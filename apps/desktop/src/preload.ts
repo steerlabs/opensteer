@@ -58,7 +58,7 @@ import {
 import { z } from "zod";
 import { contextBridge, ipcRenderer } from "electron";
 import type {
-  DesktopWorkspaceTabCommand,
+  DesktopPersonalTabCommand,
   DeploymentAccessSnapshot,
   DesktopAgentPhoneArtifact,
   DesktopChooseUsbDeviceInput,
@@ -113,8 +113,11 @@ import {
   DisplayClientDiagnosticSchema,
   RealtimeFrameDiagnosticSchema,
   RendererFailureDiagnosticSchema,
-  DesktopWorkspaceTabCommandSchema,
+  DesktopPersonalTabCommandSchema,
   DeploymentAccessSnapshotSchema,
+  DesktopPersonalOldDataStateSchema,
+  DesktopTeamLinkSchema,
+  DesktopTeamLinkDeliverySchema,
   DesktopChooseUsbDeviceInputSchema,
   DesktopReadAgentPhoneArtifactResultSchema,
   DesktopUsbDeviceChoiceSchema,
@@ -318,6 +321,24 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
   pasteViewerClipboard: () => invoke<void>(desktopBridgeChannels.pasteViewerClipboard),
   setViewerKeyboardActive: (active: boolean) =>
     invoke<void>(desktopBridgeChannels.setViewerKeyboardActive, z.boolean().parse(active)),
+  personalDataReset: {
+    oldData: async () =>
+      DesktopPersonalOldDataStateSchema.nullable().parse(
+        await invoke(desktopBridgeChannels.personalOldData),
+      ),
+    startFresh: () => invoke<void>(desktopBridgeChannels.personalStartFresh),
+  },
+  teamLinkDelivery: (input: import("@opensteer/protocol/desktop").DesktopTeamLinkDelivery) =>
+    invoke<void>(
+      desktopBridgeChannels.teamLinkDelivery,
+      DesktopTeamLinkDeliverySchema.parse(input),
+    ),
+  onTeamLink: (listener: (link: import("@opensteer/protocol/desktop").DesktopTeamLink) => void) => {
+    const receive = (_event: Electron.IpcRendererEvent, value: unknown) =>
+      listener(DesktopTeamLinkSchema.parse(value));
+    ipcRenderer.on(desktopBridgeChannels.teamLink, receive);
+    return () => ipcRenderer.removeListener(desktopBridgeChannels.teamLink, receive);
+  },
   webLinkDelivery: async (input: import("@opensteer/protocol/desktop").DesktopWebLinkDelivery) => {
     const result = await invoke(
       desktopBridgeChannels.webLinkDelivery,
@@ -342,9 +363,9 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       mcpAuthorizationListeners.delete(listener);
     };
   },
-  onWorkspaceTabCommand: (listener: (command: DesktopWorkspaceTabCommand) => void) => {
+  onPersonalTabCommand: (listener: (command: DesktopPersonalTabCommand) => void) => {
     const receive = (_event: Electron.IpcRendererEvent, value: unknown) =>
-      listener(DesktopWorkspaceTabCommandSchema.parse(value));
+      listener(DesktopPersonalTabCommandSchema.parse(value));
     ipcRenderer.on(desktopBridgeChannels.workspaceTabCommand, receive);
     return () => ipcRenderer.removeListener(desktopBridgeChannels.workspaceTabCommand, receive);
   },

@@ -1,6 +1,4 @@
-import { deploymentPolicy } from "@opensteer/core";
 import { DeploymentIdSchema, type DeploymentId, type DeploymentShape } from "@opensteer/core";
-import { hostDiscoveryDefaultWorkspaceBacking } from "@opensteer/deployment-authority";
 import type { DesktopAccessOrigin } from "@opensteer/protocol/desktop";
 import type { DeploymentCatalogStore } from "@opensteer/client/connections";
 import { resolveConnection } from "@opensteer/client/connections";
@@ -56,35 +54,17 @@ export class DesktopLocalRunnerTargetResolver implements DesktopLocalRunnerTarge
         "The local Runner Deployment is no longer available.",
       );
     }
-    // A Personal Deployment's own Mac already runs its Main Runner: a second
-    // Runner there would be the same computer enrolled twice. Every other Mac
-    // joins it over the signed access route, which is why the local Personal
-    // runtime is deliberately not offered to `resolveConnection` below.
-    if (
-      deploymentPolicy({
-        kind: connection.authority.document.deploymentShape.kind,
-        defaultWorkspaceBacking: "local-directory",
-      }).deploymentOwnsMainComputer &&
-      (await this.#supervisedDeploymentId()) === expected
-    ) {
-      throw new Error("This Mac hosts this Deployment, so it already runs as its Main Runner.");
-    }
+    if (connection.authority.document.deploymentShape.kind !== "personal")
+      throw new Error("Team servers do not run agents or enroll computers.");
+    if ((await this.#supervisedDeploymentId()) === expected)
+      throw new Error("This Mac hosts this Deployment, so it already runs its agent.");
     const resolved = resolveConnection(connection, null, { authorization: null });
     return {
       deploymentId: resolved.deploymentId,
-      deploymentShape: {
-        defaultWorkspaceBacking: hostDiscoveryDefaultWorkspaceBacking(
-          connection.authority.document.deploymentShape,
-        ),
-        kind: connection.authority.document.deploymentShape.kind,
-      },
+      deploymentShape: { kind: "personal" },
       hostUrl: resolved.origin,
       key: resolved.key,
-      // Personal agents stay on the Main computer.
-      mayRunAgents: deploymentPolicy({
-        kind: connection.authority.document.deploymentShape.kind,
-        defaultWorkspaceBacking: "local-directory",
-      }).localRunnerDefaultModules.includes("agents"),
+      mayRunAgents: false,
     };
   }
 

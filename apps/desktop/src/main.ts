@@ -1,3 +1,8 @@
+import { DesktopTeamLinks } from "./app/team-links.js";
+import { PersonalDataReset } from "./supervisor/personal-data-reset.js";
+import { desktopPersonalDataReset } from "./app/personal-data-reset.js";
+import { resetFileWrites } from "./secrets/reset-file-writes.js";
+import { desktopNativeAuthSecretsPath } from "./app/application-paths.js";
 import { DesktopBrowserProfileErasure } from "./supervisor/browser-profile-erasure.js";
 import { electronProfileRootReleaseState } from "./browser/electron-local-profile.js";
 import { DesktopSupervisor } from "./connections/desktop-supervisor.js";
@@ -48,7 +53,7 @@ import {
   prepareDesktopApplicationDirectories,
 } from "./app/application-paths.js";
 import type { DeploymentAccessUnavailable } from "@opensteer/protocol/desktop";
-import { passwordsBrokerLatestProtocolVersion } from "@opensteer/protocol/passwords-broker";
+import { passwordsBrokerProtocolVersion } from "@opensteer/protocol/passwords-broker";
 import { DeploymentIdSchema } from "@opensteer/core";
 import { AccountDeploymentDirectoryService } from "@opensteer/client/connections";
 import { AccountDirectoryRefreshService } from "@opensteer/client/connections";
@@ -185,6 +190,9 @@ const desktopOAuthLinks = {
 const mcpAuthorizationLinks = new McpAuthorizationLinks(
   new URL(embeddedRelease.oauth.hostCallback).protocol.slice(0, -1),
 );
+const teamLinks = new DesktopTeamLinks(
+  new URL(embeddedRelease.oauth.hostCallback).protocol.slice(0, -1),
+);
 const webLinks = new DesktopWebLinks((message) => {
   void app
     .whenReady()
@@ -214,13 +222,14 @@ app.on("open-url", (event, url) => {
     event.preventDefault();
     return;
   }
-  if (!webLinks.accept(url)) return;
+  if (!teamLinks.accept(url) && !webLinks.accept(url)) return;
   if (!shutdown.requested) void activeMainProcess?.activate().catch(reportFatal);
   event.preventDefault();
 });
 app.on("second-instance", (_event, argv) => {
   for (const url of argv)
-    if (!mcpAuthorizationLinks.accept(url)) routeDesktopUrl(url, desktopOAuthLinks, webLinks);
+    if (!mcpAuthorizationLinks.accept(url))
+      routeDesktopUrl(url, desktopOAuthLinks, webLinks, teamLinks);
   if (!shutdown.requested) void activeMainProcess?.activate().catch(reportFatal);
 });
 
@@ -274,7 +283,8 @@ async function startDesktop(): Promise<void> {
   if (loaded.config.updates && (await offerMoveToApplications(reportEvent))) return;
   shutdown.signal.throwIfAborted();
   for (const url of process.argv)
-    if (!mcpAuthorizationLinks.accept(url)) routeDesktopUrl(url, desktopOAuthLinks, webLinks);
+    if (!mcpAuthorizationLinks.accept(url))
+      routeDesktopUrl(url, desktopOAuthLinks, webLinks, teamLinks);
   await runDesktop(loaded, privateFiles);
 }
 
@@ -328,22 +338,20 @@ async function runDesktop(
   let fatal = false;
   let mainProcess: DesktopMainProcess;
   const browserPagePolicyPreloadPath = path.join(import.meta.dirname, "browser-page-preload.cjs");
+  const resetWrites = resetFileWrites(privateFiles, [
+    desktopDeploymentCatalogPath(loaded.config.dataDirectory),
+    desktopNativeAuthSecretsPath(loaded.config.dataDirectory),
+    path.join(loaded.config.dataDirectory, "personal-deployment.v1.json"),
+  ]);
   const personalFiles = new NativePersonalDeploymentFilesystem({
     dataDirectory: loaded.config.dataDirectory,
-    privateFiles,
+    privateFiles: resetWrites.files,
   });
   const deploymentCatalog = new DeploymentCatalogStore({
     filePath: desktopDeploymentCatalogPath(loaded.config.dataDirectory),
     localPersonalManifest: personalFiles,
-    privateFiles,
+    privateFiles: resetWrites.files,
   });
-  if (loaded.config.hostUrl) {
-    await ensureConfiguredDeployment({
-      catalog: deploymentCatalog,
-      hostUrl: loaded.config.hostUrl,
-      personalDeploymentName: defaultPersonalDeploymentName(),
-    });
-  }
   const hostNetwork = new ElectronHostNetwork();
   const serviceNetwork = new ElectronServiceNetwork();
   const protectedStorage = new VerifiedDesktopSecretCryptography(safeStorage, {
@@ -353,6 +361,19 @@ async function runDesktop(
         new Error(`${phase}: ${safeErrorMessage(error)}`),
       ),
   });
+  const dataReset = new PersonalDataReset({
+    dataDirectory: loaded.config.dataDirectory,
+    cryptography: protectedStorage,
+  });
+  const pendingReset = await dataReset.pending();
+  if (pendingReset) await dataReset.execute(pendingReset);
+  if (loaded.config.hostUrl) {
+    await ensureConfiguredDeployment({
+      catalog: deploymentCatalog,
+      hostUrl: loaded.config.hostUrl,
+      personalDeploymentName: defaultPersonalDeploymentName(),
+    });
+  }
   const resourcesDirectory = path.dirname(loaded.config.personal.releaseDirectory);
   const personalUserEnvironment = new NativePersonalUserEnvironment();
   const hostControl = new NativePersonalHostControl({
@@ -416,7 +437,7 @@ async function runDesktop(
         resourcesPath: process.resourcesPath,
       }),
     development: !app.isPackaged,
-    protocolVersion: passwordsBrokerLatestProtocolVersion,
+    protocolVersion: passwordsBrokerProtocolVersion,
     log: (event, fields) => reportEvent(event, fields),
   });
   const ownOrigins = new OpensteerOwnOrigins({
@@ -427,7 +448,6 @@ async function runDesktop(
     process.platform === "darwin"
       ? new PasswordsLoginAuthority({
           broker: passwords.broker(),
-          legacyBroker: passwords.broker(4),
           ownOrigins: ownOrigins.current,
           observeStatus: (listener) => passwords.onStatusChanged(listener),
         })
@@ -472,6 +492,7 @@ async function runDesktop(
       stopForSlot: (id) => computerUse.stopForSlot(id),
     },
     credentials: new NativePersonalDeploymentCredentials(protectedStorage, { privateFiles }),
+    dataReset,
     files: personalFiles,
     host: hostControl,
     localRuntimes: personalLocalRuntimes,
@@ -498,7 +519,7 @@ async function runDesktop(
   const protectedAuthStore = new DesktopProtectedAuthStore({
     cryptography: protectedStorage,
     dataDirectory: loaded.config.dataDirectory,
-    privateFiles,
+    privateFiles: resetWrites.files,
   });
   const personalRemoteHost = new NativePersonalRemoteHostControl({
     executorAuthorization: (runtime) => personal.executorAuthorization(runtime),
@@ -635,7 +656,7 @@ async function runDesktop(
     windowForContents: desktopWindowForContents,
   });
   const closeClearedAccountSockets = accountBrokeredHostSessions.subscribe(() =>
-    hostTransport.closeAllSockets(),
+    hostTransport.closeAllConnections(),
   );
   const localRunner = new LocalRunnerService(loaded.config, {
     profileErasure,
@@ -962,7 +983,7 @@ async function runDesktop(
     },
     hostSession: {
       abandonAuthorization: (deploymentId) => hostSessions.abandonAuthorization(deploymentId),
-      closeCurrent: async () => hostTransport.closeAllSockets(),
+      closeCurrent: async () => hostTransport.closeAllConnections(),
       establish: (deploymentId) => hostSessions.establish(deploymentId),
       subscribe: (listener) => hostSessions.subscribe(listener),
     },
@@ -1042,6 +1063,29 @@ async function runDesktop(
       restart: () => restartToUpdate(),
     },
     webLinks,
+    teamLinks,
+    personalDataReset: desktopPersonalDataReset({
+      personal,
+      quiesce: async () => {
+        access.dispose();
+        detachAccountDirectoryRefresh();
+        nativeAuth.dispose();
+        hostSessions.dispose();
+        hostTransport.dispose();
+        await resetWrites.quiesce();
+      },
+      clearSession: async (deploymentId) => {
+        await hostNetwork
+          .clearDeploymentSession(deploymentId)
+          .catch((error: unknown) =>
+            reportNonFatal("desktop.personal.reset-session-failed", error),
+          );
+      },
+      restart: () => {
+        app.relaunch();
+        shutdown.request("start-fresh", () => app.exit(0));
+      },
+    }),
     integrationAuthorizations,
     mcpAuthorizationLinks,
     isWorkspaceContents: (sender) => sender === workspaceContents,
@@ -1242,7 +1286,7 @@ async function runDesktop(
     const available =
       snapshot.deployments
         .find((deployment) => deployment.id === snapshot.selectedDeploymentId)
-        ?.capabilities?.includes("workspace-tab-reopen-v1") === true;
+        ?.capabilities?.includes("tab-reopen-v1") === true;
     const item = Menu.getApplicationMenu()?.getMenuItemById("reopen-closed-tab");
     if (item) {
       item.visible = available;
@@ -1347,7 +1391,7 @@ async function runDesktop(
       access.dispose();
       hostSessions.dispose();
       closeClearedAccountSockets();
-      hostTransport.closeAllSockets();
+      hostTransport.dispose();
       unregisterBridge();
       localVisibility.dispose();
       detachLoginSession();

@@ -321,7 +321,9 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     return this.#oldData;
   }
 
-  async startFresh(): Promise<DesktopPersonalDeploymentStatus> {
+  async startFresh(
+    options: { readonly restart?: boolean } = {},
+  ): Promise<DesktopPersonalDeploymentStatus> {
     if (!this.#oldData || !this.#dataReset)
       throw new Error("No old Personal database is awaiting reset.");
     const plan = this.#oldData;
@@ -329,6 +331,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     await this.#dataReset.execute(plan);
     this.#oldData = null;
     this.#configuredManifestLookup = undefined;
+    if (options.restart === false) return this.#status;
     this.#shutdownRequested = false;
     return this.start();
   }
@@ -729,12 +732,12 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     );
     this.#setStatus({ step: "preparing-agent-home" });
     await withTimeout(
-      this.#host.ensureMain(origin, manifest.deploymentId, signal),
+      this.#host.ensureAgentHome(origin, manifest.deploymentId, signal),
       this.#startupTimeoutMs,
       {
         abortFallback: "Personal setup was cancelled.",
         signal,
-        timeoutError: () => new Error("Personal Main Workspace creation timed out."),
+        timeoutError: () => new Error("Personal agent home readiness timed out."),
       },
     );
     this.#assertCompleteStack();

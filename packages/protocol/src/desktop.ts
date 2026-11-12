@@ -30,6 +30,7 @@ import {
   ThreadIdSchema,
   MarkColorSchema,
   IconNameSchema,
+  parseTeamPageLink,
   isBareOrigin,
   isSecureOrLoopbackOrigin,
 } from "@opensteer/core";
@@ -1187,7 +1188,7 @@ export const DesktopHostBinaryReadResultSchema = z.strictObject({
     .number()
     .int()
     .nonnegative()
-    .max(25 * 1_024 * 1_024)
+    .max(100 * 1_024 * 1_024 + 64 * 1_024)
     .nullable(),
   status: z.number().int().min(100).max(599),
 });
@@ -1405,6 +1406,31 @@ export const DesktopWebUrlSchema = z
       return false;
     }
   }, "A web link must be a valid HTTP or HTTPS URL.");
+export const DesktopPersonalOldDataStateSchema = z.strictObject({
+  kind: z.literal("old-data"),
+  deploymentId: DeploymentIdSchema,
+  entries: z
+    .array(
+      z.strictObject({
+        source: z.string().min(1).max(4096),
+        destination: z.string().min(1).max(4096),
+      }),
+    )
+    .length(5),
+});
+export type DesktopPersonalOldDataState = z.infer<typeof DesktopPersonalOldDataStateSchema>;
+
+export const DesktopTeamLinkSchema = z.strictObject({
+  id: z.uuid(),
+  url: DesktopWebUrlSchema.refine((value) => parseTeamPageLink(value) !== null),
+});
+export type DesktopTeamLink = z.infer<typeof DesktopTeamLinkSchema>;
+export const DesktopTeamLinkDeliverySchema = z.strictObject({
+  ready: z.boolean(),
+  acknowledgedId: z.uuid().optional(),
+});
+export type DesktopTeamLinkDelivery = z.infer<typeof DesktopTeamLinkDeliverySchema>;
+
 export const DesktopWebLinkRequestSchema = z.strictObject({
   deploymentId: DeploymentIdSchema,
   userId: UserIdSchema,
@@ -1750,6 +1776,12 @@ export interface OpensteerDesktopBridge {
   deploymentUpdates?: DesktopDeploymentUpdatesBridge;
   /** On-device dictation on this Mac. Present only in the desktop app. */
   dictation?: DictationPort;
+  personalDataReset?: {
+    oldData(): Promise<DesktopPersonalOldDataState | null>;
+    startFresh(): Promise<void>;
+  };
+  teamLinkDelivery?(input: DesktopTeamLinkDelivery): Promise<void>;
+  onTeamLink?(listener: (link: DesktopTeamLink) => void): () => void;
   webLinkDelivery?(input: DesktopWebLinkDelivery): Promise<DesktopWebLink | null>;
   dismissMcpAuthorization?(requestId: string): Promise<void>;
   onMcpAuthorization?(listener: (target: AgentConnectionAuthorizationTarget) => void): () => void;

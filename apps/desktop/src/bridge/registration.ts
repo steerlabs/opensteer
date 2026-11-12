@@ -1,3 +1,5 @@
+import { handleOldPersonalData, handleStartFresh } from "./methods/personal-data-reset.js";
+import { teamLinkDelivery } from "./methods/team-links.js";
 import {
   DesktopIntegrationAuthorizationSubscriptionSchema,
   DesktopFinishIntegrationAuthorizationInputSchema,
@@ -350,6 +352,10 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
         (deploymentId) => personalWebLinksAvailable(options.access.snapshot(), deploymentId),
       )
     : null;
+  register(desktopBridgeChannels.personalOldData, handleOldPersonalData(context));
+  register(desktopBridgeChannels.personalStartFresh, handleStartFresh(context));
+  const teamLinkOwner = teamLinkDelivery(context);
+  register(desktopBridgeChannels.teamLinkDelivery, teamLinkOwner.handle);
   register(desktopBridgeChannels.webLinkDelivery, (event, envelope) => {
     assertAuthorizedRenderer(context, event, envelope);
     return (
@@ -449,6 +455,7 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   return () => {
     detachIntegrationSubscription();
     webLinkOwner?.dispose();
+    teamLinkOwner.dispose();
     unsubscribeDownloads();
     context.downloadsSenders.clear();
     unsubscribeUpdates?.();

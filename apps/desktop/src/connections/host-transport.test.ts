@@ -643,6 +643,7 @@ describe("DesktopHostTransport", () => {
     };
     const transport = desktopHostTransport({
       catalog: {
+        subscribe: () => () => undefined,
         load: async () => ({
           deployments: [selected],
           revision: 1,
@@ -663,7 +664,7 @@ describe("DesktopHostTransport", () => {
   });
 
   it("resolves a local Runner target from its verified catalog route independently of selection", async () => {
-    const canonical = deployment("Cloud", "https://cloud.opensteer.test");
+    const canonical = deployment("Cloud", "https://cloud.opensteer.test", "personal");
     const directOrigin = "https://cloud.tailnet.test";
     const selected = DeploymentConnectionSchema.parse({
       ...canonical,
@@ -784,7 +785,7 @@ describe("DesktopHostTransport", () => {
       const authority = signTestDiscoveryEnvelope(
         {
           ...base.authority.document,
-          deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+          deploymentShape: { kind: "personal" },
         },
         keys,
       );
@@ -951,7 +952,7 @@ describe("DesktopHostTransport", () => {
         deploymentId: createId("deployment"),
         hostInstanceId: createId("hostInstance"),
         hostKey: { algorithm: "Ed25519" },
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+        deploymentShape: { kind: "personal" },
       }),
       bootstrapMethods: [],
       endpoints: [
@@ -1163,7 +1164,7 @@ function cloudFixture(
   return { hostRequests, recoverUnauthorized, selected, transport };
 }
 
-function deployment(name: string, canonicalOrigin: string) {
+function deployment(name: string, canonicalOrigin: string, kind: "personal" | "team" = "team") {
   const now = "2026-08-11T10:00:00.000Z";
   return DeploymentConnectionSchema.parse({
     authority: testDiscoveryEnvelope({
@@ -1172,14 +1173,13 @@ function deployment(name: string, canonicalOrigin: string) {
       hostInstanceId: createId("hostInstance") as HostInstanceId,
       hostKey: { algorithm: "Ed25519" },
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
-        kind: "server" as const,
+        kind,
       },
     }),
     bootstrapMethods: ["password"],
     createdAt: now,
     endpoints: [{ kind: "canonical", origin: canonicalOrigin, verifiedAt: now }],
-    kind: "self-hosted",
+    kind: kind === "personal" ? "personal" : "self-hosted",
     lastUsedAt: null,
     name,
     reachability: "canonical",
@@ -1192,6 +1192,7 @@ function catalogStore(
   deployments: DeploymentCatalog["deployments"],
   selectedDeploymentId: DeploymentId | null,
 ) {
+  const listeners = new Set<() => void>();
   let catalog = DeploymentCatalogSchema.parse({
     deployments,
     revision: deployments.length ? 1 : 0,
@@ -1201,7 +1202,10 @@ function catalogStore(
   });
   return {
     load: async () => catalog,
-    subscribe: () => () => undefined,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
     replace: (
       nextDeployments: DeploymentCatalog["deployments"],
       nextSelectedDeploymentId: DeploymentId | null,
@@ -1213,6 +1217,7 @@ function catalogStore(
         selectedDeploymentId: nextSelectedDeploymentId,
         updatedAt: "2026-08-11T10:02:00.000Z",
       });
+      for (const listener of listeners) listener();
     },
     select: async (deploymentId: DeploymentId | string) => {
       if (
@@ -1642,7 +1647,7 @@ it("bounds app streams independently so a full app pool leaves ordinary Host req
 });
 
 it("refuses a return proof when main selects B before processing renderer A's request", async () => {
-  const first = deployment("A", "https://a.example.test");
+  const first = deployment("A", "https://a.example.test", "personal");
   const second = deployment("B", "https://b.example.test");
   const deploymentId = first.authority.document.deploymentId;
   const catalog = catalogStore([first, second], deploymentId);
@@ -1687,5 +1692,266 @@ it("refuses a return proof when main selects B before processing renderer A's re
     expect(request).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ deploymentId }));
   } finally {
     transport.closeAllSockets();
+  }
+});
+
+describe("joined team routing", () => {
+  it("pins RPC, sockets and file bytes to each team while Personal selection changes", async () => {
+    const personal = deployment("Personal", "http://127.0.0.1:4310", "personal");
+    const other = deployment("Other Personal", "http://127.0.0.1:4311", "personal");
+    const teams = [
+      deployment("Acme", "https://acme.example"),
+      deployment("Family", "https://family.example"),
+    ];
+    const catalog = catalogStore(
+      [personal, other, ...teams],
+      personal.authority.document.deploymentId,
+    );
+    const requests: HostNetworkRequest[] = [];
+    const sockets: {
+      input: Omit<HostNetworkRequest, "request" | "signal">;
+      network: ReturnType<typeof socket>;
+    }[] = [];
+    const transport = desktopHostTransport({
+      catalog,
+      credentials: {
+        authorizationHeader: async (connection) =>
+          `Bearer credential-${connection.authority.document.deploymentId}`,
+      },
+      network: {
+        request: async (input) => {
+          requests.push(input);
+          return new Response(input.request.body ?? "team-file");
+        },
+        openWebSocket: (input) => {
+          const network = socket();
+          sockets.push({ input, network });
+          return network;
+        },
+      },
+    });
+    try {
+      for (const team of teams) {
+        const expectedDeploymentId = team.authority.document.deploymentId;
+        const origin = team.authority.document.canonicalOrigin;
+        await transport.request({
+          expectedDeploymentId,
+          headers: { apiVersion: "999" },
+          method: "GET",
+          path: "/v1/rpc/team.bootstrap",
+        });
+        await transport.openWebSocket(7, { expectedDeploymentId, path: "/v1/realtime" }, vi.fn());
+        const download = await transport.openBinary(7, {
+          expectedDeploymentId,
+          headers: { apiVersion: "999" },
+          method: "GET",
+          path: "/v1/team/files/file_1/original",
+        });
+        expect(await transport.readBinary(7, download)).toMatchObject({
+          bytes: new TextEncoder().encode("team-file"),
+          done: true,
+        });
+        await transport.closeBinary(7, download);
+        const metadata = '{"filename":"example.txt"}';
+        const upload = await transport.openBinary(7, {
+          expectedDeploymentId,
+          headers: {
+            apiVersion: "999",
+            contentType: "application/octet-stream",
+            teamUpload: metadata,
+          },
+          method: "POST",
+          path: "/v1/team/files/upload/channel_1",
+        });
+        await transport.writeBinary(7, {
+          ...upload,
+          bytes: new TextEncoder().encode("uploaded-file"),
+        });
+        expect(await transport.finishBinary(7, upload)).toMatchObject({
+          body: "uploaded-file",
+          status: 200,
+        });
+        const routed = requests.filter((input) => input.deploymentId === expectedDeploymentId);
+        expect(routed).toHaveLength(3);
+        for (const input of routed) {
+          expect(input.url).toBe(origin + input.request.path);
+          expect(input.authorization).toBe(`Bearer credential-${expectedDeploymentId}`);
+          expect(input.request.headers).toMatchObject({
+            additional: { "x-opensteer-team-api-version": "1" },
+          });
+          expect(input.request.headers.apiVersion).toBeUndefined();
+        }
+        expect(routed[2]!.request.headers.additional).toMatchObject({
+          "x-opensteer-team-upload": metadata,
+        });
+        expect(sockets.at(-1)!.input).toMatchObject({
+          deploymentId: expectedDeploymentId,
+          authorization: `Bearer credential-${expectedDeploymentId}`,
+          url: origin.replace("https:", "wss:") + "/v1/realtime",
+          headers: { "x-opensteer-team-api-version": "1" },
+        });
+      }
+      await transport.select({ deploymentId: other.authority.document.deploymentId });
+      expect(sockets.every(({ network }) => network.close.mock.calls.length === 0)).toBe(true);
+      await transport.request({ headers: {}, method: "GET", path: "/v1/rpc/bootstrap.get" });
+      expect(requests.at(-1)!.deploymentId).toBe(other.authority.document.deploymentId);
+      for (const team of teams)
+        await transport.request({
+          expectedDeploymentId: team.authority.document.deploymentId,
+          headers: {},
+          method: "GET",
+          path: "/v1/rpc/team.bootstrap",
+        });
+      expect(sockets.every(({ network }) => network.close.mock.calls.length === 0)).toBe(true);
+    } finally {
+      transport.dispose();
+    }
+    expect(sockets.every(({ network }) => network.close.mock.calls.length === 1)).toBe(true);
+  });
+
+  it("refuses missing team pins and Personal deployment mismatches before opening any network traffic", async () => {
+    const first = deployment("Personal A", "http://127.0.0.1:4310", "personal");
+    const second = deployment("Personal B", "http://127.0.0.1:4311", "personal");
+    const network = {
+      request: vi.fn(async () => new Response("{}")),
+      openWebSocket: vi.fn(() => socket()),
+    };
+    const transport = desktopHostTransport({
+      catalog: catalogStore([first, second], first.authority.document.deploymentId),
+      network,
+    });
+    try {
+      for (const expectedDeploymentId of [
+        createId("deployment"),
+        second.authority.document.deploymentId,
+      ]) {
+        await expect(
+          transport.request({
+            expectedDeploymentId,
+            headers: {},
+            method: "GET",
+            path: "/v1/rpc/bootstrap.get",
+          }),
+        ).rejects.toMatchObject({ code: "deployment-changed" });
+        await expect(
+          transport.openWebSocket(7, { expectedDeploymentId, path: "/v1/realtime" }, vi.fn()),
+        ).rejects.toMatchObject({ code: "deployment-changed" });
+        await expect(
+          transport.openBinary(7, {
+            expectedDeploymentId,
+            headers: {},
+            method: "GET",
+            path: "/v1/team/files/file_1/original",
+          }),
+        ).rejects.toMatchObject({ code: "deployment-changed" });
+      }
+      expect(network.request).not.toHaveBeenCalled();
+      expect(network.openWebSocket).not.toHaveBeenCalled();
+    } finally {
+      transport.dispose();
+    }
+  });
+});
+
+it("refuses a pinned Personal socket if selection changes during the final credential resolution", async () => {
+  const first = deployment("Personal A", "http://127.0.0.1:4310", "personal");
+  const second = deployment("Personal B", "http://127.0.0.1:4311", "personal");
+  const catalog = catalogStore([first, second], first.authority.document.deploymentId);
+  let reads = 0;
+  const openWebSocket = vi.fn(() => socket());
+  const transport = desktopHostTransport({
+    catalog,
+    network: { request: async () => new Response("{}"), openWebSocket },
+    credentials: {
+      authorizationHeader: async () => {
+        if (++reads === 1) await catalog.select(second.authority.document.deploymentId);
+        return "Bearer fixture";
+      },
+    },
+  });
+  try {
+    await expect(
+      transport.openWebSocket(
+        7,
+        { expectedDeploymentId: first.authority.document.deploymentId, path: "/v1/realtime" },
+        vi.fn(),
+      ),
+    ).rejects.toMatchObject({ code: "deployment-changed" });
+    expect(openWebSocket).not.toHaveBeenCalled();
+  } finally {
+    transport.dispose();
+  }
+});
+
+it("admits team originals beyond the Personal transfer limit and keeps previews bounded", async () => {
+  const team = deployment("Acme", "https://acme.example");
+  const expectedDeploymentId = team.authority.document.deploymentId;
+  const size = 25 * 1024 * 1024 + 1;
+  const transport = desktopHostTransport({
+    catalog: catalogStore([team], expectedDeploymentId),
+    network: {
+      openWebSocket: () => socket(),
+      request: async (input) =>
+        new Response(
+          new Uint8Array(input.request.path.endsWith("/preview") ? 64 * 1024 + 1 : size),
+        ),
+    },
+  });
+  try {
+    const original = await transport.openBinary(7, {
+      expectedDeploymentId,
+      method: "GET",
+      headers: {},
+      path: "/v1/team/files/file_1/original",
+    });
+    expect(await transport.readBinary(7, original)).toMatchObject({ sizeBytes: size, done: false });
+    await transport.closeBinary(7, original);
+    const preview = await transport.openBinary(7, {
+      expectedDeploymentId,
+      method: "GET",
+      headers: {},
+      path: "/v1/team/files/file_1/preview",
+    });
+    await expect(transport.readBinary(7, preview)).rejects.toMatchObject({
+      code: "response-too-large",
+    });
+    await transport.closeBinary(7, preview);
+  } finally {
+    transport.dispose();
+  }
+});
+
+it("closes only the removed team's live sockets after its catalog attachment disappears", async () => {
+  const personal = deployment("Personal", "http://127.0.0.1:4310", "personal");
+  const first = deployment("Acme", "https://acme.example");
+  const second = deployment("Family", "https://family.example");
+  const catalog = catalogStore([personal, first, second], personal.authority.document.deploymentId);
+  const sockets = new Map<string, ReturnType<typeof socket>>();
+  const transport = desktopHostTransport({
+    catalog,
+    network: {
+      request: async () => new Response("{}"),
+      openWebSocket: (input) => {
+        const network = socket();
+        sockets.set(input.deploymentId, network);
+        return network;
+      },
+    },
+  });
+  try {
+    for (const team of [first, second])
+      await transport.openWebSocket(
+        7,
+        { expectedDeploymentId: team.authority.document.deploymentId, path: "/v1/realtime" },
+        vi.fn(),
+      );
+    catalog.replace([personal, second], personal.authority.document.deploymentId);
+    await vi.waitFor(
+      () => expect(sockets.get(first.authority.document.deploymentId)!.close).toHaveBeenCalled(),
+      { timeout: 1_000 },
+    );
+    expect(sockets.get(second.authority.document.deploymentId)!.close).not.toHaveBeenCalled();
+  } finally {
+    transport.dispose();
   }
 });

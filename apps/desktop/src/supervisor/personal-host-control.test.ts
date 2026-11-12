@@ -20,7 +20,7 @@ const hostOrigin = "http://127.0.0.1:4310";
 const bootstrapUrl = personalHostBootstrapUrl(hostOrigin).toString();
 
 describe("NativePersonalHostControl bootstrap", () => {
-  it("claims on first boot and returns enrollment before reading Main readiness", async () => {
+  it("claims on first boot and returns enrollment before reading agent home readiness", async () => {
     const requests: Array<{ readonly credentials: RequestCredentials; readonly request: Request }> =
       [];
     let localBootstrapReads = 0;
@@ -106,7 +106,7 @@ describe("NativePersonalHostControl bootstrap", () => {
     ).toBe(true);
   });
 
-  it("verifies Main only when the supervisor asks after Runner attachment", async () => {
+  it("verifies the Personal agent home only when the supervisor asks after Runner attachment", async () => {
     const requests: Request[] = [];
     const deployment = manifest();
     const control = new NativePersonalHostControl({
@@ -117,62 +117,9 @@ describe("NativePersonalHostControl bootstrap", () => {
     });
 
     await expect(
-      control.ensureMain(hostOrigin, deployment.deploymentId, new AbortController().signal),
+      control.ensureAgentHome(hostOrigin, deployment.deploymentId, new AbortController().signal),
     ).resolves.toBeUndefined();
     expect(requests.map(({ url }) => url)).toEqual([bootstrapUrl]);
-  });
-
-  it("keeps startup alive until Main finishes provisioning", async () => {
-    const snapshot = hostBootstrap();
-    let reads = 0;
-    const control = new NativePersonalHostControl({
-      pollIntervalMs: 1,
-      fetch: async () => {
-        reads += 1;
-        return rpcData({
-          ...snapshot,
-          homeWorkspace:
-            reads === 1
-              ? null
-              : {
-                  ...snapshot.homeWorkspace,
-                  status: reads === 2 ? "provisioning" : "ready",
-                },
-        });
-      },
-    });
-    await expect(
-      control.ensureMain(hostOrigin, manifest().deploymentId, new AbortController().signal),
-    ).resolves.toBeUndefined();
-    expect(reads).toBe(3);
-  });
-
-  it("cancels Main readiness without leaving startup polling alive", async () => {
-    const abort = new AbortController();
-    const control = new NativePersonalHostControl({
-      pollIntervalMs: 1,
-      fetch: async () => {
-        abort.abort(new Error("startup cancelled"));
-        return rpcData({ ...hostBootstrap(), homeWorkspace: null });
-      },
-    });
-    await expect(
-      control.ensureMain(hostOrigin, manifest().deploymentId, abort.signal),
-    ).rejects.toThrow("startup cancelled");
-  });
-
-  it("refuses to declare Main ready while its storage is unavailable", async () => {
-    const snapshot = hostBootstrap();
-    const control = new NativePersonalHostControl({
-      fetch: async () =>
-        rpcData({
-          ...snapshot,
-          homeWorkspace: { ...snapshot.homeWorkspace, status: "unavailable" },
-        }),
-    });
-    await expect(
-      control.ensureMain(hostOrigin, manifest().deploymentId, new AbortController().signal),
-    ).rejects.toThrow("Personal Host did not finish creating Main");
   });
 
   it("recovers a cleared owner session with one typed claim request", async () => {
@@ -438,7 +385,6 @@ describe("NativePersonalRemoteHostControl Account-link failures", () => {
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
         kind: "personal" as const,
       },
     },
@@ -570,8 +516,15 @@ function hostBootstrap(
   } = {},
 ) {
   return {
-    notificationPreferences: [],
     deploymentId: createId("deployment"),
+    sessionId: createId("authSession"),
+    personalSettings: {
+      ownerId: createId("user"),
+      agentHome: { computerId: createId("runner"), path: "/Users/test/Opensteer" },
+      voiceThreadId: null,
+    },
+    can: { createTasks: true, useVoice: true, manageComputers: true, managePrivateResources: true },
+    appTabs: [],
     browser: {
       available: true,
       placements: overrides.placements ?? [],
@@ -580,23 +533,12 @@ function hostBootstrap(
       groups: { rows: [], complete: true },
       tabs: [],
     },
-    deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" as const },
     environments: overrides.environments ?? [],
+    executionPreferences: { accessMode: "full-access", history: [] },
+    quietTaskDays: 7,
     harnesses: [],
-    homeWorkspace: {
-      capacity: { kind: "host-filesystem" },
-      createdAt: "2026-08-12T12:00:00.000Z",
-      id: createId("workspace"),
-      homeThreadId: createId("thread"),
-      voiceThreadId: null,
-      icon: null,
-      kind: "main",
-      location: { environmentId: createId("environment"), kind: "machine", name: null },
-      name: "Main",
-      status: "ready",
-      storageIssue: null,
-      updatedAt: "2026-08-12T12:00:00.000Z",
-    },
+    latestPlaces: [],
+    sessionSurface: "canonical",
     identityConfig: {
       deployment: { kind: "personal" as const, name: "This computer" },
       emailDeliveryAvailable: false,
@@ -612,15 +554,6 @@ function hostBootstrap(
     },
     machines: [],
     user: authenticatedSession().user,
-    workspaceSharingAvailable: false,
-    workspaces: [],
-    workspaceWindow: {
-      byteCount: 0,
-      hasMore: false,
-      itemCount: 0,
-      nextBefore: null,
-      totalItems: 0,
-    },
   };
 }
 
@@ -637,7 +570,7 @@ function environment(id: EnvironmentId, runnerId: RunnerId) {
     providerStateModes: [],
     runnerId,
     status: "connected",
-    workspaceBackings: ["local-directory"],
+    can: { executeTasks: true },
   };
 }
 

@@ -6,6 +6,8 @@ import { openAsBlob, promises as fs } from "node:fs";
 import { createHmac, randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { DeploymentId } from "@opensteer/core";
+import { teamPreviewMaxBytes, teamUploadMaxBytes } from "@opensteer/protocol";
 import type { HostSessionRecovery } from "@opensteer/client/auth";
 import {
   HostTransport,
@@ -78,6 +80,7 @@ type SocketEndInitiator =
 
 interface OwnedSocket {
   readonly network: HostNetworkSocket;
+  readonly transport: HostTransport;
   readonly ownerId: number;
   readonly end: (code: number, reason: string, initiator: SocketEndInitiator) => void;
   readonly passkeyConsumer: (surfaceId: string) => string | null;
@@ -86,6 +89,7 @@ interface OwnedSocket {
 }
 
 interface BinaryTransfer {
+  readonly transport: HostTransport;
   readonly ownerId: number;
   readonly attachmentKey: string;
   readonly directory: string;
@@ -126,15 +130,19 @@ export class DesktopHostTransport extends HostTransport {
   readonly #surfaceDiagnosticKey = randomBytes(32);
   readonly #log:
     ((event: string, fields: Record<string, string | number | boolean>) => void) | undefined;
-  readonly #catalog: Pick<DeploymentCatalogStore, "select" | "setPreferredEndpoint">;
+  readonly #catalog: Pick<DeploymentCatalogStore, "load" | "select" | "setPreferredEndpoint">;
+  readonly #teams = new Map<DeploymentId, HostTransport>();
+  readonly #teamOptions: ConstructorParameters<typeof HostTransport>[0];
+  readonly #unsubscribeCatalog: () => void;
   readonly #projection: Pick<DesktopAccessProjection, "read">;
   readonly #sockets = new Map<string, OwnedSocket>();
   readonly #binary = new Map<string, BinaryTransfer>();
   readonly #browserControlListeners = new Set<(event: DesktopBrowserControlObservation) => void>();
   readonly #browserSocketListeners = new Set<(event: DesktopBrowserSocketObservation) => void>();
   readonly #ownerGenerations = new Map<number, number>();
-  #socketGeneration = 0;
+  readonly #socketGenerations = new WeakMap<HostTransport, number>();
   #openingBinary = 0;
+  #disposed = false;
   readonly #bootstrapDiagnostics = new BootstrapNoticeDiagnostics();
 
   constructor(options: {
@@ -157,6 +165,19 @@ export class DesktopHostTransport extends HostTransport {
       },
       network: options.network,
       ...(options.sessions === undefined ? {} : { sessions: options.sessions }),
+    });
+    this.#teamOptions = {
+      catalog: options.catalog,
+      ...(options.credentials === undefined ? {} : { credentials: options.credentials }),
+      localRuntime: {
+        current: async () => desktopLocalHostRuntime(await options.localRuntime.current()),
+      },
+      network: options.network,
+      ...(options.sessions === undefined ? {} : { sessions: options.sessions }),
+      expectedKind: "team",
+    };
+    this.#unsubscribeCatalog = options.catalog.subscribe(() => {
+      for (const team of this.#teams.values()) void team.current().catch(() => undefined);
     });
     this.#log = options.log;
     this.#catalog = options.catalog;
@@ -225,7 +246,8 @@ export class DesktopHostTransport extends HostTransport {
         }
       }
     }
-    return this.exchange(request, async (response, progress) =>
+    const transport = await this.#transport(request.expectedDeploymentId);
+    return transport.exchange(request, async (response, progress) =>
       DesktopHostHttpResponseSchema.parse({
         body: await readBoundedText(response, {
           ...progress,
@@ -288,8 +310,14 @@ export class DesktopHostTransport extends HostTransport {
     this.#openingBinary += 1;
     let directory: string | null = null;
     try {
-      await this.current();
-      const attachmentKey = this.currentKey();
+      const transport = await this.#transport(parsed.expectedDeploymentId);
+      const selected = await transport.current();
+      if (
+        parsed.expectedDeploymentId !== undefined &&
+        selected.resolved.deploymentId !== parsed.expectedDeploymentId
+      )
+        throw new HostTransportError("deployment-changed");
+      const attachmentKey = transport.currentKey();
       if (!attachmentKey) throw new Error("No deployment is attached.");
       directory = await fs.mkdtemp(join(tmpdir(), "opensteer-attachment-"));
       await ensurePrivateDirectory(directory);
@@ -300,6 +328,7 @@ export class DesktopHostTransport extends HostTransport {
       const controller = new AbortController();
       const result = DesktopHostBinaryOpenResultSchema.parse({ transferId });
       const transfer: BinaryTransfer = {
+        transport,
         attachmentKey,
         controller,
         directory,
@@ -307,7 +336,7 @@ export class DesktopHostTransport extends HostTransport {
         offset: 0,
         outcome:
           parsed.method === "GET" || parsed.body !== undefined
-            ? this.#downloadBinary(attachmentKey, parsed, filePath, controller.signal)
+            ? this.#downloadBinary(transport, attachmentKey, parsed, filePath, controller.signal)
             : null,
         ownerId,
         path: filePath,
@@ -330,7 +359,7 @@ export class DesktopHostTransport extends HostTransport {
     this.#touchBinary(parsed.transferId, transfer);
     if (transfer.input.method !== "POST" || transfer.input.body !== undefined)
       throw new Error("This transfer cannot receive bytes.");
-    if (transfer.size + parsed.bytes.byteLength > maximumBinaryBytes) {
+    if (transfer.size + parsed.bytes.byteLength > binaryByteLimit(transfer.input)) {
       throw new Error("The attachment exceeds the Desktop transfer limit.");
     }
     this.#assertBinaryAttachment(transfer);
@@ -347,10 +376,12 @@ export class DesktopHostTransport extends HostTransport {
     this.#assertBinaryAttachment(transfer);
     try {
       const body = await openAsBlob(transfer.path);
-      return await this.exchange(
+      return await transfer.transport.exchange(
         {
           body,
-          headers: transfer.input.headers,
+          expectedAttachmentKey: transfer.attachmentKey,
+          expectedDeploymentId: transfer.input.expectedDeploymentId,
+          headers: binaryHeaders(transfer.input),
           method: "POST",
           path: transfer.input.path,
           signal: transfer.controller.signal,
@@ -423,6 +454,7 @@ export class DesktopHostTransport extends HostTransport {
   }
 
   async #downloadBinary(
+    transport: HostTransport,
     attachmentKey: string,
     input: DesktopHostBinaryOpenInput,
     path: string,
@@ -436,22 +468,25 @@ export class DesktopHostTransport extends HostTransport {
     readonly lastModified: string | null;
     readonly sizeBytes: number;
   }> {
-    return this.exchange(
+    return transport.exchange(
       {
+        expectedAttachmentKey: attachmentKey,
+        expectedDeploymentId: input.expectedDeploymentId,
         ...(input.body === undefined ? {} : { body: input.body }),
-        headers: input.headers,
+        headers: binaryHeaders(input),
         method: input.method,
         path: input.path,
         signal,
         ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
       },
       async (response, progress) => {
-        if (this.currentKey() !== attachmentKey) throw new HostTransportError("deployment-changed");
+        if (transport.currentKey() !== attachmentKey)
+          throw new HostTransportError("deployment-changed");
         const size = await forEachBoundedResponseChunk(
           response,
           {
             ...progress,
-            maximumBytes: maximumBinaryBytes,
+            maximumBytes: binaryByteLimit(input),
             sizeError: () => new HostTransportError("response-too-large"),
           },
           (chunk) => fs.appendFile(path, chunk),
@@ -499,7 +534,7 @@ export class DesktopHostTransport extends HostTransport {
   }
 
   #assertBinaryAttachment(transfer: BinaryTransfer): void {
-    if (this.currentKey() !== transfer.attachmentKey)
+    if (transfer.transport.currentKey() !== transfer.attachmentKey)
       throw new HostTransportError("deployment-changed");
   }
 
@@ -514,8 +549,15 @@ export class DesktopHostTransport extends HostTransport {
     // The IPC connection id authorizes renderer commands; diagnostics get an
     // independent id which cannot be used to send or close a socket.
     const socketId = `host_socket_${globalThis.crypto.randomUUID()}`;
-    const generation = this.#socketGeneration;
     const ownerGeneration = this.#ownerGenerations.get(ownerId) ?? 0;
+    const transport = await this.#transport(parsed.expectedDeploymentId);
+    const selected = await transport.current();
+    if (
+      parsed.expectedDeploymentId !== undefined &&
+      selected.resolved.deploymentId !== parsed.expectedDeploymentId
+    )
+      throw new HostTransportError("deployment-changed");
+    const generation = this.#socketGenerations.get(transport) ?? 0;
     const browser = browserSocketPath(parsed.path);
     const diagnostic = hostSocketDiagnostic(parsed.path);
     const diagnose = (event: string, fields: Record<string, string | number | boolean> = {}) => {
@@ -621,118 +663,123 @@ export class DesktopHostTransport extends HostTransport {
         lifetimeMs: Math.max(0, Math.round(performance.now() - startedAt)),
       });
     };
-    const network = await this.openSocket({ path: parsed.path }, (socket) => {
-      if (
-        generation !== this.#socketGeneration ||
-        ownerGeneration !== (this.#ownerGenerations.get(ownerId) ?? 0)
-      ) {
-        end(4_001, "Deployment changed", "deployment-changed");
-        socket.close(4_001, "Deployment changed");
-      }
-      const invalidate = (code: number, reason: string, ownerMessage: string): void => {
-        if (closed) return;
-        deliver({ message: ownerMessage, type: "error" });
-        end(code, reason, "undeliverable");
-        socket.close(code, reason);
-      };
-      return {
-        close: (code, reason) => end(code, reason, "network"),
-        error: (message) => {
+    const network = await transport
+      .openSocket({ path: parsed.path }, (socket) => {
+        if (transport.currentKey() !== selected.resolved.key || this.#disposed)
+          throw new HostTransportError("deployment-changed");
+        if (
+          generation !== (this.#socketGenerations.get(transport) ?? 0) ||
+          ownerGeneration !== (this.#ownerGenerations.get(ownerId) ?? 0)
+        ) {
+          end(4_001, "Deployment changed", "deployment-changed");
+          socket.close(4_001, "Deployment changed");
+        }
+        const invalidate = (code: number, reason: string, ownerMessage: string): void => {
           if (closed) return;
-          if (
-            !deliver({ message: boundedMessage(message) || "Host socket failed.", type: "error" })
-          )
-            invalidate(
-              consumerUnavailableCloseCode,
-              "Client unavailable",
-              "The client could not receive this frame.",
-            );
-        },
-        message: (data) => {
-          if (closed) return;
-          if (browser && !admitted && typeof data === "string") {
-            let message: unknown;
-            try {
-              message = JSON.parse(data);
-            } catch {
-              message = null;
-            }
-            const snapshot = BrowserServerMessageSchema.safeParse(message);
+          deliver({ message: ownerMessage, type: "error" });
+          end(code, reason, "undeliverable");
+          socket.close(code, reason);
+        };
+        return {
+          close: (code, reason) => end(code, reason, "network"),
+          error: (message) => {
+            if (closed) return;
             if (
-              snapshot.success &&
-              snapshot.data.type === "browser.snapshot" &&
-              snapshot.data.sessionId === browser.sessionId
-            ) {
-              consumerToken =
-                snapshot.data.passkeys === "native" || snapshot.data.passkeys === "notice"
-                  ? (snapshot.data.passkeyConsumerToken ?? null)
-                  : null;
-              viewerToken = snapshot.data.consumerToken ?? null;
-              admitted = true;
-              observe("admitted");
+              !deliver({ message: boundedMessage(message) || "Host socket failed.", type: "error" })
+            )
+              invalidate(
+                consumerUnavailableCloseCode,
+                "Client unavailable",
+                "The client could not receive this frame.",
+              );
+          },
+          message: (data) => {
+            if (closed) return;
+            if (browser && !admitted && typeof data === "string") {
+              let message: unknown;
+              try {
+                message = JSON.parse(data);
+              } catch {
+                message = null;
+              }
+              const snapshot = BrowserServerMessageSchema.safeParse(message);
+              if (
+                snapshot.success &&
+                snapshot.data.type === "browser.snapshot" &&
+                snapshot.data.sessionId === browser.sessionId
+              ) {
+                consumerToken =
+                  snapshot.data.passkeys === "native" || snapshot.data.passkeys === "notice"
+                    ? (snapshot.data.passkeyConsumerToken ?? null)
+                    : null;
+                viewerToken = snapshot.data.consumerToken ?? null;
+                admitted = true;
+                observe("admitted");
+              }
             }
-          }
-          let rendererData = data;
-          if (browser && admitted && typeof data === "string") {
-            let raw: unknown = null;
-            try {
-              raw = JSON.parse(data);
-              const message = BrowserServerMessageSchema.parse(raw);
-              for (const listener of this.#browserControlListeners)
-                listener({ connectionId, ownerId, ...browser, type: "message", message });
-              // Main presents the request; the renderer learns only that its offer ended.
-              if (message.type === "browser.passkey.request")
-                rendererData = JSON.stringify({
-                  type: "browser.passkey.withdrawn",
-                  requestId: message.requestId,
-                });
-            } catch {
-              /* The renderer's existing protocol boundary reports invalid frames. */
+            let rendererData = data;
+            if (browser && admitted && typeof data === "string") {
+              let raw: unknown = null;
+              try {
+                raw = JSON.parse(data);
+                const message = BrowserServerMessageSchema.parse(raw);
+                for (const listener of this.#browserControlListeners)
+                  listener({ connectionId, ownerId, ...browser, type: "message", message });
+                // Main presents the request; the renderer learns only that its offer ended.
+                if (message.type === "browser.passkey.request")
+                  rendererData = JSON.stringify({
+                    type: "browser.passkey.withdrawn",
+                    requestId: message.requestId,
+                  });
+              } catch {
+                /* The renderer's existing protocol boundary reports invalid frames. */
+              }
+              // A malformed request still never carries its ceremony details to the renderer.
+              if (
+                rendererData === data &&
+                typeof raw === "object" &&
+                raw !== null &&
+                (raw as { type?: unknown }).type === "browser.passkey.request"
+              )
+                return;
             }
-            // A malformed request still never carries its ceremony details to the renderer.
             if (
-              rendererData === data &&
-              typeof raw === "object" &&
-              raw !== null &&
-              (raw as { type?: unknown }).type === "browser.passkey.request"
+              !deliver(
+                typeof rendererData === "string"
+                  ? { data: rendererData, type: "text" }
+                  : { data: new Uint8Array(rendererData), type: "binary" },
+              )
             )
-              return;
-          }
-          if (
-            !deliver(
-              typeof rendererData === "string"
-                ? { data: rendererData, type: "text" }
-                : { data: new Uint8Array(rendererData), type: "binary" },
-            )
-          )
-            invalidate(
-              invalidHostFrameCloseCode,
-              "Invalid Host frame",
-              "The Host sent an invalid frame.",
-            );
-        },
-        open: () => {
-          if (!closed) diagnose("desktop.host-socket.opened");
-          if (!closed && !deliver({ type: "open" }))
-            invalidate(
-              consumerUnavailableCloseCode,
-              "Client unavailable",
-              "The client could not receive this frame.",
-            );
-        },
-      };
-    }).catch((error: unknown) => {
-      release();
-      throw error;
-    });
+              invalidate(
+                invalidHostFrameCloseCode,
+                "Invalid Host frame",
+                "The Host sent an invalid frame.",
+              );
+          },
+          open: () => {
+            if (!closed) diagnose("desktop.host-socket.opened");
+            if (!closed && !deliver({ type: "open" }))
+              invalidate(
+                consumerUnavailableCloseCode,
+                "Client unavailable",
+                "The client could not receive this frame.",
+              );
+          },
+        };
+      })
+      .catch((error: unknown) => {
+        release();
+        throw error;
+      });
     if (
       !closed &&
-      generation === this.#socketGeneration &&
+      generation === (this.#socketGenerations.get(transport) ?? 0) &&
       ownerGeneration === (this.#ownerGenerations.get(ownerId) ?? 0)
     )
       this.#sockets.set(connectionId, {
         end,
         network,
+        transport,
         ownerId,
         diagnoseTarget,
         passkeyConsumer: (surfaceId) =>
@@ -782,11 +829,54 @@ export class DesktopHostTransport extends HostTransport {
   }
 
   override closeAllSockets(): void {
-    this.#socketGeneration += 1;
-    for (const socket of this.#sockets.values())
-      socket.end(4_001, "Deployment changed", "deployment-changed");
+    this.#closeTransportSockets(this);
     super.closeAllSockets();
-    this.#sockets.clear();
+  }
+
+  #closeTransportSockets(transport: HostTransport): void {
+    this.#socketGenerations.set(transport, (this.#socketGenerations.get(transport) ?? 0) + 1);
+    for (const socket of this.#sockets.values()) {
+      if (socket.transport === transport)
+        socket.end(4_001, "Deployment changed", "deployment-changed");
+    }
+    for (const [transferId, transfer] of this.#binary) {
+      if (transfer.transport === transport)
+        void this.closeBinary(transfer.ownerId, { transferId }).catch(() => undefined);
+    }
+  }
+
+  closeAllConnections(): void {
+    this.closeAllSockets();
+    for (const team of this.#teams.values()) {
+      this.#closeTransportSockets(team);
+      team.closeAllSockets();
+    }
+  }
+
+  dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#unsubscribeCatalog();
+    this.closeAllConnections();
+    this.#teams.clear();
+  }
+
+  async #transport(deploymentId?: DeploymentId): Promise<HostTransport> {
+    if (this.#disposed) throw new HostTransportError("cancelled");
+    if (deploymentId === undefined) return this;
+    const catalog = await this.#catalog.load();
+    if (this.#disposed) throw new HostTransportError("cancelled");
+    const connection = catalog.deployments.find(
+      ({ authority }) => authority.document.deploymentId === deploymentId,
+    );
+    if (!connection) throw new HostTransportError("deployment-changed");
+    if (connection.authority.document.deploymentShape.kind !== "team") return this;
+    const existing = this.#teams.get(deploymentId);
+    if (existing) return existing;
+    const team = new HostTransport({ ...this.#teamOptions, deploymentId });
+    team.onAttachmentInvalidated(() => this.#closeTransportSockets(team));
+    this.#teams.set(deploymentId, team);
+    return team;
   }
 
   observeBrowserSockets(listener: (event: DesktopBrowserSocketObservation) => void): () => void {
@@ -915,4 +1005,18 @@ function boundedMessage(value: string): string {
     bytes += characterBytes;
   }
   return result;
+}
+
+function binaryByteLimit(input: DesktopHostBinaryOpenInput): number {
+  if (!input.path.startsWith("/v1/team/files/")) return maximumBinaryBytes;
+  if (input.path.endsWith("/preview")) return teamPreviewMaxBytes;
+  return teamUploadMaxBytes + (input.method === "POST" ? teamPreviewMaxBytes : 0);
+}
+
+function binaryHeaders(input: DesktopHostBinaryOpenInput) {
+  const { teamUpload, ...headers } = input.headers;
+  return {
+    ...headers,
+    ...(teamUpload === undefined ? {} : { additional: { "x-opensteer-team-upload": teamUpload } }),
+  };
 }

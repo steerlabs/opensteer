@@ -91,6 +91,7 @@ export function routeDesktopUrl(
   url: string,
   oauth: { accept(url: string): boolean },
   web: DesktopWebLinks,
+  teams?: { accept(url: string): boolean },
 ): boolean {
-  return oauth.accept(url) || web.accept(url);
+  return oauth.accept(url) || teams?.accept(url) === true || web.accept(url);
 }

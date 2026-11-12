@@ -286,6 +286,7 @@ describe("desktop bridge", () => {
     const notificationChannels = new Set<string>([
       desktopBridgeChannels.integrationAuthorizationReturn,
       desktopBridgeChannels.mcpAuthorization,
+      desktopBridgeChannels.teamLink,
       desktopBridgeChannels.dictationEvent,
       desktopBridgeChannels.downloadsChanged,
       desktopBridgeChannels.updateChanged,
@@ -561,7 +562,7 @@ describe("desktop bridge", () => {
 
 const readyStatus = {
   availability: "available",
-  broker: { agentSignIns: "on", vault: "ready" },
+  broker: { agentSignIns: "on", personFill: "off", personSave: "off", vault: "ready" },
   development: false,
 } as const satisfies DesktopPasswordsStatus;
 
