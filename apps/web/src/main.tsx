@@ -12,7 +12,7 @@ import "@fontsource-variable/fraunces/wght-italic.css";
 import "./styles/index.css";
 import { initializeDesktopWindowChrome } from "./desktop/window-controls-overlay.js";
 
-import { DeploymentKindSchema } from "@opensteer/core";
+import { AuthSessionIdSchema, DeploymentKindSchema } from "@opensteer/core";
 import { personalWebBuildId } from "@opensteer/protocol";
 import { chromeConnectPagePath } from "@opensteer/client/host";
 
@@ -113,6 +113,10 @@ async function renderOpensteer(): Promise<void> {
   }
 
   let previewTeams: Parameters<typeof import("./app.js").App>[0]["previewTeams"] = null;
+  let previewDesktop: Pick<
+    Parameters<typeof import("./app.js").App>[0],
+    "deploymentAccess" | "desktopBridge" | "desktopDeployment"
+  > = {};
   const [{ App }, hostClient] = await Promise.all([
     import("./app.js"),
     import.meta.env.VITE_OPENSTEER_USE_MOCK === "true"
@@ -170,7 +174,17 @@ async function renderOpensteer(): Promise<void> {
               const subagents = mockSubagentScenes.find(
                 (scene) => scene === search.get("mock-subagents"),
               );
+              // `?mock-desktop=new-mac|blocked|this-mac|home` opens the mock as the
+              // desktop app would on a Mac that is new to it, can't finish setting
+              // up, is one of its devices, or hosts it.
+              const desktopScenario = search.get("mock-desktop");
               const client = new MockHostClient({
+                // `?mock-sessions=browser`: this window is a web browser's session.
+                ...(desktopScenario === "new-mac" || desktopScenario === "blocked"
+                  ? { sessions: mockUnboundSessions("Opensteer for Mac") }
+                  : search.get("mock-sessions") === "browser"
+                    ? { sessions: mockUnboundSessions("Chrome on Mac") }
+                    : {}),
                 lifecycle: browserClientLifecycle(),
                 browserPreferencesStorage,
                 ...(search.has("mock-devices") ? { devices: "seeded" as const } : {}),
@@ -181,6 +195,7 @@ async function renderOpensteer(): Promise<void> {
               });
               // The preview's own client, for journeys that count what the page sends.
               Object.assign(window, { opensteerMock: client });
+              if (desktopScenario) return attachMockDesktop(client, desktopScenario);
               const downloadsScript = new URLSearchParams(window.location.search).get(
                 "mock-downloads",
               );
@@ -210,6 +225,49 @@ async function renderOpensteer(): Promise<void> {
               }
               return client;
             }
+            async function attachMockDesktop(
+              client: InstanceType<typeof MockHostClient>,
+              scenario: string,
+            ) {
+              const [{ desktopPreviewBridge }, { desktopSummaryFromAccess }] = await Promise.all([
+                import("./desktop/desktop-preview-bridge.js"),
+                import("./desktop/desktop-deployment-selection.js"),
+              ]);
+              if (scenario !== "blocked")
+                client.setPersonalRemoteAccessStatus({
+                  accountLink: null,
+                  generation: 1,
+                  mode: "connect",
+                  route: null,
+                  schemaVersion: 2,
+                });
+              const bridge = desktopPreviewBridge("?desktop-preview=first-run", true, {
+                attached: {
+                  id:
+                    client.getSnapshot().deploymentId ?? "dep_00000000-0000-4000-8000-000000000001",
+                  name: "Alex’s Opensteer",
+                  origin: "https://alex.connect.opensteer.invalid",
+                  hosting:
+                    scenario === "home"
+                      ? { environmentId: "env_00000000-0000-4000-8000-000000000001" }
+                      : null,
+                  runnerId:
+                    scenario === "this-mac" ? "rnr_33333333-3333-4333-8333-333333333333" : null,
+                },
+                connectRunner: (token) => client.connectLocalRunner(token),
+              });
+              if (!bridge) return client;
+              const access = await bridge.getDeploymentAccessSnapshot();
+              const selected = access.deployments.find(
+                ({ id }) => id === access.selectedDeploymentId,
+              );
+              previewDesktop = {
+                deploymentAccess: access,
+                desktopBridge: bridge,
+                desktopDeployment: selected ? desktopSummaryFromAccess(selected) : null,
+              };
+              return client;
+            }
           },
         )
       : import("./host/browser-host-client.js").then(({ createBrowserHostClient }) =>
@@ -230,12 +288,28 @@ async function renderOpensteer(): Promise<void> {
   window.addEventListener("pagehide", () => hostClient.dispose(), { once: true });
   reactRoot.render(
     <StrictMode>
-      <App hostClient={hostClient} previewTeams={previewTeams} />
+      <App hostClient={hostClient} previewTeams={previewTeams} {...previewDesktop} />
     </StrictMode>,
   );
 }
 
 const deploymentKindKey = "opensteer:deployment-kind";
+
+function mockUnboundSessions(current: string) {
+  const at = "2026-09-14T00:00:00.000Z";
+  const labels = ["Opensteer for Mac", "Chrome on Mac", "Opensteer for iPhone"];
+  return [current, ...labels.filter((label) => label !== current)].map((deviceLabel, index) => ({
+    absoluteExpiresAt: "2026-10-14T00:00:00.000Z",
+    createdAt: at,
+    current: index === 0,
+    deviceId: null,
+    deviceLabel,
+    expiresAt: "2026-09-21T00:00:00.000Z",
+    form: "computer" as const,
+    id: AuthSessionIdSchema.parse(`ses_00000000-0000-4000-8000-00000000000${index + 1}`),
+    lastSeenAt: at,
+  }));
+}
 
 /**
  * Whether a team server served this page. An origin's kind never changes, so

@@ -39,7 +39,7 @@ import {
   fixDeviceDraftText,
   type PluginCatalogProduct,
 } from "@opensteer/client/settings";
-import { otherDeviceIcon } from "./agent-devices.js";
+import { otherDeviceIcon } from "../../devices/devices-page.js";
 import { useStartTask, useThreadPath } from "../../start-task.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "@opensteer/client/host";
 import { IntegrationIcon } from "../../integrations/integration-icon.js";

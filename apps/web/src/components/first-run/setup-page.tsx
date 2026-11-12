@@ -10,12 +10,12 @@ import {
   setupSteps,
   type SetupStepId,
 } from "./setup-memory.js";
-import { SetupPermissionsStep } from "./setup-permissions-step.js";
+import { HomeSetupStep } from "../devices/home-setup-step.js";
 import { SetupPhoneStep } from "./setup-phone-step.js";
 
 /**
- * Setup, in up to three short steps: the AI that does the work, what agents
- * may use on this Mac, and a phone. Each step reads live state, so anything
+ * Setup, in up to three short steps: the AI that does the work, Set up this
+ * Mac, and a phone. Each step reads live state, so anything
  * done elsewhere — a sign-in in a browser, a permission in System Settings, a
  * mode changed from another device — simply shows. It opens on its own right
  * after this computer is set up, resumes where the person left it, and is in
@@ -54,14 +54,7 @@ export function SetupPage() {
   const back = index > 0 ? () => setStep(steps[index - 1]!) : undefined;
 
   if (current === "permissions" && desktopBridge) {
-    return (
-      <SetupPermissionsStep
-        bridge={desktopBridge}
-        onBack={back}
-        onNext={next}
-        progress={progress}
-      />
-    );
+    return <HomeSetupStep bridge={desktopBridge} onBack={back} onNext={next} progress={progress} />;
   }
   if (current === "phone" && desktopBridge) {
     return (

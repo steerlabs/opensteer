@@ -1,3 +1,4 @@
+import { computerAppAnchorId } from "../devices/device-routes.js";
 import { pluginPath } from "@opensteer/client/settings";
 import { Link } from "react-router";
 import { ComputerSetupApprovals } from "./computer-app-approval.js";
@@ -416,10 +417,6 @@ function installationIdFor(
   return (
     platform?.catalog.find((entry) => entry.definition.id === definitionId)?.installationId ?? null
   );
-}
-
-export function computerAppAnchorId(definitionId: string): string {
-  return `computer-app-${definitionId}`;
 }
 
 function AppRow({

@@ -20,7 +20,7 @@ import { JoinTeamRoute } from "./team/join-route.js";
 import { AutomationDetailPage } from "./components/automations/automation-detail.js";
 import { AutomationEditorPage } from "./components/automations/automation-editor.js";
 import { AutomationsPage } from "./components/automations/automations-page.js";
-import { ComputerDetailPage, ComputersPage } from "./components/computers-page.js";
+import { DevicePage } from "./components/devices/device-page.js";
 import {
   SettingsShell,
   SettingsSectionRoute,
@@ -546,7 +546,7 @@ export function App({
               />
               <Route
                 path="computers/*"
-                element={<SettingsRedirect from="/computers" to="/settings/devices/computers" />}
+                element={<SettingsRedirect from="/computers" to="/settings/devices" />}
               />
               <Route
                 path="triggers"
@@ -579,8 +579,7 @@ export function App({
                 ))}
                 <Route path="teams/:teamId/:page" element={<SettingsTeamRoute />} />
                 <Route path="devices" element={<SettingsSectionRoute section="devices" />} />
-                <Route path="devices/computers" element={<ComputersPage />} />
-                <Route path="devices/computers/:computerId" element={<ComputerDetailPage />} />
+                <Route path="devices/:deviceId" element={<DevicePage />} />
                 <Route
                   path="sign-ins/chrome/*"
                   element={<SettingsSectionRoute section="chrome" />}

@@ -13,7 +13,7 @@ import { useShell } from "../../app-shell.js";
 import { Dialog } from "../../dialog.js";
 import { Icon } from "../../icon.js";
 import { SettingsGroup, SettingsRow, type SettingsView } from "../primitives.js";
-import { useHomeComputer } from "./devices.js";
+import { useHomeComputer } from "../../devices/use-home-computer.js";
 
 type RequestAction = Extract<DesktopUpdateAction, { readonly kind: "request" }>;
 

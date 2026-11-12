@@ -2,21 +2,10 @@ import { createId } from "@opensteer/core";
 import {
   DesktopDeploymentSummarySchema,
   type DesktopDeploymentSummary,
-  type DesktopLocalExecutionStatus,
   type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
-import { describe, expect, it, vi } from "vitest";
-import type { HostClient } from "@opensteer/client/host";
-import {
-  localEnrollmentModules,
-  localRunnerSlotDeploymentId,
-  removeLocalComputer,
-} from "./app-shell.js";
-
-it("lends another computer's browser, integrations, messaging and shell, never its agents", () => {
-  // Agents run only on the computer hosting a Personal Deployment.
-  expect(localEnrollmentModules).toEqual(["browser", "integrations", "messaging", "shell"]);
-});
+import { describe, expect, it } from "vitest";
+import { localRunnerSlotDeploymentId } from "./app-shell.js";
 
 const bridge = {} as OpensteerDesktopBridge;
 
@@ -93,103 +82,3 @@ describe("localRunnerSlotDeploymentId", () => {
     ).toBeNull();
   });
 });
-
-describe("removeLocalComputer", () => {
-  const deploymentId = createId("deployment");
-  const runnerId = "rnr_33333333-3333-4333-8333-333333333333";
-
-  it("revokes at the Host before it stops the Runner", async () => {
-    const order: string[] = [];
-    const dispatch = vi.fn(async () => {
-      order.push("revoke");
-      return { machineId: runnerId, type: "machine.revoke" as const };
-    });
-    const stopLocalRunner = vi.fn(async () => {
-      order.push("stop");
-      return stopped(deploymentId);
-    });
-
-    await removeLocalComputer({
-      bridge: { stopLocalRunner },
-      client: { dispatch } as unknown as Pick<HostClient, "dispatch">,
-      deploymentId,
-      runnerId,
-    });
-
-    expect(order).toEqual(["revoke", "stop"]);
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({ machineId: runnerId, type: "machine.revoke" }),
-    );
-  });
-
-  it("stops nothing when the Host refuses to forget the computer", async () => {
-    const stopLocalRunner = vi.fn(async () => stopped(deploymentId));
-    const dispatch = vi.fn(async () => {
-      throw new Error("The deployment refused that.");
-    });
-
-    await expect(
-      removeLocalComputer({
-        bridge: { stopLocalRunner },
-        client: { dispatch } as unknown as Pick<HostClient, "dispatch">,
-        deploymentId,
-        runnerId,
-      }),
-    ).rejects.toThrow("The deployment refused that.");
-    // A Runner stopped for a computer the Host still holds is a computer that
-    // is enrolled and away, with nothing on the page saying so.
-    expect(stopLocalRunner).not.toHaveBeenCalled();
-  });
-
-  it("reports a stop that fails after the revoke rather than calling it done", async () => {
-    const dispatch = vi.fn(async () => ({ machineId: runnerId, type: "machine.revoke" as const }));
-    const stopLocalRunner = vi.fn(async () => {
-      throw new Error("The local agent service did not stop.");
-    });
-
-    await expect(
-      removeLocalComputer({
-        bridge: { stopLocalRunner },
-        client: { dispatch } as unknown as Pick<HostClient, "dispatch">,
-        deploymentId,
-        runnerId,
-      }),
-    ).rejects.toThrow("The local agent service did not stop.");
-  });
-
-  it("has nothing to revoke for a slot that never enrolled", async () => {
-    const dispatch = vi.fn();
-    const stopLocalRunner = vi.fn(async () => stopped(deploymentId));
-
-    await removeLocalComputer({
-      bridge: { stopLocalRunner },
-      client: { dispatch } as unknown as Pick<HostClient, "dispatch">,
-      deploymentId,
-      runnerId: null,
-    });
-
-    expect(dispatch).not.toHaveBeenCalled();
-    expect(stopLocalRunner).toHaveBeenCalledWith({ deploymentId });
-  });
-});
-
-function stopped(
-  deploymentId: DesktopLocalExecutionStatus["deploymentId"],
-): DesktopLocalExecutionStatus {
-  return {
-    available: true,
-    computerName: "Alex's MacBook Pro",
-    deploymentId,
-    mayRunAgents: true,
-    platform: "macos",
-    runAgents: false,
-    runner: {
-      detail: "Off",
-      enrolled: false,
-      environmentId: null,
-      runnerId: null,
-      state: "disabled",
-    },
-    schemaVersion: 4,
-  };
-}

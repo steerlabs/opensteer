@@ -1112,7 +1112,7 @@ describe("a computer that can't show its apps, on the start page", () => {
     ).toBe("Needs update");
 
     await click(line);
-    expect(history.at(-1)!.path).toBe(`/settings/devices/computers/${encodeURIComponent(mini.id)}`);
+    expect(history.at(-1)!.path).toBe(`/settings/devices/${encodeURIComponent(mini.id)}`);
   });
 
   it("typed, an app whose computer waits on its owner says so, the keyboard reaches it, and Enter opens the computer's page", async () => {
@@ -1131,7 +1131,7 @@ describe("a computer that can't show its apps, on the start page", () => {
     expect(element(".start-result__action", notes).textContent).toBe("Needs permission");
     expect(notes.getAttribute("aria-disabled")).toBeNull();
     await pressEnter(field);
-    expect(history.at(-1)!.path).toBe(`/settings/devices/computers/${encodeURIComponent(mini.id)}`);
+    expect(history.at(-1)!.path).toBe(`/settings/devices/${encodeURIComponent(mini.id)}`);
   });
 
   it("a line that stops needing its owner and is only away hands the keyboard to the search field", async () => {

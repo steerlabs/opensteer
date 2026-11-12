@@ -116,6 +116,7 @@ const shell = vi.hoisted(() => ({
     deploymentId: "dep_6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b",
     environments: [] as unknown[],
     harnesses: [] as unknown[],
+    machines: [] as unknown[],
     identityConfig: {
       deployment: { name: "Studio Mac" },
       portalOrigin: "https://app.opensteer.test",
@@ -275,6 +276,7 @@ function desktopBridge(overrides: Record<string, unknown> = {}) {
       tailscaleShare: vi.fn(),
       tailscaleStatus: vi.fn(async () => ({ state: "not-installed" })),
       testNotification: vi.fn(async () => ({ outcome: "sent" })),
+      checkFullDiskAccess: vi.fn(async () => ({ granted: false })),
       unlinkPersonal: vi.fn(),
       ...overrides,
     },
@@ -386,7 +388,7 @@ it("keeps the step open with the reason when the choice cannot be saved", async 
   expect(button("Continue").disabled).toBe(false);
 });
 
-it("walks a Mac through AI, permissions and phone, remembering the step until Finish", async () => {
+it("walks a Mac through AI, Set up this Mac and phone, remembering the step until Finish", async () => {
   const { access, bridge } = desktopBridge();
   onThisMac(bridge, access);
   const key = `opensteer.setup.v1:${shell.snapshot.deploymentId}`;
@@ -395,25 +397,29 @@ it("walks a Mac through AI, permissions and phone, remembering the step until Fi
     "Step 1 of 3",
   );
   await act(async () => button("Continue").click());
-  expect(container.textContent).toContain("Permissions");
+  expect(container.textContent).toContain("Set up this Mac");
   expect(localStorage.getItem(key)).toBe("permissions");
 
   // A setup left here resumes here.
   act(() => root?.unmount());
   await mount();
-  expect(container.textContent).toContain("Permissions");
+  expect(container.textContent).toContain("Set up this Mac");
 
-  await act(async () => button("Skip").click());
+  // Apps is on, so macOS's grants for it come next; they can wait.
+  await act(async () => button("Continue").click());
+  expect(container.textContent).toContain("Let macOS allow it");
+  await act(async () => button("Do this later").click());
   expect(container.textContent).toContain("Connect your phone");
   await act(async () => button("Back").click());
-  expect(container.textContent).toContain("Permissions");
+  expect(container.textContent).toContain("Set up this Mac");
+  await act(async () => button("Continue").click());
   await act(async () => button("Continue").click());
   await act(async () => button("Finish").click());
   expect(container.textContent).toContain("Task home");
   expect(localStorage.getItem(key)).toBeNull();
 });
 
-it("sends a real notification instead of claiming permission it cannot read", async () => {
+it("shows Home only what it can change, and asks macOS once notifications stay on", async () => {
   const { access, bridge } = desktopBridge({
     computerUsePermissionsGet: vi.fn(async () => ({
       accessibility: "granted",
@@ -423,16 +429,12 @@ it("sends a real notification instead of claiming permission it cannot read", as
   onThisMac(bridge, access);
   localStorage.setItem(`opensteer.setup.v1:${shell.snapshot.deploymentId}`, "permissions");
   await mount();
+  expect(container.textContent).not.toContain("Files and commands");
+  expect(container.textContent).not.toContain("Saved passwords");
+  await act(async () => button("Continue").click());
+  expect(bridge.testNotification).toHaveBeenCalledTimes(1);
   // The helper's grants are read, so a Mac that has them says so.
   expect(container.textContent).toContain("Allowed");
-  // No Passwords row on a Mac that cannot run it.
-  expect(container.textContent).not.toContain("Saved passwords");
-  await act(async () => button("Turn on").click());
-  expect(bridge.testNotification).toHaveBeenCalledTimes(1);
-  expect(container.textContent).toContain("Sent a test");
-  expect(container.textContent).not.toContain("Notifications are on");
-  await act(async () => button("Settings").click());
-  expect(bridge.openNotificationSettings).toHaveBeenCalled();
 });
 
 it("connects a phone through Opensteer Connect and names the phone that signed in", async () => {

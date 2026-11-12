@@ -939,7 +939,6 @@ svg.icon {
   .sidebar__place,
   .task-row__link,
   .page__back,
-  .computer-row,
   .intg-card {
     min-height: var(--touch-target);
   }
@@ -1012,45 +1011,6 @@ svg.icon {
    edges; what has to be restated is focus, which several controls draw as a
    shadow-only ring, and the chosen item, which is otherwise only a fill. */
 @media (forced-colors: active) {
-  :is(
-    .btn,
-    .text-input,
-    .select-input,
-    .switch,
-    .segmented,
-    .popover,
-    .dialog,
-    .toast,
-    .composer,
-    .input-surface--action,
-    .request-row,
-    .card,
-    .settings-choice,
-    .intg-card,
-    .option-row--framed,
-    .reply__bubble,
-    .msg--user,
-    .input-card,
-    .onboarding__card,
-    .browser-address,
-    .surface-chip,
-    .voice-island__fill,
-    .voice-notice,
-    .place-card,
-    .automation-time,
-    .automations-list,
-    .computers-list,
-    .machine-access__group,
-    .code-editor,
-    .remote-preedit,
-    .remote-editing-error,
-    .streamed-context-menu
-  ) {
-    border-color: CanvasText;
-    background-color: Canvas;
-    color: CanvasText;
-  }
-
   :is(
     .settings-navigation__link.is-active,
     .settings-choice.is-selected,

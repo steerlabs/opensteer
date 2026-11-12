@@ -66,9 +66,7 @@ describe("ComputerAppPicker", () => {
     expect(container.textContent).toContain("Reading Messages needs macOS Full Disk Access");
     expect(container.textContent).toContain("Review setup");
     expect(
-      container.querySelector(
-        `a[href="/settings/devices/computers/${macBook}#computer-app-apple-messages"]`,
-      ),
+      container.querySelector(`a[href="/settings/devices/${macBook}#computer-app-apple-messages"]`),
     ).not.toBeNull();
     expect(radio(container, "Read only").getAttribute("aria-checked")).toBe("true");
 

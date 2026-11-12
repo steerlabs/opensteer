@@ -193,8 +193,6 @@ function shellContext(input: {
     desktopDeployment,
     executionPreferences: emptyExecutionPreferences,
     hostClient: input.client,
-    localExecutionAction: null,
-    localExecutionError: null,
     localExecutionStatus:
       input.localRunnerId === null ? null : localStatus(RunnerIdSchema.parse(input.localRunnerId)),
     addHarnessAccount: null,
@@ -202,7 +200,6 @@ function shellContext(input: {
     refreshHarnessCatalog: async () => undefined,
     leaveSettings: noOp,
     openMobileNavigation: noOp,
-    performLocalExecutionAction: async () => undefined,
     placements: [],
     rememberExecution: noOp,
     reportActionError: noOp,

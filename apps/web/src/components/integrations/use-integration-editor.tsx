@@ -19,7 +19,7 @@ import {
   IntegrationConnectionIdSchema,
 } from "@opensteer/integration-core";
 import { useShell } from "../app-shell.js";
-import { currentDeviceMachineId } from "../computers-page.js";
+import { useHereId } from "../computers/here.js";
 import {
   integrationAuthorizationError,
   waitForIntegrationAuthorization,
@@ -77,22 +77,13 @@ export function useIntegrationEditor({
 }) {
   const {
     deploymentAccess,
-    desktopBridge,
     desktopDeployment,
     hostClient: client,
-    localExecutionStatus,
     openMobileNavigation,
     snapshot,
   } = useShell();
-  // Only the desktop app knows which computer it runs on; a browser is never "here".
-  const localMachineId =
-    desktopBridge === null
-      ? null
-      : currentDeviceMachineId({
-          hostsDeploymentOnThisComputer: desktopDeployment?.onThisComputer === true,
-          localRunnerId: localExecutionStatus?.runner.runnerId ?? null,
-          machines: snapshot.machines,
-        });
+  // Only the desktop app knows which device it is; a browser is never "here".
+  const localMachineId = useHereId();
   const hostName = settingsDeploymentName({
     deployment: selectedDeploymentFrom(deploymentAccess, desktopDeployment),
     identityConfig: snapshot.identityConfig,
