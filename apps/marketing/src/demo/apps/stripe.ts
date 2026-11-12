@@ -28,8 +28,6 @@ const I = {
   check: path("M5 10.5 8.5 14 15 6.5"),
   refunded: path("M7.5 5 4 8.5 7.5 12M4 8.5h7.5a4.5 4.5 0 0 1 0 9H9"),
   receipt: path("M3 5h14v10H3ZM3.5 5.5 10 11l6.5-5.5"),
-  copy: path("M7 7h9.5v9.5H7ZM13 7V3.5H3.5V13H7"),
-  open: path("M11.5 3.5h5v5M16.5 3.5 9.5 10.5M8 4.5H3.5v12h12V12"),
   close: path("M6 6l8 8M14 6l-8 8"),
 } as const;
 
@@ -41,72 +39,71 @@ const nav = (icon: string, label: string, on = false): string =>
   `<span${on ? ' class="is-on"' : ""}>${icon}${label}</span>`;
 
 const MENU = `<div class="st-menu">
-  <span data-h="st-refund">${I.refunded}Refund payment</span>
-  <span>${I.receipt}Send receipt</span>
-  <span>${I.copy}Copy payment ID</span>
+  <span data-h="st-refund">Refund payment</span>
+  <span>Send receipt</span>
+  <span>Copy payment ID</span>
   <i></i>
-  <span>${I.open}View payment details</span>
+  <span>View payment details</span>
 </div>`;
 
 const payment = (hook: string, date: string, invoice: string, extra = "", more = ""): string =>
-  `<div class="st-row${extra}" data-h="${hook}"><b>$480.00</b><span class="st-status"><i class="st-badge st-badge--ok">Succeeded${I.check}</i><i class="st-badge st-badge--back">Refunded${I.refunded}</i></span><span>${invoice}</span><span>${date}</span><span class="st-more"${more ? ` data-h="${more}"` : ""}>${dots}</span>${more ? MENU : ""}</div>`;
+  `<div class="st-row${extra}" data-h="${hook}"><i class="st-box"></i><b>$480.00</b><span class="st-cur">USD</span><span class="st-status"><i class="st-badge st-badge--ok">Succeeded${I.check}</i><i class="st-badge st-badge--back">Refunded${I.refunded}</i></span><span>${invoice}</span><span>${date}</span><span class="st-more"${more ? ` data-h="${more}"` : ""}>${dots}</span>${more ? MENU : ""}</div>`;
 
-const detail = (label: string, value: string, extra = "", action = ""): string =>
-  `<div class="st-detail${extra}"><span>${label}${action}</span><b>${value}</b></div>`;
+const detail = (label: string, value: string): string =>
+  `<div class="st-detail"><span>${label}</span><b>${value}</b></div>`;
 
 export const stripe: BrowserTab = {
   id: "stripe",
-  title: "Northwind Traders – Stripe",
-  url: "dashboard.stripe.com<em>/customers/cus_Qn4Northwind</em>",
+  title: "Northwind Traders – Rivera &amp; Co. – Stripe",
+  url: "dashboard.stripe.com<em>/customers/cus_Qn4x7LmNorthwind</em>",
   mark: `<i class="br-fav" style="background:#635bff">S</i>`,
   page: `<div class="st">
   <aside class="st-side">
-    <div class="st-account" data-h="st-account"><i>R</i><span>Rivera &amp; Co.</span>${I.caret}</div>
+    <div class="st-account"><i>R</i><span>Rivera &amp; Co.</span>${I.caret}</div>
     <nav>${nav(I.home, "Home")}${nav(I.balances, "Balances")}${nav(I.transactions, "Transactions")}${nav(I.customers, "Customers", true)}${nav(I.catalog, "Product catalog")}</nav>
     <h6>Products</h6>
-    <nav>${nav(I.billing, "Billing")}${nav(I.reporting, "Reporting")}${nav(I.more, "More")}</nav>
+    <nav>${nav(I.receipt, "Payments")}${nav(I.billing, "Billing")}${nav(I.reporting, "Reporting")}${nav(I.more, "More")}</nav>
   </aside>
   <main class="st-main">
     <div class="st-top"><span class="st-search">${I.search}Search</span><span class="st-top__end">${I.help}${I.bell}${I.gear}<i class="st-create">${I.plus}</i></span></div>
     <div class="st-page">
       <p class="st-crumb">Customers</p>
-      <header class="st-head"><i class="st-tile">${I.customers}</i><div><h4>Northwind Traders</h4><p>dana@northwind.example</p></div><span class="st-btn">Actions${I.caret}</span></header>
+      <header class="st-head"><div><h4>Northwind Traders</h4><p>dana@northwind.example</p></div><span class="st-btn">${I.plus}Create invoice</span><span class="st-btn">Actions${I.caret}</span></header>
       <div class="st-cols">
         <section class="st-pay">
-          <h5>Payments<span class="st-btn st-btn--sm">${I.plus}Create</span></h5>
+          <h5>Payments</h5>
           <div class="st-table">
-            <div class="st-row st-row--head"><span>Amount</span><span>Status</span><span>Description</span><span>Date</span><span></span></div>
-            ${payment("st-first", "Nov 3, 9:02 AM", "Invoice 2291", " st-row--dup")}
-            ${payment("st-second", "Nov 3, 9:02 AM", "Invoice 2291", " st-row--dup st-row--second", "st-more")}
+            <div class="st-row st-row--head"><i class="st-box"></i><span>Amount</span><span></span><span></span><span>Description</span><span>Date</span><span></span></div>
+            ${payment("st-first", "Nov 3, 9:02 AM", "Invoice 2291")}
+            ${payment("st-second", "Nov 3, 9:02 AM", "Invoice 2291", " st-row--second", "st-more")}
             ${payment("st-oct", "Oct 3, 9:01 AM", "Invoice 2254")}
             ${payment("st-sep", "Sep 3, 9:00 AM", "Invoice 2217")}
             ${payment("st-aug", "Aug 3, 9:02 AM", "Invoice 2180")}
+            ${payment("st-jul", "Jul 3, 9:01 AM", "Invoice 2143")}
           </div>
-          <p class="st-count">5 results</p>
+          <p class="st-count">Viewing 1–6 of 32 results</p>
         </section>
         <aside class="st-details">
-          <h6>Details</h6>
-          ${detail("Customer since", "Mar 12, 2023")}
-          ${detail("Spend", `<span class="st-was">$22,080.00</span><span class="st-now">$21,600.00</span>`)}
+          <h6>Insights</h6>
+          ${detail("Spent", `<span class="st-was">$22,080.00</span><span class="st-now">$21,600.00</span>`)}
           ${detail("MRR", "$480.00")}
+          <h6>Details</h6>
+          ${detail("Customer ID", "cus_Qn4x7LmNorthwind")}
+          ${detail("Customer since", "Mar 12, 2023")}
+          ${detail("Billing email", "dana@northwind.example")}
           ${detail("Payment method", `${VISA}•••• 4242`)}
-          ${detail(
-            "Balance",
-            `<span class="st-was">$0.00</span><span class="st-now">$50.00</span>`,
-            " st-detail--credit",
-            `<a data-h="st-credit">Adjust</a>`,
-          )}
         </aside>
       </div>
     </div>
   </main>
   <div class="st-scrim"><div class="st-modal" data-h="st-modal">
     <header><h5>Refund payment</h5>${I.close}</header>
-    <p>Refunds take 5–10 days to appear on a customer's statement. Stripe's fees for the original payment won't be returned.</p>
+    <p>Refunds take 5–10 days to appear on a customer's statement. Stripe's fees for the original payment won't be returned, but there are no additional fees for the refund.</p>
     <label>Refund</label><div class="st-input"><span>$480.00</span><em>USD</em></div>
     <label>Reason</label><div class="st-input"><span>Duplicate</span>${I.caret}</div>
-    <label>Details <em>Optional</em></label><div class="st-input st-input--area"><span>Charged twice for invoice 2291.</span></div>
-    <div class="st-modal__btns"><span class="st-btn">Cancel</span><span class="st-btn st-btn--go" data-h="st-go">Refund</span></div>
+    <div class="st-input st-input--area"><span>Charged twice for invoice 2291.</span></div>
+    <div class="st-modal__btns"><span class="st-btn" data-h="st-cancel">Cancel</span><span class="st-btn st-btn--go" data-h="st-go">Refund</span></div>
   </div></div>
+  <div class="st-toast">${I.check}Refund of $480.00 issued</div>
 </div>`,
 };

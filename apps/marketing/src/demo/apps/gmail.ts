@@ -82,7 +82,7 @@ const COMPOSE = `<div class="gm-compose" data-h="gm-compose">
     <div class="gm-suggest" data-h="gm-suggest"><i>PR</i><div><b>Priya Raman</b><span>priya@acme.example</span></div></div>
   </div>
   <div class="gm-field" data-h="gm-subject-field"><span class="gm-placeholder">Subject</span><span class="gm-typed" data-h="gm-subject"></span></div>
-  <div class="gm-body" data-h="gm-body">${["gm-p1", "gm-p2", "gm-p3", "gm-p4", "gm-p5"].map((hook) => `<p class="gm-p" data-h="${hook}"></p>`).join("")}</div>
+  <div class="gm-body" data-h="gm-body">${["gm-p1", "gm-p2", "gm-p3", "gm-p4"].map((hook) => `<p class="gm-p" data-h="${hook}"></p>`).join("")}</div>
   <div class="gm-file"><i class="gm-pdf">PDF</i><b>Acme-2027-renewal-quote.pdf</b><em>(84K)</em>${icon("close")}<span class="gm-file__bar"></span></div>
   <footer class="gm-compose__foot"><span class="gm-send" data-h="gm-send"><b>Send</b><i></i><svg viewBox="0 0 10 6" aria-hidden="true"><path d="m1 1 4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></span><span class="gm-ico">${icon("format")}</span><span class="gm-ico" data-h="gm-clip">${icon("clip")}</span><span class="gm-ico">${icon("link")}</span><span class="gm-ico">${icon("smile")}</span><span class="gm-ico">${icon("drive")}</span><span class="gm-ico">${icon("image")}</span><span class="gm-ico">${icon("dots")}</span><span class="gm-saved">Draft saved</span><span class="gm-ico gm-trash">${icon("trash")}</span></footer>
 </div>`;
@@ -92,5 +92,5 @@ export const gmail: BrowserTab = {
   title: "Inbox (12) - alex@riveraco.com - Gmail",
   url: "mail.google.com<em>/mail/u/0/#inbox</em>",
   mark: `<i class="br-fav" style="background:#fff">${MARK}</i>`,
-  page: `<div class="gm">${TOP}<div class="gm-main">${SIDE}${LIST}</div>${COMPOSE}</div>`,
+  page: `<div class="gm">${TOP}<div class="gm-main">${SIDE}${LIST}</div>${COMPOSE}<div class="gm-toast">Message sent<b>Undo</b><b>View message</b></div></div>`,
 };

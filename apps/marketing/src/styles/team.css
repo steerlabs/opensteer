@@ -4,24 +4,11 @@
   isolation: isolate;
   margin-top: 8px;
 }
-.tstage::before {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  inset: 10% 8% -6%;
-  background: radial-gradient(
-    closest-side,
-    color-mix(in srgb, var(--ember) 13%, transparent),
-    transparent
-  );
-  filter: blur(30px);
-  pointer-events: none;
-}
 
 .tw {
   position: relative;
   display: grid;
-  grid-template-columns: 232px minmax(0, 1fr);
+  grid-template-columns: 232px minmax(0, 1fr) 280px;
   height: 560px;
   border-radius: 14px;
   background: #0d0d0d;
@@ -104,17 +91,6 @@
   background: var(--surface-raised);
   color: var(--text);
   box-shadow: var(--edge-plate);
-}
-.tw-new {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--ember);
-  transform: scale(0);
-  transition: transform 420ms var(--ease-bubble);
-}
-.tw-seg.has-new .tw-new {
-  transform: none;
 }
 .tw-team {
   display: inline-grid;
@@ -255,9 +231,6 @@
   padding: 18px 20px 14px;
   overflow: hidden;
 }
-.tw-feed.is-scrolled {
-  mask-image: linear-gradient(transparent, #000 48px);
-}
 
 .tm {
   display: flex;
@@ -355,37 +328,6 @@
   width: 11px;
   height: 11px;
 }
-.tm--typing {
-  align-items: center;
-  color: var(--muted);
-  font-size: 12px;
-}
-.tm--typing > .mark {
-  width: 22px;
-  height: 22px;
-  font-size: 10px;
-  border-radius: 6px;
-}
-.tm--typing i {
-  display: inline-block;
-  width: 3px;
-  height: 3px;
-  margin-left: 2px;
-  border-radius: 50%;
-  background: currentColor;
-  animation: tdot 1s infinite;
-}
-.tm--typing i:nth-child(2) {
-  animation-delay: 160ms;
-}
-.tm--typing i:nth-child(3) {
-  animation-delay: 320ms;
-}
-@keyframes tdot {
-  50% {
-    opacity: 0.2;
-  }
-}
 
 /* The live status card an agent shows in the thread while it works. */
 .tcard {
@@ -440,79 +382,13 @@
     transform: rotate(360deg);
   }
 }
-.tcard[data-state="needs"] {
-  border-color: var(--amber-line);
-  background: color-mix(in srgb, var(--amber) 5%, var(--surface-elevated));
-}
-.tcard[data-state="needs"] .tcard__spin {
-  border: 0;
-  background: var(--amber);
-  box-shadow: 0 0 0 3px var(--amber-wash);
-  animation: none;
-  transform: scale(0.7);
-}
-.tcard[data-state="needs"] .tcard__top b {
-  color: var(--amber-text);
-}
 .tcard[data-state="done"] .tcard__spin {
   border: 0;
   background: var(--green);
   animation: none;
   transform: scale(0.62);
 }
-.tcard__steps {
-  margin: 6px 0 0;
-  padding: 0;
-  list-style: none;
-}
-.tcard__steps:empty {
-  display: none;
-}
-.tcard__steps li {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 22px;
-  animation: tin 360ms var(--ease-out) both;
-}
-.tcard__steps svg {
-  width: 12px;
-  height: 12px;
-  flex: none;
-  color: var(--green);
-}
-.tcard__steps span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.tcard[data-state="done"] .tcard__steps {
-  display: none;
-}
-.tcard__ask {
-  display: none;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-top: 8px;
-  padding: 7px 10px;
-  border-radius: 8px;
-  background: var(--amber-wash);
-  color: var(--text);
-  font-size: 12.5px;
-}
-.tcard__wait {
-  flex: none;
-  color: var(--amber-text);
-  font-size: 11.5px;
-}
-.tcard[data-state="needs"] .tcard__ask {
-  display: flex;
-  animation: tin 360ms var(--ease-out) both;
-}
-
+.tcard[data-state="done"] 
 /* Composer */
 .tw-compose {
   position: relative;
@@ -533,16 +409,6 @@
   content: "Reply…";
   color: var(--muted);
 }
-.tw-input.has-text::after {
-  content: "";
-  display: inline-block;
-  width: 1.5px;
-  height: 15px;
-  margin-left: 1px;
-  vertical-align: -2px;
-  background: var(--ember);
-  animation: tdot 1s steps(1) infinite;
-}
 .tw-tools {
   display: flex;
   align-items: center;
@@ -561,11 +427,6 @@
   color: var(--text-soft);
   line-height: 22px;
 }
-.tw-ask .orb,
-.tw-opt .orb {
-  width: 12px;
-  height: 12px;
-}
 .tw-send {
   display: grid;
   place-items: center;
@@ -579,182 +440,23 @@
   width: 12px;
   height: 12px;
 }
-.tw-pop {
-  position: absolute;
-  left: 10px;
-  bottom: calc(100% + 6px);
-  width: 270px;
-  padding: 5px;
-  border-radius: 10px;
-  background: var(--surface-raised);
-  border: 1px solid var(--rim-sheet);
-  box-shadow: var(--lift-float);
-  opacity: 0;
-  transform: translateY(6px);
-  transition:
-    opacity 200ms,
-    transform 260ms var(--ease-out);
-  pointer-events: none;
-}
-.tw-pop.is-on {
-  opacity: 1;
-  transform: none;
-}
-.tw-opt {
+/* The channel's knowledge: who can see each topic, and whether agents can. */
+.tw-know {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 30px;
-  padding: 0 8px;
-  border-radius: 7px;
+  flex-direction: column;
+  min-width: 0;
+  padding-bottom: 16px;
+  border-left: 1px solid var(--line);
+  overflow: hidden;
 }
-.tw-opt.is-on {
-  background: var(--surface-hover);
+.tw-know > :not(.tw-head) {
+  margin-inline: 16px;
 }
-.tw-opt b {
-  font-weight: 550;
+.tw-know .tw-head {
+  margin-bottom: 14px;
 }
-.tw-opt span:not(.orb):not(.mark) {
-  margin-left: auto;
-  color: var(--muted);
-  font-size: 11px;
-}
-.tw-opt .mark {
-  width: 16px;
-  height: 16px;
-  font-size: 9px;
-}
-
-/* The approval on Leo's phone, floating over the window's edge. */
-.tphone {
-  position: absolute;
-  right: -28px;
-  bottom: 120px;
-  z-index: 2;
-  width: 300px;
-  padding: 12px 14px 12px;
-  border-radius: 22px;
-  background: rgb(42 40 44 / 96%);
-  backdrop-filter: blur(24px) saturate(1.6);
-  -webkit-backdrop-filter: blur(24px) saturate(1.6);
-  box-shadow:
-    inset 0 0 0 0.5px rgb(255 255 255 / 16%),
-    0 30px 60px -20px rgb(0 0 0 / 80%);
-  color: #fff;
-  font-size: 12.5px;
-  line-height: 1.4;
-  opacity: 0;
-  transform: translateY(16px) scale(0.96);
-  transition:
-    opacity 300ms,
-    transform 520ms var(--ease-bubble);
-  pointer-events: none;
-}
-.tphone.is-on {
-  opacity: 1;
-  transform: none;
-}
-.tphone__app {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin-bottom: 6px;
-  color: #c9c7cc;
-  font-size: 11.5px;
-}
-.tphone__app .orb {
-  width: 16px;
-  height: 16px;
-}
-.tphone__app time {
-  margin-left: auto;
-}
-.tphone p {
-  margin: 2px 0 10px;
-  color: #e4e2e6;
-}
-.tphone__btns {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-.tphone__btns span {
-  position: relative;
-  height: 32px;
-  border-radius: 10px;
-  background: rgb(255 255 255 / 10%);
-  font-weight: 600;
-  text-align: center;
-  line-height: 32px;
-  transition:
-    background-color 200ms,
-    color 200ms,
-    transform 200ms var(--ease-out);
-}
-.tphone__allow {
-  color: var(--ember);
-}
-.tphone.is-done .tphone__allow {
-  background: var(--ember);
-  color: var(--ink-on-ember);
-  transform: scale(0.96);
-}
-.tphone__allow::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 34px;
-  height: 34px;
-  margin: -17px 0 0 -17px;
-  border-radius: 50%;
-  background: rgb(255 255 255 / 45%);
-  opacity: 0;
-  pointer-events: none;
-}
-.tphone.is-done .tphone__allow::after {
-  animation: ttap 600ms var(--ease-out);
-}
-@keyframes ttap {
-  0% {
-    opacity: 0.9;
-    transform: scale(0.4);
-  }
-  100% {
-    opacity: 0;
-    transform: scale(1.6);
-  }
-}
-
-/* Below the stage: what's true for teams, and the knowledge switch. */
-.tbelow {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 48px;
-  align-items: start;
-  margin-top: 56px;
-}
-.tbelow .facts {
-  margin-top: 0;
-  gap: 24px;
-}
-.kcard {
-  padding: 22px;
-  border-radius: var(--radius-lg);
-  background: var(--sheen), var(--surface);
-  border: 1px solid var(--rim-sheet);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 5%);
-}
-.kcard h3 {
-  margin: 0;
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-.kcard > p {
-  margin: 6px 0 16px;
-  color: var(--muted);
-  font-size: 14px;
+.tw-know .knote {
+  margin-top: auto;
 }
 .topics-head {
   display: flex;
@@ -778,7 +480,7 @@
   font-weight: 550;
 }
 .topic__name small {
-  margin-left: 8px;
+  display: block;
   color: var(--muted);
   font-size: 12px;
 }
@@ -804,21 +506,27 @@
   animation: flash 700ms var(--ease-out);
 }
 
-@media (max-width: 920px) {
-  .tbelow {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 32px;
+@media (max-width: 1020px) {
+  .tw {
+    grid-template-columns: minmax(0, 1fr) 260px;
   }
-  .tphone {
-    right: 12px;
+  .tw-side {
+    display: none;
   }
 }
 @media (max-width: 760px) {
   .tw {
     grid-template-columns: minmax(0, 1fr);
-    height: 540px;
+    height: auto;
   }
   .tw-side {
+    display: none;
+  }
+  .tw-know {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+  .tw-compose {
     display: none;
   }
   .tw-main {
@@ -828,16 +536,7 @@
   .tw-feed {
     padding-inline: 14px;
   }
-  .tw-compose {
-    margin-inline: 10px;
-  }
   .tw-head {
     padding-inline: 14px;
-  }
-  .tphone {
-    left: 12px;
-    right: 12px;
-    bottom: 96px;
-    width: auto;
   }
 }

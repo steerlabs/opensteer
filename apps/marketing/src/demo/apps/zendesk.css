@@ -1,17 +1,17 @@
-/* Zendesk Agent Workspace: the ticket views, then one ticket */
+/* Zendesk Agent Workspace at its real sizes: the ticket views, then one ticket */
 .zd {
   display: flex;
   height: 100%;
   background: #fff;
   color: #2f3941;
-  font: 13px/1.4 var(--mac-font);
+  font: 14px/20px var(--mac-font);
 }
 .zd svg {
   width: 16px;
   height: 16px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.6;
+  stroke-width: 1.5;
   stroke-linecap: round;
   stroke-linejoin: round;
   flex: none;
@@ -20,9 +20,9 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  width: 44px;
-  padding: 10px 0;
+  gap: 8px;
+  width: 60px;
+  padding: 12px 0;
   background: #03363d;
   color: rgb(255 255 255 / 72%);
   flex: none;
@@ -30,42 +30,30 @@
 .zd-rail b {
   display: grid;
   place-items: center;
-  height: 30px;
-  margin-bottom: 6px;
+  height: 36px;
+  margin-bottom: 10px;
   color: #fff;
 }
 .zd .zd-mark {
-  width: 22px;
-  height: 22px;
+  width: 26px;
+  height: 26px;
   fill: currentColor;
   stroke: none;
 }
 .zd-rail i {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
   border-radius: 4px;
 }
 .zd-rail i svg {
-  width: 19px;
-  height: 19px;
+  width: 20px;
+  height: 20px;
 }
 .zd-rail i.is-on {
   background: rgb(255 255 255 / 14%);
-  box-shadow: inset 3px 0 0 #fff;
   color: #fff;
-}
-.zd-rail__me {
-  display: grid;
-  place-items: center;
-  width: 26px;
-  height: 26px;
-  margin-top: auto;
-  border-radius: 50%;
-  background: #8a6d5e;
-  color: #fff;
-  font: 600 10px/1 var(--mac-font);
 }
 .zd-app {
   display: flex;
@@ -81,129 +69,108 @@
 .zd-top {
   display: flex;
   align-items: flex-end;
-  gap: 2px;
-  height: 38px;
-  padding: 0 10px 0 8px;
+  height: 50px;
+  padding: 0 16px 0 0;
   border-bottom: 1px solid #d8dcde;
   background: #f8f9f9;
   color: #49545c;
   flex: none;
 }
 .zd-tab {
-  display: flex;
+  display: none;
   align-items: center;
-  gap: 7px;
-  height: 32px;
-  padding: 0 10px;
-  border: 1px solid transparent;
-  border-bottom: 0;
-  border-radius: 4px 4px 0 0;
-  font-size: 12.5px;
+  gap: 10px;
+  width: 240px;
+  height: 50px;
+  margin-bottom: -1px;
+  padding: 0 12px;
+  border-right: 1px solid #d8dcde;
+  background: #fff;
   white-space: nowrap;
 }
-.zd-tab--views,
-.grp[data-ticket] .zd-tab--ticket {
-  margin-bottom: -1px;
-  border-color: #d8dcde;
-  background: #fff;
-  color: #2f3941;
-  font-weight: 600;
-}
-.grp[data-ticket] .zd-tab--views {
-  margin-bottom: 0;
-  border-color: transparent;
-  background: none;
-  color: #49545c;
-  font-weight: 400;
-}
-.zd-tab--ticket {
-  display: none;
-  width: 196px;
-}
-.grp[data-ticket] .zd-tab--ticket {
+.grp[data-ticket] .zd-tab {
   display: flex;
 }
-.zd-tab--ticket > span {
+.zd-tab > span {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-width: 0;
-  line-height: 1.15;
+  line-height: 16px;
 }
-.zd-tab--ticket b {
+.zd-tab b {
   overflow: hidden;
+  color: #2f3941;
+  font-size: 12px;
   font-weight: 600;
   text-overflow: ellipsis;
 }
-.zd-tab--ticket em {
+.zd-tab em {
   color: #68737d;
   font-size: 12px;
   font-style: normal;
-  font-weight: 400;
 }
-.zd-tab--ticket > svg {
+.zd-tab > svg {
   width: 12px;
   height: 12px;
   color: #68737d;
 }
 .zd-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
   background: #cc3340;
   flex: none;
 }
 .grp[data-sent] .zd-dot {
-  background: #68737d;
+  background: #87929d;
 }
 .zd-add {
   display: flex;
   align-items: center;
-  gap: 4px;
-  height: 32px;
-  padding: 0 8px;
-  font-size: 12.5px;
-}
-.zd-add svg {
-  width: 13px;
-  height: 13px;
+  gap: 6px;
+  height: 50px;
+  padding: 0 16px;
 }
 .zd-top__end {
   display: flex;
   align-items: center;
-  gap: 13px;
-  height: 36px;
+  gap: 20px;
+  height: 50px;
   margin-left: auto;
   color: #68737d;
 }
+.zd-top__end svg {
+  width: 18px;
+  height: 18px;
+}
 .zd-top__end .zd-ava {
-  width: 24px;
-  height: 24px;
+  width: 32px;
+  height: 32px;
+  font-size: 12px;
 }
 .zd-badge {
   display: inline-block;
-  width: fit-content;
-  padding: 1px 7px;
-  border-radius: 3px;
-  font-size: 11px;
+  padding: 0 8px;
+  border-radius: 4px;
+  font-size: 12px;
   font-weight: 600;
-  font-style: normal;
-  line-height: 1.5;
+  line-height: 20px;
 }
 .zd-badge--new {
-  background: #ffb648;
-  color: #703b15;
+  background: #ffb057;
+  color: #703815;
 }
 .zd-badge--open {
   background: #cc3340;
   color: #fff;
 }
 .zd-badge--pending {
-  background: #3091ec;
+  background: #1f73b7;
   color: #fff;
 }
 .zd-badge--solved {
-  background: #68737d;
+  background: #87929d;
   color: #fff;
 }
 .zd-ava {
@@ -215,10 +182,8 @@
   background: var(--v);
   color: #fff;
   font: 600 10px/1 var(--mac-font);
-  font-style: normal;
   flex: none;
 }
-
 .zd-list,
 .zd-ticket {
   flex: 1;
@@ -235,28 +200,25 @@
 }
 .grp[data-ticket] .zd-ticket {
   display: flex;
-  animation: fadein 280ms var(--ease-out) both;
 }
 .zd-views {
-  width: 138px;
-  padding: 14px 6px;
+  width: 256px;
+  padding: 20px 12px;
   border-right: 1px solid #d8dcde;
   background: #f8f9f9;
   flex: none;
 }
 .zd-views h6 {
-  margin: 0 8px 8px;
-  font-size: 14px;
+  margin: 0 12px 16px;
+  font-size: 18px;
   font-weight: 600;
+  line-height: 24px;
 }
 .zd-views div {
   display: flex;
   justify-content: space-between;
-  gap: 6px;
-  padding: 6px 8px;
+  padding: 6px 12px;
   border-radius: 4px;
-  font-size: 12px;
-  line-height: 1.3;
 }
 .zd-views div.is-on {
   background: #cee2f2;
@@ -269,37 +231,40 @@
 .zd-table {
   flex: 1;
   min-width: 0;
-  padding: 14px 14px;
+  padding: 20px 28px;
 }
 .zd-table h4 {
-  margin: 0 0 10px;
-  font-size: 18px;
+  margin: 0;
+  font-size: 22px;
   font-weight: 600;
+  line-height: 28px;
+}
+.zd-table p {
+  margin: 4px 0 14px;
+  color: #68737d;
 }
 .zd-row {
   display: grid;
-  grid-template-columns: 60px minmax(0, 1fr) 92px 72px 46px;
-  gap: 8px;
+  grid-template-columns: 32px 104px minmax(0, 1fr) 150px 140px 84px 76px;
   align-items: center;
-  height: 38px;
+  height: 40px;
   border-bottom: 1px solid #e9ebed;
-  font-size: 12.5px;
   white-space: nowrap;
 }
 .zd-row--head {
-  height: 30px;
   border-bottom-color: #d8dcde;
-  color: #68737d;
-  font-size: 11.5px;
-  font-weight: 600;
-}
-.zd-subject {
-  overflow: hidden;
   color: #2f3941;
   font-weight: 600;
-  text-overflow: ellipsis;
+}
+.zd-box {
+  width: 16px;
+  height: 16px;
+  margin-left: 4px;
+  border: 1px solid #c2c8cc;
+  border-radius: 4px;
 }
 .zd-row > span {
+  padding-right: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -308,20 +273,24 @@
 }
 .grp[data-arrived] .zd-row--new {
   display: grid;
-  background: #fff8ec;
-  animation: zd-arrive 620ms var(--ease-out) both;
+  animation: zd-arrive 420ms var(--ease-out) both;
+}
+.grp[data-over-row] .zd-row--new {
+  background: #edf7ff;
+}
+.grp[data-over-row] .zd-row--new .zd-subject {
+  color: #1f73b7;
 }
 @keyframes zd-arrive {
   from {
+    height: 0;
     opacity: 0;
-    transform: translateY(-12px);
-    background: #ffe2a8;
   }
 }
 
 .zd-props {
-  width: 150px;
-  padding: 12px;
+  width: 264px;
+  padding: 18px 16px;
   border-right: 1px solid #d8dcde;
   background: #f8f9f9;
   flex: none;
@@ -329,65 +298,54 @@
 .zd-props label {
   display: flex;
   justify-content: space-between;
-  margin: 0 0 4px;
-  color: #49545c;
-  font-size: 11.5px;
+  margin: 0 0 6px;
   font-weight: 600;
-}
-.zd-field {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 30px;
-  margin-bottom: 10px;
-  padding: 0 8px;
-  border: 1px solid #d8dcde;
-  border-radius: 4px;
-  background: #fff;
-  font-size: 12.5px;
-  white-space: nowrap;
 }
 .zd-props label a {
   color: #1f73b7;
   font-weight: 400;
 }
-.zd-field--select svg {
-  width: 13px;
-  height: 13px;
+.zd-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  margin-bottom: 14px;
+  padding: 0 12px;
+  border: 1px solid #d8dcde;
+  border-radius: 4px;
+  background: #fff;
+  white-space: nowrap;
+}
+.zd-field > svg {
   margin-left: auto;
   color: #68737d;
 }
 .zd-pair {
   display: flex;
-  gap: 6px;
+  gap: 12px;
 }
 .zd-pair > div {
   flex: 1;
   min-width: 0;
 }
-.zd-pair .zd-field {
-  padding: 0 6px;
-}
-.zd-field .zd-ava {
-  width: 18px;
-  height: 18px;
-  font-size: 8px;
-}
 .zd-tags {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
-  margin-bottom: 10px;
-  padding: 5px;
+  min-height: 40px;
+  margin-bottom: 14px;
+  padding: 7px 8px;
   border: 1px solid #d8dcde;
   border-radius: 4px;
   background: #fff;
 }
 .zd-tags span {
-  padding: 1px 6px;
-  border-radius: 3px;
+  padding: 0 8px;
+  border-radius: 4px;
   background: #e9ebed;
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 24px;
 }
 .zd-convo {
   display: flex;
@@ -398,15 +356,15 @@
 .zd-crumbs {
   display: flex;
   align-items: center;
-  gap: 6px;
-  height: 36px;
-  padding: 0 14px;
+  gap: 8px;
+  height: 50px;
+  padding: 0 20px;
   border-bottom: 1px solid #d8dcde;
   font-size: 12px;
   flex: none;
 }
 .zd-crumbs > span {
-  padding: 3px 9px;
+  padding: 3px 10px;
   border: 1px solid #d8dcde;
   border-radius: 4px;
   white-space: nowrap;
@@ -414,62 +372,71 @@
 .zd-crumbs__ticket {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   background: #f8f9f9;
   font-weight: 600;
 }
-.zd-convo h4 {
-  margin: 10px 16px 0;
-  font-size: 17px;
+.grp[data-sent] .zd-crumbs .zd-badge {
+  background: #87929d;
+}
+.zd-subject-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px 10px;
+  border-bottom: 1px solid #e9ebed;
+  flex: none;
+}
+.zd-subject-line h4 {
+  margin: 0;
+  font-size: 18px;
   font-weight: 600;
+  line-height: 24px;
+}
+.zd-subject-line span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #68737d;
+  font-size: 12px;
 }
 .zd-thread {
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
   flex: 1;
   min-height: 0;
-  padding: 4px 16px;
+  padding: 8px 20px;
   overflow: hidden;
 }
 .zd-msg {
   display: flex;
-  gap: 10px;
-  padding: 8px 0;
+  gap: 12px;
+  padding: 10px 0;
 }
 .zd-msg .zd-ava {
-  width: 30px;
-  height: 30px;
-  font-size: 11px;
+  width: 40px;
+  height: 40px;
+  font-size: 14px;
 }
 .zd-msg b {
   font-weight: 600;
 }
 .zd-msg time {
-  margin-left: 8px;
+  margin-left: 10px;
   color: #68737d;
-  font-size: 11.5px;
+  font-size: 12px;
 }
 .zd-msg p {
   margin: 2px 0 0;
-  font-size: 13.5px;
-  line-height: 1.45;
-}
-.zd-msg mark {
-  padding: 0 2px;
-  border-radius: 2px;
-  background: #ffe9b8;
-  color: inherit;
 }
 .zd-msg--sent {
   display: none;
 }
 .grp[data-sent] .zd-msg--sent {
   display: flex;
-  animation: fadein 320ms var(--ease-out) both;
 }
 .zd-composer {
-  margin: 0 16px;
+  margin: 0 20px;
   border: 1px solid #c2c8cc;
   border-radius: 4px;
   flex: none;
@@ -477,21 +444,17 @@
 .zd-composer__head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 5px 10px;
+  gap: 10px;
+  height: 40px;
+  padding: 0 12px;
   border-bottom: 1px solid #e9ebed;
-  font-size: 12.5px;
 }
 .zd-channel {
   display: flex;
   align-items: center;
-  gap: 5px;
-  margin-right: 4px;
+  gap: 6px;
+  margin-right: 6px;
   font-weight: 600;
-}
-.zd-channel svg {
-  width: 14px;
-  height: 14px;
 }
 .zd-channel svg:last-child {
   width: 12px;
@@ -506,33 +469,30 @@
   color: #68737d;
 }
 .zd-composer__head em {
-  padding: 1px 7px;
-  border-radius: 999px;
+  padding: 0 8px;
+  border-radius: 4px;
   background: #e9ebed;
+  font-size: 12px;
   font-style: normal;
+  line-height: 24px;
 }
 .zd-composer__text {
-  min-height: 62px;
+  min-height: 84px;
   margin: 0;
-  padding: 8px 10px;
-  font-size: 13.5px;
-  line-height: 1.45;
+  padding: 10px 12px;
 }
-.zd-composer__text::after {
+.grp[data-typing] .zd-composer__text::after {
   content: "";
   display: inline-block;
-  width: 1.5px;
-  height: 15px;
+  width: 1px;
+  height: 16px;
   margin-left: 1px;
-  vertical-align: -2px;
-  background: #1f73b7;
+  vertical-align: -3px;
+  background: #2f3941;
   animation: zd-caret 1s steps(1) infinite;
 }
-.grp[data-sent] .zd-composer__text::after {
-  display: none;
-}
 .grp[data-sent] .zd-composer__text {
-  min-height: 30px;
+  min-height: 40px;
 }
 @keyframes zd-caret {
   50% {
@@ -542,23 +502,22 @@
 .zd-composer__tools {
   display: flex;
   gap: 4px;
-  padding: 2px 6px 4px;
+  padding: 0 6px 6px;
   color: #68737d;
 }
 .zd-composer__tools span {
   display: grid;
   place-items: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 4px;
+  width: 32px;
+  height: 32px;
 }
 .zd-foot {
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 46px;
-  margin-top: 8px;
-  padding: 0 16px;
+  gap: 16px;
+  height: 56px;
+  margin-top: 12px;
+  padding: 0 20px;
   border-top: 1px solid #d8dcde;
   background: #f8f9f9;
   flex: none;
@@ -566,19 +525,13 @@
 .zd-macro {
   display: flex;
   align-items: center;
-  gap: 5px;
-  height: 30px;
+  gap: 8px;
+  height: 40px;
   margin-right: auto;
-  padding: 0 8px;
+  padding: 0 14px;
   border: 1px solid #c2c8cc;
   border-radius: 4px;
   background: #fff;
-  color: #49545c;
-  font-size: 12.5px;
-}
-.zd-macro svg:first-child {
-  width: 14px;
-  height: 14px;
 }
 .zd-macro svg:last-child,
 .zd-close svg {
@@ -588,49 +541,138 @@
 .zd-close {
   display: flex;
   align-items: center;
-  gap: 4px;
-  color: #49545c;
-  font-size: 12.5px;
+  gap: 6px;
   white-space: nowrap;
 }
 .zd-split {
   display: flex;
-  height: 32px;
+  height: 40px;
   border-radius: 4px;
   background: #2f3941;
   color: #fff;
 }
+.grp[data-over-submit] .zd-split {
+  background: #1f262c;
+}
 .zd-split i {
   display: grid;
   place-items: center;
-  width: 28px;
+  width: 36px;
   border-left: 1px solid rgb(255 255 255 / 28%);
 }
 .zd-split i svg {
-  width: 13px;
-  height: 13px;
+  width: 12px;
+  height: 12px;
 }
 .zd-submit {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 0 12px;
-  font-size: 13px;
+  padding: 0 16px;
   white-space: nowrap;
 }
 .zd-submit b {
-  font-weight: 700;
+  font-weight: 600;
 }
-.grp[data-sent] .zd-crumbs .zd-badge {
-  background: #68737d;
+
+.zd-side {
+  width: 288px;
+  padding: 0 16px;
+  border-left: 1px solid #d8dcde;
+  flex: none;
+}
+.zd-side header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 50px;
+  margin: 0 -16px 14px;
+  padding: 0 16px;
+  border-bottom: 1px solid #d8dcde;
+  font-weight: 600;
+}
+.zd-who {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.zd-who .zd-ava {
+  width: 40px;
+  height: 40px;
+  font-size: 14px;
+}
+.zd-who b {
+  color: #1f73b7;
+  font-weight: 600;
+}
+.zd-side dl {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 8px 8px;
+  margin: 0 0 18px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid #e9ebed;
+}
+.zd-side dt {
+  color: #68737d;
+}
+.zd-side dd {
+  margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.zd-side h6 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.zd-side ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.zd-side li {
+  display: flex;
+  gap: 10px;
+  padding-bottom: 12px;
+}
+.zd-pin {
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border-radius: 2px;
+  background: #87929d;
+  flex: none;
+}
+.zd-pin--open {
+  background: #cc3340;
+}
+.grp[data-sent] .zd-pin--open {
+  background: #87929d;
+}
+.zd-side li div {
+  min-width: 0;
+}
+.zd-side li b {
+  display: block;
+  overflow: hidden;
+  font-weight: 400;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.zd-side li span {
+  color: #68737d;
+  font-size: 12px;
 }
 .zd-context {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  width: 36px;
-  padding-top: 8px;
+  gap: 8px;
+  width: 48px;
+  padding-top: 9px;
   border-left: 1px solid #d8dcde;
   color: #68737d;
   flex: none;
@@ -638,8 +680,8 @@
 .zd-context i {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border-radius: 4px;
 }
 .zd-context i.is-on {

@@ -1,0 +1,211 @@
+/* A commit page on GitHub, light theme, at its real sizes */
+.gh {
+  height: 100%;
+  background: #fff;
+  color: #1f2328;
+  font: 14px/21px var(--mac-font);
+}
+.gh-fav {
+  background: #fff;
+  color: #1f2328;
+}
+.gh-fav svg {
+  width: 14px;
+  height: 14px;
+}
+.gh-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 56px;
+  padding: 0 24px;
+  background: #f6f8fa;
+}
+.gh-top > svg {
+  width: 32px;
+  height: 32px;
+  margin-right: 8px;
+}
+.gh-top em {
+  color: #59636e;
+  font-style: normal;
+}
+.gh-top b {
+  font-weight: 600;
+}
+.gh-search {
+  width: 300px;
+  height: 32px;
+  margin-left: auto;
+  padding: 0 12px;
+  border: 1px solid #d1d9e0;
+  border-radius: 6px;
+  color: #59636e;
+  line-height: 30px;
+}
+.gh-search kbd {
+  padding: 0 4px;
+  border: 1px solid #d1d9e0;
+  border-radius: 4px;
+  font: 11px var(--font-mono);
+}
+.gh-top > i,
+.gh-meta i {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #8a6d5e;
+  color: #fff;
+  font: 600 11px/1 var(--mac-font);
+}
+.gh-tabs {
+  display: flex;
+  gap: 8px;
+  height: 48px;
+  padding: 0 24px;
+  border-bottom: 1px solid #d1d9e0;
+  background: #f6f8fa;
+}
+.gh-tabs span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+}
+.gh-tabs .is-on {
+  box-shadow: inset 0 -2px #fd8c73;
+  font-weight: 600;
+}
+.gh-tabs em {
+  padding: 0 6px;
+  border-radius: 10px;
+  background: #e6eaef;
+  font-size: 12px;
+  font-style: normal;
+  line-height: 20px;
+}
+.gh-main {
+  padding: 20px 32px;
+}
+.gh-kicker {
+  margin: 0 0 6px;
+  color: #59636e;
+}
+.gh code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.gh-main h4 {
+  margin: 0 0 10px;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 32px;
+}
+.gh-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #59636e;
+}
+.gh-meta i {
+  width: 20px;
+  height: 20px;
+  margin-right: 2px;
+  font-size: 8px;
+}
+.gh-meta b {
+  color: #1f2328;
+  font-weight: 600;
+}
+.gh-branch {
+  margin-left: 8px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: #ddf4ff;
+  color: #0969da;
+  font: 12px/22px var(--font-mono);
+}
+.gh-desc {
+  margin: 14px 0 20px;
+  padding: 14px 16px;
+  border: 1px solid #d1d9e0;
+  border-radius: 6px;
+}
+.gh-count {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+  color: #59636e;
+}
+.gh-count b {
+  color: #1f2328;
+  font-weight: 600;
+}
+.gh-add {
+  color: #1a7f37;
+  font-weight: 600;
+}
+.gh-del {
+  color: #d1242f;
+  font-weight: 600;
+}
+.gh-file {
+  border: 1px solid #d1d9e0;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.gh-file header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 16px;
+  border-bottom: 1px solid #d1d9e0;
+  background: #f6f8fa;
+}
+.gh-file header b {
+  margin-right: 4px;
+  font: 600 13px var(--font-mono);
+}
+.gh-hunk {
+  padding: 0 16px 0 108px;
+  background: #ddf4ff;
+  color: #59636e;
+  font: 12px/28px var(--font-mono);
+}
+.gh-line {
+  display: flex;
+  font: 12px/22px var(--font-mono);
+  white-space: pre;
+}
+.gh-line i {
+  width: 46px;
+  padding-right: 10px;
+  color: #59636e;
+  font-style: normal;
+  text-align: right;
+  flex: none;
+}
+.gh-line b {
+  width: 22px;
+  font-weight: 400;
+  text-align: center;
+  flex: none;
+}
+.gh-line code {
+  flex: 1;
+}
+.gh-line--del {
+  background: #ffebe9;
+}
+.gh-line--del i {
+  background: #ffcecb;
+}
+.gh-line--add {
+  background: #dafbe1;
+}
+.gh-line--add i {
+  background: #aceebb;
+}

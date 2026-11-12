@@ -40,7 +40,7 @@ const action = (name: keyof typeof ICONS, label: string, hook = ""): string =>
 const LEFT = `<aside class="hs-left">
   <div class="hs-ident"><i class="hs-deal">${line(ICONS.deals)}</i><h4>Acme Corp — 2027 renewal</h4></div>
   <p class="hs-sum">Amount: <b class="hs-sum__amount" data-h="hs-head-amount">$36,000</b></p>
-  <div class="hs-acts">${action("note", "Note", "hs-note-btn")}${action("email", "Email")}${action("call", "Call")}${action("task", "Task")}${action("meeting", "Meet")}</div>
+  <div class="hs-acts">${action("note", "Note")}${action("email", "Email")}${action("call", "Call")}${action("task", "Task")}${action("meeting", "Meet")}</div>
   <section class="hs-about">
     <h6>About this deal</h6>
     <label>Deal owner</label><div class="hs-val">Alex Rivera</div>
@@ -54,20 +54,11 @@ const LEFT = `<aside class="hs-left">
 const entry = (kind: keyof typeof ICONS, who: string, when: string, body: string): string =>
   `<article class="hs-entry"><header><i>${line(ICONS[kind])}</i><b>${who}</b><time>${when}</time></header><p>${body}</p></article>`;
 
-export const HUBSPOT_NOTE =
-  "Team grew to 120. Repriced: 120 seats × $400 = $48,000 (was 90 seats, $36,000).";
-
 const MID = `<main class="hs-mid">
   <div class="hs-tabs"><span>Overview</span><span class="is-on">Activities</span><span>Intelligence</span></div>
-  <div class="hs-editor" data-h="hs-editor">
-    <header><b>Note</b><span>×</span></header>
-    <p class="hs-typed" data-h="hs-note"></p>
-    <footer><span class="hs-btn" data-h="hs-save">Save note</span></footer>
-  </div>
   <div class="hs-find"><span class="hs-find__box">${line(ICONS.search)}Search activities</span><span class="hs-find__link">Collapse all</span></div>
   <p class="hs-month">November 2026</p>
   <div class="hs-feed">
-    <article class="hs-entry hs-entry--new"><header><i>${line(ICONS.note)}</i><b>Note by Alex Rivera</b><time>Just now</time></header><p>${HUBSPOT_NOTE}</p></article>
     ${entry("email", "Email to Priya Raman", "Nov 2", "Acme's plan renews Dec 31. Want to set up time to plan 2027?")}
     ${entry("call", "Call with Priya Raman", "Oct 14", "New VP Ops since September. Wants a renewal quote before budgets lock.")}
     ${entry("deals", "Deal created", "Oct 2", "Renewal of Acme's 90-seat Team plan, $36,000 a year.")}

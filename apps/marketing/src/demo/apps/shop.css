@@ -1,0 +1,347 @@
+/* A small shop's checkout, the kind every storefront has: the form on the left, the order on the right */
+.sh {
+  display: flex;
+  height: 100%;
+  background: #fff;
+  color: #1d1d1b;
+  font: 14px/20px var(--mac-font);
+}
+.sh-main {
+  flex: 1;
+  min-width: 0;
+  padding: 20px 40px 0 48px;
+}
+.sh-main h3 {
+  margin: 0 0 10px;
+  color: #1f3d2b;
+  font: 600 24px/30px var(--font-display);
+  letter-spacing: -0.01em;
+}
+.sh-crumbs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  color: #1f3d2b;
+  font-size: 12px;
+}
+.sh-crumbs > *:not(:last-child)::after {
+  content: "›";
+  margin-left: 8px;
+  color: #8a8a86;
+}
+.sh-crumbs b {
+  color: #1d1d1b;
+  font-weight: 500;
+}
+.sh-facts,
+.sh-card,
+.sh-box {
+  border: 1px solid #dedcd6;
+  border-radius: 8px;
+}
+.sh-fact {
+  display: flex;
+  gap: 12px;
+  padding: 10px 14px;
+}
+.sh-fact + .sh-fact {
+  border-top: 1px solid #e9e7e1;
+}
+.sh-fact span {
+  width: 64px;
+  color: #6f6f6b;
+  flex: none;
+}
+.sh-fact b {
+  flex: 1;
+  font-weight: 400;
+}
+.sh-fact a {
+  color: #1f3d2b;
+  font-size: 12px;
+}
+.sh-step h4 {
+  margin: 16px 0 2px;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 24px;
+}
+.sh-step > p {
+  margin: 0 0 10px;
+  color: #6f6f6b;
+}
+.sh-card {
+  padding: 0 14px 4px;
+  background: #f7f6f2;
+}
+.sh-card__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 44px;
+  margin: 0 -14px 12px;
+  padding: 0 14px;
+  border-bottom: 1px solid #1f3d2b;
+  border-radius: 8px 8px 0 0;
+  background: #eef3ee;
+  box-shadow: 0 0 0 1px #1f3d2b;
+  font-weight: 500;
+}
+.sh-card__head i {
+  width: 16px;
+  height: 16px;
+  border: 5px solid #1f3d2b;
+  border-radius: 50%;
+  background: #fff;
+}
+.sh-card__head span {
+  margin-left: auto;
+  padding: 0 6px;
+  border: 1px solid #dedcd6;
+  border-radius: 3px;
+  background: #fff;
+  color: #1a1f71;
+  font: italic 800 10px/18px var(--mac-font);
+}
+.sh-input {
+  height: 46px;
+  margin-bottom: 10px;
+  padding: 5px 12px 0;
+  border: 1px solid #d0cec8;
+  border-radius: 6px;
+  background: #fff;
+  line-height: 18px;
+}
+.sh-input label {
+  display: block;
+  color: #6f6f6b;
+  font-size: 11px;
+  line-height: 15px;
+}
+.sh-pair {
+  display: flex;
+  gap: 10px;
+}
+.sh-pair > * {
+  flex: 1;
+}
+.sh-error {
+  display: none;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 14px;
+  border: 1px solid #e8b4ae;
+  border-radius: 8px;
+  background: #fdf1ef;
+  color: #8e1f0b;
+}
+.grp[data-failed] .sh-error {
+  display: flex;
+}
+.sh-error svg {
+  width: 20px;
+  height: 20px;
+  flex: none;
+}
+.sh-error b,
+.sh-error span {
+  display: block;
+}
+.sh-error b {
+  font-weight: 600;
+}
+.sh-pay {
+  display: grid;
+  place-items: center;
+  height: 50px;
+  margin-top: 12px;
+  border-radius: 8px;
+  background: #1f3d2b;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+}
+.grp[data-over-pay] .sh-pay {
+  background: #17301f;
+}
+.sh-pay i {
+  display: none;
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgb(255 255 255 / 35%);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 700ms linear infinite;
+}
+.grp[data-paying] .sh-pay span {
+  display: none;
+}
+.grp[data-paying] .sh-pay i {
+  display: block;
+}
+.sh-step--done,
+.grp[data-confirmed] .sh-step--pay {
+  display: none;
+}
+.grp[data-confirmed] .sh-step--done {
+  display: block;
+}
+.sh-thanks {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 18px 0 20px;
+  color: #1f3d2b;
+}
+.sh-thanks svg {
+  width: 52px;
+  height: 52px;
+  flex: none;
+}
+.sh-thanks span {
+  color: #6f6f6b;
+}
+.sh-thanks h4 {
+  margin: 0;
+  color: #1d1d1b;
+  font-size: 22px;
+  line-height: 28px;
+}
+.sh-box {
+  margin-bottom: 14px;
+  padding: 16px;
+}
+.sh-box b,
+.sh-box span {
+  display: block;
+}
+.sh-box b {
+  font-weight: 600;
+}
+.sh-box span {
+  color: #55554f;
+}
+.sh-box--grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.sh-again {
+  display: inline-grid;
+  place-items: center;
+  height: 48px;
+  padding: 0 22px;
+  border-radius: 8px;
+  background: #1f3d2b;
+  color: #fff;
+  font-weight: 600;
+}
+
+.sh-side {
+  width: 340px;
+  padding: 44px 32px 0 28px;
+  border-left: 1px solid #e4e2dc;
+  background: #f7f6f2;
+  flex: none;
+}
+.sh-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+.sh-item i {
+  position: relative;
+  width: 60px;
+  height: 60px;
+  border: 1px solid #dedcd6;
+  border-radius: 8px;
+  flex: none;
+}
+.sh-item i b {
+  position: absolute;
+  right: -8px;
+  top: -8px;
+  min-width: 20px;
+  border-radius: 10px;
+  background: #6f6f6b;
+  color: #fff;
+  font: 500 12px/20px var(--mac-font);
+  text-align: center;
+}
+.sh-item div {
+  flex: 1;
+  min-width: 0;
+}
+.sh-item div b,
+.sh-item div span {
+  display: block;
+}
+.sh-item div b {
+  font-weight: 500;
+}
+.sh-item div span {
+  color: #6f6f6b;
+  font-size: 12px;
+}
+.sh-item em {
+  font-style: normal;
+}
+.sh-code {
+  display: flex;
+  gap: 10px;
+  margin: 22px 0;
+  padding: 20px 0;
+  border-block: 1px solid #e4e2dc;
+}
+.sh-code span,
+.sh-code b {
+  display: grid;
+  align-items: center;
+  height: 44px;
+  padding: 0 12px;
+  border-radius: 6px;
+}
+.sh-code span {
+  border: 1px solid #d0cec8;
+  background: #fff;
+  color: #8a8a86;
+  flex: 1;
+}
+.sh-code b {
+  background: #e4e2dc;
+  color: #6f6f6b;
+  font-weight: 500;
+}
+.sh-side dl {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  margin: 0;
+}
+.sh-side dt {
+  color: #55554f;
+}
+.sh-side dd {
+  margin: 0;
+  font-weight: 500;
+}
+.sh-total {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid #e4e2dc;
+  font-size: 16px;
+}
+.sh-total em {
+  margin-left: auto;
+  color: #6f6f6b;
+  font-size: 12px;
+  font-style: normal;
+}
+.sh-total b {
+  font-size: 22px;
+  font-weight: 600;
+}
