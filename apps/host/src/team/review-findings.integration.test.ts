@@ -39,6 +39,14 @@ describe("team review regressions", () => {
           userId: f.member.userId,
         })
         .execute();
+      const mention = await f.team.chat.send(f.owner, {
+        channelId: f.channel.id,
+        threadRootId: null,
+        clientMessageId: randomUUID(),
+        bodyMarkdown: "Pending push",
+        mentions: [{ kind: "person", userId: f.member.userId }],
+        attachmentIds: [],
+      });
       const headers = new Headers({ "x-opensteer-team-api-version": "1" });
       const result = await f.team.rpc(
         headers,
@@ -75,6 +83,16 @@ describe("team review regressions", () => {
         ),
       ).rejects.toMatchObject({ code: "forbidden" });
       const delivered: string[] = [];
+      await f.database
+        .insertInto("teamOutbox")
+        .values({
+          kind: "message",
+          channelId: f.channel.id,
+          messageId: mention.message.id,
+          noticeId: null,
+          createdAt: new Date(),
+        })
+        .execute();
       await new TeamOutboxStore(f.team.access).drain(async (delivery) => {
         delivered.push(delivery.userId);
       });
