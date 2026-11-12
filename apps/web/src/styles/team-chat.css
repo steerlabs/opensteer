@@ -1483,13 +1483,6 @@ a.team-row__main:hover {
   min-height: 0;
 }
 
-.thread-pane__scroll {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: var(--space-10) 0 var(--space-8);
-}
-
 .thread-pane .tmsg {
   padding-inline: var(--space-16);
 }
@@ -2895,4 +2888,10 @@ a.team-row__main:hover {
 
 .connection-line--amber > svg {
   color: var(--amber);
+}
+
+.thread-pane > .tmsg {
+  flex: none;
+  max-height: 30%;
+  overflow-y: auto;
 }

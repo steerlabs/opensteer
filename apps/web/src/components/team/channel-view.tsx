@@ -1,10 +1,9 @@
-import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
-import { AgentCardRow, type AgentCardActions } from "./agent-status-card.js";
+import { type AgentCardActions } from "./agent-status-card.js";
 import { MessageRow, type MessageActions } from "./message-row.js";
-import { joins, itemId, SystemRow, useStableItems } from "./message-list.js";
-import { useStableActions } from "../use-stable-actions.js";
+import { MessageList } from "./message-list.js";
 import { ChannelGlyph, PeopleOnlyBadge, PersonAvatar } from "./team-marks.js";
 import {
   channelLabel,
@@ -291,6 +290,10 @@ export function ThreadPane({
   channel,
   composer,
   editingId = null,
+  flashId = null,
+  hasOlder = false,
+  onLoadOlder,
+  onVisibleMessage,
   onBack,
   onClose,
   onEditingChange,
@@ -306,26 +309,13 @@ export function ThreadPane({
   readonly editingId?: string | null;
   readonly onClose: () => void;
   readonly onEditingChange?: ((messageId: string | null) => void) | undefined;
+  readonly flashId?: string | null;
+  readonly hasOlder?: boolean;
+  readonly onLoadOlder?: (() => void) | undefined;
+  readonly onVisibleMessage?: ((id: string) => void) | undefined;
   readonly replies: readonly TimelineItem[];
   readonly root: MessageView;
 }) {
-  const stable = useStableItems(replies);
-  const rowActions = useStableActions(actions ?? {});
-  const rowCardActions = useStableActions(cardActions ?? {});
-  const editingLatest = useRef(onEditingChange);
-  editingLatest.current = onEditingChange;
-  const onEditing = useCallback(
-    (messageId: string, editing: boolean) => editingLatest.current?.(editing ? messageId : null),
-    [],
-  );
-  const replyCount = replies.filter((item) => item.kind === "message").length;
-  const scroller = useRef<HTMLDivElement | null>(null);
-  const atEnd = useRef(true);
-  // Opens at the newest reply, and follows new ones only while the reader is there.
-  useLayoutEffect(() => {
-    const list = scroller.current;
-    if (list && atEnd.current) list.scrollTop = list.scrollHeight;
-  }, [replies]);
   return (
     <div className="thread-pane">
       <PaneHeader
@@ -334,48 +324,26 @@ export function ThreadPane({
         onClose={onClose}
         title="Thread"
       />
-      <div
-        aria-label="Thread"
-        className="thread-pane__scroll"
-        onScroll={(event) => {
-          const list = event.currentTarget;
-          atEnd.current = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
-        }}
-        ref={scroller}
-        role="log"
-      >
-        <MessageRow
-          actions={rowActions}
-          editing={editingId === root.id}
-          inThread
-          message={root}
-          onEditingChange={onEditing}
-        />
-        <div className="thread-pane__rule" role="separator">
-          <span>{replyCount > 0 ? plural(replyCount, "reply", "replies") : "No replies yet"}</span>
-        </div>
-        {stable.map((item, index) => {
-          const id = itemId(item);
-          return (
-            <div className="tlist__row" data-row-id={id} key={id}>
-              {item.kind === "message" ? (
-                <MessageRow
-                  actions={rowActions}
-                  editing={editingId === id}
-                  grouped={joins(stable[index - 1], item.message)}
-                  inThread
-                  message={item.message}
-                  onEditingChange={onEditing}
-                />
-              ) : item.kind === "card" ? (
-                <AgentCardRow actions={rowCardActions} request={item.request} />
-              ) : (
-                <SystemRow at={item.at} icon={item.icon} text={item.text} />
-              )}
-            </div>
-          );
-        })}
+      <MessageRow actions={actions} editing={editingId === root.id} inThread message={root} />
+      <div className="thread-pane__rule" role="separator">
+        <span>
+          {root.thread?.replyCount ? plural(root.thread.replyCount, "reply", "replies") : "Replies"}
+        </span>
       </div>
+      <MessageList
+        actions={actions}
+        cardActions={cardActions}
+        editingId={editingId}
+        firstUnreadId={null}
+        flashId={flashId}
+        hasOlder={hasOlder}
+        inThread
+        items={replies}
+        label="Thread replies"
+        onEditingChange={onEditingChange}
+        onLoadOlder={onLoadOlder}
+        onVisibleMessage={onVisibleMessage}
+      />
       <div className="thread-pane__composer">{composer}</div>
     </div>
   );

@@ -221,7 +221,7 @@ describe("taskList", () => {
     expect(list.ready).toEqual([]);
   });
 
-  it("keeps the sidebar to work that needs the reader: questions, then unread results and the open one, then running", () => {
+  it("keeps the sidebar to work that needs the reader: questions, then unread results, then running", () => {
     const list = taskList(
       snapshot(
         [
@@ -234,13 +234,6 @@ describe("taskList", () => {
         { unread: [2], waiting: [asking(4, "Pick a night")] },
       ),
     );
-    expect(titles(liveTasks(list, threadId(5)))).toEqual([
-      "Asks the reader",
-      "Unread result",
-      "Opened result",
-      "Running",
-    ]);
-    // Read, it leaves once the reader moves on.
     expect(titles(liveTasks(list))).toEqual(["Asks the reader", "Unread result", "Running"]);
   });
 

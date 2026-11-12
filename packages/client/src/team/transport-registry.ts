@@ -137,6 +137,11 @@ export class TeamTransportRegistry {
   async join(scope: TeamCacheScope): Promise<TeamSessionClient> {
     if (this.#disposed) throw new Error("Team registry disposed.");
     const key = teamCacheKey(scope);
+    for (const other of this.#clients.keys()) {
+      const [teamDeploymentId, userId] = JSON.parse(other) as [string, string];
+      if (teamDeploymentId === scope.teamDeploymentId && userId !== scope.userId)
+        await this.remove({ teamDeploymentId, userId });
+    }
     await this.#removing.get(key);
     if (this.#disposed) throw new Error("Team registry disposed.");
     const held = this.#clients.get(key);

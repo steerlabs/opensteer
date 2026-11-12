@@ -46,6 +46,8 @@ export function TeamComposer({
   agent,
   agentStartsOn = false,
   autoFocus = false,
+  draft,
+  onDraft,
   me,
   onAddFiles,
   onConnect,
@@ -62,6 +64,8 @@ export function TeamComposer({
   /** The viewer's agent's task for this thread is still open: start with "to my agent" on. */
   readonly agentStartsOn?: boolean;
   readonly autoFocus?: boolean;
+  readonly draft?: string;
+  readonly onDraft?: (text: string) => void;
   readonly me: PersonView;
   readonly onAddFiles?: ((files: readonly File[]) => void) | undefined;
   /** Connect this team to the viewer's own Opensteer. */
@@ -69,7 +73,7 @@ export function TeamComposer({
   /** ↑ in an empty composer. */
   readonly onEditLast?: (() => void) | undefined;
   readonly onRemoveFile?: ((id: string) => void) | undefined;
-  readonly onSend: (send: TeamSend) => void;
+  readonly onSend: (send: TeamSend) => Promise<void> | void;
   readonly onTyping?: (() => void) | undefined;
   /** Members of this channel, for the @ list. */
   readonly people: readonly PersonView[];
@@ -78,7 +82,14 @@ export function TeamComposer({
   readonly typing?: readonly PersonView[];
 }) {
   const ready = agent.kind === "ready";
-  const [text, setText] = useState("");
+  const [localText, setLocalText] = useState("");
+  const text = draft ?? localText;
+  const setText = (value: string) => {
+    setLocalText(value);
+    onDraft?.(value);
+  };
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
   const [toAgent, setToAgent] = useState(ready && agentStartsOn);
   const [mention, setMention] = useState<MentionQuery | null>(null);
   const [active, setActive] = useState(0);
@@ -117,16 +128,25 @@ export function TeamComposer({
     } else setWhy(true);
   };
 
-  const send = (forceAgent: boolean) => {
-    if (!sendable) return;
+  const send = async (forceAgent: boolean) => {
+    if (!sendable || sendingRef.current) return;
     if (forceAgent && !ready) {
       setWhy(true);
       return;
     }
-    onSend({ body: text.trim(), toMyAgent: ready && (toAgent || forceAgent) });
-    setText("");
-    setMention(null);
-    setToAgent(ready && agentStartsOn);
+    sendingRef.current = true;
+    setSending(true);
+    try {
+      await onSend({ body: text.trim(), toMyAgent: ready && (toAgent || forceAgent) });
+      setText("");
+      setMention(null);
+      setToAgent(ready && agentStartsOn);
+    } catch {
+      // The caller reports admission failure; the draft and files remain here.
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+    }
   };
 
   const pick = (item: PickerItem) => {
@@ -181,7 +201,7 @@ export function TeamComposer({
     }
     if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !event.ctrlKey) {
       event.preventDefault();
-      send(false);
+      void send(false);
       return;
     }
     if (event.key === "ArrowUp" && text === "" && onEditLast) {
@@ -279,6 +299,7 @@ export function TeamComposer({
             ref={field}
             role="combobox"
             rows={1}
+            disabled={sending}
             value={text}
           />
         </div>
@@ -356,8 +377,8 @@ export function TeamComposer({
           <button
             aria-label={toAgent ? "Send to your agent" : "Send"}
             className="composer__send"
-            disabled={!sendable}
-            onClick={() => send(false)}
+            disabled={!sendable || sending}
+            onClick={() => void send(false)}
             title={toAgent ? "Send · asks your agent" : "Send"}
             type="button"
           >

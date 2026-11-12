@@ -45,11 +45,7 @@ export const localTeamPersistence: TeamPersistence = {
     }
   },
   async save(scope, state: TeamSavedState) {
-    try {
-      localStorage.setItem(savedPrefix + teamCacheKey(scope), JSON.stringify(state));
-    } catch {
-      // Storage refused: the session keeps them in memory for this window.
-    }
+    localStorage.setItem(savedPrefix + teamCacheKey(scope), JSON.stringify(state));
   },
   async remove(scope) {
     try {
@@ -85,7 +81,7 @@ export function browserTeamSession(input: {
     baseUrl: new URL(origin),
     fetch: globalThis.fetch.bind(globalThis),
     kind: "team",
-    onAuthenticationRequired: () => window.location.reload(),
+    onAuthenticationRequired: () => undefined,
   });
   let first = input.bootstrap ?? null;
   return {

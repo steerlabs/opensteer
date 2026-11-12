@@ -20,11 +20,12 @@ export const TeamSendCommandSchema = TeamCommandSchema.transform((command, conte
 export const PendingTeamSendSchema = z.strictObject({
   command: TeamSendCommandSchema,
   createdAt: z.iso.datetime({ offset: true }),
+  failure: z.string().max(2048).nullable().default(null),
 });
 export type PendingTeamSend = z.infer<typeof PendingTeamSendSchema>;
 export const TeamSavedStateSchema = z.strictObject({
   drafts: z
-    .record(z.string(), z.string().max(16384))
+    .record(z.string(), z.string().max(1024 * 1024))
     .refine((rows) => Object.keys(rows).length <= 100),
   pending: z.array(PendingTeamSendSchema).max(100),
 });

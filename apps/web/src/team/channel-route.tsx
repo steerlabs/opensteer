@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useLocation, useNavigate } from "react-router";
 import {
   TeamChannelIdSchema,
@@ -11,7 +11,8 @@ import {
 import { teamPageUrl } from "@opensteer/core";
 import type { TeamChannel, TeamFileSchema } from "@opensteer/protocol";
 import { readTeamReply, unwrapRpcResult } from "@opensteer/client/host";
-import type { TeamTimeline } from "@opensteer/client/team";
+import { teamScopeKey, type TeamTimeline } from "@opensteer/client/team";
+import { TeamPreviewUrls } from "./preview-urls.js";
 import type { z } from "zod";
 import { useOptionalShell } from "../components/app-shell.js";
 import { ChannelDetails, MembersPane } from "../components/team/channel-details.js";
@@ -41,7 +42,7 @@ import { useWorkspace } from "../components/workspace/workspace-context.js";
 import { DrawerButton } from "../components/workspace/place-stage.js";
 import { SidebarRestoreButton } from "../components/sidebar-chrome.js";
 import { actionErrorMessage } from "../ui-utils.js";
-import { useTeams } from "./team-attachments.js";
+import { useTeams, useTeamSession } from "./team-attachments.js";
 import { useKnowledge } from "./team-knowledge.js";
 import { channelPath } from "./team-paths.js";
 import { teamMessage } from "./team-send.js";
@@ -57,6 +58,8 @@ import {
 } from "./team-view-models.js";
 
 type TeamFile = z.infer<typeof TeamFileSchema>;
+const noReadStates = {};
+const noSubscribe = () => () => undefined;
 
 /** Where in a channel the address points. */
 interface ChannelPlace {
@@ -84,30 +87,18 @@ function placeOf(rest: readonly string[]): ChannelPlace {
   return { tab: "messages", threadId: null, messageId: null, topicId: null };
 }
 
-/** Object URLs for the small previews this screen has read, revoked when it closes. */
-function usePreviews() {
-  const [previews, setPreviews] = useState<ReadonlyMap<string, string>>(new Map());
-  const asked = useRef(new Set<string>());
-  useEffect(
-    () => () => {
-      for (const url of previews.values()) URL.revokeObjectURL(url);
+function usePreviews(key: string, session: TeamView["client"] | null) {
+  const store = useMemo(() => new TeamPreviewUrls(), [key, session]);
+  const previews = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  useEffect(() => () => store.clear(), [store]);
+  const want = useCallback(
+    (view: TeamView | null, files: readonly TeamFile[]) => {
+      if (!view) return;
+      for (const file of files)
+        if (file.preview) void store.load(file.id, () => view.client.file(file));
     },
-    [],
+    [store],
   );
-  const want = useCallback((view: TeamView | null, files: readonly TeamFile[]) => {
-    if (!view) return;
-    for (const file of files) {
-      if (!file.preview || asked.current.has(file.id)) continue;
-      asked.current.add(file.id);
-      void view.client
-        .file(file)
-        .then((blob) => {
-          if (blob)
-            setPreviews((current) => new Map([...current, [file.id, URL.createObjectURL(blob)]]));
-        })
-        .catch(() => undefined);
-    }
-  }, []);
   return { previews, want };
 }
 
@@ -120,8 +111,18 @@ export function ChannelRoute({
 }) {
   const channelId = TeamChannelIdSchema.safeParse(rest[0]).data ?? null;
   const place = placeOf(rest.slice(1));
-  const { previews, want } = usePreviews();
+  const attachment = useTeams().teams.find((team) => team.teamId === teamId);
+  const contentGeneration = useSyncExternalStore(
+    attachment?.client?.subscribe ?? (() => () => undefined),
+    () => attachment?.client?.getSnapshot().contentGeneration ?? 0,
+  );
+  const { previews, want } = usePreviews(
+    `${teamId}:${channelId}:${contentGeneration}`,
+    attachment?.client ?? null,
+  );
   const view = useTeamView(teamId, previews);
+  const navigate = useNavigate();
+  const location = useLocation();
   const client = view?.client ?? null;
   useEffect(() => {
     if (!client || !channelId) return;
@@ -134,6 +135,29 @@ export function ChannelRoute({
   useEffect(() => {
     if (client && channelId) client.selectThread(channelId, threadRoot);
   }, [channelId, client, threadRoot]);
+  useEffect(() => {
+    if (!client || !channelId || !place.messageId) return;
+    let live = true;
+    void client
+      .landMessage(channelId, TeamMessageIdSchema.parse(place.messageId))
+      .then((message) => {
+        if (!live || !message?.threadRootId || message.threadRootId === threadRoot) return;
+        void navigate(
+          {
+            pathname: channelPath(teamId, channelId, {
+              threadId: message.threadRootId,
+              messageId: message.id,
+            }),
+            search: location.search,
+          },
+          { replace: true },
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [client, channelId, place.messageId, threadRoot, teamId, navigate]);
   const channelTimeline = view?.snapshot.channel ?? null;
   const threadTimeline = view?.snapshot.thread ?? null;
   useEffect(() => {
@@ -148,6 +172,7 @@ export function ChannelRoute({
   if (!view) return <TeamUnavailable teamId={teamId} />;
   return (
     <ChannelScreenFor
+      key={`${teamId}:${channelId}:${contentGeneration}`}
       channelId={channelId}
       place={place}
       timeline={channelTimeline}
@@ -160,6 +185,15 @@ export function ChannelRoute({
 export function TeamUnavailable({ teamId }: { readonly teamId: string }) {
   const { teams } = useTeams();
   const team = teams.find((candidate) => candidate.teamId === teamId);
+  const snapshot = useTeamSession(team?.client ?? null);
+  if (snapshot?.ended)
+    return (
+      <p className="team-empty">
+        {snapshot.ended === "removed"
+          ? `You’re no longer in ${team?.name ?? "this team"}.`
+          : `Sign in to ${team?.name ?? "this team"} again.`}
+      </p>
+    );
   if (!team) return <p className="team-empty">You aren’t in this team on this computer.</p>;
   return (
     <div className="team-empty">
@@ -210,7 +244,8 @@ function ChannelScreenFor({
 }) {
   const { client, snapshot, team, words } = view;
   const navigate = useNavigate();
-  const { search } = useLocation();
+  const location = useLocation();
+  const { search } = location;
   const { drawer, selection, work } = useWorkspace();
   const hostClient = useOptionalShell()?.hostClient ?? null;
   const { links, surface } = useTeams();
@@ -233,12 +268,42 @@ function ChannelScreenFor({
   };
 
   /* ---- Sending ---- */
-  const [staged, setStaged] = useState<readonly (StagedFileView & { file: TeamFile | null })[]>([]);
-  const uploads = useRef(new Map<string, Promise<TeamFile | null>>());
-  const addFiles = (files: readonly File[]) => {
+  type Staged = StagedFileView & { file: TeamFile | null };
+  const [stagedScopes, setStagedScopes] = useState<Readonly<Record<string, readonly Staged[]>>>({});
+  const setStaged = (
+    rootId: string | null,
+    update: (rows: readonly Staged[]) => readonly Staged[],
+  ) =>
+    setStagedScopes((held) => ({
+      ...held,
+      [rootId ?? "channel"]: update(held[rootId ?? "channel"] ?? []),
+    }));
+  const uploads = useRef(
+    new Map<string, { rootId: string | null; done: Promise<TeamFile | null> }>(),
+  );
+  const stagedUrls = useRef(new Map<string, string>());
+  const uploadGeneration = useRef(0);
+  useEffect(
+    () => () => {
+      uploadGeneration.current++;
+      for (const url of stagedUrls.current.values()) URL.revokeObjectURL(url);
+      stagedUrls.current.clear();
+    },
+    [],
+  );
+  const retireFile = (id: string) => {
+    const url = stagedUrls.current.get(id);
+    if (url) URL.revokeObjectURL(url);
+    stagedUrls.current.delete(id);
+    uploads.current.delete(id);
+  };
+  const addFiles = (rootId: string | null) => (files: readonly File[]) => {
     for (const file of files) {
       const id = crypto.randomUUID();
-      setStaged((current) => [
+      const generation = uploadGeneration.current;
+      const previewUrl = file.type.startsWith("image/") ? URL.createObjectURL(file) : null;
+      if (previewUrl) stagedUrls.current.set(id, previewUrl);
+      setStaged(rootId, (current) => [
         ...current,
         {
           id,
@@ -247,13 +312,14 @@ function ChannelScreenFor({
           sizeBytes: file.size,
           status: "uploading",
           file: null,
-          previewUrl: file.type.startsWith("image/") ? URL.createObjectURL(file) : null,
+          previewUrl,
         },
       ]);
       const done = prepareTeamUpload(channelId, file)
         .then((upload) => client.upload(upload))
         .then((uploaded) => {
-          setStaged((current) =>
+          if (generation !== uploadGeneration.current) return null;
+          setStaged(rootId, (current) =>
             current.map((row) =>
               row.id === id ? { ...row, status: "ready", file: uploaded } : row,
             ),
@@ -261,23 +327,27 @@ function ChannelScreenFor({
           return uploaded;
         })
         .catch((error: unknown) => {
-          setStaged((current) =>
+          if (generation !== uploadGeneration.current) return null;
+          setStaged(rootId, (current) =>
             current.map((row) =>
               row.id === id ? { ...row, status: "failed", error: actionErrorMessage(error) } : row,
             ),
           );
           return null;
         });
-      uploads.current.set(id, done);
+      uploads.current.set(id, { rootId, done });
     }
   };
   const send = (threadRootId: string | null) => async (input: TeamSend) => {
     const me = view.me;
     if (!me) return;
     // A message never posts half its files: it waits for every upload.
-    const files = await Promise.all(uploads.current.values());
-    uploads.current.clear();
-    setStaged([]);
+    const sending = [...uploads.current.entries()].filter(
+      ([, upload]) => upload.rootId === threadRootId,
+    );
+    const files = await Promise.all(sending.map(([, upload]) => upload.done));
+    if (files.some((file) => !file))
+      throw new Error("Remove or retry the failed attachment before sending.");
     const message = teamMessage(input, me, view.members);
     try {
       await client.send({
@@ -290,8 +360,12 @@ function ChannelScreenFor({
         })),
         attachmentIds: files.flatMap((file) => (file ? [file.id] : [])),
       });
+      const ids = new Set(sending.map(([id]) => id));
+      for (const id of ids) retireFile(id);
+      setStaged(threadRootId, (rows) => rows.filter((row) => !ids.has(row.id)));
     } catch (error) {
       report(error);
+      throw error;
     }
   };
 
@@ -309,7 +383,11 @@ function ChannelScreenFor({
         pendingView(
           words,
           { ...row.command, createdAt: row.createdAt },
-          snapshot.connection === "connected" ? { kind: "sending" } : { kind: "queued" },
+          row.failure
+            ? { kind: "failed", reason: row.failure }
+            : snapshot.connection === "connected"
+              ? { kind: "sending" }
+              : { kind: "queued" },
         ),
       );
   const items = useMemo(
@@ -327,7 +405,11 @@ function ChannelScreenFor({
   const openTask = async (rootId: string) => {
     if (!links) return;
     const taskId = await links.task(team.teamId, channelId, rootId);
-    if (taskId) go(`/tasks/${encodeURIComponent(taskId)}`);
+    if (taskId)
+      void navigate(
+        { pathname: `/tasks/${encodeURIComponent(taskId)}`, search },
+        { state: { teamReturn: { pathname: location.pathname, search } } },
+      );
     else toast.error("That task isn’t on this computer.");
   };
   const requestRoot = (requestId: string) =>
@@ -377,6 +459,10 @@ function ChannelScreenFor({
         .then(() => toast.success("Link copied"))
         .catch(report),
     onEdit: (messageId: string, body: string) => {
+      if (messageId.startsWith("pending:")) {
+        void client.editPending(messageId.slice(8), body).catch(report);
+        return;
+      }
       if (!view.me) return;
       const message = teamMessage({ body, toMyAgent: false }, view.me, view.members);
       dispatch({
@@ -391,11 +477,13 @@ function ChannelScreenFor({
       });
     },
     onDelete: (messageId: string) =>
-      dispatch({
-        type: "team.message.delete",
-        channelId,
-        messageId: TeamMessageIdSchema.parse(messageId),
-      }),
+      messageId.startsWith("pending:")
+        ? void client.discardPending(messageId.slice(8)).catch(report)
+        : dispatch({
+            type: "team.message.delete",
+            channelId,
+            messageId: TeamMessageIdSchema.parse(messageId),
+          }),
     onOpenFile: openFile,
     onOpenTask: links ? (messageId: string) => void openTask(threadRoot(messageId)) : undefined,
   };
@@ -456,19 +544,38 @@ function ChannelScreenFor({
         agent={agent}
         agentStartsOn={startsOn}
         autoFocus={rootId !== null}
-        key={rootId ?? "channel"}
+        key={`${team.teamId}:${channelId}:${rootId ?? "channel"}`}
+        draft={
+          snapshot.drafts[
+            teamScopeKey(
+              rootId
+                ? { kind: "thread", channelId, rootId: TeamMessageIdSchema.parse(rootId) }
+                : { kind: "channel", channelId },
+            )
+          ] ?? ""
+        }
+        onDraft={(text) =>
+          void client
+            .setDraft(
+              rootId
+                ? { kind: "thread", channelId, rootId: TeamMessageIdSchema.parse(rootId) }
+                : { kind: "channel", channelId },
+              text,
+            )
+            .catch(report)
+        }
         me={me}
-        onAddFiles={addFiles}
+        onAddFiles={addFiles(rootId)}
         onConnect={
           surface === "desktop"
             ? () => go(`/join?team=${encodeURIComponent(team.teamId)}`)
             : undefined
         }
         onRemoveFile={(id) => {
-          uploads.current.delete(id);
-          setStaged((current) => current.filter((row) => row.id !== id));
+          retireFile(id);
+          setStaged(rootId, (current) => current.filter((row) => row.id !== id));
         }}
-        onSend={(input) => void send(rootId)(input)}
+        onSend={send(rootId)}
         onTyping={() =>
           client.typing(channelId, rootId ? TeamMessageIdSchema.parse(rootId) : null, true)
         }
@@ -480,7 +587,7 @@ function ChannelScreenFor({
               ? `Message ${channel.name}`
               : `Message #${channel.name}`
         }
-        staged={staged}
+        staged={stagedScopes[rootId ?? "channel"] ?? []}
         typing={typingFor(rootId)}
       />
     );
@@ -491,14 +598,8 @@ function ChannelScreenFor({
   const replies = useMemo(
     () =>
       thread && place.threadId
-        ? timelineItems(
-            words,
-            {
-              ...thread,
-              messages: thread.messages.filter((message) => message.id !== place.threadId),
-            },
-            pendingFor(place.threadId),
-            true,
+        ? timelineItems(words, thread, pendingFor(place.threadId), true).filter(
+            (item) => item.kind !== "message" || item.message.id !== place.threadId,
           )
         : [],
     [thread, words, place.threadId, snapshot.pending, snapshot.connection],
@@ -511,18 +612,38 @@ function ChannelScreenFor({
           request.state === "working" ||
           request.state === "needs_you"),
     ) ?? false;
-  // Reading your agent's reply in the thread reads its task.
-  const repliedToMe = thread?.messages.some(
-    (message) => message.authorKind === "agent" && message.authorUserId === words.viewerUserId,
+  const personalReadStates = useSyncExternalStore(
+    hostClient?.subscribe ?? noSubscribe,
+    () => hostClient?.getSnapshot().threadReadStates ?? noReadStates,
   );
-  useEffect(() => {
-    if (!repliedToMe || !place.threadId || !links || !hostClient) return;
-    void readTeamReply(hostClient, {
-      teamId: team.teamId,
+  const readVisibleReply = useCallback(
+    (messageId: string) => {
+      if (!hostClient || !links || !place.threadId) return;
+      const message = thread?.messages.find((row) => row.id === messageId);
+      if (
+        message?.authorKind !== "agent" ||
+        message.authorUserId !== words.viewerUserId ||
+        !message.agentRequestId
+      )
+        return;
+      void readTeamReply(hostClient, {
+        teamId: team.teamId,
+        channelId,
+        threadRootId: place.threadId,
+        replyMessageId: messageId,
+      }).catch(() => undefined);
+    },
+    [
+      hostClient,
+      links,
+      place.threadId,
+      thread?.messages,
+      words.viewerUserId,
+      team.teamId,
       channelId,
-      threadRootId: place.threadId,
-    }).catch(() => undefined);
-  }, [channelId, hostClient, links, place.threadId, repliedToMe, team.teamId]);
+      personalReadStates,
+    ],
+  );
   const threadPane =
     place.threadId && threadRootMessage ? (
       <ThreadPane
@@ -533,6 +654,10 @@ function ChannelScreenFor({
         onBack={docked ? () => go(channelPath(team.teamId, channelId)) : undefined}
         onClose={() => go(channelPath(team.teamId, channelId))}
         replies={replies}
+        flashId={place.messageId}
+        hasOlder={thread?.hasMore ?? false}
+        onLoadOlder={() => void client.loadPage("thread", "before").catch(report)}
+        onVisibleMessage={readVisibleReply}
         root={messageView(words, threadRootMessage, { requests: thread?.requests ?? [] })}
       />
     ) : null;

@@ -5,6 +5,7 @@ import type {
   DeploymentAccessUnavailable,
   DeploymentStatusInfo,
 } from "@opensteer/protocol/desktop";
+import type { ComputerFacts } from "./computer-facts.js";
 import type { IconName } from "../components/icon.js";
 import { deploymentConnectionStatusInfo } from "./desktop-deployment-selection.js";
 
@@ -18,6 +19,7 @@ import { deploymentConnectionStatusInfo } from "./desktop-deployment-selection.j
  */
 export interface PlaceRow {
   readonly current: boolean;
+  readonly facts?: ComputerFacts | undefined;
   readonly detail: string;
   readonly icon: IconName;
   readonly id: string;
@@ -34,6 +36,7 @@ export interface PlaceRow {
 export interface PlaceRowContext {
   /** What this computer is called from itself: "This Mac" on macOS. */
   readonly thisComputer: string;
+  readonly facts?: ReadonlyMap<string, ComputerFacts>;
 }
 
 /**
@@ -81,6 +84,7 @@ function placeRow(
       : deploymentConnectionStatusInfo(deployment);
   return {
     current,
+    facts: context.facts?.get(deployment.id),
     detail: placeDetail(deployment, context),
     icon: deployment.kind === "personal" ? "laptop" : "server",
     id: deployment.id,

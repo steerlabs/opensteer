@@ -90,6 +90,7 @@ export function createHostApiHandlers(
     | "attachment.content"
     | "folder.files.list"
     | "folder.files.preview"
+    | "attention.get"
     | "needsYou.get"
     | "teams.links.list"
     | "teams.channelFolder.get"

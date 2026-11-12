@@ -37,7 +37,7 @@ export interface TeamWords {
   /** Owners whose Opensteer is connected to the team right now. */
   readonly linkOnline: ReadonlyMap<string, boolean>;
   readonly previews: ReadonlyMap<string, string>;
-  readonly canModerate: boolean;
+  readonly managedChannels: ReadonlySet<string>;
 }
 
 export function person(words: TeamWords, userId: string): PersonView {
@@ -81,8 +81,8 @@ export function sidebarView(input: {
     tile: input.tile,
     connection: input.connection,
     channels,
-    dms: dms.slice(0, 8),
-    moreDms: Math.max(0, dms.length - 8),
+    dms,
+    moreDms: 0,
   };
 }
 
@@ -276,7 +276,7 @@ export function messageView(
         }
       : null,
     canEdit: mine && !message.deletedAt,
-    canDelete: (mine || words.canModerate) && !message.deletedAt,
+    canDelete: (mine || words.managedChannels.has(message.channelId)) && !message.deletedAt,
   };
 }
 
@@ -308,6 +308,8 @@ export function pendingView(
           };
     }),
     files: [],
+    canEdit: state.kind === "failed",
+    canDelete: state.kind === "failed",
     send: state,
   };
 }

@@ -1440,6 +1440,11 @@ export const hostApi = defineRpc({
       content: z.string().max(512 * 1024),
     }),
   ),
+  "attention.get": declaration(
+    "POST",
+    z.strictObject({}),
+    z.object({ needsYou: z.number().int().nonnegative(), unread: z.boolean() }),
+  ),
   "needsYou.get": declaration(
     "POST",
     z.strictObject({

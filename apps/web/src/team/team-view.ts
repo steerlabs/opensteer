@@ -29,9 +29,29 @@ export function useTeamView(teamId: string | undefined, previews: ReadonlyMap<st
       members: members.size > 0 ? members : new Map([[member.userId, member]]),
       linkOnline: new Map((linkPresence ?? []).map((row) => [row.ownerUserId, row.online])),
       previews,
-      canModerate: member.role === "owner" || member.role === "admin",
+      managedChannels: new Set(
+        [
+          ...new Map(
+            [
+              ...(snapshot.sidebar?.channels.map((row) => row.channel) ?? []),
+              ...(snapshot.channel?.channel ? [snapshot.channel.channel] : []),
+              ...(snapshot.thread?.channel ? [snapshot.thread.channel] : []),
+            ].map((channel) => [channel.id, channel] as const),
+          ).values(),
+        ]
+          .filter((channel) => channel.can.manage)
+          .map((channel) => channel.id),
+      ),
     };
-  }, [linkPresence, members, previews, snapshot?.bootstrap?.member]);
+  }, [
+    linkPresence,
+    members,
+    previews,
+    snapshot?.bootstrap?.member,
+    snapshot?.sidebar,
+    snapshot?.channel?.channel,
+    snapshot?.thread?.channel,
+  ]);
   if (!team || !client || !snapshot || !words) return null;
   return {
     team,

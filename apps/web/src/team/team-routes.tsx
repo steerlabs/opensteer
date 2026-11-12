@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router";
 import {
   createId,
@@ -7,6 +7,8 @@ import {
   TeamGroupIdSchema,
   UserIdSchema,
 } from "@opensteer/core";
+import { usePagedList } from "@opensteer/client/react";
+import { useWindowedRows } from "../components/workspace/windowed-rows.js";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import { AreaHeader } from "../components/workspace/conversation-header.js";
 import { useOptionalShell } from "../components/app-shell.js";
@@ -287,26 +289,41 @@ function TeamSearchPage({ view }: { readonly view: TeamView }) {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const query = params.get("q") ?? "";
-  const [filters, setFilters] = useState<SearchFilters>({
-    ...noSearchFilters,
-    channelId: params.get("in"),
-  });
-  const run = (next: string, nextFilters: SearchFilters) => {
+  const filters = useMemo<SearchFilters>(
+    () => ({
+      ...noSearchFilters,
+      channelId: params.get("in"),
+      authorId: params.get("from"),
+      hasFile: params.has("file"),
+      inThreads: params.has("threads"),
+    }),
+    [params],
+  );
+  const run = (next: string, nextFilters: SearchFilters) =>
     setParams(
-      next ? { q: next, ...(nextFilters.channelId ? { in: nextFilters.channelId } : {}) } : {},
+      {
+        ...(next ? { q: next } : {}),
+        ...(nextFilters.channelId ? { in: nextFilters.channelId } : {}),
+        ...(nextFilters.authorId ? { from: nextFilters.authorId } : {}),
+        ...(nextFilters.hasFile ? { file: "1" } : {}),
+        ...(nextFilters.inThreads ? { threads: "1" } : {}),
+      },
       { replace: true },
     );
-    if (!next.trim()) return;
-    const author = nextFilters.authorId?.replace(/^agent:/u, "") ?? null;
-    void view.client.search({
-      query: next.trim(),
-      ...(nextFilters.channelId
-        ? { channelId: TeamChannelIdSchema.parse(nextFilters.channelId) }
-        : {}),
-      ...(author ? { authorUserId: UserIdSchema.parse(author) } : {}),
-      ...(nextFilters.hasFile ? { hasFile: true } : {}),
-    });
-  };
+  const toast = useToast();
+  useEffect(() => {
+    if (!query.trim()) return;
+    const author = filters.authorId?.replace(/^agent:/u, "") ?? null;
+    void view.client
+      .search({
+        query: query.trim(),
+        ...(filters.channelId ? { channelId: TeamChannelIdSchema.parse(filters.channelId) } : {}),
+        ...(author ? { authorUserId: UserIdSchema.parse(author) } : {}),
+        ...(filters.hasFile ? { hasFile: true } : {}),
+        ...(filters.inThreads ? { threadsOnly: true } : {}),
+      })
+      .catch((error: unknown) => toast.error(actionErrorMessage(error)));
+  }, [view.client, query, filters]);
   const channels = (view.snapshot.sidebar?.channels ?? []).map((row) => ({
     id: row.channel.id,
     name: row.channel.name,
@@ -322,7 +339,6 @@ function TeamSearchPage({ view }: { readonly view: TeamView }) {
       channels={channels}
       filters={filters}
       onFilters={(next) => {
-        setFilters(next);
         run(query, next);
       }}
       onOpenResult={(result) =>
@@ -331,21 +347,25 @@ function TeamSearchPage({ view }: { readonly view: TeamView }) {
         )
       }
       onQuery={(next) => run(next, filters)}
+      hasMore={view.snapshot.search?.hasMore ?? false}
+      onMore={() =>
+        void view.client
+          .loadMoreSearch()
+          .catch((error: unknown) => toast.error(actionErrorMessage(error)))
+      }
       people={people}
       query={query}
       results={
         results
-          ? results
-              .filter((row) => !filters.inThreads || row.message.threadRootId !== null)
-              .map((row) => ({
-                message: messageView(view.words, row.message),
-                channel: {
-                  id: row.message.channelId,
-                  name: row.source.audience.channelName,
-                  kind: channelKind(row.source.audience.channelKind),
-                },
-                threadOf: row.message.threadRootId ? "a thread" : null,
-              }))
+          ? results.map((row) => ({
+              message: messageView(view.words, row.message),
+              channel: {
+                id: row.message.channelId,
+                name: row.source.audience.channelName,
+                kind: channelKind(row.source.audience.channelKind),
+              },
+              threadOf: row.message.threadRootId ? "a thread" : null,
+            }))
           : null
       }
     />
@@ -358,10 +378,31 @@ function BrowseChannels({ view }: { readonly view: TeamView }) {
   const navigate = useNavigate();
   const toast = useToast();
   const report = (error: unknown) => toast.error(actionErrorMessage(error));
-  const list = useTeamRead(
-    () => view.client.rpc["team.channels.list"]({}).then(unwrapRpcResult),
+  const list = usePagedList(
+    (cursor) =>
+      view.client.rpc["team.channels.list"](
+        cursor ? { after: TeamChannelIdSchema.parse(cursor) } : {},
+      )
+        .then(unwrapRpcResult)
+        .then((page) => ({
+          items: page.channels,
+          nextCursor: page.hasMore ? (page.channels.at(-1)?.id ?? null) : null,
+        })),
     `channels:${view.team.teamId}:${view.snapshot.sidebar?.accessRevision ?? ""}`,
   );
+  const scroll = useRef<HTMLElement | null>(null),
+    rowsRef = useRef<HTMLUListElement | null>(null);
+  const channels = list.items.filter(
+    (channel) => channel.kind === "public" || channel.kind === "private",
+  );
+  const plan = useWindowedRows({
+    list: scroll,
+    rows: rowsRef,
+    keys: channels.map((channel) => channel.id),
+    estimate: () => 44,
+    pinned: [],
+    all: false,
+  });
   const [name, setName] = useState("");
   const [kind, setKind] = useState<"public" | "private">("public");
   const [peopleOnly, setPeopleOnly] = useState(false);
@@ -385,7 +426,12 @@ function BrowseChannels({ view }: { readonly view: TeamView }) {
       .catch(report);
   };
   return (
-    <div className="team-browse">
+    <div
+      className="team-browse"
+      ref={(node) => {
+        scroll.current = node?.parentElement ?? null;
+      }}
+    >
       {view.snapshot.bootstrap?.can.createChannel ? (
         <form className="team-inline-form" onSubmit={create}>
           <input
@@ -411,11 +457,13 @@ function BrowseChannels({ view }: { readonly view: TeamView }) {
           </button>
         </form>
       ) : null}
-      <ul className="team-browse__list">
-        {(list.value?.channels ?? [])
-          .filter((channel) => channel.kind === "public" || channel.kind === "private")
-          .map((channel) => (
-            <li className="team-browse__row" key={channel.id}>
+      <ul className="team-browse__list" ref={rowsRef}>
+        {plan.map((entry, index) => {
+          if ("spacer" in entry)
+            return <li aria-hidden key={`spacer:${index}`} style={{ height: entry.spacer }} />;
+          const channel = channels[entry.index]!;
+          return (
+            <li className="team-browse__row" data-motion-key={channel.id} key={channel.id}>
               <span className="team-browse__name">
                 {channel.kind === "private" ? "🔒" : "#"} {channel.name}
               </span>
@@ -446,8 +494,15 @@ function BrowseChannels({ view }: { readonly view: TeamView }) {
                 </button>
               )}
             </li>
-          ))}
+          );
+        })}
       </ul>
+      {list.nextCursor ? (
+        <button className="btn" disabled={list.loadingMore} onClick={list.more} type="button">
+          {list.loadingMore ? "Loading…" : "More channels"}
+        </button>
+      ) : null}
+      {list.error ? <p role="alert">{actionErrorMessage(list.error)}</p> : null}
     </div>
   );
 }

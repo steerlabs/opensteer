@@ -153,15 +153,16 @@ describe("team synchronization", () => {
       await f.client.load();
       await Promise.resolve();
       f.host.loseNextSendAck = true;
-      await expect(
-        f.client.send({
-          channelId: mockTeamChannelId,
-          threadRootId: null,
-          bodyMarkdown: "Hello",
-          mentions: [],
-          attachmentIds: [],
-        }),
-      ).rejects.toThrow("Acknowledgement lost");
+      await f.client.send({
+        channelId: mockTeamChannelId,
+        threadRootId: null,
+        bodyMarkdown: "Hello",
+        mentions: [],
+        attachmentIds: [],
+      });
+      await vi.waitFor(() => expect(f.client.getSnapshot().error).toBe("Acknowledgement lost."), {
+        timeout: 1000,
+      });
       expect(f.host.messages.size).toBe(1);
       expect((await f.persistence.load(scope))?.pending).toHaveLength(1);
       const callsAt = f.host.calls.length;
