@@ -1,4 +1,4 @@
-import { HarnessIdSchema, type RunId } from "@opensteer/core";
+import { HarnessIdSchema, ProviderSessionIdSchema, type RunId } from "@opensteer/core";
 import { expect } from "vitest";
 import { startPersonalQueuedRunFixture } from "./personal-run-fixture.test-support.js";
 import {
@@ -54,9 +54,23 @@ describeStore("fresh model context", (it) => {
     });
     // Merely waiting for dispatch must not change the selected native session.
     expect(fresh.run.providerSessionId).toBe(prior.run.providerSessionId);
-    await f.store.claimCommand(fresh.command.id, "first-dispatch");
+    const claimed = await f.store.claimCommand(fresh.command.id, "first-dispatch");
     const context = await f.store.loadRunDispatchContext(fresh.command.id);
     expect(context.run.providerSessionId).not.toBe(prior.run.providerSessionId);
+    expect(claimed?.events.filter(({ type }) => type === "thread.execution-updated")).toMatchObject(
+      [
+        {
+          threadId: prior.thread.id,
+          runId: null,
+          data: {
+            thread: {
+              providerSessionId: context.run.providerSessionId,
+              continuationIdentity: null,
+            },
+          },
+        },
+      ],
+    );
     expect(context.history).toEqual([]);
     expect(context.initialContext).toBeNull();
     const selected = await f.database
@@ -65,8 +79,19 @@ describeStore("fresh model context", (it) => {
       .where("id", "=", context.run.providerSessionId)
       .executeTakeFirstOrThrow();
     expect(selected).toMatchObject({ bindingGeneration: 0, providerSessionReference: null });
+    // Recovery must lock the inactive sessions before the pinned session, regardless of generated IDs.
+    const inactiveSessionId = ProviderSessionIdSchema.parse(
+      "psn_00000000-0000-4000-8000-000000000000",
+    );
+    await f.database
+      .insertInto("providerSessions")
+      .values({ ...selected, active: false, id: inactiveSessionId })
+      .execute();
     await f.store.recoverCommandsAfterHostRestart();
-    await f.store.claimCommand(fresh.command.id, "recovered-dispatch");
+    const recoveredClaim = await f.store.claimCommand(fresh.command.id, "recovered-dispatch");
+    expect(
+      recoveredClaim?.events.filter(({ type }) => type === "thread.execution-updated"),
+    ).toEqual([]);
     const recovered = await f.store.loadRunDispatchContext(fresh.command.id);
     expect(recovered.run.providerSessionId).toBe(context.run.providerSessionId);
     expect(recovered.history).toEqual([]);
@@ -109,8 +134,13 @@ describeStore("fresh model context", (it) => {
         .selectFrom("providerSessions")
         .select("id")
         .where("threadId", "=", prior.thread.id)
+        .orderBy("id", "asc")
         .execute(),
-    ).toHaveLength(2);
+    ).toEqual(
+      [inactiveSessionId, prior.run.providerSessionId, context.run.providerSessionId]
+        .sort()
+        .map((id) => ({ id })),
+    );
   });
 
   it.for(["failed-startup", "completed"] as const)(
@@ -125,13 +155,23 @@ describeStore("fresh model context", (it) => {
         requestedBy: prior.userId,
         threadId: prior.thread.id,
       });
-      await f.store.claimCommand(fresh.command.id, "boundary-dispatch");
+      const claimed = await f.store.claimCommand(fresh.command.id, "boundary-dispatch");
       if (outcome === "failed-startup")
         await f.store.failCommand(fresh.command.id, "Native process failed before acceptance");
       else {
         await startPersonalQueuedRunFixture(f.store, fresh.run.id);
         await complete(f, fresh.run.id);
       }
+      const selected = await f.store.getThreadForOwner(prior.thread.id, prior.userId);
+      expect(selected!.providerSessionId).not.toBe(prior.run.providerSessionId);
+      expect(claimed?.events).toContainEqual(
+        expect.objectContaining({
+          type: "thread.execution-updated",
+          data: expect.objectContaining({
+            thread: expect.objectContaining({ providerSessionId: selected!.providerSessionId }),
+          }),
+        }),
+      );
       // Audience rotation also creates a new session, so it must reconstruct from the boundary.
       await f.database
         .transaction()

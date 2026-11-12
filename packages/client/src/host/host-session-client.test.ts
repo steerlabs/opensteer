@@ -9951,9 +9951,11 @@ describe("HttpHostClient Run activity and live streams", () => {
 
   it("retains selection state live and after reload without adding conversation rows", async () => {
     const workspace = makeDeployment();
-    const thread = makeThread(workspace.id);
+    const thread = { ...makeThread(workspace.id), providerSessionId: createId("providerSession") };
     const switched = {
       ...thread,
+      providerSessionId: createId("providerSession"),
+      continuationIdentity: null,
       modelSelection: ModelSelectionSchema.parse({
         modelId: "gpt-5.6-sol",
         options: { effort: "high" },
@@ -9996,11 +9998,14 @@ describe("HttpHostClient Run activity and live streams", () => {
           harnessInstanceId: switched.harnessInstanceId,
           id: event.eventId,
           modelSelection: switched.modelSelection,
+          providerSessionId: switched.providerSessionId,
         }),
       ]);
-      expect(
-        client.getSnapshot().threads.find(({ id }) => id === thread.id)?.modelSelection,
-      ).toEqual(switched.modelSelection);
+      expect(client.getSnapshot().threads.find(({ id }) => id === thread.id)).toMatchObject({
+        modelSelection: switched.modelSelection,
+        providerSessionId: switched.providerSessionId,
+        continuationIdentity: null,
+      });
       expect(visibleTranscript(client.getSnapshot().transcripts[thread.id] ?? [], null)).toEqual(
         [],
       );
@@ -10008,6 +10013,9 @@ describe("HttpHostClient Run activity and live streams", () => {
       history = [event];
       await client.loadLatestTranscript(thread.id);
       expect(markers()).toEqual(live);
+      expect(
+        client.getSnapshot().threads.find(({ id }) => id === thread.id)?.providerSessionId,
+      ).toBe(switched.providerSessionId);
       expect(visibleTranscript(client.getSnapshot().transcripts[thread.id] ?? [], null)).toEqual(
         [],
       );

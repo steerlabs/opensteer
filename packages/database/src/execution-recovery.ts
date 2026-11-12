@@ -806,9 +806,10 @@ async function recoverLostExecutions(
         };
       }
       await lockThreadRow(transaction, run.threadId);
-      const session = await transaction
+      const sessions = await transaction
         .selectFrom("providerSessions")
         .select([
+          "id",
           "active",
           "bindingGeneration",
           "leaseExpiresAt",
@@ -816,9 +817,11 @@ async function recoverLostExecutions(
           "runnerId",
           "status",
         ])
-        .where("id", "=", run.providerSessionId)
+        .where("threadId", "=", run.threadId)
+        .orderBy("id", "asc")
         .forNoKeyUpdate()
-        .executeTakeFirst();
+        .execute();
+      const session = sessions.find(({ id }) => id === run.providerSessionId);
       if (
         !session?.active ||
         session.runnerId !== runnerId ||

@@ -1325,6 +1325,7 @@ export async function claimRunInputBatch(
       message: "A Run must start with its queued work item",
     });
 
+  const events: AgentEvent[] = [];
   if (seed.freshContext) {
     const providerSessionId = await ensureSelectedProviderSession(transaction, thread, {
       freshRunId: run.id,
@@ -1336,6 +1337,27 @@ export async function claimRunInputBatch(
       .where("id", "=", run.id)
       .execute();
     run.providerSessionId = providerSessionId;
+    const updated = await transaction
+      .selectFrom("threads")
+      .selectAll()
+      .select([
+        threadPendingRequestsSelection,
+        threadVisitSelection,
+        threadLatestRunCompletedAtSelection,
+        threadProviderSessionSelection,
+        threadContinuationIdentitySelection,
+      ])
+      .where("id", "=", thread.id)
+      .executeTakeFirstOrThrow();
+    events.push(
+      await appendHostDeploymentEvent(transaction, {
+        data: { thread: threadFromRow(updated) },
+        environmentId: thread.environmentId,
+        runId: null,
+        threadId: thread.id,
+        type: "thread.execution-updated",
+      }),
+    );
   }
   const seedMessage = await transaction
     .selectFrom("messages")
@@ -1362,7 +1384,6 @@ export async function claimRunInputBatch(
   const total = await eligible
     .select(({ fn }) => fn.countAll<string>().as("count"))
     .executeTakeFirstOrThrow();
-  const events: AgentEvent[] = [];
   const reportIds: MessageId[] = [];
   let cancelledCount = 0;
   let bytes = 2; // JSON array delimiters.
