@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import integration from "../vitest.integration.config.js";
 
 export default defineConfig({
@@ -11,6 +11,7 @@ export default defineConfig({
           "tests/mobile-network-bench.integration.test.ts",
           "tests/team-mobile-network.integration.test.ts",
         ],
+    exclude: configDefaults.exclude,
     maxWorkers: 1,
     testTimeout: 3_600_000,
     hookTimeout: 60_000,

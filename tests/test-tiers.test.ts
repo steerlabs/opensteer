@@ -3,7 +3,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, matchesGlob, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { configDefaults } from "vitest/config";
-import { darwinOnlyTests, realBrowserTests } from "../.github/scripts/ci-test-files.mjs";
+import {
+  darwinOnlyTests,
+  optInIntegrationBenchmarks,
+  realBrowserTests,
+} from "../.github/scripts/ci-test-files.mjs";
 import config from "../vitest.config.js";
 import browserConfig from "../vitest.browser.config.js";
 import integrationConfig from "../vitest.integration.config.js";
@@ -32,6 +36,12 @@ const suites = [
   { name: "device", directory: root, config: deviceConfig },
   { name: "soak", directory: root, config: soakConfig },
   { name: "iphone-apps-vm", directory: root, config: iphoneAppsVmConfig },
+  // Run by their benchmark commands; integration discovery leaves them out.
+  {
+    name: "benchmarks",
+    directory: root,
+    config: { test: { include: optInIntegrationBenchmarks } },
+  },
 ];
 const browserConfigPath = resolve(root, "apps/browser-runtime/vitest.config.ts");
 if (existsSync(browserConfigPath)) {
