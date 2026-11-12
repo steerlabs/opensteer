@@ -34,7 +34,6 @@ export interface TimelineActions extends MessageRowActions {
     action: NonNullable<StatusFace["action"]>["kind"],
   ) => void;
   readonly onOpenCardTask: (requestId: string) => void;
-  readonly onJump: () => void;
   /** Older pages, when the reader scrolls to the top of what is loaded. */
   readonly onLoadOlder: () => void;
   /** The reader is (or is no longer) within `followDistance` of the newest message. */
@@ -64,6 +63,7 @@ export function Timeline(props: {
 }): ReactNode {
   const { actions } = props;
   const newestFirst = useMemo(() => [...props.items].reverse(), [props.items]);
+  const list = useRef<FlatList<TimelineItem>>(null);
   const following = useRef(true);
   const onScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -74,6 +74,11 @@ export function Timeline(props: {
       }
     },
     [actions],
+  );
+  // The newest message is the inverted list's top; reaching it is what follows and reads.
+  const jumpToNewest = useCallback(
+    () => list.current?.scrollToOffset({ offset: 0, animated: true }),
+    [],
   );
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<TimelineItem>) => <TimelineRow actions={actions} item={item} />,
@@ -95,12 +100,13 @@ export function Timeline(props: {
         onEndReached={actions.onLoadOlder}
         onEndReachedThreshold={0.6}
         onScroll={onScroll}
+        ref={list}
         renderItem={renderItem}
         scrollEventThrottle={100}
         windowSize={9}
       />
       {props.jump === null ? null : (
-        <JumpPill bottom={props.clearance + space[8]} jump={props.jump} onPress={actions.onJump} />
+        <JumpPill bottom={props.clearance + space[8]} jump={props.jump} onPress={jumpToNewest} />
       )}
     </View>
   );

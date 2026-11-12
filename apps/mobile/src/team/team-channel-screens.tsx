@@ -640,7 +640,6 @@ function Place(props: {
             else void openTask(requestId, null).catch(() => undefined);
           },
           onOpenCardTask: (requestId) => void openTask(requestId, null).catch(() => undefined),
-          onJump: () => setFollowing(true),
           onLoadOlder: () =>
             void session
               .loadPage(rootId === null ? "channel" : "thread", "before")
