@@ -130,64 +130,83 @@ async function renderOpensteer(): Promise<void> {
           ]) => {
             const search = new URLSearchParams(window.location.search);
             const world = search.get("mock-world");
-            // `?mock-team` puts one live mock team beside the person's own tasks.
-            if (search.has("mock-team")) {
-              const team = new MockTeamHost();
-              previewTeams = [
-                {
-                  teamId: team.teamId,
-                  name: team.bootstrap.teamName,
-                  origin: "https://chat.acme.example",
-                  client: new TeamSessionClient({
-                    scope: { teamDeploymentId: team.teamId, userId: team.userId },
-                    persistence: createMemoryTeamPersistence(),
-                    rpc: team.rpc,
-                    connect: team.connect,
-                  }),
-                  link: null,
-                },
-              ];
-            }
-            const subagents = mockSubagentScenes.find(
-              (scene) => scene === search.get("mock-subagents"),
-            );
-            const client = new MockHostClient({
-              lifecycle: browserClientLifecycle(),
-              browserPreferencesStorage,
-              ...(search.has("mock-devices") ? { devices: "seeded" as const } : {}),
-              ...(world === "first-run" || world === "busy" || world === "stress" ? { world } : {}),
-              ...(subagents ? { subagents } : {}),
+            // `?mock-team` puts one live mock team beside the person's own tasks;
+            // `?mock-team=busy` two teams full of people, threads, files and asks.
+            const attach = (team: InstanceType<typeof MockTeamHost>, origin: string) => ({
+              teamId: team.teamId,
+              name: team.bootstrap.teamName,
+              origin,
+              client: new TeamSessionClient({
+                scope: { teamDeploymentId: team.teamId, userId: team.userId },
+                persistence: createMemoryTeamPersistence(),
+                rpc: team.rpc,
+                connect: team.connect,
+                readFile: team.readFile,
+                uploadFile: team.uploadFile,
+              }),
+              link: null,
             });
-            // The preview's own client, for journeys that count what the page sends.
-            Object.assign(window, { opensteerMock: client });
-            const downloadsScript = new URLSearchParams(window.location.search).get(
-              "mock-downloads",
-            );
-            if (downloadsScript !== null) {
-              return Promise.all([
-                import("./desktop/desktop-preview-bridge.js"),
-                import("@opensteer/protocol/desktop"),
-              ]).then(
-                ([
-                  { desktopPreviewBridge, desktopPreviewDownloads },
-                  { DesktopDownloadsSnapshotSchema },
-                ]) => {
-                  const initial = DesktopDownloadsSnapshotSchema.parse({
-                    downloads: JSON.parse(downloadsScript),
-                  });
-                  const downloads = desktopPreviewDownloads(initial.downloads);
-                  Object.assign(window, {
-                    opensteerDesktop: {
-                      ...desktopPreviewBridge("?desktop-preview=first-run", true),
-                      downloads,
-                    },
-                    opensteerPreviewDownloads: downloads,
-                  });
-                  return client;
+            if (search.get("mock-team") === "busy")
+              return import("./team/mock-team-world.js").then(
+                async ({ busyTeamIds, seedBusyTeam }) => {
+                  const acme = new MockTeamHost({ teamId: busyTeamIds[0] });
+                  const family = new MockTeamHost({ teamId: busyTeamIds[1] });
+                  await seedBusyTeam(acme, { name: "Acme", index: 1 });
+                  await seedBusyTeam(family, { name: "Family", index: 2 });
+                  previewTeams = [
+                    attach(acme, "https://chat.acme.example"),
+                    attach(family, "https://family.example"),
+                  ];
+                  return mockClient();
                 },
               );
+            if (search.has("mock-team"))
+              previewTeams = [attach(new MockTeamHost(), "https://chat.acme.example")];
+            return mockClient();
+            function mockClient() {
+              const subagents = mockSubagentScenes.find(
+                (scene) => scene === search.get("mock-subagents"),
+              );
+              const client = new MockHostClient({
+                lifecycle: browserClientLifecycle(),
+                browserPreferencesStorage,
+                ...(search.has("mock-devices") ? { devices: "seeded" as const } : {}),
+                ...(world === "first-run" || world === "busy" || world === "stress"
+                  ? { world }
+                  : {}),
+                ...(subagents ? { subagents } : {}),
+              });
+              // The preview's own client, for journeys that count what the page sends.
+              Object.assign(window, { opensteerMock: client });
+              const downloadsScript = new URLSearchParams(window.location.search).get(
+                "mock-downloads",
+              );
+              if (downloadsScript !== null) {
+                return Promise.all([
+                  import("./desktop/desktop-preview-bridge.js"),
+                  import("@opensteer/protocol/desktop"),
+                ]).then(
+                  ([
+                    { desktopPreviewBridge, desktopPreviewDownloads },
+                    { DesktopDownloadsSnapshotSchema },
+                  ]) => {
+                    const initial = DesktopDownloadsSnapshotSchema.parse({
+                      downloads: JSON.parse(downloadsScript),
+                    });
+                    const downloads = desktopPreviewDownloads(initial.downloads);
+                    Object.assign(window, {
+                      opensteerDesktop: {
+                        ...desktopPreviewBridge("?desktop-preview=first-run", true),
+                        downloads,
+                      },
+                      opensteerPreviewDownloads: downloads,
+                    });
+                    return client;
+                  },
+                );
+              }
+              return client;
             }
-            return client;
           },
         )
       : import("./host/browser-host-client.js").then(({ createBrowserHostClient }) =>

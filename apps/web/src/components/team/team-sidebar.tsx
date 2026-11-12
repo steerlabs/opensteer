@@ -1,13 +1,12 @@
-import { useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { memo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
+import { useScrollEdges } from "../workspace/scroll-edges.js";
 import { ChannelGlyph, TeamTile } from "./team-marks.js";
 import type { ChannelRowView, TeamSidebarView, TeamTileView } from "./team-models.js";
 
 export interface TeamSideActions {
   readonly onOpenChannel: (channelId: string) => void;
-  /** Gives rows real addresses, so a modified click opens a new window. */
-  readonly hrefFor?: ((channelId: string) => string) | undefined;
   readonly onNewChannel?: (() => void) | undefined;
   readonly onNewMessage?: (() => void) | undefined;
   readonly onBrowseChannels?: (() => void) | undefined;
@@ -40,8 +39,10 @@ export interface SwitchSegment {
 }
 
 /**
- * Tasks and each team the computer joined, one segment each. Both sides
- * always keep their badge, and only the person ever changes the side.
+ * Tasks and each team the computer joined, as one segmented control. A
+ * segment holds its badge and, once chosen, its team's ⌄, so the chosen plate
+ * carries all three. Both sides always keep their badge, and only the person
+ * ever changes the side.
  */
 export function SidebarSwitch({
   active,
@@ -58,12 +59,15 @@ export function SidebarSwitch({
     <div aria-label="Tasks or a team" className="segmented side-switch" role="radiogroup">
       {segments.map((segment) => {
         const chosen = segment.id === active;
-        const menu = segment.menu;
+        const menu = chosen ? segment.menu : undefined;
         return (
-          <div className="side-switch__segment" key={segment.id}>
+          <div
+            className={chosen ? "side-switch__segment is-chosen" : "side-switch__segment"}
+            key={segment.id}
+          >
             <button
               aria-checked={chosen}
-              className="segmented__option side-switch__option"
+              className="side-switch__option"
               data-value={segment.id}
               onClick={() => onSelect(segment.id)}
               role="radio"
@@ -75,7 +79,7 @@ export function SidebarSwitch({
               <span className="side-switch__label">{segment.label}</span>
               <Badge badge={segment.badge} />
             </button>
-            {chosen && menu ? (
+            {menu ? (
               <button
                 aria-expanded={menuFor === segment.id}
                 aria-haspopup="menu"
@@ -111,13 +115,11 @@ function Badge({ badge }: { readonly badge: SegmentBadge }) {
     return <span aria-label="new result" className="task-row__unread" role="img" />;
   if (badge.count === 0) return null;
   return badge.kind === "needs-you" ? (
-    <span aria-label={`${badge.count} need you`} className="side-needs side-needs--inline">
-      <span aria-hidden className="side-needs__bang">
-        !
-      </span>
+    <span aria-label={`${badge.count} need you`} className="side-needs__bang" role="img">
+      !
     </span>
   ) : (
-    <span aria-label={`${badge.count} mentions`} className="mention-count">
+    <span aria-label={`${badge.count} mentions`} className="mention-count" role="img">
       {badge.count}
     </span>
   );
@@ -166,14 +168,20 @@ function TeamMenu({
  */
 export function TeamSide({
   actions,
+  hrefFor,
   openChannelId = null,
   team,
 }: {
+  /** Kept the same between draws, so unchanged rows are not drawn again. */
   readonly actions: TeamSideActions;
+  /** Gives rows real addresses, so a modified click opens a new window. */
+  readonly hrefFor?: ((channelId: string) => string) | undefined;
   readonly openChannelId?: string | null;
   readonly team: TeamSidebarView;
 }) {
   const name = team.tile.name;
+  const scroller = useRef<HTMLDivElement | null>(null);
+  useScrollEdges(scroller);
   if (team.connection === "removed" || team.connection === "left")
     return (
       <div className="team-left">
@@ -204,7 +212,11 @@ export function TeamSide({
           ? `${name}’s server needs an update. It updates itself.`
           : null;
   return (
-    <div className={problem ? "team-side team-side--dim" : "team-side"}>
+    <div
+      className={problem ? "team-side team-side--dim" : "team-side"}
+      data-scroll-edges=""
+      ref={scroller}
+    >
       {problem ? (
         <p className="team-side__problem" role="status">
           {problem}
@@ -224,13 +236,25 @@ export function TeamSide({
       />
       <ul aria-label={`${name} channels`} className="team-rows">
         {team.channels.map((row) => (
-          <ChannelRow actions={actions} key={row.id} open={row.id === openChannelId} row={row} />
+          <ChannelRow
+            hrefFor={hrefFor}
+            key={row.id}
+            onOpen={actions.onOpenChannel}
+            open={row.id === openChannelId}
+            row={row}
+          />
         ))}
       </ul>
       <SideLabel label="Direct messages" menu={[["New message", actions.onNewMessage]]} />
       <ul aria-label={`${name} direct messages`} className="team-rows">
         {team.dms.map((row) => (
-          <ChannelRow actions={actions} key={row.id} open={row.id === openChannelId} row={row} />
+          <ChannelRow
+            hrefFor={hrefFor}
+            key={row.id}
+            onOpen={actions.onOpenChannel}
+            open={row.id === openChannelId}
+            row={row}
+          />
         ))}
         {team.moreDms > 0 && actions.onMoreDms ? (
           <li>
@@ -293,15 +317,15 @@ function SideLabel({
   );
 }
 
-function ChannelRow({
-  actions,
-  open,
-  row,
-}: {
-  readonly actions: TeamSideActions;
+/** One channel or DM; drawn again only when what it shows changes. */
+interface ChannelRowProps {
+  readonly hrefFor: ((channelId: string) => string) | undefined;
+  readonly onOpen: (channelId: string) => void;
   readonly open: boolean;
   readonly row: ChannelRowView;
-}) {
+}
+
+const ChannelRow = memo(function ChannelRow({ hrefFor, onOpen, open, row }: ChannelRowProps) {
   const dm = row.kind === "dm" || row.kind === "group-dm";
   const label = [
     dm ? row.name : `${row.kind === "private" ? "Private channel" : "Channel"} ${row.name}`,
@@ -311,11 +335,11 @@ function ChannelRow({
   ]
     .filter(Boolean)
     .join(", ");
-  const href = actions.hrefFor?.(row.id);
+  const href = hrefFor?.(row.id);
   const go = (event: MouseEvent<HTMLElement>) => {
     if (href && (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0)) return;
     event.preventDefault();
-    actions.onOpenChannel(row.id);
+    onOpen(row.id);
   };
   const inner: ReactNode = (
     <>
@@ -366,4 +390,24 @@ function ChannelRow({
       )}
     </li>
   );
+}, sameChannelRow);
+
+function sameChannelRow(before: ChannelRowProps, after: ChannelRowProps): boolean {
+  return (
+    before.open === after.open &&
+    before.onOpen === after.onOpen &&
+    before.hrefFor === after.hrefFor &&
+    rowKeys.every((key) => before.row[key] === after.row[key])
+  );
 }
+
+const rowKeys = [
+  "id",
+  "kind",
+  "name",
+  "unread",
+  "mentions",
+  "peopleOnly",
+  "muted",
+  "people",
+] as const satisfies readonly (keyof ChannelRowView)[];

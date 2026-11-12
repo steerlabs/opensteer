@@ -172,7 +172,12 @@ export function ThreadSummaryLine(props: {
       style={({ pressed }) => [styles.summary, pressed && styles.summaryPressed]}
     >
       <FaceStack faces={summary.faces} ground={color.background} size={18} />
-      <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" style={styles.replies}>
+      <AppText
+        maxFontSizeMultiplier={controlFontScaleLimit}
+        numberOfLines={1}
+        role="caption"
+        style={styles.replies}
+      >
         {replies}
       </AppText>
       {summary.live ? (
@@ -299,7 +304,8 @@ const styles = StyleSheet.create({
   pinned: { borderLeftColor: color.amber, borderLeftWidth: 2, paddingLeft: space[12] },
   pressed: { backgroundColor: "rgba(255, 255, 255, 0.03)" },
   queued: { color: color.amber, flexShrink: 1 },
-  replies: { color: color.ember, fontWeight: "700" },
+  // The count reads whole; the fact beside it gives way.
+  replies: { color: color.ember, flexShrink: 0, fontWeight: "700" },
   row: {
     flexDirection: "row",
     gap: faceGap,

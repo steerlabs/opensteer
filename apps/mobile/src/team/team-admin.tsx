@@ -377,11 +377,8 @@ export function InvitesAdminBody(props: {
   readonly onCopy: () => void;
   readonly onShare: () => void;
   readonly onNewLink: () => void;
-  /** "Expires Nov 18 · used 4 times". */
+  /** "One person can join with it. Expires Nov 18." */
   readonly status: string;
-  /** "#general". */
-  readonly landing: string;
-  readonly onLanding: () => void;
   readonly paddingBottom: number;
 }): ReactNode {
   return (
@@ -420,14 +417,6 @@ export function InvitesAdminBody(props: {
                 <Symbol name="square.and.arrow.up" size={17} tint={color.ember} />
               </Pressable>
             </View>
-          ) : null,
-          props.enabled ? (
-            <LinkRow
-              key="landing"
-              label="New people land in"
-              onPress={props.onLanding}
-              value={props.landing}
-            />
           ) : null,
           props.enabled ? (
             <LinkRow

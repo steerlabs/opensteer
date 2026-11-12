@@ -276,7 +276,7 @@ export function Sidebar({
   }, [list, openRowThreadId]);
   const openCount = list.working.length + list.ready.length;
   const tasksList = useRef<HTMLUListElement | null>(null);
-  const [side, setSide] = useSidebarSide(deploymentId, userId);
+  const [side, setSide] = useSidebarSide(deploymentId, userId, pathname);
 
   const allTasks = useMemo(() => [...list.working, ...list.ready, ...list.done], [list]);
   const searchSources = useMemo<SidebarSearchSources>(
@@ -935,23 +935,27 @@ function VoiceButton({ onOpen }: { readonly onOpen: () => void }) {
 /** Live tasks the sidebar lists before "All tasks": more only when more need the person. */
 const liveRowLimit = 5;
 
-/** Which side of the switch this person last chose here; the app never changes it itself. */
+/**
+ * Which side of the switch shows. On load it follows the address (a channel
+ * opens on its team, a task on Tasks), else what this person last chose here;
+ * after that only the person changes it.
+ */
 function useSidebarSide(
   deploymentId: string | null,
   userId: string | null,
+  pathname: string,
 ): readonly [string, (side: string) => void] {
   const key = `opensteer.sidebar.side:${deploymentId ?? ""}:${userId ?? ""}`;
-  const [side, setSide] = useState(() => {
-    try {
-      return localStorage.getItem(key) ?? "tasks";
-    } catch {
-      return "tasks";
-    }
-  });
+  const loadedAt = useRef(pathname).current;
+  const [chosen, setChosen] = useState<{ readonly key: string; readonly side: string } | null>(
+    null,
+  );
+  const loaded = useMemo(() => routeSide(loadedAt) ?? storedSide(key), [key, loadedAt]);
+  const side = chosen?.key === key ? chosen.side : loaded;
   const { teams } = useTeams();
   const choose = useCallback(
     (next: string) => {
-      setSide(next);
+      setChosen({ key, side: next });
       try {
         localStorage.setItem(key, next);
       } catch {
@@ -962,6 +966,20 @@ function useSidebarSide(
   );
   // A team that is gone leaves its side; Tasks is what remains.
   return [side === "tasks" || teams.some((team) => team.teamId === side) ? side : "tasks", choose];
+}
+
+function routeSide(pathname: string): string | null {
+  const team = /^\/teams\/([^/]+)\//u.exec(pathname);
+  if (team) return decodeURIComponent(team[1]!);
+  return pathname === "/tasks" || pathname.startsWith("/tasks/") ? "tasks" : null;
+}
+
+function storedSide(key: string): string {
+  try {
+    return localStorage.getItem(key) ?? "tasks";
+  } catch {
+    return "tasks";
+  }
 }
 
 const selectTasksBadge = (snapshot: HostSnapshot): SegmentBadge => {

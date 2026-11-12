@@ -175,7 +175,8 @@ export interface ChannelView {
   readonly name: string;
   readonly description: string;
   readonly peopleOnly: boolean;
-  readonly memberCount: number;
+  /** Null while the team has not said how many are here. */
+  readonly memberCount: number | null;
   /** A few faces for the header. */
   readonly faces: readonly PersonView[];
   /** A DM's other people. */

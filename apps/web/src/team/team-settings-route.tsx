@@ -353,7 +353,7 @@ function InvitesPage({ view }: { readonly view: TeamView }) {
       await view.client.rpc["commands.dispatch"]({
         type: "team.invite.create",
         id: TeamInviteIdSchema.parse(createId("teamInvite")),
-        maxUses: 100,
+        maxUses: 1,
         expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
       }),
     );
@@ -363,17 +363,11 @@ function InvitesPage({ view }: { readonly view: TeamView }) {
   };
   return (
     <InvitesAdmin
-      channels={(view.snapshot.sidebar?.channels ?? []).map((row) => ({
-        id: row.channel.id,
-        name: row.channel.name,
-      }))}
       copied={copied}
       invite={{
         enabled: active.length > 0,
         url: made?.url ?? "",
         expiresAt: made?.expiresAt ?? active[0]?.expiresAt ?? new Date().toISOString(),
-        uses: active[0]?.usedCount ?? 0,
-        landingChannel: "",
       }}
       onCopy={() => {
         if (!made) {
@@ -382,7 +376,6 @@ function InvitesPage({ view }: { readonly view: TeamView }) {
         }
         void navigator.clipboard.writeText(made.url).then(() => setCopied(true));
       }}
-      onLanding={() => undefined}
       onNewLink={() => void newLink().catch(report)}
       onToggle={(enabled) => {
         if (enabled) void newLink().catch(report);

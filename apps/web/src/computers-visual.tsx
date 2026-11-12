@@ -344,7 +344,9 @@ const noOp = () => undefined;
 const context: ShellContext = {
   actionError: null,
   clearActionError: noOp,
-  createThreadAndSend: async () => null,
+  createThreadAndSend: async () => {
+    throw new Error("Tasks don’t start in this preview.");
+  },
   defaultPlacement: undefined,
   deploymentAccess: null,
   desktopBridge: scenario.bridge ? fakeBridge(scenario) : null,

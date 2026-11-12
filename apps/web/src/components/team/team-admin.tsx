@@ -437,8 +437,6 @@ export interface InviteLinkView {
   readonly enabled: boolean;
   readonly url: string;
   readonly expiresAt: string;
-  readonly uses: number;
-  readonly landingChannel: string;
 }
 
 /**
@@ -446,19 +444,15 @@ export interface InviteLinkView {
  * that revokes the old one. Everyone it admits joins as a member.
  */
 export function InvitesAdmin({
-  channels,
   copied = false,
   invite,
   onCopy,
-  onLanding,
   onNewLink,
   onToggle,
 }: {
-  readonly channels: readonly { readonly id: string; readonly name: string }[];
   readonly copied?: boolean;
   readonly invite: InviteLinkView;
   readonly onCopy: () => void;
-  readonly onLanding: (channelId: string) => void;
   readonly onNewLink: () => void;
   readonly onToggle: (enabled: boolean) => void;
 }) {
@@ -478,7 +472,7 @@ export function InvitesAdmin({
           action={
             <SettingsSwitch checked={invite.enabled} label="Invite link" onChange={onToggle} />
           }
-          detail="Anyone with it can join as a member."
+          detail="One person can join with it, as a member."
           icon="link"
           title="Invite link"
         />
@@ -510,22 +504,7 @@ export function InvitesAdmin({
                 <Icon name="reload" />
                 New link
               </button>
-              <span className="invite-admin__facts">
-                Expires {shortDate(invite.expiresAt)} · used {plural(invite.uses, "time")} · lands
-                in
-              </span>
-              <select
-                aria-label="Channel people land in"
-                className="select-input invite-admin__landing"
-                onChange={(event) => onLanding(event.target.value)}
-                value={channels.find((channel) => channel.name === invite.landingChannel)?.id}
-              >
-                {channels.map((channel) => (
-                  <option key={channel.id} value={channel.id}>
-                    #{channel.name}
-                  </option>
-                ))}
-              </select>
+              <span className="invite-admin__facts">Expires {shortDate(invite.expiresAt)}</span>
             </div>
           </div>
         ) : null}

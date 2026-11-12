@@ -177,18 +177,20 @@ export function AllTasksPage({
               </li>
             );
           })}
+          {actions.onLoadMore ? (
+            <li className="all-tasks__more">
+              <button
+                className="sidebar__more"
+                disabled={loadingMore}
+                onClick={actions.onLoadMore}
+                type="button"
+              >
+                {loadingMore ? "Loading…" : "Show more"}
+              </button>
+            </li>
+          ) : null}
         </ul>
       )}
-      {actions.onLoadMore ? (
-        <button
-          className="sidebar__more"
-          disabled={loadingMore}
-          onClick={actions.onLoadMore}
-          type="button"
-        >
-          {loadingMore ? "Loading…" : "Show more"}
-        </button>
-      ) : null}
     </div>
   );
 }

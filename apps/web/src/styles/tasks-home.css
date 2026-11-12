@@ -886,3 +886,61 @@ a.home-task:hover {
   gap: var(--space-8);
   margin-top: var(--space-6);
 }
+
+/* ---- All tasks: the filter chips, then the list, which scrolls on its own
+   (and so draws only the rows in view) under them. ---- */
+
+.all-tasks__chips {
+  display: flex;
+  flex: none;
+  gap: var(--space-6);
+  padding: var(--space-8) var(--space-16) var(--space-10);
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+  scrollbar-width: none;
+}
+
+.all-tasks__chips > .chip {
+  flex: none;
+  cursor: pointer;
+}
+
+.all-tasks__chips > .chip[aria-pressed="true"] {
+  border-color: var(--rim-selected);
+  background: var(--sheen) var(--fill-plate-hover);
+  color: var(--text);
+}
+
+.all-tasks__chips > .chip--needs {
+  border-color: var(--amber-line);
+  color: var(--amber-text);
+}
+
+.all-tasks__chips > .chip--needs[aria-pressed="true"] {
+  background: var(--amber-wash);
+}
+
+.chip__count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.all-tasks__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-8) var(--space-8) var(--space-16);
+}
+
+.all-tasks__more > .sidebar__more {
+  padding-left: var(--space-10);
+}
+
+.all-tasks__empty {
+  margin: 0;
+  padding: var(--space-32) var(--space-16);
+  color: var(--muted);
+  font-size: var(--text-lg);
+  text-align: center;
+}

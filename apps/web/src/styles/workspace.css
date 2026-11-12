@@ -498,11 +498,25 @@
   border-right: 0;
 }
 
-/* Search and collapse only: Chat's row below, with Opensteer's orb, is the brand and the way home. */
+/* The name, then Voice, Search, New task and collapse, at the rows' scale. */
 .sidebar__header {
-  justify-content: flex-end;
+  gap: var(--space-2);
   padding: var(--space-10) var(--space-10) var(--space-6) var(--space-8);
   min-height: 50px;
+}
+
+.sidebar__title {
+  flex: 1;
+  min-width: 0;
+  margin: 0 var(--space-4) 0 0;
+  padding-left: var(--space-8);
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* A row and the 1px between rows: the sections' floors are counted in these. */
@@ -4093,4 +4107,37 @@ html[data-tab-sorting] * {
 .task-family__toggle svg {
   width: 14px;
   height: 14px;
+}
+
+/* "All tasks": a quiet row under the live tasks, at the rows' own scale. */
+.side-all .side-task__main {
+  color: var(--muted);
+}
+
+.side-all .side-task__main:is(:hover, [aria-current="page"]) {
+  color: var(--text);
+}
+
+.side-all .side-task__main > svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-inline: var(--space-4);
+}
+
+.side-all .side-task__text {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+}
+
+.side-all__count {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.side-all__chevron.side-all__chevron {
+  width: 12px;
+  height: 12px;
+  margin-inline: 0;
 }

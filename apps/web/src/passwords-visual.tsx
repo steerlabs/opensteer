@@ -84,7 +84,9 @@ function useShellContext(): ShellContext {
   return {
     actionError: null,
     clearActionError: noOp,
-    createThreadAndSend: async () => null,
+    createThreadAndSend: async () => {
+      throw new Error("Tasks don’t start in this preview.");
+    },
     defaultPlacement: undefined,
     deploymentAccess: null,
     desktopBridge: onThisMac ? bridge : null,
