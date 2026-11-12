@@ -1498,7 +1498,6 @@ function approval(
     reason: null,
     setupRequestId,
     threadTitle: null,
-    workspaceName: "Main",
   };
 }
 

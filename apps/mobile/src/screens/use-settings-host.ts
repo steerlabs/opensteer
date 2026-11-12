@@ -1,4 +1,3 @@
-import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { canRespondToRequests, type HostClient, type HostSnapshot } from "@opensteer/client/host";
 import { useCallback, useRef, useSyncExternalStore } from "react";
 interface EngineInstallationRow {
@@ -11,7 +10,6 @@ interface EngineInstallationRow {
 
 interface SettingsHost {
   readonly deploymentShape: HostSnapshot["deploymentShape"];
-  readonly deploymentPolicy: HostSnapshot["deploymentPolicy"];
   readonly engineInstallations: readonly EngineInstallationRow[];
   readonly harnessUpdateAvailable: boolean;
   readonly hostConnected: boolean;
@@ -19,10 +17,8 @@ interface SettingsHost {
   readonly iphoneAppsAvailable: boolean;
   readonly machineRevision: number;
   readonly machines: HostSnapshot["machines"];
-  readonly notificationMutes: HostSnapshot["notificationMutes"];
   /** Null while the Host does not move quiet tasks to Done, or has not said after how long. */
   readonly quietTaskDays: HostSnapshot["quietTaskDays"];
-  readonly workspaces: HostSnapshot["workspaces"];
 }
 
 /**
@@ -62,7 +58,6 @@ export function useSettingsHost(hostClient: HostClient | null): SettingsHost | n
         : installations;
     const next: SettingsHost = {
       deploymentShape: snapshot.deploymentShape,
-      deploymentPolicy: hostDeploymentPolicy(snapshot),
       engineInstallations,
       harnessUpdateAvailable: snapshot.harnessUpdateAvailable === true,
       hostConnected: canRespondToRequests(snapshot),
@@ -70,9 +65,7 @@ export function useSettingsHost(hostClient: HostClient | null): SettingsHost | n
       iphoneAppsAvailable: snapshot.iphoneAppsAvailable,
       machineRevision: snapshot.machineRevision,
       machines: snapshot.machines,
-      notificationMutes: snapshot.notificationMutes,
       quietTaskDays: snapshot.quietTasksAvailable === true ? snapshot.quietTaskDays : null,
-      workspaces: snapshot.workspaces,
     };
     if (
       previous !== null &&

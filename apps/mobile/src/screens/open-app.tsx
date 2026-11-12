@@ -10,7 +10,7 @@ import {
   type PlaceItem,
   type StartPageGroup,
   type StartPageProfileChoice,
-  type WorkspaceSurfaceDestination,
+  type PersonalSurfaceDestination,
 } from "@opensteer/client/host";
 import { computerNotReadyStatus, computerReasonWords } from "@opensteer/client/integrations";
 import { useHostSelector, usePlaceList } from "@opensteer/client/react";
@@ -19,7 +19,7 @@ import { StackActions, useNavigation, type StaticScreenProps } from "@react-navi
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, SectionList, StyleSheet, View } from "react-native";
 import { showPendingBrowserTab } from "../browser/pending-tab-route.js";
-import { workspaceRoute } from "../browser/surface-route.js";
+import { tabsRoute } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { MacAppIcon } from "../computers/app-mark.js";
 import { useHereDeviceId } from "../computers/here-device.js";
@@ -168,7 +168,7 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
       });
       // The sheet goes first, so the tab opens over the screen it came from.
       navigation.goBack();
-      showPendingBrowserTab(navigation, { deploymentId, scope: "workspace" }, opening, {});
+      showPendingBrowserTab(navigation, { deploymentId, scope: "tabs" }, opening, {});
     },
     [browserProfileHomes, deploymentId, hereId, hostClient, machines, navigation],
   );
@@ -184,11 +184,11 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
   );
 
   const show = useCallback(
-    (destination: WorkspaceSurfaceDestination) => {
+    (destination: PersonalSurfaceDestination) => {
       // The sheet goes first, so the view opens over the screen it came from.
       navigation.goBack();
       navigation.dispatch(
-        StackActions.push("WorkspaceBrowser", workspaceRoute(deploymentId, destination)),
+        StackActions.push("WorkspaceBrowser", tabsRoute(deploymentId, destination)),
       );
     },
     [deploymentId, navigation],

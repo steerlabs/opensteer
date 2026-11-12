@@ -3,15 +3,12 @@
 import { act, useEffect, type ReactNode, type Ref } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { unwrapRpcResult, type HostClient } from "@opensteer/client/host";
+import type { HostClient } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
-import { rpcSuccess } from "@opensteer/protocol";
 import type { ThreadHeaderState } from "../thread/thread-pane.js";
 
 // Failure journeys: a closed picker is released before native dismissal or
-// focuses a missing opener; connection health loses to assignment state;
-// an unloaded project is called Opensteer; a member is offered owner edits,
-// or a refused edit/focus return keeps stale permission.
+// focuses a missing opener; connection health loses to assignment state.
 const harness = vi.hoisted(() => ({
   liquidGlass: false,
   client: null as HostClient | null,
@@ -212,22 +209,17 @@ vi.mock("../ui/sheet.js", () => ({
   Sheet: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("../ui/chat-orb.js", () => ({ ChatOrb: () => <i data-chat-orb /> }));
-vi.mock("../ui/workspace-mark.js", () => ({
-  WorkspaceMark: (props: {
-    readonly name: string;
-    readonly color: string | null;
-    readonly icon: string | null;
-  }) => <i data-workspace={props.name} data-color={props.color} data-icon={props.icon} />,
-  WorkspaceIconGlyph: () => null,
+vi.mock("../team/team-marks.js", async (load) => ({
+  ...(await load<typeof import("../team/team-marks.js")>()),
+  AgentOrb: () => <i data-chat-orb />,
 }));
+vi.mock("../ui/icon-glyph.js", () => ({ IconGlyph: () => null }));
 vi.mock("../ui/task-mark.js", () => ({
   TaskMark: ({ mark }: { readonly mark: { icon: string; color: string | null } }) => (
     <i data-task-icon={mark.icon} data-task-color={mark.color} />
   ),
 }));
 
-const { ProjectScreen } = await import("./project.js");
 const { useThreadHeader } = await import("./thread-header.js");
 const { ThreadMenu } = await import("../thread/thread-menu.js");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -275,181 +267,50 @@ async function client() {
   harness.client = result;
   return result;
 }
-async function project(
-  role: "owner" | "member",
-  state: "active" | "revoked" = "active",
-  relocating = false,
-  source = "/source",
-) {
-  const host = await client();
-  const workspace = host.getSnapshot().workspaces.find(({ kind }) => kind === "project")!;
-  if (relocating) {
-    workspace.status = "failed";
-    workspace.storageIssue = {
-      code: "relocation-required",
-      message: `Restore files from ${source} to /Main/Projects/research, then confirm its location.`,
-      occurredAt: new Date().toISOString(),
-      retryable: false,
-    };
-  }
-  const rpc = host.rpc;
-  const read = rpc["workspace.members.list"].bind(rpc);
-  let membership = { role, state };
-  const members = vi.fn(async (input: Parameters<typeof read>[0]) => {
-    const result = unwrapRpcResult(await read(input));
-    return rpcSuccess({
-      members: result.members.map((member) =>
-        member.userId === host.getSnapshot().user?.id ? { ...member, ...membership } : member,
-      ),
-    });
-  });
-  Object.defineProperty(host, "rpc", {
-    value: new Proxy(rpc, {
-      get: (target, name) =>
-        name === "workspace.members.list" ? members : Reflect.get(target, name),
-    }),
-  });
-  const container = render(
-    <ProjectScreen route={{ params: { deploymentId: "deployment", workspaceId: workspace.id } }} />,
-  );
-  await settle();
-  return {
-    host,
-    workspace,
-    container,
-    members,
-    setMembership: (role: "owner" | "member") => {
-      membership = { role, state: "active" };
-    },
-  };
-}
-
 describe("mobile task mark review journeys", () => {
-  it.each(["member", "owner"] as const)(
-    "only gives an active owner the appearance editor (%s)",
-    async (role) => {
-      const { container, members, workspace } = await project(role);
-      expect(members).toHaveBeenCalledWith({ workspaceId: workspace.id });
-      expect(container.querySelector("[data-workspace]")).not.toBeNull();
-      expect(
-        container.querySelector('[aria-label="Change project icon and colour"]') !== null,
-      ).toBe(role === "owner");
-    },
-  );
-
-  it("does not give an inactive owner the editor", async () => {
-    const { container } = await project("owner", "revoked");
-    expect(container.querySelector('[aria-label="Change project icon and colour"]')).toBeNull();
-  });
-
-  it("rereads ownership on screen focus and foreground return", async () => {
-    const fixture = await project("owner");
-    fixture.setMembership("member");
-    await act(async () => {
-      harness.focusEffects.forEach((cleanup, effect) => {
-        cleanup?.();
-        harness.focusEffects.set(effect, effect() ?? undefined);
-      });
+  it("schedules Android focus after hiding the task picker", async () => {
+    harness.platform = "android";
+    let frame: FrameRequestCallback | null = null;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frame = callback;
+      return 1;
     });
-    await settle();
-    expect(
-      fixture.container.querySelector('[aria-label="Change project icon and colour"]'),
-    ).toBeNull();
-    fixture.setMembership("owner");
-    await act(async () => {
-      harness.foreground.forEach((listener) => listener("active"));
-    });
-    await settle();
-    expect(
-      fixture.container.querySelector('[aria-label="Change project icon and colour"]'),
-    ).not.toBeNull();
-  });
-
-  it("retains a project Modal until dismissal, then focuses its actual opener", async () => {
-    const { container } = await project("owner");
-    const opener = container.querySelector('[aria-label="Change project icon and colour"]');
-    await press(container, "Change project icon and colour");
-    harness.focus.mockImplementation(() => {
-      expect(container.querySelector('[data-modal-visible="false"]')).not.toBeNull();
-    });
-    expect(container.querySelector('[data-modal-visible="true"]')).not.toBeNull();
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    const host = await client();
+    const thread = host.getSnapshot().threads.find(({ purpose }) => purpose === "task")!;
+    const container = render(
+      <ThreadMenu
+        deploymentId="deployment-1"
+        hostClient={host}
+        maxWidth={260}
+        onFind={() => undefined}
+        onOpenThread={() => undefined}
+        task={null}
+        threadId={thread.id}
+        title={thread.title}
+      >
+        Task
+      </ThreadMenu>,
+    );
+    const opener = container.querySelector('[aria-label$="Actions"]');
+    await press(container, "Change icon…");
     await press(container, "Close");
     expect(container.querySelector('[data-modal-visible="false"]')).not.toBeNull();
     expect(harness.focus).not.toHaveBeenCalled();
-    expect(harness.dismiss).not.toBeNull();
-    act(() => harness.dismiss?.());
+    expect(frame).not.toBeNull();
+    act(() => {
+      (frame as FrameRequestCallback | null)?.(0);
+    });
     expect(harness.focus).toHaveBeenCalledOnce();
     expect(harness.handles.get(harness.focus.mock.calls[0]![0])).toBe(opener);
     expect(container.querySelector("[data-modal-visible]")).toBeNull();
   });
 
-  it("rechecks after refusal and dismisses a revoked owner's editor", async () => {
-    const { host, container, setMembership, members } = await project("owner");
-    await press(container, "Change project icon and colour");
-    setMembership("member");
-    vi.spyOn(host, "dispatch").mockRejectedValueOnce(new Error("Owner required"));
-    await press(container, "Magenta");
-    expect(members.mock.calls.length).toBeGreaterThan(1);
-    expect(container.querySelector('[aria-label="Change project icon and colour"]')).toBeNull();
-    expect(container.querySelector('[data-modal-visible="false"]')).not.toBeNull();
-    act(() => harness.dismiss?.());
-    expect(container.querySelector("[data-modal-visible]")).toBeNull();
-  });
-
-  it.each(["task", "project"] as const)(
-    "schedules Android focus after hiding the %s picker",
-    async (kind) => {
-      harness.platform = "android";
-      let frame: FrameRequestCallback | null = null;
-      vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-        frame = callback;
-        return 1;
-      });
-      vi.stubGlobal("cancelAnimationFrame", vi.fn());
-      let container: HTMLElement;
-      if (kind === "project") container = (await project("owner")).container;
-      else {
-        const host = await client();
-        const thread = host.getSnapshot().threads.find(({ role }) => role === "work")!;
-        container = render(
-          <ThreadMenu
-            deploymentId="deployment-1"
-            hostClient={host}
-            maxWidth={260}
-            onFind={() => undefined}
-            onOpenThread={() => undefined}
-            task={null}
-            threadId={thread.id}
-            title={thread.title}
-          >
-            Task
-          </ThreadMenu>,
-        );
-      }
-      const opener = container.querySelector(
-        kind === "task"
-          ? '[aria-label$="Actions"]'
-          : '[aria-label="Change project icon and colour"]',
-      );
-      await press(container, kind === "task" ? "Change icon…" : "Change project icon and colour");
-      await press(container, "Close");
-      expect(container.querySelector('[data-modal-visible="false"]')).not.toBeNull();
-      expect(harness.focus).not.toHaveBeenCalled();
-      expect(frame).not.toBeNull();
-      act(() => {
-        (frame as FrameRequestCallback | null)?.(0);
-      });
-      expect(harness.focus).toHaveBeenCalledOnce();
-      expect(harness.handles.get(harness.focus.mock.calls[0]![0])).toBe(opener);
-      expect(container.querySelector("[data-modal-visible]")).toBeNull();
-    },
-  );
-
   it.each([null, "Studio Mac offline"] as const)(
     "announces connection-first header state %s with and without an assignment",
     async (connectionLabel) => {
       const host = await client();
-      const thread = host.getSnapshot().threads.find(({ role }) => role === "work")!;
+      const thread = host.getSnapshot().threads.find(({ purpose }) => purpose === "task")!;
       for (const assigned of [false, true]) {
         const header: ThreadHeaderState = {
           connectionLabel,
@@ -460,7 +321,7 @@ describe("mobile task mark review journeys", () => {
                 detail: null,
                 moving: true,
                 open: true,
-                requester: "Chat",
+                requester: "Weekly plan",
                 requesterThreadId: null,
                 stopBlocked: null,
                 tone: "working",
@@ -468,12 +329,10 @@ describe("mobile task mark review journeys", () => {
               }
             : null,
           title: "Tokyo flights",
-          workspaceName: "Travel",
-          workspaceColor: "blue",
-          workspaceIcon: "luggage",
+          placeName: "Travel",
+          placeKind: "folder",
           icon: "plane",
           color: "teal",
-          isHome: false,
           isVoice: false,
         };
         function Header() {
@@ -508,7 +367,7 @@ describe("mobile task mark review journeys", () => {
   // a second bar line repeating the menu's state; dropping that line also
   // drops the state from what VoiceOver reads; a state that still asks for the
   // reader (working, waiting, failed, stopped) or a lost connection disappears
-  // with it; the project's name or the task menu goes too.
+  // with it; the folder's name or the task menu goes too.
   it.each([
     ["completed", "Finished", null, false],
     ["completed", "Finished", "Travel", false],
@@ -518,10 +377,10 @@ describe("mobile task mark review journeys", () => {
     ["waiting", "Needs you", null, false],
     ["working", "Working", null, false],
   ] as const)(
-    "keeps a %s task's menu state accessible while compacting only Finished (%s, project %s, offline %s)",
-    async (tone, word, workspaceName, offline) => {
+    "keeps a %s task's menu state accessible while compacting only Finished (%s, folder %s, offline %s)",
+    async (tone, word, folderName, offline) => {
       const host = await client();
-      const thread = host.getSnapshot().threads.find(({ role }) => role === "work")!;
+      const thread = host.getSnapshot().threads.find(({ purpose }) => purpose === "task")!;
       const header: ThreadHeaderState = {
         connectionLabel: offline ? "Studio Mac offline" : null,
         task: {
@@ -530,19 +389,17 @@ describe("mobile task mark review journeys", () => {
           detail: null,
           moving: tone === "working",
           open: tone === "working" || tone === "waiting",
-          requester: "Chat",
+          requester: "Weekly plan",
           requesterThreadId: null,
           stopBlocked: null,
           tone,
           word,
         },
         title: "Tokyo flights",
-        workspaceName,
-        workspaceColor: "blue",
-        workspaceIcon: "luggage",
+        placeName: folderName,
+        placeKind: folderName === null ? null : "folder",
         icon: "plane",
         color: "teal",
-        isHome: false,
         isVoice: false,
       };
       function Header() {
@@ -563,28 +420,28 @@ describe("mobile task mark review journeys", () => {
       const bar = container.textContent ?? "";
       expect(bar).toContain("Tokyo flights");
       if (offline) expect(bar).toContain("Studio Mac offline");
-      if (workspaceName !== null) expect(bar).toContain(workspaceName);
+      if (folderName !== null) expect(bar).toContain(folderName);
       // The word stands alone on its line; "Mark Done" in the menu is not that line.
       const says = [...container.querySelectorAll("*")].some(
         (node) => node.childElementCount === 0 && node.textContent === word,
       );
       expect(says).toBe(tone !== "completed");
       expect(container.querySelector('[aria-label$="Actions"]')?.getAttribute("aria-label")).toBe(
-        `Tokyo flights${workspaceName === null ? "" : `, ${workspaceName}`}, ${offline ? "Studio Mac offline" : word}. Actions`,
+        `Tokyo flights${folderName === null ? "" : `, ${folderName}`}, ${offline ? "Studio Mac offline" : word}. Actions`,
       );
     },
   );
 
-  // Ways the capsule can lose what the bar said: the word and project leave the
+  // Ways the capsule can lose what the bar said: the word and folder leave the
   // bar and reach neither the menu nor VoiceOver, or an offline computer is
   // dropped with them though nothing there will answer.
   it.each([null, "Studio Mac offline"])(
-    "moves a task's word and project into the menu on Liquid Glass (offline: %s)",
+    "moves a task's word and folder into the menu on Liquid Glass (offline: %s)",
     async (connectionLabel) => {
       harness.liquidGlass = true;
       try {
         const host = await client();
-        const thread = host.getSnapshot().threads.find(({ role }) => role === "work")!;
+        const thread = host.getSnapshot().threads.find(({ purpose }) => purpose === "task")!;
         const header: ThreadHeaderState = {
           connectionLabel,
           task: {
@@ -593,19 +450,17 @@ describe("mobile task mark review journeys", () => {
             detail: "Waiting for approval",
             moving: false,
             open: true,
-            requester: "Chat",
+            requester: "Weekly plan",
             requesterThreadId: null,
             stopBlocked: null,
             tone: "waiting",
             word: "Needs you",
           },
           title: "Tokyo flights",
-          workspaceName: "Travel",
-          workspaceColor: "blue",
-          workspaceIcon: "luggage",
+          placeName: "Travel",
+          placeKind: "folder",
           icon: "plane",
           color: "teal",
-          isHome: false,
           isVoice: false,
         };
         function Header() {
@@ -633,7 +488,7 @@ describe("mobile task mark review journeys", () => {
         );
         expect(
           container.querySelector("[data-menu-heading]")?.getAttribute("data-menu-heading"),
-        ).toBe("From Chat · Needs you\nTravel\nWaiting for approval");
+        ).toBe("From Weekly plan · Needs you\nTravel\nWaiting for approval");
       } finally {
         harness.liquidGlass = false;
       }

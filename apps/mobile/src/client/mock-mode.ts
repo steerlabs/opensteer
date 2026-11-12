@@ -22,6 +22,10 @@ export const mockDeploymentId = DeploymentIdSchema.parse(
 );
 const mockSignedOutOrigin = "https://signed-out.opensteer.example";
 
+/** Mock mode's team, which the mock computer is in. */
+export const mockTeamId = DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-0000000000a1");
+export const mockTeamOrigin = "https://acme.opensteer.example";
+
 /** The Deployment mock mode holds no credential for, so its row needs one. */
 export const mockSignedOutDeploymentId = DeploymentIdSchema.parse(
   "dep_0192f4a1-0000-4000-8000-000000000003",
@@ -47,8 +51,15 @@ export function mockDeploymentConnections(): readonly DeploymentConnectionInput[
     mockConnection({
       deploymentId: mockSignedOutDeploymentId,
       hostInstanceId: "hst_0192f4a1-0000-4000-8000-000000000004",
-      name: "Mock signed-out server",
+      name: "Mock signed-out computer",
       origin: mockSignedOutOrigin,
+    }),
+    mockConnection({
+      deploymentId: mockTeamId,
+      hostInstanceId: "hst_00000000-0000-4000-8000-0000000000a2",
+      kind: "team",
+      name: "Acme",
+      origin: mockTeamOrigin,
     }),
   ];
 }
@@ -56,6 +67,7 @@ export function mockDeploymentConnections(): readonly DeploymentConnectionInput[
 function mockConnection(input: {
   readonly deploymentId: string;
   readonly hostInstanceId: string;
+  readonly kind?: "personal" | "team";
   readonly name: string;
   readonly origin: string;
 }): DeploymentConnectionInput {
@@ -65,7 +77,7 @@ function mockConnection(input: {
       document: {
         canonicalOrigin: input.origin,
         deploymentId: DeploymentIdSchema.parse(input.deploymentId),
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
+        deploymentShape: { kind: input.kind ?? "personal" },
         hostInstanceId: HostInstanceIdSchema.parse(input.hostInstanceId),
         hostKey: { algorithm: "Ed25519" },
       },

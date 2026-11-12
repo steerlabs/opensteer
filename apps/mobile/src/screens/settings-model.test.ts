@@ -475,20 +475,6 @@ describe("Passwords in settings", () => {
   it("names the Mac a Personal Opensteer keeps them on", () => {
     expect(
       passwordsSettingsModel({
-        deploymentPolicy: {
-          ownership: "single-user",
-          personalRemoteAccess: true,
-          nativeWebLinks: true,
-          localOwnerClaim: true,
-          deploymentOwnsMainComputer: true,
-          nativePasswords: true,
-          deploymentComputerAccess: true,
-          sharing: false,
-          serviceManagement: false,
-          runnerEnrollmentMode: "reach-only",
-          projectConsent: "owner-wide",
-          localRunnerDefaultModules: ["shell"],
-        },
         deploymentName: "Mac mini",
         machines: [macMini],
       }),
@@ -496,7 +482,7 @@ describe("Passwords in settings", () => {
       body: "Passwords are kept in the Opensteer app on Studio Mac. Set them up and manage them there.",
       detail: "Kept on Studio Mac",
       facts: [
-        "You allow an account once per Workspace from any device signed in to this Opensteer. After that, agents there can use it to sign in on their own.",
+        "You allow an account from any device signed in to this Opensteer. Your agents can then use it for your tasks.",
         "Cards work on websites only. Every use needs a fresh approval, lasting up to 30 minutes; it does not approve a charge.",
         "You can allow or decline a sign-in from this phone. Allowing first confirms it’s you on this device.",
         "In Opensteer’s browser, tap a sign-in field to fill your own saved login. Studio Mac types it; it never comes to this phone.",
@@ -507,51 +493,9 @@ describe("Passwords in settings", () => {
     // Before the Mac reports itself, a Personal Opensteer is named after it.
     expect(
       passwordsSettingsModel({
-        deploymentPolicy: {
-          ownership: "single-user",
-          personalRemoteAccess: true,
-          nativeWebLinks: true,
-          localOwnerClaim: true,
-          deploymentOwnsMainComputer: true,
-          nativePasswords: true,
-          deploymentComputerAccess: true,
-          sharing: false,
-          serviceManagement: false,
-          runnerEnrollmentMode: "reach-only",
-          projectConsent: "owner-wide",
-          localRunnerDefaultModules: ["shell"],
-        },
         deploymentName: "Mac mini",
         machines: [],
       }).detail,
     ).toBe("Kept on Mac mini");
-  });
-
-  it("says a server Opensteer has none yet", () => {
-    expect(
-      passwordsSettingsModel({
-        deploymentPolicy: {
-          ownership: "members",
-          personalRemoteAccess: false,
-          nativeWebLinks: false,
-          localOwnerClaim: false,
-          deploymentOwnsMainComputer: false,
-          nativePasswords: false,
-          deploymentComputerAccess: false,
-          sharing: true,
-          serviceManagement: true,
-          runnerEnrollmentMode: "unrestricted",
-          projectConsent: "per-project",
-          localRunnerDefaultModules: ["agents", "browser", "shell"],
-        },
-        deploymentName: "steer.example.com",
-        machines: [macMini],
-      }),
-    ).toEqual({
-      body: "Saved-password sign-ins are available on a Personal Opensteer for now.",
-      detail: "Not available on this Opensteer",
-      facts: [],
-      title: "Passwords",
-    });
   });
 });

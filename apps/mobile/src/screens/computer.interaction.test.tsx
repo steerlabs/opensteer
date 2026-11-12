@@ -129,7 +129,7 @@ it("opens the approved phone as an independent workspace owner view", async () =
       name: "WorkspaceBrowser",
       params: {
         deploymentId: "deployment",
-        scope: "workspace",
+        scope: "tabs",
         phone: true,
         machineId: "phone",
       },

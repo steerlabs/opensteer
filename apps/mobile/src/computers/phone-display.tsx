@@ -36,7 +36,7 @@ import {
 } from "react-native";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import Animated, { useAnimatedStyle } from "react-native-reanimated";
-import { workspaceRoute } from "../browser/surface-route.js";
+import { tabsRoute } from "../browser/surface-route.js";
 import { MacAppIcon } from "./app-mark.js";
 import { openAppOwnerView, openPhoneOwnerView } from "./open-owner-view.js";
 import { ToolbarAsk, ToolbarLeave, useNativeBarAway } from "../browser/place-bar.js";
@@ -965,7 +965,7 @@ export function ComputerOwnerView(props: {
       );
       if (destination && deploymentId)
         navigation.dispatch(
-          StackActions.replace("WorkspaceBrowser", workspaceRoute(deploymentId, destination)),
+          StackActions.replace("WorkspaceBrowser", tabsRoute(deploymentId, destination)),
         );
     } catch (error) {
       if (mounted.current)

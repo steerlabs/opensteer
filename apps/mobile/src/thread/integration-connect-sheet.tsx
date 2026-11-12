@@ -62,15 +62,13 @@ import { useMobileClient } from "../ui/mobile-client-context.js";
 import type { ThreadMutationGate } from "./thread-mutation-gate.js";
 
 type Step = "review" | "accounts" | "api-key" | "computer" | "repository-access" | "server";
-type CardHostState = Pick<HostSnapshot, "deploymentId" | "machines" | "workspaceWindow"> & {
-  readonly workspace: HostSnapshot["workspaces"][number] | null;
+type CardHostState = Pick<HostSnapshot, "deploymentId" | "machines"> & {
+  readonly deploymentName: string;
 };
 const sameCardHostState = (a: CardHostState, b: CardHostState) =>
   a.deploymentId === b.deploymentId &&
   a.machines === b.machines &&
-  a.workspace === b.workspace &&
-  a.workspaceWindow.hasMore === b.workspaceWindow.hasMore &&
-  a.workspaceWindow.itemCount === b.workspaceWindow.itemCount;
+  a.deploymentName === b.deploymentName;
 
 /** The Request stays inline. Only credential entry and device setup need a sheet. */
 export function IntegrationConnectCard(props: {
@@ -125,24 +123,22 @@ export function IntegrationConnectCard(props: {
       (snapshot: HostSnapshot): CardHostState => ({
         deploymentId: snapshot.deploymentId,
         machines: snapshot.machines,
-        workspaceWindow: snapshot.workspaceWindow,
-        workspace:
-          snapshot.workspaces.find(({ id }) => id === props.request.targetWorkspaceId) ?? null,
+        deploymentName: snapshot.identityConfig?.deployment.name ?? "your computer",
       }),
-    [props.request.targetWorkspaceId],
+    [],
   );
   const snapshot = useHostSelector(props.hostClient, selectCardHostState, sameCardHostState);
-  const { workspace } = snapshot;
+  const { deploymentName } = snapshot;
   const plan = useMemo(
     () => (loaded === null ? null : accessPlan(loaded, accountId)),
     [loaded, accountId],
   );
   const card = useMemo(
     () =>
-      loaded && workspace
+      loaded
         ? connectCard({
             loaded,
-            workspace,
+            deploymentName,
             selectedAccountId: accountId,
             allowChanges,
             agentProposed: props.request.presentation.agentProposed === true,
@@ -155,7 +151,7 @@ export function IntegrationConnectCard(props: {
         : null,
     [
       loaded,
-      workspace,
+      deploymentName,
       accountId,
       allowChanges,
       props.request.presentation.agentProposed,
@@ -204,23 +200,6 @@ export function IntegrationConnectCard(props: {
       if (presented.current) props.onClose?.();
     };
   }, [props.hostClient, props.request.id]);
-  useEffect(() => {
-    if (!payload || workspace || !snapshot.workspaceWindow.hasMore) return;
-    let cancelled = false;
-    void props.hostClient.loadEarlierWorkspaces().catch((reason: unknown) => {
-      if (!cancelled) setError(describe(reason));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    props.hostClient,
-    payload,
-    workspace,
-    snapshot.workspaceWindow.hasMore,
-    snapshot.workspaceWindow.itemCount,
-    reload,
-  ]);
   useEffect(() => {
     if (!payload) return;
     let cancelled = false;
@@ -299,7 +278,7 @@ export function IntegrationConnectCard(props: {
     generation: number,
     current = loaded,
   ): Promise<void> => {
-    if (!current || !workspace) return;
+    if (!current) return;
     const [dashboard, platform] = await Promise.all([
       props.hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
       props.hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
@@ -314,12 +293,11 @@ export function IntegrationConnectCard(props: {
     if (computerAccessUpgrade(nextPlan, effectiveAccess))
       throw new Error("Allow changes on this computer before allowing this request.");
     if (
-      workspace.kind === "project" ||
-      (await integrationRequestStillPending(
+      await integrationRequestStillPending(
         props.hostClient,
         props.request.originatingThreadId,
         props.request.id,
-      ))
+      )
     ) {
       if (generation !== operationGeneration.current) return;
       await resolveIntegrationAccess(props.hostClient, {
@@ -328,7 +306,6 @@ export function IntegrationConnectCard(props: {
         installationTitle: nextPlan.installationTitle,
         requestId: props.request.id,
         selectedAccount: nextPlan.selectedAccount,
-        targetKind: workspace.kind,
       });
     }
     if (generation !== operationGeneration.current) return;
@@ -384,10 +361,9 @@ export function IntegrationConnectCard(props: {
     }
   };
   const authorize = async (current: LoadedAccessRequest, generation: number): Promise<void> => {
-    if (!workspace) return;
     const next = connectCard({
       loaded: current,
-      workspace,
+      deploymentName,
       allowChanges,
       selectedAccountId: accountId,
     });
@@ -447,7 +423,7 @@ export function IntegrationConnectCard(props: {
   };
   const install = () =>
     run(async (generation) => {
-      if (!payload || !loaded || !card?.primary || !workspace) return;
+      if (!payload || !loaded || !card?.primary) return;
       await props.hostClient.dispatch({
         idempotencyKey: mutationIdempotencyKey(`request:${props.request.id}:install`),
         requestId: props.request.id,
@@ -480,7 +456,7 @@ export function IntegrationConnectCard(props: {
       const next = { dashboard, platform, request: updated.payload };
       setLoaded(next);
       if (card.autoInstall) {
-        const nextCard = connectCard({ loaded: next, workspace, allowChanges });
+        const nextCard = connectCard({ loaded: next, deploymentName, allowChanges });
         if (nextCard.form === "api-key") showForm("api-key");
         else if (nextCard.form === "computer") showForm("computer");
         else if (nextCard.form === "server") showForm("server");
@@ -492,7 +468,6 @@ export function IntegrationConnectCard(props: {
             installationTitle: nextCard.plan.installationTitle,
             requestId: props.request.id,
             selectedAccount: null,
-            targetKind: workspace.kind,
           });
           if (generation === operationGeneration.current) props.onResponded();
         }
@@ -596,7 +571,7 @@ export function IntegrationConnectCard(props: {
   const allow = () => {
     lastAction.current = "allow";
     return run(async (generation) => {
-      if (!plan || !workspace) return;
+      if (!plan) return;
       if (plan.selectedAccount) await finish(plan.selectedAccount.id, generation);
       else {
         await resolveIntegrationAccess(props.hostClient, {
@@ -605,7 +580,6 @@ export function IntegrationConnectCard(props: {
           installationTitle: plan.installationTitle,
           requestId: props.request.id,
           selectedAccount: null,
-          targetKind: workspace.kind,
         });
         if (generation === operationGeneration.current) props.onResponded();
       }
@@ -659,15 +633,8 @@ export function IntegrationConnectCard(props: {
   if (!card)
     return (
       <View style={styles.body}>
-        <AppText role="secondary">
-          {error ??
-            (!workspace
-              ? snapshot.workspaceWindow.hasMore
-                ? "Checking target Workspace…"
-                : "The target Workspace is no longer available."
-              : "Checking account access…")}
-        </AppText>
-        {error || (!workspace && !snapshot.workspaceWindow.hasMore) ? (
+        <AppText role="secondary">{error ?? "Checking account access…"}</AppText>
+        {error ? (
           <SecondaryButton
             label="Not now"
             disabled={busy || (props.disabled ?? false)}
@@ -842,7 +809,7 @@ export function IntegrationConnectCard(props: {
       {computerUpgrade ? (
         <Notice
           title="Allow changes on this computer"
-          detail={`${plan?.integrationName} on ${computerUpgrade.displayName} is ${plan?.definition?.computerApp?.accessLabels.read ?? "read only"}. Choose ${plan?.definition?.computerApp?.accessLabels.readWrite ?? "read and write"} before allowing changes in this Workspace; the request itself does not change.`}
+          detail={`${plan?.integrationName} on ${computerUpgrade.displayName} is ${plan?.definition?.computerApp?.accessLabels.read ?? "read only"}. Choose ${plan?.definition?.computerApp?.accessLabels.readWrite ?? "read and write"} before allowing changes; the request itself does not change.`}
           tone="neutral"
         />
       ) : null}

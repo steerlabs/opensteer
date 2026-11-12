@@ -125,10 +125,7 @@ function testDiscoveryDocument(input: {
   return HostDiscoveryDocumentSchema.parse({
     canonicalOrigin: input.canonicalOrigin,
     deploymentId: DeploymentIdSchema.parse(input.deploymentId),
-    deploymentShape: {
-      defaultWorkspaceBacking: input.personal ? "local-directory" : "local-directory",
-      kind: input.personal ? "personal" : "server",
-    },
+    deploymentShape: { kind: input.personal ? "personal" : "team" },
     hostInstanceId: HostInstanceIdSchema.parse("hst_0192f4a1-2222-4000-8000-000000000002"),
     hostKey: { algorithm: "Ed25519" },
   });

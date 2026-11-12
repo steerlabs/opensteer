@@ -157,7 +157,7 @@ function ScheduleList(props: {
     navigation.setOptions(
       headerActions({
         right: {
-          accessibilityHint: "Opens Chat, where you ask Opensteer for one",
+          accessibilityHint: "Opens Home, where you ask your agent for one",
           icon: "plus",
           label: "New",
           onPress: () => navigation.dispatch(StackActions.popToTop()),

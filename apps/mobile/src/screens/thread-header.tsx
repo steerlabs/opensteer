@@ -76,7 +76,7 @@ export function useScopedThreadHeader(
 }
 
 /**
- * The bar over a conversation — Chat or a task.
+ * The bar over a task or a voice conversation.
  *
  * The transcript runs under it, which is why the header is configured by the
  * screen rather than in the route table: it needs the thread's own name and
@@ -124,9 +124,8 @@ export function useThreadHeader(props: {
               >
                 <AppText role="title">{fallbackTitle}</AppText>
                 <ThreadSubtitle
-                  workspaceName={null}
-                  workspaceColor={null}
-                  workspaceIcon={null}
+                  placeKind={null}
+                  placeName={null}
                   connectionLabel={savedSubtitle.label}
                   onRetry={savedSubtitle.onRetry}
                   task={null}
@@ -144,14 +143,8 @@ export function useThreadHeader(props: {
                   deploymentId={deploymentId}
                   threadId={threadId}
                   hostClient={hostClient}
-                  // Chat is the root under every stack, so it is returned to,
-                  // never opened a second time over this task.
                   onOpenThread={(id) =>
-                    navigation.dispatch(
-                      id === hostClient.getSnapshot().homeThreadId
-                        ? StackActions.popTo("Home", { deploymentId })
-                        : StackActions.push("Thread", { deploymentId, threadId: id }),
-                    )
+                    navigation.dispatch(StackActions.push("Thread", { deploymentId, threadId: id }))
                   }
                 />
               ),
@@ -282,7 +275,7 @@ function ThreadTitle(
  * The conversation's mark and name, where it stands, and its menu.
  *
  * Liquid Glass draws them as one capsule beside the bar's others: the state
- * shrinks to its mark, and its word and project move to the menu's heading.
+ * shrinks to its mark, and its word and place move to the menu's heading.
  * Elsewhere the two lines stay, and Android's menu has no heading to move to.
  * A pill floating over a transcript with no bar under it, as beside a page,
  * is always the capsule: where there is no glass, it wears the opaque float.
@@ -326,7 +319,6 @@ export function ThreadTitlePill(
       title={props.title}
       icon={props.icon}
       color={props.color}
-      isHome={props.isHome}
       isVoice={props.isVoice}
     />
   );
@@ -336,11 +328,10 @@ export function ThreadTitlePill(
       deploymentId={deploymentId}
       extraActions={props.extraActions ?? []}
       hostClient={props.hostClient}
-      isHome={props.isHome}
       maxWidth={maxWidth}
       onFind={props.onFind}
       onOpenThread={props.onOpenThread}
-      projectName={props.workspaceName}
+      placeName={props.placeName}
       task={props.task}
       threadId={threadId}
       title={props.title}
@@ -364,10 +355,9 @@ export function ThreadTitlePill(
               {props.connectionLabel === null ? null : (
                 <ThreadSubtitle
                   connectionLabel={props.connectionLabel}
+                  placeKind={null}
+                  placeName={null}
                   task={null}
-                  workspaceColor={null}
-                  workspaceIcon={null}
-                  workspaceName={null}
                 />
               )}
             </View>
@@ -385,9 +375,8 @@ export function ThreadTitlePill(
         <View style={styles.words} {...measure("words")}>
           {name}
           <ThreadSubtitle
-            workspaceName={props.workspaceName}
-            workspaceColor={props.workspaceColor}
-            workspaceIcon={props.workspaceIcon}
+            placeName={props.placeName}
+            placeKind={props.placeKind}
             connectionLabel={props.connectionLabel}
             // iOS says "Completed" in the menu's heading and its accessible
             // name, so the bar keeps one line for the title. Android's menu

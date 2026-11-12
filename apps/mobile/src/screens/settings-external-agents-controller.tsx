@@ -1,4 +1,3 @@
-import { hostDeploymentPolicy } from "@opensteer/client/host";
 import {
   arrivedConnection,
   connectionDetail,
@@ -25,7 +24,7 @@ export function ExternalAgentsSettingsController(): ReactNode {
   const { selection } = useMobileState();
   const host = selection.hostClient;
   const snapshot = useSettingsHost(host);
-  const personal = hostDeploymentPolicy(snapshot)?.personalRemoteAccess === true;
+  const personal = snapshot !== null;
   // Both read only while this page is open, never on attach.
   const agents = useConnectedAgents(host);
   const remote = usePersonalRemoteAccess(personal ? host : null);
@@ -42,7 +41,6 @@ export function ExternalAgentsSettingsController(): ReactNode {
     if (selection.deploymentId)
       navigation.navigate("SettingsRemoteAccess", { deploymentId: selection.deploymentId });
   };
-  const workspaces = snapshot?.workspaces ?? [];
   const remove = (connectionId: string) => {
     const connection = connections?.find((row) => row.id === connectionId);
     if (!connection || pending.current !== null) return;
@@ -91,7 +89,7 @@ export function ExternalAgentsSettingsController(): ReactNode {
           connections={(connections ?? []).map((connection) => ({
             id: connection.id,
             title: connection.label,
-            detail: connectionDetail(connection, workspaces),
+            detail: connectionDetail(connection),
             removing: agents.pending === connection.id,
           }))}
           addDisabled={connections === null || reach.kind !== "ready"}

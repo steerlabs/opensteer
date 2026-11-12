@@ -4,7 +4,7 @@ import { createNotificationsIntroFile, NotificationsIntro } from "./notification
 import type { PushRegistrationStatus } from "./push-registration.js";
 
 const filePath = "/private/notifications-intro.json";
-const onConnectedChat = { connected: true, onChat: true };
+const onConnectedHome = { connected: true, onHome: true };
 
 function intro(
   privateFiles: MemoryPrivateFilesystem,
@@ -22,12 +22,12 @@ function intro(
 }
 
 describe("the notifications intro", () => {
-  it("is offered on a connected Chat while the system can still ask", async () => {
+  it("is offered on a connected Home while the system can still ask", async () => {
     const gate = intro(new MemoryPrivateFilesystem());
 
-    await expect(gate.due({ connected: false, onChat: true })).resolves.toBe(false);
-    await expect(gate.due({ connected: true, onChat: false })).resolves.toBe(false);
-    await expect(gate.due(onConnectedChat)).resolves.toBe(true);
+    await expect(gate.due({ connected: false, onHome: true })).resolves.toBe(false);
+    await expect(gate.due({ connected: true, onHome: false })).resolves.toBe(false);
+    await expect(gate.due(onConnectedHome)).resolves.toBe(true);
   });
 
   it.each([
@@ -39,7 +39,7 @@ describe("the notifications intro", () => {
     "push-not-configured",
     "device-limit",
   ] as const)("is not offered when the registration is %s", async (status) => {
-    await expect(intro(new MemoryPrivateFilesystem(), status).due(onConnectedChat)).resolves.toBe(
+    await expect(intro(new MemoryPrivateFilesystem(), status).due(onConnectedHome)).resolves.toBe(
       false,
     );
   });
@@ -47,11 +47,11 @@ describe("the notifications intro", () => {
   it("is offered once, including after the app restarts", async () => {
     const privateFiles = new MemoryPrivateFilesystem();
     const gate = intro(privateFiles);
-    await expect(gate.due(onConnectedChat)).resolves.toBe(true);
+    await expect(gate.due(onConnectedHome)).resolves.toBe(true);
 
     await gate.presented();
 
-    await expect(gate.due(onConnectedChat)).resolves.toBe(false);
-    await expect(intro(privateFiles).due(onConnectedChat)).resolves.toBe(false);
+    await expect(gate.due(onConnectedHome)).resolves.toBe(false);
+    await expect(intro(privateFiles).due(onConnectedHome)).resolves.toBe(false);
   });
 });

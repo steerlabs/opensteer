@@ -30,7 +30,7 @@ const client = new MockHostClient({ latencyMs: 0 });
 await client.load();
 afterAll(() => client.dispose());
 const source = client.getSnapshot();
-const home = source.homeThreadId!;
+const home = source.threads[0]!.id;
 const titled = (title: string) => source.threads.find((thread) => thread.title === title)!.id;
 const glance = (snapshot: HostSnapshot, threadId: string) =>
   aroundGlanceSelector(threadId)(snapshot);

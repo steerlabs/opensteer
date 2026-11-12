@@ -10,7 +10,7 @@ export const settingsDestinations = [
   { route: "SettingsSignIns", title: "Sign-ins", group: "For your agents" },
 ] as const;
 
-/** The team's rows in Settings, present only when its Host lets this person in. */
+/** Settings' Teams group: the teams of the computer being shown, and Join a team. */
 export interface SettingsHomeTeam {
   readonly name: string;
   readonly rows: readonly { readonly title: string; readonly onPress: () => void }[];

@@ -1,7 +1,7 @@
 import type { QuietTaskDays } from "@opensteer/core";
 import { useNavigation } from "@react-navigation/native";
 import Constants from "expo-constants";
-import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useRef, useState, type ReactNode } from "react";
 import { Linking } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
 import type { NotificationPreferences } from "../notifications/push-registration.js";
@@ -32,20 +32,6 @@ export function GeneralSettingsController(): ReactNode {
     selectedRow?.deploymentId ?? null,
     selectedRow?.name ?? "",
   );
-  const agents = useMemo(
-    () =>
-      snapshot === null
-        ? []
-        : snapshot.workspaces
-            .filter((workspace) => workspace.kind === "project")
-            .map((workspace) => ({
-              muted: (snapshot.notificationMutes ?? []).includes(workspace.id),
-              name: workspace.name,
-              workspaceId: workspace.id,
-            })),
-    [snapshot],
-  );
-
   const [quietDays, setQuietDays] = useState<QuietTaskDays | null>(null);
   const [quietError, setQuietError] = useState<string | null>(null);
   const hostQuietDays = snapshot?.quietTaskDays ?? null;
@@ -111,23 +97,10 @@ export function GeneralSettingsController(): ReactNode {
       <SettingsPageLayout>
         <GeneralSettingsForm
           page={page}
-          agents={agents}
           deployment={deploymentModel}
           desktopUpdate={desktopUpdate}
           notificationError={notificationError}
           notifications={notificationModel}
-          onAgentMuteChange={(workspaceId, muted) => {
-            const hostClient = selection.hostClient;
-            if (hostClient === null) return;
-            setNotificationError(null);
-            void hostClient
-              .setWorkspaceNotificationMute(workspaceId, muted)
-              .catch((error: unknown) => {
-                setNotificationError(
-                  operationDetail(error, "That notification setting could not be saved."),
-                );
-              });
-          }}
           onDeploymentAction={() => navigation.navigate("DeploymentSwitcher")}
           onNotificationAction={onNotificationAction}
           onPreferenceChange={onPreferenceChange}

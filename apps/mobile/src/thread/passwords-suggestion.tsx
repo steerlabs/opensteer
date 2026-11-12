@@ -1,4 +1,3 @@
-import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { hostsDeployment } from "@opensteer/client/computers";
 import {
   passwordsOfferLine,
@@ -62,8 +61,7 @@ export function PasswordsSuggestion(props: {
 }
 
 function selectHomeName(snapshot: HostSnapshot): string | null {
-  const policy = hostDeploymentPolicy(snapshot) ?? null;
-  return snapshot.machines.find((machine) => hostsDeployment(machine, policy))?.name ?? null;
+  return snapshot.machines.find(hostsDeployment)?.name ?? null;
 }
 
 const styles = StyleSheet.create({

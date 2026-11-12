@@ -97,7 +97,6 @@ function ScheduleForHost(props: {
   return <ScheduleView key={`${reader}:${props.triggerId}`} {...props} />;
 }
 
-const selectHomeThreadId = (snapshot: HostSnapshot) => snapshot.homeThreadId;
 const selectChangeBlocked = (snapshot: HostSnapshot): string | null =>
   canRespondToRequests(snapshot) ? null : "Connect to the Host to change schedules.";
 
@@ -117,7 +116,6 @@ function ScheduleView(props: {
   const state = useSchedule(hostClient, triggerId, focused && foreground);
   const detail = useShownSchedule(state);
   const blocked = useHostSelector(hostClient, selectChangeBlocked);
-  const homeThreadId = useHostSelector(hostClient, selectHomeThreadId);
   const [pending, setPending] = useState<ScheduleAction | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -160,17 +158,12 @@ function ScheduleView(props: {
   );
 
   /**
-   * Chat is the root under every stack, so it is returned to. A conversation
-   * directly under this screen is returned to rather than opened a second
-   * time; anything else is pushed, so Back comes here.
+   * A conversation directly under this screen is returned to rather than
+   * opened a second time; anything else is pushed, so Back comes here.
    */
   const openThread = useCallback(
     (threadId: string, messageId?: string) => {
       const at = messageId === undefined ? {} : { messageId };
-      if (threadId === homeThreadId) {
-        navigation.dispatch(StackActions.popTo("Home", { deploymentId, ...at }));
-        return;
-      }
       const stack = navigation.getState();
       const under = stack === undefined ? undefined : stack.routes[stack.index - 1];
       const params = { deploymentId, threadId, ...at };
@@ -185,7 +178,7 @@ function ScheduleView(props: {
       }
       navigation.dispatch(StackActions.push("Thread", params));
     },
-    [deploymentId, homeThreadId, navigation],
+    [deploymentId, navigation],
   );
 
   return (
@@ -287,8 +280,8 @@ function ScheduleBody(props: {
       {managed ? (
         <AppText role="secondary" tone="muted">
           {item.systemRole === "memory-light"
-            ? "Light memory pass — checks what’s new and tells Chat when something matters."
-            : "Nightly memory pass — tidies memory and prepares tomorrow. Findings reach you through Chat."}
+            ? "Light memory pass — checks what’s new and tells you when something matters."
+            : "Nightly memory pass — tidies memory and prepares tomorrow."}
         </AppText>
       ) : null}
       <View accessible accessibilityLabel={status} style={styles.status}>
@@ -331,9 +324,9 @@ function ScheduleBody(props: {
           <AppText role="caption" tone="muted">
             {item.anchor.visible
               ? managed
-                ? "Findings reach you through Chat"
+                ? "It tells you when something matters"
                 : "Each run posts its result there"
-              : "That thread isn’t available to you"}
+              : "That task isn’t available to you"}
           </AppText>
         </View>
         {item.anchor.visible ? (
@@ -465,8 +458,7 @@ function ScheduleBody(props: {
 }
 
 /**
- * The reply threads this reader can open: Chat, or a thread the Host lists
- * for them. A reply elsewhere is still told, just not offered as a way in.
+ * The reply threads this reader can open: those the Host lists for them. A reply elsewhere is still told, just not offered as a way in.
  */
 function useReachableThreads(hostClient: HostClient, detail: ScheduleDetail): string {
   const ids = useMemo(
@@ -481,9 +473,7 @@ function useReachableThreads(hostClient: HostClient, detail: ScheduleDetail): st
     hostClient,
     useCallback(
       (snapshot: HostSnapshot) =>
-        ids
-          .filter((id) => id === snapshot.homeThreadId || threadInDirectory(id, snapshot) !== null)
-          .join("\n"),
+        ids.filter((id) => threadInDirectory(id, snapshot) !== null).join("\n"),
       [ids],
     ),
   );

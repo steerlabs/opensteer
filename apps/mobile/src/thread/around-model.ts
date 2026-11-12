@@ -214,14 +214,13 @@ function dayTitle(time: number, now: number): string {
 }
 
 /**
- * The way back from work someone handed this conversation. Chat works for
- * nobody, and a Thread this reader cannot open is never offered.
+ * The way back from work someone handed this task. A Thread this reader
+ * cannot open is never offered.
  */
 export function aroundFrom(
-  snapshot: Parameters<typeof threadRequester>[0] & Pick<HostSnapshot, "homeThreadId">,
+  snapshot: Parameters<typeof threadRequester>[0],
   threadId: string,
 ): RequesterLink | null {
-  if (snapshot.homeThreadId === threadId) return null;
   const assignment = workerAssignment(snapshot.assignments, threadId);
   if (assignment === null) return threadRequester(snapshot, threadId);
   return assignment.parentThreadId === threadId

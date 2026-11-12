@@ -36,7 +36,7 @@ import { AccessibilityInfo, Alert, Pressable, StyleSheet, View } from "react-nat
 import { operationDetail } from "../client/mobile-client.js";
 import { color, radius, space, touchTarget } from "../theme.js";
 import { ActionReviewSheet } from "../ui/action-review.js";
-import { ChatOrb } from "../ui/chat-orb.js";
+import { AgentOrb } from "../team/team-marks.js";
 import { AppText, StatusDot } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { TaskMark } from "../ui/task-mark.js";
@@ -213,7 +213,7 @@ function HeldTaskCards(props: {
 }
 
 /**
- * A Thread's own mark, as the task list draws it: Chat's orb, or the task's
+ * A Thread's own mark, as the task list draws it: the agent orb, or the task's
  * subject. Nothing without the Host to read it from.
  */
 export function ThreadMark(props: { readonly threadId: string }): ReactNode {
@@ -230,10 +230,10 @@ function HeldThreadMark(props: {
   const { threadId } = props;
   const mark = useHostSelector(
     props.hostClient,
-    (snapshot) => (snapshot.homeThreadId === threadId ? null : threadMark(threadId, snapshot)),
+    (snapshot) => threadMark(threadId, snapshot),
     sameMark,
   );
-  return mark === null ? <ChatOrb size={16} /> : <TaskMark mark={mark} size={16} />;
+  return mark === null ? <AgentOrb size={16} /> : <TaskMark mark={mark} size={16} />;
 }
 
 function sameMark(left: ResolvedTaskMark | null, right: ResolvedTaskMark | null): boolean {
@@ -330,7 +330,7 @@ function TaskCardRow(props: {
           compact={props.compact === true}
           noun={props.noun === true}
           onAccessibilityAction={onAccessibilityAction}
-          owner={taskOwner(assignment, snapshot)}
+          owner={taskOwner(assignment)}
         />
       </MenuView>
     </>
@@ -449,12 +449,12 @@ function HeldDelegationLine(props: {
   return <DelegationLineFrom {...props} snapshot={snapshot} />;
 }
 
-const nothingHeld = { activeTasks: [], tasks: null, threads: [], workspaceTasks: {} };
+const nothingHeld = { activeTasks: [], tasks: null, threads: [] };
 
 function DelegationLineFrom(props: {
   readonly delegation: DelegationEntry;
   readonly onOpenThread: (threadId: string) => void;
-  readonly snapshot: Pick<HostSnapshot, "activeTasks" | "tasks" | "threads" | "workspaceTasks">;
+  readonly snapshot: Pick<HostSnapshot, "activeTasks" | "tasks" | "threads">;
 }): ReactNode {
   const { delegation, snapshot } = props;
   const presentation = delegationPresentation(delegation, snapshot);

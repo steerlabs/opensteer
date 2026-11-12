@@ -46,7 +46,6 @@ export interface IphoneAppsApproval {
   readonly access: "read" | "read-write";
   readonly reason: string | null;
   readonly threadTitle: string | null;
-  readonly workspaceName: string | null;
   readonly createdAt: string;
   readonly expiresAt: string;
 }

@@ -12,8 +12,8 @@ import { useGutter } from "../ui/screen.js";
 const selectConnected = (snapshot: HostSnapshot): boolean => snapshot.connection === "connected";
 
 /**
- * Offers the notifications intro over Chat the first time this phone is
- * connected there and can still be asked. Chat is the one place every way of
+ * Offers the notifications intro over Home the first time this phone is
+ * connected there and can still be asked. Home is the one place every way of
  * reaching a computer lands, so it is asked from here and nowhere else.
  */
 export function useNotificationsIntro(hostClient: HostClient | null): void {
@@ -25,7 +25,7 @@ export function useNotificationsIntro(hostClient: HostClient | null): void {
   useEffect(() => {
     if (intro === null) return;
     let current = true;
-    void intro.due({ connected, onChat: focused }).then((due) => {
+    void intro.due({ connected, onHome: focused }).then((due) => {
       if (!due || !current || !navigation.isFocused()) return;
       void intro.presented();
       navigation.navigate("NotificationsIntro");

@@ -3,8 +3,10 @@ import {
   ContentPartSchema,
   ModelSelectionSchema,
   provisionalThreadTitle,
+  TaskFolderSchema,
   ThreadAccessModeSchema,
   type BrowserPageContentPart,
+  type TaskFolder,
 } from "@opensteer/core";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { z } from "zod";
@@ -79,8 +81,8 @@ const DraftSchema = LegacyDraftSchema.extend({
   page: BrowserPageSchema.optional(),
   quote: DraftQuoteSchema.optional(),
   userId: z.string().min(1).max(200),
-  /** Where a new task's draft would start. Absent on one saved under its Workspace's id. */
-  workspaceId: z.string().min(1).max(200).optional(),
+  /** The folder a new task's draft would start in. */
+  folder: TaskFolderSchema.optional(),
 });
 
 /**
@@ -118,7 +120,7 @@ const PendingThreadStartSchema = z.strictObject({
   modelSelection: ModelSelectionSchema,
   generateTitle: z.literal(true).optional(),
   title: z.string().min(1).max(200),
-  workspaceId: z.string().min(1).max(200),
+  folder: TaskFolderSchema,
 });
 const PendingCommandSchema = LegacyPendingCommandSchema.extend({
   browserPage: BrowserPageSchema.optional(),
@@ -182,11 +184,7 @@ export type PendingThreadStart = z.infer<typeof PendingThreadStartSchema>;
 
 const newTaskKeyPrefix = "new-task:";
 
-/**
- * The key of a new task's draft, under an id made on this phone. A release that
- * kept one per Workspace used the Workspace's id as the draft id: its key, files
- * and message in flight are never rewritten, and that id still says where it runs.
- */
+/** The key of a new task's draft, under an id made on this phone. */
 export function newTaskDraftKey(draftId: string): string {
   return `${newTaskKeyPrefix}${draftId}`;
 }
@@ -201,7 +199,7 @@ export interface NewTaskDraftSummary {
   /** A message already handed over, unanswered: retried from the draft, never discarded. */
   readonly held: boolean;
   readonly title: string;
-  readonly workspaceId: string;
+  readonly folder: TaskFolder | null;
 }
 
 /** What the sidebar shows of one reader's drafts on one Deployment. */
@@ -224,7 +222,7 @@ export function sameDraftSummary(left: DraftSummary, right: DraftSummary): boole
         draft.draftId === other?.draftId &&
         draft.held === other.held &&
         draft.title === other.title &&
-        draft.workspaceId === other.workspaceId
+        sameFolder(draft.folder, other.folder)
       );
     }) &&
     left.threadIds.size === right.threadIds.size &&
@@ -321,7 +319,7 @@ export interface ThreadDraftStore {
     deploymentId: string,
     userId: string,
     draftId: string,
-    workspaceId: string,
+    folder: TaskFolder,
   ): void;
   readDraft(deploymentId: string, userId: string, threadId: string): ThreadDraft | null;
   readDraftSummary(deploymentId: string, userId: string): DraftSummary;
@@ -370,7 +368,7 @@ export function createThreadDraftStore(options: {
   const textEdits = new Map<string, { readonly text: string }>();
   const quoteEdits = new Map<string, { readonly quote: ThreadDraftQuote | null }>();
   const pageEdits = new Map<string, { readonly page: BrowserPageContentPart | null }>();
-  const newTaskWorkspaces = new Map<string, string>();
+  const newTaskFolders = new Map<string, TaskFolder>();
   const writes = new MutationQueue();
 
   const key = (deploymentId: string, userId: string, threadId: string): string =>
@@ -393,7 +391,7 @@ export function createThreadDraftStore(options: {
       page: pageEdit === undefined ? entry?.page : (pageEdit.page ?? undefined),
       quote: quoteEdit === undefined ? entry?.quote : (quoteEdit.quote ?? undefined),
       text: textEdit?.text ?? entry?.text ?? "",
-      workspaceId: entry?.workspaceId ?? newTaskWorkspaces.get(entryKey),
+      folder: entry?.folder ?? newTaskFolders.get(entryKey),
     };
     if (draftEmpty(fields)) return null;
     return DraftSchema.parse({
@@ -418,7 +416,7 @@ export function createThreadDraftStore(options: {
           ...fields,
           updatedAt: options.now().toISOString(),
           userId,
-          workspaceId: fields.workspaceId ?? newTaskWorkspaces.get(entryKey),
+          folder: fields.folder ?? newTaskFolders.get(entryKey),
         }),
       );
   };
@@ -597,8 +595,8 @@ export function createThreadDraftStore(options: {
       publish();
     },
 
-    placeNewTaskDraft(deploymentId, userId, draftId, workspaceId): void {
-      newTaskWorkspaces.set(key(deploymentId, userId, newTaskDraftKey(draftId)), workspaceId);
+    placeNewTaskDraft(deploymentId, userId, draftId, folder): void {
+      newTaskFolders.set(key(deploymentId, userId, newTaskDraftKey(draftId)), folder);
     },
 
     readDraft(deploymentId, userId, threadId): ThreadDraft | null {
@@ -623,7 +621,7 @@ export function createThreadDraftStore(options: {
           draftId,
           held: false,
           title: firstLine(draft.text, draft.attachments?.length ?? 0, draft.page),
-          workspaceId: draft.workspaceId ?? draftId,
+          folder: draft.folder ?? null,
         });
       }
       // Once claimed, a message has left its draft and New task opens a blank
@@ -638,7 +636,7 @@ export function createThreadDraftStore(options: {
           draftId,
           held: true,
           title: firstLine(command.text, command.attachments?.length ?? 0, command.browserPage),
-          workspaceId: command.start?.workspaceId ?? tasks.get(draftId)?.workspaceId ?? draftId,
+          folder: command.start?.folder ?? tasks.get(draftId)?.folder ?? null,
         });
       }
       return {
@@ -765,7 +763,7 @@ interface DraftFields {
   readonly page: ThreadDraft["page"] | undefined;
   readonly quote: ThreadDraft["quote"] | undefined;
   readonly text: string;
-  readonly workspaceId: ThreadDraft["workspaceId"] | undefined;
+  readonly folder: ThreadDraft["folder"] | undefined;
 }
 
 function draftFields(draft: ThreadDraft | undefined): DraftFields {
@@ -774,7 +772,7 @@ function draftFields(draft: ThreadDraft | undefined): DraftFields {
     page: draft?.page,
     quote: draft?.quote,
     text: draft?.text ?? "",
-    workspaceId: draft?.workspaceId,
+    folder: draft?.folder,
   };
 }
 
@@ -797,4 +795,8 @@ function firstLine(text: string, files: number, page: BrowserPageContentPart | u
   if (text.trim() !== "") return provisionalThreadTitle(text);
   if (files > 0) return files === 1 ? "1 file" : `${files} files`;
   return provisionalThreadTitle(page?.title || page?.url || "");
+}
+
+function sameFolder(left: TaskFolder | null, right: TaskFolder | null): boolean {
+  return left?.computerId === right?.computerId && left?.path === right?.path;
 }

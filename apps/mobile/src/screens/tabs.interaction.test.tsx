@@ -25,7 +25,6 @@ import {
 } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
-import { useScopedThreadHeader, useThreadHeader } from "./thread-header.js";
 import type { MobileClient } from "../client/mobile-client.js";
 import { createThreadDraftStore, type ThreadDraftStore } from "../client/thread-drafts.js";
 
@@ -43,7 +42,7 @@ import { createThreadDraftStore, type ThreadDraftStore } from "../client/thread-
  * J1 Global Tabs
  *   - the sidebar has no Tabs, or Tabs is not a destination (it piles up behind
  *     Back, keeps Back, or loses the Menu);
- *   - opening it from Chat, a task or Projects carries a conversation into
+ *   - opening it from Home, a task or Automations carries a conversation into
  *     a standalone tab, or silently swaps the selected tab;
  *   - the list misses the person's own desktop tab, a task's tab, a delegated
  *     worker's, a saved tab, a task-held app, or the person's own Mac view;
@@ -60,9 +59,9 @@ import { createThreadDraftStore, type ThreadDraftStore } from "../client/thread-
  *     or Try again does nothing.
  * J2 A tab from Tabs is that tab
  *   - the page is shown under the conversation that happened to be in front
- *     (Chat, or task A), or the tab's occupying task, so on a narrow cover
+ *     (Home, or task A), or the tab's occupying task, so on a narrow cover
  *     screen a conversation covers the page that was chosen;
- *   - the draft typed in Chat or A is gone after viewing a tab and returning;
+ *   - the draft typed in Home or A is gone after viewing a tab and returning;
  *   - viewing a tab creates a conversation, or shows a composer that would.
  * J3 Restoring a saved tab
  *   - it never asks, asks twice, or asks while the computer is offline or the
@@ -88,7 +87,7 @@ import { createThreadDraftStore, type ThreadDraftStore } from "../client/thread-
  *   - the docked sidebar lists no tabs, so a tab is reached only through
  *     Tabs, or it goes away while a page is in front;
  *   - choosing a tab there shows another conversation instead, or piles
- *     screens behind Back, or rebuilds Chat;
+ *     screens behind Back, or rebuilds Home;
  *   - the open tab or task is not the one marked selected;
  *   - folding the window loses the page, or the tab chosen.
  */
@@ -556,12 +555,14 @@ vi.mock("../ui/primitives.js", () => ({
   monoFontFamily: "monospace",
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("../ui/chat-orb.js", () => ({ ChatOrb: () => <i data-chat-orb /> }));
-vi.mock("../ui/workspace-mark.js", () => ({
-  WorkspaceDot: () => null,
-  WorkspaceIconGlyph: () => null,
-  WorkspaceMark: () => null,
+vi.mock("../team/team-marks.js", async (load) => ({
+  ...(await load<typeof import("../team/team-marks.js")>()),
+  AgentOrb: () => <i data-chat-orb />,
 }));
+vi.mock("../team/team-context.js", () => ({
+  useTeamsSnapshot: () => ({ computerId: null, teams: [], unlinked: [], selected: null }),
+}));
+vi.mock("../ui/icon-glyph.js", () => ({ IconGlyph: () => null }));
 vi.mock("../markdown/markdown.js", () => ({
   Markdown: (props: { readonly text: string }) => <p>{props.text}</p>,
   PlainProse: (props: { readonly text: string }) => <p>{props.text}</p>,
@@ -645,7 +646,6 @@ vi.mock("../ui/composer-action.js", () => ({
 }));
 vi.mock("../thread/request-card.js", () => ({ RequestCard: () => null }));
 vi.mock("../thread/answer-bar.js", () => ({ AnswerBar: () => null }));
-vi.mock("./home-intro.js", () => ({ HomeIntro: () => null, homeIntroDraftKey: "home-intro" }));
 // Counts each conversation pane and page that mounts, around the real ones.
 vi.mock("../thread/thread-pane.js", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
@@ -687,7 +687,6 @@ vi.mock("../browser/browser-page.js", async () => {
 const { MobileClientProvider } = await import("../ui/mobile-client-context.js");
 const { SidebarShell } = await import("../sidebar/sidebar-shell.js");
 const { useSidebarMenu } = await import("../navigation-header.js");
-const { ThreadPane } = await import("../thread/thread-pane.js");
 const { ThreadScreen } = await import("./thread.js");
 const { TabsScreen } = await import("./tabs.js");
 const { WorkspaceBrowserScreen } = await import("./workspace-browser.js");
@@ -830,45 +829,20 @@ class TestStack {
   }
 }
 
-function HomeStandIn(props: { readonly route: StackRoute }): ReactNode {
-  // Chat's own screen is not under test here: it is the root, with the Menu,
-  // and the real conversation pane once Chat exists.
-  const hostClient = useContext(HostContext);
-  useSidebarMenu(hostClient);
-  const homeThreadId = useSyncExternalStore(
-    hostClient.subscribe,
-    () => hostClient.getSnapshot().homeThreadId,
-  );
-  const { header, onHeader } = useScopedThreadHeader(hostClient, homeThreadId);
-  useThreadHeader({
-    deploymentId,
-    fallbackTitle: "Chat",
-    header,
-    hostClient,
-    threadId: homeThreadId,
-  });
-  return homeThreadId === null ? (
-    <p>First message</p>
-  ) : (
-    <ThreadPane
-      deploymentId={props.route.params!["deploymentId"] as string}
-      hostClient={hostClient}
-      onHeader={onHeader}
-      onOpenThread={() => undefined}
-      requestId={null}
-      threadId={homeThreadId}
-    />
-  );
-}
-function ProjectsStandIn(): ReactNode {
+function HomeStandIn(): ReactNode {
+  // Home's composer is not under test here: it is the root, with the Menu.
   useSidebarMenu(useContext(HostContext));
-  return <p>Projects</p>;
+  return <p>Home</p>;
+}
+function SchedulesStandIn(): ReactNode {
+  useSidebarMenu(useContext(HostContext));
+  return <p>Automations</p>;
 }
 const HostContext = createContext<HostClient>(null as never);
 
 const screens: Record<string, (props: { route: never }) => ReactNode> = {
   Home: HomeStandIn as never,
-  Projects: ProjectsStandIn as never,
+  Schedules: SchedulesStandIn as never,
   Tabs: TabsScreen as never,
   Thread: ThreadScreen as never,
   WorkspaceBrowser: WorkspaceBrowserScreen as never,
@@ -959,8 +933,8 @@ async function world(
     viewers: [],
     watches: [],
   };
-  const activate = host.activateWorkspaceTab;
-  Object.defineProperty(host, "activateWorkspaceTab", {
+  const activate = host.activatePersonalTab;
+  Object.defineProperty(host, "activatePersonalTab", {
     configurable: true,
     value: (...args: Parameters<typeof activate>) => {
       const [tabId] = args;
@@ -1213,7 +1187,7 @@ function aloneRoute(place: { readonly destination: { readonly kind: string } }) 
   const { destination } = place;
   if (destination.kind !== "browser") throw new Error("Not a browser tab.");
   const { sessionId, tabId } = destination as unknown as { sessionId: string; tabId: string };
-  return { deploymentId, scope: "workspace", sessionId, tabId };
+  return { deploymentId, scope: "tabs", sessionId, tabId };
 }
 
 function threadTitled(snapshot: HostSnapshot, title: string): string {
@@ -1294,7 +1268,7 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     }
     await press(control(front(w), "https://pending.example/"));
     expect(w.stack.top.params).toMatchObject({
-      scope: "workspace",
+      scope: "tabs",
       pendingBrowserTab: "mobile-list",
     });
     expect(front(w).textContent).toContain("Opening");
@@ -1311,12 +1285,10 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
 
   it("is a sidebar destination with the Menu, opened as the Deployment's own", async () => {
     const w = await world();
-    const destinations = buttons(sidebar(w))
-      .map((button) => button.textContent?.trim())
-      .filter((label) => ["Chat", "New task", "Projects", "All tabs"].includes(label ?? ""));
-    expect(destinations).toEqual(["Chat", "New task", "Projects", "All tabs"]);
+    expect(find(sidebar(w), "New task")).toBeDefined();
+    expect(find(sidebar(w), "All tabs")).toBeDefined();
 
-    // From Chat: pushed over Chat, the Deployment's tabs rather than Chat's.
+    // From Home: pushed over Home.
     await openSidebarTabs(w);
     expect(w.stack.trace.at(-1)).toEqual({
       action: "PUSH",
@@ -1330,8 +1302,8 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
       buttons(bar).some((button) => button.getAttribute("aria-label")?.startsWith("Menu")),
     ).toBe(true);
 
-    // From Tabs to Projects and back: one destination replaces the other.
-    await press(control(sidebar(w), "Projects"));
+    // From Tabs to Automations and back: one destination replaces the other.
+    await press(control(sidebar(w), "Automations"));
     await openSidebarTabs(w);
     expect(w.stack.trace.at(-1)).toEqual({
       action: "REPLACE",
@@ -1339,12 +1311,12 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
       from: "sidebar",
     });
     expect(w.stack.routes.map(({ name }) => name)).toEqual(["Home", "Tabs"]);
-    w.record("J1 sidebar destination from Chat and Projects");
+    w.record("J1 sidebar destination from Home and Automations");
   });
 
-  it("from task A resets to Chat and Tabs, carrying no conversation", async () => {
+  it("from task A resets to Home and Tabs, carrying no conversation", async () => {
     const snapshot = new MockHostClient({ automations: "absent", latencyMs: 0 }).getSnapshot();
-    const taskA = threadTitled(snapshot, "Switch Slack to Opensteer");
+    const taskA = threadTitled(snapshot, "Review storage integration");
     const w = await world({
       routes: [
         { name: "Home", params: { deploymentId } },
@@ -1425,8 +1397,6 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     expect(row(screen, "Pixel 7").getAttribute("aria-label")).toBe(
       "Pixel 7, Agent Phone, Check the delivery ETA, working here",
     );
-    // Chat in a tab wears Chat's orb.
-    expect(row(screen, "Weekend ideas").querySelector("[data-chat-orb]")).not.toBeNull();
     // Marks, never names, on screen: the words are titles and sites.
     expect(screen.querySelector("[data-header-title]")?.textContent).toBe("Tabs");
     const words = screen.querySelector("[data-list]")!.textContent;
@@ -1481,14 +1451,14 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     expect(shown()).toEqual(places.map(({ title }) => title));
   });
 
-  it("does not redraw the page bar when Chat streams a token", async () => {
+  it("does not redraw the page bar when a task streams a token", async () => {
     let host!: ReturnType<typeof steerable>;
     const w = await world({ prepare: (mock) => void (host = steerable(mock)) });
     await openSidebarTabs(w);
     await press(row(front(w), "Friday dinner"));
     const before = harness.draws.get("menu:Ask") ?? 0;
     expect(before).toBeGreaterThan(0);
-    const home = w.host.getSnapshot().homeThreadId!;
+    const home = w.host.getSnapshot().threads[0]!.id;
     await host.change((snapshot) => ({
       ...snapshot,
       transcripts: {
@@ -1519,7 +1489,7 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     ];
     const before = drawn();
     expect(before.every((count) => count > 0)).toBe(true);
-    const home = w.host.getSnapshot().homeThreadId!;
+    const home = w.host.getSnapshot().threads[0]!.id;
     for (const text of ["Hel", "Hello", "Hello there"])
       await host.change((snapshot) => {
         const entries = snapshot.transcripts[home] ?? [];
@@ -1633,13 +1603,12 @@ describe("J2: a tab from Tabs is that tab alone, whoever was in front", () => {
     expect(harness.paneMounts.filter((mount) => mount.endsWith(":companion"))).toEqual([]);
   }
 
-  it("on a narrow cover screen, from Chat, shows the page alone and leaves Chat's draft where it was", async () => {
+  it("on a narrow cover screen, from Home, shows the page alone", async () => {
     harness.frame = { height: 748, width: 344 };
     harness.pair = { height: 700, width: 344 };
     const w = await world();
-    await typeDraft(front(w), "Ask about the reservation");
     await openSidebarTabs(w);
-    // Friday dinner is held by a task; neither that task nor Chat comes with it.
+    // Friday dinner is held by a task, which does not come with it.
     const place = placeList(w.host.getSnapshot()).find(({ title }) => title === "Friday dinner")!;
     await press(row(front(w), "Friday dinner"));
     const opened = w.stack.top;
@@ -1652,14 +1621,13 @@ describe("J2: a tab from Tabs is that tab alone, whoever was in front", () => {
     expect(w.stack.top.name).toBe("Tabs");
     await press(row(front(w), "Q4 roadmap – Linear"));
     expectAlone(front(w));
-    // Back to Chat: its own draft, untouched.
+    // Back to Home.
     await act(async () => w.stack.navigation(w.stack.top.key).goBack());
     await act(async () => w.stack.navigation(w.stack.top.key).goBack());
     await settle();
     expect(w.stack.routes.map(({ name }) => name)).toEqual(["Home"]);
-    expect(draftShown(front(w))).toBe("Ask about the reservation");
     expect(w.calls.creates).toEqual([]);
-    w.record("J2 from Chat on a cover screen");
+    w.record("J2 from Home on a cover screen");
   });
 
   it("from task A shows the tab alone, and A keeps its draft when chosen again from the sidebar", async () => {
@@ -1685,17 +1653,7 @@ describe("J2: a tab from Tabs is that tab alone, whoever was in front", () => {
     w.record("J2 from task A");
   });
 
-  it("before Chat exists, opens Tabs and a tab alone and creates nothing", async () => {
-    // The mock's world before Chat has no computer to browse on, so the page
-    // itself is opened in the seeded world.
-    const first = await world({ host: { initialHome: "absent" } });
-    expect(first.host.getSnapshot().homeThreadId).toBeNull();
-    await openSidebarTabs(first);
-    expect(first.stack.top).toMatchObject({ name: "Tabs", params: { deploymentId } });
-    expect(placeRows(front(first))).toHaveLength(placeList(first.host.getSnapshot()).length);
-    expect(first.calls.creates).toEqual([]);
-    first.record("J2 before Chat: Tabs");
-
+  it("opens a tab alone and creates nothing", async () => {
     const w = await world({
       routes: [
         { name: "Home", params: { deploymentId } },
@@ -1703,7 +1661,7 @@ describe("J2: a tab from Tabs is that tab alone, whoever was in front", () => {
       ],
     });
     await press(row(front(w), "Q4 roadmap – Linear"));
-    expect(w.stack.top.params).toMatchObject({ scope: "workspace" });
+    expect(w.stack.top.params).toMatchObject({ scope: "tabs" });
     expectAlone(front(w));
     expect(w.calls.creates).toEqual([]);
     w.record("J2 tab with no conversation");
@@ -1747,7 +1705,7 @@ describe("J3: a saved tab restores once, through the shared activation", () => {
 
   it("closes an offline saved tab from its menu without starting its browser", async () => {
     const { saved, w } = await openSaved({ profileName: "Work", connected: false });
-    const close = vi.spyOn(w.host, "closeWorkspaceTabs");
+    const close = vi.spyOn(w.host, "closePersonalTabs");
     await press(control(front(w), "Close tab"));
     expect(close).toHaveBeenCalledExactlyOnceWith([saved.tabId]);
     expect(w.stack.top.name).toBe("Tabs");
@@ -1777,7 +1735,7 @@ describe("J3: a saved tab restores once, through the shared activation", () => {
 
   it("retries a failed saved-tab close without restarting its browser", async () => {
     const { saved, w } = await openSaved({ profileName: "Work", connected: false });
-    const close = vi.spyOn(w.host, "closeWorkspaceTabs").mockResolvedValueOnce({
+    const close = vi.spyOn(w.host, "closePersonalTabs").mockResolvedValueOnce({
       closed: [],
       failed: [{ tabId: saved.tabId, message: "The close was interrupted." }],
     });
@@ -1836,7 +1794,7 @@ describe("J3: a saved tab restores once, through the shared activation", () => {
     expect(front(w).textContent).toContain("This tab was closed");
     expect(JSON.stringify(w.stack.routes)).toBe(routes);
     expect(front(w).querySelector("[data-page]")).toBeNull();
-    expect(w.host.getSnapshot().activatingWorkspaceTabs ?? []).not.toContain(saved.tabId);
+    expect(w.host.getSnapshot().activatingPersonalTabs ?? []).not.toContain(saved.tabId);
     w.record("J3 closed while opening");
   });
 
@@ -1888,7 +1846,7 @@ describe("J6: native views keep their own authority", () => {
     expect(w.stack.top.params).toMatchObject({
       appKey: "com.apple.notes",
       generation,
-      scope: "workspace",
+      scope: "tabs",
       viewId,
     });
     expect(w.stack.top.params?.["computerSessionId"]).toBeUndefined();
@@ -1939,7 +1897,7 @@ describe("J6: native views keep their own authority", () => {
       computerSessionId: session,
       deploymentId,
       machineId: slack.destination.machineId,
-      scope: "workspace",
+      scope: "tabs",
     });
     expect(w.calls.displays.map((source) => JSON.parse(source))).toContainEqual({
       appKey: "com.tinyspeck.slackmacgap",
@@ -1959,7 +1917,7 @@ describe("J7: a task's page from Tabs, beside its occupant's thread only where t
       ],
     });
     const snapshot = w.host.getSnapshot();
-    const occupant = threadTitled(snapshot, "Switch Slack to Opensteer");
+    const occupant = threadTitled(snapshot, "Build the new architecture");
     const place = placeList(snapshot).find(({ title }) => title === "Le Petit Jardin")!;
     await press(row(front(w), "Le Petit Jardin"));
     expect(w.stack.top.params).toEqual(aloneRoute(place));
@@ -1975,20 +1933,16 @@ describe("J7: a task's page from Tabs, beside its occupant's thread only where t
     expect(beside()).toEqual([`${occupant}:companion`]);
     const companion = () => screen.querySelector<HTMLElement>('[data-testid="conversation-slot"]')!;
     await typeDraft(companion(), "Keep the occupant’s question");
-    await press(control(screen, "Ask in Chat"));
+    await press(control(screen, "New task"));
     expect(draftShown(companion())).toBe("");
     // Closed from its pill, the pane goes; the occupant's own thread comes back from the bar.
     await press(
       control(screen.querySelector<HTMLElement>('[data-testid="conversation-name"]')!, "Close"),
     );
     expect(screen.querySelector('[data-testid="conversation-slot"]')).toBeNull();
-    await press(control(screen, "Switch Slack to Opensteer · Working here"));
+    await press(control(screen, "Build the new architecture · Working here"));
     expect(draftShown(companion())).toBe("Keep the occupant’s question");
-    const mounted = [
-      `${occupant}:companion`,
-      `${snapshot.homeThreadId}:companion`,
-      `${occupant}:companion`,
-    ];
+    const mounted = [`${occupant}:companion`, `${occupant}:companion`];
     expect(beside()).toEqual(mounted);
     harness.pair = { height: 900, width: 900 };
     harness.regions = [
@@ -2025,11 +1979,11 @@ describe("J8: one sidebar switches between tasks and tabs", () => {
         (place) =>
           place.kind === "browser" &&
           place.availability === "ready" &&
-          place.workspaceTab?.state !== "suspended",
+          place.personalTab?.state !== "suspended",
       );
     if (roadmap === undefined || dinner === undefined) throw new Error("Too few live tabs.");
     const later = places.slice(5).find((place) => place.kind === "browser")!;
-    const taskA = threadTitled(snapshot, "Switch Slack to Opensteer");
+    const taskA = threadTitled(snapshot, "Review storage integration");
     const sidebarColumn = () => w.container.querySelector('[data-testid="sidebar-column"]');
 
     // The tab, exactly, in the sidebar's room: never three panes.
@@ -2041,10 +1995,10 @@ describe("J8: one sidebar switches between tasks and tabs", () => {
     expect(front(w).querySelector("[data-page]")).not.toBeNull();
     expect(sidebarColumn()).toBeNull();
 
-    // Back to Chat docks the sidebar again; a task, then another tab, each in place of the last.
+    // Back to Home docks the sidebar again; a task, then another tab, each in place of the last.
     await act(async () => w.stack.navigation(w.stack.top.key).goBack());
     expect(w.stack.routes[0]!.key).toBe(home.key);
-    await press(row(dockedSidebar(w), "Switch Slack to Opensteer"));
+    await press(row(dockedSidebar(w), "Review storage integration"));
     expect(w.stack.routes.map(({ name }) => name)).toEqual(["Home", "Thread"]);
     expect(w.stack.top.params).toMatchObject({ threadId: taskA });
     await press(row(dockedSidebar(w), dinner.title));
@@ -2081,68 +2035,53 @@ describe("J8: one sidebar switches between tasks and tabs", () => {
   });
 });
 
-it.each([
-  "mac",
-  "phone",
-  "personal",
-  "other",
-  "no-computer-use",
-  "legacy-personal",
-  "legacy-server",
-])("offers Tabs Open and its empty action only for an owned computer: %s", async (kind) => {
-  const personal = kind === "personal" || kind === "legacy-personal";
-  let host!: ReturnType<typeof steerable>;
-  const w = await world({
-    prepare: (mock) => {
-      host = steerable(mock);
-    },
-  });
-  await openSidebarTabs(w);
-  await host.change((snapshot) => {
-    const machine = snapshot.machines.find((m) =>
-      kind === "phone" ? m.device?.platform === "android" : m.name === "Mac mini",
-    )!;
-    return seedBrowserSnapshot(
-      {
-        ...snapshot,
-        browserAvailable: false,
-        browserSessions: [],
-        deploymentShape: {
-          ...snapshot.deploymentShape!,
-          kind: personal ? "personal" : "server",
-        },
-        machines: [
-          {
-            ...machine,
-            ownership:
-              personal || kind === "legacy-server"
-                ? "deployment"
-                : kind === "other"
-                  ? "other"
-                  : "mine",
-            tabOpenedAt: null,
-            computerUse:
-              kind === "no-computer-use"
-                ? null
-                : { ...machine.computerUse!, ownerViews: [], sessions: [] },
-          },
-        ],
-        ...(kind.startsWith("legacy-") ? { deploymentPolicy: undefined } : {}),
-      } as HostSnapshot,
-      [],
-    ) as HostSnapshot;
-  });
-  const offered = !["other", "no-computer-use", "legacy-server"].includes(kind);
-  expect(find(front(w), "Open") !== undefined).toBe(offered);
-  expect(find(front(w), "Open an app") !== undefined).toBe(offered);
-  if (offered) {
-    // Both controls use the same route; this stand-in only records arrival at the sheet.
-    screens["OpenApp"] = () => <p>Open sheet</p>;
-    await press(control(front(w), "Open an app"));
-    expect(w.stack.routes.at(-1)).toMatchObject({
-      name: "OpenApp",
-      params: { deploymentId: expect.any(String) },
+it.each(["mac", "phone", "personal", "other", "no-computer-use"])(
+  "offers Tabs Open and its empty action only for an owned computer: %s",
+  async (kind) => {
+    const personal = kind === "personal";
+    let host!: ReturnType<typeof steerable>;
+    const w = await world({
+      prepare: (mock) => {
+        host = steerable(mock);
+      },
     });
-    delete screens["OpenApp"];
-  }
-});
+    await openSidebarTabs(w);
+    await host.change((snapshot) => {
+      const machine = snapshot.machines.find((m) =>
+        kind === "phone" ? m.device?.platform === "android" : m.name === "Mac mini",
+      )!;
+      return seedBrowserSnapshot(
+        {
+          ...snapshot,
+          browserAvailable: false,
+          browserSessions: [],
+          machines: [
+            {
+              ...machine,
+              ownership: personal ? "deployment" : kind === "other" ? "other" : "mine",
+              tabOpenedAt: null,
+              computerUse:
+                kind === "no-computer-use"
+                  ? null
+                  : { ...machine.computerUse!, ownerViews: [], sessions: [] },
+            },
+          ],
+        } as HostSnapshot,
+        [],
+      ) as HostSnapshot;
+    });
+    const offered = !["other", "no-computer-use"].includes(kind);
+    expect(find(front(w), "Open") !== undefined).toBe(offered);
+    expect(find(front(w), "Open an app") !== undefined).toBe(offered);
+    if (offered) {
+      // Both controls use the same route; this stand-in only records arrival at the sheet.
+      screens["OpenApp"] = () => <p>Open sheet</p>;
+      await press(control(front(w), "Open an app"));
+      expect(w.stack.routes.at(-1)).toMatchObject({
+        name: "OpenApp",
+        params: { deploymentId: expect.any(String) },
+      });
+      delete screens["OpenApp"];
+    }
+  },
+);

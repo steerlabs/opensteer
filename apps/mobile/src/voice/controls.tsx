@@ -59,7 +59,7 @@ const selectLive = (snapshot: VoiceSnapshot) => voiceBar(snapshot).live;
 const selectTone = (snapshot: VoiceSnapshot) => voiceBar(snapshot).tone;
 
 /**
- * Chat composer's way in: starts voice, or ends the call. `disc` is the bar's
+ * Home composer's way in: starts voice, or ends the call. `disc` is the bar's
  * trailing circle when there is nothing to send; `glyph` sits among the
  * other toolbar glyphs.
  */

@@ -1,5 +1,11 @@
 import {
+  DeploymentIdSchema,
+  mobileDeepLinkScheme,
   opensteerMobileClient,
+  parseTeamPageAppLink,
+  TeamNoticeIdSchema,
+  TeamOriginSchema,
+  teamPageUrl,
   parseMobileOpenDeepLink,
   parseMobilePairingDeepLink,
   parseMobileSetupCode,
@@ -24,6 +30,11 @@ import { parseAgentConnectionDeepLink } from "@opensteer/protocol";
  * `authorize-agent` opens an agent's connection request for review. The link
  * carries no authority: the Host decides whether this phone's session may
  * answer it, and the person still chooses Allow or Deny.
+ *
+ * `team` is a team page a team's "Open in Opensteer" handed over: an invite
+ * (its verifier stays in the page URL's fragment), a channel or a message. It
+ * is opened only after the team itself says the reader may see it. `team-notice`
+ * opens that team's notices.
  */
 export type ApplicationLinkOutcome =
   | { readonly kind: "ignore" }
@@ -39,12 +50,23 @@ export type ApplicationLinkOutcome =
       readonly messageId?: string;
       readonly threadId: string;
     }
+  | { readonly kind: "team"; readonly page: string; readonly origin: string }
+  | {
+      readonly kind: "team-notice";
+      readonly origin: string;
+      readonly teamId: string;
+      readonly noticeId: string;
+    }
   | { readonly detail: string; readonly kind: "unknown-deployment" };
 
 export function resolveApplicationLink(
   url: string,
   knownDeploymentIds: readonly string[],
 ): ApplicationLinkOutcome {
+  const team = parseTeamPageAppLink(url, mobileDeepLinkScheme);
+  if (team !== null) return { kind: "team", origin: team.origin, page: teamPageUrl(team) };
+  const notice = parseTeamNoticeLink(url);
+  if (notice !== null) return { kind: "team-notice", ...notice };
   const agent = parseAgentConnectionDeepLink(url, opensteerMobileClient.applicationId);
   if (agent !== null)
     return knownDeploymentIds.includes(agent.deploymentId)
@@ -108,4 +130,42 @@ export function routeSetupCode(
   if (code.kind === "open") to.open(code.deploymentId);
   else to.offer({ code: code.code, origin: code.origin });
   return true;
+}
+
+/**
+ * A team notice's link, as the team's push publication spells it:
+ * `com.opensteer.mobile:/team-notice?origin=…&teamId=…&noticeId=…`.
+ */
+export function parseTeamNoticeLink(
+  value: string,
+): { readonly origin: string; readonly teamId: string; readonly noticeId: string } | null {
+  if (!value.startsWith(`${mobileDeepLinkScheme}:/team-notice?`) || value.includes("#"))
+    return null;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.host || url.pathname !== "/team-notice" || url.searchParams.size !== 3) return null;
+  const origin = TeamOriginSchema.safeParse(url.searchParams.get("origin"));
+  const teamId = DeploymentIdSchema.safeParse(url.searchParams.get("teamId"));
+  const noticeId = TeamNoticeIdSchema.safeParse(url.searchParams.get("noticeId"));
+  if (!origin.success || !teamId.success || !noticeId.success) return null;
+  return { origin: origin.data, teamId: teamId.data, noticeId: noticeId.data };
+}
+
+/**
+ * Which computer a team link should be shown on. The team is reached directly,
+ * so its chat works whichever computer is in front; the drawer it belongs to is
+ * that of a computer that is in it. Stays on the computer in front when it is
+ * in the team or none is known to be; otherwise moves to one that is.
+ */
+export function computerForTeam(input: {
+  readonly shown: string | null;
+  readonly computersInTeam: readonly string[];
+}): string | null {
+  if (input.computersInTeam.length === 0) return null;
+  if (input.shown !== null && input.computersInTeam.includes(input.shown)) return null;
+  return input.computersInTeam[0] ?? null;
 }

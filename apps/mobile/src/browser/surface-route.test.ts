@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { WorkspaceSurfaceDestination } from "@opensteer/client/host";
+import type { PersonalSurfaceDestination } from "@opensteer/client/host";
 import {
   pageSite,
   paramsDestination,
@@ -7,7 +7,7 @@ import {
   sameDestination,
   surfaceRoute,
   viewedPage,
-  workspaceRoute,
+  tabsRoute,
 } from "./surface-route.js";
 
 const source = { kind: "owner-view", viewId: "view", generation: 2 } as const;
@@ -35,7 +35,7 @@ describe("app tab routes", () => {
 
   it("round trips through typed and untyped params from Tabs and from a conversation", () => {
     for (const route of [
-      workspaceRoute("deployment", destination),
+      tabsRoute("deployment", destination),
       surfaceRoute("deployment", "thread", destination),
     ]) {
       expect(route.appId).toBe(appId);
@@ -76,17 +76,17 @@ describe("native viewer routes", () => {
       windowId: 42,
       source,
     } as const;
-    const route = workspaceRoute("deployment", destination);
+    const route = tabsRoute("deployment", destination);
     expect(route.windowId).toBe(42);
     expect(routeDestination(route)).toEqual(destination);
     expect(paramsDestination(route)).toEqual(destination);
   });
-  it.each<WorkspaceSurfaceDestination>([
+  it.each<PersonalSurfaceDestination>([
     { kind: "app", machineId: "mac", appKey: "notes", source },
     { kind: "app", machineId: "mac", appKey: "notes", computerSessionId: "task" },
     { kind: "phone", machineId: "phone" },
   ])("keeps legacy, task and phone routes without a window ($kind)", (destination) => {
-    const route = workspaceRoute("deployment", destination);
+    const route = tabsRoute("deployment", destination);
     expect(route).not.toHaveProperty("windowId");
     expect(paramsDestination(route)).toEqual(destination);
     expect(paramsDestination({ ...route, windowId: "42" })).toEqual(destination);

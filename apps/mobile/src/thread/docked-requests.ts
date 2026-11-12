@@ -40,7 +40,7 @@ export function requestTitleLine(request: Request): string {
 export function waitingQuestion(
   waitingRequests: readonly WaitingRequest[],
   threadId: string,
-  user: Pick<AuthenticatedUser, "id" | "instanceRole">,
+  user: Pick<AuthenticatedUser, "id">,
   options: { readonly own?: boolean } = {},
 ): { readonly surface: SurfaceModel; readonly waiting: WaitingRequest | null } | null {
   const waiting = requestsWaitingOn(waitingRequests, threadId).filter(

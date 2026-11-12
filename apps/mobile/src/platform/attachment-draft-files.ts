@@ -18,8 +18,8 @@ export interface AttachmentDraftScope {
 }
 
 /**
- * Local files for a first message, before the Thread it starts exists: Chat's
- * first message, or one new-task draft's. They belong to no Thread until the
+ * Local files for a first message, before the Thread it starts exists: one
+ * new-task draft's. They belong to no Thread until the
  * Host has made the one they start.
  */
 export type FirstMessageAttachmentDraftScope =
@@ -216,7 +216,7 @@ export async function copyFirstMessageDraftFileToThread(
     // An interrupted copy may leave a shorter file at this stable URI.
     // A same-size disagreement is not safe to overwrite as a retry.
     if (destination.size >= source.size) {
-      throw new Error("The Chat draft copy differs from the selected file. Pick it again.");
+      throw new Error("The draft copy differs from the selected file. Pick it again.");
     }
     destination.delete();
   }
