@@ -135,17 +135,8 @@ export function registerTeamSetupRoutes(
       void reply.header("cache-control", "no-store");
       return HostedTeamOwnerCheckResponseSchema.parse(await hosted.isOwner(input.assertion));
     });
-  app.post("/v1/team/setup/sign-in", { onRequest: gate }, async (request, reply) => {
-    const result = await options.identity.beginOidcSignIn({
-      headers: headers(request),
-      providerId: "opensteer-account",
-      returnPath: "/",
-    });
-    for (const cookie of result.headers.getSetCookie()) void reply.header("set-cookie", cookie);
-    void reply.header("cache-control", "no-store");
-    return result.data;
-  });
 }
+const teamSignInScript = `const signIn=async()=>{const result=await post('/v1/rpc/auth.oidc.begin',{providerId:'opensteer-account',returnPath:'/'});if(!result.ok)throw new Error(result.error.message);location.assign(result.data.redirectUrl);};`;
 function teamSetupPage(nonce: string, accountPortalOrigin: string) {
   const portal = new URL(accountPortalOrigin).origin;
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Set up your team · Opensteer</title><style>body{font:16px system-ui;margin:12vh auto;padding:24px;max-width:440px;color:#25231f;background:#faf9f6}h1{font-weight:600}button{font:inherit;padding:12px 18px;border-radius:10px;border:1px solid #d6d2ca;background:#fff;cursor:pointer}p{line-height:1.5}</style><h1>Set up your team</h1><p id="status">Checking setup…</p><button id="continue" hidden>Continue with Opensteer Account</button><script nonce="${nonce}">
@@ -153,9 +144,10 @@ function teamSetupPage(nonce: string, accountPortalOrigin: string) {
   const status=document.getElementById('status'),button=document.getElementById('continue');
   const portal=${JSON.stringify(portal)},versionHeaders=${versionHeaders()};
   const post=async(path,input)=>{const r=await fetch(path,{method:'POST',headers:{...versionHeaders,'content-type':'application/json'},body:JSON.stringify(input),redirect:'error'});if(!r.ok)throw new Error('Setup could not continue. Re-run the team setup script for a new link.');return r.json();};
+  ${teamSignInScript}
   let popup=null,nonce=null,ready=false;
   const initialize=async()=>{try{if(verifier)await post('/v1/team/setup/exchange',{token:verifier});const state=await(await fetch('/v1/team/setup/state',{headers:versionHeaders})).json();if(state.complete){location.replace('/');return;}ready=state.accountReady;status.textContent='Your team uses Opensteer Account to sign in. Your own agent and files stay on your computer.';button.hidden=false;}catch(error){status.textContent=error.message;}};
-  button.onclick=async()=>{if(ready){try{const result=await post('/v1/team/setup/sign-in',{});location.assign(result.redirectUrl);}catch(error){status.textContent=error.message;}return;}nonce=crypto.randomUUID();const url=new URL('/team-setup',portal);url.searchParams.set('origin',location.origin);url.searchParams.set('nonce',nonce);popup=window.open(url.href,'opensteer-team-setup','popup,width=520,height=720');if(!popup)status.textContent='Allow this popup to continue with Opensteer Account.';};
+  button.onclick=async()=>{if(ready){try{await signIn();}catch(error){status.textContent=error.message;}return;}nonce=crypto.randomUUID();const url=new URL('/team-setup',portal);url.searchParams.set('origin',location.origin);url.searchParams.set('nonce',nonce);popup=window.open(url.href,'opensteer-team-setup','popup,width=520,height=720');if(!popup)status.textContent='Allow this popup to continue with Opensteer Account.';};
   window.addEventListener('message',async(event)=>{if(event.source!==popup||event.origin!==portal||event.data?.nonce!==nonce)return;try{if(event.data.type==='team-setup.account'){const proof=await post('/v1/team/setup/adoption/proof',event.data.account);popup.postMessage({type:'team-setup.proof',nonce,proof},portal);}else if(event.data.type==='team-setup.completed'){popup.close();ready=true;status.textContent='Your team is connected. Sign in to become its first owner.';button.textContent='Sign in and create team';}}catch(error){status.textContent=error.message;}});
   initialize();</script></html>`;
 }
@@ -194,13 +186,14 @@ const verifier=location.hash.slice(1),selector=location.pathname.split('/').pop(
 const versionHeaders=${versionHeaders()},el=(id)=>document.getElementById(id);
 const show=(id)=>{for(const main of document.querySelectorAll('main'))main.hidden=main.id!==id;};
 const post=async(path,input)=>{const r=await fetch(path,{method:'POST',headers:{...versionHeaders,'content-type':'application/json'},body:JSON.stringify(input),redirect:'error'});const body=await r.json().catch(()=>null);if(!r.ok)throw Object.assign(new Error(body?.message??'Something went wrong. Try again.'),{reason:body?.reason});return body;};
+${teamSignInScript}
 const refuse=(reason)=>{el('refused-title').textContent=reason==='invite-expired'?'This invite has expired':reason==='invite-used-up'?'This invite has been used up':reason==='missing'?'Open your invite link again':"This invite doesn't work";show('refused');};
 const mobile=/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)||(navigator.maxTouchPoints>1&&/Macintosh/.test(navigator.userAgent));
 el('open-app').href=(mobile?${JSON.stringify(teamAppScheme("mobile"))}:${JSON.stringify(teamAppScheme("desktop"))})+':/team?'+new URLSearchParams({url:location.origin+location.pathname+'#'+verifier});
 el('open-app').onclick=()=>show('opening');
 el('web').onclick=()=>show('joining');
 for(const back of document.querySelectorAll('[data-back]'))back.onclick=()=>show('start');
-el('sign-in').onclick=async()=>{const button=el('sign-in'),error=el('join-error');button.disabled=true;error.hidden=true;try{await post('/v1/team/invites/exchange',{selector,verifier});const result=await post('/v1/team/setup/sign-in',{});location.assign(result.redirectUrl);}catch(e){if(e.reason&&e.reason.startsWith('invite-'))return refuse(e.reason);error.textContent=e.message;error.hidden=false;button.disabled=false;}};
+el('sign-in').onclick=async()=>{const button=el('sign-in'),error=el('join-error');button.disabled=true;error.hidden=true;try{await post('/v1/team/invites/exchange',{selector,verifier});await signIn();}catch(e){if(e.reason&&e.reason.startsWith('invite-'))return refuse(e.reason);error.textContent=e.message;error.hidden=false;button.disabled=false;}};
 (async()=>{if(!/^[A-Za-z0-9_-]{24,128}$/.test(verifier))return refuse('missing');if(authorize!==null){try{await post('/v1/team/invites/exchange',{selector,verifier});location.replace(${JSON.stringify(teamNativeAuthorizePath)}+'?'+authorize);}catch(e){if(e.reason&&e.reason.startsWith('invite-'))return refuse(e.reason);el('checking-text').textContent=e.message;}return;}try{const invite=await post(${JSON.stringify(teamInvitePreviewPath)},{selector,verifier});el('mark').textContent=[...invite.teamName.trim()][0]?.toUpperCase()??'';el('invited').textContent='You\u2019re invited to '+invite.teamName;el('join-title').textContent='Join '+invite.teamName;document.title='Join '+invite.teamName+' \u00b7 Opensteer';show('start');}catch(e){refuse(e.reason);}})();
 </script></html>`;
 }

@@ -8,6 +8,9 @@ import {
   type TeamBootstrapSchema,
 } from "@opensteer/protocol";
 import type { z } from "zod";
+import { startHostOidcSignIn } from "../account/host-oidc.js";
+import { NativeOAuthConsent, useNativeOAuthQuery } from "../account/native-oauth-consent.js";
+import { consumeOAuthErrorQuery } from "../account/auth-error-query.js";
 import { Icon } from "../components/icon.js";
 import { ErrorNotice, OnboardingCard } from "../components/onboarding-card.js";
 import { ToastProvider } from "../components/toast.js";
@@ -59,6 +62,20 @@ async function readEntry(): Promise<Entry> {
  * the team.
  */
 export function TeamWebApp() {
+  const nativeOAuthQuery = useNativeOAuthQuery();
+  const [authorizationError] = useState(() =>
+    consumeOAuthErrorQuery(window.location, (url) => window.history.replaceState(null, "", url)),
+  );
+  const rpc = useMemo(
+    () =>
+      createHttpHostApiClient({
+        baseUrl: new URL(window.location.origin),
+        fetch: globalThis.fetch.bind(globalThis),
+        kind: "team",
+        onAuthenticationRequired: () => undefined,
+      }),
+    [],
+  );
   const [entry, setEntry] = useState<Entry>({ kind: "loading" });
   useEffect(() => {
     void readEntry()
@@ -67,6 +84,17 @@ export function TeamWebApp() {
   }, []);
   const [link] = useState(sharedLink);
   const [continued, setContinued] = useState(false);
+  if (authorizationError)
+    return (
+      <OnboardingCard
+        title="Authorization couldn’t finish"
+        description="Close this browser and start sign-in again in the Opensteer app."
+      >
+        <ErrorNotice message={authorizationError.description ?? authorizationError.error} />
+      </OnboardingCard>
+    );
+  if (entry.kind === "ready" && nativeOAuthQuery)
+    return <NativeOAuthConsent oauthQuery={nativeOAuthQuery} rpc={rpc} />;
   if (entry.kind === "loading") return null;
   if (link && !continued)
     return (
@@ -76,7 +104,8 @@ export function TeamWebApp() {
         signedIn={entry.kind === "ready"}
       />
     );
-  if (entry.kind === "signed-out") return <TeamSignIn setUp={entry.setUp} />;
+  if (entry.kind === "signed-out")
+    return <TeamSignIn setUp={entry.setUp} oauthQuery={nativeOAuthQuery} rpc={rpc} />;
   if (entry.kind === "failed")
     return (
       <OnboardingCard title="This team can’t open">
@@ -117,7 +146,15 @@ function SharedLinkLanding({
   );
 }
 
-function TeamSignIn({ setUp }: { readonly setUp: boolean }) {
+function TeamSignIn({
+  setUp,
+  oauthQuery,
+  rpc,
+}: {
+  readonly setUp: boolean;
+  readonly oauthQuery: string | null;
+  readonly rpc: ReturnType<typeof createHttpHostApiClient>;
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (!setUp)
@@ -131,19 +168,19 @@ function TeamSignIn({ setUp }: { readonly setUp: boolean }) {
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch("/v1/team/setup/sign-in", {
-        body: "{}",
-        headers: { ...versionHeaders, "content-type": "application/json" },
-        method: "POST",
-        redirect: "error",
+      await startHostOidcSignIn({
+        desktopBridge: null,
+        deploymentId: null,
+        hostClient: { rpc },
+        navigate: (url) => window.location.assign(url),
+        oauthQuery,
+        providerId: "opensteer-account",
       });
-      if (!response.ok) throw new Error("Sign-in couldn’t start.");
-      const { redirectUrl } = (await response.json()) as { redirectUrl?: unknown };
-      if (typeof redirectUrl !== "string") throw new Error("Sign-in couldn’t start.");
-      window.location.assign(redirectUrl);
     } catch (failure) {
       setBusy(false);
-      setError(failure instanceof Error ? failure.message : "Sign-in couldn’t start.");
+      setError(
+        `${failure instanceof Error ? failure.message : "Sign-in couldn’t start."}${oauthQuery ? " Close this browser and start sign-in again in the Opensteer app." : ""}`,
+      );
     }
   };
   return (

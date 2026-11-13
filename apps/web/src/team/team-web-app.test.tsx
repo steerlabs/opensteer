@@ -24,7 +24,7 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { headers: { "content-type": "application/json" }, status });
 
 /** The team server at this origin: the mock team behind its HTTP routes. */
-function serveTeam(options: { readonly signedIn: boolean }) {
+function serveTeam(options: { readonly signedIn: boolean; readonly consentError?: string }) {
   const team = new MockTeamHost();
   seedBusyTeam(team, { name: "Acme", index: 1 });
   const requests: { readonly path: string; readonly init: RequestInit | undefined }[] = [];
@@ -35,8 +35,21 @@ function serveTeam(options: { readonly signedIn: boolean }) {
       requests.push({ path: url.pathname, init });
       if (url.pathname === "/v1/team/setup/state")
         return json({ complete: true, accountReady: true });
-      if (url.pathname === "/v1/team/setup/sign-in")
-        return json({ redirectUrl: "https://account.opensteer.example/authorize?state=1" });
+      if (url.pathname === "/v1/rpc/auth.oidc.begin")
+        return json({
+          ok: true,
+          data: { redirectUrl: "https://account.opensteer.example/authorize?state=1" },
+        });
+      if (url.pathname === "/v1/rpc/auth.native.complete")
+        return options.consentError
+          ? json({
+              ok: false,
+              error: { code: "bad_request", message: options.consentError, retryable: false },
+            })
+          : json({
+              ok: true,
+              data: { url: "com.opensteer.opensteer:/oauth/callback?code=returned" },
+            });
       const name = url.pathname.replace("/v1/rpc/", "") as keyof MockTeamHost["rpc"];
       if (!options.signedIn)
         return json({ ok: false, error: { code: "unauthenticated", message: "Sign in." } }, 401);
@@ -74,6 +87,17 @@ const button = (node: HTMLElement, label: string) =>
     (candidate) => candidate.textContent === label,
   );
 
+const nativeQuery = new URLSearchParams({
+  response_type: "code",
+  client_id: "opensteer-desktop",
+  redirect_uri: "com.opensteer.opensteer:/oauth/callback",
+  code_challenge: "a".repeat(43),
+  code_challenge_method: "S256",
+  ba_iat: "1786499200000",
+  ba_param: "client_id",
+  sig: "signed-value",
+}).toString();
+
 describe("a team's own web app", () => {
   it("signs a signed-out member in through the team server", async () => {
     const { requests } = serveTeam({ signedIn: false });
@@ -87,11 +111,80 @@ describe("a team's own web app", () => {
     });
 
     expect(assign).toHaveBeenCalledWith("https://account.opensteer.example/authorize?state=1");
-    const signIn = requests.find(({ path }) => path === "/v1/team/setup/sign-in");
+    const signIn = requests.find(({ path }) => path === "/v1/rpc/auth.oidc.begin");
     expect(signIn?.init?.method).toBe("POST");
     expect(new Headers(signIn?.init?.headers).get(teamApiVersionHeader)).toBe(
       String(teamApiVersion),
     );
+  });
+
+  it("retains the native continuation through Account sign-in and reload", async () => {
+    window.history.replaceState(null, "", `/?${nativeQuery}`);
+    const { requests } = serveTeam({ signedIn: false });
+    const assign = vi.spyOn(window.location, "assign").mockImplementation(() => undefined);
+    let node = await render();
+    expect(window.location.search).toBe("");
+    expect(window.history.state.nativeOAuthQuery).toBe(nativeQuery);
+    act(() => root?.unmount());
+    root = null;
+    node = await render();
+    await act(async () => button(node, "Continue with Opensteer Account")?.click());
+    expect(assign).toHaveBeenCalled();
+    expect(
+      JSON.parse(
+        String(requests.find(({ path }) => path.endsWith("/auth.oidc.begin"))?.init?.body),
+      ),
+    ).toEqual({
+      providerId: "opensteer-account",
+      returnPath: "/",
+      oauthQuery: nativeQuery,
+    });
+  });
+
+  it.each([true, false])(
+    "requires consent before chat and returns the app callback (accept=%s)",
+    async (accept) => {
+      window.history.replaceState(null, "", `/?${nativeQuery}`);
+      const { requests } = serveTeam({ signedIn: true });
+      const assign = vi.spyOn(window.location, "assign").mockImplementation(() => undefined);
+      const node = await render();
+      expect(node.textContent).toContain("Connect Opensteer");
+      expect(node.querySelector(".sidebar")).toBeNull();
+      expect(requests.some(({ path }) => path.endsWith("/auth.native.complete"))).toBe(false);
+      await act(async () => button(node, accept ? "Allow" : "Deny")?.click());
+      const complete = requests.find(({ path }) => path.endsWith("/auth.native.complete"));
+      expect(JSON.parse(String(complete?.init?.body))).toEqual({ accept, oauthQuery: nativeQuery });
+      expect(new Headers(complete?.init?.headers).get(teamApiVersionHeader)).toBe(
+        String(teamApiVersion),
+      );
+      expect(assign).toHaveBeenCalledWith("com.opensteer.opensteer:/oauth/callback?code=returned");
+      expect(window.history.state).not.toHaveProperty("nativeOAuthQuery");
+    },
+  );
+
+  it("explains how to recover an expired consent without opening chat", async () => {
+    window.history.replaceState(null, "", `/?${nativeQuery}`);
+    serveTeam({ signedIn: true, consentError: "Consent has expired." });
+    const assign = vi.spyOn(window.location, "assign").mockImplementation(() => undefined);
+    const node = await render();
+    await act(async () => button(node, "Allow")?.click());
+    expect(node.textContent).toContain("Consent has expired.");
+    expect(node.textContent).toContain("start sign-in again in the Opensteer app");
+    expect(assign).not.toHaveBeenCalled();
+    expect(button(node, "Deny")?.hasAttribute("disabled")).toBe(false);
+  });
+
+  it("shows an upstream OAuth failure with app retry guidance", async () => {
+    window.history.replaceState(
+      null,
+      "",
+      "/auth/error?error=access_denied&error_description=Sign-in+cancelled",
+    );
+    serveTeam({ signedIn: true });
+    const node = await render();
+    expect(node.textContent).toContain("Sign-in cancelled");
+    expect(node.textContent).toContain("start sign-in again in the Opensteer app");
+    expect(node.querySelector(".sidebar")).toBeNull();
   });
 
   it("opens the team's first channel after asking who is signed in once", async () => {
