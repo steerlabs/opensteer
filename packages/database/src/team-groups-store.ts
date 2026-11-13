@@ -7,7 +7,7 @@ import {
   requireTeam,
   teamConflict,
 } from "./team-access-store.js";
-import { deleteTeamTopicGrantsFor } from "./team-topics-store.js";
+import { deleteTeamTopicGrantsFor } from "./team-knowledge-store.js";
 import { appendTeamAudit } from "./team-audit-store.js";
 
 export class TeamGroupsStore {

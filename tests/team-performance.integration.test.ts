@@ -9,11 +9,9 @@ import { teamApiVersion } from "../packages/deployment-authority/src/index.js";
 import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import { TeamAccessStore } from "../packages/database/src/team-access-store.js";
 import { TeamChatStore } from "../packages/database/src/team-chat-store.js";
-import { teamChannelTopics } from "../packages/database/src/team-topics-store.js";
 import { createTeamKnowledgeFixture } from "../packages/database/src/team-knowledge.test-support.js";
 import { appendTeamAudit } from "../packages/database/src/team-audit-store.js";
 import { startTeamKnowledge } from "../apps/host/src/knowledge/team-knowledge.js";
-import { ownTestDatabaseProducer } from "../packages/database/src/test-database.test-support.js";
 import { startTeamSystem, openMachineSocket } from "./team-system.test-support.js";
 import { TeamLinkConnection } from "../apps/host/src/team-links/connection.js";
 import {
@@ -380,7 +378,7 @@ scenario(
         });
         const access = new TeamAccessStore(instrumented);
         await access.initialize();
-        const profiled = new TeamChatStore(access, teamChannelTopics, {
+        const profiled = new TeamChatStore(access, {
           teamId: team.host.deployment.id,
           teamName: "Acme",
         });
@@ -522,7 +520,7 @@ scenario(
         });
         const access = new TeamAccessStore(instrumented);
         await access.initialize();
-        const chat = new TeamChatStore(access, teamChannelTopics, {
+        const chat = new TeamChatStore(access, {
           teamId: team.host.deployment.id,
           teamName: "Acme",
         });
@@ -669,15 +667,11 @@ scenario(
       const fixture = await createTeamKnowledgeFixture();
       const access = new TeamAccessStore(fixture.database);
       await access.initialize();
-      const knowledge = await ownTestDatabaseProducer(fixture.databaseUrl, () =>
-        startTeamKnowledge({
-          database: fixture.database,
-          databaseUrl: fixture.databaseUrl,
-          credentials: fixture.credentials,
-          access,
-          audit: appendTeamAudit,
-        }),
-      );
+      const knowledge = await startTeamKnowledge({
+        database: fixture.database,
+        access,
+        audit: appendTeamAudit,
+      });
       try {
         const users = await Promise.all(
           Array.from({ length: 999 }, (_, n) => fixture.member(`resource${n}`)),
@@ -689,41 +683,33 @@ scenario(
             ...users.map((userId) => ({ userId, level: "post" as const })),
           ],
         });
-        const ask = await fixture.request(fixture.owner, channel.channelId),
-          hidden = await fixture.sharedTopic("hidden", []);
-        for (let batch = 0; batch < 40; batch++) {
-          const operation = crypto.randomUUID();
-          await sql`insert into knowledge.operations(id,writer_kind,writer_id,input_hash,row_count,receipt) values(${operation},'human',${fixture.owner},repeat('0',64),25,'{}')`.execute(
+        const ask = await fixture.request(fixture.owner, channel.channelId);
+        const shared = await fixture.topic("shared", [
+          { subject: { kind: "everyone" }, level: "write" },
+        ]);
+        const hidden = await fixture.topic("hidden", []);
+        const seed = (topicId: string, prefix: string, count: number, body: string) =>
+          sql`with notes as (
+              insert into team_notes(id, topic_id, version, title, body)
+              select 'knt_' || gen_random_uuid(), ${topicId}, 1, ${prefix} || '-' || n, ${body}
+              from generate_series(1, ${count}) n returning id, title, body)
+            insert into team_note_versions(note_id, version, title, body, deleted, writer_kind, writer_user_id)
+            select id, 1, title, body, false, 'human', ${fixture.owner} from notes`.execute(
             fixture.database,
           );
-          await sql`insert into knowledge.fact_log(topic,thing,property,value,writer_kind,writer_id,operation_id,operation_row)
-            select ${channel.topicId},'resource-'||(${batch}*25+n),'v',to_jsonb(repeat('value ',64)),'human',${fixture.owner},${operation},n from generate_series(1,25) n`.execute(
-            fixture.database,
-          );
-        }
-        const hiddenOperation = crypto.randomUUID();
-        await sql`insert into knowledge.operations(id,writer_kind,writer_id,input_hash,row_count,receipt) values(${hiddenOperation},'human',${fixture.owner},repeat('0',64),1,'{}')`.execute(
-          fixture.database,
-        );
-        await sql`insert into knowledge.fact_log(topic,thing,property,value,writer_kind,writer_id,operation_id,operation_row) values(${hidden},'secret','v','"HIDDEN_RESOURCE_SENTINEL"','human',${fixture.owner},${hiddenOperation},1)`.execute(
-          fixture.database,
-        );
+        await seed(shared, "resource", 1000, "value ".repeat(640));
+        await seed(hidden, "secret", 1, "HIDDEN_RESOURCE_SENTINEL");
+        const agent = { linkId: ask.linkId, ownerUserId: fixture.owner, requestId: ask.requestId };
+        const search = (query: string) => knowledge.readNotes(agent, { query });
+        expect((await search("secret HIDDEN_RESOURCE_SENTINEL")).result.notes).toHaveLength(0);
         const keyed: number[] = [];
-        const call = (text: string) =>
-          knowledge.sql({
-            linkId: ask.linkId,
-            requestId: ask.requestId,
-            input: { mode: "read", parameters: [], sql: text },
-          });
-        const hiddenRead = await call(`SELECT value FROM facts WHERE topic='${hidden}'`);
-        expect(hiddenRead.result.rows).toHaveLength(0);
-        const chat = new TeamChatStore(access, teamChannelTopics, {
+        const chat = new TeamChatStore(access, {
           teamId: fixture.deploymentId,
           teamName: "Acme",
         });
         for (let n = 0; n < 20; n++) {
           const [answer] = await Promise.all([
-            measured(keyed, () => call("SELECT value FROM facts WHERE thing='resource-1'")),
+            measured(keyed, () => search("resource 1")),
             chat.send(human(fixture.owner), {
               channelId: channel.channelId,
               threadRootId: null,
@@ -733,40 +719,29 @@ scenario(
               attachmentIds: [],
             }),
           ]);
-          expect(answer.result.rows).toHaveLength(1);
+          expect(answer.result.notes.length).toBeGreaterThan(0);
         }
-        const corpus = [
-          "SELECT repeat('x',1000000000)",
-          "SELECT string_agg(repeat('x',1048576),'') FROM facts",
-          "SELECT a.thing,count(*) FROM facts a JOIN facts b ON a.topic=b.topic GROUP BY a.thing",
-        ];
+        // The broadest reads an agent can ask for stay bounded in rows and bytes.
         const outcomes = [];
-        for (const text of corpus) {
+        for (const input of [{ query: "value" }, { topicId: shared }] as const) {
           const started = performance.now();
-          try {
-            const result = await call(text);
-            outcomes.push({
-              fingerprint: createHash("sha256").update(text).digest("hex"),
-              outcome: "bounded",
-              milliseconds: performance.now() - started,
-              bytes: JSON.stringify(result.result).length,
-            });
-          } catch (error) {
-            outcomes.push({
-              outcome: "rejected",
-              milliseconds: performance.now() - started,
-              code: error && typeof error === "object" && "code" in error ? error.code : "error",
-            });
-          }
+          const { result } = await knowledge.readNotes(agent, input);
+          outcomes.push({
+            input: Object.keys(input)[0],
+            notes: result.notes.length,
+            truncated: result.truncated,
+            milliseconds: performance.now() - started,
+            bytes: JSON.stringify(result).length,
+          });
         }
         const concurrent = await Promise.allSettled(
-          Array.from({ length: 40 }, () => call("SELECT count(*) FROM facts")),
+          Array.from({ length: 40 }, () => search("value")),
         );
         const rejected = concurrent.filter((row) => row.status === "rejected");
         metrics.members = 1000;
-        metrics.facts = { readable: 1000, hidden: 1 };
+        metrics.notes = { readable: 1000, hidden: 1 };
         metrics.keyedReadMs = distribution(keyed);
-        metrics.corpus = outcomes;
+        metrics.broadReads = outcomes;
         metrics.concurrent = { calls: 40, rejected: rejected.length };
         metrics.caps =
           process.env.OPENSTEER_TEAM_PERF_CAPS ??
@@ -778,7 +753,6 @@ scenario(
           status: "unavailable after resource corpus",
         }));
       } finally {
-        await knowledge.close();
         await fixture.close();
       }
     }),

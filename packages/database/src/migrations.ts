@@ -1,10 +1,12 @@
 import { sql, type Kysely } from "kysely";
 import { Migrator, type MigrationProvider, type MigrationResultSet } from "kysely/migration";
 import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
+import { TEAM_KNOWLEDGE_NOTES_SQL } from "./team-knowledge-schema.js";
 import type { DatabaseSchema } from "./schema.js";
 
 export const personalTeamBaselineName = "0002_personal_team_baseline";
 export const threadVisitsMigrationName = "0004_thread_visits";
+export const teamKnowledgeNotesMigrationName = "0006_team_knowledge_notes";
 export function migrationProvider(): MigrationProvider {
   return {
     async getMigrations() {
@@ -67,6 +69,12 @@ export function migrationProvider(): MigrationProvider {
             await sql`create or replace view thread_work_inputs as select * from thread_inputs where policy in ('queue','steer')`.execute(
               database,
             );
+          },
+        },
+        [teamKnowledgeNotesMigrationName]: {
+          /** Team knowledge becomes notes in topics, read and written through the Host's own connection. */
+          async up(database) {
+            await sql.raw(TEAM_KNOWLEDGE_NOTES_SQL).execute(database);
           },
         },
       };

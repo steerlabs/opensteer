@@ -1,7 +1,6 @@
 import { expect, it } from "vitest";
 import { TeamAccessStore } from "../packages/database/src/team-access-store.js";
 import { TeamChatStore } from "../packages/database/src/team-chat-store.js";
-import { teamChannelTopics } from "../packages/database/src/team-topics-store.js";
 import { startTeamSystem } from "./team-system.test-support.js";
 import { perfChannels, perfHistory } from "./team-performance.test-support.js";
 
@@ -23,7 +22,7 @@ it("batches source and audience resolution across a search page", async () => {
     });
     const access = new TeamAccessStore(database);
     await access.initialize();
-    const chat = new TeamChatStore(access, teamChannelTopics, {
+    const chat = new TeamChatStore(access, {
       teamId: team.host.deployment.id,
       teamName: "Acme",
     });

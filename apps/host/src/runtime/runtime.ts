@@ -1,5 +1,5 @@
 import { digestSecret } from "@opensteer/shared/secretDigest";
-import { PersonalTabStore } from "@opensteer/database";
+import { PersonalTabStore, runAllowsPersonalContext } from "@opensteer/database";
 import { resolveTeamTaskExecution } from "./team-task-execution.js";
 import { ReconcileLoop, reconcileServices } from "./reconcile-loop.js";
 import { TeamRunEvents } from "./team-run-events.js";
@@ -1942,6 +1942,12 @@ export async function createHostRuntime(
           content: [{ type: "text" as const, text: JSON.stringify(context.messages) }],
         };
       },
+      teamKnowledgeAvailable: async () =>
+        (await database
+          .selectFrom("personalTeamLinks")
+          .select("id")
+          .where("state", "=", "active")
+          .executeTakeFirst()) !== undefined,
       onRunAdmitted: (threadId) => {
         void naming?.request(threadId);
       },
@@ -2323,8 +2329,13 @@ export async function createHostRuntime(
           read: async (...args) => (await ensureLinks()).teamTools.read(...args),
           search: async (...args) => (await ensureLinks()).teamTools.search(...args),
           reply: async (...args) => (await ensureLinks()).teamTools.reply(...args),
-          sql: async (...args) => (await ensureLinks()).teamTools.sql(...args),
         },
+        knowledge: {
+          topics: async (...args) => (await ensureLinks()).knowledge.topics(...args),
+          read: async (...args) => (await ensureLinks()).knowledge.read(...args),
+          write: async (...args) => (await ensureLinks()).knowledge.write(...args),
+        },
+        personalContextForRun: (runId) => runAllowsPersonalContext(database, runId),
         pluginInstall: async (scope, directory) => {
           const thread = await store.getThreadForOwner(scope.threadId, scope.requestedBy);
           if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });

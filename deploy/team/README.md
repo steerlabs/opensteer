@@ -75,7 +75,5 @@ Stop the stack with `docker compose --env-file deploy/team/config.env -f
 Tailscale serving with `tailscale serve reset` if configured.
 
 PostgreSQL has no published port and is reachable only on the private database
-network. Its container is capped at 2 GiB and 2 CPUs. A hostile knowledge query
-can exhaust that cap and restart PostgreSQL, briefly interrupting chat. This
-is a container bound, not a per-query memory guarantee. External managed/TLS
+network. Its container is capped at 2 GiB and 2 CPUs. External managed/TLS
 PostgreSQL and native unbounded PostgreSQL are outside this v1 recipe.

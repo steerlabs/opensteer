@@ -1,34 +1,45 @@
-import type { KnowledgeTopicId, TeamActor, UserId } from "@opensteer/core";
+import {
+  createId,
+  type KnowledgeNoteId,
+  type KnowledgeTopicId,
+  type TeamActor,
+  type UserId,
+} from "@opensteer/core";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { ownTestDatabaseProducer } from "@opensteer/database/test-support/database";
 import { createTeamKnowledgeFixture } from "@opensteer/database/test-support/team-knowledge";
-import { teamReadSchemas, type TeamCommandSchema, type TeamSqlInput } from "@opensteer/protocol";
+import { TeamMembersStore } from "@opensteer/database/team-members";
+import {
+  teamReadSchemas,
+  type TeamCommandSchema,
+  type TeamKnowledgeReadInput,
+  type TeamKnowledgeWrite,
+} from "@opensteer/protocol";
 import { sql } from "kysely";
-import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { z } from "zod";
 import { testTeamAccess, testTeamAudit } from "./team-access.test-support.js";
-import { startTeamKnowledge, type TeamKnowledgeReadName } from "./team-knowledge.js";
+import {
+  startTeamKnowledge,
+  type TeamKnowledgeAgent,
+  type TeamKnowledgeReadName,
+} from "./team-knowledge.js";
 
 const none = { users: [], channels: [], topics: [], links: [], requests: [] };
 
 /**
- * Mira, a plain member, reaches pricing through nested groups and manages #support; Sam posts in
- * #support and reads roadmap; Lee manages roadmap; Ada is an admin on no list. Both
- * shared topics are attached to #support; payroll is Mira's but attached nowhere.
+ * Mira, a plain member, reaches pricing through nested groups and manages payroll; Sam posts in
+ * #support and reads roadmap; Lee manages roadmap; Ada is an admin on no list. #support holds
+ * Mira and Sam; #deals is the revenue group's, so only Mira.
  */
 async function team() {
   const f = await createTeamKnowledgeFixture();
   const { access, pauses, changes } = testTeamAccess(f.database);
-  const knowledge = await ownTestDatabaseProducer(f.databaseUrl, () =>
-    startTeamKnowledge({
-      database: f.database,
-      databaseUrl: f.databaseUrl,
-      credentials: f.credentials,
-      access,
-      audit: testTeamAudit,
-    }),
-  );
+  await access.initialize();
+  const knowledge = await startTeamKnowledge({
+    database: f.database,
+    access,
+    audit: testTeamAudit,
+  });
   const owner = f.owner;
   const mira = await f.member("Mira");
   const sam = await f.member("Sam");
@@ -43,69 +54,58 @@ async function team() {
       { userId: sam, level: "post" },
     ],
   });
-  const leadership = await f.channel({
-    name: "leadership",
+  const deals = await f.channel({
+    name: "deals",
     kind: "private",
-    access: [{ userId: mira, level: "post", manage: true }],
+    access: [{ groupId: revenue, level: "post" }],
   });
-  const quiet = await f.channel({
-    name: "quiet",
-    kind: "private",
-    peopleOnly: true,
-    access: [
-      { userId: mira, level: "post", manage: true },
-      { userId: sam, level: "post" },
-    ],
-  });
-  const pricing = await f.sharedTopic("pricing", [
-    { subject: { kind: "group", groupId: revenue }, level: "manage" },
+  const general = (await f.database.selectFrom("teamTopics").select("id").executeTakeFirstOrThrow())
+    .id;
+  const pricing = await f.topic("pricing", [
+    { subject: { kind: "group", groupId: revenue }, level: "write" },
   ]);
-  const roadmap = await f.sharedTopic("roadmap", [
+  const roadmap = await f.topic("roadmap", [
     { subject: { kind: "person", userId: sam }, level: "read" },
     { subject: { kind: "person", userId: lee }, level: "manage" },
   ]);
-  const payroll = await f.sharedTopic("payroll", [
+  const payroll = await f.topic("payroll", [
     { subject: { kind: "person", userId: mira }, level: "manage" },
   ]);
-  await f.attach(support.channelId, pricing);
-  await f.attach(support.channelId, roadmap);
-  const seed = async (topic: KnowledgeTopicId, value: string) => {
-    const operation = randomUUID();
-    await sql`insert into knowledge.operations (id, writer_kind, writer_id, input_hash, row_count, receipt)
-      values (${operation}, 'human', ${owner}, repeat('0', 64), 1, '{}')`.execute(f.database);
-    await sql`insert into knowledge.fact_log
-        (topic, thing, property, value, writer_kind, writer_id, operation_id, operation_row)
-      values (${topic}, 'marker', 'v', ${JSON.stringify(value)}::jsonb, 'human', ${owner}, ${operation}, 1)`.execute(
-      f.database,
-    );
-  };
-  await seed(support.topicId, "SUPPORT_FACT");
-  await seed(leadership.topicId, "SECRET_LEADERSHIP");
-  await seed(quiet.topicId, "QUIET_FACT");
-  await seed(pricing, "PRICING_FACT");
-  await seed(roadmap, "ROADMAP_FACT");
-  await seed(payroll, "SECRET_PAYROLL");
   const asks = {
     mira: await f.request(mira, support.channelId),
+    miraDeals: await f.request(mira, deals.channelId),
     sam: await f.request(sam, support.channelId),
-    quiet: await f.request(mira, quiet.channelId),
   };
-  type Ask = (typeof asks)[keyof typeof asks];
-  const ask = (who: Ask, input: Partial<TeamSqlInput> = {}) =>
-    knowledge
-      .sql({
-        linkId: who.linkId,
-        requestId: who.requestId,
-        input: { mode: "read", parameters: [], ...input },
-      })
-      .then((answer) => answer.result);
-  const write = (who: Ask, topic: KnowledgeTopicId, thing: string, operationId = randomUUID()) =>
-    ask(who, {
-      sql: "INSERT INTO facts (topic, thing, property, value) VALUES ($1, $2, 'v', '1')",
-      parameters: [topic, thing],
-      mode: "write",
-      operationId,
+  /** Each person's agent from a private Run: their link, no request. */
+  const agents = {
+    mira: { linkId: asks.mira.linkId, ownerUserId: mira },
+    sam: { linkId: asks.sam.linkId, ownerUserId: sam },
+    owner: { linkId: await f.link(owner), ownerUserId: owner },
+    ada: { linkId: await f.link(ada), ownerUserId: ada },
+  } satisfies Record<string, TeamKnowledgeAgent>;
+  const asking = (who: keyof typeof asks): TeamKnowledgeAgent => ({
+    linkId: asks[who].linkId,
+    ownerUserId: who === "sam" ? sam : mira,
+    requestId: asks[who].requestId,
+  });
+  const topics = async (agent: TeamKnowledgeAgent) => (await knowledge.topics(agent)).result;
+  const readNotes = async (agent: TeamKnowledgeAgent, input: TeamKnowledgeReadInput) =>
+    (await knowledge.readNotes(agent, input)).result;
+  const create = (
+    agent: TeamKnowledgeAgent,
+    topicId: KnowledgeTopicId,
+    title = "Note",
+    noteId: KnowledgeNoteId = createId("knowledgeNote"),
+  ) =>
+    knowledge.write(agent, {
+      noteId,
+      topicId,
+      expectedVersion: null,
+      title,
+      body: `${title} body`,
     });
+  const write = (agent: TeamKnowledgeAgent, input: TeamKnowledgeWrite) =>
+    knowledge.write(agent, input);
   const person = (userId: UserId): TeamActor => ({ kind: "human", userId });
   /** A person's read, checked against the wire contract. */
   const read = async <Name extends TeamKnowledgeReadName>(
@@ -118,13 +118,12 @@ async function team() {
     ) as z.infer<(typeof teamReadSchemas)[Name]["output"]>;
   const command = (userId: UserId, input: z.infer<typeof TeamCommandSchema>) =>
     knowledge.command(person(userId), input);
-  const scope = async (who: Ask) => ((await ask(who)).topics ?? []).map((topic) => topic.id);
-  const count = async () =>
+  const versions = async () =>
     Number(
       (
         await sql<{
           count: string;
-        }>`select count(*)::text as count from knowledge.fact_log`.execute(f.database)
+        }>`select count(*)::text as count from team_note_versions`.execute(f.database)
       ).rows[0]!.count,
     );
   return {
@@ -133,17 +132,20 @@ async function team() {
     lock: access,
     pauses,
     changes,
+    people: { owner, mira, sam, lee, ada },
+    groups: { sales, revenue },
+    channels: { support, deals },
+    topicIds: { general, pricing, roadmap, payroll },
+    asks,
+    agents,
+    asking,
+    topics,
+    readNotes,
+    create,
+    write,
     read,
     command,
-    people: { mira, sam, lee, ada },
-    groups: { sales, revenue },
-    channels: { support, leadership, quiet },
-    topics: { pricing, roadmap, payroll },
-    asks,
-    ask,
-    write,
-    scope,
-    count,
+    versions,
   };
 }
 type Team = Awaited<ReturnType<typeof team>>;
@@ -168,16 +170,11 @@ const reason = (promise: Promise<unknown>) =>
     (error: unknown) => (error as { reason?: string }).reason ?? String(error),
   );
 
+/** Every way Mira's agent can lose pricing, its owner's group-granted topic. */
 const losses: Record<string, (t: Team) => Promise<void>> = {
-  member: (t) =>
-    t.lock.mutate(async (transaction) => {
-      await transaction
-        .updateTable("teamMembers")
-        .set({ state: "removed" })
-        .where("userId", "=", t.people.mira)
-        .execute();
-      return { value: undefined, effects: { ...none, users: [t.people.mira] } };
-    }),
+  member: async (t) => {
+    await new TeamMembersStore(t.lock).change(person(t.people.owner), t.people.mira, "remove");
+  },
   link: (t) =>
     t.lock.mutate(async (transaction) => {
       await transaction
@@ -188,9 +185,9 @@ const losses: Record<string, (t: Team) => Promise<void>> = {
       return { value: undefined, effects: { ...none, links: [t.asks.mira.linkId] } };
     }),
   topic: async (t) => {
-    await t.command(t.people.mira, {
+    await t.command(t.people.owner, {
       type: "team.knowledge.topic.access.set",
-      topicId: t.topics.pricing,
+      topicId: t.topicIds.pricing,
       expectedRevision: "0" as never,
       access: [{ subject: { kind: "person", userId: t.people.sam }, level: "read" }],
     });
@@ -205,6 +202,11 @@ const losses: Record<string, (t: Team) => Promise<void>> = {
       return { value: undefined, effects: { ...none, users: [t.people.mira] } };
     }),
 };
+const lost = /^knowledge-(link-unavailable|topic-not-found)$/u;
+
+function person(userId: UserId): TeamActor {
+  return { kind: "human", userId };
+}
 
 async function waitingOnLock(t: Team) {
   await vi.waitFor(
@@ -219,19 +221,332 @@ async function waitingOnLock(t: Team) {
   );
 }
 
-// Skip outside the integration launcher, which supplies an isolated PostgreSQL clone.
-const integration = process.env.OPENSTEER_TEST_DATABASE_URL ? describe : describe.skip;
-integration("team knowledge", () => {
-  it.each(["rename", "archive", "restore"] as const)(
+describe("team knowledge", () => {
+  it("lets an agent read and write exactly what its owner can, never what its owner only manages", async () => {
+    const t = await team();
+    const { general, pricing, roadmap, payroll } = t.topicIds;
+    const listed = async (agent: TeamKnowledgeAgent) =>
+      (await t.topics(agent)).topics.map((topic) => [topic.name, topic.canWrite]);
+    expect(await listed(t.agents.mira)).toEqual([
+      ["General", true],
+      ["payroll", true],
+      ["pricing", true],
+    ]);
+    expect(await listed(t.agents.sam)).toEqual([
+      ["General", true],
+      ["roadmap", false],
+    ]);
+    // The owner and an admin manage every topic, but their agents get only what they read.
+    expect(await listed(t.agents.owner)).toEqual([["General", true]]);
+    expect(await listed(t.agents.ada)).toEqual([["General", true]]);
+    expect((await t.topics(t.agents.mira)).topics[0]).toEqual({
+      id: general,
+      name: "General",
+      description: expect.any(String),
+      canWrite: true,
+      archived: false,
+      audience: { everyone: true, people: 5 },
+    });
+    expect(await reason(t.create(t.agents.sam, roadmap))).toBe("knowledge-topic-read-only");
+    expect(await reason(t.create(t.agents.sam, payroll))).toBe("knowledge-topic-not-found");
+    expect(await reason(t.create(t.agents.ada, pricing))).toBe("knowledge-topic-not-found");
+    const secret = await t.create(t.agents.mira, payroll, "Salaries");
+    if (!secret.written) throw new Error("Mira's agent could not write payroll");
+    expect(await reason(t.readNotes(t.agents.sam, { noteId: secret.noteId }))).toBe(
+      "knowledge-note-not-found",
+    );
+    expect(await reason(t.readNotes(t.agents.ada, { topicId: payroll }))).toBe(
+      "knowledge-topic-not-found",
+    );
+    // No topic structure for agents: archived topics stay readable but take nothing new.
+    await t.command(t.people.mira, { type: "team.knowledge.topic.archive", topicId: payroll });
+    expect((await t.topics(t.agents.mira)).topics.at(-1)).toMatchObject({
+      name: "payroll",
+      archived: true,
+      canWrite: false,
+    });
+    expect((await t.readNotes(t.agents.mira, { topicId: payroll })).notes).toHaveLength(1);
+    expect(await reason(t.create(t.agents.mira, payroll))).toBe("knowledge-topic-read-only");
+    // A link names only its own requests.
+    await expect(
+      t.knowledge.topics({ ...t.agents.sam, requestId: t.asks.mira.requestId }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+  });
+
+  it("tells a team request's agent whether everyone in the asking channel can read each topic", async () => {
+    const t = await team();
+    const roomCanRead = async (agent: TeamKnowledgeAgent) =>
+      Object.fromEntries(
+        (await t.topics(agent)).topics.map((topic) => [topic.name, topic.roomCanRead]),
+      );
+    // #support holds Mira and Sam; Sam cannot read pricing or payroll.
+    expect(await roomCanRead(t.asking("mira"))).toEqual({
+      General: true,
+      payroll: false,
+      pricing: false,
+    });
+    // #deals is the revenue group's channel, so through sales only Mira reads it.
+    expect(await roomCanRead(t.asking("miraDeals"))).toEqual({
+      General: true,
+      payroll: true,
+      pricing: true,
+    });
+    expect(Object.values(await roomCanRead(t.agents.mira))).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    await t.create(t.agents.mira, t.topicIds.pricing, "Discount ladder");
+    const found = await t.readNotes(t.asking("mira"), { query: "discount" });
+    expect(found.notes.map((note) => note.title)).toEqual(["Discount ladder"]);
+    expect(found.topics).toEqual([
+      expect.objectContaining({
+        id: t.topicIds.pricing,
+        audience: { everyone: false, people: 1 },
+        roomCanRead: false,
+      }),
+    ]);
+  });
+
+  it("versions agent and person writes, gives a stale agent the note and a stale person a conflict", async () => {
+    const t = await team();
+    const { general } = t.topicIds;
+    const noteId = createId("knowledgeNote");
+    const first = await t.create(t.asking("mira"), general, "Refunds", noteId);
+    expect(first).toEqual({ written: true, noteId, topicId: general, version: 1 });
+    // A resent agent write answers with its first outcome.
+    expect(await t.create(t.asking("mira"), general, "Refunds", noteId)).toEqual(first);
+    await t.command(t.people.sam, {
+      type: "team.knowledge.note.write",
+      noteId,
+      topicId: general,
+      expectedVersion: 1,
+      title: "Refunds",
+      body: "Annual plans: 30 days.",
+    });
+    const stale = await t.write(t.agents.mira, { noteId, expectedVersion: 1, body: "14 days" });
+    expect(stale).toMatchObject({
+      written: false,
+      current: {
+        version: 2,
+        body: "Annual plans: 30 days.",
+        writer: { kind: "human", name: "Sam" },
+      },
+    });
+    await expect(
+      t.command(t.people.lee, {
+        type: "team.knowledge.note.write",
+        noteId,
+        topicId: general,
+        expectedVersion: 1,
+        title: "Refunds",
+        body: "Mine",
+      }),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      reason: "knowledge-note-changed",
+      message: "Sam changed this note while you were editing it.",
+    });
+    expect(
+      await t.command(t.people.lee, {
+        type: "team.knowledge.note.delete",
+        noteId,
+        expectedVersion: 2,
+      }),
+    ).toEqual({ type: "team.knowledge.note.delete", noteId, version: 3 });
+    expect(
+      (await t.read(t.people.lee, "team.knowledge.notes.page", { topicId: general })).notes,
+    ).toEqual([]);
+    await t.write(t.agents.mira, { noteId, expectedVersion: 3, body: "Restored" });
+    const history = await t.read(t.people.sam, "team.knowledge.note.history", { noteId });
+    expect(
+      history.versions.map((version) => [
+        version.version,
+        version.deleted,
+        version.writer.kind,
+        version.writer.name,
+        version.source,
+      ]),
+    ).toEqual([
+      [4, false, "agent", "Mira", null],
+      [3, true, "human", "Lee", null],
+      [2, false, "human", "Sam", null],
+      [
+        1,
+        false,
+        "agent",
+        "Mira",
+        { channelId: t.channels.support.channelId, messageId: t.asks.mira.messageId },
+      ],
+    ]);
+    expect(await t.read(t.people.sam, "team.knowledge.note.get", { noteId })).toMatchObject({
+      version: 4,
+      body: "Restored",
+    });
+  });
+
+  it("searches by word prefixes across only the topics the reader can read", async () => {
+    const t = await team();
+    await t.create(t.agents.mira, t.topicIds.general, "Refund policy");
+    await t.create(t.agents.mira, t.topicIds.payroll, "Refund of expenses");
+    await t.create(t.agents.mira, t.topicIds.pricing, "Pricing tiers");
+    const titles = async (agent: TeamKnowledgeAgent, query: string) =>
+      (await t.readNotes(agent, { query })).notes.map((note) => note.title).toSorted();
+    expect(await titles(t.agents.mira, "refu")).toEqual(["Refund of expenses", "Refund policy"]);
+    expect(await titles(t.agents.sam, "refu")).toEqual(["Refund policy"]);
+    expect(await titles(t.agents.ada, "pric")).toEqual([]);
+    const people = await t.read(t.people.sam, "team.knowledge.notes.page", { query: "REFUND" });
+    expect(people.notes.map((note) => note.title)).toEqual(["Refund policy"]);
+    // Owners and admins manage without reading: the list shows the topic, never its notes.
+    const listed = await t.read(t.people.ada, "team.knowledge.topics.list", {});
+    expect(listed.topics.find((topic) => topic.id === t.topicIds.payroll)).toMatchObject({
+      noteCount: 0,
+      can: { read: false, write: false, manage: true },
+    });
+    await expect(
+      t.read(t.people.ada, "team.knowledge.notes.page", { topicId: t.topicIds.payroll }),
+    ).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("audits agent calls with ids and counts, never note text or search words", async () => {
+    const t = await team();
+    await t.topics(t.asking("mira"));
+    const saved = await t.create(t.asking("mira"), t.topicIds.pricing, "PINE_TITLE");
+    await t.readNotes(t.asking("mira"), { query: "PINE_TITLE" });
+    await reason(t.create(t.agents.sam, t.topicIds.payroll, "PINE_DENIED"));
+    const rows = await t.database
+      .selectFrom("teamAudit")
+      .selectAll()
+      .where("actorKind", "=", "agent")
+      .orderBy("id")
+      .execute();
+    expect(rows.map((row) => [row.action, row.outcome, row.actorUserId])).toEqual([
+      ["knowledge.topics", "allowed", t.people.mira],
+      ["knowledge.write", "allowed", t.people.mira],
+      ["knowledge.read", "allowed", t.people.mira],
+      ["knowledge.write", "denied", t.people.sam],
+    ]);
+    expect(rows[1]).toMatchObject({
+      linkId: t.asks.mira.linkId,
+      agentRequestId: t.asks.mira.requestId,
+      channelId: t.channels.support.channelId,
+      resourceId: t.topicIds.pricing,
+      metadata: { noteId: saved.written ? saved.noteId : null, written: true, version: 1 },
+    });
+    expect(rows[2]!.metadata).toMatchObject({ count: 1, search: true });
+    expect(JSON.stringify(rows)).not.toMatch(/PINE|body/u);
+  });
+
+  it("cuts a removed member's agent off as soon as the removal returns", async () => {
+    const t = await team();
+    await t.topics(t.agents.mira);
+    await new TeamMembersStore(t.lock).change(person(t.people.owner), t.people.mira, "remove");
+    for (const call of [
+      t.topics(t.agents.mira),
+      t.readNotes(t.agents.mira, { query: "anything" }),
+      t.create(t.agents.mira, t.topicIds.general),
+    ])
+      expect(await reason(call)).toBe("knowledge-link-unavailable");
+  });
+
+  it("replays a write's outcome only while its topic is still writable", async () => {
+    const t = await team();
+    const noteId = createId("knowledgeNote");
+    const first = await t.create(t.agents.mira, t.topicIds.pricing, "Replayed", noteId);
+    expect(await t.create(t.agents.mira, t.topicIds.pricing, "Replayed", noteId)).toEqual(first);
+    const saved = await t.versions();
+    await losses.topic!(t);
+    expect(await reason(t.create(t.agents.mira, t.topicIds.pricing, "Replayed", noteId))).toBe(
+      "knowledge-topic-not-found",
+    );
+    expect(await t.versions()).toBe(saved);
+  });
+
+  describe.each(Object.keys(losses))("losing access by %s", (loss) => {
+    it("refuses a write authorized before the change returned that had not reached the lock", async () => {
+      const t = await team();
+      const paused = hold();
+      t.pauses.beforeWriteLock = paused.pause;
+      const writing = reason(t.create(t.agents.mira, t.topicIds.pricing, "late"));
+      await paused.reached;
+      const before = await t.versions();
+      await losses[loss]!(t);
+      const afterReturn = await t.versions();
+      paused.release();
+      expect(await writing).toMatch(lost);
+      expect(afterReturn).toBe(before);
+      expect(await t.versions()).toBe(before);
+    });
+
+    it("does not return the change until a write already holding the lock has committed", async () => {
+      const t = await team();
+      const paused = hold();
+      t.pauses.insideWriteLock = paused.pause;
+      const writing = reason(t.create(t.agents.mira, t.topicIds.pricing, "early"));
+      await paused.reached;
+      const before = await t.versions();
+      let returned = false;
+      const changing = losses[loss]!(t).then(() => {
+        returned = true;
+      });
+      await waitingOnLock(t);
+      expect(returned).toBe(false);
+      paused.release();
+      await changing;
+      const afterReturn = await t.versions();
+      delete t.pauses.insideWriteLock;
+      expect(await writing).toBe("allowed");
+      expect(afterReturn).toBe(before + 1);
+      expect(await reason(t.create(t.agents.mira, t.topicIds.pricing, "after"))).toMatch(lost);
+      expect(await t.versions()).toBe(afterReturn);
+    });
+
+    it("discards a buffered read when the access it was answered under is lost before handoff", async () => {
+      const t = await team();
+      await t.create(t.agents.mira, t.topicIds.pricing, "Discount ladder");
+      const delivered = await t.knowledge.readNotes(t.agents.mira, { query: "discount" });
+      expect(delivered.result.notes).toHaveLength(1);
+      expect(await delivered.reauthorize()).toBe(true);
+      const paused = hold();
+      t.pauses.beforeHandoff = paused.pause;
+      const reading = t.readNotes(t.agents.mira, { query: "discount" });
+      await paused.reached;
+      await losses[loss]!(t);
+      paused.release();
+      await expect(reading).rejects.toMatchObject({ code: "forbidden" });
+      // The link's own final handoff rechecks the same topics.
+      expect(await delivered.reauthorize()).toBe(false);
+    });
+  });
+
+  it("still hands over a buffered read when access changed only elsewhere", async () => {
+    const t = await team();
+    await t.create(t.agents.mira, t.topicIds.pricing, "Discount ladder");
+    const paused = hold();
+    t.pauses.beforeHandoff = paused.pause;
+    const reading = t.readNotes(t.agents.mira, { query: "discount" });
+    await paused.reached;
+    await t.command(t.people.lee, {
+      type: "team.knowledge.topic.access.set",
+      topicId: t.topicIds.roadmap,
+      expectedRevision: "0" as never,
+      access: [{ subject: { kind: "person", userId: t.people.lee }, level: "manage" }],
+    });
+    paused.release();
+    expect((await reading).notes.map((note) => note.title)).toEqual(["Discount ladder"]);
+  });
+
+  it.each(["update", "archive", "restore"] as const)(
     "fences a topic %s already admitted by a manager until commit before removing their grant",
     async (action) => {
       const t = await team();
+      const { payroll } = t.topicIds;
       const barrier = hold();
       let paused = false;
       const topic = t.lock.topic.bind(t.lock);
       vi.spyOn(t.lock, "topic").mockImplementation(async (tx, actor, topicId) => {
         const rights = await topic(tx, actor, topicId);
-        if (!paused && actor.userId === t.people.mira && topicId === t.topics.payroll) {
+        if (!paused && actor.userId === t.people.mira && topicId === payroll) {
           paused = true;
           await withTimeout(barrier.pause(), 5000, {
             timeoutError: () => new Error("Metadata barrier never released"),
@@ -239,19 +554,25 @@ integration("team knowledge", () => {
         }
         return rights;
       });
-      const command = t.command(
-        t.people.mira,
-        action === "rename"
-          ? { type: "team.knowledge.topic.rename", topicId: t.topics.payroll, name: "Updated" }
-          : {
-              type:
-                action === "archive"
-                  ? "team.knowledge.topic.archive"
-                  : "team.knowledge.topic.restore",
-              topicId: t.topics.payroll,
-            },
+      const outcome = reason(
+        t.command(
+          t.people.mira,
+          action === "update"
+            ? {
+                type: "team.knowledge.topic.update",
+                topicId: payroll,
+                name: "Updated",
+                description: "",
+              }
+            : {
+                type:
+                  action === "archive"
+                    ? "team.knowledge.topic.archive"
+                    : "team.knowledge.topic.restore",
+                topicId: payroll,
+              },
+        ),
       );
-      const outcome = reason(command);
       await withTimeout(barrier.reached, 5000, {
         timeoutError: () => new Error("Metadata never checked manager authority"),
       });
@@ -259,7 +580,7 @@ integration("team knowledge", () => {
       const removal = t
         .command(t.people.ada, {
           type: "team.knowledge.topic.access.set",
-          topicId: t.topics.payroll,
+          topicId: payroll,
           expectedRevision: "0" as never,
           access: [{ subject: { kind: "person", userId: t.people.ada }, level: "manage" }],
         })
@@ -267,17 +588,7 @@ integration("team knowledge", () => {
           removed = true;
         });
       try {
-        await vi.waitFor(
-          async () => {
-            const { rows } = await sql<{
-              waiting: boolean;
-            }>`select exists(select 1 from pg_stat_activity where datname=current_database() and wait_event_type='Lock') as waiting`.execute(
-              t.database,
-            );
-            expect(removed || rows[0]?.waiting).toBe(true);
-          },
-          { timeout: 3000 },
-        );
+        await waitingOnLock(t);
         expect(removed).toBe(false);
       } finally {
         barrier.release();
@@ -287,485 +598,38 @@ integration("team knowledge", () => {
       expect(await outcome).toBe("allowed");
       await expect(
         t.command(t.people.mira, {
-          type: "team.knowledge.topic.rename",
-          topicId: t.topics.payroll,
+          type: "team.knowledge.topic.update",
+          topicId: payroll,
           name: "After removal",
+          description: "",
         }),
-      ).rejects.toThrow();
+      ).rejects.toMatchObject({ code: "not_found" });
     },
   );
 
-  it("notifies the previous topic manager when an admin replaces every grant with themselves", async () => {
+  it("lets any member create a topic they manage, and only managers change a list at its revision", async () => {
     const t = await team();
-    await t.command(t.people.ada, {
-      type: "team.knowledge.topic.access.set",
-      topicId: t.topics.payroll,
-      expectedRevision: "0" as never,
-      access: [{ subject: { kind: "person", userId: t.people.ada }, level: "manage" }],
+    const { sam, lee, ada, mira } = t.people;
+    const { roadmap, payroll } = t.topicIds;
+    const created = createId("knowledgeTopic");
+    await t.command(sam, {
+      type: "team.knowledge.topic.create",
+      id: created,
+      name: "Support macros",
+      description: "Replies we reuse",
+      access: [{ subject: { kind: "everyone" }, level: "read" }],
     });
-    expect(
-      await t.database
-        .selectFrom("teamNotices")
-        .select("recipientUserId")
-        .where("recipientUserId", "=", t.people.mira)
-        .execute(),
-    ).toHaveLength(1);
-  });
-  it("scopes each owner's agent to its ticket channel's topic and the attached topics it may use", async () => {
-    const t = await team();
-    const { support } = t.channels;
-    const { pricing, roadmap, payroll } = t.topics;
-    expect((await t.ask(t.asks.mira)).topics).toEqual([
-      { id: support.topicId, name: "support" },
-      { id: pricing, name: "pricing" },
-    ]);
-    expect(await t.scope(t.asks.sam)).toEqual([support.topicId, roadmap]);
-    const texts = async (who: (typeof t.asks)["mira"]) =>
-      (await t.ask(who, { sql: "SELECT text FROM facts ORDER BY text" })).rows;
-    expect(await texts(t.asks.mira)).toEqual([["PRICING_FACT"], ["SUPPORT_FACT"]]);
-    expect(await texts(t.asks.sam)).toEqual([["ROADMAP_FACT"], ["SUPPORT_FACT"]]);
-
-    // Naming a topic is never a grant: an agent writes only where its owner may, from this channel.
-    const outcomes = await Promise.all(
-      (
-        [
-          ["mira", pricing],
-          ["mira", support.topicId],
-          ["mira", roadmap],
-          ["mira", payroll],
-          ["mira", t.channels.leadership.topicId],
-          ["sam", support.topicId],
-          ["sam", roadmap],
-          ["sam", pricing],
-        ] as const
-      ).map(async ([who, topic]) => [who, topic, await reason(t.write(t.asks[who], topic, who))]),
-    );
-    expect(outcomes).toEqual([
-      ["mira", pricing, "allowed"],
-      ["mira", support.topicId, "allowed"],
-      ["mira", roadmap, "knowledge-topic-not-writable"],
-      ["mira", payroll, "knowledge-topic-not-writable"],
-      ["mira", t.channels.leadership.topicId, "knowledge-topic-not-writable"],
-      ["sam", support.topicId, "allowed"],
-      ["sam", roadmap, "knowledge-topic-not-writable"],
-      ["sam", pricing, "knowledge-topic-not-writable"],
-    ]);
-    const { rows: stamped } = await sql<Record<string, string | null>>`
-      select f.topic, f.writer_kind, f.writer_id, o.request_id from knowledge.fact_log f
-      join knowledge.operations o on o.id = f.operation_id where f.thing in ('mira', 'sam')
-      order by f.writer_id = ${t.people.mira} desc, f.topic
-    `.execute(t.database);
-    expect(stamped).toEqual(
-      expect.arrayContaining([
-        {
-          topic: pricing,
-          writerKind: "agent",
-          writerId: t.people.mira,
-          requestId: t.asks.mira.requestId,
-        },
-        {
-          topic: support.topicId,
-          writerKind: "agent",
-          writerId: t.people.sam,
-          requestId: t.asks.sam.requestId,
-        },
-      ]),
-    );
-    expect(stamped).toHaveLength(3);
-    const audit = await t.database
-      .selectFrom("teamAudit")
-      .select(["actorUserId", "actorKind", "agentRequestId", "outcome"])
-      .where("action", "=", "knowledge.sql")
-      .execute();
-    expect(audit.length).toBeGreaterThanOrEqual(7);
-    expect(new Set(audit.map((row) => row.actorKind))).toEqual(new Set(["agent"]));
-  });
-
-  it("grants nothing by attaching a topic, and shrinks the scope when it is detached", async () => {
-    const t = await team();
-    const { mira, sam } = t.people;
-    const { support } = t.channels;
-    const { pricing, roadmap, payroll } = t.topics;
-    const supportTopics = async (userId: UserId) =>
-      (
-        await t.read(userId, "team.knowledge.topics.list", { channelId: support.channelId })
-      ).topics.map((topic) => topic.id);
-    expect(await supportTopics(mira)).toEqual([support.topicId, pricing]);
-    await expect(
-      t.read(mira, "team.knowledge.topic.get", { topicId: roadmap }),
-    ).rejects.toMatchObject({
-      code: "not_found",
-    });
-    // Attaching needs channel manage and topic read; Payroll joins Mira's scope only.
-    await expect(
-      t.command(sam, {
-        type: "team.channel.topic.attach",
-        channelId: support.channelId,
-        topicId: payroll,
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(
-      t.command(mira, {
-        type: "team.channel.topic.attach",
-        channelId: t.channels.leadership.channelId,
-        topicId: roadmap,
-      }),
-    ).rejects.toMatchObject({ code: "not_found" });
-    await t.command(mira, {
-      type: "team.channel.topic.attach",
-      channelId: support.channelId,
-      topicId: payroll,
-    });
-    expect(await t.scope(t.asks.mira)).toEqual([support.topicId, payroll, pricing]);
-    expect(await t.scope(t.asks.sam)).toEqual([support.topicId, roadmap]);
-    // A channel manager detaches a topic she cannot read herself.
-    await t.command(mira, {
-      type: "team.channel.topic.detach",
-      channelId: support.channelId,
-      topicId: roadmap,
-    });
-    expect(await t.scope(t.asks.sam)).toEqual([support.topicId]);
-    expect((await t.ask(t.asks.sam, { sql: "SELECT text FROM facts ORDER BY text" })).rows).toEqual(
-      [["SUPPORT_FACT"]],
-    );
-  });
-
-  it("keeps agents out of people-only channels and topics, which their owners still read", async () => {
-    const t = await team();
-    const { mira } = t.people;
-    const { support, quiet } = t.channels;
-    const { pricing } = t.topics;
-    expect(await reason(t.ask(t.asks.quiet))).toBe("knowledge-request-unavailable");
-    expect(await reason(t.ask(t.asks.quiet, { sql: "SELECT 1" }))).toBe(
-      "knowledge-request-unavailable",
-    );
-    expect(
-      await t.database
-        .selectFrom("teamAudit")
-        .select(["actorUserId", "actorKind", "agentRequestId", "linkId"])
-        .where("outcome", "=", "denied")
-        .execute(),
-    ).toEqual(
-      Array(2).fill({
-        actorUserId: mira,
-        actorKind: "agent",
-        agentRequestId: t.asks.quiet.requestId,
-        linkId: t.asks.quiet.linkId,
-      }),
-    );
-    expect(
-      (await t.read(mira, "team.knowledge.facts.page", { topicId: quiet.topicId })).facts.map(
-        (fact) => fact.value,
-      ),
-    ).toEqual(["QUIET_FACT"]);
-
-    const peopleOnly = (topicId: KnowledgeTopicId, value: boolean) =>
-      t.command(mira, {
-        type: "team.knowledge.topic.peopleOnly.set",
-        topicId,
-        peopleOnly: value,
-      });
-    await peopleOnly(support.topicId, true);
-    expect(await t.scope(t.asks.mira)).toEqual([pricing]);
-    expect(await reason(t.write(t.asks.mira, support.topicId, "x"))).toBe(
-      "knowledge-topic-not-writable",
-    );
-    await peopleOnly(support.topicId, false);
-    await peopleOnly(pricing, true);
-    expect(await t.scope(t.asks.mira)).toEqual([support.topicId]);
-    expect(
-      (
-        await t.ask(t.asks.mira, {
-          sql: "SELECT count(*) FROM facts WHERE text = 'PRICING_FACT'",
-        })
-      ).rows,
-    ).toEqual([["0"]]);
-    const shown = await t.read(mira, "team.knowledge.topic.get", { topicId: pricing });
-    expect(shown).toMatchObject({
-      peopleOnly: true,
+    expect(await t.read(sam, "team.knowledge.topic.get", { topicId: created })).toMatchObject({
+      name: "Support macros",
+      audience: { everyone: true, people: 5 },
       can: { read: true, write: true, manage: true },
     });
-    expect(
-      (await t.read(mira, "team.knowledge.facts.page", { topicId: pricing })).facts.map(
-        (fact) => fact.value,
-      ),
-    ).toEqual(["PRICING_FACT"]);
-  });
-
-  it("refuses forged scope settings, roles and catalog reads without revealing anything", async () => {
-    const t = await team();
-    const hidden = t.topics.roadmap;
-    const before = await t.count();
-    const attempts: Partial<TeamSqlInput>[] = [
-      { sql: `SELECT set_config('knowledge.read_topics', '{${hidden}}', true)` },
-      {
-        sql: "SELECT text FROM facts WHERE set_config('knowledge.read_topics', $1, true) IS NOT NULL",
-        parameters: [`{${hidden}}`],
-      },
-      { sql: `SET LOCAL knowledge.read_topics = '{${hidden}}'` },
-      { sql: "RESET knowledge.write_topics" },
-      { sql: "SELECT current_setting('knowledge.read_topics')" },
-      { sql: "SELECT current_setting('knowledge.writer_id')" },
-      { sql: "SET ROLE opensteer_knowledge_owner" },
-      { sql: "SET SESSION AUTHORIZATION DEFAULT" },
-      { sql: "SELECT current_user, session_user" },
-      { sql: "SELECT * FROM knowledge.fact_log" },
-      { sql: "SELECT * FROM knowledge.topics" },
-      { sql: "SELECT * FROM knowledge.operations" },
-      { sql: "SELECT * FROM team_topic_grants" },
-      { sql: "SELECT * FROM public.team_members" },
-      { sql: "SELECT query FROM pg_catalog.pg_stat_activity" },
-      { sql: "SELECT name, setting FROM pg_settings" },
-      { sql: "SELECT * FROM information_schema.role_table_grants" },
-      { sql: "SELECT pg_read_file('/etc/passwd')" },
-      {
-        sql: "INSERT INTO facts (topic, thing, property, value, writer_id) VALUES ($1, 'x', 'p', '1', $2)",
-        parameters: [t.channels.support.topicId, t.people.sam],
-        mode: "write",
-      },
-      {
-        sql: "INSERT INTO knowledge.fact_log (topic, thing, property, value, writer_kind, writer_id, operation_id, operation_row) VALUES ($1, 'x', 'p', '1', 'human', 'u', 'o', 1)",
-        parameters: [hidden],
-        mode: "write",
-      },
-      {
-        sql: "INSERT INTO facts (topic, thing, property, value) SELECT topic, 'x', 'p', value FROM facts",
-        mode: "write",
-      },
-    ];
-    for (const attempt of attempts) {
-      const outcome = await t.ask(t.asks.mira, attempt).then(
-        (result) => ({ allowed: JSON.stringify(result) }),
-        (error: { code?: string; message?: string; next?: string }) => error,
-      );
-      expect(outcome, attempt.sql).not.toHaveProperty("allowed");
-      expect(["bad_request", "forbidden"], attempt.sql).toContain(
-        (outcome as { code?: string }).code,
-      );
-      const text = JSON.stringify(outcome);
-      expect(text, attempt.sql).not.toContain(hidden);
-      expect(text, attempt.sql).not.toMatch(/ROADMAP_FACT|SECRET_|opensteer_knowledge|passwd/u);
-    }
-    expect(await t.count()).toBe(before);
-  });
-
-  it("replays a write's receipt only while its topics are still writable", async () => {
-    const t = await team();
-    const key = randomUUID();
-    const first = await t.write(t.asks.mira, t.topics.pricing, "replayed", key);
-    expect(first.receipt).toMatchObject({ committed: true, replayed: false });
-    const replay = await t.write(t.asks.mira, t.topics.pricing, "replayed", key);
-    expect(replay).toEqual({ ...first, receipt: { ...first.receipt!, replayed: true } });
-    const saved = await t.count();
-    await losses.topic!(t);
-    const stale = await t.write(t.asks.mira, t.topics.pricing, "replayed", key).then(
-      () => "allowed",
-      (error: { reason?: string; message?: string }) => `${error.reason}: ${error.message ?? ""}`,
+    expect(await t.read(lee, "team.knowledge.topic.get", { topicId: created })).toMatchObject({
+      can: { read: true, write: false, manage: false },
+    });
+    expect(await reason(t.read(sam, "team.knowledge.topic.get", { topicId: payroll }))).toBe(
+      "knowledge-topic-not-found",
     );
-    expect(stale).toMatch(/^knowledge-topic-not-writable: /u);
-    expect(stale).not.toContain(first.receipt!.facts[0]!.id);
-    expect(await t.count()).toBe(saved);
-  });
-
-  describe.each(Object.keys(losses))("losing access by %s", (loss) => {
-    it("refuses a write authorized before the change returned that had not reached the lock", async () => {
-      const t = await team();
-      const paused = hold();
-      t.pauses.beforeWriteLock = paused.pause;
-      const writing = reason(t.write(t.asks.mira, t.topics.pricing, "late"));
-      await paused.reached;
-      const before = await t.count();
-      await losses[loss]!(t);
-      const afterReturn = await t.count();
-      paused.release();
-      expect(await writing).toMatch(/^knowledge-(request-unavailable|topic-not-writable)$/u);
-      expect(afterReturn).toBe(before);
-      expect(await t.count()).toBe(before);
-    });
-
-    it("does not return the change until a write already holding the lock has committed", async () => {
-      const t = await team();
-      const paused = hold();
-      t.pauses.insideWriteLock = paused.pause;
-      const writing = reason(t.write(t.asks.mira, t.topics.pricing, "early"));
-      await paused.reached;
-      const before = await t.count();
-      let returned = false;
-      const changing = losses[loss]!(t).then(() => {
-        returned = true;
-      });
-      await waitingOnLock(t);
-      expect(returned).toBe(false);
-      paused.release();
-      await changing;
-      const afterReturn = await t.count();
-      delete t.pauses.insideWriteLock;
-      expect(await writing).toBe("allowed");
-      expect(afterReturn).toBe(before + 1);
-      expect(await reason(t.write(t.asks.mira, t.topics.pricing, "after"))).toMatch(
-        /^knowledge-(request-unavailable|topic-not-writable)$/u,
-      );
-      expect(await t.count()).toBe(afterReturn);
-    });
-  });
-
-  it("discards a whole aggregate when the access it was computed under shrinks before handoff", async () => {
-    const t = await team();
-    const count: TeamSqlInput = { sql: "SELECT count(*) FROM facts", mode: "read", parameters: [] };
-    const delivered = await t.knowledge.sql({ ...t.asks.mira, input: count });
-    expect(delivered.result.rows).toEqual([["2"]]);
-    expect(await delivered.reauthorize()).toBe(true);
-    const paused = hold();
-    t.pauses.beforeHandoff = paused.pause;
-    const counting = t.ask(t.asks.mira, { sql: "SELECT count(*) FROM facts" });
-    await paused.reached;
-    await losses.topic!(t);
-    paused.release();
-    await expect(counting).rejects.toMatchObject({
-      code: "forbidden",
-      reason: "knowledge-access-changed",
-      message: "Access to this knowledge changed while answering, so nothing was returned.",
-    });
-    // The link's own final handoff re-checks the same whole scope.
-    expect(await delivered.reauthorize()).toBe(false);
-
-    // A change elsewhere only makes the answer re-check, and it is still delivered.
-    const again = hold();
-    t.pauses.beforeHandoff = again.pause;
-    const recount = t.ask(t.asks.mira, { sql: "SELECT count(*) FROM facts" });
-    await again.reached;
-    await t.command(t.people.lee, {
-      type: "team.knowledge.topic.access.set",
-      topicId: t.topics.roadmap,
-      expectedRevision: "0" as never,
-      access: [
-        { subject: { kind: "person", userId: t.people.lee }, level: "manage" },
-        { subject: { kind: "person", userId: t.people.sam }, level: "write" },
-      ],
-    });
-    again.release();
-    expect((await recount).rows).toEqual([["1"]]);
-  });
-
-  it("lets people browse, edit and manage topics by their own access, admins by a change made as themselves", async () => {
-    const t = await team();
-    const { mira, sam, lee, ada } = t.people;
-    const { support, leadership, quiet } = t.channels;
-    const { pricing, roadmap, payroll } = t.topics;
-    const listed = async (userId: UserId) =>
-      (await t.read(userId, "team.knowledge.topics.list", {})).topics.map((topic) => [
-        topic.name,
-        topic.can.read,
-      ]);
-    expect(await listed(mira)).toEqual([
-      ["leadership", true],
-      ["payroll", true],
-      ["pricing", true],
-      ["quiet", true],
-      ["support", true],
-    ]);
-    expect(await listed(sam)).toEqual([
-      ["quiet", true],
-      ["roadmap", true],
-      ["support", true],
-    ]);
-    // An admin manages every public or private channel and shared topic, without reading them.
-    expect(await listed(ada)).toEqual([
-      ["leadership", false],
-      ["payroll", false],
-      ["pricing", false],
-      ["quiet", false],
-      ["roadmap", false],
-      ["support", false],
-    ]);
-    await expect(
-      t.read(ada, "team.knowledge.facts.page", { topicId: roadmap }),
-    ).rejects.toMatchObject({
-      code: "not_found",
-    });
-    await expect(
-      t.read(mira, "team.knowledge.topic.access.get", { topicId: support.topicId }),
-    ).rejects.toMatchObject({ reason: "team-topic-follows-channel" });
-
-    // People append versions; a stale version is refused; agents' writes name their source.
-    await t.command(mira, {
-      type: "team.knowledge.fact.append",
-      operationId: randomUUID(),
-      facts: [
-        {
-          topicId: support.topicId,
-          thing: "refunds",
-          property: "window",
-          value: "30 days",
-          replacesId: null,
-        },
-      ],
-    });
-    const [current] = (
-      await t.read(mira, "team.knowledge.facts.page", { topicId: support.topicId })
-    ).facts;
-    expect(current).toMatchObject({
-      thing: "refunds",
-      writerKind: "human",
-      writerUserId: mira,
-      source: null,
-    });
-    await expect(
-      t.command(sam, {
-        type: "team.knowledge.fact.append",
-        operationId: randomUUID(),
-        facts: [
-          {
-            topicId: support.topicId,
-            thing: "refunds",
-            property: "window",
-            value: "14 days",
-            replacesId: null,
-          },
-        ],
-      }),
-    ).rejects.toMatchObject({ code: "conflict", reason: "knowledge-fact-changed" });
-    await t.command(sam, {
-      type: "team.knowledge.fact.append",
-      operationId: randomUUID(),
-      facts: [
-        {
-          topicId: support.topicId,
-          thing: "refunds",
-          property: "window",
-          value: "14 days",
-          replacesId: current!.id,
-        },
-      ],
-    });
-    await t.write(t.asks.mira, support.topicId, "agent-wrote");
-    const facts = (await t.read(mira, "team.knowledge.facts.page", { topicId: support.topicId }))
-      .facts;
-    expect(facts.map((fact) => [fact.thing, fact.value, fact.writerKind])).toEqual([
-      ["agent-wrote", 1, "agent"],
-      ["refunds", "14 days", "human"],
-      ["marker", "SUPPORT_FACT", "human"],
-    ]);
-    expect(facts[0]!.source).toEqual({
-      channelId: support.channelId,
-      messageId: t.asks.mira.messageId,
-    });
-    expect(
-      (await t.read(mira, "team.knowledge.history.page", { topicId: support.topicId })).facts.map(
-        (fact) => fact.value,
-      ),
-    ).toEqual([1, "14 days", "30 days", "SUPPORT_FACT"]);
-    await expect(
-      t.command(sam, {
-        type: "team.knowledge.fact.append",
-        operationId: randomUUID(),
-        facts: [
-          { topicId: leadership.topicId, thing: "x", property: "y", value: 1, replacesId: null },
-        ],
-      }),
-    ).rejects.toMatchObject({ code: "forbidden", reason: "knowledge-topic-not-writable" });
-
-    // Lists change at their revision, by managers or admins; an admin adding herself is logged and told.
     const access = await t.read(lee, "team.knowledge.topic.access.get", { topicId: roadmap });
     expect(access).toMatchObject({ revision: "0", can: { manage: true } });
     await expect(
@@ -776,6 +640,14 @@ integration("team knowledge", () => {
         access: [],
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      t.command(mira, {
+        type: "team.knowledge.topic.access.set",
+        topicId: roadmap,
+        expectedRevision: access.revision,
+        access: [],
+      }),
+    ).rejects.toMatchObject({ code: "not_found" });
     await t.command(ada, {
       type: "team.knowledge.topic.access.set",
       topicId: roadmap,
@@ -790,26 +662,40 @@ integration("team knowledge", () => {
         access: access.entries,
       }),
     ).rejects.toMatchObject({ code: "conflict" });
-    expect(
-      (await t.read(ada, "team.knowledge.facts.page", { topicId: roadmap })).facts.map(
-        (fact) => fact.value,
-      ),
-    ).toEqual(["ROADMAP_FACT"]);
+    expect(await t.read(ada, "team.knowledge.topic.get", { topicId: roadmap })).toMatchObject({
+      can: { read: true, manage: true },
+    });
     // The access service records and announces an admin's self-add from the change's actor.
     expect(t.changes).toContainEqual({
       actor: { kind: "human", userId: ada },
       action: "team.knowledge.topic.access.set",
     });
-    expect(
-      await t
-        .read(sam, "team.knowledge.topic.get", { topicId: payroll })
-        .catch((error) => error.code),
-    ).toBe("not_found");
-    expect(
-      (await t.read(sam, "team.knowledge.topics.list", { channelId: quiet.channelId })).topics,
-    ).toHaveLength(1);
-    expect(await t.read(mira, "team.knowledge.topic.get", { topicId: pricing })).toMatchObject({
-      name: "pricing",
+  });
+
+  it("notifies the previous topic manager when an admin replaces every grant with themselves", async () => {
+    const t = await team();
+    await t.command(t.people.ada, {
+      type: "team.knowledge.topic.access.set",
+      topicId: t.topicIds.payroll,
+      expectedRevision: "0" as never,
+      access: [{ subject: { kind: "person", userId: t.people.ada }, level: "manage" }],
     });
+    expect(
+      await t.database
+        .selectFrom("teamNotices")
+        .select("recipientUserId")
+        .where("recipientUserId", "=", t.people.mira)
+        .execute(),
+    ).toHaveLength(1);
+  });
+
+  it("seeds General once, however often the team Host starts", async () => {
+    const t = await team();
+    await startTeamKnowledge({ database: t.database, access: t.lock, audit: testTeamAudit });
+    expect(
+      (await t.database.selectFrom("teamTopics").select("name").execute()).filter(
+        (topic) => topic.name === "General",
+      ),
+    ).toHaveLength(1);
   });
 });

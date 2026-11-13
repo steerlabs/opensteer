@@ -1,17 +1,23 @@
 import {
   DeploymentIdSchema,
+  KnowledgeNoteIdSchema,
+  KnowledgeTopicIdSchema,
   TeamAgentRequestIdSchema,
+  TeamGroupIdSchema,
   TeamBlobIdSchema,
   TeamChannelIdSchema,
   TeamHandleSchema,
   UserIdSchema,
+  type KnowledgeTopicId,
   type TeamChannelId,
+  type TeamMessageId,
   type UserId,
 } from "@opensteer/core";
 import {
   TeamAgentRequestSchema,
   TeamChannelSchema,
   TeamFileSchema,
+  TeamGroupSchema,
   TeamMemberSchema,
   type TeamAgentRequest,
   type TeamMessage,
@@ -229,6 +235,7 @@ export function seedBusyTeam(
       mentions: [{ userId: me, kind: "person" }],
     });
     void plans;
+    seedFamilyKnowledge(host, { maya, leo, dana });
     return;
   }
 
@@ -404,6 +411,362 @@ export function seedBusyTeam(
   markRead(host, dmGroup);
   send(dmJordan, jordan, "Thanks for the intro!");
   markRead(host, dmJordan);
+
+  seedAcmeKnowledge(host, {
+    people: { me, leo, maya, dana, priya, sam, jordan },
+    support,
+    asks: { refund4411: myAsk, window4411: priyaAsk, bankStep: mySecond },
+  });
+}
+
+const topicId = (team: number, n: number) =>
+  KnowledgeTopicIdSchema.parse(`ktp_00000000-0000-4000-8${team}00-${String(n).padStart(12, "0")}`);
+const noteId = (team: number, n: number) =>
+  KnowledgeNoteIdSchema.parse(`knt_00000000-0000-4000-8${team}00-${String(n).padStart(12, "0")}`);
+const day = (date: string, time = "10:00") => new Date(`${date}T${time}:00.000Z`).toISOString();
+
+type Writer = { readonly userId: UserId; readonly agent?: boolean };
+
+/** Writes a note's versions, oldest first, as their writers saved them. */
+function seedNote(
+  host: MockTeamHost,
+  id: ReturnType<typeof noteId>,
+  topic: KnowledgeTopicId,
+  versions: readonly {
+    readonly by: Writer;
+    readonly at: string;
+    readonly title?: string;
+    readonly body?: string;
+    readonly deleted?: boolean;
+    readonly source?: { readonly channelId: TeamChannelId; readonly messageId: TeamMessageId };
+  }[],
+): void {
+  let title = "";
+  let body = "";
+  for (const version of versions) {
+    title = version.title ?? title;
+    body = version.body ?? body;
+    const member = host.members.find((row) => row.userId === version.by.userId);
+    host.knowledge.addVersion({
+      noteId: id,
+      topicId: topic,
+      title,
+      body,
+      deleted: version.deleted ?? false,
+      at: version.at,
+      writer: {
+        kind: version.by.agent ? "agent" : "human",
+        userId: version.by.userId,
+        name: member?.displayName ?? "Someone",
+      },
+      source: version.by.agent ? (version.source ?? null) : null,
+    });
+  }
+}
+
+const customers = [
+  ["Harbor & Pine Coffee", "Wholesale, 40 kettles a quarter. Prefers invoices on the 1st."],
+  ["Juniper Studio", "Design studio in Lisbon. Ships to the office, not the founder's home."],
+  ["Kettle Club Berlin", "Subscription box partner. Their API key rotates every 90 days."],
+  ["Morrow Hotels", "Six properties. Damage claims go to their facilities lead, not reception."],
+  ["Northwind Outfitters", "Outdoor retailer. Wants the matte black lid only."],
+  ["Oak & Ember", "Restaurant group. Delivery window 7–9am, loading dock on Rue Saint-Paul."],
+  ["Pebble Workspace", "Coworking chain. Pays by card; receipts to accounts@."],
+  ["Quietwater Spa", "Asked about bulk engraving. Quote sent Oct 30."],
+] as const;
+
+function seedAcmeKnowledge(
+  host: MockTeamHost,
+  refs: {
+    readonly people: Readonly<
+      Record<"me" | "leo" | "maya" | "dana" | "priya" | "sam" | "jordan", UserId>
+    >;
+    readonly support: TeamChannelId;
+    readonly asks: Readonly<Record<"refund4411" | "window4411" | "bankStep", TeamMessage>>;
+  },
+): void {
+  const { me, leo, maya, dana, priya, sam, jordan } = refs.people;
+  const groupId = (n: number) =>
+    TeamGroupIdSchema.parse(`tgr_00000000-0000-4000-8100-${String(n).padStart(12, "0")}`);
+  const supportTeam = TeamGroupSchema.parse({
+    id: groupId(1),
+    name: "Support team",
+    people: [me, leo, dana, sam],
+    children: [],
+    updatedAt: day("2026-09-02"),
+  });
+  const design = TeamGroupSchema.parse({
+    id: groupId(2),
+    name: "Design",
+    people: [priya, jordan],
+    children: [],
+    updatedAt: day("2026-09-02"),
+  });
+  host.groups.set(supportTeam.id, supportTeam);
+  host.groups.set(design.id, design);
+  const source = (ask: TeamMessage) => ({ channelId: refs.support, messageId: ask.id });
+  const general = host.knowledge.starterTopicId;
+  const [customersTopic, playbook, leadership, interviews, launch] = [1, 2, 3, 4, 5].map((n) =>
+    topicId(1, n),
+  ) as [KnowledgeTopicId, KnowledgeTopicId, KnowledgeTopicId, KnowledgeTopicId, KnowledgeTopicId];
+  host.knowledge.addTopic({
+    id: customersTopic,
+    name: "Customers",
+    description: "Who our customers are, what they bought and what they asked for.",
+    access: [
+      { subject: { kind: "everyone" }, level: "read" },
+      { subject: { kind: "group", groupId: supportTeam.id }, level: "write" },
+      { subject: { kind: "person", userId: dana }, level: "manage" },
+    ],
+    createdBy: maya,
+    at: day("2026-09-03"),
+  });
+  host.knowledge.addTopic({
+    id: playbook,
+    name: "Support playbook",
+    description: "How we handle refunds, claims and the tickets that keep coming back.",
+    access: [{ subject: { kind: "group", groupId: supportTeam.id }, level: "write" }],
+    createdBy: dana,
+    at: day("2026-09-04"),
+  });
+  host.knowledge.addTopic({
+    id: leadership,
+    name: "Leadership",
+    description: "Board prep, hiring and plans that aren't ready to share.",
+    access: [
+      { subject: { kind: "person", userId: me }, level: "manage" },
+      { subject: { kind: "person", userId: priya }, level: "write" },
+      { subject: { kind: "person", userId: jordan }, level: "read" },
+    ],
+    createdBy: maya,
+    at: day("2026-09-05"),
+  });
+  host.knowledge.addTopic({
+    id: interviews,
+    name: "Interview notes",
+    description: "Candidate feedback. Only the hiring panel reads it.",
+    access: [{ subject: { kind: "person", userId: dana }, level: "read" }],
+    createdBy: maya,
+    at: day("2026-10-01"),
+  });
+  host.knowledge.addTopic({
+    id: launch,
+    name: "Q3 launch",
+    description: "The kettle v2 launch: checklist, press and what we learned.",
+    access: [{ subject: { kind: "everyone" }, level: "read" }],
+    createdBy: sam,
+    at: day("2026-07-01"),
+    archivedAt: day("2026-10-20"),
+  });
+
+  let n = 0;
+  const note = () => noteId(1, ++n);
+  seedNote(host, note(), general, [
+    {
+      by: { userId: priya },
+      at: day("2026-11-03", "09:12"),
+      title: "Office wifi",
+      body: "Network **Acme-Staff**, password on the card by the kitchen.\n\nGuests use **Acme-Guest**; it resets every Monday.",
+    },
+  ]);
+  seedNote(host, note(), general, [
+    {
+      by: { userId: maya },
+      at: day("2026-10-14", "15:40"),
+      title: "Standup",
+      body: "Daily at 10:00 in the big room, 15 minutes. Async updates in #announcements when you're out.",
+    },
+    {
+      by: { userId: maya, agent: true },
+      at: day("2026-11-08", "08:50"),
+      body: "Daily at **10:15** in the big room, 15 minutes (moved from 10:00 in November).\n\nAsync updates in #announcements when you're out.",
+    },
+  ]);
+  seedNote(host, note(), general, [
+    {
+      by: { userId: me },
+      at: day("2026-09-20", "11:00"),
+      title: "Where things live",
+      body: "- Contracts and invoices: the shared drive, *Finance* folder\n- Brand assets: Figma, *Acme Brand* file\n- Shipping labels: the carrier portal (ask Sam for access)",
+    },
+  ]);
+
+  seedNote(host, note(), customersTopic, [
+    {
+      by: { userId: dana },
+      at: day("2026-11-08", "11:44"),
+      title: "Order 4411 — cracked lid",
+      body: "Customer reported a cracked lid on arrival, with photos.",
+    },
+    {
+      by: { userId: me, agent: true },
+      at: day("2026-11-12", "09:20"),
+      body: "Customer reported a cracked lid on arrival, with photos.\n\n- Delivered **Nov 2**; day 9 of the 30-day window\n- Refunded **$64.00** to the original card on Nov 12\n- Replacement lid not needed; customer kept the kettle",
+      source: source(refs.asks.refund4411),
+    },
+  ]);
+  seedNote(host, note(), customersTopic, [
+    {
+      by: { userId: priya, agent: true },
+      at: day("2026-11-09", "12:03"),
+      title: "Order 4411 — refund window",
+      body: "Delivered Nov 2, so the 30-day window ends **Dec 2**. A cracked lid with photos is covered.",
+      source: source(refs.asks.window4411),
+    },
+  ]);
+  seedNote(host, note(), customersTopic, [
+    {
+      by: { userId: sam },
+      at: day("2026-11-07", "16:30"),
+      title: "Order 4420 — reroute",
+      body: "Shipped to the customer's old address. Called them and set up a reroute with the carrier; new ETA Nov 11.",
+    },
+  ]);
+  const start = Date.parse("2026-10-01T09:00:00.000Z");
+  for (let index = 0; index < 52; index++) {
+    const [name, detail] = customers[index % customers.length]!;
+    const writer = [leo, dana, sam, me][index % 4]!;
+    seedNote(host, note(), customersTopic, [
+      {
+        by: { userId: writer, agent: index % 3 === 0 },
+        at: new Date(start + index * 13 * 3_600_000).toISOString(),
+        title: index < customers.length ? name : `${name} — order ${4300 + index}`,
+        body:
+          index < customers.length
+            ? `${detail}\n\nAccount owner: ${["Leo", "Dana", "Sam", "Tim"][index % 4]}.`
+            : `Order ${4300 + index} shipped ${index % 2 ? "on time" : "a day late"}. ${detail}`,
+      },
+    ]);
+  }
+
+  seedNote(host, note(), playbook, [
+    {
+      by: { userId: dana },
+      at: day("2026-09-10", "10:00"),
+      title: "Refunds over $500",
+      body: "Need a second approval from Maya.",
+    },
+    {
+      by: { userId: leo },
+      at: day("2026-10-02", "14:10"),
+      body: "Need a second approval from **Maya or Dana** before you refund.",
+    },
+    {
+      by: { userId: me, agent: true },
+      at: day("2026-11-09", "13:05"),
+      body: "Need a second approval from **Maya or Dana** before you refund.\n\n1. Check the order is inside the 30-day window\n2. Ask in #support with the order number\n3. Refund to the original card; use store credit if Shopify's refund API fails\n\nIf a refund sits at the bank step for more than a day, open a ticket with the payment processor.",
+      source: source(refs.asks.bankStep),
+    },
+  ]);
+  seedNote(host, note(), playbook, [
+    {
+      by: { userId: dana },
+      at: day("2026-10-20", "09:30"),
+      title: "Opened bundles",
+      body: "Opened bundles can be returned within 14 days for store credit.",
+    },
+    {
+      by: { userId: dana },
+      at: day("2026-11-08", "11:20"),
+      body: "Opened bundles can be returned within **30 days** for a refund, minus the shipping cost. The old macro said 14 days; it's fixed.",
+    },
+  ]);
+  seedNote(host, note(), playbook, [
+    {
+      by: { userId: sam, agent: true },
+      at: day("2026-11-06", "15:00"),
+      title: "Carrier claims",
+      body: "File within 7 days of delivery on the carrier portal with:\n\n- photos of the box and the damage\n- the order number and tracking number\n\nClaims usually settle in 5–10 business days.",
+    },
+  ]);
+  seedNote(host, note(), playbook, [
+    {
+      by: { userId: leo },
+      at: day("2026-10-28", "12:00"),
+      title: "Coupon workaround",
+      body: "If KETTLE10 doesn't apply at checkout, refund 10% by hand after the order ships.",
+    },
+    { by: { userId: leo }, at: day("2026-11-08", "13:30"), deleted: true },
+  ]);
+
+  seedNote(host, note(), leadership, [
+    {
+      by: { userId: maya },
+      at: day("2026-11-04", "17:00"),
+      title: "Board meeting prep",
+      body: "Deck draft is in the drive. Numbers to update: Q3 revenue, CSAT (94%), headcount plan.",
+    },
+  ]);
+  seedNote(host, note(), leadership, [
+    {
+      by: { userId: priya },
+      at: day("2026-10-25", "10:30"),
+      title: "Q1 hiring plan",
+      body: "Two support hires in January, one designer in March. Budget approved.",
+    },
+  ]);
+  seedNote(host, note(), interviews, [
+    {
+      by: { userId: dana },
+      at: day("2026-10-10", "16:00"),
+      title: "Support lead candidates",
+      body: "Shortlist of three. Panel notes to follow.",
+    },
+  ]);
+  seedNote(host, note(), launch, [
+    {
+      by: { userId: sam },
+      at: day("2026-09-30", "18:00"),
+      title: "Launch retro",
+      body: "**Went well:** press kit, landing page.\n\n**Next time:** start the carrier conversations two weeks earlier.",
+    },
+  ]);
+}
+
+/** The family team: Tim is a member there, so its topics show what a reader sees. */
+function seedFamilyKnowledge(
+  host: MockTeamHost,
+  people: Readonly<Record<"maya" | "leo" | "dana", UserId>>,
+): void {
+  host.bootstrap.member.role = "member";
+  host.bootstrap.can = {
+    ...host.bootstrap.can,
+    manageMembers: false,
+    manageGroups: false,
+    manageInvites: false,
+    transferOwner: false,
+    viewAudit: false,
+  };
+  const owner = host.members.find((member) => member.userId === people.maya);
+  if (owner) owner.role = "owner";
+  const house = topicId(2, 1);
+  host.knowledge.addTopic({
+    id: house,
+    name: "House",
+    description: "Bills, appliances and who to call.",
+    access: [
+      { subject: { kind: "everyone" }, level: "read" },
+      { subject: { kind: "person", userId: people.leo }, level: "write" },
+    ],
+    createdBy: people.maya,
+    at: day("2026-09-02"),
+  });
+  seedNote(host, noteId(2, 1), house, [
+    {
+      by: { userId: people.leo },
+      at: day("2026-10-12", "19:00"),
+      title: "Boiler service",
+      body: "Serviced every October by Nordic Heating. Next visit booked for **Oct 2027**.",
+    },
+  ]);
+  seedNote(host, noteId(2, 2), host.knowledge.starterTopicId, [
+    {
+      by: { userId: people.dana, agent: true },
+      at: day("2026-11-01", "08:00"),
+      title: "Trip packing list",
+      body: "- Tent and stove (Leo)\n- Groceries (Tim, Friday)\n- Ferry tickets",
+    },
+  ]);
 }
 
 function markRead(host: MockTeamHost, where: TeamChannelId, through?: string): void {

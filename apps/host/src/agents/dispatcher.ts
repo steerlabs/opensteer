@@ -163,6 +163,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #triggerControlTokens: TriggerControlTokenService;
   readonly #triggers: TriggerStore;
   readonly #teamRequestContext: TeamRequestContextLoader;
+  readonly #teamKnowledgeAvailable: () => Promise<boolean>;
   constructor(options: {
     readonly attachmentRunTokens: RunCapabilityTokenService<"opensteer-run-attachments">;
     readonly attachments: Pick<AttachmentStore, "listForRun">;
@@ -192,6 +193,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly triggerControlTokens: TriggerControlTokenService;
     readonly triggers: TriggerStore;
     readonly teamRequestContext: TeamRequestContextLoader;
+    /** Whether the owner is linked to a team, so their private Runs get team knowledge. */
+    readonly teamKnowledgeAvailable?: () => Promise<boolean>;
   }) {
     this.#attachmentRunTokens = options.attachmentRunTokens;
     this.#attachments = options.attachments;
@@ -218,6 +221,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     this.#triggerControlTokens = options.triggerControlTokens;
     this.#triggers = options.triggers;
     this.#teamRequestContext = options.teamRequestContext;
+    this.#teamKnowledgeAvailable = options.teamKnowledgeAvailable ?? (async () => false);
   }
   isAvailable(command: PendingCommandRow, dispatchingRuns: number): boolean {
     if (!supportedCommandTypes.has(command.type) || command.environmentId === null) return false;
@@ -492,6 +496,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       });
     if (!binding) return;
     if (binding.continuationEvent) this.#onDeploymentEvent(binding.continuationEvent);
+    const knowledge = context.personalContext && (await this.#teamKnowledgeAvailable());
     const toolsToken = this.#runToolTokens.issue({
       bindingGeneration: binding.bindingGeneration,
       grantId: binding.grantId,
@@ -600,6 +605,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           purpose: context.thread.purpose,
           teamBound: context.thread.teamOrigin !== null,
           personalContext: context.personalContext,
+          knowledge,
           ...(teamContext ? { teamContext } : {}),
           accessMode: context.thread.accessMode,
         }),

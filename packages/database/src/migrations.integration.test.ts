@@ -7,6 +7,7 @@ import {
   migrateToLatest,
   migrationProvider,
   personalTeamBaselineName,
+  teamKnowledgeNotesMigrationName,
 } from "./migrations.js";
 import type { DatabaseSchema } from "./schema.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
@@ -67,11 +68,19 @@ async function message(channel: string, owner: string, clientId = crypto.randomU
   ).rows[0]!.id;
 }
 
+/** Every migration that sorts before `name`, as a database last migrated by an older build has. */
+function migrationsBefore(name: string) {
+  return {
+    async getMigrations() {
+      const all = await migrationProvider().getMigrations();
+      return Object.fromEntries(Object.entries(all).filter(([key]) => key < name));
+    },
+  };
+}
+
 describe("fresh personal/team lineage", () => {
   it("upgrades existing queued inputs with fresh context disabled in the table and work view", async () => {
-    const migrations = await migrationProvider().getMigrations();
-    delete migrations["0005_thread_input_fresh_context"];
-    await migrateToLatest(database, { getMigrations: async () => migrations });
+    await migrateToLatest(database, migrationsBefore("0005_thread_input_fresh_context"));
     const { userId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
     const store = new OpensteerStore(database);
     const { thread } = await createPersonalRunFixturePort(store).createTask({
@@ -207,6 +216,10 @@ describe("fresh personal/team lineage", () => {
         "team_messages",
         "team_agent_requests",
         "personal_team_requests",
+        "team_topics",
+        "team_topic_grants",
+        "team_notes",
+        "team_note_versions",
       ]),
     );
     expect(
@@ -227,6 +240,83 @@ describe("fresh personal/team lineage", () => {
         )
       ).rows,
     ).toEqual(Object.keys(await migrationProvider().getMigrations()).map((name) => ({ name })));
+  });
+  it("replaces a team's restricted knowledge schema, its login and channel topics with notes in topics", async () => {
+    await migrateToLatest(database, migrationsBefore(teamKnowledgeNotesMigrationName));
+    const { owner, channel } = await team();
+    const { oid } = (
+      await sql<{
+        oid: string;
+      }>`select oid::text as oid from pg_database where datname=current_database()`.execute(
+        database,
+      )
+    ).rows[0]!;
+    const executor = `opensteer_knowledge_executor_${oid}`;
+    const exists = async (query: string) =>
+      (
+        await sql<{ present: boolean }>`select exists(${sql.raw(query)}) as present`.execute(
+          database,
+        )
+      ).rows[0]!.present;
+    try {
+      // What the old team Host built at start: a schema owned by a cluster-wide role, a login
+      // for agent SQL, and grant and channel-topic rows that point into it. One transaction, so
+      // a concurrent migration never sees the owner without the schema it owns.
+      await database.transaction().execute(async (transaction) => {
+        await sql
+          .raw(
+            `do $$ begin create role opensteer_knowledge_owner nologin;
+              exception when duplicate_object then null; end $$;
+            create role "${executor}" login noinherit;
+            alter role "${executor}" set search_path = pg_catalog, knowledge, pg_temp;
+            create schema knowledge authorization opensteer_knowledge_owner;
+            create table knowledge.topics (id text primary key, name text not null,
+              origin_channel_id text references public.team_channels(id));
+            alter table knowledge.topics owner to opensteer_knowledge_owner;
+            alter table public.team_topic_grants add foreign key (topic_id) references knowledge.topics(id);
+            alter table public.team_channel_topics add foreign key (topic_id) references knowledge.topics(id);
+            grant usage on schema knowledge to "${executor}";
+            grant select on knowledge.topics to "${executor}";
+            insert into knowledge.topics values ('ktp_old', 'pricing', null), ('ktp_channel', 'support', '${channel}');
+            insert into team_topic_grants (topic_id, subject_kind, subject_id, level, added_by)
+              values ('ktp_old', 'person', '${owner}', 'manage', '${owner}');
+            insert into team_channel_topics (channel_id, topic_id, attached_by)
+              values ('${channel}', 'ktp_old', '${owner}');`,
+          )
+          .execute(transaction);
+      });
+      await migrateToLatest(database);
+      expect(await exists("select from pg_namespace where nspname='knowledge'")).toBe(false);
+      expect(await exists(`select from pg_roles where rolname='${executor}'`)).toBe(false);
+      expect(await exists("select from pg_class where relname='team_channel_topics'")).toBe(false);
+      // The new tables take an everyone grant, which can read or write but never manage.
+      const topic = createId("knowledgeTopic");
+      await sql`insert into team_topics (id, name, created_by) values (${topic}, 'General', ${owner})`.execute(
+        database,
+      );
+      await sql`insert into team_topic_grants (topic_id, subject_kind, subject_id, level) values (${topic}, 'everyone', 'team', 'write')`.execute(
+        database,
+      );
+      await expect(
+        sql`update team_topic_grants set level='manage' where topic_id=${topic}`.execute(database),
+      ).rejects.toThrow(/check constraint/u);
+      await expect(
+        sql`insert into team_topic_grants (topic_id, subject_kind, subject_id, level) values ('ktp_old', 'person', ${owner}, 'read')`.execute(
+          database,
+        ),
+      ).rejects.toThrow(/foreign key/u);
+      await migrateToLatest(database);
+    } finally {
+      await sql
+        .raw(
+          `drop schema if exists knowledge cascade;
+          do $$ begin
+            if exists (select from pg_roles where rolname = '${executor}') then drop role "${executor}"; end if;
+            drop role if exists opensteer_knowledge_owner;
+          exception when dependent_objects_still_exist then null; end $$;`,
+        )
+        .execute(database);
+    }
   });
   it.each([
     ["app_versions", "size_bytes", "integer", "NO"],

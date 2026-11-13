@@ -19,7 +19,7 @@ import {
   teamApiVersion,
   teamApiVersionHeader,
 } from "../packages/deployment-authority/src/index.js";
-import type { RequestResponse } from "../packages/core/src/index.js";
+import type { KnowledgeTopicId, RequestResponse } from "../packages/core/src/index.js";
 import { WebSocket } from "ws";
 import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import { expect, it, vi } from "vitest";
@@ -464,7 +464,7 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
     );
     expect(personalClient.getSnapshot().threadVisits[local.localTaskId]).toBe(completedAt);
 
-    console.info("Z4: SQL continuation");
+    console.info("Z4: knowledge continuation");
     engineArguments.splice(
       0,
       engineArguments.length,
@@ -472,28 +472,28 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
       "--unique-threads",
     );
     await personal.restartRunner();
-    const topic = (
+    const general = (
       await sql<{
         id: string;
-      }>`select id from knowledge.topics where origin_channel_id=${channelId}`.execute(
-        team.database,
-      )
+      }>`select id from team_topics where name='General'`.execute(team.database)
     ).rows[0]!;
+    const noteId = createId("knowledgeNote");
+    const seeded = await session.rpc["commands.dispatch"]({
+      type: "team.knowledge.note.write",
+      noteId,
+      topicId: general.id as KnowledgeTopicId,
+      expectedVersion: null,
+      title: "z4",
+      body: "The answer is unknown.",
+    });
+    if (!seeded.ok) throw new Error(JSON.stringify(seeded));
     const call = (name: string, input: unknown) =>
       `[[call ${name} ${Buffer.from(JSON.stringify(input)).toString("base64url")}]]`;
+    // The engine may see a directive more than once; a resent change is the same write.
     await ask(
       [
-        call("sql", {
-          mode: "write",
-          sql: "INSERT INTO facts(topic,thing,property,value) VALUES ($1,'z4','answer','42')",
-          parameters: [topic.id],
-          operationId: crypto.randomUUID(),
-        }),
-        call("sql", {
-          mode: "read",
-          sql: "SELECT 42 / count(*) AS result FROM facts WHERE thing='z4' AND value='42'::jsonb",
-          parameters: [],
-        }),
+        call("knowledge_write", { noteId, version: 1, body: "The answer is 42." }),
+        call("knowledge_read", { query: "z4" }),
         "[[reply Knowledge written and read.]]",
       ].join("\n"),
       queued.id,
@@ -504,7 +504,7 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
         session.client
           .getSnapshot()
           .thread?.messages.find((row) => row.bodyMarkdown === "Knowledge written and read."),
-      "Agent SQL continuation did not finish",
+      "Agent knowledge continuation did not finish",
     );
     expect(
       await personal.host.store.database
@@ -517,9 +517,9 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
       (
         await sql<{
           count: string;
-        }>`select count(*)::text as count from knowledge.fact_log where thing='z4'`.execute(
-          team.database,
-        )
+        }>`select count(*)::text as count from team_note_versions
+          where note_id=${noteId} and writer_kind='agent' and request_id is not null
+            and body='The answer is 42.'`.execute(team.database)
       ).rows[0]!.count,
     ).toBe("1");
 
