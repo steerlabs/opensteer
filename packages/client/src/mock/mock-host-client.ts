@@ -6967,7 +6967,6 @@ class MockHostState {
       updatedAt: timestamp,
     });
     const runRecord: Run = RunSchema.parse({
-      teamRequestId: null,
       accessMode: thread.accessMode,
       activationInputId: message.id,
       assignmentId: input.assignmentId,
@@ -10421,7 +10420,6 @@ class MockHostState {
     if (!thread || seed?.kind !== "message" || seed.author.kind !== "human") return null;
     // Some seeded transcripts carry ids no Host would issue; their Runs take no one's message.
     const parsed = RunSchema.safeParse({
-      teamRequestId: null,
       accessMode: thread.accessMode,
       activationInputId: seed.id,
       assignmentId: null,

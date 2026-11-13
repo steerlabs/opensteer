@@ -2098,7 +2098,7 @@ const opensteerSteps = new Map<string, OpensteerStep>([
 
   ["team_read", said(["Reading team context", "Read team context"], "list")],
   ["team_search", said(["Searching team messages", "Searched team messages"], "search")],
-  ["team_reply", said(["Replying to the team", "Replied to the team"], "share")],
+  ["team_post", said(["Replying to the team", "Replied to the team"], "share")],
   ["knowledge_topics", said(["Looking up team topics", "Looked up team topics"], "list")],
   [
     "knowledge_read",

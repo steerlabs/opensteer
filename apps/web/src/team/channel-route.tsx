@@ -447,11 +447,17 @@ function ChannelScreenFor({
     void client.rpc["commands.dispatch"](command).then(unwrapRpcResult).catch(report);
   const messageActions = {
     onOpenThread: (rootId: string) => go(channelPath(team.teamId, channelId, { threadId: rootId })),
-    onAskAgent: (rootId: string) =>
-      void navigate({
-        pathname: channelPath(team.teamId, channelId, { threadId: rootId }),
-        search: search ? `${search}&ask=1` : "?ask=1",
-      }),
+    onAskAgent: (rootId: string) => {
+      void client
+        .setAgentRecipient(channelId, TeamMessageIdSchema.parse(rootId), true)
+        .then(() =>
+          navigate({
+            pathname: channelPath(team.teamId, channelId, { threadId: rootId }),
+            search,
+          }),
+        )
+        .catch(report);
+    },
     onPin: (messageId: string, pinned: boolean) =>
       dispatch({
         type: pinned ? "team.message.pin" : "team.message.unpin",
@@ -550,13 +556,28 @@ function ChannelScreenFor({
     (snapshot.typing[JSON.stringify([channelId, rootId])] ?? [])
       .filter((userId) => userId !== words.viewerUserId)
       .map((userId) => person(words, userId));
-  const composer = (rootId: string | null, startsOn: boolean) =>
+  const composer = (rootId: string | null) =>
     can?.post !== true ? (
       <p className="team-composer__closed">You can read this channel but not post here.</p>
     ) : (
       <TeamComposer
         agent={agent}
-        agentStartsOn={startsOn}
+        agentStartsOn={
+          rootId !== null &&
+          (snapshot.agentRecipients.find(
+            (row) => row.channelId === channelId && row.rootId === rootId,
+          )?.enabled ??
+            false)
+        }
+        {...(rootId
+          ? {
+              onAgentRecipient: (enabled: boolean) => {
+                void client
+                  .setAgentRecipient(channelId, TeamMessageIdSchema.parse(rootId), enabled)
+                  .catch(report);
+              },
+            }
+          : {})}
         autoFocus={rootId !== null}
         key={`${team.teamId}:${channelId}:${rootId ?? "channel"}`}
         draft={
@@ -614,14 +635,6 @@ function ChannelScreenFor({
         : [],
     [thread, words, place.threadId, snapshot.pending, snapshot.connection],
   );
-  const myOpenAsk =
-    thread?.requests.some(
-      (request) =>
-        request.ownerUserId === words.viewerUserId &&
-        (request.state === "queued" ||
-          request.state === "working" ||
-          request.state === "needs_you"),
-    ) ?? false;
   const readVisibleReply = useCallback(
     (messageId: string) => {
       if (!hostClient || !links || !place.threadId) return;
@@ -655,7 +668,7 @@ function ChannelScreenFor({
         actions={messageActions}
         cardActions={cardActions}
         channel={channel}
-        composer={composer(place.threadId, myOpenAsk || params.has("ask"))}
+        composer={composer(place.threadId)}
         onBack={docked ? () => go(channelPath(team.teamId, channelId)) : undefined}
         onClose={() => go(channelPath(team.teamId, channelId))}
         editingId={editingId}
@@ -681,10 +694,10 @@ function ChannelScreenFor({
           agent.kind === "not-linked" && surface !== "desktop" ? (
             <>
               <AgentUnavailable kind="not-linked" />
-              {composer(null, false)}
+              {composer(null)}
             </>
           ) : (
-            composer(null, false)
+            composer(null)
           )
         }
         list={

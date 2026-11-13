@@ -36,6 +36,45 @@ function fixture() {
   return { host, persistence, client };
 }
 describe("team synchronization", () => {
+  it("reconciles recipient state across devices, snapshot and resume without inferring from requests", async () => {
+    const f = fixture();
+    const rootId = TeamMessageIdSchema.parse("1");
+    try {
+      await f.client.load();
+      await vi.waitFor(() => expect(f.client.getSnapshot().connection).toBe("connected"), {
+        timeout: 1000,
+      });
+      f.client.selectChannel(mockTeamChannelId);
+      await f.client.setAgentRecipient(mockTeamChannelId, rootId, true);
+      await f.client.setAgentRecipient(mockTeamChannelId, rootId, true);
+      expect(f.client.getSnapshot().agentRecipients).toEqual([
+        { channelId: mockTeamChannelId, rootId, enabled: true },
+      ]);
+      f.client.receive({
+        type: "team.agent.recipient",
+        recipient: { channelId: mockTeamChannelId, rootId, enabled: false },
+      });
+      expect(f.client.getSnapshot().agentRecipients[0]?.enabled).toBe(false);
+      const cut = f.host.cut(
+        channelScope,
+        "channel",
+        f.client.getSnapshot().channel!.generation,
+        null,
+      );
+      f.client.receive({ type: "team.cut", cut });
+      expect(f.client.getSnapshot().agentRecipients[0]?.enabled).toBe(true);
+      f.host.agentRecipients.clear();
+      const resumed = f.host.cut(channelScope, "channel", cut.generation, cut.throughSeq);
+      expect(resumed.type).toBe("resumed");
+      f.client.receive({ type: "team.cut", cut: resumed });
+      expect(f.client.getSnapshot().agentRecipients).toEqual([]);
+      f.client.receive({ type: "team.cut", cut: { ...cut, generation: cut.generation + 1 } });
+      expect(f.client.getSnapshot().agentRecipients).toEqual([]);
+    } finally {
+      f.client.dispose();
+      f.host.dispose();
+    }
+  });
   it("keeps synchronizing through a newer team server's fields and frame types", async () => {
     const host = new MockTeamHost(),
       sockets: MockTeamSocket[] = [];

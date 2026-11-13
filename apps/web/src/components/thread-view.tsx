@@ -1,3 +1,4 @@
+import { useTaskSourceView } from "../team/team-attachments.js";
 import { useThreadVisits } from "@opensteer/client/react";
 import { ThreadServerApprovals } from "./computer-apps/thread-server-approvals.js";
 import { threadMark, type PasswordsSetupOffer } from "@opensteer/client/host";
@@ -90,7 +91,6 @@ import { LivePlace } from "./workspace/viewfinder.js";
 import { useWorkspace } from "./workspace/workspace-context.js";
 import { TaskMark, TaskState, taskStateWords } from "./workspace/task-mark.js";
 import { useTaskDirectory } from "./workspace/task-directory.js";
-import { TaskAudienceLine, TaskSourceChip } from "../team/task-source-chip.js";
 
 export function ThreadRoute() {
   const { threadId } = useParams();
@@ -179,6 +179,7 @@ function ThreadView({
   requests,
   thread,
 }: ThreadViewProps) {
+  const teamSource = useTaskSourceView(thread.teamOrigin);
   const { nav, phone, selection, work } = useWorkspace();
   // A subagent opened from this conversation: in its column, or beside it when it stands alone and wide.
   const [searchParams] = useSearchParams();
@@ -983,7 +984,6 @@ function ThreadView({
             title={title}
             titleRef={headerTitleRef}
           />
-          {thread.teamOrigin ? <TaskSourceChip origin={thread.teamOrigin} /> : null}
 
           {finding ? (
             <ThreadFind
@@ -1058,6 +1058,7 @@ function ThreadView({
                     <EmptyThread voice={voiceThread} />
                   ) : null}
                   <AgentTranscript
+                    teamChannelName={teamSource?.channel.name ?? null}
                     revealMessage={revealMessage}
                     key={thread.id}
                     attachmentReader={hostClient}
@@ -1219,9 +1220,6 @@ function ThreadView({
                   />
                 }
               />
-            ) : null}
-            {thread.teamOrigin && !voiceThread ? (
-              <TaskAudienceLine origin={thread.teamOrigin} />
             ) : null}
             {voiceThread ? null : (
               <InputSurface

@@ -1,3 +1,4 @@
+import { TeamInputSource } from "../team/task-source-chip.js";
 import { useToolOutput } from "@opensteer/client/react";
 import { copyText } from "@opensteer/shared/clipboard";
 import { placeIdentityKey, voiceCallSeed } from "@opensteer/core";
@@ -180,7 +181,10 @@ const TaskViews = createContext<TaskRenderer | undefined>(undefined);
 const TranscriptBrowserUses = createContext<readonly BrowserSessionUseSummary[]>([]);
 const TranscriptBrowsers = createContext<readonly BrowserSessionSummary[]>([]);
 /** Whose transcript this is and the reader's Workspaces, which say who speaks in it. */
-const Speakers = createContext<{ readonly threadId: string | null }>({ threadId: null });
+const Speakers = createContext<{
+  readonly threadId: string | null;
+  readonly teamChannelName?: string;
+}>({ threadId: null });
 
 /**
  * The reader's Macs, and the client that stops one. Given, a live turn at work
@@ -270,6 +274,7 @@ export function AgentTranscript({
   revealMessage = null,
   startHold = null,
   threadId = null,
+  teamChannelName = null,
   inputQueuePaused = false,
   queued = null,
   renderPasswordsSuggestion,
@@ -314,6 +319,7 @@ export function AgentTranscript({
   revealMessage?: { readonly id: string } | null;
   /** Why the Thread's queued work has not started, from `threadStartHold`. */
   startHold?: string | null;
+  teamChannelName?: string | null;
   /** The Thread this transcript is, whose mark its own replies wear. */
   threadId?: string | null;
   inputQueuePaused?: boolean;
@@ -384,7 +390,15 @@ export function AgentTranscript({
     live && !(requestShown && activity === "waiting_for_you")
       ? threadActivityIndicator(activity, { conversation, groups, startHold })
       : null;
-  const speakers = useMemo(() => ({ threadId }), [threadId]);
+  const teamInput = entries.find((entry) => entry.kind === "message" && entry.teamSource);
+  const deliveryChannelName =
+    teamInput?.kind === "message"
+      ? (teamInput.teamSource?.audience.channelName ?? teamChannelName ?? "channel")
+      : (teamChannelName ?? "channel");
+  const speakers = useMemo(
+    () => ({ threadId, teamChannelName: deliveryChannelName }),
+    [threadId, deliveryChannelName],
+  );
   const agents = useAgentSource(subagentReader, entries, threadId, live);
   const passwordsOffer = useMemo(
     () => (renderPasswordsSuggestion ? passwordsSetupOffer(groups) : null),
@@ -520,6 +534,7 @@ function TurnView({
         reveal={reveal?.id ?? null}
         live={live}
       />
+      {turn.reply && !turn.continued && turn.run?.delivery ? <TeamDelivery run={turn.run} /> : null}
       {placesShown && !placesUnderOutcome ? <ReplySurfaces turn={turn} turnKey={turnKey} /> : null}
       {renderTask?.(turn.assignments)}
       {turn.run && outcome ? <RunOutcome run={turn.run} /> : null}
@@ -886,6 +901,7 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
       ) : startHold !== null ? (
         <WorkingIndicator label={startHold} />
       ) : null}
+      {view.reply && !turn.continued && turn.run?.delivery ? <TeamDelivery run={turn.run} /> : null}
       {view.reply && settled && !placesUnderOutcome ? (
         <ReplySurfaces turn={turn} turnKey={turnKey} />
       ) : null}
@@ -2170,6 +2186,7 @@ function OwnMessage({
           </div>
         </div>
       ) : null}
+      {message.teamSource ? <TeamInputSource source={message.teamSource} /> : null}
       {message.delivery ? (
         <p className="form-actions__error" role="alert">
           {message.delivery.reason}
@@ -2411,6 +2428,7 @@ function InputMessage({
           </MessageFold>
         ) : null}
       </article>
+      {message.teamSource ? <TeamInputSource source={message.teamSource} /> : null}
       {message.delivery ? (
         <p className="form-actions__error" role="alert">
           {message.delivery.reason}
@@ -2582,5 +2600,20 @@ function WorkingIndicator({ label }: { label: string }) {
       <span aria-hidden className="working__orb" />
       <span className="working__label">{label}</span>
     </div>
+  );
+}
+
+function TeamDelivery({ run }: { readonly run: RunEntry }) {
+  const channelName = useContext(Speakers).teamChannelName ?? "channel";
+  const delivery = run.delivery;
+  if (!delivery) return null;
+  return (
+    <small className="team-run-delivery">
+      {delivery.state === "sent"
+        ? `Sent to #${channelName}`
+        : delivery.state === "sending"
+          ? "Sending…"
+          : `Not sent: ${delivery.reason ?? "Unavailable"}`}
+    </small>
   );
 }

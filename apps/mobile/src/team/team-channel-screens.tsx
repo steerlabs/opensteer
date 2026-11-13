@@ -81,8 +81,6 @@ export type TeamThreadRoute = {
   readonly rootId: string;
   /** The reply a link named. */
   readonly replyId?: string | undefined;
-  /** Opened from "Ask my agent" on a message: the composer starts "to my agent". */
-  readonly toAgent?: boolean | undefined;
 };
 
 type Navigation = NativeStackNavigationProp<RootParamList>;
@@ -232,7 +230,6 @@ export function TeamThreadScreen(props: StaticScreenProps<TeamThreadRoute>): Rea
         members={people.members}
         rootId={rootId}
         session={session}
-        startToAgent={props.route.params.toAgent === true}
         team={team}
         teamId={teamId}
         view={view}
@@ -356,7 +353,6 @@ function Place(props: {
   readonly members: readonly TeamMember[];
   readonly directory: MemberDirectory;
   readonly rootId?: string;
-  readonly startToAgent?: boolean;
   readonly children: (place: PlaceProps) => ReactNode;
 }): ReactNode {
   const { session, view, directory, teamId } = props;
@@ -457,14 +453,22 @@ function Place(props: {
   const [text, setText] = useState(() => snapshot.drafts[scopeKey] ?? "");
   const [editing, setEditing] = useState<TeamMessageId | null>(null);
   const [selection, setSelection] = useState({ start: 0, end: 0 });
-  const ownActive = view.requests.some(
-    (request) =>
-      request.ownerUserId === viewerId &&
-      (request.state === "queued" || request.state === "working" || request.state === "needs_you"),
-  );
-  const [toMyAgent, setToMyAgent] = useState(
-    rootId !== null && (props.startToAgent === true || ownActive),
-  );
+  const [localToMyAgent, setLocalToMyAgent] = useState(false);
+  const toMyAgent =
+    rootId === null
+      ? localToMyAgent
+      : (snapshot.agentRecipients.find(
+          (row) => row.channelId === channelId && row.rootId === rootId,
+        )?.enabled ?? false);
+  const setToMyAgent = (enabled: boolean) => {
+    if (rootId === null) setLocalToMyAgent(enabled);
+    else
+      void session
+        .setAgentRecipient(channelId, rootId, enabled)
+        .catch((error: unknown) =>
+          setFailure(error instanceof Error ? error.message : "Could not update recipient."),
+        );
+  };
   const [staged, setStaged] = useState<readonly Staged[]>([]);
   const [failure, setFailure] = useState<string | null>(null);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -529,7 +533,7 @@ function Place(props: {
     const files = staged.filter((row) => row.fileId !== null).map((row) => row.fileId!);
     if (words === "" && files.length === 0) return;
     if (staged.some((row) => row.fileId === null)) return;
-    const asking = toMyAgent && reach === "available" && me !== null;
+    const asking = rootId === null && toMyAgent && reach === "available" && me !== null;
     const body = asking ? `@${teamAgentHandle(me.handle)} ${words}` : words;
     const found = writtenMentions(body, props.members);
     const mentioned = asking
@@ -609,7 +613,12 @@ function Place(props: {
         navigation.navigate("TeamThread", { teamId, channelId, rootId: message.id });
         return;
       case "ask":
-        navigation.navigate("TeamThread", { teamId, channelId, rootId: message.id, toAgent: true });
+        await session.setAgentRecipient(channelId, message.threadRootId ?? message.id, true);
+        navigation.navigate("TeamThread", {
+          teamId,
+          channelId,
+          rootId: message.threadRootId ?? message.id,
+        });
         return;
       case "pin":
       case "unpin":
@@ -688,6 +697,7 @@ function Place(props: {
     onSelectionChange: setSelection,
     agent: reach,
     toMyAgent,
+    sticky: rootId !== null,
     onToMyAgentChange: setToMyAgent,
     onAgentUnavailable: () => navigation.navigate("ConnectOpensteer", { teamId }),
     mentions,

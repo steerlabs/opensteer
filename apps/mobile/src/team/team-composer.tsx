@@ -29,11 +29,8 @@ export interface TeamComposerProps {
     readonly end: number;
   }) => void;
   readonly agent: AgentReach;
-  /**
-   * This message asks the reader's agent. One state, three ways in: the pill,
-   * @ My agent, and (where a task for this thread is still open) it starts on.
-   */
   readonly toMyAgent: boolean;
+  readonly sticky?: boolean;
   readonly onToMyAgentChange: (on: boolean) => void;
   /** Asking with no Opensteer linked: opens "Connect your Opensteer". */
   readonly onAgentUnavailable: () => void;
@@ -91,7 +88,14 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
         <MentionList onPick={props.onPickMention} options={props.mentions} />
       )}
       {props.hint ?? null}
-      <View style={[styles.rim, toMyAgent && styles.rimOn]}>
+      {props.sticky && (toMyAgent || props.agent === "available") ? (
+        <Pressable accessibilityRole="button" onPress={() => props.onToMyAgentChange(!toMyAgent)}>
+          <AppText role="caption" tone="muted">
+            {toMyAgent ? "→ your agent ✕" : "+ your agent"}
+          </AppText>
+        </Pressable>
+      ) : null}
+      <View style={[styles.rim, toMyAgent && !props.sticky && styles.rimOn]}>
         <ComposerBar
           {...(props.attachments.length === 0 && !uploading
             ? {}
@@ -116,7 +120,7 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
               onPress={() => input.current?.focus()}
               style={styles.lane}
             >
-              {toMyAgent ? (
+              {toMyAgent && !props.sticky ? (
                 <Pressable
                   accessibilityHint="Turns off asking your agent"
                   accessibilityLabel="To my agent"
@@ -179,7 +183,7 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
               ) : null}
             </View>
           }
-          {...(open ? { accessory: askPill } : {})}
+          {...(open && !props.sticky ? { accessory: askPill } : {})}
           action={
             open ? (
               <ComposerAction
@@ -190,7 +194,7 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
                 onPress={props.onSend}
               />
             ) : (
-              <View style={styles.restAction}>{askPill}</View>
+              <View style={styles.restAction}>{props.sticky ? null : askPill}</View>
             )
           }
           shape={open ? "rounded" : "capsule"}

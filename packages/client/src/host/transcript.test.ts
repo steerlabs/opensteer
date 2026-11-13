@@ -85,6 +85,20 @@ it("keeps delivery on the answering Run when later status and history events arr
     status: "completed",
     replyMessageId: answerMessageId,
   });
+  expect(
+    mergeTranscriptSegments(entries, fold([event("run.status", { status: "completed" })])).find(
+      (entry) => entry.kind === "run",
+    ),
+  ).toMatchObject({ delivery: sent });
+  const blocked = { ...sent, state: "blocked" as const, reason: "Link revoked" };
+  const updated = foldTranscriptEvent(
+    entries,
+    event("run.delivery-updated", { delivery: blocked }),
+  );
+  expect(updated.find((entry) => entry.kind === "run")).toMatchObject({
+    delivery: blocked,
+    status: "completed",
+  });
 });
 
 it("keeps one app card at its latest publication, including across history pages", () => {
@@ -648,7 +662,19 @@ describe("foldTranscriptEvent", () => {
     const messageId = createId("message");
     const input = {
       teamRequestId: null,
-      teamSource: null,
+      teamSource: {
+        teamId: createId("deployment"),
+        channelId: createId("teamChannel"),
+        threadRootId: TeamMessageIdSchema.parse("1"),
+        messageId: TeamMessageIdSchema.parse("2"),
+        audience: {
+          teamName: "Team",
+          channelName: "general",
+          channelKind: "public" as const,
+          memberCount: 2,
+          peopleOnly: false,
+        },
+      },
       assignmentId: null,
       cancelReason: null,
       causalChainId: createId("causalChain"),
@@ -681,6 +707,12 @@ describe("foldTranscriptEvent", () => {
       },
     });
 
+    const placed = event("message.placed", { message: created.data.message });
+    expect(fold([created, placed])[0]).toMatchObject({ teamSource: input.teamSource });
+    expect(mergeTranscriptSegments(fold([created]), fold([placed]))[0]).toMatchObject({
+      teamSource: input.teamSource,
+    });
+
     const refused = fold([
       created,
       event("thread-input.updated", {
@@ -688,6 +720,7 @@ describe("foldTranscriptEvent", () => {
       }),
     ]);
     expect(refused[0]).toMatchObject({
+      teamSource: input.teamSource,
       body: "Change direction",
       delivery: { reason: "Steer was not delivered: steer refused.", status: "failed" },
     });

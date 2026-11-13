@@ -384,7 +384,6 @@ function mockOccurrence(
 function mockRun(thread: ThreadSummary, userId: string, at: Date): Run {
   const seed = createId("message");
   return RunSchema.parse({
-    teamRequestId: null,
     accessMode: thread.accessMode,
     activationInputId: seed,
     assignmentId: null,
