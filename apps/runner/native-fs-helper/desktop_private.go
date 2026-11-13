@@ -28,7 +28,8 @@ type desktopPrivateDirectoryEmptyResult struct {
 }
 
 // executeDesktopPrivate is a separate authority surface for the signed Desktop
-// main process. Its root is an app-owned directory with a private OS ACL. Every
+// main process; the Runner uses only its root creation, for program results.
+// Its root is an app-owned directory with a private OS ACL. Every
 // descendant is reached relative to that verified directory handle; absolute
 // path traversal, reparse points, and symlinks are never accepted.
 func executeDesktopPrivate(input request) (any, error) {

@@ -1,4 +1,8 @@
-import { nativeUserHarnessRuntimeBoundary, type SupervisedProcess } from "@opensteer/harness";
+import {
+  linkNames,
+  nativeUserHarnessRuntimeBoundary,
+  type SupervisedProcess,
+} from "@opensteer/harness";
 import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,6 +62,9 @@ describe("the Codex session store overlay on Windows", () => {
     await mkdir(stale);
     await writeFile(join(stale, "archived.jsonl"), "archived\n");
     await symlink(stale, join(home, "archived_sessions"), "junction");
+    // A junction inside the legacy tree must lead into the store once that tree is gone.
+    await symlink(join(home, "sessions", day), join(home, "sessions", "latest"), "junction");
+    await symlink(stale, join(home, "sessions", "elsewhere"), "junction");
 
     const driver = new CodexHarnessDriver({
       launch: { arguments: [], executable: process.execPath },
@@ -95,5 +102,15 @@ describe("the Codex session store overlay on Windows", () => {
     await rm(join(directory, "profile"), { force: true, recursive: true });
     expect(await readFile(join(store, "sessions", day, "new.jsonl"), "utf8")).toBe("new\n");
     expect(await readFile(join(store, "sessions", day, "shared.jsonl"), "utf8")).toBe("same\n");
+    expect(await linkNames(join(store, "sessions", "latest"), join(store, "sessions", day))).toBe(
+      true,
+    );
+    expect(await readFile(join(store, "sessions", "latest", "legacy.jsonl"), "utf8")).toBe(
+      "legacy\n",
+    );
+    expect(await linkNames(join(store, "sessions", "elsewhere"), stale)).toBe(true);
+    expect(await readFile(join(store, "sessions", "elsewhere", "archived.jsonl"), "utf8")).toBe(
+      "archived\n",
+    );
   });
 });

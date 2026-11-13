@@ -16,6 +16,7 @@ import {
   open,
   readdir,
   readlink,
+  realpath,
   rm,
   stat,
   symlink,
@@ -3798,12 +3799,33 @@ async function linkCodexStoreEntry(linkPath: string, target: string): Promise<vo
  * removes the source only after every entry has a counterpart in the store.
  */
 async function mergeDirectoryInto(source: string, destination: string): Promise<void> {
+  let realSource: string;
+  try {
+    realSource = await realpath(source);
+  } catch (error) {
+    // Another process finished this merge and removed the source already.
+    if (nodeErrorCode(error) === "ENOENT") return;
+    throw error;
+  }
+  await mergeEntriesInto(source, destination, { destination, realSource, source });
+}
+
+interface StoreMergeRoots {
+  readonly destination: string;
+  readonly realSource: string;
+  readonly source: string;
+}
+
+async function mergeEntriesInto(
+  source: string,
+  destination: string,
+  roots: StoreMergeRoots,
+): Promise<void> {
   await mkdir(destination, { mode: 0o700, recursive: true });
   let entries: Dirent[];
   try {
     entries = await readdir(source, { withFileTypes: true });
   } catch (error) {
-    // Another process finished this merge and removed the source already.
     if (nodeErrorCode(error) === "ENOENT") return;
     throw error;
   }
@@ -3811,11 +3833,11 @@ async function mergeDirectoryInto(source: string, destination: string): Promise<
     const from = join(source, entry.name);
     const to = join(destination, entry.name);
     if (entry.isDirectory()) {
-      await mergeDirectoryInto(from, to);
+      await mergeEntriesInto(from, to, roots);
       continue;
     }
     if (entry.isSymbolicLink()) {
-      await copyStoreLink(from, to);
+      await copyStoreLink(from, to, roots);
       continue;
     }
     if (!entry.isFile()) throw codexStoreConflict(from, to);
@@ -3839,28 +3861,43 @@ async function mergeDirectoryInto(source: string, destination: string): Promise<
 }
 
 /**
- * Recreates the link at `from` as `to`, never replacing an existing entry:
- * only the same link already there counts as its counterpart. POSIX keeps the
- * link's own text. Windows recreates a directory link as a junction to where
- * it led, since a standard user cannot create a symbolic link.
+ * Recreates the link at `from` as `to`, never replacing an existing entry. A
+ * link into the legacy tree, which the caller then deletes, leads to its store
+ * counterpart instead. POSIX keeps a relative link relative; Windows makes a
+ * directory link a junction, since a standard user cannot create a symlink.
  */
-async function copyStoreLink(from: string, to: string): Promise<void> {
+async function copyStoreLink(from: string, to: string, roots: StoreMergeRoots): Promise<void> {
   const value = await readlink(from);
-  const junctionTarget =
-    process.platform === "win32" && (await stat(from).catch(() => undefined))?.isDirectory()
-      ? resolve(dirname(from), value)
-      : undefined;
+  const target = await migratedLinkTarget(resolve(dirname(from), value), roots);
+  const junction =
+    process.platform === "win32" && (await stat(from).catch(() => undefined))?.isDirectory();
   try {
-    if (junctionTarget) await linkDirectory(junctionTarget, to);
-    else await symlink(value, to);
+    if (junction) await linkDirectory(target, to);
+    else await symlink(isAbsolute(value) ? target : relative(dirname(to), target) || ".", to);
   } catch (error) {
     if (nodeErrorCode(error) !== "EEXIST") throw error;
     const existing = await lstat(to);
-    const same =
-      existing.isSymbolicLink() &&
-      (junctionTarget ? await linkNames(to, junctionTarget) : (await readlink(to)) === value);
-    if (!same) throw codexStoreConflict(from, to);
+    if (!existing.isSymbolicLink() || !(await linkNames(to, target))) {
+      throw codexStoreConflict(from, to);
+    }
   }
+}
+
+async function migratedLinkTarget(named: string, roots: StoreMergeRoots): Promise<string> {
+  const lexical = pathWithin(roots.source, named);
+  if (lexical !== undefined) return join(roots.destination, lexical);
+  const real = await realpath(named).catch((error: unknown) => {
+    if (nodeErrorCode(error) === "ENOENT") return undefined;
+    throw error;
+  });
+  const reached = real === undefined ? undefined : pathWithin(roots.realSource, real);
+  return reached === undefined ? named : join(roots.destination, reached);
+}
+
+function pathWithin(root: string, path: string): string | undefined {
+  const inner = relative(root, path);
+  if (inner === ".." || inner.startsWith(`..${sep}`) || isAbsolute(inner)) return undefined;
+  return inner;
 }
 
 function codexStoreConflict(source: string, destination: string): OpensteerError {

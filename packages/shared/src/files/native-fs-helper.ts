@@ -78,6 +78,10 @@ export const NativeDirectoryIdentitySchema = z.strictObject({
   volumeId: z.string().regex(/^(0|[1-9][0-9]*)$/u),
 });
 export type NativeDirectoryIdentity = z.infer<typeof NativeDirectoryIdentitySchema>;
+const PrivateRootResultSchema = z.strictObject({
+  created: z.boolean(),
+  identity: NativeDirectoryIdentitySchema,
+});
 export const NativeFileMetadataSchema = LocalFileMetadataSchema;
 export type NativeFileMetadata = z.infer<typeof NativeFileMetadataSchema>;
 export const NativeFilesListResultSchema = LocalDirectoryListingSchema;
@@ -276,6 +280,20 @@ export class NativeFsHelper implements NativeFilesystem, NativeFilesAuthority {
     return identity;
   }
 
+  /**
+   * Creates `root` (and any missing ancestor) private to this OS account, or
+   * refuses one that already exists and is not: owner-only mode on POSIX, a
+   * protected DACL naming only this account and SYSTEM on Windows.
+   */
+  async ensurePrivateRoot(root: string, signal: AbortSignal): Promise<void> {
+    await this.#request(
+      { operation: "desktop-ensure-root", root },
+      PrivateRootResultSchema,
+      signal,
+      "desktop-private",
+    );
+  }
+
   list(input: Parameters<NativeFilesystem["list"]>[0], signal: AbortSignal) {
     return this.#request({ ...input, operation: "list" }, ListResultSchema, signal);
   }
@@ -358,10 +376,11 @@ export class NativeFsHelper implements NativeFilesystem, NativeFilesAuthority {
     request: Record<string, unknown>,
     resultSchema: z.ZodType<Result>,
     signal: AbortSignal,
+    rootPolicy: HelperRootPolicy = this.#rootPolicy,
   ): Promise<Result> {
     signal.throwIfAborted();
     await assertTrustedHelperExecutable(this.#binary);
-    const encoded = encodeHelperRequest(request, this.#rootPolicy);
+    const encoded = encodeHelperRequest(request, rootPolicy);
     const response = await executeHelper({
       binary: this.#binary,
       input: encoded,
@@ -500,9 +519,11 @@ function executeHelper(input: {
   });
 }
 
+type HelperRootPolicy = NativeFilesystemRootPolicy | "desktop-private";
+
 function encodeHelperRequest(
   request: Record<string, unknown>,
-  rootPolicy: NativeFilesystemRootPolicy,
+  rootPolicy: HelperRootPolicy,
 ): Buffer {
   const encoded = Buffer.from(JSON.stringify({ ...request, rootPolicy }), "utf8");
   if (encoded.byteLength > maxHelperRequestBytes) {

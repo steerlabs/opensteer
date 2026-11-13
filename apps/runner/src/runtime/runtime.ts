@@ -188,6 +188,7 @@ export interface RunnerRuntimeOptions {
    * their own computer. Tests point it at a temporary home.
    */
   readonly modelServerHome?: string;
+  readonly nativeFsHelperBinary?: string;
   readonly nodeExecutable?: string;
   readonly privateStateDirectory: string;
   readonly projectContinuationIdentity: ProviderContinuationIdentityProjector;
@@ -3621,17 +3622,20 @@ function reject(code: ProtocolError["code"], message: string, retryable: boolean
 
 /**
  * A Runner that cannot run Trigger programs must not start at all: the Node
- * executable is resolved and verified before the runtime exists, so its
- * absence here is a composition bug rather than a runtime condition.
+ * executable and native filesystem helper are resolved before the runtime
+ * exists, so their absence here is a composition bug rather than a runtime condition.
  */
 function programExecutorFor(
-  options: Pick<RunnerRuntimeOptions, "nodeExecutable">,
+  options: Pick<RunnerRuntimeOptions, "nativeFsHelperBinary" | "nodeExecutable">,
   privateStateDirectory: string,
 ): TriggerProgramExecutor {
-  if (!options.nodeExecutable) {
-    throw new TypeError("RunnerRuntime requires a verified nodeExecutable for Trigger programs");
+  if (!options.nodeExecutable || !options.nativeFsHelperBinary) {
+    throw new TypeError(
+      "RunnerRuntime requires a verified nodeExecutable and nativeFsHelperBinary for Trigger programs",
+    );
   }
   return new TriggerProgramExecutor({
+    nativeFsHelperBinary: options.nativeFsHelperBinary,
     nodeExecutable: options.nodeExecutable,
     privateDirectory: resolve(privateStateDirectory, "trigger-programs"),
   });

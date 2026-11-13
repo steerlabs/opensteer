@@ -108,6 +108,7 @@ async function boot(input: Boot) {
     maxConcurrentRuns: 1,
     maxConcurrentTriggerPrograms: 1,
     mode: "development",
+    nativeFsHelperBinary: input.nativeFsHelperBinary,
     nodeExecutable: process.execPath,
     privateStateDirectory: join(config.dataDirectory, "private", "harness-state"),
     projectContinuationIdentity: providerContinuationIdentityProjector(

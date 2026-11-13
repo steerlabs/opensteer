@@ -1,8 +1,19 @@
 import type { HarnessProcessLaunch } from "@opensteer/harness";
-import { chmod, mkdtemp, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdtemp,
+  mkdir,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createId } from "@opensteer/core";
 import { TriggerExecutionContextSchema } from "@opensteer/protocol";
 import { TriggerExecutionOutputSchema } from "@opensteer/triggers";
@@ -11,6 +22,12 @@ import { startProgramEndpoints } from "./program-endpoints.js";
 import { TriggerProgramExecutor } from "./program-executor.js";
 
 const temporaryDirectories: string[] = [];
+const nativeFsHelperBinary = fileURLToPath(
+  new URL(
+    `../../native-fs-helper/opensteer-native-fs${process.platform === "win32" ? ".exe" : ""}`,
+    import.meta.url,
+  ),
+);
 
 afterEach(async () => {
   await Promise.all(
@@ -133,6 +150,7 @@ describe("TriggerProgramExecutor", () => {
     });
     try {
       const output = await new TriggerProgramExecutor({
+        nativeFsHelperBinary,
         nodeExecutable: process.execPath,
         privateDirectory: join(workspace.path, ".opensteer", "private"),
       }).execute({
@@ -180,6 +198,36 @@ describe("TriggerProgramExecutor", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")(
+    "refuses a private directory other accounts can read before writing anything",
+    async () => {
+      const workspace = await temporaryWorkspace();
+      const privateDirectory = join(workspace.path, "private");
+      await mkdir(privateDirectory, { mode: 0o755 });
+      await chmod(privateDirectory, 0o755);
+      const planLaunch = vi.fn(async () => (launch: HarnessProcessLaunch) => launch);
+      const context = triggerContext({ source: "export default () => 1;" });
+
+      await expect(
+        new TriggerProgramExecutor({
+          nativeFsHelperBinary,
+          nodeExecutable: process.execPath,
+          privateDirectory,
+        }).execute({
+          context,
+          ...direct(context),
+          planLaunch,
+          signal: new AbortController().signal,
+          workspace,
+        }),
+      ).rejects.toThrow("other accounts");
+
+      expect(planLaunch).not.toHaveBeenCalled();
+      expect(await readdir(privateDirectory)).toEqual([]);
+      expect((await readdir(workspace.path)).sort()).toEqual([".opensteer", "private"]);
+    },
+  );
+
   it("returns a normalized failure without confusing program output with its control result", async () => {
     const workspace = await temporaryWorkspace();
     const context = triggerContext({
@@ -189,7 +237,10 @@ describe("TriggerProgramExecutor", () => {
       }`,
     });
 
-    const output = await new TriggerProgramExecutor({ nodeExecutable: process.execPath }).execute({
+    const output = await new TriggerProgramExecutor({
+      nativeFsHelperBinary,
+      nodeExecutable: process.execPath,
+    }).execute({
       context,
       ...direct(context),
       signal: new AbortController().signal,
@@ -251,6 +302,7 @@ describe("TriggerProgramExecutor", () => {
     const context = triggerContext({ source });
 
     const output = await new TriggerProgramExecutor({
+      nativeFsHelperBinary,
       nodeExecutable: process.execPath,
       privateDirectory,
     }).execute({ context, ...direct(context), signal: new AbortController().signal, workspace });
@@ -277,7 +329,10 @@ describe("TriggerProgramExecutor", () => {
     });
     const abort = new AbortController();
 
-    const running = new TriggerProgramExecutor({ nodeExecutable: process.execPath }).execute({
+    const running = new TriggerProgramExecutor({
+      nativeFsHelperBinary,
+      nodeExecutable: process.execPath,
+    }).execute({
       context,
       ...direct(context),
       signal: abort.signal,
@@ -315,14 +370,15 @@ describe("TriggerProgramExecutor", () => {
     });
 
     try {
-      const output = await new TriggerProgramExecutor({ nodeExecutable: process.execPath }).execute(
-        {
-          context,
-          ...direct(context),
-          signal: new AbortController().signal,
-          workspace,
-        },
-      );
+      const output = await new TriggerProgramExecutor({
+        nativeFsHelperBinary,
+        nodeExecutable: process.execPath,
+      }).execute({
+        context,
+        ...direct(context),
+        signal: new AbortController().signal,
+        workspace,
+      });
 
       expect(output).toMatchObject({
         result: { extraCaPath: certificatePath },
@@ -349,7 +405,10 @@ describe("TriggerProgramExecutor", () => {
       `,
     });
 
-    const output = await new TriggerProgramExecutor({ nodeExecutable: process.execPath }).execute({
+    const output = await new TriggerProgramExecutor({
+      nativeFsHelperBinary,
+      nodeExecutable: process.execPath,
+    }).execute({
       context,
       ...direct(context),
       signal: new AbortController().signal,
@@ -372,7 +431,10 @@ describe("TriggerProgramExecutor", () => {
       }`,
     });
 
-    const output = await new TriggerProgramExecutor({ nodeExecutable: process.execPath }).execute({
+    const output = await new TriggerProgramExecutor({
+      nativeFsHelperBinary,
+      nodeExecutable: process.execPath,
+    }).execute({
       context,
       ...direct(context),
       signal: new AbortController().signal,
@@ -397,7 +459,10 @@ describe("TriggerProgramExecutor", () => {
       `,
     });
 
-    const output = await new TriggerProgramExecutor({ nodeExecutable: process.execPath }).execute({
+    const output = await new TriggerProgramExecutor({
+      nativeFsHelperBinary,
+      nodeExecutable: process.execPath,
+    }).execute({
       context,
       ...direct(context),
       signal: new AbortController().signal,
@@ -419,7 +484,10 @@ describe("TriggerProgramExecutor", () => {
       `,
     });
 
-    const output = await new TriggerProgramExecutor({ nodeExecutable: process.execPath }).execute({
+    const output = await new TriggerProgramExecutor({
+      nativeFsHelperBinary,
+      nodeExecutable: process.execPath,
+    }).execute({
       context,
       ...direct(context),
       signal: new AbortController().signal,
@@ -453,6 +521,7 @@ describe("TriggerProgramExecutor", () => {
 
     try {
       const output = await new TriggerProgramExecutor({
+        nativeFsHelperBinary,
         nodeExecutable: process.execPath,
       }).execute({
         context,
@@ -483,7 +552,10 @@ describe("TriggerProgramExecutor", () => {
       source: `export default function () { return { usedWrapper: true }; }`,
     });
 
-    const output = await new TriggerProgramExecutor({ nodeExecutable: wrapper }).execute({
+    const output = await new TriggerProgramExecutor({
+      nativeFsHelperBinary,
+      nodeExecutable: wrapper,
+    }).execute({
       context,
       ...direct(context),
       signal: new AbortController().signal,

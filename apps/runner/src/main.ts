@@ -340,6 +340,7 @@ async function startAgentsRunner(input: {
     maxConcurrentTriggerPrograms: config.maxConcurrentTriggerPrograms,
     machineAccess: machineAccessRuntimeOptions(config, applicationConfig.nativeFsHelperBinary),
     mode: config.mode,
+    nativeFsHelperBinary: applicationConfig.nativeFsHelperBinary,
     nodeExecutable: config.nodeExecutable,
     privateStateDirectory: resolve(config.dataDirectory, "private", "harness-state"),
     projectContinuationIdentity: providerContinuationIdentityProjector(identity.privateKey),

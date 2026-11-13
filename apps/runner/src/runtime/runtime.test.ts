@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { AttachmentCache } from "../attachments/attachment-cache.js";
 import { agentTools, appHostingGuide } from "@opensteer/agent-tools";
@@ -77,6 +78,12 @@ import { RunnerRuntime, harnessProcessEnvironment, type RunnerMessageSink } from
 import { warmEngineKey, WarmEnginePool } from "./warm-engine-pool.js";
 import { providerContinuationIdentityProjector } from "@opensteer/runner-client";
 
+const testNativeFsHelperBinary = fileURLToPath(
+  new URL(
+    `../../native-fs-helper/opensteer-native-fs${process.platform === "win32" ? ".exe" : ""}`,
+    import.meta.url,
+  ),
+);
 const testAgentSkills = {
   paths: {
     "opensteer:skills": "/runner/agent-skills/skills/skills",
@@ -747,6 +754,7 @@ describe("RunnerRuntime", () => {
       kind: driverKind,
     });
     const baseOptions = {
+      nativeFsHelperBinary: testNativeFsHelperBinary,
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
       bootId: "boot-managed-authentication-test",
@@ -860,6 +868,7 @@ describe("RunnerRuntime", () => {
       kind: driverKind,
     });
     const runtime = runtimeWithLeaseGrants({
+      nativeFsHelperBinary: testNativeFsHelperBinary,
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
       bootId: "boot-catalog-privacy-test",
@@ -3622,6 +3631,7 @@ describe("RunnerRuntime", () => {
     };
     const environmentId = createId("environment");
     const runtime = runtimeWithLeaseGrants({
+      nativeFsHelperBinary: testNativeFsHelperBinary,
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
       plugins: noPlugins,
@@ -3858,6 +3868,7 @@ describe("RunnerRuntime", () => {
     registry.registerDriver(driver);
     const environmentId = createId("environment");
     const runtime = runtimeWithLeaseGrants({
+      nativeFsHelperBinary: testNativeFsHelperBinary,
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
       plugins: noPlugins,
@@ -3927,6 +3938,7 @@ describe("RunnerRuntime", () => {
     const environmentId = createId("environment");
     const logged: string[] = [];
     const runtime = runtimeWithLeaseGrants({
+      nativeFsHelperBinary: testNativeFsHelperBinary,
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
       bootId: "boot-skill-layer-test",
@@ -6360,6 +6372,7 @@ function configuredRuntime(input: {
   return runtimeWithLeaseGrants(
     {
       ...(input.attachmentCache ? { attachmentCache: input.attachmentCache } : {}),
+      nativeFsHelperBinary: testNativeFsHelperBinary,
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
       plugins: noPlugins,
