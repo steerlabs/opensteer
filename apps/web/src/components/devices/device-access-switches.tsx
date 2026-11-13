@@ -10,7 +10,7 @@ import {
   type DeviceSwitch,
 } from "./device-access.js";
 
-export const accessConflictNotice =
+const accessConflictNotice =
   "This changed on another device. The switches show what’s set now.";
 
 /**

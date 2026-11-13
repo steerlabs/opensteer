@@ -11,7 +11,7 @@ import type { SFSymbolName } from "../ui/symbol.js";
 import { computerSymbols } from "./settings-model.js";
 
 /** Where a row of Devices leads. */
-export type DeviceRowOpens =
+type DeviceRowOpens =
   | { readonly kind: "device"; readonly machineId: string }
   | { readonly kind: "set-up" }
   | { readonly kind: "use-here"; readonly elsewhere: string; readonly elsewhereName: string }
@@ -26,7 +26,7 @@ export interface DeviceListRow {
   readonly opens: DeviceRowOpens;
 }
 
-export interface DeviceListSection {
+interface DeviceListSection {
   readonly key: "here" | "other" | "signed-in";
   readonly title: string;
   readonly footer: string | null;

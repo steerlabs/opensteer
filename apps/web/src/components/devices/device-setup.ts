@@ -51,7 +51,7 @@ export interface DeviceSetupPorts {
 
 export type DeviceSetupStage = "checking" | "joining" | "binding";
 
-export type DeviceSetupResult =
+type DeviceSetupResult =
   | { readonly ok: true; readonly runnerId: string }
   | { readonly ok: false; readonly cause: FinishSetupCause; readonly runnerId: string | null };
 

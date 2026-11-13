@@ -12,7 +12,7 @@ import {
 } from "@opensteer/shared/atomicPrivateFile";
 import { z } from "zod";
 
-export const DeviceMembershipSchema = z.strictObject({
+const DeviceMembershipSchema = z.strictObject({
   state: z.enum(["active", "leaving", "removed"]),
   generation: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   runnerId: RunnerIdSchema.nullable(),

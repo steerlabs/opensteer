@@ -6,7 +6,7 @@ import { useOptionalShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 
 const dismissedKey = "opensteer.web-tab-notice.v1";
-export const macAppUrl = "https://opensteer.com/download";
+const macAppUrl = "https://opensteer.com/download";
 
 const selectHomeName = (snapshot: HostSnapshot) =>
   snapshot.machines.find(hostsDeployment)?.name ?? null;

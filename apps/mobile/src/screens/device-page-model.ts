@@ -9,7 +9,7 @@ import type { MachineSummary } from "@opensteer/protocol";
 export { isHomeDevice as isHome };
 export type { DeviceCapability as DeviceSwitchKey };
 
-export interface DeviceSwitchRow {
+interface DeviceSwitchRow {
   readonly key: DeviceCapability;
   readonly title: string;
   readonly detail: string;
@@ -27,7 +27,7 @@ const copy: Readonly<
 };
 
 export const homeFixed = "Always on. Your agent runs here.";
-export const homeFooter = "Your Opensteer lives on this Mac, so it can't be removed.";
+const homeFooter = "Your Opensteer lives on this Mac, so it can't be removed.";
 
 export function deviceSwitches(
   machine: MachineSummary,

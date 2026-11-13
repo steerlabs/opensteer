@@ -7,7 +7,7 @@ import { z } from "zod";
  * set up, `elsewhere` is set up with another Opensteer, and `removed` is
  * removed by its Host a moment after opening.
  */
-export const mockPhoneScenes = [
+const mockPhoneScenes = [
   "away",
   "needs-update",
   "no-browser",

@@ -29,8 +29,8 @@ const capabilityDetail: Readonly<Record<DeviceCapability, string>> = {
   files: "Read files and run commands",
 };
 
-export const homeFixedDetail = "Always on. Your agent runs here.";
-export const olderHostDetail = "Always on. Update Opensteer on your Home Mac to switch it off.";
+const homeFixedDetail = "Always on. Your agent runs here.";
+const olderHostDetail = "Always on. Update Opensteer on your Home Mac to switch it off.";
 
 export type DeviceSwitch =
   | Extract<DeviceAccessRow, { kind: "fixed" }>

@@ -27,7 +27,7 @@ export interface PhoneSetupDraft {
  */
 export type PhoneSetupOutcome = "on" | "off" | "denied" | "waiting" | "unavailable";
 
-export type PhoneSetupPhase =
+type PhoneSetupPhase =
   | { readonly kind: "editing" }
   | { readonly kind: "enrolling" }
   | { readonly kind: "asking"; readonly item: "notifications" | IphoneAppId }
@@ -42,7 +42,7 @@ export interface PhoneSetupState {
 }
 
 /** The Notifications choice, applied durably after Continue; only on asks the OS. */
-export interface SetupNotifications {
+interface SetupNotifications {
   choose(on: boolean): Promise<NotificationChoice>;
 }
 
@@ -68,7 +68,7 @@ export function phoneSetupDraft(
 }
 
 /** The initial switches the Host stores with the enrollment; a phone never offers files. */
-export function phoneInitialAccess(draft: PhoneSetupDraft): DeviceInitialAccess {
+function phoneInitialAccess(draft: PhoneSetupDraft): DeviceInitialAccess {
   return {
     browser: draft.browser,
     apps: Object.values(draft.apps).some(Boolean),

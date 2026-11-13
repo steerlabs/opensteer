@@ -4,7 +4,7 @@
  * own the device itself.
  */
 export type DeviceSetupStep = "choose" | "macos" | "ready";
-export type DeferredSetup = "use-from-anywhere" | "bind" | "failed";
+type DeferredSetup = "use-from-anywhere" | "bind" | "failed";
 
 const notificationsKey = (deploymentId: string) =>
   `opensteer.device-notifications.v1:${deploymentId}`;

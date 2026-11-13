@@ -11,7 +11,7 @@ import { desktopPreviewBridge } from "../../desktop/desktop-preview-bridge.js";
 import { desktopSummaryFromAccess } from "../../desktop/desktop-deployment-selection.js";
 import { observeLocalExecutionStatus } from "../../desktop/local-execution-status.js";
 import { turnOnDeviceAccess } from "../thread-device-access-action.js";
-import { accessConflictNotice, useAccessSwitch } from "./device-access-switches.js";
+import { useAccessSwitch } from "./device-access-switches.js";
 import { DeviceRemovedScreen } from "./device-removed.js";
 import { FinishSetupBar, SetUpThisMac } from "./set-up-this-mac.js";
 import { useThisDeviceLifecycle } from "./this-device.js";
@@ -275,7 +275,7 @@ it("writes a switch against the revision on screen, and shows a newer one instea
   root = createRoot(container());
   await act(async () => root!.render(<Probe />));
   await act(async () => void (await api!.set("browser", false)));
-  expect(container().textContent).toBe(accessConflictNotice);
+  expect(container().textContent).toContain("This changed on another device.");
   expect(machine().access!.policy).toMatchObject({ reach: "nobody" });
   expect(machine().access!.policy.browser).not.toBe(false);
 

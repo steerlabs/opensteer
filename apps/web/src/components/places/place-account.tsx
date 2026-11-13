@@ -85,7 +85,7 @@ type AccountLeaves =
   | { readonly state: "error"; readonly message: string }
   | { readonly state: "ready"; readonly names: readonly string[] };
 
-export function useAccountLeaves(
+function useAccountLeaves(
   bridge: Pick<OpensteerDesktopBridge, "accountSignOutPreview"> | null,
 ): AccountLeaves {
   const [result, setResult] = useState<AccountLeaves>({ state: "loading" });
@@ -123,7 +123,7 @@ export function useAccountLeaves(
 }
 
 /** "Home", "Home and Studio", "Home, Studio and Lab". */
-export function namesInWords(names: readonly string[]): string {
+function namesInWords(names: readonly string[]): string {
   if (names.length <= 1) return names[0] ?? "";
   return `${names.slice(0, -1).join(", ")} and ${names.at(-1)!}`;
 }
