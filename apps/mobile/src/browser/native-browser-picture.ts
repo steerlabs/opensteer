@@ -72,6 +72,11 @@ export function useNativeBrowserPicture(input: {
   // The newest delivery whose receipt this view has taken, so none is returned twice.
   const handled = useRef<BrowserFrameView | null>(null);
   const [drawn, setDrawn] = useState<BrowserFrameView | null>(null);
+  const drawnNow = useRef(drawn);
+  drawnNow.current = drawn;
+  // The view can draw again after dropping its pixels by itself: the newest picture is drawn anew.
+  const replay = useRef(false);
+  const [replays, setReplays] = useState(0);
   // Re-renders only when this tab's picture appears or goes, not per delivery.
   const subscribe = useCallback(
     (listener: () => void) =>
@@ -104,15 +109,23 @@ export function useNativeBrowserPicture(input: {
     const owned = new Set<BrowserFrameView>();
     const current = generation.current;
     let disposed = false;
+    // A picture drawn again was already returned: its receipt is not returned twice.
+    let returned: BrowserFrameView | null = null;
+    if (replay.current) {
+      replay.current = false;
+      returned = handled.current;
+      handled.current = null;
+    }
     const release = (delivery: BrowserFrameView) => {
-      if (owned.delete(delivery)) settle(delivery);
+      if (owned.delete(delivery) && delivery !== returned) settle(delivery);
     };
     const pump = () => {
       const latest = frames.get(sessionId, tabId);
       if (latest === null || latest === handled.current) return;
       handled.current = latest;
       owned.add(latest);
-      if (latest.header.watchToken) frames.claim?.(sessionId, tabId, latest.header.watchToken);
+      if (latest.header.watchToken && latest !== returned)
+        frames.claim?.(sessionId, tabId, latest.header.watchToken);
       const native = view.current;
       const size = latest.data.byteLength;
       if (
@@ -156,7 +169,7 @@ export function useNativeBrowserPicture(input: {
         settle(latest);
       }
     };
-  }, [enabled, frames, invalidation, sessionId, settle, shown, tabId]);
+  }, [enabled, frames, invalidation, replays, sessionId, settle, shown, tabId]);
 
   // Whatever the store holds that this view will not draw is returned at once:
   // everything while hidden, and another tab's picture while shown.
@@ -180,10 +193,16 @@ export function useNativeBrowserPicture(input: {
       setDrawn(null);
     }
   }, []);
+  const shownAgain = useCallback((event: { nativeEvent: { generation: number } }) => {
+    if (event.nativeEvent.generation !== generation.current || drawnNow.current !== null) return;
+    replay.current = true;
+    setReplays((count) => count + 1);
+  }, []);
   return {
     view,
     present,
     drawn: shown && drawn?.header.surfaceId === tabId ? drawn : null,
     cleared,
+    shownAgain,
   };
 }

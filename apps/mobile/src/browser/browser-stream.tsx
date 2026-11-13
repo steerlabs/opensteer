@@ -220,25 +220,31 @@ function BrowserStreamView({
 
   // A Watch of a sleeping tab shows its last picture: watching it would wake it.
   const awake = useBrowserTabAwake(hostClient, session.id, tabId);
-  useEffect(
-    () =>
-      active
-        ? interactive
-          ? hostClient.retainBrowserViewer(session.id, tabId, {
+  // The client bounds how many browser targets it holds; past that it refuses, and says so.
+  const [leaseError, setLeaseError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!active) return;
+    try {
+      const release = interactive
+        ? hostClient.retainBrowserViewer(session.id, tabId, {
+            captureRegion: true,
+            rasterDemand: true,
+            frameWindow: native,
+          })
+        : awake
+          ? hostClient.retainBrowserWatch(session.id, tabId, {
               captureRegion: true,
               rasterDemand: true,
               frameWindow: native,
             })
-          : awake
-            ? hostClient.retainBrowserWatch(session.id, tabId, {
-                captureRegion: true,
-                rasterDemand: true,
-                frameWindow: native,
-              })
-            : undefined
-        : undefined,
-    [active, attempt, awake, hostClient, interactive, native, session.id, tabId],
-  );
+          : undefined;
+      setLeaseError(null);
+      return release;
+    } catch (error) {
+      setLeaseError(error instanceof Error ? error.message : "This page can’t be shown.");
+      return;
+    }
+  }, [active, attempt, awake, hostClient, interactive, native, session.id, tabId]);
   // Held apart from the picture, so the picture coming and going reuses this socket.
   useEffect(() => {
     if (!kept) return;
@@ -714,6 +720,7 @@ function BrowserStreamView({
   if (!requestedActive && !kept) return null;
   const words =
     presentationError ??
+    leaseError ??
     (displayed === null ? streamLabel(session.state, feedState, feedError) : null);
 
   return (
@@ -763,6 +770,7 @@ function BrowserStreamView({
             accessibilityLabel={liveDisplayed === null ? undefined : label}
             importantForAccessibility={liveDisplayed === null ? "no-hide-descendants" : "auto"}
             onCleared={picture.cleared}
+            onShown={picture.shownAgain}
             ref={picture.view}
             style={styles.image}
           />
@@ -900,7 +908,7 @@ function BrowserStreamView({
           <Text numberOfLines={3} style={styles.label}>
             {words}
           </Text>
-          {feedError !== null || presentationError !== null ? (
+          {feedError !== null || presentationError !== null || leaseError !== null ? (
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Try again"

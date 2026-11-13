@@ -193,7 +193,7 @@ const RootStack = createNativeStackNavigator({
       screen: QuietlyMovedScreen,
       options: {
         headerShown: false,
-        presentation: "formSheet",
+        presentation: screenPresentations.QuietlyMoved,
         sheetAllowedDetents: [0.6, 0.95],
         sheetGrabberVisible: true,
         title: "Moved to Done for you",
@@ -591,7 +591,7 @@ const RootStack = createNativeStackNavigator({
       screen: AgentAuthorizationScreen,
       options: ({ navigation }) => ({
         ...headerActions({ left: { label: "Cancel", onPress: () => navigation.goBack() } }),
-        presentation: "modal",
+        presentation: screenPresentations.AgentAuthorization,
         title: "Connect an agent",
       }),
     },
@@ -609,7 +609,7 @@ const RootStack = createNativeStackNavigator({
       screen: NotificationsIntroScreen,
       options: {
         headerShown: false,
-        presentation: "formSheet",
+        presentation: screenPresentations.NotificationsIntro,
         sheetAllowedDetents: "fitToContents",
         sheetGrabberVisible: true,
         title: "Notifications",

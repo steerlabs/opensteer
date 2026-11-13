@@ -96,7 +96,15 @@ vi.mock("@react-navigation/native", () => ({
     replace: (name: string, params: object) => ({ name, params, type: "REPLACE" }),
   },
   useIsFocused: () => state.focused,
-  useNavigationState: () => state.drawn,
+  // The page's own stack: a screen over it while it is not drawn.
+  useNavigationState: (select: (navigation: object) => unknown) =>
+    select({
+      index: state.drawn ? 0 : 1,
+      routes: [
+        { key: "page", name: "WorkspaceBrowser" },
+        ...(state.drawn ? [] : [{ key: "over", name: "Thread" }]),
+      ],
+    }),
   useRoute: () => ({ key: "page" }),
   useNavigation: () => ({
     dispatch: state.dispatch,
