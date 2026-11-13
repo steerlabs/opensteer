@@ -2912,7 +2912,11 @@ async function executeMockCommand(
       return rpcSuccess({ type: command.type });
     case "runner.enrollment.createLocal":
       return rpcSuccess({
-        ...(await client.createLocalRunnerEnrollment(command.name, command.access)),
+        ...(await client.createLocalRunnerEnrollment(
+          command.name,
+          command.access,
+          command.preparedIdentity,
+        )),
         type: command.type,
       });
 
@@ -8739,12 +8743,16 @@ class MockHostState {
     return grant;
   }
 
+  private readonly preparedLocalRunners = new Map<string, string>();
+
   async createLocalRunnerEnrollment(
     name: string,
     access?: import("@opensteer/protocol").DeviceInitialAccess,
+    preparedIdentity?: import("@opensteer/protocol").DevicePreparedIdentity,
   ) {
     const expiresAt = new Date(this.now().getTime() + 10 * 60_000).toISOString();
     const enrollmentId = `ren_${crypto.randomUUID()}`;
+    if (preparedIdentity) this.preparedLocalRunners.set(enrollmentId, preparedIdentity.runnerId);
     this.update({
       ...this.snapshot,
       machines: [
@@ -8808,7 +8816,8 @@ class MockHostState {
     const enrollmentId = /ren_[0-9a-f-]{36}$/u.exec(token)?.[0];
     const pending = this.snapshot.machines.find((entry) => entry.id === enrollmentId);
     if (!pending) throw new Error("That enrollment is not waiting to connect.");
-    const id = `rnr_${crypto.randomUUID()}`;
+    const id = this.preparedLocalRunners.get(pending.id) ?? `rnr_${crypto.randomUUID()}`;
+    this.preparedLocalRunners.delete(pending.id);
     this.update({
       ...this.snapshot,
       machines: this.snapshot.machines.map((entry) =>

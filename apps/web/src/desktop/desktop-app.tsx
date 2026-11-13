@@ -20,8 +20,7 @@ import {
   DesktopWelcome,
   type ConnectKind,
 } from "../components/places/desktop-entry.js";
-import { DeviceRemovedScreen } from "../components/devices/device-removed.js";
-import { setUpAgainChosen } from "../components/devices/device-preferences.js";
+import { DeviceRemovedScreen, DeviceSignInScreen } from "../components/devices/device-removed.js";
 import { membershipRecord } from "../components/devices/this-device.js";
 import { observeLocalExecutionStatus } from "./local-execution-status.js";
 import { DesktopPlacesProvider, type DesktopPlaces } from "./places-context.js";
@@ -196,7 +195,6 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   // A Mac removed from the Opensteer on screen shows that before anything
   // signs in again, whichever arrived first: the session ending or the 4010.
   const [membership, setMembership] = useState<DesktopLocalExecutionStatus | null>(null);
-  const [setUpAgain, setSetUpAgain] = useState<ReadonlySet<string>>(() => new Set());
   const membershipDeploymentId =
     selected && selected.kind === "personal" && !selected.onThisComputer ? selected.id : null;
   useEffect(() => {
@@ -210,9 +208,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     membershipDeploymentId !== null &&
     membership?.deploymentId === membershipDeploymentId &&
     (membershipRecord(membership)?.state === "removed" ||
-      membershipRecord(membership)?.state === "leaving") &&
-    !setUpAgain.has(membershipDeploymentId) &&
-    !setUpAgainChosen(membershipDeploymentId);
+      membershipRecord(membership)?.state === "leaving");
   const hostTransportIdentity = JSON.stringify([
     desktopHostTransportIdentity(selected),
     selectedConnection?.attachmentKey,
@@ -343,10 +339,26 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
           deploymentId={selected.id}
           name={selected.name}
           onSetUpAgain={async () => {
-            setSetUpAgain((ids) => new Set([...ids, selected.id]));
-            await bridge.select({ deploymentId: selected.id });
+            setMembership(await bridge.getLocalExecutionStatus({ deploymentId: selected.id }));
           }}
           unconfirmed={membership?.membership?.leaveUnconfirmed === true}
+        />
+      );
+    }
+
+    if (
+      selected &&
+      membership?.membership?.state === "active" &&
+      (membership.membership.sessionState === "confirming" ||
+        membership.membership.sessionState === "sign-in-again" ||
+        selectedConnection?.status === "needs-sign-in")
+    ) {
+      return (
+        <DeviceSignInScreen
+          bridge={bridge}
+          deploymentId={selected.id}
+          name={selected.name}
+          confirming={membership.membership.sessionState === "confirming"}
         />
       );
     }

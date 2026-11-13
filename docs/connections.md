@@ -191,11 +191,17 @@ obligations before changing credentials; manual memberships survive. Legacy pref
 source or Host pin until a verified catalog entry returns, so Account sign-out refuses to guess
 which waiting memberships it should remove.
 
-A durable session-ended notice reaches the lifecycle owner before unauthorized recovery. Removal
-blocks that Deployment's automatic authorization and aborts in-flight exchanges. Late results clear
-their session artifacts, and explicit setup waits for those attempts before admitting a new session.
-Transport loss and natural expiry alone do not remove membership. A fresh explicit setup is the
-only way to clear removal; other Deployments and the hosting supervisor retain their authority.
+A session-ended notice reaches the lifecycle owner before unauthorized recovery. It fences automatic
+authorization while the Runner reconnects to confirm membership. Success releases the fence; 4010
+confirms removal and starts local erasure. Route rotation, transport loss and natural expiry alone
+never remove membership. Both Sign in again and Set up again first resume authorization in main,
+awaiting cleanup and generation fences before selection. Expiry preserves the key; confirmed removal
+requires a fresh identity. Late exchanges clear their session artifacts. Other Deployments and the
+hosting supervisor retain their authority.
+
+Account sign-out previews come from main’s durable membership inventory, including parked devices
+absent from the catalog. An unreadable inventory blocks confirmation instead of promising that
+nothing is deleted; browser profiles for departing memberships are erased locally.
 
 ## The place list
 

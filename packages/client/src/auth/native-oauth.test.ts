@@ -35,9 +35,16 @@ describe("NativeOAuthManager", () => {
     await fixture.signInAccount();
     const previous = (await fixture.store.load()).account;
     const lease = await fixture.manager.accountAuthorizationLease();
+    const source = {
+      kind: "account" as const,
+      issuer: previous!.issuerOrigin,
+      subject: previous!.subject,
+    };
+    expect(() => fixture.manager.assertAccountSource(source)).not.toThrow();
     const signOut = fixture.manager.signOutAccount();
     await vi.waitFor(() => expect(leaving).toHaveBeenCalledWith(null), { timeout: 1000 });
     expect(lease?.signal.aborted).toBe(true);
+    expect(() => fixture.manager.assertAccountSource(source)).toThrow("Sign in");
     await expect(fixture.manager.accountAuthorizationLease()).resolves.toBeNull();
     expect((await fixture.store.load()).account).toEqual(previous);
     expect(fixture.accountSessions.removeAllAccountIdentities).not.toHaveBeenCalled();

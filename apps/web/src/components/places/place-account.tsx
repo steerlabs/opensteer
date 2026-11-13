@@ -1,6 +1,6 @@
 import { discardAllStagedFiles } from "../attachments/use-staged-attachments.js";
 import { composerDrafts } from "../composer-drafts.js";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { DeploymentAccessSnapshot, OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { Dialog } from "../dialog.js";
 import { ErrorNotice } from "../onboarding-card.js";
@@ -80,48 +80,46 @@ export function PlaceAccountFooter({
   );
 }
 
-/**
- * The Opensteers this Mac leaves when the Account signs out: every Account
- * listing it is a device of. Read from each one's membership as the dialog
- * opens, because the catalog alone can't say which this Mac joined.
- */
+type AccountLeaves =
+  | { readonly state: "loading" }
+  | { readonly state: "error"; readonly message: string }
+  | { readonly state: "ready"; readonly names: readonly string[] };
+
 export function useAccountLeaves(
-  bridge: Pick<OpensteerDesktopBridge, "getLocalExecutionStatus"> | null,
-  snapshot: DeploymentAccessSnapshot | null,
-): readonly string[] | null {
-  const [names, setNames] = useState<readonly string[] | null>(null);
-  const listed = useRef(snapshot?.deployments ?? []);
-  listed.current = (snapshot?.deployments ?? []).filter(
-    (deployment) =>
-      deployment.source === "account" &&
-      deployment.kind === "personal" &&
-      !deployment.onThisComputer,
-  );
-  const key = listed.current.map(({ id }) => id).join(",");
+  bridge: Pick<OpensteerDesktopBridge, "accountSignOutPreview"> | null,
+): AccountLeaves {
+  const [result, setResult] = useState<AccountLeaves>({ state: "loading" });
   useEffect(() => {
-    if (!bridge) return;
     let live = true;
-    void Promise.all(
-      listed.current.map((deployment) =>
-        bridge
-          .getLocalExecutionStatus({ deploymentId: deployment.id })
-          .then((status) =>
-            status.membership?.state === "active" ||
-            status.membership?.state === "waiting" ||
-            (!status.membership && status.runner.enrolled)
-              ? deployment.name
-              : null,
-          )
-          .catch(() => null),
-      ),
-    ).then((found) => {
-      if (live) setNames(found.filter((name): name is string => name !== null));
-    });
+    setResult({ state: "loading" });
+    if (!bridge || typeof bridge.accountSignOutPreview !== "function") {
+      setResult({
+        state: "error",
+        message:
+          "This app cannot read this Mac’s device memberships. Update it before signing out.",
+      });
+      return;
+    }
+    void bridge.accountSignOutPreview().then(
+      (memberships) => {
+        if (live) setResult({ state: "ready", names: memberships.map(({ name }) => name) });
+      },
+      (reason: unknown) => {
+        if (live)
+          setResult({
+            state: "error",
+            message:
+              reason instanceof Error
+                ? reason.message
+                : "This Mac’s device memberships could not be read.",
+          });
+      },
+    );
     return () => {
       live = false;
     };
-  }, [bridge, key]);
-  return names;
+  }, [bridge]);
+  return result;
 }
 
 /** "Home", "Home and Studio", "Home, Studio and Lab". */
@@ -140,7 +138,7 @@ export function SignOutDialog({
   onConfirm,
   snapshot = null,
 }: {
-  readonly bridge?: Pick<OpensteerDesktopBridge, "getLocalExecutionStatus"> | null;
+  readonly bridge?: Pick<OpensteerDesktopBridge, "accountSignOutPreview"> | null;
   readonly onClose: () => void;
   readonly onConfirm: () => Promise<void>;
   readonly snapshot?: DeploymentAccessSnapshot | null;
@@ -148,7 +146,8 @@ export function SignOutDialog({
   const titleId = useId();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const leaves = useAccountLeaves(bridge, snapshot);
+  const inventory = useAccountLeaves(bridge);
+  const leaves = inventory.state === "ready" ? inventory.names : null;
   const email = snapshot?.account.email ?? null;
   const hosts = snapshot?.personalSetup?.deploymentId != null;
   return (
@@ -160,7 +159,7 @@ export function SignOutDialog({
           </button>
           <button
             className={leaves && leaves.length > 0 ? "btn btn--danger" : "btn btn--primary"}
-            disabled={pending}
+            disabled={pending || inventory.state !== "ready"}
             onClick={() => {
               setPending(true);
               setError(null);
@@ -191,17 +190,18 @@ export function SignOutDialog({
         <span id={titleId}>{email ? `Sign out of ${email}?` : "Sign out on this computer?"}</span>
       }
     >
-      {leaves && leaves.length > 0 ? (
+      {inventory.state === "loading" ? (
+        <p role="status">Checking this Mac’s device memberships…</p>
+      ) : inventory.state === "error" ? (
+        <ErrorNotice message={inventory.message} />
+      ) : leaves && leaves.length > 0 ? (
         <p>
           This Mac is removed from {namesInWords(leaves)}. Browser profiles kept on this Mac for{" "}
           {leaves.length === 1 ? "it" : "them"} are deleted.
           {hosts ? " The Opensteer this Mac runs keeps running." : ""}
         </p>
       ) : (
-        <p>
-          Your other Opensteers will be hidden here until you sign in again. They keep running, and
-          nothing is deleted.
-        </p>
+        <p>Your other Opensteers will be hidden here until you sign in again. They keep running.</p>
       )}
       <ErrorNotice message={error} />
     </Dialog>

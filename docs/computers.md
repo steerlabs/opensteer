@@ -22,8 +22,12 @@ not add routes to the Run that asked. The separate owned-device inventory includ
 and phones without making them shell targets. Per-app, profile and OS authorization still apply.
 
 Initial setup choices apply only at first redemption. Replaying enrollment cannot reset later access
-edits. A self-setup enrollment may pin its prepared runner key; signed leave then retires that exact
-attempt against redemption. Tokens minted for other computers are independent.
+edits. Desktop main persists the prepared key and Account provenance before the renderer requests
+its enrollment, then saves the pending receipt before handing its token to the worker. Issuance
+serializes with Account sign-out; signed leave retires the prepared identity’s pending enrollments
+against redemption. Tokens minted for other computers are independent. A prepared identity is not
+an enrolled device: after a crash, Finish setup obtains a fresh enrollment for the same key, even
+if the prior enrollment expired.
 
 Remote route changes disconnect route-admitted computers without deleting enrollment. The hosting
 computer and supervised services are not remote computers to sweep. Revocation is terminal and
@@ -38,7 +42,9 @@ reuses that identity; the environment binding is immutable after its first adver
 device shape is presentation, never authority or routing. Android phones offer no shell. Windows
 shell endpoints remain unsupported, but this does not prevent a browser-only connection.
 
-Apps bind their authenticated session to a device by proving possession of its runner key. Explicit
+Apps bind their authenticated session to a device by proving possession of its runner key. Desktop
+replays accepted bindings through main and reconciles the current session at startup, so a lost
+binding receipt cannot disable session-loss fencing. Explicit
 removal, signed self-leave and sign-out of a bound non-Home session share one removal operation:
 tombstone the device and delete all bound sessions in the same transaction, then end live work.
 Home and unbound web or legacy sessions sign out only that session. Expiry, refresh and route
@@ -47,7 +53,9 @@ removal until they update. Removing bound sessions also retires their Host notif
 keys; Account-side generic push registration is separate.
 
 Desktop main owns remote device membership independently of its disposable route catalog. A missing
-route suspends the slot; offline state never removes it. Enrollment intent precedes worker startup,
+route suspends the slot; offline state never removes it. Session loss fences automatic sign-in until
+a new Runner connection answers: success preserves membership; only 4010 or an explicit Host
+removal answer starts erasure. Session deadlines are not removal evidence. Enrollment intent precedes worker startup,
 and a surviving enrolled key can heal a missing legacy preference unless removal or profile-erasure
 intent forbids it. Unknown membership formats stop recovery and report an error.
 

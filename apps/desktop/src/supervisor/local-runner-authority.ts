@@ -15,6 +15,7 @@ import { resolveConnection } from "@opensteer/client/connections";
  */
 export interface DesktopLocalRunnerTarget {
   readonly authority: HostDiscoveryEnvelope;
+  readonly name?: string;
   readonly source: DeploymentConnectionSource;
   readonly accessRoute: PersonalHostAccessRouteEnvelope | null;
   readonly deploymentId: DeploymentId;
@@ -69,6 +70,7 @@ export class DesktopLocalRunnerTargetResolver implements DesktopLocalRunnerTarge
     const resolved = resolveConnection(connection, null, { authorization: null });
     return {
       authority: connection.authority,
+      name: connection.name,
       source: connection.source,
       accessRoute: resolved.route,
       deploymentId: resolved.deploymentId,

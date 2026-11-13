@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { ErrorNotice, OnboardingCard } from "../onboarding-card.js";
-import { chooseSetUpAgain } from "./device-preferences.js";
+import { resumeDeviceSignIn } from "./device-setup.js";
 
 /**
  * Where a Mac lands once it is no longer a device of an Opensteer, whichever
@@ -16,7 +16,7 @@ export function DeviceRemovedScreen({
   onSetUpAgain,
   unconfirmed,
 }: {
-  readonly bridge: Pick<OpensteerDesktopBridge, "cancel">;
+  readonly bridge: Pick<OpensteerDesktopBridge, "cancel" | "setUpDevice" | "select">;
   readonly deploymentId: string;
   readonly name: string;
   /** Opens setup again, signing in first where this window has no session. */
@@ -52,9 +52,9 @@ export function DeviceRemovedScreen({
           className="btn btn--primary onboarding__primary"
           disabled={pending}
           onClick={() =>
-            run(() => {
-              chooseSetUpAgain(deploymentId, true);
-              return onSetUpAgain();
+            run(async () => {
+              await resumeDeviceSignIn(bridge, deploymentId);
+              await onSetUpAgain();
             })
           }
           type="button"
@@ -70,6 +70,51 @@ export function DeviceRemovedScreen({
           Not now
         </button>
       </div>
+    </OnboardingCard>
+  );
+}
+
+export function DeviceSignInScreen({
+  bridge,
+  deploymentId,
+  name,
+  confirming = false,
+}: {
+  readonly bridge: Pick<OpensteerDesktopBridge, "setUpDevice" | "select">;
+  readonly deploymentId: string;
+  readonly name: string;
+  readonly confirming?: boolean;
+}) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <OnboardingCard
+      bare
+      title={confirming ? "Checking this Mac’s connection" : "Sign in again"}
+      description={
+        confirming
+          ? `Waiting for ${name} to confirm this Mac is still a device.`
+          : `This Mac is still one of your devices in ${name}.`
+      }
+      titleId="device-sign-in-title"
+    >
+      <ErrorNotice message={error} />
+      {!confirming ? (
+        <button
+          className="btn btn--primary"
+          disabled={pending}
+          type="button"
+          onClick={() => {
+            setPending(true);
+            setError(null);
+            void resumeDeviceSignIn(bridge, deploymentId)
+              .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+              .finally(() => setPending(false));
+          }}
+        >
+          {pending ? "Signing in…" : "Sign in again"}
+        </button>
+      ) : null}
     </OnboardingCard>
   );
 }

@@ -208,6 +208,8 @@ export interface DesktopBridgeOptions {
     | "status"
     | "subscribe"
     | "setUpDevice"
+    | "prepareDeviceSetup"
+    | "accountSignOutPreview"
     | "signDeviceSessionBinding"
     | "leaveDeployment"
   >;

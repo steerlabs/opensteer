@@ -19,10 +19,8 @@ import { expect, it, vi } from "vitest";
 import { DeploymentCatalogSchema } from "../packages/client/src/connections/index.js";
 import { HostDescriptorSchema } from "../packages/deployment-authority/src/index.js";
 import { createId, RequestIdSchema, shippedHarnessKindRecord } from "../packages/core/src/index.js";
-import {
-  createDeviceLeaveSignature,
-  createDeviceSessionBindingSignature,
-} from "../packages/runner-auth/src/index.js";
+import { createDeviceLeaveSignature } from "../packages/runner-auth/src/index.js";
+import { desktopDeploymentPaths } from "../apps/desktop/src/app/application-paths.js";
 import { readDesktopConfiguration } from "../apps/desktop/src/config.js";
 import { DesktopLocalRunnerTargetResolver } from "../apps/desktop/src/supervisor/local-runner-authority.js";
 import {
@@ -30,6 +28,7 @@ import {
   type UtilityProcessLike,
 } from "../apps/desktop/src/supervisor/local-runner-service.js";
 import {
+  configurePersonalRemoteAccess,
   createMachineAccessDatabase,
   nativeFsHelperBinary,
   startPersonalMachineHost,
@@ -92,9 +91,17 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
     });
     await mkdir(path.join(root, "skills"));
     const revoked = Promise.withResolvers<void>();
+    let sessionHeaders = home.ownerHeaders;
     const createService = () =>
       new LocalRunnerService(config, {
         computerName: async () => "Devices E2E Mac",
+        readSession: async () => {
+          const current = (
+            await testRpcData(home.origin, "sessions.list", {}, { headers: sessionHeaders })
+          ).sessions.find((session) => session.current);
+          if (!current) throw new Error("No current desktop session");
+          return current;
+        },
         homeDirectory: root,
         targets,
         runtimeRelease: async () => ({
@@ -160,12 +167,24 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
       }
     }
     service = createService();
-    let sessionHeaders = home.ownerHeaders;
     const command = (input: Parameters<typeof testRpcData<"commands.dispatch">>[2]) =>
-      testRpcData(home.origin, "commands.dispatch", input, { headers: sessionHeaders });
+      service!.withPreparedEnrollment(deploymentId, input, async () => {
+        const result = await testRpcData(home.origin, "commands.dispatch", input, {
+          headers: sessionHeaders,
+        });
+        await service!.observeHostCommand(deploymentId, input, result);
+        return result;
+      });
     const mint = async (key: string) => {
+      await service!.setUpDevice({ deploymentId, runnerName: "Devices E2E Mac", runAgents: false });
+      const preparedIdentity = await service!.prepareDeviceSetup({
+        deploymentId,
+        runnerName: "Devices E2E Mac",
+        runAgents: false,
+      });
       const result = await command({
         type: "runner.enrollment.createLocal",
+        preparedIdentity,
         name: "Devices E2E Mac",
         allowedModules: ["browser", "integrations", "messaging", "shell"],
         access: { browser: true, apps: false, files: false },
@@ -224,23 +243,14 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
       privateKeyPem: string;
       runnerId: string;
     };
-    const current = (
+    let current = (
       await testRpcData(home.origin, "sessions.list", {}, { headers: home.ownerHeaders })
     ).sessions.find((s) => s.current)!;
-    const issuedAt = new Date().toISOString();
     await command({
       type: "machine.session.bind",
       machineId: runnerId,
       idempotencyKey: "bind",
-      proof: {
-        issuedAt,
-        signature: createDeviceSessionBindingSignature(createPrivateKey(identity.privateKeyPem), {
-          deploymentId,
-          runnerId,
-          sessionId: current.id,
-          issuedAt,
-        }),
-      },
+      proof: await service.signDeviceSessionBinding({ deploymentId, sessionId: current.id }),
     });
     expect(
       (
@@ -248,6 +258,87 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
       ).sessions.find((s) => s.current)?.deviceId,
     ).toBe(runnerId);
     console.info("STEP 2: signed HTTP binding appears in sessions.list");
+    const originalSession = await home.runtime.store.database
+      .selectFrom("authSessions")
+      .selectAll()
+      .where("id", "=", current.id)
+      .executeTakeFirstOrThrow();
+    const cloneSession = async () => {
+      const token = randomUUID();
+      await home.runtime.store.database
+        .insertInto("authSessions")
+        .values({ ...originalSession, id: createId("authSession"), token, deviceId: null })
+        .execute();
+      const cookie = `opensteer.session=${encodeURIComponent(`${token}.${createHmac("sha256", home.config.authSecret).update(token).digest("base64")}`)}`;
+      return { ...home.ownerHeaders, cookie };
+    };
+    const otherHeaders = await cloneSession();
+    const access = await home.runtime.store.database
+      .selectFrom("personalRemoteAccess")
+      .selectAll()
+      .executeTakeFirstOrThrow();
+    await home.runtime.store.database
+      .insertInto("personalRemoteSessions")
+      .values({
+        authSessionId: current.id,
+        delivery: "cookie",
+        routeGeneration: access.generation,
+        routeKind: "private",
+        routeOrigin: access.routeOrigin!,
+        createdAt: new Date(),
+      })
+      .execute();
+    const profileRoot = desktopDeploymentPaths(root, deploymentId).browserProfilesDirectory;
+    await mkdir(profileRoot, { recursive: true });
+    await writeFile(path.join(profileRoot, "saved-profile"), "keep");
+    await configurePersonalRemoteAccess(
+      { runtime: home.runtime, ownerHeaders: otherHeaders },
+      { schemaVersion: 1, mode: "private", routeOrigin: "https://rotated.machine-access.test" },
+    );
+    expect(
+      (await testRpcRequest(home.origin, "sessions.list", {}, { headers: home.ownerHeaders }))
+        .status,
+    ).toBe(401);
+    await service.sessionLost(deploymentId);
+    const confirmed = Promise.withResolvers<void>();
+    const observeConfirmation = async () => {
+      const status = await service!.status(deploymentId);
+      if (status.runner.state === "running" && status.membership?.sessionState === "ready")
+        confirmed.resolve();
+    };
+    const detach = service.subscribe(() => {
+      void observeConfirmation();
+    });
+    try {
+      await observeConfirmation();
+      await withTimeout(confirmed.promise, 5000, {
+        timeoutError: () =>
+          new Error("Runner never confirmed membership after Home rotated its route"),
+      });
+    } finally {
+      detach();
+    }
+    await service.assertSessionAllowed(deploymentId);
+    expect(JSON.parse(await readFile(identityPath, "utf8")).runnerId).toBe(runnerId);
+    expect(JSON.parse(await readFile(identityPath, "utf8")).privateKeyPem).toBe(
+      identity.privateKeyPem,
+    );
+    expect(await readFile(path.join(profileRoot, "saved-profile"), "utf8")).toBe("keep");
+    expect((await row()).revokedAt).toBeNull();
+    const recoveredHeaders = await cloneSession();
+    sessionHeaders = recoveredHeaders;
+    current = (
+      await testRpcData(home.origin, "sessions.list", {}, { headers: recoveredHeaders })
+    ).sessions.find((session) => session.current)!;
+    await command({
+      type: "machine.session.bind",
+      machineId: runnerId,
+      idempotencyKey: "bind-after-rotation",
+      proof: await service.signDeviceSessionBinding({ deploymentId, sessionId: current.id }),
+    });
+    console.info(
+      "STEP 2b: Home route rotation ends the bound session; Runner confirms membership, preserves the key and browser profiles, and sign-in rebinds",
+    );
     await service.shutdown();
     service.dispose();
     service = createService();
@@ -269,18 +360,6 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
     console.info(
       "STEP 6a: empty membership + older empty catalog waits; restored catalog reconnects same key without resetting switches",
     );
-    const originalSession = await home.runtime.store.database
-      .selectFrom("authSessions")
-      .selectAll()
-      .where("id", "=", current.id)
-      .executeTakeFirstOrThrow();
-    const token = randomUUID();
-    await home.runtime.store.database
-      .insertInto("authSessions")
-      .values({ ...originalSession, id: createId("authSession"), token, deviceId: null })
-      .execute();
-    const cookie = `opensteer.session=${encodeURIComponent(`${token}.${createHmac("sha256", home.config.authSecret).update(token).digest("base64")}`)}`;
-    const otherHeaders = { ...home.ownerHeaders, cookie };
     await testRpcData(
       home.origin,
       "commands.dispatch",
@@ -288,7 +367,7 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
       { headers: otherHeaders },
     );
     expect(
-      (await testRpcRequest(home.origin, "sessions.list", {}, { headers: home.ownerHeaders }))
+      (await testRpcRequest(home.origin, "sessions.list", {}, { headers: recoveredHeaders }))
         .status,
     ).toBe(401);
     await withTimeout(revoked.promise, 5000, {

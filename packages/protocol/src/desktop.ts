@@ -92,6 +92,8 @@ export const DesktopDeviceMembershipSchema = z.strictObject({
   runnerId: RunnerIdSchema.nullable(),
   generation: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   leaveUnconfirmed: z.boolean().optional(),
+  enrolled: z.boolean().optional(),
+  sessionState: z.enum(["ready", "confirming", "sign-in-again"]).optional(),
 });
 export type DesktopDeviceMembership = z.infer<typeof DesktopDeviceMembershipSchema>;
 
@@ -1951,6 +1953,12 @@ export interface OpensteerDesktopBridge {
     deploymentId: string;
     sessionId: string;
   }): Promise<import("./devices.js").DeviceSessionBindingProof>;
+  prepareDeviceSetup(
+    input: DesktopStartLocalRunnerInput,
+  ): Promise<import("./devices.js").DevicePreparedIdentity>;
+  accountSignOutPreview(): Promise<
+    readonly { readonly deploymentId: string; readonly name: string }[]
+  >;
   leaveDeployment(input: DesktopLocalExecutionInput): Promise<void>;
   setUpDevice(input: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus>;
   startLocalRunner(input: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus>;

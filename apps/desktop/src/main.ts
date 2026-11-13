@@ -29,7 +29,7 @@ import { NativeDictationHelperClient } from "./dictation/helper-client.js";
 import { bundledDictationBrokerPath } from "./dictation/paths.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { AuthenticatedSessionViewSchema } from "@opensteer/core";
+import { AuthSessionSummarySchema } from "@opensteer/core";
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
 import { apiVersionHeaders } from "@opensteer/deployment-authority";
 import { z } from "zod";
@@ -634,6 +634,10 @@ async function runDesktop(
   });
   sessionOwners.add(hostSessions);
   const hostTransport = new DesktopHostTransport({
+    withPreparedEnrollment: (deploymentId, command, operation) => {
+      if (!deviceLifecycle) throw new Error("Device membership is still loading.");
+      return deviceLifecycle.withPreparedEnrollment(deploymentId, command, operation);
+    },
     observeCommand: async (deploymentId, command, result) =>
       deviceLifecycle?.observeHostCommand(deploymentId, command, result),
     catalog: deploymentCatalog,
@@ -701,6 +705,7 @@ async function runDesktop(
       hostTransport.closeDeploymentConnections(DeploymentIdSchema.parse(deploymentId));
   });
   const localRunner = new LocalRunnerService(loaded.config, {
+    assertAccountSource: (source) => nativeAuth.assertAccountSource(source),
     fenceDeployment: (deploymentId) => {
       for (const sessions of sessionOwners) sessions.blockDeployment(deploymentId);
       hostTransport.closeDeploymentConnections(deploymentId);
@@ -746,10 +751,11 @@ async function runDesktop(
     readSession: async (deploymentId, origin) => {
       const response = await hostNetwork.partitionFetch(
         deploymentId,
-        new URL("/v1/auth/session", origin),
+        new URL("/v1/rpc/sessions.list", origin),
         {
-          method: "GET",
-          headers: { ...apiVersionHeaders("personal"), origin },
+          method: "POST",
+          headers: { ...apiVersionHeaders("personal"), origin, "content-type": "application/json" },
+          body: "{}",
           signal: AbortSignal.timeout(15_000),
         },
       );
@@ -761,7 +767,15 @@ async function runDesktop(
         maximumBytes: 64 * 1024,
         sizeError: () => new Error("Invalid Host session response."),
       });
-      return z.object({ session: AuthenticatedSessionViewSchema }).parse(body).session;
+      const current = z
+        .object({
+          ok: z.literal(true),
+          data: z.object({ sessions: z.array(AuthSessionSummarySchema) }),
+        })
+        .parse(body)
+        .data.sessions.find((session) => session.current);
+      if (!current) throw new Error("The session being bound has ended.");
+      return current;
     },
     profileErasure,
     log: reportEvent,

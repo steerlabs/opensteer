@@ -1,6 +1,8 @@
+import { RunnerIdSchema } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 import { bindSessionToDevice, setUpThisDevice, type DeviceSetupPorts } from "./device-setup.js";
+import { deviceRemovalCopy } from "./device-page.js";
 import { deviceSwitches, switchPolicy } from "./device-access.js";
 
 const access = { browser: true, apps: false, files: true };
@@ -9,6 +11,13 @@ const proof = { issuedAt: "2026-11-12T12:00:00Z", signature: "a".repeat(86) };
 function ports(overrides: Partial<DeviceSetupPorts> = {}) {
   const calls: string[] = [];
   const value: DeviceSetupPorts = {
+    prepare: async () => {
+      calls.push("prepare");
+      return {
+        runnerId: RunnerIdSchema.parse("rnr_11111111-1111-4111-8111-111111111111"),
+        publicKeyPem: "public-key",
+      };
+    },
     remoteAccessMode: async () => "connect",
     mint: async (input) => {
       calls.push(`mint:${JSON.stringify(input.access)}`);
@@ -32,7 +41,7 @@ describe("setting up this Mac", () => {
     await expect(
       setUpThisDevice(value, { name: "MBP", access, devicesAvailable: true, homeName: "Mac mini" }),
     ).resolves.toEqual({ ok: true, runnerId: "rnr_1" });
-    expect(calls).toEqual([`mint:${JSON.stringify(access)}`, "setUp", "bind:rnr_1"]);
+    expect(calls).toEqual(["prepare", `mint:${JSON.stringify(access)}`, "setUp", "bind:rnr_1"]);
   });
 
   it("asks an older Host for the plain enrollment and binds nothing", async () => {
@@ -75,7 +84,7 @@ describe("setting up this Mac", () => {
 });
 
 describe("binding a new sign-in", () => {
-  it("binds an unbound session once and then leaves it alone", async () => {
+  it("binds an unbound session once and replays the idempotent binding through main", async () => {
     const client = new MockHostClient({ latencyMs: 0 });
     try {
       const machine = client.getSnapshot().machines.find((entry) => entry.kind === "computer")!;
@@ -100,7 +109,7 @@ describe("binding a new sign-in", () => {
       // The mock's own session starts bound to its laptop, so a different Mac's binding refuses.
       await expect(bindSessionToDevice(bindPorts, other.id)).rejects.toThrow("already bound");
       await expect(bindSessionToDevice(bindPorts, machine.id)).resolves.toBe("already-bound");
-      expect(signed).toHaveLength(1);
+      expect(signed).toHaveLength(2);
     } finally {
       client.dispose();
     }
@@ -163,4 +172,18 @@ describe("access switches", () => {
       on: true,
     });
   });
+});
+
+it("warns about browser profile deletion when removing an offline device", () => {
+  const machine = { id: "offline-mac", name: "Travel Mac", status: "offline" as const };
+  const copy = deviceRemovalCopy({
+    machine,
+    thisDevice: false,
+    profiles: [{ homeRunnerId: machine.id, name: "Work" }],
+  });
+  expect(copy.body).toContain("browser profile Work and its sign-ins are deleted");
+  expect(copy.body).toContain("Travel Mac erases it the next time it connects");
+  expect(deviceRemovalCopy({ machine, thisDevice: false, profiles: [] }).body).toContain(
+    "Browser profiles kept on it are deleted",
+  );
 });

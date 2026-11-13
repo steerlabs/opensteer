@@ -45,10 +45,13 @@ import {
 } from "@opensteer/runner-auth";
 import {
   RunnerLeaveResponseSchema,
+  DevicePreparedIdentitySchema,
   type HostApiCommandInput,
   type HostApiCommandOutput,
   type DeviceSessionBindingProof,
+  type DevicePreparedIdentity,
 } from "@opensteer/protocol";
+import { assertDeviceSessionAllowed } from "@opensteer/client/computers";
 import { type AccountDeploymentConnectionSource } from "@opensteer/client/connections";
 import { readPrivateFileText } from "@opensteer/shared/atomicPrivateFile";
 import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
@@ -105,7 +108,7 @@ const maxLogTailDetailChars = 240;
 const maxRestartAttempts = 5;
 
 const notEnrolledDetail = "This Mac is not in this Deployment.";
-const neverEnrolledDetail = "This Mac never finished joining; remove it and add it again.";
+const neverEnrolledDetail = "Finish setting up this Mac to join this Opensteer.";
 const revokedDetail = "This Mac was removed from this Deployment.";
 const stoppedDetail = "The Runner is stopped on this Mac.";
 const removedBeforeConnectedMessage = "This Mac left the Deployment before its Runner connected.";
@@ -113,8 +116,7 @@ const stillRunningMessage =
   "The Runner on this Mac is still running, so nothing was deleted. Try again in a moment.";
 
 /**
- * A slot whose Runner never completed enrollment. Terminal on purpose: the
- * token is gone, so only Remove (and adding this Mac again) can fix it.
+ * A slot that needs a fresh enrollment hand-off to finish setup.
  */
 export class LocalRunnerNeverEnrolledError extends Error {}
 
@@ -152,6 +154,7 @@ export interface UtilityProcessLike {
 
 export interface LocalRunnerServiceDependencies {
   readonly log?: ShutdownLog;
+  readonly assertAccountSource?: (source: AccountDeploymentConnectionSource) => void;
   readonly leaveFetch?: typeof fetch;
   readonly retireEnrollment?: (
     deploymentId: DeploymentId,
@@ -162,7 +165,11 @@ export interface LocalRunnerServiceDependencies {
     deploymentId: DeploymentId,
     origin: string,
     sessionId: string,
-  ) => Promise<NonNullable<DeviceMembership["boundSession"]>>;
+  ) => Promise<
+    NonNullable<DeviceMembership["boundSession"]> & {
+      readonly deviceId?: string | null | undefined;
+    }
+  >;
   /** Fences authentication and client traffic synchronously, before disk or teardown awaits. */
   readonly fenceDeployment?: (deploymentId: DeploymentId) => void;
   readonly clearDeploymentSession?: (deploymentId: DeploymentId) => Promise<void>;
@@ -269,6 +276,8 @@ interface RunnerSlot {
 
 export class LocalRunnerService {
   readonly #log: ShutdownLog;
+  readonly #assertAccountSource: NonNullable<LocalRunnerServiceDependencies["assertAccountSource"]>;
+  #accountGeneration = 0;
   readonly #leaveFetch: typeof fetch;
   readonly #pendingEnrollments = new Map<
     string,
@@ -307,6 +316,7 @@ export class LocalRunnerService {
   readonly #inspectIdentity: NonNullable<LocalRunnerServiceDependencies["inspectIdentity"]>;
   readonly #listeners = new Set<() => void>();
   readonly #preferenceMutations = new MutationQueue();
+  readonly #setupIssuances = new MutationQueue();
   readonly #preferencePath: string;
   /** Failed starts since this Deployment's Runner last connected healthily. */
   readonly #restartPolicies = new Map<DeploymentId, RestartPolicy>();
@@ -325,6 +335,7 @@ export class LocalRunnerService {
     this.#log =
       dependencies.log ?? ((event, fields) => console.info(JSON.stringify({ event, ...fields })));
     this.#config = config;
+    this.#assertAccountSource = dependencies.assertAccountSource ?? (() => undefined);
     this.#leaveFetch = dependencies.leaveFetch ?? fetch;
     this.#retireEnrollment = dependencies.retireEnrollment;
     this.#readSession = dependencies.readSession;
@@ -435,6 +446,14 @@ export class LocalRunnerService {
         throw new Error("The deployment route changed while this computer's status was read.");
       }
     }
+    if (stored?.state === "active" && !slot.child) {
+      const identity = await this.#inspectIdentity(this.#deploymentDataDirectory(deploymentId));
+      if (identity) {
+        slot.enrolled = identity.enrolled;
+        slot.runnerId = identity.runnerId;
+        slot.environmentId = identity.environmentId;
+      }
+    }
     const computer = await this.#computerName();
     const status = localExecutionStatus(deploymentId, this.#runnerSnapshot(slot), {
       computerName: computer,
@@ -448,6 +467,12 @@ export class LocalRunnerService {
         runnerId: stored?.runnerId ?? slot.runnerId,
         generation: stored?.generation ?? 0,
         leaveUnconfirmed: stored?.state === "leaving",
+        enrolled: slot.enrolled,
+        sessionState: stored?.confirmingSession
+          ? "confirming"
+          : stored?.needsSignIn
+            ? "sign-in-again"
+            : "ready",
       },
     };
   }
@@ -477,6 +502,141 @@ export class LocalRunnerService {
     return promise;
   }
 
+  async prepareDeviceSetup(input: DesktopStartLocalRunnerInput): Promise<DevicePreparedIdentity> {
+    const parsed = DesktopStartLocalRunnerInputSchema.parse(input);
+    if (parsed.enrollmentToken)
+      throw new Error("Prepare this Mac before requesting its enrollment.");
+    const accountGeneration = this.#accountGeneration;
+    const slot = this.#slot(parsed.deploymentId);
+    const generation = slot.intentGeneration;
+    const target = await this.#targets.resolve(parsed.deploymentId);
+    const assertCurrent = () => {
+      if (
+        this.#shuttingDown ||
+        accountGeneration !== this.#accountGeneration ||
+        generation !== slot.intentGeneration ||
+        this.#fenced.has(parsed.deploymentId)
+      )
+        throw new Error("Device setup was cancelled by sign-out or removal.");
+      if (target.source.kind === "account") this.#assertAccountSource(target.source);
+    };
+    assertCurrent();
+    let prepared: DevicePreparedIdentity | undefined;
+    await this.#mutatePreference(async (preference) => {
+      assertCurrent();
+      const current = preference.runners[parsed.deploymentId];
+      if (
+        current &&
+        (current.state !== "active" || current.confirmingSession || current.needsSignIn)
+      )
+        throw new Error("Resume this Mac's sign-in before setting it up.");
+      if (current?.hostAuthority && !isSameHost(current.hostAuthority, target.authority))
+        throw new Error("This Deployment's Host identity changed.");
+      const identity = await new FileRunnerIdentityStore({
+        dataDirectory: this.#deploymentDataDirectory(parsed.deploymentId),
+        environmentless: true,
+      }).loadOrCreate();
+      assertCurrent();
+      prepared = { runnerId: identity.runnerId, publicKeyPem: identity.publicKeyPem };
+      return {
+        ...preference,
+        runners: {
+          ...preference.runners,
+          [parsed.deploymentId]: {
+            ...(current ?? membershipIntent(parsed.runnerName, parsed.runAgents)),
+            runnerId: identity.runnerId,
+            deploymentName: target.name ?? current?.deploymentName ?? null,
+            runnerName: parsed.runnerName,
+            runAgents: parsed.runAgents,
+            prepared: true,
+            provenance: current?.provenance ?? target.source,
+            hostAuthority: target.authority,
+            lastVerifiedRoute: { origin: target.hostUrl, accessRoute: target.accessRoute },
+          },
+        },
+      };
+    });
+    assertCurrent();
+    if (!prepared) throw new Error("Device setup was not prepared.");
+    return prepared;
+  }
+
+  withPreparedEnrollment<T>(
+    deploymentId: DeploymentId,
+    command: HostApiCommandInput,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (command.type !== "runner.enrollment.createLocal" || !command.preparedIdentity)
+      return operation();
+    const prepared = DevicePreparedIdentitySchema.parse(command.preparedIdentity);
+    const accountGeneration = this.#accountGeneration;
+    return this.#setupIssuances.run(async () => {
+      const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
+      if (
+        accountGeneration !== this.#accountGeneration ||
+        row?.state !== "active" ||
+        !row.prepared ||
+        row.runnerId !== prepared.runnerId ||
+        this.#fenced.has(deploymentId)
+      )
+        throw new Error("Device setup was cancelled before enrollment issuance.");
+      if (row.provenance?.kind === "account") this.#assertAccountSource(row.provenance);
+      const identity = await this.#signingIdentity(
+        deploymentId,
+        RunnerIdSchema.parse(prepared.runnerId),
+      );
+      if (
+        createPublicKey(identity.privateKey).export({ format: "pem", type: "spki" }).toString() !==
+        prepared.publicKeyPem
+      )
+        throw new Error("Enrollment does not match this Mac's prepared key.");
+      return operation();
+    });
+  }
+
+  async #accountMembershipInventory(): Promise<DeviceMemberships> {
+    await this.#discoverMemberships();
+    const preference = await readMemberships(this.#preferencePath);
+    for (const [idValue, row] of Object.entries(preference.runners)) {
+      const id = DeploymentIdSchema.parse(idValue);
+      if (row.state !== "active" || row.provenance) continue;
+      let target: DesktopLocalRunnerTarget;
+      try {
+        target = await this.#targets.resolve(id);
+      } catch (error) {
+        if (error instanceof LocalRunnerDeploymentUnavailableError) continue;
+        throw error;
+      }
+      await this.#mutatePreference((current) => {
+        const stored = current.runners[id];
+        if (stored?.state !== "active" || stored.provenance) return current;
+        return {
+          ...current,
+          runners: {
+            ...current.runners,
+            [id]: {
+              ...stored,
+              provenance: target.source,
+              deploymentName: target.name ?? stored.deploymentName,
+              hostAuthority: target.authority,
+              lastVerifiedRoute: { origin: target.hostUrl, accessRoute: target.accessRoute },
+            },
+          },
+        };
+      });
+    }
+    return readMemberships(this.#preferencePath);
+  }
+
+  async accountSignOutPreview(): Promise<readonly { deploymentId: string; name: string }[]> {
+    const preference = await this.#accountMembershipInventory();
+    if (Object.values(preference.runners).some((row) => row.state === "active" && !row.provenance))
+      throw new Error("Reconnect the waiting Opensteers to identify this Mac's memberships.");
+    return Object.entries(preference.runners)
+      .filter(([, row]) => row.state === "active" && row.provenance?.kind === "account")
+      .map(([deploymentId, row]) => ({ deploymentId, name: row.deploymentName ?? "an Opensteer" }));
+  }
+
   async #startNow(parsed: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus> {
     const membership = (await readMemberships(this.#preferencePath)).runners[parsed.deploymentId];
     if (this.#fenced.has(parsed.deploymentId) || (membership && membership.state !== "active"))
@@ -488,6 +648,14 @@ export class LocalRunnerService {
       await this.#reconcileTail;
       this.#assertCurrentIntent(slot, intentGeneration);
       const target = await this.#targets.resolve(parsed.deploymentId);
+      if (target.source.kind === "account") this.#assertAccountSource(target.source);
+      if (
+        membership?.prepared &&
+        parsed.enrollmentToken &&
+        membership.pendingEnrollment?.tokenHash !==
+          createHash("sha256").update(parsed.enrollmentToken).digest("hex")
+      )
+        throw new Error("This enrollment does not belong to the prepared setup attempt.");
       if (membership?.hostAuthority && !isSameHost(membership.hostAuthority, target.authority))
         throw new Error("This Deployment's Host identity changed. Set up this Mac again.");
       slot.waiting = false;
@@ -509,6 +677,9 @@ export class LocalRunnerService {
       await this.#mutatePreference((preference) => {
         this.#assertCurrentIntent(slot, intentGeneration);
         const current = preference.runners[parsed.deploymentId];
+        if (current && current.state !== "active")
+          throw new Error("Device setup was cancelled by removal.");
+        if (target.source.kind === "account") this.#assertAccountSource(target.source);
         return {
           ...preference,
           runners: {
@@ -516,10 +687,13 @@ export class LocalRunnerService {
             [parsed.deploymentId]: {
               ...(current ?? membershipIntent(parsed.runnerName, parsed.runAgents)),
               runnerId: identity.runnerId,
-              pendingEnrollment: parsed.enrollmentToken
-                ? this.#enrollmentForToken(parsed.deploymentId, parsed.enrollmentToken)
-                : (current?.pendingEnrollment ?? null),
+              pendingEnrollment: current?.prepared
+                ? current.pendingEnrollment
+                : parsed.enrollmentToken
+                  ? this.#enrollmentForToken(parsed.deploymentId, parsed.enrollmentToken)
+                  : (current?.pendingEnrollment ?? null),
               runnerName: parsed.runnerName,
+              deploymentName: target.name ?? current?.deploymentName ?? null,
               runAgents: parsed.runAgents,
               provenance: current?.provenance ?? target.source,
               hostAuthority: target.authority,
@@ -553,11 +727,55 @@ export class LocalRunnerService {
     }
   }
 
+  async reconcileBoundSession(deploymentIdInput: string): Promise<void> {
+    const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
+    if (!this.#readSession) return;
+    const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
+    if (
+      row?.state !== "active" ||
+      !row.runnerId ||
+      row.confirmingSession ||
+      this.#fenced.has(deploymentId)
+    )
+      return;
+    const target = await this.#targets.resolve(deploymentId);
+    const session = await this.#readSession(deploymentId, target.hostUrl, "");
+    if (session.deviceId !== row.runnerId) return;
+    await this.#mutatePreference((preference) => {
+      const current = preference.runners[deploymentId];
+      if (
+        current?.state !== "active" ||
+        current.generation !== row.generation ||
+        current.confirmingSession ||
+        this.#fenced.has(deploymentId)
+      )
+        return preference;
+      return {
+        ...preference,
+        runners: {
+          ...preference.runners,
+          [deploymentId]: {
+            ...current,
+            boundSession: {
+              id: session.id,
+              expiresAt: session.expiresAt,
+              absoluteExpiresAt: session.absoluteExpiresAt,
+            },
+          },
+        },
+      };
+    });
+  }
+
   async startIfEnabled(): Promise<void> {
     await this.#preferenceMutations.run(async () => {
       await writeMemberships(this.#preferencePath, await readMemberships(this.#preferencePath));
     });
     await this.reconcile();
+    const rows = await readMemberships(this.#preferencePath);
+    await Promise.all(
+      Object.keys(rows.runners).map((id) => this.reconcileBoundSession(id).catch(() => undefined)),
+    );
     await this.#profileErasure.finishPending();
   }
 
@@ -570,6 +788,10 @@ export class LocalRunnerService {
       if (slot.intentGeneration !== generation)
         throw new Error("Device setup was cancelled before authorization resumed.");
     };
+    if (parsed.enrollmentToken && existing && existing.state !== "active")
+      throw new Error("Resume device setup before handing off an enrollment.");
+    if (existing?.confirmingSession)
+      throw new Error("Waiting for the Runner to confirm this Mac is still a device.");
     if (existing?.state === "leaving") throw new Error("This Mac's leave is still unconfirmed.");
     if (existing?.state === "removed") {
       await this.#finishObligation(parsed.deploymentId);
@@ -621,6 +843,7 @@ export class LocalRunnerService {
     const generation = slot.intentGeneration;
     if (this.#fenced.has(deploymentId) || membership?.state !== "active" || !membership.runnerId)
       throw new Error("This Mac is not an active device in this Deployment.");
+    await this.assertSessionAllowed(deploymentId);
     const identity = await this.#signingIdentity(deploymentId, membership.runnerId);
     const target = await this.#targets.resolve(deploymentId);
     if (membership.hostAuthority && !isSameHost(membership.hostAuthority, target.authority))
@@ -645,7 +868,11 @@ export class LocalRunnerService {
     this.#pendingBindings.set(deploymentId, {
       generation: membership.generation,
       signature,
-      session,
+      session: {
+        id: session.id,
+        expiresAt: session.expiresAt,
+        absoluteExpiresAt: session.absoluteExpiresAt,
+      },
     });
     return { issuedAt, signature };
   }
@@ -656,6 +883,34 @@ export class LocalRunnerService {
     result: HostApiCommandOutput,
   ): Promise<void> {
     if (command.type === "runner.enrollment.createLocal" && result.type === command.type) {
+      if (command.preparedIdentity) {
+        const prepared = command.preparedIdentity;
+        let accepted = false;
+        await this.#mutatePreference((preference) => {
+          const row = preference.runners[deploymentId];
+          if (!row?.prepared || row.runnerId !== prepared.runnerId) return preference;
+          accepted = row.state === "active" && !this.#fenced.has(deploymentId);
+          return {
+            ...preference,
+            runners: {
+              ...preference.runners,
+              [deploymentId]: {
+                ...row,
+                pendingEnrollment: {
+                  id: result.enrollmentId,
+                  expiresAt: result.expiresAt,
+                  tokenHash: createHash("sha256").update(result.token).digest("hex"),
+                },
+              },
+            },
+          };
+        });
+        if (!accepted) {
+          await this.#finishObligation(deploymentId);
+          throw new Error("Device setup was cancelled before token hand-off.");
+        }
+        return;
+      }
       for (const [key, pending] of this.#pendingEnrollments)
         if (Date.parse(pending.expiresAt) <= Date.now()) this.#pendingEnrollments.delete(key);
       if (this.#pendingEnrollments.size >= 100)
@@ -744,36 +999,9 @@ export class LocalRunnerService {
   }
 
   async leaveAccountMemberships(next?: AccountDeploymentConnectionSource): Promise<void> {
-    await this.#discoverMemberships();
-    let preference = await readMemberships(this.#preferencePath);
-    for (const [idValue, row] of Object.entries(preference.runners)) {
-      const id = DeploymentIdSchema.parse(idValue);
-      if (row.state !== "active" || row.provenance) continue;
-      let target: DesktopLocalRunnerTarget;
-      try {
-        target = await this.#targets.resolve(id);
-      } catch (error) {
-        if (error instanceof LocalRunnerDeploymentUnavailableError) continue;
-        throw error;
-      }
-      await this.#mutatePreference((current) => {
-        const stored = current.runners[id];
-        if (stored?.state !== "active" || stored.provenance) return current;
-        return {
-          ...current,
-          runners: {
-            ...current.runners,
-            [id]: {
-              ...stored,
-              provenance: target.source,
-              hostAuthority: target.authority,
-              lastVerifiedRoute: { origin: target.hostUrl, accessRoute: target.accessRoute },
-            },
-          },
-        };
-      });
-    }
-    preference = await readMemberships(this.#preferencePath);
+    ++this.#accountGeneration;
+    await this.#setupIssuances.run(async () => undefined);
+    const preference = await this.#accountMembershipInventory();
     if (
       !next &&
       Object.values(preference.runners).some(
@@ -800,27 +1028,23 @@ export class LocalRunnerService {
   async sessionLost(deploymentIdInput: string): Promise<void> {
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
     const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
-    if (row?.state !== "active" || !row.boundSession) return;
-    const deadline = Math.min(
-      Date.parse(row.boundSession.expiresAt),
-      Date.parse(row.boundSession.absoluteExpiresAt),
-    );
-    if (deadline > Date.now()) {
-      await this.markRemoved(deploymentId);
-      return;
-    }
+    if (row?.state !== "active" || !row.runnerId || row.confirmingSession) return;
     this.#fenceDeployment(deploymentId);
     await this.#mutatePreference((preference) => {
       const current = preference.runners[deploymentId];
       if (current?.state !== "active" || current.generation !== row.generation) return preference;
       return {
         ...preference,
-        runners: { ...preference.runners, [deploymentId]: { ...current, needsSignIn: true } },
+        runners: {
+          ...preference.runners,
+          [deploymentId]: { ...current, needsSignIn: true, confirmingSession: true },
+        },
       };
     });
     await this.#clearSession(deploymentId);
-    this.#slot(deploymentId).detail =
-      "Sign in again to this Deployment. This Mac is still a device.";
+    this.#slot(deploymentId).detail = "Confirming this Mac’s membership with the Runner…";
+    await this.#stop(this.#slot(deploymentId));
+    void this.reconcile();
     this.#emit();
   }
 
@@ -855,9 +1079,22 @@ export class LocalRunnerService {
   async assertSessionAllowed(deploymentIdInput: string): Promise<void> {
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
     const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
-    if (row?.needsSignIn) throw new Error("Sign in again to this Deployment.");
     if (this.#fenced.has(deploymentId) || (row && row.state !== "active"))
       throw new Error("This Mac was removed. Choose Set up again to reconnect.");
+    assertDeviceSessionAllowed(
+      row
+        ? {
+            state: row.state,
+            runnerId: row.runnerId,
+            generation: row.generation,
+            sessionState: row.confirmingSession
+              ? "confirming"
+              : row.needsSignIn
+                ? "sign-in-again"
+                : "ready",
+          }
+        : null,
+    );
   }
 
   async shutdown(signal?: AbortSignal): Promise<void> {
@@ -977,6 +1214,7 @@ export class LocalRunnerService {
               [deploymentId]: {
                 ...row,
                 provenance: row.provenance ?? target.source,
+                deploymentName: target.name ?? row.deploymentName,
                 hostAuthority: target.authority,
                 lastVerifiedRoute: { origin: target.hostUrl, accessRoute: target.accessRoute },
               },
@@ -1008,9 +1246,7 @@ export class LocalRunnerService {
           slot.detail = safeDetail(error);
           slot.state = "failed";
           this.#emit();
-          // A slot that never finished joining holds no identity and no token
-          // — the token is never written down — so retrying is a loop with a
-          // dead credential. It waits for Remove instead.
+          // Unredeemed identities need an explicit fresh enrollment, not a worker restart.
           if (error instanceof LocalRunnerNeverEnrolledError) {
             this.#disableIntent(slot);
             this.#cancelRestart(deploymentId);
@@ -1315,6 +1551,28 @@ export class LocalRunnerService {
                             parsed.data.type === "runner.worker.connected"
                               ? parsed.data.runnerId
                               : row.runnerId,
+                        },
+                      },
+                    };
+                  });
+                  if (!this.#intentIsCurrent(slot, intentGeneration)) {
+                    cancel();
+                    return;
+                  }
+                  await this.#sessionCleanups.get(target.deploymentId);
+                  await this.#allowDeployment(target.deploymentId);
+                  await this.#mutatePreference((preference) => {
+                    const row = preference.runners[target.deploymentId];
+                    if (row?.state !== "active" || !this.#intentIsCurrent(slot, intentGeneration))
+                      return preference;
+                    return {
+                      ...preference,
+                      runners: {
+                        ...preference.runners,
+                        [target.deploymentId]: {
+                          ...row,
+                          confirmingSession: false,
+                          needsSignIn: false,
                         },
                       },
                     };
@@ -1735,6 +1993,7 @@ export class LocalRunnerService {
               state: removing ? "removed" : "active",
               erasePending: removing,
               provenance: stored?.provenance ?? target?.source ?? null,
+              deploymentName: stored?.deploymentName ?? target?.name ?? null,
               hostAuthority: stored?.hostAuthority ?? target?.authority ?? null,
               lastVerifiedRoute:
                 stored?.lastVerifiedRoute ??
@@ -1801,7 +2060,7 @@ export class LocalRunnerService {
 
   async #retirePendingEnrollment(deploymentId: DeploymentId): Promise<void> {
     const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
-    if (!row?.pendingEnrollment) return;
+    if (!row?.pendingEnrollment || row.prepared) return;
     let retired = Date.parse(row.pendingEnrollment.expiresAt) <= Date.now();
     if (!retired && row.lastVerifiedRoute && this.#retireEnrollment) {
       try {
@@ -1862,7 +2121,12 @@ export class LocalRunnerService {
             ...preference,
             runners: {
               ...preference.runners,
-              [deploymentId]: { ...current, state: "removed", leaveProof: null },
+              [deploymentId]: {
+                ...current,
+                state: "removed",
+                leaveProof: null,
+                pendingEnrollment: null,
+              },
             },
           };
         });
@@ -1879,7 +2143,7 @@ export class LocalRunnerService {
   }
 
   async #deliverLeave(deploymentId: DeploymentId, row: DeviceMembership): Promise<void> {
-    if (row.pendingEnrollment)
+    if (row.pendingEnrollment && !row.prepared)
       throw new Error("Waiting for this Mac's pending setup enrollment to retire or expire.");
     if (!row.leaveProof || !row.hostAuthority || !row.lastVerifiedRoute)
       throw new Error("Waiting for the pinned Host route to confirm removal.");
