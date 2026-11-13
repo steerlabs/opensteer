@@ -129,6 +129,7 @@ export const desktopBridgeChannels = {
   signIn: "opensteer.desktop.access.sign-in",
   signOut: "opensteer.desktop.access.sign-out",
   signDeviceSessionBinding: "opensteer.desktop.device.sign-session-binding",
+  retryDeviceConnection: "opensteer.desktop.device.retry",
   leaveDeployment: "opensteer.desktop.device.leave",
   prepareDeviceSetup: "opensteer.desktop.device.prepare-setup",
   accountSignOutPreview: "opensteer.desktop.device.account-sign-out-preview",

@@ -121,6 +121,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [screen, setScreen] = useState<BrowsingScreen>(null);
+  const [chooserFor, setChooserFor] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [connectingPrivate, setConnectingPrivate] = useState(false);
   // This window set this computer up, so setup carries on into the app it
@@ -240,7 +241,13 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     () =>
       snapshot
         ? {
-            bridge,
+            bridge: {
+              ...bridge,
+              select: async (input) => {
+                setChooserFor(null);
+                await bridge.select(input);
+              },
+            },
             onAddPlace: () => setScreen("pairing"),
             snapshot,
           }
@@ -297,7 +304,8 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   return <DesktopPlacesProvider value={places}>{surface(snapshot, places)}</DesktopPlacesProvider>;
 
   function surface(snapshot: DeploymentAccessSnapshot, places: DesktopPlaces) {
-    const presentation = desktopAccessPresentationFromSnapshot(snapshot);
+    const choosing = chooserFor !== null && chooserFor === selected?.id;
+    const presentation = choosing ? "picker" : desktopAccessPresentationFromSnapshot(snapshot);
     const activeScreen = screen;
     const busy =
       connectingPrivate ||
@@ -332,7 +340,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       );
     }
 
-    if (selected && removedHere) {
+    if (selected && removedHere && !choosing) {
       return (
         <DeviceRemovedScreen
           bridge={bridge}
@@ -342,12 +350,15 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
             setMembership(await bridge.getLocalExecutionStatus({ deploymentId: selected.id }));
           }}
           unconfirmed={membership?.membership?.leaveUnconfirmed === true}
+          detail={membership?.runner.detail}
+          onChoose={() => setChooserFor(selected.id)}
         />
       );
     }
 
     if (
       selected &&
+      !choosing &&
       membership?.membership?.state === "active" &&
       (membership.membership.sessionState === "confirming" ||
         membership.membership.sessionState === "sign-in-again" ||
@@ -359,6 +370,8 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
           deploymentId={selected.id}
           name={selected.name}
           confirming={membership.membership.sessionState === "confirming"}
+          detail={membership.runner.detail}
+          onChoose={() => setChooserFor(selected.id)}
         />
       );
     }

@@ -16,6 +16,16 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createHmac, createPrivateKey, randomUUID } from "node:crypto";
 import { expect, it, vi } from "vitest";
+import {
+  signTestDiscoveryEnvelope,
+  signTestPersonalAccessRoute,
+  testHostAuthorityKeys,
+} from "../packages/client/src/test-support/index.js";
+import { readMemberships } from "../apps/desktop/src/supervisor/device-membership.js";
+import { HostSession } from "../packages/client/src/auth/host-session.js";
+import { establishedCookieSession } from "../packages/client/src/test-support/session-exchange.js";
+import { resolveConnection } from "../packages/client/src/connections/connection-resolver.js";
+import { ControlPlaneAccountIdSchema } from "../packages/control-plane-protocol/src/index.js";
 import { DeploymentCatalogSchema } from "../packages/client/src/connections/index.js";
 import { HostDescriptorSchema } from "../packages/deployment-authority/src/index.js";
 import { createId, RequestIdSchema, shippedHarnessKindRecord } from "../packages/core/src/index.js";
@@ -58,6 +68,7 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
         {
           authority: descriptor.authority,
           bootstrapMethods: descriptor.bootstrapMethods,
+          capabilities: descriptor.capabilities,
           createdAt: now,
           endpoints: [{ kind: "canonical", origin: home.origin.origin, verifiedAt: now }],
           kind: "personal",
@@ -92,9 +103,47 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
     await mkdir(path.join(root, "skills"));
     const revoked = Promise.withResolvers<void>();
     let sessionHeaders = home.ownerHeaders;
+    let lifecycleSession: HostSession | undefined;
+    let membershipTime: number | null = null;
+    let legacySessionCleared = false;
+    const leaveFetch = vi.fn<typeof fetch>(fetch);
     const createService = () =>
       new LocalRunnerService(config, {
         computerName: async () => "Devices E2E Mac",
+        leaveFetch,
+        now: () => membershipTime ?? Date.now(),
+        fenceDeployment: (id) => lifecycleSession?.blockDeployment(id),
+        allowDeployment: async (id) => {
+          await lifecycleSession?.allowDeployment(id);
+        },
+        clearDeploymentSession: async () => {
+          legacySessionCleared = true;
+        },
+        revokeLegacyRunner: async (_id, _origin, machineId) => {
+          expect(legacySessionCleared).toBe(false);
+          await testRpcData(
+            home.origin,
+            "commands.dispatch",
+            { type: "machine.revoke", machineId, idempotencyKey: `legacy-remove:${machineId}` },
+            { headers: sessionHeaders },
+          );
+        },
+        retireEnrollment: async (_id, _origin, enrollmentId) => {
+          expect(legacySessionCleared).toBe(false);
+          const result = await testRpcData(
+            home.origin,
+            "commands.dispatch",
+            {
+              type: "runner.enrollment.retire",
+              enrollmentId,
+              idempotencyKey: `legacy-retire:${enrollmentId}`,
+            },
+            { headers: sessionHeaders },
+          );
+          if (result.type !== "runner.enrollment.retire")
+            throw new Error("Invalid retirement receipt");
+          return result.state;
+        },
         readSession: async () => {
           const current = (
             await testRpcData(home.origin, "sessions.list", {}, { headers: sessionHeaders })
@@ -273,6 +322,106 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
       return { ...home.ownerHeaders, cookie };
     };
     const otherHeaders = await cloneSession();
+    const shortHeaders = await cloneSession();
+    sessionHeaders = shortHeaders;
+    current = (
+      await testRpcData(home.origin, "sessions.list", {}, { headers: shortHeaders })
+    ).sessions.find((session) => session.current)!;
+    const expiry = new Date(Date.now() + 30_000);
+    await home.store.database
+      .updateTable("authSessions")
+      .set({ absoluteExpiresAt: expiry })
+      .where("id", "=", current.id)
+      .execute();
+    await command({
+      type: "machine.session.bind",
+      machineId: runnerId,
+      idempotencyKey: "bind-expiring",
+      proof: await service.signDeviceSessionBinding({ deploymentId, sessionId: current.id }),
+    });
+    const attachment = {
+      connection: fullCatalog.deployments[0]!,
+      resolved: resolveConnection(fullCatalog.deployments[0]!, null, { authorization: null }),
+    };
+    const establish = vi.fn(async () => {
+      sessionHeaders = await cloneSession();
+      return establishedCookieSession();
+    });
+    lifecycleSession = new HostSession({
+      attachment: { current: async () => attachment, currentKey: () => attachment.resolved.key },
+      assertSessionAllowed: (id) => service!.assertSessionAllowed(id),
+      onUnauthorized: async () => service!.sessionLost(deploymentId),
+      onSessionEnded: async () => service!.sessionLost(deploymentId),
+      clearDeploymentSession: async () => undefined,
+      exchange: { supports: () => true, probe: async () => "unauthenticated", establish },
+      localOwner: { ownsHostSession: () => false, recoverOwnerSession: async () => false },
+      oauth: {
+        abandonHostSignIn: () => undefined,
+        beginHostSignIn: async () => {
+          throw new Error("Unexpected OAuth sign-in");
+        },
+        hostCredentialState: () => {
+          throw new Error("Unexpected OAuth read");
+        },
+        recoverHostAuthorization: async () => false,
+        signOutHost: async () => {
+          throw new Error("Unexpected OAuth sign-out");
+        },
+        subscribe: () => () => undefined,
+        subscribeHostCredentials: () => () => undefined,
+      },
+    });
+    await home.store.database
+      .updateTable("authSessions")
+      .set({ absoluteExpiresAt: new Date(0) })
+      .where("id", "=", current.id)
+      .execute();
+    membershipTime = expiry.getTime() + 1_000;
+    try {
+      expect(
+        (await testRpcRequest(home.origin, "sessions.list", {}, { headers: shortHeaders })).status,
+      ).toBe(401);
+      expect(await lifecycleSession.recoverUnauthorized(attachment)).toBe("blocked");
+      const confirmedExpiry = Promise.withResolvers<void>();
+      let lastExpiryStatus = await service.status(deploymentId);
+      const observe = async () => {
+        lastExpiryStatus = await service!.status(deploymentId);
+        if (lastExpiryStatus.membership?.sessionState === "sign-in-again")
+          confirmedExpiry.resolve();
+      };
+      const unsubscribe = service.subscribe(() => {
+        void observe();
+      });
+      try {
+        await observe();
+        await withTimeout(confirmedExpiry.promise, 5_000, {
+          timeoutError: () =>
+            new Error(
+              `Expired bound session never reached explicit Sign in again: ${JSON.stringify(lastExpiryStatus)}`,
+            ),
+        });
+      } finally {
+        unsubscribe();
+      }
+      await expect(lifecycleSession.establish(deploymentId)).rejects.toThrow("Sign in again");
+      expect(establish).not.toHaveBeenCalled();
+      expect((await row()).revokedAt).toBeNull();
+      await service.setUpDevice({ deploymentId, runnerName: "Devices E2E Mac", runAgents: false });
+      await lifecycleSession.establish(deploymentId);
+      expect(establish).toHaveBeenCalledOnce();
+      expect((await service.status(deploymentId)).membership?.runnerId).toBe(runnerId);
+    } finally {
+      membershipTime = null;
+      lifecycleSession.dispose();
+      lifecycleSession = undefined;
+    }
+    sessionHeaders = home.ownerHeaders;
+    current = (
+      await testRpcData(home.origin, "sessions.list", {}, { headers: sessionHeaders })
+    ).sessions.find((session) => session.current)!;
+    console.info(
+      "STEP 2a: actual bound session expiry fences HostSession recovery until explicit Sign in again; runner identity stays",
+    );
     const access = await home.runtime.store.database
       .selectFrom("personalRemoteAccess")
       .selectAll()
@@ -460,6 +609,73 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
     console.info(
       "STEP 6c: empty-membership heal against a Host tombstone receives 4010 and forgets the identity",
     );
+    await service.shutdown();
+    service.dispose();
+    const source = {
+      kind: "account" as const,
+      issuer: "https://accounts.opensteer.test",
+      subject: ControlPlaneAccountIdSchema.parse(`acct_${randomUUID()}`),
+    };
+    catalog = {
+      ...fullCatalog,
+      deployments: fullCatalog.deployments.map((connection) => ({
+        ...connection,
+        capabilities: [],
+        source,
+      })),
+    };
+    service = createService();
+    sessionHeaders = otherHeaders;
+    await service.setUpDevice({ deploymentId, runnerName: "Legacy Mac", runAgents: false });
+    const legacyReceipt = await command({
+      type: "runner.enrollment.createLocal",
+      name: "Legacy Mac",
+      allowedModules: ["browser", "integrations", "messaging", "shell"],
+      idempotencyKey: "legacy-mint",
+    });
+    if (legacyReceipt.type !== "runner.enrollment.createLocal")
+      throw new Error("Missing legacy receipt");
+    const legacy = await service.start({
+      deploymentId,
+      enrollmentToken: legacyReceipt.token,
+      runnerName: "Legacy Mac",
+      runAgents: false,
+    });
+    legacySessionCleared = false;
+    leaveFetch.mockImplementation(async () => new Response(null, { status: 404 }));
+    await service.leaveAccountMemberships();
+    expect(leaveFetch).not.toHaveBeenCalled();
+    expect((await service.status(deploymentId)).membership).toMatchObject({
+      state: "removed",
+      leaveUnconfirmed: false,
+    });
+    expect(
+      (
+        await home.store.database
+          .selectFrom("runners")
+          .select("revokedAt")
+          .where("id", "=", legacy.runner.runnerId!)
+          .executeTakeFirstOrThrow()
+      ).revokedAt,
+    ).not.toBeNull();
+    await service.setUpDevice({ deploymentId, runnerName: "Legacy rejoin", runAgents: false });
+    const again = await command({
+      type: "runner.enrollment.createLocal",
+      name: "Legacy rejoin",
+      allowedModules: ["browser", "integrations", "messaging", "shell"],
+      idempotencyKey: "legacy-again",
+    });
+    if (again.type !== "runner.enrollment.createLocal") throw new Error("Missing rejoin receipt");
+    const rejoined = await service.start({
+      deploymentId,
+      enrollmentToken: again.token,
+      runnerName: "Legacy rejoin",
+      runAgents: false,
+    });
+    expect(rejoined.runner.runnerId).not.toBe(legacy.runner.runnerId);
+    console.info(
+      "STEP 7: legacy setup → Account sign-out uses authenticated removal before discarding session → rejoin succeeds with no signed-leave endpoint",
+    );
   } finally {
     await service?.shutdown();
     service?.dispose();
@@ -473,6 +689,149 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
     await rm(root, { recursive: true, force: true });
   }
 }, 60000);
+
+it.each(["before", "after"] as const)(
+  "reconciles prepared issuance whose reply fails %s Host commit using signed key retirement",
+  async (boundary) => {
+    const root = await mkdtemp(path.join(tmpdir(), "devices-issuance-"));
+    const database = await createMachineAccessDatabase(process.env.OPENSTEER_TEST_DATABASE_URL!);
+    let host: Awaited<ReturnType<typeof startPersonalMachineHost>> | undefined;
+    let service: LocalRunnerService | undefined;
+    try {
+      host = await startPersonalMachineHost({ databaseUrl: database.url, remoteAccess: true });
+      const home = host;
+      const deploymentId = home.runtime.deployment.id;
+      const keys = testHostAuthorityKeys();
+      const authority = signTestDiscoveryEnvelope(
+        {
+          deploymentId,
+          hostInstanceId: createId("hostInstance"),
+          canonicalOrigin: home.origin.origin,
+          hostKey: { algorithm: "Ed25519" },
+          deploymentShape: { kind: "personal" },
+        },
+        keys,
+      );
+      const origin = "https://issuance-fixture.opensteer.test";
+      const accessRoute = signTestPersonalAccessRoute(
+        {
+          authority: { ...authority.document, deploymentShape: { kind: "personal" } },
+          documentVersion: 2,
+          purpose: "opensteer-personal-access-route",
+          route: { generation: 1, kind: "private", origin },
+        },
+        keys,
+      );
+      const { config } = readDesktopConfiguration({
+        appDataDirectory: root,
+        defaultMode: "development",
+        packaged: false,
+        environment: { OPENSTEER_DESKTOP_DATA_DIR: root },
+      });
+      const signedLeaves = vi.fn<typeof fetch>(async (_url, init) => {
+        const response = await fetch(new URL("/v1/runner/leave", home.origin), init);
+        return new Response(await response.text(), {
+          status: response.status,
+          headers: response.headers,
+        });
+      });
+      const createService = () =>
+        new LocalRunnerService(config, {
+          targets: {
+            resolve: async () => ({
+              authority,
+              accessRoute,
+              deploymentId,
+              deploymentShape: { kind: "personal" },
+              source: { kind: "manual" },
+              devicesAvailable: true,
+              hostUrl: origin,
+              key: "fixture",
+              mayRunAgents: false,
+            }),
+            isCurrent: async () => true,
+            subscribe: () => () => undefined,
+          },
+          fork: () => {
+            throw new Error("Cancellation must not start a worker");
+          },
+          leaveFetch: signedLeaves,
+        });
+      service = createService();
+      const input = { deploymentId, runnerName: "Prepared Mac", runAgents: false };
+      const neverIssued = await service.prepareDeviceSetup(input);
+      await service.leaveDeployment({ deploymentId });
+      expect(signedLeaves).not.toHaveBeenCalled();
+      await service.setUpDevice(input);
+      const prepared = await service.prepareDeviceSetup(input);
+      expect(prepared.runnerId).not.toBe(neverIssued.runnerId);
+      const command = {
+        type: "runner.enrollment.createLocal" as const,
+        name: "Prepared Mac",
+        allowedModules: boundary === "before" ? ["agents" as const] : ["shell" as const],
+        preparedIdentity: prepared,
+        idempotencyKey: "ambiguous",
+      };
+      if (boundary === "before")
+        await testRpcData(
+          home.origin,
+          "commands.dispatch",
+          {
+            type: "runner.enrollment.createLocal",
+            name: "Another setup",
+            allowedModules: ["shell"],
+            idempotencyKey: "ambiguous",
+          },
+          { headers: home.ownerHeaders },
+        );
+      await expect(
+        service.withPreparedEnrollment(deploymentId, command, async () => {
+          expect(
+            (
+              await readMemberships(
+                path.join(config.localExecution.dataDirectory, "desktop-runner.json"),
+              )
+            ).runners[deploymentId]?.issuanceStarted,
+          ).toBe(true);
+          const response = await testRpcRequest(home.origin, "commands.dispatch", command, {
+            headers: home.ownerHeaders,
+          });
+          expect(response.status).toBe(boundary === "before" ? 409 : 200);
+          throw new Error("Issuance reply was lost");
+        }),
+      ).rejects.toThrow("Issuance reply was lost");
+      await service.shutdown();
+      service.dispose();
+      service = createService();
+      await service.leaveDeployment({ deploymentId });
+      expect((await service.status(deploymentId)).membership).toMatchObject({
+        state: "removed",
+        leaveUnconfirmed: false,
+      });
+      const retired = await home.store.database
+        .selectFrom("deviceSetupRetirements")
+        .select("runnerId")
+        .where("runnerId", "=", prepared.runnerId)
+        .executeTakeFirst();
+      expect(retired?.runnerId).toBe(prepared.runnerId);
+      const late = await testRpcRequest(
+        home.origin,
+        "commands.dispatch",
+        { ...command, allowedModules: ["shell"], idempotencyKey: "late" },
+        { headers: home.ownerHeaders },
+      );
+      expect(late.status).toBe(403);
+      await service.setUpDevice(input);
+      expect((await service.prepareDeviceSetup(input)).runnerId).not.toBe(prepared.runnerId);
+    } finally {
+      await service?.shutdown();
+      service?.dispose();
+      await host?.close();
+      await database.drop();
+      await rm(root, { force: true, recursive: true });
+    }
+  },
+);
 
 it("keeps person and Guest placement while Browser is off and continues a pending access Request", async () => {
   const database = await createMachineAccessDatabase(process.env.OPENSTEER_TEST_DATABASE_URL!);

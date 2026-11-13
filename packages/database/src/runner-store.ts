@@ -1409,6 +1409,16 @@ export async function createRunnerEnrollment(
         throw new OpensteerError({ code: "bad_request", message: "Invalid prepared device key" });
       }
     }
+    if (preparedIdentity) {
+      const retired = await transaction
+        .selectFrom("deviceSetupRetirements")
+        .select("runnerId")
+        .where("runnerId", "=", preparedIdentity.runnerId)
+        .where("publicKeyPem", "=", preparedIdentity.publicKeyPem)
+        .executeTakeFirst();
+      if (retired)
+        throw new OpensteerError({ code: "forbidden", message: "Device setup was cancelled" });
+    }
     if (input.ownerUserId && input.runnerKind !== "managed") {
       throw new OpensteerError({
         code: "bad_request",

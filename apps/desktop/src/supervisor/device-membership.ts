@@ -47,6 +47,17 @@ export const DeviceMembershipSchema = z.strictObject({
   needsSignIn: z.boolean().default(false),
   confirmingSession: z.boolean().default(false),
   prepared: z.boolean().default(false),
+  issuanceStarted: z.boolean().default(true),
+  devicesAvailable: z.boolean().nullable().default(null),
+  legacyLeaves: z
+    .array(
+      z.strictObject({
+        runnerId: RunnerIdSchema.nullable(),
+        enrollmentId: z.string().nullable(),
+        authority: HostDiscoveryEnvelopeSchema,
+      }),
+    )
+    .default([]),
   erasePending: z.boolean(),
   leaveProof: RunnerLeaveRequestSchema.nullable(),
 });
@@ -64,6 +75,7 @@ export const DeviceMembershipsSchema = z
         (row.hostAuthority && row.hostAuthority.document.deploymentId !== id) ||
         (row.leaveProof &&
           (row.leaveProof.deploymentId !== id || row.leaveProof.runnerId !== row.runnerId)) ||
+        row.legacyLeaves.some((leave) => leave.authority.document.deploymentId !== id) ||
         (row.state === "leaving" && !row.leaveProof)
       )
         context.addIssue({
@@ -111,6 +123,9 @@ export function membershipIntent(runnerName: string, runAgents: boolean): Device
     needsSignIn: false,
     confirmingSession: false,
     prepared: false,
+    issuanceStarted: false,
+    devicesAvailable: null,
+    legacyLeaves: [],
     erasePending: false,
     leaveProof: null,
   };

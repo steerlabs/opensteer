@@ -60,6 +60,8 @@ interface DesktopPreviewBridgeOptions {
   /** Delay between observable simulator phases. Browser previews use the
    * default; focused tests can shorten it without changing the state model. */
   readonly transitionDelayMs?: number;
+  readonly leaveDevice?: (deploymentId: string) => Promise<void>;
+  readonly confirmDevice?: (deploymentId: string) => Promise<void>;
   /** A mock Host the setup's enrollment token belongs to: its Runner connects there. */
   readonly connectRunner?: (token: string) => string;
   /**
@@ -700,6 +702,12 @@ export function desktopPreviewBridge(
         throw new Error("This Mac is not a device of that Opensteer.");
       return { issuedAt: new Date().toISOString(), signature: "p".repeat(86) };
     },
+    retryDeviceConnection: async (input) => {
+      const current = localExecutionFor(input);
+      if (current.membership?.sessionState !== "confirming")
+        throw new Error("No membership confirmation is pending.");
+      await options.confirmDevice?.(current.deploymentId);
+    },
     leaveDeployment: async (input) => {
       const current = localExecutionFor(input);
       const leaving = DesktopLocalExecutionStatusSchema.parse({
@@ -718,17 +726,26 @@ export function desktopPreviewBridge(
         hostAuth = { deploymentId: leaving.deploymentId, status: "signed-out" };
         emitAuth();
       }
-      // The Host confirms the signed leave a moment later.
-      schedule(4, () => {
+      try {
+        if (!options.leaveDevice)
+          throw new Error("Removal is unconfirmed: the preview Host has not acknowledged it.");
+        await options.leaveDevice(leaving.deploymentId);
         const latest = localExecutionFor(input);
-        if (latest.membership?.state !== "leaving") return;
-        updateLocalExecution(
-          DesktopLocalExecutionStatusSchema.parse({
-            ...latest,
-            membership: { ...latest.membership, leaveUnconfirmed: false, state: "removed" },
-          }),
-        );
-      });
+        if (latest.membership?.state === "leaving")
+          updateLocalExecution(
+            DesktopLocalExecutionStatusSchema.parse({
+              ...latest,
+              membership: { ...latest.membership, leaveUnconfirmed: false, state: "removed" },
+            }),
+          );
+      } catch (error) {
+        updateLocalExecution({
+          ...localExecutionFor(input),
+          runner: inertRunner(
+            `Signed out here. Removal from the Host is unconfirmed. ${error instanceof Error ? error.message : ""}`,
+          ),
+        });
+      }
     },
     prepareDeviceSetup: async (input) => {
       const parsed = DesktopStartLocalRunnerInputSchema.parse(input);

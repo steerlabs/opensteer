@@ -717,6 +717,34 @@ async function runDesktop(
     },
     clearDeploymentSession: (deploymentId) => hostNetwork.clearDeploymentSession(deploymentId),
     leaveFetch: serviceNetwork.fetch.bind(serviceNetwork),
+    revokeLegacyRunner: async (deploymentId, origin, runnerId) => {
+      const response = await hostNetwork.partitionFetch(
+        deploymentId,
+        new URL("/v1/rpc/commands.dispatch", origin),
+        {
+          method: "POST",
+          headers: { ...apiVersionHeaders("personal"), origin, "content-type": "application/json" },
+          body: JSON.stringify({
+            type: "machine.revoke",
+            machineId: runnerId,
+            idempotencyKey: `desktop-leave:${runnerId}`,
+          }),
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new Error("Removal from this older Host is unconfirmed. Sign in again to finish.");
+      }
+      const body = await readBoundedJson(response, {
+        maximumBytes: 4096,
+        sizeError: () => new Error("Invalid removal confirmation."),
+      });
+      z.object({
+        ok: z.literal(true),
+        data: z.object({ type: z.literal("machine.revoke") }),
+      }).parse(body);
+    },
     retireEnrollment: async (deploymentId, origin, enrollmentId) => {
       const response = await hostNetwork.partitionFetch(
         deploymentId,
@@ -740,13 +768,15 @@ async function runDesktop(
         maximumBytes: 4096,
         sizeError: () => new Error("Invalid retirement confirmation."),
       });
-      z.object({
-        ok: z.literal(true),
-        data: z.object({
-          type: z.literal("runner.enrollment.retire"),
-          state: z.enum(["consumed", "expired", "retired"]),
-        }),
-      }).parse(body);
+      return z
+        .object({
+          ok: z.literal(true),
+          data: z.object({
+            type: z.literal("runner.enrollment.retire"),
+            state: z.enum(["consumed", "expired", "retired"]),
+          }),
+        })
+        .parse(body).data.state;
     },
     readSession: async (deploymentId, origin) => {
       const response = await hostNetwork.partitionFetch(

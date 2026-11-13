@@ -1942,6 +1942,7 @@ export interface AgentConnectionTable {
 }
 
 export interface DatabaseSchema extends KnowledgeTables {
+  deviceSetupRetirements: { runnerId: RunnerId; publicKeyPem: string };
   agentHomeSkillInventory: {
     computerId: RunnerId;
     environmentId: EnvironmentId;

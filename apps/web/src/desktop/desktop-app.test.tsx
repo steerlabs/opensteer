@@ -17,6 +17,69 @@ import { DesktopApp, desktopAccessPresentationFromSnapshot } from "./desktop-app
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
+it("keeps confirmation fenced while exposing its failure, retry, leave and the chooser", async () => {
+  const selected = accessDeployment("needs-sign-in");
+  const access = snapshot({ deployments: [selected], selectedDeploymentId: selected.id });
+  const retryGate = Promise.withResolvers<void>();
+  const retryDeviceConnection = vi.fn(async () => retryGate.promise);
+  const leaveDeployment = vi.fn(async () => undefined);
+  const setUpDevice = vi.fn();
+  const bridge = {
+    retryDeviceConnection,
+    leaveDeployment,
+    setUpDevice,
+    checkDeployments: async () => undefined,
+    getDeploymentAccessSnapshot: async () => access,
+    getLocalExecutionStatus: async () => ({
+      deploymentId: selected.id,
+      runner: {
+        state: "failed",
+        detail: "Home is offline; runner route refused the connection.",
+        enrolled: true,
+        runnerId: createId("runner"),
+        environmentId: null,
+      },
+      membership: {
+        state: "active",
+        sessionState: "confirming",
+        runnerId: createId("runner"),
+        generation: 3,
+      },
+    }),
+    onHostWebSocketEvent: () => () => undefined,
+    onDeploymentAccessSnapshotChanged: () => () => undefined,
+    onNotificationActivated: () => () => undefined,
+    onLocalExecutionStatusChanged: () => () => undefined,
+  } as unknown as OpensteerDesktopBridge;
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<DesktopApp bridge={bridge} />));
+    await vi.waitFor(() => expect(container.textContent).toContain("Home is offline"));
+    const click = async (label: string) => {
+      const button = [...container.querySelectorAll("button")].find(
+        (item) => item.textContent?.trim() === label,
+      );
+      expect(button, label).toBeDefined();
+      await act(async () => button!.click());
+    };
+    await click("Retry");
+    expect(retryDeviceConnection).toHaveBeenCalledWith({ deploymentId: selected.id });
+    await click("Leave this Opensteer");
+    expect(leaveDeployment).toHaveBeenCalledWith({ deploymentId: selected.id });
+    await act(async () => retryGate.resolve());
+    await click("Choose an Opensteer");
+    expect(container.textContent).toContain("Open your Opensteer");
+    expect(container.textContent).not.toContain("Checking this Mac’s connection");
+    expect(setUpDevice).not.toHaveBeenCalled();
+  } finally {
+    retryGate.resolve();
+    await act(async () => root.unmount());
+    container.remove();
+  }
+});
+
 it("lets a connecting place go back and shows cancellation failures", async () => {
   const cancel = vi.fn(async () => {
     throw new Error("The connection could not be cancelled.");
