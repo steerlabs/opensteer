@@ -23,7 +23,13 @@ import { PeopleOnlyBadge } from "../components/team/team-marks.js";
 import { useToast } from "../components/toast.js";
 import { actionErrorMessage } from "../ui-utils.js";
 import { useTeams } from "./team-attachments.js";
-import { InvitePanel, useAgentLine, useConnectAgent, useTeamDialogs } from "./hosted-teams.js";
+import {
+  InvitePanel,
+  useAgentLine,
+  useConnectAgent,
+  useHoldsHostedTeam,
+  useTeamDialogs,
+} from "./hosted-teams.js";
 import { teamTile } from "./team-people.js";
 import { channelPath } from "./team-paths.js";
 import { useTeamRead, useTeamView, type TeamView } from "./team-view.js";
@@ -112,11 +118,13 @@ function ProfilePage({ view }: { readonly view: TeamView }) {
   const report = useReport();
   const line = useAgentLine(view.team);
   const connect = useConnectAgent(view.team);
+  const owner = view.snapshot.bootstrap?.member.role === "owner";
+  const hostedTeamId = view.snapshot.bootstrap?.hostedTeamId ?? null;
+  const holds = useHoldsHostedTeam(owner ? hostedTeamId : null);
   const me = view.me;
   if (!me) return null;
   const name = view.snapshot.bootstrap?.teamName ?? view.team.name;
-  const owner = view.snapshot.bootstrap?.member.role === "owner";
-  const hosted = (view.snapshot.bootstrap?.hostedTeamId ?? null) !== null;
+  const hosted = hostedTeamId !== null;
   const disconnect =
     coordination && line !== "none"
       ? () =>
@@ -179,7 +187,7 @@ function ProfilePage({ view }: { readonly view: TeamView }) {
           }
           title={`Leave ${name}`}
         />
-        {owner && hosted && coordination ? (
+        {owner && holds ? (
           <SettingsRow
             action={
               <button

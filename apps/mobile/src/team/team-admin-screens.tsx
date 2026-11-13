@@ -1,9 +1,10 @@
 import { unwrapRpcResult } from "@opensteer/client/host";
 import type { TeamSessionClient } from "@opensteer/client/team";
+import type { HostedTeamId } from "@opensteer/control-plane-protocol/hosted-teams";
 import { createId, DeploymentIdSchema, TeamGroupIdSchema, UserIdSchema } from "@opensteer/core";
 import type { HostApiCommandInput, TeamGroupSchema } from "@opensteer/protocol";
 import type { z } from "zod";
-import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useEffect, useState, type ReactNode } from "react";
 import { ActivityIndicator, Alert, FlatList, ScrollView, StyleSheet, View } from "react-native";
@@ -73,6 +74,27 @@ function useGroups(session: TeamSessionClient | null): {
   return { groups, reload: () => setGeneration((next) => next + 1) };
 }
 
+/**
+ * Whether Account says this Account holds the hosted team: only its holder may transfer it. Read
+ * again whenever the screen comes back into view, as after a transfer.
+ */
+function useHoldsHostedTeam(hostedTeamId: HostedTeamId | null): boolean {
+  const { account } = useTeamEntry();
+  const focused = useIsFocused();
+  const [held, setHeld] = useState<HostedTeamId | null>(null);
+  useEffect(() => {
+    if (!focused) return;
+    if (hostedTeamId === null) return;
+    const controller = new AbortController();
+    void account.hostedTeam(hostedTeamId, controller.signal).then(
+      (view) => !controller.signal.aborted && setHeld(view?.creator ? hostedTeamId : null),
+      () => undefined,
+    );
+    return () => controller.abort();
+  }, [account, focused, hostedTeamId]);
+  return hostedTeamId !== null && held === hostedTeamId;
+}
+
 /** A team's own page: the reader in it, their agent's link, and for admins the team itself. */
 export function TeamSettingsScreen(props: TeamParams): ReactNode {
   const { teamId } = props.route.params;
@@ -85,6 +107,7 @@ export function TeamSettingsScreen(props: TeamParams): ReactNode {
   const agent = useAgentConnection(teamId);
   const bootstrap = snapshot.bootstrap;
   const hostedTeamId = bootstrap?.member.role === "owner" ? (bootstrap.hostedTeamId ?? null) : null;
+  const holds = useHoldsHostedTeam(hostedTeamId);
   if (session === null || bootstrap === null || team === null) return <Waiting failure={failure} />;
   const words = agentWords(agent.intent, agent.linked, bootstrap.member.handle);
   const connected = words.tone === "done";
@@ -116,8 +139,7 @@ export function TeamSettingsScreen(props: TeamParams): ReactNode {
           onDisconnect: connected
             ? () => void coordinator.disconnectAgent(DeploymentIdSchema.parse(teamId)).catch(failed)
             : null,
-          onTransfer:
-            hostedTeamId === null ? null : () => navigation.navigate("TransferTeam", { teamId }),
+          onTransfer: holds ? () => navigation.navigate("TransferTeam", { teamId }) : null,
           onDelete:
             hostedTeamId === null ? null : () => navigation.navigate("DeleteTeam", { teamId }),
         }}

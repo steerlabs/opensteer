@@ -68,6 +68,7 @@ import { ControlPlaneError } from "../server/errors.js";
 import {
   abandonAccountDeletion,
   beginAccountDeletion,
+  renewAccountDeletion,
   deleteHostedTeams,
   heldHostedTeams,
   promoteReadyHostedTeams,
@@ -1535,13 +1536,17 @@ export class ControlPlaneStore {
     return account?.refreshToken ?? null;
   }
 
-  /** Refuses, or fences the Account for its deletion; see `beginAccountDeletion`. */
-  async beginAccountDeletion(accountId: ControlPlaneAccountId): Promise<void> {
-    await beginAccountDeletion(this.#database, accountId);
+  /** Refuses, or fences the Account for one deletion attempt; see `beginAccountDeletion`. */
+  beginAccountDeletion(accountId: ControlPlaneAccountId): Promise<string> {
+    return beginAccountDeletion(this.#database, accountId);
   }
 
-  async abandonAccountDeletion(accountId: ControlPlaneAccountId): Promise<void> {
-    await abandonAccountDeletion(this.#database, accountId);
+  renewAccountDeletion(accountId: ControlPlaneAccountId, attemptId: string): Promise<void> {
+    return renewAccountDeletion(this.#database, accountId, attemptId);
+  }
+
+  abandonAccountDeletion(accountId: ControlPlaneAccountId, attemptId: string): Promise<void> {
+    return abandonAccountDeletion(this.#database, accountId, attemptId);
   }
 
   /** Hosted teams that keep this Account from being deleted until each is deleted or transferred. */

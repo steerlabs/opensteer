@@ -46,7 +46,10 @@ type HostedTeamRow = Selectable<HostedTeamTable>;
 
 /** How long one bootstrap attempt may hold a team before another Account replica may take over. */
 const bootstrapLeaseMilliseconds = 2 * 60_000;
-/** How long a deletion that never finished, say in a crash, keeps fencing its Account. */
+/**
+ * How long a deletion fence lasts unless its attempt renews it, which it does before each step,
+ * so only an attempt that died, say in a crash, lets go.
+ */
 const accountDeletionFenceMilliseconds = 10 * 60_000;
 const unfinishedMessage = "Setup didn’t finish. Try again.";
 
@@ -122,12 +125,12 @@ export class HostedTeamStore {
       // The creator's row serializes their creates, so the cap and request replay both hold.
       const account = await transaction
         .selectFrom("users")
-        .select(["id", "deletionStartedAt"])
+        .select(["id", "deletionFencedUntil"])
         .where("id", "=", accountId)
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!account) throw new ControlPlaneError("unauthorized", "Account sign-in required");
-      if (deletionFenced(account.deletionStartedAt)) throw deletionInProgress();
+      if (deletionFenced(account.deletionFencedUntil)) throw deletionInProgress();
       const replayed = await transaction
         .selectFrom("hostedTeams")
         .selectAll()
@@ -214,12 +217,12 @@ export class HostedTeamStore {
       // FOR SHARE: waits for, or holds off, this Account's deletion fence.
       const account = await transaction
         .selectFrom("users")
-        .select("deletionStartedAt")
+        .select("deletionFencedUntil")
         .where("id", "=", accountId)
         .forShare()
         .executeTakeFirst();
       if (!account) throw new ControlPlaneError("unauthorized", "Account sign-in required");
-      if (deletionFenced(account.deletionStartedAt)) throw deletionInProgress();
+      if (deletionFenced(account.deletionFencedUntil)) throw deletionInProgress();
       const current = await transaction
         .selectFrom("hostedTeams")
         .selectAll()
@@ -898,12 +901,12 @@ async function transferHostedTeam(
   // FOR SHARE: holds off the recipient's deletion fence, and its row, until this commits.
   const recipient = await transaction
     .selectFrom("users")
-    .select("deletionStartedAt")
+    .select("deletionFencedUntil")
     .where("id", "=", input.to)
     .forShare()
     .executeTakeFirst();
   if (!recipient) throw new ControlPlaneError("not_found", "That person’s Account is gone.");
-  if (deletionFenced(recipient.deletionStartedAt)) throw deletionInProgress();
+  if (deletionFenced(recipient.deletionFencedUntil)) throw deletionInProgress();
   await transaction
     .updateTable("deployments")
     .set({ ownerAccountId: input.to })
@@ -925,14 +928,16 @@ async function transferHostedTeam(
 }
 
 /**
- * Starts deleting an Account, before anything else is undone: refuses while it holds a team
- * whose Host may have an owner (deleting or transferring that is the person's call), cancels its
- * teams still being set up, and fences it so nothing gives it a team until the deletion ends.
+ * Starts deleting an Account, before anything else is undone: refuses while another attempt is
+ * deleting it or while it holds a team whose Host may have an owner (deleting or transferring
+ * that is the person's call), cancels its teams still being set up, and fences it so nothing
+ * gives it a team until the deletion ends. Returns the attempt that holds the fence.
  */
 export async function beginAccountDeletion(
   database: Database,
   accountId: ControlPlaneAccountId,
-): Promise<void> {
+): Promise<string> {
+  const attemptId = randomUUID();
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const listed = await database
       .selectFrom("hostedTeams")
@@ -946,12 +951,21 @@ export async function beginAccountDeletion(
       for (const { slug } of listed)
         await lockDeploymentOrigin(transaction, hostedTeamOrigin(slug as HostedTeamSlug));
       const account = await transaction
-        .updateTable("users")
-        .set({ deletionStartedAt: new Date() })
+        .selectFrom("users")
+        .select(["deletionAttemptId", "deletionFencedUntil"])
         .where("id", "=", accountId)
-        .returning("id")
+        .forNoKeyUpdate()
         .executeTakeFirst();
       if (!account) throw new ControlPlaneError("not_found", "Account was not found");
+      if (account.deletionAttemptId !== attemptId && deletionFenced(account.deletionFencedUntil))
+        throw new ControlPlaneError("conflict", "Account deletion already in progress.", {
+          reason: "account-deletion-in-progress",
+        });
+      await transaction
+        .updateTable("users")
+        .set({ deletionAttemptId: attemptId, deletionFencedUntil: fenceUntil() })
+        .where("id", "=", accountId)
+        .execute();
       const teams = await transaction
         .selectFrom("hostedTeams")
         .select(["id", "slug", "bootstrapReceipt"])
@@ -967,20 +981,41 @@ export async function beginAccountDeletion(
       if (teams.length > 0) await deleteHostedTeams(transaction, { creatorAccountId: accountId });
       return true;
     });
-    if (fenced) return;
+    if (fenced) return attemptId;
   }
+  await abandonAccountDeletion(database, accountId, attemptId);
   throw new ControlPlaneError("unavailable", "Your teams changed. Try again.");
 }
 
-/** Ends a deletion that won't finish, so the Account may have teams again. */
+/** Keeps `attemptId`'s fence up for its next step; refuses once it lapsed or another took it. */
+export async function renewAccountDeletion(
+  database: Database,
+  accountId: ControlPlaneAccountId,
+  attemptId: string,
+): Promise<void> {
+  const renewed = await database
+    .updateTable("users")
+    .set({ deletionFencedUntil: fenceUntil() })
+    .where("id", "=", accountId)
+    .where("deletionAttemptId", "=", attemptId)
+    .where("deletionFencedUntil", ">", new Date())
+    .returning("id")
+    .executeTakeFirst();
+  if (!renewed)
+    throw new ControlPlaneError("unavailable", "Deleting your Account stopped. Try again.");
+}
+
+/** Ends `attemptId`'s deletion that won't finish, so the Account may have teams again. */
 export async function abandonAccountDeletion(
   database: Database,
   accountId: ControlPlaneAccountId,
+  attemptId: string,
 ): Promise<void> {
   await database
     .updateTable("users")
-    .set({ deletionStartedAt: null })
+    .set({ deletionAttemptId: null, deletionFencedUntil: null })
     .where("id", "=", accountId)
+    .where("deletionAttemptId", "=", attemptId)
     .execute();
 }
 
@@ -1111,8 +1146,12 @@ function hostedTeamsRemain(teams: readonly { readonly origin: string }[]) {
   );
 }
 
-function deletionFenced(startedAt: Date | null): boolean {
-  return startedAt !== null && Date.now() - startedAt.getTime() < accountDeletionFenceMilliseconds;
+function deletionFenced(until: Date | null): boolean {
+  return until !== null && until.getTime() > Date.now();
+}
+
+function fenceUntil(): Date {
+  return new Date(Date.now() + accountDeletionFenceMilliseconds);
 }
 
 function deletionInProgress() {

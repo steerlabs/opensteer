@@ -663,7 +663,9 @@ async function computerWithRemoteAccess(
       name: "Mac",
       reachability: "canonical",
       activeHostInstanceId: HostInstanceIdSchema.parse(`hst_${crypto.randomUUID()}`),
-      hostKeyFingerprint: HostKeyFingerprintSchema.parse(`sha256:${"B".repeat(43)}`),
+      hostKeyFingerprint: HostKeyFingerprintSchema.parse(
+        `sha256:${randomBytes(32).toString("base64url")}`,
+      ),
       canonicalOrigin: `https://${id.slice(4)}.connect.hosted-team-bootstrap.invalid`,
       lifecycle: "active",
       oidcClientId: null,
@@ -677,7 +679,7 @@ async function computerWithRemoteAccess(
       createdAt: now,
       credentialGeneration: 1,
       deploymentId: id,
-      dnsRecordId: "c".repeat(32),
+      dnsRecordId: randomBytes(16).toString("hex"),
       hostname: `${id.slice(4)}.connect.hosted-team-bootstrap.invalid`,
       lastCompletedOperationId: null,
       lastCompletedOperationKind: null,
@@ -687,13 +689,16 @@ async function computerWithRemoteAccess(
       operationKind: null,
       provider: "cloudflare",
       state: "ready",
-      tunnelId: "11111111-1111-4111-8111-111111111111",
+      tunnelId: crypto.randomUUID(),
       tunnelName: `opensteer-${id.slice(4)}`,
       updatedAt: now,
     })
     .execute();
   const revoked: DeploymentId[] = [];
-  const revoke = system.connectLifecycle.revoke.bind(system.connectLifecycle);
+  const current = system.connectLifecycle.revoke;
+  const revoke = vi.isMockFunction(current)
+    ? (current.getMockImplementation() ?? current)
+    : current.bind(system.connectLifecycle);
   vi.spyOn(system.connectLifecycle, "revoke").mockImplementation(
     async (owner, deploymentId, request) => {
       if (deploymentId !== id) return revoke(owner, deploymentId, request);
@@ -852,6 +857,92 @@ it("refuses new teams and incoming transfers while an Account is being deleted",
   expect(await system.accounts.selectFrom("hostedTeams").select("slug").execute()).toEqual([
     { slug: "acme" },
   ]);
+});
+
+/** Moves `accountId`'s deletion fence `minutes` closer to lapsing, as if that much time passed. */
+async function elapse(
+  system: Awaited<ReturnType<typeof startHostedTeam>>,
+  accountId: ControlPlaneAccountId,
+  minutes: number,
+) {
+  await system.accounts
+    .updateTable("users")
+    .set({
+      deletionFencedUntil: sql<Date>`deletion_fenced_until - make_interval(mins => ${minutes})`,
+    })
+    .where("id", "=", accountId)
+    .execute();
+}
+
+it("keeps a slow deletion fenced from start to finish, and refuses a second one meanwhile", async () => {
+  const system = await startHostedTeam();
+  await system.report();
+  await system.bootstrapper.runOnce();
+  await system.ready();
+  const sam = await listedPerson(system, "sam@example.test", "owner");
+  const refusals: unknown[] = [];
+  let turningOff = false;
+  // Turning off each of Sam's two computers takes six minutes, longer together than a fence lasts.
+  const slowly = async () => {
+    if (turningOff) return;
+    turningOff = true;
+    await elapse(system, sam, 6);
+    refusals.push(
+      await deleteAccountOf(system, sam).catch((error: unknown) => error),
+      await system.teams
+        .transfer(system.creator, system.created.id, sam)
+        .catch((error: unknown) => error),
+    );
+    turningOff = false;
+  };
+  await computerWithRemoteAccess(system, sam, slowly);
+  await computerWithRemoteAccess(system, sam, slowly);
+
+  await deleteAccountOf(system, sam);
+  const inProgress = expect.objectContaining({ reason: "account-deletion-in-progress" });
+  const alreadyDeleting = expect.objectContaining({
+    message: "Account deletion already in progress.",
+    reason: "account-deletion-in-progress",
+  });
+  expect(refusals).toEqual([alreadyDeleting, inProgress, alreadyDeleting, inProgress]);
+  expect(
+    await system.accounts.selectFrom("users").select("id").where("id", "=", sam).execute(),
+  ).toEqual([]);
+  expect((await teamAccountState(system)).team.creatorAccountId).toBe(system.creator);
+});
+
+it("lets a dead deletion's fence lapse, and an attempt clear only its own fence", async () => {
+  const system = await startHostedTeam();
+  await system.report();
+  await system.bootstrapper.runOnce();
+  await system.ready();
+  const sam = await listedPerson(system, "sam@example.test", "owner");
+  const create = (slug: string) =>
+    system.teams.create(sam, { requestId: crypto.randomUUID(), name: slug, slug });
+
+  // An attempt whose replica dies keeps the Account fenced for a while, then lets go.
+  const dead = await system.store.beginAccountDeletion(sam);
+  await expect(system.store.beginAccountDeletion(sam)).rejects.toMatchObject({
+    reason: "account-deletion-in-progress",
+  });
+  await elapse(system, sam, 11);
+  const live = await system.store.beginAccountDeletion(sam);
+  // The dead attempt wakes: it can't carry on, and its cleanup leaves the live fence alone.
+  await expect(system.store.renewAccountDeletion(sam, dead)).rejects.toMatchObject({
+    code: "unavailable",
+  });
+  await system.store.abandonAccountDeletion(sam, dead);
+  await expect(create("sams")).rejects.toMatchObject({ reason: "account-deletion-in-progress" });
+  await expect(system.teams.transfer(system.creator, system.created.id, sam)).rejects.toMatchObject(
+    { reason: "account-deletion-in-progress" },
+  );
+  // A live attempt that falls behind can't pick its lapsed fence back up either.
+  await elapse(system, sam, 11);
+  await expect(system.store.renewAccountDeletion(sam, live)).rejects.toMatchObject({
+    code: "unavailable",
+  });
+  await system.store.abandonAccountDeletion(sam, live);
+  await expect(create("sams")).resolves.toMatchObject({ stage: "reserving" });
 });
 
 it("transfers a team only by its creator, only to an owner its own Host confirms", async () => {

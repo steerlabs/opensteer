@@ -14,7 +14,9 @@ and makes the cluster match, so Account never holds cluster credentials. Account
 Google-signed ID token for `OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL` with its own public URL as
 audience, and offers no hosted teams without that setting. Turn it on in
 [account.env](../deploy/account/account.env) only after a Stable promotion has deployed the
-provisioner, or teams wait at `starting`.
+provisioner, or teams wait at `starting`. Also wait until every Account replica runs a release
+that refuses Account deletion while it holds a hosted team: an older replica deletes a creator's
+hosted teams with their Account, even teams other people now own.
 
 Addresses are never reused: a deleted team stays as a tombstone, and the database tombstones a team
 whenever its creator's Account is deleted, whichever release deletes it.
@@ -29,8 +31,10 @@ also sets a deletion fence on the Account and cancels its teams still being set 
 team's origin lock so no adoption lands after. Only then does deletion turn off remote access, so a
 refusal never leaves the person without it; a failure after that point keeps the remote-access
 warning. A fenced Account can't create or retry a team or be handed one, and the final delete
-rechecks under the Account row lock. A deletion that fails clears the fence; one that crashes stops fencing after
-ten minutes.
+rechecks under the Account row lock. Each fence belongs to one deletion attempt: another attempt
+is refused while it lasts, and the attempt renews it before each step, so only an attempt that
+died (a crashed replica) lets it lapse, after ten minutes. An attempt that fails, or finds its fence
+lapsed, clears only its own.
 
 Transfer moves the team, its Account Deployment, that Deployment's Account sign-in client and the
 recipient's hide marker together, under the origin lock. Only the Account holding the team (its

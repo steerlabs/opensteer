@@ -41,8 +41,9 @@ export class AccountDeletionService {
   async delete(accountId: ControlPlaneAccountId): Promise<void> {
     // Before anything is undone: a hosted team the Account holds refuses here, and from here on
     // nothing can give it one.
+    let attemptId: string;
     try {
-      await this.#store.beginAccountDeletion(accountId);
+      attemptId = await this.#store.beginAccountDeletion(accountId);
     } catch (error) {
       if (isNotFound(error)) return;
       throw error;
@@ -51,6 +52,8 @@ export class AccountDeletionService {
     try {
       for (const deployment of await this.#store.ownedDeployments(accountId)) {
         if (deployment.connectState === null || deployment.connectState === "revoked") continue;
+        // Each step renews the fence, so a slow deletion keeps it and only a dead one lets go.
+        await this.#store.renewAccountDeletion(accountId, attemptId);
         try {
           await this.#connectLifecycle.revoke(accountId, deployment.id, {
             hostInstanceId: deployment.activeHostInstanceId,
@@ -68,9 +71,10 @@ export class AccountDeletionService {
       appleRefreshToken = this.#apple
         ? await this.#store.oauthRefreshToken(accountId, "apple")
         : null;
+      await this.#store.renewAccountDeletion(accountId, attemptId);
       await this.#store.deleteAccount(accountId);
     } catch (error) {
-      await this.#store.abandonAccountDeletion(accountId).catch(() => undefined);
+      await this.#store.abandonAccountDeletion(accountId, attemptId).catch(() => undefined);
       if (isNotFound(error)) return;
       throw error;
     }

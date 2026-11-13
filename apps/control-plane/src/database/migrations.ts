@@ -614,13 +614,15 @@ export const hostedTeamsMigration: Migration = {
 
 /**
  * While an Account is being deleted, nothing may give it a hosted team. Add-only: a previous
- * release never sets it, and deletes the row it sits on.
+ * release never sets them, and deletes the row they sit on.
  */
 const accountDeletionFenceMigration: Migration = {
   async up(database) {
-    await sql`alter table public.users add column deletion_started_at timestamptz`.execute(
-      database,
-    );
+    await sql`
+      alter table public.users
+        add column deletion_attempt_id uuid,
+        add column deletion_fenced_until timestamptz
+    `.execute(database);
   },
 };
 

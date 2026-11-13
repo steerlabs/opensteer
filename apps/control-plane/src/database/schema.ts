@@ -49,8 +49,9 @@ export interface UserTable {
   image: string | null;
   createdAt: Timestamp;
   updatedAt: Timestamp;
-  /** Set while this Account's deletion runs; see `beginAccountDeletion`. */
-  deletionStartedAt: NullableTimestamp;
+  /** The deletion attempt holding this Account's fence; see `beginAccountDeletion`. */
+  deletionAttemptId: string | null;
+  deletionFencedUntil: NullableTimestamp;
 }
 
 export interface AuthAccountTable {

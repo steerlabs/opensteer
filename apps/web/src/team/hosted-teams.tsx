@@ -28,6 +28,7 @@ import type { ControlPlaneAccountId } from "@opensteer/control-plane-protocol";
 import {
   hostedTeamsDomain,
   type HostedTeamAvailability,
+  type HostedTeamId,
   type HostedTeamOwner,
   type HostedTeamSlug,
   type HostedTeamView,
@@ -62,6 +63,8 @@ interface TeamDialogs {
   readonly openInvite: (teamId: string) => void;
   readonly openDelete: (teamId: string) => void;
   readonly openTransfer: (teamId: string) => void;
+  /** Counts transfers made here, so what reads who holds a team reads it again. */
+  readonly transfers: number;
 }
 
 const TeamDialogsContext = createContext<TeamDialogs>({
@@ -70,6 +73,7 @@ const TeamDialogsContext = createContext<TeamDialogs>({
   openInvite: () => undefined,
   openDelete: () => undefined,
   openTransfer: () => undefined,
+  transfers: 0,
 });
 
 export function useTeamDialogs(): TeamDialogs {
@@ -95,6 +99,23 @@ export function useCoordinatorSnapshot(): TeamCoordinatorSnapshot {
   );
 }
 
+/** Whether Account says this Account holds the hosted team: only its holder may transfer it. */
+export function useHoldsHostedTeam(hostedTeamId: HostedTeamId | null): boolean {
+  const account = useTeams().coordination?.account ?? null;
+  const { transfers } = useTeamDialogs();
+  const [held, setHeld] = useState<HostedTeamId | null>(null);
+  useEffect(() => {
+    if (!account || hostedTeamId === null) return;
+    const controller = new AbortController();
+    void account.hostedTeam(hostedTeamId, controller.signal).then(
+      (view) => !controller.signal.aborted && setHeld(view?.creator ? hostedTeamId : null),
+      () => undefined,
+    );
+    return () => controller.abort();
+  }, [account, hostedTeamId, transfers]);
+  return hostedTeamId !== null && held === hostedTeamId;
+}
+
 /**
  * Create, join, invite and delete, opened from wherever the person is; also where entering a team
  * navigates and where a team that became ready in the background is announced.
@@ -104,6 +125,7 @@ export function TeamDialogsProvider({ children }: { readonly children: ReactNode
   const navigate = useNavigate();
   const toast = useToast();
   const [open, setOpen] = useState<OpenDialog | null>(null);
+  const [transfers, setTransfers] = useState(0);
   useEffect(() => {
     navigator.current = (path) => {
       const team = /^\/teams\/([^/]+)\//u.exec(path)?.[1];
@@ -138,8 +160,9 @@ export function TeamDialogsProvider({ children }: { readonly children: ReactNode
       openInvite: (teamId) => setOpen({ kind: "invite", teamId }),
       openDelete: (teamId) => setOpen({ kind: "delete", teamId }),
       openTransfer: (teamId) => setOpen({ kind: "transfer", teamId }),
+      transfers,
     }),
-    [],
+    [transfers],
   );
   const close = () => setOpen(null);
   const watched = snapshot.hostedTeams.find((team) => team.id === snapshot.watching) ?? null;
@@ -152,7 +175,11 @@ export function TeamDialogsProvider({ children }: { readonly children: ReactNode
       {open?.kind === "invite" ? <InviteDialog onClose={close} teamId={open.teamId} /> : null}
       {open?.kind === "delete" ? <DeleteTeamDialog onClose={close} teamId={open.teamId} /> : null}
       {open?.kind === "transfer" ? (
-        <TransferTeamDialog onClose={close} teamId={open.teamId} />
+        <TransferTeamDialog
+          onClose={close}
+          onTransferred={() => setTransfers((count) => count + 1)}
+          teamId={open.teamId}
+        />
       ) : null}
     </TeamDialogsContext>
   );
@@ -1088,9 +1115,11 @@ export function WelcomeCard({ team }: { readonly team: TeamAttachment }) {
  */
 function TransferTeamDialog({
   onClose,
+  onTransferred,
   teamId,
 }: {
   readonly onClose: () => void;
+  readonly onTransferred: () => void;
   readonly teamId: string;
 }) {
   const { coordination, teams } = useTeams();
@@ -1126,6 +1155,7 @@ function TransferTeamDialog({
     void coordinator.transferHostedTeam(hostedTeamId, person.accountId).then(
       () => {
         toast.success(`${person.displayName || person.email} now holds ${name}`);
+        onTransferred();
         onClose();
       },
       (failure: unknown) => {
