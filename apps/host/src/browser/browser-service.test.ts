@@ -3060,13 +3060,21 @@ describe("BrowserService", () => {
       Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: "page-2", frames: false })),
       false,
     );
-    expect(await runtime.nextCommand()).toEqual({
+    expect(
+      await withTimeout(runtime.nextCommand(), 1_000, {
+        timeoutError: () => new Error("The suspended tab's subscribe never reached the runtime"),
+      }),
+    ).toEqual({
       type: "stream.subscribe",
       surfaceId: "page-2",
       frames: false,
     });
     asleep.close();
-    expect(await runtime.nextCommand()).toEqual({
+    expect(
+      await withTimeout(runtime.nextCommand(), 1_000, {
+        timeoutError: () => new Error("The suspended tab's unsubscribe never reached the runtime"),
+      }),
+    ).toEqual({
       type: "stream.unsubscribe",
       surfaceId: "page-2",
     });
