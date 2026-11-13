@@ -1,4 +1,4 @@
-import { createContext, useContext, useMemo, useState } from "react";
+import { useContext, useState, type ReactNode } from "react";
 import type { Request } from "@opensteer/core";
 import { withDeviceSwitch } from "@opensteer/client/computers";
 import type { HostClient } from "@opensteer/client/host";
@@ -16,6 +16,11 @@ import {
   useMacosGrants,
 } from "./devices/macos-permission-rows.js";
 import { SetupList } from "./first-run/setup-list.js";
+import {
+  DeviceGrantDock,
+  DeviceGrantFollowUpContext,
+  type DeviceGrantFollowUp,
+} from "./workspace/device-grant-follow-ups.js";
 
 export function deviceAccessRequestTitle(payload: {
   readonly access: DeviceCapability;
@@ -48,51 +53,32 @@ export async function turnOnDeviceAccess(
   throw new Error("It changed on another device. Look again and try once more.");
 }
 
-/** A device switch just turned on here whose macOS grant is still missing. */
-export interface DeviceGrantFollowUp {
-  readonly requestId: string;
-  readonly machineName: string;
-  readonly access: DeviceCapability;
-}
-
-const DeviceGrantFollowUpContext = createContext<{
-  readonly retain: (followUp: DeviceGrantFollowUp) => void;
-  readonly release: (requestId: string) => void;
-} | null>(null);
-
 /**
- * Fulfilling a device.access Request resolves it, which takes its card out of
- * the dock. The dock keeps the macOS grants that switch still needs here, so
- * "Turn it on" carries on into them where the person pressed it.
+ * The follow-ups a surface shows: those pressed in this conversation's dock
+ * whose Request is no longer on it, narrowed to one subagent in its own view.
  */
-export function useDeviceGrantFollowUps(liveRequestIds: readonly string[]) {
-  const [followUps, setFollowUps] = useState<readonly DeviceGrantFollowUp[]>([]);
-  const context = useMemo(
-    () => ({
-      retain: (followUp: DeviceGrantFollowUp) =>
-        setFollowUps((current) => [
-          ...current.filter((entry) => entry.requestId !== followUp.requestId),
-          followUp,
-        ]),
-      release: (requestId: string) =>
-        setFollowUps((current) => current.filter((entry) => entry.requestId !== requestId)),
-    }),
-    [],
+export function useDeviceGrantFollowUps(scope: {
+  readonly threadId: string;
+  readonly nodeId?: string | undefined;
+  readonly liveRequestIds?: readonly string[];
+}): ReactNode {
+  const store = useContext(DeviceGrantFollowUpContext);
+  const { deploymentId } = useShell().snapshot;
+  const shown = (store?.followUps ?? []).filter(
+    (entry) =>
+      entry.deploymentId === deploymentId &&
+      entry.threadId === scope.threadId &&
+      (scope.nodeId === undefined || entry.nodeId === scope.nodeId) &&
+      !scope.liveRequestIds?.includes(entry.requestId),
   );
-  const shown = followUps.filter((entry) => !liveRequestIds.includes(entry.requestId));
-  const node =
-    shown.length > 0 ? (
-      <>
-        {shown.map((followUp) => (
-          <DeviceGrantFollowUpCard
-            followUp={followUp}
-            key={followUp.requestId}
-            onDone={() => context.release(followUp.requestId)}
-          />
-        ))}
-      </>
-    ) : null;
-  return { Provider: DeviceGrantFollowUpContext.Provider, context, node };
+  if (!store || shown.length === 0) return null;
+  return shown.map((followUp) => (
+    <DeviceGrantFollowUpCard
+      followUp={followUp}
+      key={followUp.requestId}
+      onDone={() => store.release(followUp.requestId)}
+    />
+  ));
 }
 
 function DeviceGrantFollowUpCard({
@@ -143,7 +129,7 @@ function DeviceGrantFollowUpCard({
 /**
  * An agent asking for a capability that is off on one device. "Turn it on"
  * flips the switch; where this window is that Mac, any macOS grant it still
- * needs follows in the dock, after the Request itself has resolved. "Not now"
+ * needs follows where it was pressed, after the Request itself has resolved. "Not now"
  * sticks for this task.
  */
 export function ThreadDeviceAccessAction({
@@ -153,8 +139,9 @@ export function ThreadDeviceAccessAction({
   readonly disabled?: boolean;
   readonly request: Request;
 }) {
-  const { desktopBridge, hostClient, reportActionError } = useShell();
+  const { desktopBridge, hostClient, reportActionError, snapshot } = useShell();
   const followUps = useContext(DeviceGrantFollowUpContext);
+  const dockThreadId = useContext(DeviceGrantDock);
   const hereId = useHereId();
   const [pending, setPending] = useState<"on" | "decline" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -174,7 +161,16 @@ export function ThreadDeviceAccessAction({
         onThisMac && desktopBridge !== null
           ? missingMacosGrant(await readMacosGrants(desktopBridge), access)
           : false;
-      if (followUp) followUps?.retain({ access, machineName, requestId: request.id });
+      if (followUp)
+        followUps?.retain({
+          access,
+          deploymentId: snapshot.deploymentId,
+          machineId,
+          machineName,
+          nodeId: request.originatingNodeId ?? null,
+          requestId: request.id,
+          threadId: dockThreadId ?? request.originatingThreadId,
+        });
       await turnOnDeviceAccess(hostClient, machineId, access);
     } catch (reason) {
       if (followUp) followUps?.release(request.id);

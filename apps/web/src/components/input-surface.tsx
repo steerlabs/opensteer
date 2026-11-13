@@ -18,6 +18,7 @@ import { Icon, type IconName } from "./icon.js";
 import { IntegrationInstallReview } from "./integration-install-review.js";
 import { AgentProposedChip } from "./integrations/agent-proposed-chip.js";
 import { AreaLink } from "./workspace/area-link.js";
+import { DeviceGrantDock } from "./workspace/device-grant-follow-ups.js";
 import { useComposerContext } from "./workspace/composer-context.js";
 import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 import { TaskMark, TaskBadge } from "./workspace/task-mark.js";
@@ -308,6 +309,7 @@ export function RequestStack({
   onOpen,
   onUnfold,
   openId,
+  subagentNodeId,
   threadId,
 }: {
   /** Names the subagent that asked; its own view already is that subagent. */
@@ -321,15 +323,21 @@ export function RequestStack({
   readonly onUnfold?: () => void;
   /** The request the reader opened, or was sent to; the first one otherwise. */
   readonly openId: string | null;
+  /** This is that subagent's own view: only the follow-ups it asked for. */
+  readonly subagentNodeId?: string;
   readonly threadId: string;
 }) {
-  const followUps = useDeviceGrantFollowUps(items.map((item) => item.surface.request.id));
+  const followUps = useDeviceGrantFollowUps({
+    liveRequestIds: items.map((item) => item.surface.request.id),
+    nodeId: subagentNodeId,
+    threadId,
+  });
   const index = Math.max(
     0,
     items.findIndex((item) => item.surface.request.id === openId),
   );
   const open = items[index];
-  if (!open) return followUps.node ? <div className="request-stack">{followUps.node}</div> : null;
+  if (!open) return followUps ? <div className="request-stack">{followUps}</div> : null;
   if (folded)
     return (
       <div className="request-stack">
@@ -349,7 +357,7 @@ export function RequestStack({
     ) : null;
   return (
     <div className="request-stack">
-      {followUps.node}
+      {followUps}
       <div
         className={`${inputSurfaceClass(open.surface)} request-card`}
         key={open.surface.request.id}
@@ -374,13 +382,13 @@ export function RequestStack({
         ) : pager ? (
           <div className="request-card__by">{pager}</div>
         ) : null}
-        <followUps.Provider value={followUps.context}>
+        <DeviceGrantDock value={threadId}>
           <RequestPanel
             disabled={disabled}
             surface={open.surface}
             threadId={open.source ? open.surface.request.originatingThreadId : threadId}
           />
-        </followUps.Provider>
+        </DeviceGrantDock>
       </div>
     </div>
   );
