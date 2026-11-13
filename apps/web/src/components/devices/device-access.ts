@@ -1,11 +1,14 @@
 import { deviceAccess, type DeviceInitialAccess, type MachineSummary } from "@opensteer/protocol";
-import { hostsDeployment } from "@opensteer/client/computers";
+import {
+  deviceAccessRows,
+  hostsDeployment,
+  type DeviceAccessRow,
+  type DeviceCapability,
+} from "@opensteer/client/computers";
 import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
 import { isAgentPhone } from "@opensteer/client/integrations";
 
-export type DeviceCapability = "browser" | "apps" | "files";
-
-export const deviceCapabilities: readonly DeviceCapability[] = ["browser", "apps", "files"];
+export type { DeviceCapability };
 
 export const capabilityLabel: Readonly<Record<DeviceCapability, string>> = {
   browser: "Browser",
@@ -26,58 +29,28 @@ const capabilityDetail: Readonly<Record<DeviceCapability, string>> = {
   files: "Read files and run commands",
 };
 
-export const homeFixedDetail = "Always on. Your agent runs here.";
-export const olderHostDetail = "Always on. Update Opensteer on your Home Mac to switch it off.";
+const homeFixedDetail = "Always on. Your agent runs here.";
+const olderHostDetail = "Always on. Update Opensteer on your Home Mac to switch it off.";
 
 export type DeviceSwitch =
-  /** Home's own browser and files, or a switch an older Host can't store. */
-  | {
-      readonly capability: DeviceCapability;
-      readonly kind: "fixed";
-      readonly reason: "home" | "older-host";
-    }
+  | Extract<DeviceAccessRow, { kind: "fixed" }>
   | {
       readonly capability: DeviceCapability;
       readonly kind: "switch";
       readonly on: boolean;
-      /** On, but macOS has not granted what it needs yet. */
       readonly needsMacos: boolean;
     };
 
-/**
- * The "Your agent can use" rows a device page shows, in order.
- *
- * What a device can offer at all is its enrollment's fixed ceiling, so a
- * capability its grant never allowed has no row rather than a switch that
- * cannot work. Apps is the integrations grant: computer use on a Mac, a
- * phone's data apps, and MCP a computer hosts on any platform. Home runs the
- * agent, so its browser and files are fixed. Browser and Apps are switches
- * only on a Host that says `devices-v1`; an older one never gates them.
- */
 export function deviceSwitches(
   machine: MachineSummary,
   devicesAvailable: boolean,
 ): readonly DeviceSwitch[] {
-  const policy = machine.access?.policy ?? null;
-  const switches = policy ? deviceAccess(policy) : null;
-  const home = hostsDeployment(machine);
-  const offered: Record<DeviceCapability, boolean> = {
-    browser: home || machine.allowedModules.includes("browser"),
-    apps: isAgentPhone(machine) || machine.allowedModules.includes("integrations"),
-    files: home || (machine.allowedModules.includes("shell") && machine.device?.form !== "phone"),
-  };
-  return deviceCapabilities
-    .filter((capability) => offered[capability])
-    .flatMap((capability): DeviceSwitch[] => {
-      if (home && capability !== "apps") return [{ capability, kind: "fixed", reason: "home" }];
-      if (!devicesAvailable && capability !== "files")
-        return [{ capability, kind: "fixed", reason: "older-host" }];
-      if (!switches) return [];
-      const on = switches[capability];
-      return [
-        { capability, kind: "switch", needsMacos: on && needsMacos(machine, capability), on },
-      ];
-    });
+  return deviceAccessRows(machine, devicesAvailable).flatMap((row): DeviceSwitch[] => {
+    if (row.kind === "fixed") return [row];
+    if (row.on === null) return [];
+    const { capability, on } = row;
+    return [{ capability, kind: "switch", needsMacos: on && needsMacos(machine, capability), on }];
+  });
 }
 
 function needsMacos(machine: MachineSummary, capability: DeviceCapability): boolean {

@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import { createId, type AuthSessionSummary } from "@opensteer/core";
 import { MachineSummarySchema, deviceAccess } from "@opensteer/protocol";
 import { withDeviceSwitch } from "./device-access-request.js";
-import { deviceMembership, devicesView, type DeviceMembershipInput } from "./devices.js";
+import {
+  deviceAccessRows,
+  deviceMembership,
+  devicesView,
+  type DeviceMembershipInput,
+} from "./devices.js";
 const base: DeviceMembershipInput = {
   applicable: true,
   hosting: false,
@@ -167,5 +172,71 @@ it("turns a switch off and on again without widening what was saved underneath",
     forwarding: false,
     shares: saved.shares,
     browser: false,
+  });
+});
+
+describe("device access rows", () => {
+  const unreported = { checkedAt: null, detail: null, readiness: "unavailable" as const };
+  const device = (input: {
+    readonly allowedModules: readonly string[];
+    readonly modules: readonly string[];
+    readonly device: { readonly form: string; readonly platform: string; readonly app?: string };
+    readonly status?: "online" | "offline";
+  }) =>
+    MachineSummarySchema.parse({
+      ...machine("rnr_device", "computer"),
+      access: {
+        activeSessions: [],
+        ownerReachAvailable: true,
+        revision: 1,
+        policy: { apps: false, reach: "owner", commands: true, forwarding: true, shares: [] },
+      },
+      allowedModules: input.allowedModules,
+      device: input.device,
+      modules: Object.fromEntries(input.modules.map((name) => [name, unreported])),
+      status: input.status ?? "online",
+    });
+  const rows = (summary: ReturnType<typeof device>) =>
+    deviceAccessRows(summary, true).map((row) => row.capability);
+
+  it("offers Apps only where integrations are advertised, not merely granted", () => {
+    const phone = { form: "phone", platform: "android", app: "opensteer" };
+    expect(
+      rows(
+        device({
+          allowedModules: ["browser", "integrations"],
+          modules: ["browser"],
+          device: phone,
+        }),
+      ),
+    ).toEqual(["browser"]);
+    expect(
+      rows(
+        device({
+          allowedModules: ["browser", "integrations"],
+          modules: ["browser", "integrations"],
+          device: { ...phone, platform: "ios" },
+        }),
+      ),
+    ).toEqual(["browser", "apps"]);
+    expect(
+      rows(
+        device({
+          allowedModules: ["browser", "integrations"],
+          modules: ["integrations"],
+          device: { form: "phone", platform: "android" },
+        }),
+      ),
+    ).toEqual(["browser", "apps"]);
+    const server = device({
+      allowedModules: ["integrations", "shell"],
+      modules: ["integrations", "shell"],
+      device: { form: "server", platform: "linux" },
+      status: "offline",
+    });
+    expect(deviceAccessRows(server, true)).toEqual([
+      { capability: "apps", kind: "switch", on: false },
+      { capability: "files", kind: "switch", on: true },
+    ]);
   });
 });

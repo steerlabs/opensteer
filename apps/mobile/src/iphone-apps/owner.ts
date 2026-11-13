@@ -39,7 +39,6 @@ export interface IphoneAppsOwner {
     stopped: IphoneAppsStopped,
     dispatch: HostClient["dispatch"] | null,
   ): Promise<IphoneLeaveOutcome>;
-  /** Whether this Deployment's session open here is bound to this phone. */
   sessionBound(deploymentId: string): boolean;
   /** The Host removed this phone (4010); the listener fences that Deployment's sign-in. */
   onRemoved(listener: (deploymentId: string) => void): () => void;

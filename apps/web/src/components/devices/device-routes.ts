@@ -19,7 +19,6 @@ export function deviceAppRoute(input: {
   return `${deviceRoute(input.runnerId)}#${computerAppAnchorId(input.definitionId)}`;
 }
 
-/** The definition a `#computer-app-…` fragment names, if it names one. */
 export function computerAppIdFromHash(hash: string): string | null {
   const bare = hash.startsWith("#") ? hash.slice(1) : hash;
   const prefix = computerAppAnchorId("");

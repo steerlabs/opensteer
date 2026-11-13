@@ -49,10 +49,6 @@ const bare = (top: number, bottom: number) => [
   listRowInsets({ bottom, leading: 0, top, trailing: 0 }),
 ];
 
-/**
- * Before any Opensteer exists: a system form, like Settings. The Mac link is
- * the way forward; a code on a Mac that already has Opensteer is the other.
- */
 export function Welcome(props: WelcomeProps): ReactNode {
   const view = welcomePresentation(props);
   const link = view.macLink;

@@ -20,14 +20,12 @@ export const DeviceGrantFollowUpContext = createContext<{
   readonly release: (requestId: string) => void;
 } | null>(null);
 
-/** The conversation a request card is docked in. */
 export const DeviceGrantDock = createContext<string | null>(null);
 
 /**
- * Fulfilling a device.access Request resolves it, which takes its card, and
- * often the whole surface that held it (a subagent's footer, Voice's ask),
- * off the screen. The workspace keeps the macOS grants that switch still
- * needs here, so "Turn it on" carries on into them wherever it was pressed.
+ * Fulfilling a device.access Request takes its card, and often its whole surface (a subagent's
+ * footer, Voice's ask), off the screen. The workspace keeps the macOS grants the switch still
+ * needs, so "Turn it on" carries on into them wherever it was pressed.
  */
 export function DeviceGrantFollowUpProvider({ children }: { readonly children: ReactNode }) {
   const [followUps, setFollowUps] = useState<readonly DeviceGrantFollowUp[]>([]);

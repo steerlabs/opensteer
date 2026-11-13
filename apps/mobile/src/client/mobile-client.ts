@@ -2374,7 +2374,11 @@ export class MobileClient {
   async readAttention(
     deploymentId: DeploymentId | string,
     deadlineMs = 3_000,
-  ): Promise<{ readonly needsYou: number; readonly unread: boolean } | null> {
+  ): Promise<{
+    readonly homeName?: string | null | undefined;
+    readonly needsYou: number;
+    readonly unread: boolean;
+  } | null> {
     const id = DeploymentIdSchema.parse(deploymentId);
     // The computer on screen answers from its own snapshot.
     if (id === this.#state.selection.deploymentId || id === this.#attachedDeploymentId) return null;

@@ -1,9 +1,5 @@
 import { ActionSheetIOS, Alert, Platform } from "react-native";
 
-/**
- * A destructive choice confirmed as each platform does: an action sheet on
- * iOS, a Material dialog on Android. Cancel is always the safe default.
- */
 export function confirmDestructive(input: {
   readonly title: string;
   readonly message: string;

@@ -30,7 +30,6 @@ import {
 
 type SetupProps = StaticScreenProps<{ readonly deploymentId: string }>;
 
-/** Set up this phone: a full-screen step pushed over Home after sign-in, with no Back. */
 export function SetUpPhoneScreen({ route }: SetupProps): ReactNode {
   const hostClient = useAttachedHost(route.params.deploymentId);
   return hostClient === null ? (

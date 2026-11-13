@@ -1,4 +1,5 @@
 import { useNavigation, useRoute } from "@react-navigation/native";
+import { hostsDeployment } from "@opensteer/client/computers";
 import type { AccountDeploymentDirectoryUnavailable } from "@opensteer/client/connections";
 import {
   memo,
@@ -49,6 +50,8 @@ import { UnreadDot } from "../threads/task-row.js";
 import {
   attentionReads,
   computerBadge,
+  homeLine,
+  sameAttention,
   type AttentionBadge,
   type ComputerAttention,
 } from "./computer-signals.js";
@@ -149,9 +152,12 @@ const DeploymentListRow = memo(function DeploymentListRow(props: {
             <AppText role="caption" tone="muted">
               ·
             </AppText>
-            <AppText numberOfLines={1} role="caption" style={styles.kind} tone="muted">
-              {row.kindLabel}
-            </AppText>
+            <RowKind
+              current={props.current}
+              kindLabel={row.kindLabel}
+              name={row.name}
+              read={props.attention}
+            />
           </View>
           {detail === null ? null : (
             <AppText numberOfLines={2} role="caption" tone="muted">
@@ -237,22 +243,53 @@ function ShownBadge(props: { readonly host: HostClient }): ReactNode {
   return <Badge badge={computerBadge({ current: true, shown, read: undefined })} />;
 }
 
+function RowKind(props: {
+  readonly current: boolean;
+  readonly kindLabel: string;
+  readonly name: string;
+  readonly read: ComputerAttention | null | undefined;
+}): ReactNode {
+  const host = useSelectedHostClient();
+  if (props.current && host !== null) return <ShownKind {...props} host={host} />;
+  return <KindText text={homeLine(props.read, props.name) ?? props.kindLabel} />;
+}
+
+function ShownKind(props: {
+  readonly host: HostClient;
+  readonly kindLabel: string;
+  readonly name: string;
+}): ReactNode {
+  const shown = useHostSelector(props.host, shownAttention, sameAttention);
+  return <KindText text={homeLine(shown, props.name) ?? props.kindLabel} />;
+}
+
+function KindText(props: { readonly text: string }): ReactNode {
+  return (
+    <AppText numberOfLines={1} role="caption" style={styles.kind} tone="muted">
+      {props.text}
+    </AppText>
+  );
+}
+
 let shownHeld: { readonly source: HostSnapshot; readonly value: ComputerAttention } | null = null;
 function shownAttention(snapshot: HostSnapshot): ComputerAttention {
-  if (shownHeld !== null && sameTaskListSource(shownHeld.source, snapshot)) {
-    const needsYou = snapshot.needsYou?.count ?? 0;
-    if (needsYou === shownHeld.value.needsYou) return shownHeld.value;
-  }
+  const needsYou = snapshot.needsYou?.count ?? 0;
+  const homeName = snapshot.machines.find(hostsDeployment)?.name ?? null;
+  if (
+    shownHeld !== null &&
+    sameTaskListSource(shownHeld.source, snapshot) &&
+    needsYou === shownHeld.value.needsYou &&
+    homeName === shownHeld.value.homeName
+  )
+    return shownHeld.value;
   const value = {
-    needsYou: snapshot.needsYou?.count ?? 0,
+    homeName,
+    needsYou,
     unread: taskList(snapshot).ready.some((row) => row.unread),
   };
   shownHeld = { source: snapshot, value };
   return value;
 }
-
-const sameAttention = (left: ComputerAttention, right: ComputerAttention): boolean =>
-  left.needsYou === right.needsYou && left.unread === right.unread;
 
 function Badge(props: { readonly badge: AttentionBadge }): ReactNode {
   const { badge } = props;
@@ -697,11 +734,7 @@ export function DeploymentsScreen(): ReactNode {
   );
 }
 
-/**
- * Signed in, with no Opensteer yet: the Account is read again while this is on
- * screen and whenever the app returns, so it advances by itself once the Mac
- * has one.
- */
+/** The Account is read again while this is on screen and on return, so it advances by itself. */
 function SignedInWaiting(props: {
   readonly children: ReactNode;
   readonly onRefresh: () => void;

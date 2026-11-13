@@ -6,7 +6,7 @@ import { useOptionalShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 
 const dismissedKey = "opensteer.web-tab-notice.v1";
-export const macAppUrl = "https://opensteer.com/download";
+const macAppUrl = "https://opensteer.com/download";
 
 const selectHomeName = (snapshot: HostSnapshot) =>
   snapshot.machines.find(hostsDeployment)?.name ?? null;
@@ -19,11 +19,7 @@ function dismissed(): boolean {
   }
 }
 
-/**
- * A web browser is never a device: it says so once, where it first matters,
- * and stays out of the way after it is dismissed. Devices keeps the lasting
- * explanation in its "This browser window" row.
- */
+/** Said once where it first matters; Devices' "This browser window" row keeps the explanation. */
 export function WebTabNotice({ hostClient }: { readonly hostClient: HostClient }) {
   const homeName = useHostSelector(hostClient, selectHomeName);
   const [hidden, setHidden] = useState(dismissed);

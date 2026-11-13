@@ -183,25 +183,17 @@ Deployment. Desktop membership intent pins the verified Host and last route sepa
 catalog reset cannot remove a device. Compatible older catalog shapes load forward; incompatible
 signed shapes remain disposable because changing their bytes would invalidate Host signatures.
 
-The desktop lifecycle owner writes leave or removal intent before cleanup. Its persisted signature
-can only remove that runner on that Host, so delivery needs neither an Account credential nor a
-normal Runner connection. Local erasure and Host confirmation remain separate obligations across
-restarts. Account sign-out and identity replacement persist outgoing Account memberships' leave
-obligations before changing credentials; manual memberships survive. Legacy preferences have no
-source or Host pin until a verified catalog entry returns, so Account sign-out refuses to guess
-which waiting memberships it should remove.
-
-A session-ended notice reaches the lifecycle owner before unauthorized recovery. It fences automatic
-authorization while the Runner reconnects to confirm membership. Success releases the fence; 4010
-confirms removal and starts local erasure. Route rotation, transport loss and natural expiry alone
-never remove membership. Both Sign in again and Set up again first resume authorization in main,
-awaiting cleanup and generation fences before selection. Expiry preserves the key; confirmed removal
-requires a fresh identity. Late exchanges clear their session artifacts. Other Deployments and the
-hosting supervisor retain their authority.
-
-Account sign-out previews come from main’s durable membership inventory, including parked devices
-absent from the catalog. An unreadable inventory blocks confirmation instead of promising that
-nothing is deleted; browser profiles for departing memberships are erased locally.
+A session-ended notice reaches desktop main before unauthorized recovery. Main fences automatic
+authorization while the Runner reconnects to confirm membership, independently of browser and
+computer-use startup; Retry, signed leave and the chooser stay available after startup retries run
+out. Only 4010 or an explicit Host removal answer confirms removal and starts local erasure; session
+deadlines, route rotation and transport loss never do. After route rotation or transport loss,
+Runner success releases the fence and recovery stays automatic. After natural expiry, success keeps
+the device and its key, but only an explicit Sign in again reopens person authorization. Sign in
+again and Set up again resume authorization in main, awaiting cleanup and generation fences before
+selection; Set up again after confirmed removal needs a fresh identity. Late exchanges clear their
+session artifacts. Other Deployments and the hosting supervisor keep their authority. Leave and
+Account sign-out are in [Runner and desktop](computers.md#runner-and-desktop).
 
 ## The place list
 

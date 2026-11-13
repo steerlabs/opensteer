@@ -12,10 +12,7 @@ export type MacosGrants = {
   readonly fullDiskAccess: boolean;
 } | null;
 
-/**
- * This Mac's grants as macOS reports them now. They change in System Settings,
- * so they are read again whenever this window comes back to the front.
- */
+/** Grants change in System Settings, so they are read again whenever this window regains focus. */
 export function useMacosGrants(bridge: OpensteerDesktopBridge | null): {
   readonly grants: MacosGrants;
   readonly reload: () => void;
@@ -45,7 +42,6 @@ export async function readMacosGrants(bridge: OpensteerDesktopBridge): Promise<M
   };
 }
 
-/** Whether a switch that is on still waits on macOS here. */
 export function missingMacosGrant(
   grants: MacosGrants,
   capability: "browser" | "apps" | "files",
@@ -56,10 +52,6 @@ export function missingMacosGrant(
   return false;
 }
 
-/**
- * One row per macOS grant the switches that are on need, each turning green
- * as soon as macOS reports it.
- */
 export function MacosPermissionRows({
   apps,
   bridge,

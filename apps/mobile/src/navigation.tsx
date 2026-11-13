@@ -503,8 +503,6 @@ const RootStack = createNativeStackNavigator({
         title: "Connect an agent",
       }),
     },
-    // A full-screen step with its own native bar, pushed over Home after
-    // sign-in; it leaves only forward, through Ready.
     SetUpPhone: {
       screen: SetUpPhoneScreen,
       options: {

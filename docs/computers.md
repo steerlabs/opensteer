@@ -18,10 +18,10 @@ Legacy policy edits preserve omitted switches inside the revision transaction.
 When an owned online device has access off, the agent can ask in Needs you. Turning it on changes
 the device's persistent policy; Not now suppresses the same ask for that task. An offline device
 never opens a Request. Fulfillment resumes through a continuation Run with rebuilt routes; it does
-not add routes to the Run that asked. Only surfaces that can answer this Request opt into its lists,
-counts and live notifications; Account push omits it while installed phones cannot declare support.
-The separate owned-device inventory includes disabled devices
-and phones without making them shell targets. Per-app, profile and OS authorization still apply.
+not add routes to the Run that asked. Which readers see it, and why push still carries it, is in
+[Compatibility](host-boundaries.md#compatibility). The separate owned-device inventory includes
+disabled devices and phones without making them shell targets. Per-app, profile and OS
+authorization still apply.
 
 Initial setup choices apply only at first redemption. A new Files policy starts with commands and
 forwarding enabled underneath either switch position; Off changes only reach to nobody. Later
@@ -61,28 +61,34 @@ rotation never remove a device. Old apps that do not bind remain independently s
 removal until they update. Removing bound sessions also retires their Host notification preview
 keys; Account-side generic push registration is separate.
 
-Desktop main owns remote device membership independently of its disposable route catalog. A missing
-route suspends the slot; offline state never removes it. Session loss fences automatic sign-in until
-a new Runner connection answers, independently of browser and computer-use startup. Confirmation
-keeps Retry, signed leave and the chooser available even after startup retries run out. Success
-preserves membership; after natural expiry, only explicit Sign in again reopens person authorization
-with the same identity. Route rotation retains automatic recovery. Only 4010 or an explicit Host
-removal answer starts erasure; session deadlines are never removal evidence. Enrollment intent precedes worker startup,
-and a surviving enrolled key can heal a missing legacy preference unless removal or profile-erasure
-intent forbids it. Unknown membership formats stop recovery and report an error.
+Desktop main owns remote device membership independently of its disposable route catalog; session
+loss and the catalog are in [Catalog authority](connections.md#catalog-authority). A missing route
+suspends the slot; offline state never removes it. Enrollment intent precedes worker startup, and a
+surviving enrolled key can heal a missing legacy preference unless removal or profile-erasure intent
+forbids it. Unknown membership formats stop recovery and report an error.
 
-Leave and removal persist terminal intent before stopping workers. A leave proof survives key and
-profile erasure so main can deliver it without restarting browser or computer use. Erasure still
-waits for every worker to exit; unreachable Hosts leave removal unconfirmed. Rejoining requires an
-explicit setup action and a new identity. Against a Host without affirmative `devices-v1` support,
-main attempts authenticated runner removal and enrollment retirement before discarding the session.
-Unconfirmed legacy removal remains a durable obligation, retried after sign-in; it does not wait
-forever on an unsupported signed-leave endpoint or prevent rejoining. Account sign-out or replacement leaves only memberships
-whose saved provenance names the outgoing Account, while Home keeps running. The Host chooses the
-enrollment grant; main resolves the origin and holds signing keys, and the renderer receives only
-session-binding signatures. Only the supervising desktop can establish that a computer is local.
-Team administrators cannot enroll, remove or inspect another person's
-computer through team authority.
+Leave and removal persist terminal intent before stopping workers. The persisted leave signature can
+remove only that runner on that Host, so delivery needs neither an Account credential nor a normal
+Runner connection, and it survives key and profile erasure so main never restarts browser or
+computer use to deliver it. Local erasure and Host confirmation are separate obligations across
+restarts: erasure waits for every worker to exit, and an unreachable Host leaves removal
+unconfirmed. Rejoining requires an explicit setup action and a new identity. Against a Host without
+affirmative `devices-v1` support, main attempts authenticated runner removal and enrollment
+retirement before discarding the session. Unconfirmed legacy removal remains a durable obligation,
+retried after sign-in; it does not wait forever on an unsupported signed-leave endpoint or prevent
+rejoining.
+
+Account sign-out and replacement persist leave obligations for the memberships whose saved
+provenance names the outgoing Account before credentials change; manual memberships survive and Home
+keeps running. Legacy preferences have no source or Host pin until a verified catalog entry returns,
+so Account sign-out refuses to guess which waiting memberships to remove. Its confirmation reads
+main's durable membership inventory, including parked devices absent from the catalog; an
+unreadable inventory blocks confirmation instead of promising that nothing is deleted.
+
+The Host chooses the enrollment grant; main resolves the origin and holds signing keys, and the
+renderer receives only session-binding signatures. Only the supervising desktop can establish that
+a computer is local. Team administrators cannot enroll, remove or inspect another person's computer
+through team authority.
 
 ## Machine access
 

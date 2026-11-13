@@ -1,11 +1,16 @@
-import { deviceRemovalProfiles, hostsDeployment } from "@opensteer/client/computers";
-import { deviceAccess, type MachineSummary } from "@opensteer/protocol";
+import {
+  deviceAccessRows,
+  deviceRemovalProfiles,
+  isHomeDevice,
+  type DeviceCapability,
+} from "@opensteer/client/computers";
+import type { MachineSummary } from "@opensteer/protocol";
 
-export type DeviceSwitchKey = "browser" | "apps" | "files";
+export { isHomeDevice as isHome };
+export type { DeviceCapability as DeviceSwitchKey };
 
-/** One line of "Your agent can use": a live switch, or a fact Home cannot change. */
-export interface DeviceSwitchRow {
-  readonly key: DeviceSwitchKey;
+interface DeviceSwitchRow {
+  readonly key: DeviceCapability;
   readonly title: string;
   readonly detail: string;
   readonly fixed: boolean;
@@ -13,59 +18,39 @@ export interface DeviceSwitchRow {
   readonly disabled: boolean;
 }
 
-const copy: Readonly<Record<DeviceSwitchKey, { readonly title: string; readonly detail: string }>> =
-  {
-    browser: { title: "Browser", detail: "Open and use tabs" },
-    apps: { title: "Apps", detail: "See and control apps" },
-    files: { title: "Files and commands", detail: "Read files and run commands" },
-  };
+const copy: Readonly<
+  Record<DeviceCapability, { readonly title: string; readonly detail: string }>
+> = {
+  browser: { title: "Browser", detail: "Open and use tabs" },
+  apps: { title: "Apps", detail: "See and control apps" },
+  files: { title: "Files and commands", detail: "Read files and run commands" },
+};
 
 export const homeFixed = "Always on. Your agent runs here.";
-export const homeFooter = "Your Opensteer lives on this Mac, so it can't be removed.";
+const homeFooter = "Your Opensteer lives on this Mac, so it can't be removed.";
 
-export function isHome(machine: MachineSummary): boolean {
-  return machine.kind === "home" || hostsDeployment(machine);
-}
-
-/**
- * The switches a device's page offers, from its enrollment's fixed ceiling:
- * a switch never offers what the device can't lend. Offline devices keep
- * editable switches; a Host without `devices-v1` can change only files.
- */
 export function deviceSwitches(
   machine: MachineSummary,
   options: { readonly devicesAvailable: boolean; readonly noun?: string },
 ): { readonly rows: readonly DeviceSwitchRow[]; readonly footer: string | null } {
-  const home = isHome(machine);
-  const policy = machine.access?.policy ?? null;
-  const on = policy === null ? null : deviceAccess(policy);
-  const modules = new Set(machine.allowedModules);
-  const offers: Readonly<Record<DeviceSwitchKey, boolean>> = {
-    browser: modules.has("browser"),
-    apps: modules.has("integrations") || machine.computerUse !== null,
-    files: modules.has("shell"),
-  };
-  const rows = (["browser", "apps", "files"] as const)
-    .filter((key) => offers[key])
-    .map((key): DeviceSwitchRow => {
-      const fixed = home && key !== "apps";
-      const needsDevices = key !== "files" && !options.devicesAvailable;
-      return {
-        key,
-        title: copy[key].title,
-        detail: fixed
-          ? homeFixed
-          : key === "browser" && options.noun !== undefined
-            ? `Open and use tabs on this ${options.noun}`
-            : copy[key].detail,
-        fixed,
-        value: fixed || (on?.[key] ?? false),
-        disabled: fixed || on === null || needsDevices,
-      };
-    });
-  const footer = home
+  const rows = deviceAccessRows(machine, options.devicesAvailable).map((row): DeviceSwitchRow => {
+    const home = row.kind === "fixed" && row.reason === "home";
+    return {
+      key: row.capability,
+      title: copy[row.capability].title,
+      detail: home
+        ? homeFixed
+        : row.capability === "browser" && options.noun !== undefined
+          ? `Open and use tabs on this ${options.noun}`
+          : copy[row.capability].detail,
+      fixed: home,
+      value: row.kind === "fixed" || (row.on ?? false),
+      disabled: row.kind === "fixed" || row.on === null,
+    };
+  });
+  const footer = isHomeDevice(machine)
     ? homeFooter
-    : policy === null
+    : !machine.access?.policy
       ? machine.status === "pending"
         ? "These switches appear once this device has connected."
         : "Update Opensteer on your Mac to change what your agent can use here."
@@ -75,7 +60,6 @@ export function deviceSwitches(
   return { rows, footer };
 }
 
-/** The destructive action alone in the last section, and its confirmation, as on web. */
 export function deviceRemoval(
   machine: MachineSummary,
   options: {
@@ -84,7 +68,7 @@ export function deviceRemoval(
     readonly profiles: Parameters<typeof deviceRemovalProfiles>[1];
   },
 ): { readonly label: string; readonly title: string; readonly message: string } | null {
-  if (isHome(machine) || !machine.revocable) return null;
+  if (isHomeDevice(machine) || !machine.revocable) return null;
   if (options.thisDevice)
     return {
       label: `Sign out and remove this ${options.noun}`,
@@ -105,7 +89,6 @@ export function deviceRemoval(
   };
 }
 
-/** What this phone leaving an Opensteer deletes, for every way it can leave. */
 export function phoneLeaves(noun: string, deploymentName: string): string {
   return `This ${noun} is removed from ${deploymentName}. Browser profiles kept on this ${noun} for it are deleted.`;
 }

@@ -173,7 +173,6 @@ function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
   }
 }
 
-/** The Material Symbol Android's own Settings would lead a row with, for each SF Symbol a row names. */
 const materialSymbols: Partial<Record<SFSymbolName, AndroidSymbol>> = {
   camera: "videocam",
   desktopcomputer: "desktop_mac",

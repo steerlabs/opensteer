@@ -5,11 +5,7 @@ import { actionErrorMessage } from "../../ui-utils.js";
 import { ErrorNotice, OnboardingCard } from "../onboarding-card.js";
 import { resumeDeviceSignIn } from "./device-setup.js";
 
-/**
- * Where a Mac lands once it is no longer a device of an Opensteer, whichever
- * happened first: its session ended, or its Runner heard it was removed.
- * Nothing signs back in by itself; "Set up again" is the person's choice.
- */
+/** Whichever arrived first, session end or 4010; nothing signs back in by itself. */
 export function DeviceRemovedScreen({
   bridge,
   deploymentId,

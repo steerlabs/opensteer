@@ -15,11 +15,7 @@ export function dismissPhoneSetup(deploymentId: string): void {
 const selectSetupHost = (snapshot: HostSnapshot): string =>
   `${snapshot.connection === "connected"}:${snapshot.iphoneAppsAvailable}`;
 
-/**
- * Pushes Set up this phone over Home once a personal Deployment is open here
- * and this phone is not yet one of its devices. True while it is due, so the
- * notifications intro waits: setup asks for notifications itself.
- */
+/** True while setup is due, so the notifications intro waits: setup asks for them itself. */
 export function usePhoneSetup(hostClient: HostClient | null, deploymentId: string): boolean {
   const navigation = useNavigation();
   const focused = useIsFocused();

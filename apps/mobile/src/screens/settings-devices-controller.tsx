@@ -20,11 +20,6 @@ import type { NativeSettingsSection } from "./native-settings-page.types.js";
 import { otherDevicesSettingsRows } from "./settings-model.js";
 import { useSettingsHost } from "./use-settings-host.js";
 
-/**
- * Settings › Devices: every device signed in to this Opensteer, this phone
- * and Home first, then other devices, then sessions that run nothing; and,
- * apart from them, what plugins reach.
- */
 export function DevicesSettingsController(): ReactNode {
   const [adding, setAdding] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);

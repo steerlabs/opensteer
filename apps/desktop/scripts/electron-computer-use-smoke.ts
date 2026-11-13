@@ -237,8 +237,6 @@ async function run(): Promise<void> {
       leaveDeployment: unused,
       retryDeviceConnection: unused,
       recheckEngines: unused,
-      remove: unused,
-      start: unused,
       status: unused,
       subscribe,
     },

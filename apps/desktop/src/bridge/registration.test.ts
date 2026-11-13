@@ -775,11 +775,9 @@ function runnerController() {
     leaveDeployment: vi.fn(async () => undefined),
     retryDeviceConnection: vi.fn(async () => undefined),
     recheckEngines: vi.fn(),
-    remove: vi.fn(async (deploymentId) => status(deploymentId)),
     notify: () => {
       for (const listener of listeners) listener();
     },
-    start: vi.fn(async (input) => status(input.deploymentId)),
     status: vi.fn(async (deploymentId) => status(deploymentId)),
     subscribe: vi.fn((listener: () => void) => {
       listeners.add(listener);

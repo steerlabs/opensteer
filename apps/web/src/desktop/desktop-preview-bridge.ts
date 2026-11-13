@@ -846,26 +846,6 @@ export function desktopPreviewBridge(
       updateLocalExecution(joined);
       return joined;
     },
-    startLocalRunner: async (input) => {
-      const parsed = DesktopStartLocalRunnerInputSchema.parse(input);
-      if (selection.selectedDeploymentId !== parsed.deploymentId) {
-        throw new Error("The selected deployment changed before local agents could start.");
-      }
-      const localExecution = DesktopLocalExecutionStatusSchema.parse({
-        ...localExecutionFor({ deploymentId: parsed.deploymentId }),
-        runAgents: parsed.runAgents,
-        runner: {
-          detail: "Local agents are ready in this development preview.",
-          enrolled: true,
-          environmentId: previewEnvironmentId,
-          runnerId: previewRunnerId,
-          state: "running",
-        },
-      });
-      updateLocalExecution(localExecution);
-      return localExecution;
-    },
-
     createPersonalDeployment: async () => {
       const generation = ++personalGeneration;
       personal = DesktopPersonalDeploymentStatusSchema.parse({
@@ -975,22 +955,6 @@ export function desktopPreviewBridge(
         emitPersonal();
         selectHost(created, "signed-in");
       });
-    },
-
-    stopLocalRunner: async (input) => {
-      const parsed = DesktopLocalExecutionInputSchema.parse(input);
-      const localExecution = DesktopLocalExecutionStatusSchema.parse({
-        ...localExecutionFor(parsed),
-        runner: {
-          detail: "Local agents are off.",
-          enrolled: false,
-          environmentId: null,
-          runnerId: null,
-          state: "disabled",
-        },
-      });
-      updateLocalExecution(localExecution);
-      return localExecution;
     },
 
     // Every place the preview lists is on this computer or answers at once.

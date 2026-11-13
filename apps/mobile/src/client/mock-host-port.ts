@@ -34,7 +34,6 @@ export function createMockHostPort(
     const deploymentId = connection.authority.document.deploymentId;
     let host = hosts.get(deploymentId);
     if (host === undefined) {
-      // As the web preview's mock: the device setup tasks and their Requests.
       const created = new MockHostClient({
         devices: "seeded",
         ...(options.subagents ? { subagents: options.subagents } : {}),

@@ -47,7 +47,6 @@ const choices: readonly {
   },
 ];
 
-/** The three ways a device joins, each opening in place. */
 export function AddDeviceDialog({
   homeName,
   onClose,

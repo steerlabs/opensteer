@@ -24,10 +24,6 @@ import {
   type SetupSwitch,
 } from "./setup-view.js";
 
-/**
- * Set up this phone in Material 3: a large title, list items with trailing
- * switches, and one filled button held at the bottom.
- */
 export function SetupStep(props: {
   readonly setup: SetupFormProps;
   readonly ready: ReadyFormProps | null;
@@ -118,7 +114,6 @@ function Page(props: {
     <View style={{ flex: 1, backgroundColor: color.background, paddingTop: insets.top }}>
       <SettingsHost>
         <SettingsList>
-          {/* Material's large top app bar title, at headline size. */}
           <Text
             color={color.text}
             modifiers={[padding(16, 24, 16, 16)]}

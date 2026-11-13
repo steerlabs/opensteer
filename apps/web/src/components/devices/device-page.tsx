@@ -70,10 +70,7 @@ export function DevicePage() {
   return <DeviceDetail key={machine.id} machine={machine} />;
 }
 
-/**
- * A device whose setup token nothing has redeemed yet. It has no runner to
- * rename or switch until it joins; its owner can retire the token.
- */
+/** Nothing has redeemed its setup token yet, so only the token can be retired. */
 function PendingDeviceDetail({
   enrollmentId,
   machine,
@@ -177,7 +174,6 @@ function PendingDeviceDetail({
   );
 }
 
-/** The sentence a removal asks, in the words design settled for every device. */
 export function deviceRemovalCopy(input: {
   readonly machine: Pick<MachineSummary, "id" | "name" | "status">;
   readonly thisDevice: boolean;

@@ -331,7 +331,6 @@ a.devices-row:focus-visible {
   gap: var(--space-4);
 }
 
-/* Setup that couldn't finish: one line above the workspace, with its fix. */
 .device-finish-bar {
   display: flex;
   flex-wrap: wrap;

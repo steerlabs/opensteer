@@ -18,7 +18,6 @@ import type { DeviceSetupChoice, ThisDevice } from "./this-device.js";
 
 const notificationsDetail = "Tell you when your agent needs you or finishes";
 
-/** One switch row: the capability, what it means here, and its own labelled switch. */
 export function SwitchRow({
   checked,
   detail,
@@ -53,7 +52,6 @@ export function SwitchRow({
   );
 }
 
-/** A captioned group of setup rows, so "Your agent can use" reads apart from this Mac's own. */
 export function SetupGroup({
   children,
   title,
@@ -72,10 +70,6 @@ export function SetupGroup({
   );
 }
 
-/**
- * The full window a Mac shows until it is one of this person's devices: its
- * name and switches, then the macOS grants they need, then an honest Ready.
- */
 export function SetUpThisMac({
   bridge,
   device,
@@ -308,10 +302,7 @@ function applied(device: ThisDevice): DeviceSetupChoice["access"] | null {
   });
 }
 
-/**
- * Setup that couldn't finish never blocks work: the workspace opens under this
- * bar, whose button fixes what actually stands in the way.
- */
+/** Setup that couldn't finish never blocks work: the workspace opens under this bar. */
 export function FinishSetupBar({
   device,
   homeId,

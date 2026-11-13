@@ -35,7 +35,6 @@ export const otherDeviceIcon: Record<OtherDevice["kind"], IconName> = {
   tv: "tv",
 };
 
-/** Settings › Devices: every device of this Opensteer, then what runs nothing. */
 export function DevicesSection() {
   const { desktopBridge, hostClient, snapshot } = useShell();
   const toast = useToast();
@@ -187,7 +186,6 @@ function DeviceListRow({ here, row }: { readonly here: boolean; readonly row: De
   );
 }
 
-/** Things that run no Opensteer, reached through a plugin's server on one of these devices. */
 function OtherDevices({ devices }: { readonly devices: readonly OtherDevice[] }) {
   const { snapshot } = useShell();
   const threadPath = useThreadPath();

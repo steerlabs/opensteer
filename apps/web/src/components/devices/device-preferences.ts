@@ -1,10 +1,6 @@
-/**
- * What this window keeps about this device per Opensteer: whether it shows
- * notifications and where an unfinished setup stands. The Host and desktop main
- * own the device itself.
- */
+/** Per-window conveniences only: the Host and desktop main own the device itself. */
 export type DeviceSetupStep = "choose" | "macos" | "ready";
-export type DeferredSetup = "use-from-anywhere" | "bind" | "failed";
+type DeferredSetup = "use-from-anywhere" | "bind" | "failed";
 
 const notificationsKey = (deploymentId: string) =>
   `opensteer.device-notifications.v1:${deploymentId}`;

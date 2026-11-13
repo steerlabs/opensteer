@@ -61,7 +61,7 @@ export interface IphonePendingLeave {
   readonly enrollmentId?: string | null;
   readonly enrolled?: boolean | null;
 }
-export interface IphoneSessionBinding {
+interface IphoneSessionBinding {
   readonly runnerId: string;
   readonly issuedAt: string;
   readonly signature: string;

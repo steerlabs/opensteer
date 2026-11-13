@@ -32,7 +32,6 @@ export function finishSetupLine(cause: FinishSetupCause): {
   }
 }
 
-/** Everything setting up this Mac touches, each a port so the order is testable. */
 export interface DeviceSetupPorts {
   /** Home's Use from anywhere, or null when it can't be read from here. */
   readonly remoteAccessMode: () => Promise<"off" | "connect" | "private" | null>;
@@ -51,15 +50,11 @@ export interface DeviceSetupPorts {
 
 export type DeviceSetupStage = "checking" | "joining" | "binding";
 
-export type DeviceSetupResult =
+type DeviceSetupResult =
   | { readonly ok: true; readonly runnerId: string }
   | { readonly ok: false; readonly cause: FinishSetupCause; readonly runnerId: string | null };
 
-/**
- * Mints this Mac's enrollment with the switches it was set up with, starts its
- * Runner, then binds this session to it. A Host without device switches gets
- * the old enrollment; its switches are then the Host's defaults.
- */
+/** A Host without device switches gets the old enrollment, with the Host's default switches. */
 export async function setUpThisDevice(
   ports: DeviceSetupPorts,
   input: {
