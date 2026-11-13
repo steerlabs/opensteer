@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { TeamMember } from "@opensteer/protocol";
 import type { TeamSessionClient, TeamSessionSnapshot } from "@opensteer/client/team";
 import { useTeamAttachment, useTeamSession, type TeamAttachment } from "./team-attachments.js";
-import { useTeamMembers } from "./team-people.js";
+import { useTeamMembers, type PeopleState } from "./team-people.js";
 import type { TeamWords } from "./team-view-models.js";
 
 /** One team, as a screen in it needs it: the session, its members and this viewer's words. */
@@ -11,6 +11,8 @@ export interface TeamView {
   readonly client: TeamSessionClient;
   readonly snapshot: TeamSessionSnapshot;
   readonly members: ReadonlyMap<string, TeamMember>;
+  /** Whether `members` has been read yet; until then it holds only the viewer. */
+  readonly people: PeopleState["status"];
   readonly me: TeamMember | null;
   readonly words: TeamWords;
 }
@@ -19,7 +21,10 @@ export function useTeamView(teamId: string | undefined, previews: ReadonlyMap<st
   const team = useTeamAttachment(teamId);
   const client = team?.client ?? null;
   const snapshot = useTeamSession(client);
-  const members = useTeamMembers(client, snapshot?.sidebar?.accessRevision ?? null);
+  const { members, status: people } = useTeamMembers(
+    client,
+    snapshot?.sidebar?.accessRevision ?? null,
+  );
   const linkPresence = snapshot?.channel?.linkPresence;
   const words = useMemo<TeamWords | null>(() => {
     const member = snapshot?.bootstrap?.member;
@@ -58,6 +63,7 @@ export function useTeamView(teamId: string | undefined, previews: ReadonlyMap<st
     client,
     snapshot,
     members: words.members,
+    people,
     me: snapshot.bootstrap?.member ?? null,
     words,
   } satisfies TeamView;

@@ -18,6 +18,8 @@ import {
   TeamConsistentCutSchema,
   TeamMarkdownSchema,
   TeamMessageSchema,
+  teamChannelNameKey,
+  teamChannelNameTakenReason,
   type TeamChannel,
   type TeamMessage,
   type TeamMentionSchema,
@@ -356,6 +358,24 @@ export class TeamChatStore {
     );
     return id;
   }
+  /**
+   * Live channels keep unique names (`team_channels_name`). Refused here, under the team access
+   * lock the caller holds, so the person reads why instead of an unexplained failure.
+   */
+  async #requireFreeName(
+    transaction: Transaction<DatabaseSchema>,
+    name: string,
+    except: TeamChannelId | null,
+  ) {
+    let query = transaction
+      .selectFrom("teamChannels")
+      .select("id")
+      .where("normalizedName", "=", teamChannelNameKey(name))
+      .where("archivedAt", "is", null);
+    if (except !== null) query = query.where("id", "!=", except);
+    if (await query.executeTakeFirst())
+      teamConflict(`There’s already a channel called #${name.trim()}.`, teamChannelNameTakenReason);
+  }
   async #insertChannel(
     transaction: Transaction<DatabaseSchema>,
     actor: TeamActor,
@@ -367,13 +387,14 @@ export class TeamChatStore {
       access: readonly ChannelAccess[];
     },
   ) {
+    await this.#requireFreeName(transaction, input.name, null);
     await transaction
       .insertInto("teamChannels")
       .values({
         id: input.id,
         kind: input.kind,
         name: input.name,
-        normalizedName: input.name.normalize("NFKC").toLowerCase(),
+        normalizedName: teamChannelNameKey(input.name),
         peopleOnly: input.peopleOnly,
         createdBy: actor.userId,
         createdAt: new Date(),
@@ -696,9 +717,16 @@ export class TeamChatStore {
         (input.instructionsMarkdown !== undefined &&
           input.instructionsMarkdown !== row.instructionsMarkdown);
       if (!changed) return { value: undefined, effects: emptyTeamAccessEffects };
+      const named = input.name ?? row.name;
+      const live = input.archived === undefined ? row.archivedAt === null : !input.archived;
+      const renamed =
+        input.name !== undefined && teamChannelNameKey(input.name) !== row.normalizedName;
+      const restored = input.archived === false && row.archivedAt !== null;
+      if (named !== null && live && (renamed || restored))
+        await this.#requireFreeName(transaction, named, channelId);
       const change = {
         ...(input.name !== undefined
-          ? { name: input.name, normalizedName: input.name.normalize("NFKC").toLowerCase() }
+          ? { name: input.name, normalizedName: teamChannelNameKey(input.name) }
           : {}),
         ...(input.peopleOnly !== undefined ? { peopleOnly: input.peopleOnly } : {}),
         ...(input.archived !== undefined

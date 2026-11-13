@@ -11,6 +11,8 @@ export const screenPresentations = {
   TeamSetup: "formSheet",
   DeleteTeam: "formSheet",
   TransferTeam: "formSheet",
+  TeamNewChannel: "formSheet",
+  TeamNewMessage: "formSheet",
   ConnectOpensteer: "formSheet",
   ThreadStep: "formSheet",
   RequestSheet: "formSheet",
