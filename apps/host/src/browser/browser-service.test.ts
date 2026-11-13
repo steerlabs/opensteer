@@ -1,3 +1,4 @@
+import { DeviceAccessRefusal } from "../administration/device-access.js";
 import { BrowserRuntime } from "@opensteer/browser-runtime-core";
 import {
   FakeContext,
@@ -5515,7 +5516,64 @@ describe("BrowserService", () => {
   });
 });
 
+it("serializes an agent attachment with Browser-off and fences it before the off turn returns", async () => {
+  const keys = generateKeyPairSync("ed25519");
+  const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
+  const ownerId = createId("user");
+  const entered = Promise.withResolvers<RunnerId>();
+  const release = Promise.withResolvers<void>();
+  let hold = true;
+  let off = false;
+  const service = freshService({
+    keys,
+    runtime,
+    repository: new MemoryBrowserRepository(ownerId),
+    requireAgentAccess: async (runnerId) => {
+      if (hold) {
+        hold = false;
+        entered.resolve(runnerId);
+        await withTimeout(release.promise, 2000, {
+          timeoutError: () => new Error("agent admission was not released"),
+        });
+      }
+      if (off) throw new DeviceAccessRefusal("device-access-off", runnerId, "browser");
+    },
+  });
+  const person = await service.start({ fresh: true, ownerId });
+  let closed = false;
+  const attaching = service.attachCdpForAgent(
+    { ownerId, sessionId: person.session.id, agentBindingId: "device-fence" },
+    () => {},
+    () => {
+      closed = true;
+    },
+  );
+  const runnerId = await withTimeout(entered.promise, 2000, {
+    timeoutError: () => new Error("agent admission never read access"),
+  });
+  const switchingOff = service.withRunnerAdmission(runnerId, async () => {
+    off = true;
+    await service.disableAgentAccess(runnerId);
+  });
+  release.resolve();
+  const attachment = await attaching;
+  await switchingOff;
+  expect(closed).toBe(true);
+  await expect(attachment.dispatch({ method: "Target.getTargets" })).rejects.toThrow(
+    "attachment has ended",
+  );
+  await expect(
+    service.closeAgentSession({
+      ownerId,
+      sessionId: person.session.id,
+      agentBindingId: "device-fence",
+    }),
+  ).rejects.toMatchObject({ reason: "device-access-off" });
+  expect((await service.start({ fresh: true, ownerId })).session.state).toBe("ready");
+});
+
 function freshService(options: {
+  readonly requireAgentAccess?: (runnerId: RunnerId) => Promise<void>;
   readonly surfaceState?: boolean | undefined;
   readonly tabRestoreVersion?: boolean;
   readonly history?: BrowserHistoryStore;
@@ -5540,6 +5598,7 @@ function freshService(options: {
   readonly personalTabs?: PersonalTabStore;
 }): BrowserService {
   const service = new BrowserService({
+    ...(options.requireAgentAccess ? { requireAgentAccess: options.requireAgentAccess } : {}),
     ...(options.personalTabs ? { personalTabs: options.personalTabs } : {}),
     ...nativeProfileOptions(),
     passkeys: options.passkeysEnabled === true,

@@ -19,6 +19,7 @@ import {
   runnerRunsItsDeployment,
 } from "@opensteer/core";
 import {
+  deviceAccess,
   type MachineAccessPolicy,
   type RunnerShellModule,
   type MachineAccessShare,
@@ -37,6 +38,8 @@ import {
   machineIsManagedBy,
   type MachineOwnershipRecord,
 } from "./machine-ownership.js";
+
+const noPolicyChanges = { shell: false, browser: false, apps: false };
 
 /** The two machine-access commands whose results are recorded for replay. */
 type MachineAccessCommandType = "machine.access.session.stop" | "machine.access.update";
@@ -258,7 +261,16 @@ export async function updateMachineAccessPolicy(
   },
 ): Promise<
   | { readonly outcome: "conflict"; readonly replayed: boolean }
-  | { readonly outcome: "updated"; readonly replayed: boolean; readonly revision: number }
+  | {
+      readonly outcome: "updated";
+      readonly replayed: boolean;
+      readonly revision: number;
+      readonly changed: {
+        readonly shell: boolean;
+        readonly browser: boolean;
+        readonly apps: boolean;
+      };
+    }
 > {
   const request = {
     expectedRevision: input.expectedRevision,
@@ -278,14 +290,21 @@ export async function updateMachineAccessPolicy(
         // motion — live sessions closed because the policy they opened under
         // is gone — must not happen a second time to sessions that started
         // after it and are running under the policy this replay describes.
-        return {
-          ...(stored.result as
-            | { readonly outcome: "conflict" }
-            | { readonly outcome: "updated"; readonly revision: number }),
-          replayed: true,
-        };
+        const result = stored.result as
+          | { readonly outcome: "conflict" }
+          | { readonly outcome: "updated"; readonly revision: number };
+        return result.outcome === "conflict"
+          ? { ...result, replayed: true }
+          : { ...result, changed: noPolicyChanges, replayed: true };
       }
     }
+    const stored = await transaction
+      .selectFrom("runners")
+      .select(["accessPolicy", "kind", "ownerKind"])
+      .where("id", "=", input.runnerId)
+      .where("revokedAt", "is", null)
+      .forNoKeyUpdate()
+      .executeTakeFirst();
     const ownership = await machineOwnershipIn(transaction, input.runnerId);
     if (!ownership || !machineIsManagedBy(ownership, input.ownerId)) {
       throw new OpensteerError({ code: "not_found", message: "Active Runner not found" });
@@ -300,10 +319,34 @@ export async function updateMachineAccessPolicy(
           "This computer belongs to the Deployment rather than to a person, so it cannot be limited to its owner's agents.",
       });
     }
+    if (!stored)
+      throw new OpensteerError({ code: "not_found", message: "Active Runner not found" });
+    if (
+      stored.kind === "main" &&
+      stored.ownerKind === "deployment" &&
+      !deviceAccess(input.policy).browser
+    )
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Home's browser is always available to your agent.",
+      });
+    const previous = deviceAccess(stored.accessPolicy);
+    const policy = {
+      ...input.policy,
+      browser: input.policy.browser ?? previous.browser,
+      apps: input.policy.apps ?? previous.apps,
+    };
+    const { browser: _oldBrowser, apps: _oldApps, ...oldShell } = stored.accessPolicy;
+    const { browser: _browser, apps: _apps, ...newShell } = policy;
+    const changed = {
+      shell: !isDeepStrictEqual(oldShell, newShell),
+      browser: previous.browser !== deviceAccess(policy).browser,
+      apps: previous.apps !== deviceAccess(policy).apps,
+    };
     const updated = await transaction
       .updateTable("runners")
       .set({
-        accessPolicy: jsonValue(input.policy),
+        accessPolicy: jsonValue(policy),
         accessPolicyRevision: sql`access_policy_revision + 1`,
         updatedAt: new Date(),
       })
@@ -313,7 +356,7 @@ export async function updateMachineAccessPolicy(
       .returning("accessPolicyRevision")
       .executeTakeFirst();
     const result = updated
-      ? { outcome: "updated" as const, revision: updated.accessPolicyRevision }
+      ? { outcome: "updated" as const, revision: updated.accessPolicyRevision, changed }
       : { outcome: "conflict" as const };
     if (input.idempotency) {
       await recordMachineAccessCommand(transaction, {

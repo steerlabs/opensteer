@@ -11,17 +11,19 @@ import { ComputerMcpTransport } from "./computer-mcp-transport.js";
 it("checks exact-launch authority in admission, then releases admission while the Runner opens", async () => {
   const opening = Promise.withResolvers<ComputerMcpSession>();
   let admitted = false;
-  const hub: Pick<ComputerAppHub, "withRunnerAdmission" | "openMcpSession"> = {
-    withRunnerAdmission: async (_runner, work) => {
-      admitted = true;
-      try {
-        return await work();
-      } finally {
-        admitted = false;
-      }
-    },
-    openMcpSession: vi.fn(() => opening.promise),
-  };
+  const hub: Pick<ComputerAppHub, "withRunnerAdmission" | "openMcpSession" | "requireAgentAccess"> =
+    {
+      withRunnerAdmission: async (_runner, work) => {
+        admitted = true;
+        try {
+          return await work();
+        } finally {
+          admitted = false;
+        }
+      },
+      requireAgentAccess: async () => {},
+      openMcpSession: vi.fn(() => opening.promise),
+    };
   const authorize = vi.fn(async () => {
     expect(admitted).toBe(true);
   });
@@ -45,10 +47,12 @@ it("checks exact-launch authority in admission, then releases admission while th
 });
 
 it("sends no launch if the Host's exact-launch check fails at admission", async () => {
-  const hub: Pick<ComputerAppHub, "withRunnerAdmission" | "openMcpSession"> = {
-    withRunnerAdmission: async (_runner, work) => work(),
-    openMcpSession: vi.fn(),
-  };
+  const hub: Pick<ComputerAppHub, "withRunnerAdmission" | "openMcpSession" | "requireAgentAccess"> =
+    {
+      withRunnerAdmission: async (_runner, work) => work(),
+      requireAgentAccess: async () => {},
+      openMcpSession: vi.fn(),
+    };
   const transport = new ComputerMcpTransport(hub, {
     authorize: async () => {
       throw new Error("Launch changed");
@@ -65,16 +69,18 @@ it("sends no launch if the Host's exact-launch check fails at admission", async 
 it("never repeats a server's secrets in why the computer ended its session", async () => {
   const stopped = "The MCP server stopped. Its last output: connecting with hunter2";
   let end: ((error: ComputerMcpSessionError) => void) | undefined;
-  const hub: Pick<ComputerAppHub, "withRunnerAdmission" | "openMcpSession"> = {
-    withRunnerAdmission: async (_runner, work) => work(),
-    openMcpSession: vi
-      .fn<ComputerAppHub["openMcpSession"]>()
-      .mockRejectedValueOnce(new ComputerMcpSessionError("failed", stopped))
-      .mockImplementationOnce(async (input) => {
-        end = input.onclose;
-        return { close: async () => undefined, send: async () => undefined };
-      }),
-  };
+  const hub: Pick<ComputerAppHub, "withRunnerAdmission" | "openMcpSession" | "requireAgentAccess"> =
+    {
+      withRunnerAdmission: async (_runner, work) => work(),
+      requireAgentAccess: async () => {},
+      openMcpSession: vi
+        .fn<ComputerAppHub["openMcpSession"]>()
+        .mockRejectedValueOnce(new ComputerMcpSessionError("failed", stopped))
+        .mockImplementationOnce(async (input) => {
+          end = input.onclose;
+          return { close: async () => undefined, send: async () => undefined };
+        }),
+    };
   const transport = () =>
     new ComputerMcpTransport(hub, {
       authorize: async () => undefined,
@@ -102,17 +108,19 @@ it("never repeats a server's secrets in why the computer ended its session", asy
 
 it("drops what is left of a secret the computer's cut of the output split", async () => {
   const secret = `token-${"x".repeat(40)}-tail`;
-  const hub: Pick<ComputerAppHub, "withRunnerAdmission" | "openMcpSession"> = {
-    withRunnerAdmission: async (_runner, work) => work(),
-    openMcpSession: vi
-      .fn<ComputerAppHub["openMcpSession"]>()
-      .mockRejectedValue(
-        new ComputerMcpSessionError(
-          "failed",
-          `The MCP server stopped. Its last output: ${secret.slice(20)} was refused`,
+  const hub: Pick<ComputerAppHub, "withRunnerAdmission" | "openMcpSession" | "requireAgentAccess"> =
+    {
+      withRunnerAdmission: async (_runner, work) => work(),
+      requireAgentAccess: async () => {},
+      openMcpSession: vi
+        .fn<ComputerAppHub["openMcpSession"]>()
+        .mockRejectedValue(
+          new ComputerMcpSessionError(
+            "failed",
+            `The MCP server stopped. Its last output: ${secret.slice(20)} was refused`,
+          ),
         ),
-      ),
-  };
+    };
   const error = await new ComputerMcpTransport(hub, {
     authorize: async () => undefined,
     runnerId: createId("runner"),

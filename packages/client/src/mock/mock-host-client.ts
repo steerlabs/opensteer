@@ -1,3 +1,4 @@
+import { deviceAccess } from "@opensteer/protocol";
 import { listedRowThreadId } from "../host/task-list.js";
 import {
   DeploymentSnapshotSchema,
@@ -1643,7 +1644,7 @@ const mockMachines: readonly MachineSummary[] = [
       },
     ],
     access: null,
-    allowedModules: ["integrations"],
+    allowedModules: ["browser", "integrations"],
     detail: null,
     device: { form: "phone", platform: "android" },
     enrollmentId: "ren_runner_phone",
@@ -6999,6 +7000,7 @@ class MockHostState {
   async resetPasswordWithRecovery(_token: string, _newPassword: string): Promise<void> {}
 
   async signOut(): Promise<void> {
+    await this.revokeSession(this.sessions.find((session) => session.current)?.id);
     this.update({
       ...this.snapshot,
       machines: this.snapshot.machines.map((machine) =>
@@ -7714,6 +7716,8 @@ class MockHostState {
   }
 
   async revokeMachine(machineId: string): Promise<void> {
+    if (this.snapshot.machines.find((machine) => machine.id === machineId)?.kind === "home")
+      throw new Error("Home cannot be removed");
     this.sessions = this.sessions.filter((session) => session.deviceId !== machineId);
     // The profiles that live on it go with it, as the Host deletes them.
     this.update({
@@ -7727,7 +7731,12 @@ class MockHostState {
   }
 
   async bindDeviceSession(machineId: string): Promise<void> {
-    if (!this.snapshot.machines.some((machine) => machine.id === machineId))
+    if (
+      !this.snapshot.machines.some(
+        (machine) =>
+          machine.id === machineId && (machine.ownership === "mine" || machine.kind === "home"),
+      )
+    )
       throw new Error("Device not found");
     const session = this.sessions.find((entry) => entry.current);
     if (!session) throw new Error("Sign in first");
@@ -8746,15 +8755,15 @@ class MockHostState {
                   browser: access.browser,
                   apps: access.apps,
                   reach: access.files ? "owner" : "nobody",
-                  commands: true,
-                  forwarding: true,
+                  commands: access.files,
+                  forwarding: access.files,
                   shares: [],
                 },
               }
             : null,
           // A row still waiting to connect has reported no apps either.
           apps: null,
-          allowedModules: ["agents", "shell"],
+          allowedModules: ["browser", "integrations", "messaging", "shell"],
           detail: null,
           device: null,
           enrollmentId,
@@ -8766,7 +8775,12 @@ class MockHostState {
           id: enrollmentId,
           lastSeenAt: null,
 
-          modules: { agents: { checkedAt: null, detail: null, readiness: "unavailable" } },
+          modules: {
+            browser: { checkedAt: null, detail: null, readiness: "unavailable" },
+            integrations: { checkedAt: null, detail: null, readiness: "unavailable" },
+            messaging: { checkedAt: null, detail: null, readiness: "unavailable" },
+            shell: { checkedAt: null, detail: null, readiness: "unavailable" },
+          },
           name,
           ownership: "mine",
 
@@ -8792,6 +8806,8 @@ class MockHostState {
   ): Promise<number | null> {
     const machine = this.snapshot.machines.find((entry) => entry.id === machineId);
     if (!machine?.access || machine.access.revision !== expectedRevision) return null;
+    if (machine.kind === "home" && !deviceAccess(policy).browser)
+      throw new Error("Home's browser is always available to your agent.");
     const revision = machine.access.revision + 1;
     this.update({
       ...this.snapshot,
@@ -8799,7 +8815,16 @@ class MockHostState {
         entry.id === machineId && entry.access
           ? {
               ...entry,
-              access: { ...entry.access, policy: { ...entry.access.policy, ...policy }, revision },
+              access: {
+                ...entry.access,
+                policy: {
+                  ...entry.access.policy,
+                  ...policy,
+                  browser: policy.browser ?? deviceAccess(entry.access.policy).browser,
+                  apps: policy.apps ?? deviceAccess(entry.access.policy).apps,
+                },
+                revision,
+              },
             }
           : entry,
       ),
@@ -8882,14 +8907,14 @@ class MockHostState {
                   browser: access.browser,
                   apps: access.apps,
                   reach: access.files ? "owner" : "nobody",
-                  commands: true,
-                  forwarding: true,
+                  commands: access.files,
+                  forwarding: access.files,
                   shares: [],
                 },
               }
             : null,
           apps: null,
-          allowedModules: ["integrations"],
+          allowedModules: ["browser", "integrations"],
           detail: null,
           device: profile === "iphone" ? { form: "phone", platform: "ios" } : null,
           enrollmentId,
@@ -8900,7 +8925,10 @@ class MockHostState {
           id: enrollmentId,
           lastSeenAt: null,
 
-          modules: { integrations: { checkedAt: null, detail: null, readiness: "unavailable" } },
+          modules: {
+            browser: { checkedAt: null, detail: null, readiness: "unavailable" },
+            integrations: { checkedAt: null, detail: null, readiness: "unavailable" },
+          },
           name,
           ownership: "mine",
 

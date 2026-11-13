@@ -250,6 +250,8 @@ describe("computer use observation", () => {
 describe("computer use errors", () => {
   it("names every refusal the helper and the Host can produce", () => {
     expect(ComputerUseErrorCodeSchema.options).toEqual([
+      "device-access-off",
+      "device-offline",
       "permission-required",
       "app-not-allowed",
       "app-not-found",

@@ -1,3 +1,4 @@
+import { DeviceRefusalContextSchema } from "@opensteer/protocol";
 import { utf8Prefix } from "@opensteer/core";
 import { z } from "zod";
 
@@ -53,6 +54,8 @@ export const ReplReplySchema = z.object({
 });
 export type ReplReply = z.infer<typeof ReplReplySchema>;
 export const ReplFailureSchema = z.object({
+  machineId: DeviceRefusalContextSchema.shape.machineId.optional(),
+  capability: DeviceRefusalContextSchema.shape.capability.optional(),
   code: z.string(),
   message: z.string(),
   performed: z.array(z.string()).default([]),
@@ -61,6 +64,8 @@ export type ReplFailure = z.infer<typeof ReplFailureSchema>;
 /** Guest exceptions are untrusted even when the VM itself is memory-bounded. */
 export function boundedReplFailure(error: ReplFailure): ReplFailure {
   return {
+    ...(error.machineId ? { machineId: error.machineId } : {}),
+    ...(error.capability ? { capability: error.capability } : {}),
     code: utf8Prefix(error.code, 128),
     message: utf8Prefix(error.message, 8192),
     performed: error.performed.slice(0, 160).map((receipt) => utf8Prefix(receipt, 2048)),

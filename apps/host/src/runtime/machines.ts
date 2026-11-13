@@ -1,4 +1,4 @@
-import { runnerRunsItsDeployment } from "@opensteer/core";
+import { runnerRunsItsDeployment, sameStringSet } from "@opensteer/core";
 import {
   RunnerModuleNameSchema,
   androidPhoneDefinitionId,
@@ -361,6 +361,20 @@ export function projectMachines(input: MachineProjectionInput): readonly Machine
           ? null
           : (runner.modules.shell?.fullDiskAccess ?? null),
       id: runner.id,
+      kind: personalMain
+        ? "home"
+        : sameStringSet(runner.allowedModules, ["browser", "integrations"]) &&
+            runner.device?.form === "phone"
+          ? runner.device.app === "opensteer"
+            ? "phone"
+            : runner.device.platform === "android"
+              ? "agent-phone"
+              : "unknown"
+          : runner.device?.app === "opensteer"
+            ? "computer"
+            : runner.device?.form === "server"
+              ? "server"
+              : "unknown",
       lastSeenAt: isoOrNull(runner.lastSeenAt),
       modules: projectModules(runner),
       name: runner.name,

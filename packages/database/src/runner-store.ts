@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+import { canonicalRunnerPublicKeyPem } from "@opensteer/runner-auth";
 import { withPersonalTransaction } from "./personal-transaction.js";
 
 import { lockBrowserProfile } from "./browser-profile-storage-store.js";
@@ -13,6 +15,7 @@ import {
 } from "./administration-command.js";
 import { type IntegrationConnectionId } from "@opensteer/channel-core";
 import {
+  type AuthSessionId,
   type AgentEvent,
   type BrowserProfileId,
   type EnvironmentId,
@@ -859,6 +862,7 @@ export async function revokeRunner(
     readonly allowOtherOwners?: boolean;
   } = {},
 ): Promise<{
+  readonly endedSessionIds: readonly AuthSessionId[];
   readonly deletedBrowserProfiles: readonly {
     readonly id: BrowserProfileId;
     readonly ownerId: UserId;
@@ -934,6 +938,27 @@ export async function revokeRunner(
     }
   };
   return withPersonalTransaction(database, async (personalTransaction) => {
+    const identity = await personalTransaction
+      .selectFrom("runners")
+      .select(["ownerKind", "ownerUserId", "publicKeyPem", "revokedAt"])
+      .where("id", "=", runnerId)
+      .executeTakeFirst();
+    if (
+      identity?.revokedAt &&
+      (identity.ownerUserId === ownerId ||
+        (identity.ownerKind === "deployment" && options.allowDeployment) ||
+        options.allowOtherOwners)
+    ) {
+      return {
+        endedSessionIds: [],
+        deletedBrowserProfiles: [],
+        cancelledRequestIds: [],
+        closedBrowserSessions: [],
+        events: [],
+        requestEvents: [],
+        revokedComputerConnectionIds: [],
+      };
+    }
     await (async (transaction) => {
       profileIds = (await homes(transaction).orderBy("id").execute(databaseOperationOptions())).map(
         (row) => row.id,
@@ -1101,7 +1126,21 @@ export async function revokeRunner(
           deletedBrowserProfiles,
           revokedAt,
         );
+        await transaction
+          .updateTable("runnerEnrollments")
+          .set({ expiresAt: new Date(0) })
+          .where(
+            sql<boolean>`prepared_identity ->> 'runnerId' = ${runnerId} and prepared_identity ->> 'publicKeyPem' = ${identity!.publicKeyPem}`,
+          )
+          .where("consumedAt", "is", null)
+          .execute();
+        const endedSessions = await transaction
+          .deleteFrom("authSessions")
+          .where("deviceId", "=", runnerId)
+          .returning("id")
+          .execute();
         return {
+          endedSessionIds: endedSessions.map((row) => row.id),
           deletedBrowserProfiles: deletedBrowserProfiles.map(({ id, ownerId }) => ({
             id,
             ownerId,
@@ -1320,6 +1359,8 @@ export async function createRunnerEnrollment(
      */
     readonly allowedModules: readonly RunnerModuleName[];
     readonly issuanceModules?: readonly RunnerModuleName[];
+    readonly initialAccess?: import("@opensteer/protocol").DeviceInitialAccess;
+    readonly preparedIdentity?: import("@opensteer/protocol").DevicePreparedIdentity;
     /** Null when the deployment authored this enrollment for its own Main Runner. */
     readonly createdBy: UserId | null;
     readonly deviceProfile?: RunnerDeviceProfile;
@@ -1341,6 +1382,17 @@ export async function createRunnerEnrollment(
   },
 ): Promise<RunnerEnrollmentIssuanceRecord> {
   return withPersonalTransaction(database, async (transaction) => {
+    let preparedIdentity = input.preparedIdentity ?? null;
+    if (preparedIdentity) {
+      try {
+        preparedIdentity = {
+          ...preparedIdentity,
+          publicKeyPem: canonicalRunnerPublicKeyPem(preparedIdentity.publicKeyPem),
+        };
+      } catch {
+        throw new OpensteerError({ code: "bad_request", message: "Invalid prepared device key" });
+      }
+    }
     if (input.ownerUserId && input.runnerKind !== "managed") {
       throw new OpensteerError({
         code: "bad_request",
@@ -1399,6 +1451,8 @@ export async function createRunnerEnrollment(
         "deviceProfile",
         "allowedModules",
         "issuanceModules",
+        "initialAccess",
+        "preparedIdentity",
         "expiresAt",
         "id",
         "name",
@@ -1419,6 +1473,8 @@ export async function createRunnerEnrollment(
       .executeTakeFirst(databaseOperationOptions());
     if (existing) {
       if (
+        !isDeepStrictEqual(existing.initialAccess, input.initialAccess ?? null) ||
+        !isDeepStrictEqual(existing.preparedIdentity, preparedIdentity) ||
         existing.deviceProfile !== (input.deviceProfile ?? null) ||
         existing.requestFingerprint !== input.requestFingerprint ||
         existing.name !== input.name ||
@@ -1513,6 +1569,8 @@ export async function createRunnerEnrollment(
     await transaction
       .insertInto("runnerEnrollments")
       .values({
+        initialAccess: input.initialAccess ? jsonValue(input.initialAccess) : null,
+        preparedIdentity: preparedIdentity ? jsonValue(preparedIdentity) : null,
         deviceProfile: input.deviceProfile ?? null,
         allowedModules: jsonValue(allowedModules),
         issuanceModules: jsonValue(input.issuanceModules ?? allowedModules),
@@ -1646,6 +1704,8 @@ export async function enrollRunnerConnection(
       .select([
         "deviceProfile",
         "allowedModules",
+        "initialAccess",
+        "preparedIdentity",
         "consumedAt",
         "createdBy",
         "expiresAt",
@@ -1680,6 +1740,16 @@ export async function enrollRunnerConnection(
         code: "forbidden",
         ...profileRefusal,
       });
+    if (
+      enrollment.preparedIdentity &&
+      (enrollment.preparedIdentity.runnerId !== input.descriptor.runnerId ||
+        enrollment.preparedIdentity.publicKeyPem !== input.publicKeyPem)
+    ) {
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Runner enrollment is pinned to another identity",
+      });
+    }
     assertModulesWithinGrant(input.descriptor, enrollment.allowedModules);
     const existing = enrollment.runnerId
       ? await transaction
@@ -1751,7 +1821,18 @@ export async function enrollRunnerConnection(
       await transaction
         .insertInto("runners")
         .values({
-          accessPolicy: jsonValue(machineAccessPolicyDefault),
+          accessPolicy: jsonValue(
+            enrollment.initialAccess
+              ? {
+                  ...machineAccessPolicyDefault,
+                  browser: enrollment.initialAccess.browser,
+                  apps: enrollment.initialAccess.apps,
+                  ...(enrollment.initialAccess.files
+                    ? { reach: "owner" as const, commands: true, forwarding: true }
+                    : { reach: "nobody" as const }),
+                }
+              : machineAccessPolicyDefault,
+          ),
           accessPolicyRevision: 1,
           allowedModules: jsonValue(enrollment.allowedModules),
           capabilities: jsonValue(input.descriptor.capabilities),

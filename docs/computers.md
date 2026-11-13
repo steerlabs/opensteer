@@ -1,12 +1,23 @@
-# Computers: enrollment and machine access
+# Devices: enrollment and access
 
 ## Enrollment
 
-A computer is one Runner identity in a Deployment. Enrollment caps its modules on every reconnect;
+A device is one Runner identity in a personal Deployment. Enrollment caps its modules on every reconnect;
 advertising fewer does not reduce the grant, and presentation shape never grants authority.
 Execution policy changes preserve identity. Personal Opensteer executes tasks only on its hosting
 computer, which cannot be removed; phones never offer shell. Enrollment profiles live in
 [the grant policy](../apps/host/src/agents/runner-enrollment-grant.ts).
+
+Browser and Apps are live Host policy, separate from the immutable module ceiling and per-app
+approvals. Turning them off preserves capability descriptors and saved approvals. Browser gates
+only agents: profile homes, person browsing and the shared browser transport stay available.
+Apps gates agent computer use, phone data apps and computer-hosted MCP; a write already sent may
+have an unknown outcome when access is withdrawn. Files and commands uses the existing shell policy.
+Legacy policy edits preserve omitted switches inside the revision transaction.
+
+Initial setup choices apply only at first redemption. Replaying enrollment cannot reset later access
+edits. A self-setup enrollment may pin its prepared runner key; signed leave then retires that exact
+attempt against redemption. Tokens minted for other computers are independent.
 
 Remote route changes disconnect route-admitted computers without deleting enrollment. The hosting
 computer and supervised services are not remote computers to sweep. Revocation is terminal and
@@ -20,6 +31,14 @@ its browser relay starts independently. Keep the work-location identity while ex
 reuses that identity; the environment binding is immutable after its first advertisement. Signed
 device shape is presentation, never authority or routing. Android phones offer no shell. Windows
 shell endpoints remain unsupported, but this does not prevent a browser-only connection.
+
+Apps bind their authenticated session to a device by proving possession of its runner key. Explicit
+removal, signed self-leave and sign-out of a bound non-Home session share one removal operation:
+tombstone the device and delete all bound sessions in the same transaction, then end live work.
+Home and unbound web or legacy sessions sign out only that session. Expiry, refresh and route
+rotation never remove a device. Old apps that do not bind remain independently signed in after
+removal until they update. Removing bound sessions also retires their Host notification preview
+keys; Account-side generic push registration is separate.
 
 Desktop persists enrollment before starting the Runner so an exit during join cannot strand a Host
 row. Turning execution off restarts the same identity, data directory and SSH host key. Removal
@@ -38,8 +57,8 @@ audited and ends with the session. Thread access mode decides harness confirmati
 policy decides permission: never intersect them or treat running agents on the target as SSH
 permission. See the [shell wire](../packages/protocol/src/shell.ts).
 
-Each SSH session has its own WebSocket so its bytes never block the serial control inbox. Policy
-changes end existing sessions. Sessions live under the admitting Run attempt's grant, not the
+Each SSH session has its own WebSocket so its bytes never block the serial control inbox. Shell policy
+changes end existing SSH sessions; Browser or Apps edits and command replays do not. Sessions live under the admitting Run attempt's grant, not the
 presented token: token refresh ends nothing, withdrawing the grant ends them before the Runner
 reports completion, and a late end from an old attempt cannot stop replacement sessions. Relay
 sockets live outside `privateStateRoot`; warm engines carry one Run's authority at a time and refuse

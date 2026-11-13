@@ -26,7 +26,10 @@ export class ComputerMcpTransport implements Transport {
   onmessage?: (message: JSONRPCMessage) => void;
   /** Why the computer ended the session, when it said. */
   closeError: ComputerMcpSessionError | null = null;
-  readonly #hub: Pick<ComputerAppHub, "openMcpSession" | "withRunnerAdmission">;
+  readonly #hub: Pick<
+    ComputerAppHub,
+    "openMcpSession" | "withRunnerAdmission" | "requireAgentAccess"
+  >;
   readonly #target: {
     readonly authorize: () => Promise<void>;
     readonly launch: LocalMcpLaunch;
@@ -42,7 +45,7 @@ export class ComputerMcpTransport implements Transport {
   #session: ComputerMcpSession | undefined;
 
   constructor(
-    hub: Pick<ComputerAppHub, "openMcpSession" | "withRunnerAdmission">,
+    hub: Pick<ComputerAppHub, "openMcpSession" | "withRunnerAdmission" | "requireAgentAccess">,
     target: {
       readonly authorize: () => Promise<void>;
       readonly launch: LocalMcpLaunch;
@@ -60,6 +63,7 @@ export class ComputerMcpTransport implements Transport {
     const admitted = await this.#hub.withRunnerAdmission(this.#target.runnerId, async () => {
       this.#abandoned.signal.throwIfAborted();
       await this.#target.authorize();
+      await this.#hub.requireAgentAccess(this.#target.runnerId);
       this.#abandoned.signal.throwIfAborted();
       return {
         opening: this.#hub.openMcpSession({
@@ -99,9 +103,12 @@ export class ComputerMcpTransport implements Transport {
     }
     // The SDK builds messages with fields left `undefined`, which JSON drops:
     // what the computer is sent is the JSON the message is.
-    await this.#session.send(
-      JSON.parse(JSON.stringify(message)) as HostIntegrationsMcpMessage["message"],
-    );
+    await this.#hub.withRunnerAdmission(this.#target.runnerId, async () => {
+      await this.#hub.requireAgentAccess(this.#target.runnerId);
+      await this.#session?.send(
+        JSON.parse(JSON.stringify(message)) as HostIntegrationsMcpMessage["message"],
+      );
+    });
   }
 
   /**

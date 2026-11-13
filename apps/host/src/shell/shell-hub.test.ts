@@ -178,8 +178,9 @@ describe("ShellHub admission", () => {
       reach: "nobody",
     };
     await expect(connect()).rejects.toMatchObject({
-      code: "reach_denied",
-      message: "example-mac does not allow access from other computers.",
+      code: "device-access-off",
+      message: "Files and commands are off on example-mac.",
+      context: { machineId: context.target, capability: "files" },
     });
     context.store.state.machine.policy = {
       ...context.store.state.machine.policy,
@@ -205,7 +206,7 @@ describe("ShellHub admission", () => {
       }),
     ).rejects.toSatisfy((error: unknown) => {
       const rejection = error as { code?: string; message?: string };
-      expect(rejection.code).toBe("target_offline");
+      expect(rejection.code).toBe("device-offline");
       expect(rejection.message).toBe("example-mac is offline (last seen 2 hours ago).");
       return true;
     });
@@ -352,13 +353,31 @@ describe("ShellHub activation", () => {
     });
   });
 
-  it("ends a session whose policy revision moved while the target was starting", async () => {
+  it("activates under unchanged shell authority after Browser or Apps changes", async () => {
+    const context = harness();
+    const pending = await openSession(context);
+    context.store.state.machine.revision += 1;
+    context.store.state.machine.policy = {
+      ...context.store.state.machine.policy,
+      browser: false,
+      apps: false,
+    };
+    const session = await activate(context, pending);
+    expect(context.store.state.activated).toContain(session.sessionId);
+    expect(context.store.state.ended).toEqual([]);
+  });
+
+  it("ends a session whose shell policy changed while the target was starting", async () => {
     const context = harness();
     const session = await openSession(context);
     if (session.open.type !== "host.shell.session.open") throw new Error("unreachable");
     const sessionId = await context.hub.claimDataSocket(session.open.dataTicket);
     context.hub.attachDataSocket(sessionId, byteSocket());
     context.store.state.machine.revision += 1;
+    context.store.state.machine.policy = {
+      ...context.store.state.machine.policy,
+      commands: !context.store.state.machine.policy.commands,
+    };
 
     await context.hub.handleMessage(context.peer, context.stream, {
       ...context.stream.fence,

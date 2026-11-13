@@ -1,3 +1,4 @@
+import { DeviceRefusalContextSchema } from "@opensteer/protocol";
 /// <reference lib="dom" />
 import { parentPort } from "node:worker_threads";
 import { setImmediate as yieldTurn } from "node:timers/promises";
@@ -256,6 +257,8 @@ async function pump(key: string, context: Context) {
               : String(value),
           );
           if (context.vm.typeof(state.error) === "object" && value !== null) {
+            const deviceContext = DeviceRefusalContextSchema.safeParse(value);
+            if (deviceContext.success) Object.assign(call.failure, deviceContext.data);
             const code = context.vm.getProp(state.error, "code");
             const performed = context.vm.getProp(state.error, "performed");
             if (context.vm.typeof(code) === "string")
