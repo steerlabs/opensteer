@@ -11,7 +11,7 @@
     "./limits": "./src/limits.ts"
   },
   "scripts": {
-    "clean": "rm -rf dist *.tsbuildinfo",
+    "clean": "node ../../scripts/clean.mjs dist *.tsbuildinfo",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

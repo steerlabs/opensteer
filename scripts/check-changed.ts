@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { readGraph, parseDiff } from "../.github/scripts/ci-changes.mjs";
 import { localPlan } from "../.github/scripts/local-check.mjs";
+import { pnpmInvocation } from "./pnpm-invocation.js";
 
 const root = resolve(import.meta.dirname, "..");
 const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
@@ -47,12 +48,14 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     console.log(
       "No changed or sibling tests selected; provide a focused journey for behavior changes.",
     );
-  if (!values["dry-run"])
+  if (!values["dry-run"]) {
+    const [node, pnpm] = pnpmInvocation(process.env);
     for (const args of plan.commands) {
-      const result = spawnSync("pnpm", args, { cwd: root, stdio: "inherit" });
+      const result = spawnSync(node, [pnpm, ...args], { cwd: root, stdio: "inherit" });
       if (result.status !== 0) {
         process.exitCode = result.status ?? 1;
         break;
       }
     }
+  }
 }

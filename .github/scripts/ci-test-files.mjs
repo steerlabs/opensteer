@@ -57,8 +57,13 @@ export const optInIntegrationBenchmarks = [
   "tests/team-mobile-network.integration.test.ts",
   "tests/team-performance.integration.test.ts",
 ];
-// Real Windows behaviour: `vitest --config vitest.windows.config.ts` on the Windows CI job.
-export const windowsTestInclude = ["apps/**/*.windows.test.ts", "packages/**/*.windows.test.ts"];
+// Real Windows behaviour (the supervisor's Job, cmd, junctions, a non-administrator token).
+// Only the native-windows lane runs them, through vitest.windows.config.ts.
+export const windowsTestInclude = [
+  "apps/**/*.windows.test.ts",
+  "packages/**/*.windows.test.ts",
+  "tests/**/*.windows.test.ts",
+];
 export const defaultTestExclude = [
   "**/*.integration.test.*",
   "**/*.gui.test.*",

@@ -204,5 +204,24 @@
     "tsconfig.base.json",
     "tsconfig.json",
     "tsconfig.package.json"
+  ],
+  "native-windows": [
+    ".github/scripts/ci-test-files.mjs",
+    "apps/desktop/scripts/build-process-supervisor.ts",
+    "apps/desktop/tsconfig.json",
+    "apps/runner/scripts/build-native-fs.ts",
+    "apps/runner/tsconfig.json",
+    "packages/core",
+    "packages/shared",
+    "scripts/dev-supervisor.ts",
+    "scripts/process-supervisor-path.ts",
+    "tests/dev-launcher.test.ts",
+    "tests/dev-launcher.windows.test.ts",
+    "tests/windows-lane.windows.test.ts",
+    "tsconfig.base.json",
+    "tsconfig.json",
+    "tsconfig.package.json",
+    "vitest.process-supervisor.setup.ts",
+    "vitest.windows.config.ts"
   ]
 }

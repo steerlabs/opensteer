@@ -13,7 +13,8 @@ focused journey across any boundary you change. Empty selections and skipped, bl
 ## Selecting checks
 
 Import selection misses runtime reads and launches. Declare those in the native task's
-[extra inputs](../.github/scripts/ci-native-mac.json). CI inventories and the merged lock graph
+[extra inputs](../.github/scripts/ci-native-mac.json) or the
+[Windows lane's inputs](../.github/scripts/ci-native-windows.json). CI inventories and the merged lock graph
 must fail closed when incomplete or inconsistent. Selection and scheduling live in
 [local-check.mjs](../.github/scripts/local-check.mjs) and
 [ci-changes.mjs](../.github/scripts/ci-changes.mjs); procedures belong in the testing skill.
@@ -27,6 +28,12 @@ substitute, and a missing one fails. Real Chromium suites are classified by the 
 [`realBrowserTests` list](../.github/scripts/ci-test-files.mjs), excluded from default discovery,
 and run by `pnpm test:browser` in the existing Linux browser-journeys job. Their process startup
 and cleanup have a separate budget; explicit scenario and operation deadlines still apply.
+
+`*.windows.test.ts` files prove real Windows behaviour and run only in the `native-windows` job,
+with its Go module tests, through `vitest.windows.config.ts`. Hosted Windows runners run every step
+as an administrator with UAC off, which hides the failures a person's standard account would hit, so
+that job runs them as a disposable user outside Administrators, and its lane test asserts the
+token. Keep pure Windows logic (`path.win32` tables, quoting, environment merging) in ordinary tests.
 
 ## Integration databases
 

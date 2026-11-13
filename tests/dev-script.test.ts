@@ -1,5 +1,6 @@
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { builtProcessSupervisor } from "../scripts/process-supervisor-path.js";
 import {
   developmentPreflightCommands,
   configureDevelopmentEnvironment,
@@ -73,6 +74,20 @@ describe("development service selection", () => {
     expect(developmentPreflightCommands(["host", "web"])).toEqual([
       ["--filter", "@opensteer/runner", "build:native-fs"],
     ]);
+  });
+
+  it("runs every service under the supervisor built for this computer", () => {
+    const environment: NodeJS.ProcessEnv = {};
+    configureDevelopmentEnvironment("team", environment);
+    expect(environment.OPENSTEER_PROCESS_SUPERVISOR_EXECUTABLE).toBe(
+      builtProcessSupervisor(resolve(import.meta.dirname, "..")),
+    );
+    expect(builtProcessSupervisor("/r", "win32", "x64")).toBe(
+      join("/r", "apps/desktop/generated-native/windows-amd64/opensteer-process-supervisor.exe"),
+    );
+    expect(builtProcessSupervisor("/r", "linux", "arm64")).toBe(
+      join("/r", "apps/desktop/generated-native/linux-arm64/opensteer-process-supervisor"),
+    );
   });
 
   it("uses the hosting computer’s native file helper", () => {

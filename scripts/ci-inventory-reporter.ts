@@ -1,15 +1,17 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import { relative } from "node:path";
+import { relative, sep } from "node:path";
 import type { Reporter, TestModule, TestSpecification } from "vitest/node";
+// Inventories name files as Git does, with forward slashes on every OS.
+const repositoryPath = (file: string) => relative(process.cwd(), file).split(sep).join("/");
 /** Discovery comes from an unsharded Vitest list invocation of the same config. */
 export default class InventoryReporter implements Reporter {
   private executed: string[] = [];
   private selected: string[] = [];
   onTestRunStart(specs: readonly TestSpecification[]) {
-    this.selected = specs.map((spec) => relative(process.cwd(), spec.moduleId)).sort();
+    this.selected = specs.map((spec) => repositoryPath(spec.moduleId)).sort();
   }
   onTestModuleEnd(module: TestModule) {
-    if (module.state() !== "skipped") this.executed.push(relative(process.cwd(), module.moduleId));
+    if (module.state() !== "skipped") this.executed.push(repositoryPath(module.moduleId));
   }
   onTestRunEnd() {
     const path = process.env.CI_INVENTORY_PATH;
@@ -20,7 +22,7 @@ export default class InventoryReporter implements Reporter {
       raw.some((p) => !p || typeof p !== "object" || !("file" in p) || typeof p.file !== "string")
     )
       throw new Error("Invalid discovery");
-    const discovered = raw.map((p) => relative(process.cwd(), String(p.file))).sort();
+    const discovered = raw.map((p) => repositoryPath(String(p.file))).sort();
     writeFileSync(
       path,
       JSON.stringify(

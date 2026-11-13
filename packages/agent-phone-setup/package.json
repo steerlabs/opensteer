@@ -9,7 +9,7 @@
     "./webusb": "./src/webusb.ts"
   },
   "scripts": {
-    "clean": "rm -rf dist *.tsbuildinfo",
+    "clean": "node ../../scripts/clean.mjs dist *.tsbuildinfo",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

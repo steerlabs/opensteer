@@ -8,7 +8,7 @@ import { parse } from "yaml";
 import { z } from "zod";
 import { holdCheckoutWrites } from "@opensteer/shared/kernelLock";
 import { lockOrderMode } from "@opensteer/shared/lockOrderMode";
-import { builtProcessSupervisor } from "../tests/process-supervisor.test-support.js";
+import { builtProcessSupervisor } from "./process-supervisor-path.js";
 import { runBounded } from "./command-runner.js";
 import {
   invalidateIntegrationBundles,
@@ -182,7 +182,10 @@ export const integrationPrerequisites = [
   {
     filter: "@opensteer/desktop",
     script: "build:process-supervisor",
-    output: relative(resolve(import.meta.dirname, ".."), builtProcessSupervisor),
+    output: relative(
+      resolve(import.meta.dirname, ".."),
+      builtProcessSupervisor(resolve(import.meta.dirname, "..")),
+    ),
   },
 ] as const;
 

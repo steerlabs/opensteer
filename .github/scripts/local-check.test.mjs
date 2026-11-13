@@ -46,6 +46,20 @@ test("routes integration and GUI siblings through their owned launchers", () => 
     !p.commands.some((c) => c.includes("vitest") && c.some((a) => a.includes(".gui.test."))),
   );
 });
+test("Windows-real siblings run through the Windows config, and only on Windows", () => {
+  const files = ["packages/a/value.ts"];
+  const graph = [{ name: "a", dir: "packages/a", deps: [], coverage: [] }];
+  const present = ["packages/a/value.windows.test.ts"];
+  const windows = localPlan(files, graph, present, graph, "win32").commands;
+  assert.ok(
+    windows.some(
+      (c) =>
+        c.includes("vitest.windows.config.ts") && c.includes("packages/a/value.windows.test.ts"),
+    ),
+  );
+  const mac = localPlan(files, graph, present, graph, "darwin").commands;
+  assert.ok(!mac.some((c) => c.some((a) => a.includes(".windows.test."))));
+});
 test("Node fixture tests run through Node even for global CI inputs", () => {
   const p = localPlan([".github/scripts/a.mjs"], [], [".github/scripts/a.test.mjs"]);
   assert.ok(

@@ -17,6 +17,8 @@ outputs:
     value: ${{ steps.detect.outputs.integration }}
   native-mac:
     value: ${{ steps.detect.outputs.native-mac }}
+  native-windows:
+    value: ${{ steps.detect.outputs.native-windows }}
   android:
     value: ${{ steps.detect.outputs.android }}
   browser-journeys:

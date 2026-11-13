@@ -12,7 +12,7 @@
   "scripts": {
     "test": "vitest run --config vitest.config.ts",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist *.tsbuildinfo"
+    "clean": "node ../../scripts/clean.mjs dist *.tsbuildinfo"
   },
   "dependencies": {
     "@noble/curves": "2.4.0",
