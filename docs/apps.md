@@ -22,6 +22,12 @@ agents and programs publish or call apps through a managed Run; approving a conn
 direct app-server authority. Servers use the program launch and containment paths, get the program
 environment allowlist plus `PORT`, and never receive an Opensteer tool credential.
 
+A server's `start` is shell source for its hosting computer: `/bin/sh -c` on macOS and Linux,
+`cmd.exe /d /s /c` on Windows, passed as written. Windows uses cmd rather than PowerShell because
+Windows PowerShell 5.1 has no `&&` and prefers npm's `.ps1` shims, which execution policy blocks; an
+author who wants PowerShell names it. Only the hosting Runner knows its OS, so it adds the shell to
+the Run's guide.
+
 App tool outputs carry app identity and publication metadata, never a viewing credential or a
 token-bearing URL; clients get viewing authority on their own and treat the whole URL as private.
 

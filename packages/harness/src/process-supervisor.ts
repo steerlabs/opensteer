@@ -1,4 +1,11 @@
-import { hostCommandPlatform, planLaunch, resolveCommand } from "@opensteer/shared/command";
+import {
+  hostCommandPlatform,
+  planLaunch,
+  resolveCommand,
+  type CommandPlatform,
+  type LaunchPlan,
+  type ResolvedCommand,
+} from "@opensteer/shared/command";
 import {
   processSupervisorExecutableVariable,
   writeProcessControl,
@@ -14,6 +21,11 @@ type SupervisedProcessOptions = {
   readonly cwd: string;
   readonly environment: Readonly<Record<string, string>>;
   readonly signal?: AbortSignal;
+  /**
+   * A complete cmd.exe command line for shell source the caller planned with
+   * `planShellLaunch`; `executable` is that cmd.exe and `args` is empty.
+   */
+  readonly windowsCommandLine?: string;
   /** `closed` ends the child's stdin at once, for a child that must see EOF rather than wait. */
   readonly stdin?: "pipe" | "closed";
 } & (
@@ -38,6 +50,23 @@ export interface SupervisedProcess {
     readonly signal: NodeJS.Signals | null;
   }>;
   terminate(graceMs?: number): Promise<void>;
+}
+
+/** A supervised process that has not exited: while it runs, its whole tree is its own. */
+export interface RunningSupervisedProcess {
+  readonly environment: Readonly<Record<string, string>>;
+  /** The supervisor's pid, with when it started: a reused pid is another process. */
+  readonly identity: string;
+  readonly pid: number;
+  /** Tells the supervisor to stop its tree; it exits once nothing of the tree is left. */
+  control(mode: "force" | "graceful"): void;
+}
+
+const running = new Set<RunningSupervisedProcess>();
+
+/** Every supervised process this process started that has not exited yet. */
+export function runningSupervisedProcesses(): readonly RunningSupervisedProcess[] {
+  return [...running];
 }
 
 /**
@@ -65,10 +94,9 @@ export function spawnSupervised(options: SupervisedProcessOptions): SupervisedPr
       new Error(`${options.executable} was not found on the PATH it would run with.`),
       { code: "ENOENT" },
     );
-  const plan = planLaunch(resolved, options.args, {
-    environment: options.environment,
-    platform,
-  });
+  const plan = options.windowsCommandLine
+    ? plannedCommandLine(resolved, options.args, options.windowsCommandLine, platform)
+    : planLaunch(resolved, options.args, { environment: options.environment, platform });
   // A process group of its own lets the supervisor contain the tree on POSIX;
   // on Windows `detached` would only give it a console of its own.
   const child = spawn(
@@ -97,6 +125,15 @@ export function spawnSupervised(options: SupervisedProcessOptions): SupervisedPr
   control.on("error", (error: Error) => {
     controlError = error;
   });
+  const entry: RunningSupervisedProcess = {
+    control: (mode) => {
+      if (!controlError) void writeProcessControl(control as Writable, mode).catch(() => undefined);
+    },
+    environment: options.environment,
+    identity: `${String(child.pid)}@${String(Date.now())}`,
+    pid: child.pid ?? 0,
+  };
+  if (child.pid !== undefined) running.add(entry);
   if (options.stdin === "closed") child.stdin.end();
   const maxOutputBytes =
     options.output === "raw" ? Number.POSITIVE_INFINITY : (options.maxOutputBytes ?? 1_048_576);
@@ -106,8 +143,14 @@ export function spawnSupervised(options: SupervisedProcessOptions): SupervisedPr
     readonly code: number | null;
     readonly signal: NodeJS.Signals | null;
   }>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", (code, signal) => resolve({ code, signal }));
+    child.once("error", (error) => {
+      running.delete(entry);
+      reject(error);
+    });
+    child.once("exit", (code, signal) => {
+      running.delete(entry);
+      resolve({ code, signal });
+    });
   });
 
   let childClosed = false;
@@ -137,6 +180,19 @@ export function spawnSupervised(options: SupervisedProcessOptions): SupervisedPr
       );
   }
   return { child, exited, stderr, stdout, terminate };
+}
+
+function plannedCommandLine(
+  resolved: ResolvedCommand,
+  args: readonly string[],
+  windowsCommandLine: string,
+  platform: CommandPlatform,
+): LaunchPlan {
+  if (platform !== "win32" || resolved.kind !== "native" || args.length > 0)
+    throw new TypeError(
+      "A Windows command line runs one native program with no further arguments.",
+    );
+  return { args: [], executable: resolved.path, windowsCommandLine };
 }
 
 async function stopSupervised(

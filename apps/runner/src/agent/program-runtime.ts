@@ -165,7 +165,7 @@ function safeError(error) {
 }
 
 function writeResult(value) {
-  writeFileSync(3, JSON.stringify(value), { encoding: "utf8" });
+  writeFileSync(requiredEnv("OPENSTEER_RESULT_PATH"), JSON.stringify(value), { encoding: "utf8" });
 }
 `;
 }

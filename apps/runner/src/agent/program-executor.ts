@@ -1,6 +1,9 @@
-import { programEnvironment } from "@opensteer/harness";
-import { setPrivateDirectoryMode, setPrivateFileMode } from "@opensteer/shared/privateFiles";
-import { spawn } from "node:child_process";
+import { programEnvironment, spawnSupervised } from "@opensteer/harness";
+import {
+  readBoundedRegularFile,
+  setPrivateDirectoryMode,
+  setPrivateFileMode,
+} from "@opensteer/shared/privateFiles";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -30,6 +33,8 @@ export interface ProgramEndpoints {
 export type ProgramLaunchPlanner = (input: {
   readonly environment: Readonly<Record<string, string>>;
   readonly privateDirectory: string;
+  /** The one file in `privateDirectory` the program writes: its execution result. */
+  readonly resultFile?: string;
   readonly workspacePath: string;
 }) => Promise<HarnessProcessLaunchWrapper>;
 
@@ -63,6 +68,7 @@ export class TriggerProgramExecutor {
     assertChildPath(this.#privateDirectory, privateExecutionRoot);
     const runtimeFile = join(privateExecutionRoot, "runtime.mjs");
     const eventFile = join(privateExecutionRoot, "event.json");
+    const resultFile = join(privateExecutionRoot, "result.json");
     await mkdir(privateExecutionRoot, { mode: 0o700, recursive: true });
     await setPrivateDirectoryMode(privateExecutionRoot);
     try {
@@ -70,8 +76,17 @@ export class TriggerProgramExecutor {
         writePrivateFile(programFile, context.program.source),
         writePrivateFile(runtimeFile, triggerProgramRuntimeSource(pathToFileURL(programFile).href)),
         writePrivateFile(eventFile, JSON.stringify(context.event)),
+        // Created empty so a sandbox can bind exactly this file writable.
+        writePrivateFile(resultFile, ""),
       ]);
-      return await this.#run({ context, eventFile, input, privateExecutionRoot, runtimeFile });
+      return await this.#run({
+        context,
+        eventFile,
+        input,
+        privateExecutionRoot,
+        resultFile,
+        runtimeFile,
+      });
     } finally {
       await Promise.all([
         rm(programFile, { force: true }).catch(() => undefined),
@@ -90,9 +105,10 @@ export class TriggerProgramExecutor {
       readonly workspace: AgentHomeWorkspace;
     };
     readonly privateExecutionRoot: string;
+    readonly resultFile: string;
     readonly runtimeFile: string;
   }): Promise<TriggerExecutionOutput> {
-    const environment = triggerEnvironment(input.context, input.input.endpoints, input.eventFile);
+    const environment = triggerEnvironment(input.context, input.input.endpoints, input);
     const args = ["--enable-source-maps"];
     if (input.context.program.language === "typescript") {
       args.push("--experimental-transform-types");
@@ -101,6 +117,7 @@ export class TriggerProgramExecutor {
     const wrap = await input.input.planLaunch({
       environment,
       privateDirectory: input.privateExecutionRoot,
+      resultFile: input.resultFile,
       workspacePath: input.input.workspace.path,
     });
     const launch = wrap({
@@ -109,28 +126,21 @@ export class TriggerProgramExecutor {
       environment,
       executable: this.#nodeExecutable,
     });
-    const child = spawn(launch.executable, [...launch.args], {
-      cwd: launch.cwd,
-      detached: process.platform !== "win32",
-      env: { ...launch.environment },
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe", "pipe"],
-      windowsHide: true,
+    const child = spawnSupervised({
+      ...launch,
+      output: "raw",
+      stdin: "closed",
     });
     const stdout = collectBounded(child.stdout, streamByteLimit);
     const stderr = collectBounded(child.stderr, streamByteLimit);
-    const result = collectBounded(readablePipe(child.stdio[3]), resultByteLimit);
-    const stop = () => terminateChild(child);
+    const stop = () => void child.terminate().catch(() => undefined);
     if (input.input.signal.aborted) stop();
     else input.input.signal.addEventListener("abort", stop, { once: true });
-    const exit = await new Promise<{
-      readonly code: number | null;
-      readonly signal: string | null;
-    }>((resolvePromise, reject) => {
-      child.once("error", reject);
-      child.once("close", (code, signal) => resolvePromise({ code, signal }));
-    }).finally(() => input.input.signal.removeEventListener("abort", stop));
-    const [stdoutText, stderrText, resultText] = await Promise.all([stdout, stderr, result]);
+    // The supervisor exits only once nothing it started is left, so the result is final.
+    const exit = await child.exited.finally(() =>
+      input.input.signal.removeEventListener("abort", stop),
+    );
+    const [stdoutText, stderrText] = await Promise.all([stdout, stderr]);
     const completedAt = new Date().toISOString();
     if (input.input.signal.aborted) {
       return {
@@ -144,7 +154,7 @@ export class TriggerProgramExecutor {
         stdout: stdoutText,
       };
     }
-    const programResult = parseProgramResult(resultText);
+    const programResult = await readProgramResult(input.resultFile);
     if (exit.code === 0 && programResult.ok) {
       return {
         completedAt,
@@ -178,10 +188,11 @@ export class TriggerProgramExecutor {
 function triggerEnvironment(
   context: TriggerExecutionContext,
   endpoints: ProgramEndpoints,
-  eventFile: string,
+  files: { readonly eventFile: string; readonly resultFile: string },
 ): Record<string, string> {
   const environment = programEnvironment();
-  environment.OPENSTEER_EVENT_PATH = eventFile;
+  environment.OPENSTEER_EVENT_PATH = files.eventFile;
+  environment.OPENSTEER_RESULT_PATH = files.resultFile;
   environment.OPENSTEER_MCP_URL = endpoints.mcp.url;
   environment.OPENSTEER_MCP_TOKEN = endpoints.mcp.token;
   environment.OPENSTEER_OCCURRENCE_ID = context.occurrenceId;
@@ -199,15 +210,13 @@ async function writePrivateFile(path: string, content: string): Promise<void> {
 }
 
 async function collectBounded(
-  stream: NodeJS.ReadableStream | null,
+  stream: AsyncIterable<Buffer>,
   maximumBytes: number,
 ): Promise<string> {
-  if (!stream) return "";
   const chunks: Buffer[] = [];
   let retainedBytes = 0;
   let truncated = false;
-  for await (const raw of stream) {
-    const chunk = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+  for await (const chunk of stream) {
     chunks.push(chunk);
     retainedBytes += chunk.byteLength;
     while (retainedBytes > maximumBytes && chunks.length > 0) {
@@ -229,17 +238,33 @@ async function collectBounded(
   return Buffer.concat(chunks).toString("utf8");
 }
 
-function readablePipe(
-  stream: ReturnType<typeof spawn>["stdio"][number],
-): NodeJS.ReadableStream | null {
-  if (stream === null || stream === undefined) return null;
-  if (!("readable" in stream)) throw new Error("Trigger result pipe is not readable");
-  return stream;
+type ProgramResult =
+  { readonly error: string; readonly ok: false } | { readonly ok: true; readonly value: unknown };
+
+const invalidResult: ProgramResult = {
+  error: "Trigger program returned an invalid execution result",
+  ok: false,
+};
+
+/** Read once the program's whole tree has stopped, so nothing can still be writing it. */
+async function readProgramResult(resultFile: string): Promise<ProgramResult> {
+  let bytes: Buffer | null;
+  try {
+    const refused = () => new Error("Trigger result file refused");
+    bytes = await readBoundedRegularFile(resultFile, resultByteLimit, {
+      changedError: refused,
+      invalidFileError: refused,
+      missing: "null",
+      sizeError: refused,
+    });
+  } catch {
+    // Replaced by something other than a regular file, or larger than a result may be.
+    return invalidResult;
+  }
+  return parseProgramResult(bytes?.toString("utf8") ?? "");
 }
 
-function parseProgramResult(
-  value: string,
-): { readonly error: string; readonly ok: false } | { readonly ok: true; readonly value: unknown } {
+function parseProgramResult(value: string): ProgramResult {
   if (!value) return { error: "Trigger program returned no execution result", ok: false };
   try {
     const parsed = JSON.parse(value) as { ok?: unknown; error?: unknown; value?: unknown };
@@ -250,27 +275,7 @@ function parseProgramResult(
   } catch {
     // The normalized failure below is enough; stdout and stderr remain available.
   }
-  return { error: "Trigger program returned an invalid execution result", ok: false };
-}
-
-function terminateChild(child: ReturnType<typeof spawn>): void {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  try {
-    if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGTERM");
-    else child.kill("SIGTERM");
-  } catch {
-    child.kill("SIGTERM");
-  }
-  const timer = setTimeout(() => {
-    if (child.exitCode !== null || child.signalCode !== null) return;
-    try {
-      if (process.platform !== "win32" && child.pid) process.kill(-child.pid, "SIGKILL");
-      else child.kill("SIGKILL");
-    } catch {
-      child.kill("SIGKILL");
-    }
-  }, 5_000);
-  timer.unref();
+  return invalidResult;
 }
 
 function assertChildPath(root: string, child: string): void {

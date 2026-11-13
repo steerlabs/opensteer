@@ -1,6 +1,7 @@
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { AttachmentCache } from "../attachments/attachment-cache.js";
-import { agentTools } from "@opensteer/agent-tools";
+import { agentTools, appHostingGuide } from "@opensteer/agent-tools";
+import { hostCommandPlatform } from "@opensteer/shared/command";
 import {
   ignoreForeignTestRequest,
   probeTestServer,
@@ -4040,7 +4041,13 @@ describe("RunnerRuntime", () => {
         });
         return;
       }
-      expect(driver.context?.platformGuide).toBe(command.context.agentTools.instructions);
+      // The Host's guide, completed with how this computer runs an app's start.
+      expect(driver.context?.platformGuide).toBe(
+        `${command.context.agentTools.instructions}\n\n${appHostingGuide({
+          platform: hostCommandPlatform(),
+          tools: command.context.agentTools.tools,
+        })}`,
+      );
       expect(driver.context?.agentTools.tools).toEqual(command.context.agentTools.tools);
       expect(reports).toEqual([
         ["release-notes", "research"],

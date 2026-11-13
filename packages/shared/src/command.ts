@@ -225,10 +225,30 @@ export function planLaunch(
   };
 }
 
+/**
+ * How to run `command` as shell source, the way the computer runs an app's
+ * start string: `/bin/sh -c` on POSIX, `cmd.exe /d /s /c` on Windows. The
+ * text is the author's own shell code, so it is quoted for cmd's outer pair
+ * only and never escaped as one argument; `/s` strips exactly that pair.
+ */
+export function planShellLaunch(
+  command: string,
+  options: { readonly platform: CommandPlatform; readonly environment: Environment },
+): LaunchPlan {
+  if (options.platform !== "win32") return { args: ["-c", command], executable: "/bin/sh" };
+  if (/[\0\r\n]/u.test(command))
+    throw new Error("cmd.exe cannot run a command that contains NUL or a line break.");
+  return {
+    args: [],
+    executable: path.win32.join(windowsSystemRoot(options.environment), "System32", "cmd.exe"),
+    windowsCommandLine: `cmd.exe /d /s /c "${command}"`,
+  };
+}
+
 function windowsSystemRoot(environment: Environment): string {
   const root = getEnvironmentValue(environment, "SystemRoot", "win32");
   if (!root || !isFullyQualifiedWindowsPath(root))
-    throw new Error("A Windows script needs SystemRoot in the environment it runs with.");
+    throw new Error("A Windows shell or script needs SystemRoot in the environment it runs with.");
   return root;
 }
 
