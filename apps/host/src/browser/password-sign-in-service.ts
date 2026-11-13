@@ -59,6 +59,7 @@ type Finish = "settled" | "ended-elsewhere" | "retrying";
 
 interface Call {
   readonly sessionId?: string | undefined;
+  readonly surfaceId?: import("@opensteer/protocol").BrowserSurfaceId | undefined;
   readonly credential?: "card" | undefined;
   readonly callId: string;
   readonly arrivedAt?: number;
@@ -1200,7 +1201,13 @@ export class PasswordSignInService {
       pending
         ? [...operation.calls.values()].flatMap((call) =>
             call.sessionId
-              ? [{ sessionId: BrowserSessionIdSchema.parse(call.sessionId), runId: call.runId }]
+              ? [
+                  {
+                    sessionId: BrowserSessionIdSchema.parse(call.sessionId),
+                    runId: call.runId,
+                    ...(call.surfaceId ? { surfaceId: call.surfaceId } : {}),
+                  },
+                ]
               : [],
           )
         : [],
@@ -1214,6 +1221,7 @@ export class PasswordSignInService {
   #recordCall(operation: Operation, call: Call): void {
     const identity: Call = {
       sessionId: call.sessionId,
+      surfaceId: call.surfaceId,
       credential: call.credential,
       callId: call.callId,
       ownerId: call.ownerId,
@@ -1267,7 +1275,11 @@ export interface PasswordSignInServiceOptions {
   readonly now?: () => number;
   readonly onPendingBrowserPins?: (
     key: string,
-    pins: readonly { sessionId: import("@opensteer/protocol").BrowserSessionId; runId: RunId }[],
+    pins: readonly {
+      sessionId: import("@opensteer/protocol").BrowserSessionId;
+      runId: RunId;
+      surfaceId?: import("@opensteer/protocol").BrowserSurfaceId;
+    }[],
   ) => void;
   readonly onError?: (error: unknown) => void;
   readonly onRequestResolved: () => void;

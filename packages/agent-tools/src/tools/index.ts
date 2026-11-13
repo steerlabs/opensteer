@@ -18,17 +18,7 @@ import {
   thread_queue,
 } from "./threads.js";
 import { person_message, person_show } from "./person.js";
-import {
-  browser_profile_list,
-  sign_in,
-  use_card,
-  browser_profile_request,
-  browser_tab_read,
-  browser_tab_write,
-  browser_session_list,
-  browser_session_open,
-  browser_session_close,
-} from "./browser.js";
+import { browser_profile_list, sign_in, use_card, browser_profile_request } from "./browser.js";
 import { device_access_request, machine_full_disk_access_request } from "./computer.js";
 import { trigger_read, trigger_write } from "./triggers.js";
 import { integrationTools } from "./integrations.js";
@@ -62,11 +52,6 @@ export const agentTools = [
   browser_profile_request,
   machine_full_disk_access_request,
   device_access_request,
-  browser_tab_read,
-  browser_tab_write,
-  browser_session_list,
-  browser_session_open,
-  browser_session_close,
   trigger_read,
   trigger_write,
   ...integrationTools,

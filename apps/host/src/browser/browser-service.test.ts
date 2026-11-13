@@ -3879,14 +3879,15 @@ describe("BrowserService", () => {
     }
   });
 
-  it("answers a late command without restoring an ended Run's actor or attachment", async () => {
+  it("refuses a late command without restoring an ended Run's actor or attachment", async () => {
     const f = await actorAdmissionFixture();
     try {
       await f.service.detachAgentSessionsForBinding(f.authority.agentBindingId);
       const resolveActors = vi.spyOn(f.backing, "resolvePlaceActors");
-      await expect(f.cdp.request({ method: "Browser.getVersion" })).resolves.toEqual({});
-      expect(f.forwarded).toHaveLength(1);
-      expect(f.forwarded[0]?.actorToken).toBeUndefined();
+      await expect(f.cdp.request({ method: "Browser.getVersion" })).rejects.toMatchObject({
+        name: "BrowserCdpConnectionEnded",
+      });
+      expect(f.forwarded).toHaveLength(0);
       expect(resolveActors).not.toHaveBeenCalled();
       expect(
         await f.backing.listActiveBrowserSessionsForAgentBinding(f.authority.agentBindingId),
@@ -4932,7 +4933,7 @@ describe("BrowserService", () => {
       // The refusal names the candidates, because the agent's only way out of
       // it is to call again with one of these environmentIds.
       message:
-        "Choose which connected computer should run this browser session: " +
+        "Choose which connected computer should run this browser: " +
         `Computer ${first.runnerId} (environmentId ${environmentId}), ` +
         `Computer ${second.runnerId} (environmentId ${environmentId}).`,
     });
@@ -5019,8 +5020,7 @@ describe("BrowserService", () => {
       }),
     ).rejects.toMatchObject({
       code: "bad_request",
-      message:
-        "An existing Browser Session already runs on a computer, so attaching to it cannot choose one.",
+      message: "An existing tab already belongs to a computer, so selecting it cannot choose one.",
     });
   });
 
@@ -5841,7 +5841,11 @@ async function attachedSessionIds(
 
 class MemoryBrowserRepository implements BrowserSessionRepository {
   async resolveResourceAccess() {
-    return { specialistAllowed: true };
+    return {
+      specialistAllowed: true,
+      access: "read-write" as const,
+      runAccess: "read-write" as const,
+    };
   }
   mainRunnerId: RunnerId | undefined;
   rememberedPlacement: RunnerId | null = null;

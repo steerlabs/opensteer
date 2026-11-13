@@ -644,7 +644,12 @@ export class PersonalTabStore {
         .execute(databaseOperationOptions());
     });
   }
-  async close(ownerId: UserId, id: string, person = true) {
+  async close(
+    ownerId: UserId,
+    id: string,
+    person = true,
+    authorize?: (database: Database) => Promise<void>,
+  ) {
     const row = await this.database
       .selectFrom("personalTabs")
       .selectAll()
@@ -655,6 +660,7 @@ export class PersonalTabStore {
       await this.#lockLayout(tx, ownerId);
       const { arrangement } = await new BrowserTabGroupStore(tx).orderedTabs(ownerId, tx);
       const at = arrangement.order.indexOf(id);
+      await authorize?.(tx);
       const result = await tx
         .updateTable("personalTabs")
         .set({
