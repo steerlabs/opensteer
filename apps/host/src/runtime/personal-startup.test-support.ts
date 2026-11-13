@@ -329,7 +329,7 @@ export async function startPersonalRuntime(input: {
       maxConcurrentRuns: vertical?.maxConcurrentRuns ?? input.maxConcurrentRuns ?? 1,
       maxConcurrentTriggerPrograms: 1,
       mode: "development",
-      nativeFsHelperBinary: resolve("apps/runner/native-fs-helper/opensteer-native-fs"),
+      nativeFsHelperBinary: resolve("apps/runner/native-fs-helper/opensteer-native-fs-test"),
       nodeExecutable: process.execPath,
       privateStateDirectory: join(directory, "private", "harness-state"),
       projectContinuationIdentity: providerContinuationIdentityProjector(keys.privateKey),
@@ -384,7 +384,7 @@ export async function startPersonalRuntime(input: {
       void closed.catch(() => undefined);
       void ready.promise.catch(() => undefined);
       owned.child.send({
-        nativeFsHelperBinary: resolve("apps/runner/native-fs-helper/opensteer-native-fs"),
+        nativeFsHelperBinary: resolve("apps/runner/native-fs-helper/opensteer-native-fs-test"),
         bootId,
         config: { ...config, hostUrl: config.hostUrl.toString() },
         engine: vertical.runnerChild,
