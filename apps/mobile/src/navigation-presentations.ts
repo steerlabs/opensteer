@@ -32,6 +32,29 @@ export const screenPresentations = {
 const presentations: Readonly<Record<string, NativeStackNavigationOptions["presentation"]>> =
   screenPresentations;
 
+/**
+ * Whether the screen of the route `key` is still drawn: everything over it is a
+ * sheet it shows beneath. iOS presents a modal as a card over the screen it
+ * came from; Android's covers it.
+ */
+export function routeShown(
+  state: {
+    readonly index: number;
+    readonly routes: readonly { readonly key: string; readonly name: string }[];
+  },
+  key: string,
+  os: string,
+): boolean {
+  for (let index = state.index; index >= 0; index--) {
+    const route = state.routes[index];
+    if (route === undefined) continue;
+    if (route.key === key) return true;
+    const presentation = presentations[route.name];
+    if (presentation !== "formSheet" && !(presentation === "modal" && os === "ios")) return false;
+  }
+  return false;
+}
+
 /** Sheets leave the underlying page in charge of the surrounding layout. */
 export function layoutRoute<T extends { readonly name: string }>(state: {
   readonly index: number;

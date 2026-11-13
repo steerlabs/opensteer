@@ -122,7 +122,7 @@ import { InsetView, Pane, useContentInsets } from "../ui/pane.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { AppText, Notice, SecondaryButton } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
-import { useAppForeground } from "../ui/foreground.js";
+import { useScreenPresence, type PagePresence } from "../ui/page-presence.js";
 import { NewTaskPane } from "./new-task.js";
 import { ThreadTitlePill } from "./thread-header.js";
 
@@ -166,12 +166,12 @@ function Surfaces(props: {
   readonly route: SurfacesRoute;
 }): ReactNode {
   const { snapshot, loadError, reload } = useHostSnapshot(props.hostClient);
-  const focused = useIsFocused();
-  const foreground = useAppForeground();
+  const presence = useScreenPresence();
   const authorized = snapshot.session === "authenticated" && snapshot.user !== null;
+  // Coming back into view, not out from under a sheet: the page never left the stream.
   useEffect(() => {
-    if (focused && foreground && authorized) void reload().catch(() => undefined);
-  }, [authorized, focused, foreground, reload]);
+    if (presence.shown && authorized) void reload().catch(() => undefined);
+  }, [authorized, presence.shown, reload]);
   if (!authorized)
     return (
       <Screen>
@@ -186,7 +186,7 @@ function Surfaces(props: {
   return (
     <SurfacesForUser
       key={snapshot.user?.id}
-      active={focused && foreground}
+      presence={presence}
       hostClient={props.hostClient}
       loadError={loadError}
       reload={reload}
@@ -197,7 +197,7 @@ function Surfaces(props: {
 }
 
 function SurfacesForUser(props: {
-  readonly active: boolean;
+  readonly presence: PagePresence;
   readonly hostClient: HostClient;
   readonly loadError: string | null;
   readonly reload: () => Promise<void>;
@@ -243,7 +243,7 @@ function SurfacesForUser(props: {
     );
   return (
     <Focused
-      active={props.active}
+      presence={props.presence}
       connected={connected}
       destination={destination}
       hostClient={props.hostClient}
@@ -263,7 +263,7 @@ type Companion = { readonly kind: "thread"; readonly threadId: string } | { read
  * hears that it is typing, so the pane being typed in is the one that lifts.
  */
 function Focused(props: {
-  readonly active: boolean;
+  readonly presence: PagePresence;
   readonly connected: boolean;
   readonly destination: PersonalSurfaceDestination;
   readonly hostClient: HostClient;
@@ -454,7 +454,7 @@ function Focused(props: {
   const agentTab = useThreadAgentTab(hostClient, besideId);
   const follow = useBrowserAgentFollow({
     agentTab,
-    held: !props.active,
+    held: !props.presence.interactive,
     onFollow: showTab,
     shownTab,
     threadId: besideId,
@@ -608,7 +608,7 @@ function Focused(props: {
       />
     ) : destination.kind !== "browser" ? (
       <MacAppView
-        active={props.active}
+        active={props.presence.interactive}
         destination={destination}
         hostClient={hostClient}
         key={JSON.stringify(destination)}
@@ -617,7 +617,7 @@ function Focused(props: {
       />
     ) : (
       <BrowserTab
-        active={props.active}
+        presence={props.presence}
         connected={props.connected}
         deploymentId={deploymentId}
         hereId={hereId}
@@ -769,7 +769,7 @@ const LocalPhoneTab = lazy(() =>
 );
 
 function BrowserTab(props: {
-  readonly active: boolean;
+  readonly presence: PagePresence;
   readonly connected: boolean;
   readonly deploymentId: string;
   /** This phone's own device in the Deployment, which needs no name beside a page. */
@@ -864,7 +864,7 @@ function BrowserTab(props: {
   };
   useBrowserPopupFollow(
     hostClient,
-    live && props.active ? { sessionId, tabId } : null,
+    live && props.presence.interactive ? { sessionId, tabId } : null,
     props.onPopup,
   );
   const popupEnded =
@@ -872,8 +872,8 @@ function BrowserTab(props: {
   const latestClosed = useRef(onClosed);
   latestClosed.current = onClosed;
   useEffect(() => {
-    if (popupEnded && props.active) latestClosed.current();
-  }, [popupEnded, props.active]);
+    if (popupEnded && props.presence.interactive) latestClosed.current();
+  }, [popupEnded, props.presence.interactive]);
 
   if ((live || local) && session !== null)
     return (
@@ -882,7 +882,7 @@ function BrowserTab(props: {
           local && phoneManager ? (
             <Suspense fallback={<TabStatus title="Opening…" waiting />}>
               <LocalPhoneTab
-                active={props.active}
+                presence={props.presence}
                 available={snapshot.browserPlacements.some(
                   (placement) =>
                     placement.runnerId === phoneManager.runnerId && placement.available,
@@ -899,7 +899,7 @@ function BrowserTab(props: {
             </Suspense>
           ) : undefined
         }
-        active={props.active}
+        presence={props.presence}
         arrival={shown.current.arrival}
         connected={props.connected}
         device={device}
@@ -923,7 +923,7 @@ function BrowserTab(props: {
     return (
       <Suspense fallback={<TabStatus title="Opening…" waiting />}>
         <LocalPhoneTab
-          active={props.active}
+          presence={props.presence}
           available={snapshot.browserPlacements.some(
             (placement) => placement.runnerId === phoneManager.runnerId && placement.available,
           )}

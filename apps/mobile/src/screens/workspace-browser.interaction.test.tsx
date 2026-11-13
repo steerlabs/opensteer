@@ -43,6 +43,8 @@ const state = vi.hoisted(() => ({
   snapshot: null as HostSnapshot | null,
   deploymentId: "deployment-a",
   focused: true,
+  /** Whether the page is still drawn: only sheets over it, as the stack says. */
+  drawn: true,
   /** Whether this page is still the screen in front, as the stack says when an answer arrives. */
   navigationFocused: true,
   refresh: vi.fn(async () => {}),
@@ -94,6 +96,8 @@ vi.mock("@react-navigation/native", () => ({
     replace: (name: string, params: object) => ({ name, params, type: "REPLACE" }),
   },
   useIsFocused: () => state.focused,
+  useNavigationState: () => state.drawn,
+  useRoute: () => ({ key: "page" }),
   useNavigation: () => ({
     dispatch: state.dispatch,
     getState: () => ({ index: state.routes.length - 1, routes: state.routes }),
@@ -617,6 +621,7 @@ afterEach(() => {
   state.snapshot = null;
   state.deploymentId = "deployment-a";
   state.focused = true;
+  state.drawn = true;
   state.navigationFocused = true;
   state.refresh.mockClear();
   state.hostClient = {};
@@ -1567,7 +1572,7 @@ describe("mobile pages", () => {
     expect(state.dispatch).not.toHaveBeenCalled();
   });
 
-  it("refreshes on focus and keeps the exact view while other browsers arrive", () => {
+  it("refreshes coming back into view, not out from under a sheet, and keeps the exact view while other browsers arrive", () => {
     const { container, render } = setup({ sessionId: "chosen" });
     expect(state.refresh).toHaveBeenCalledTimes(1);
     state.snapshot = snapshot([session("chosen"), session("new")]);
@@ -1577,6 +1582,13 @@ describe("mobile pages", () => {
     state.focused = false;
     render();
     state.focused = true;
+    render();
+    expect(state.refresh).toHaveBeenCalledTimes(1);
+    state.focused = false;
+    state.drawn = false;
+    render();
+    state.focused = true;
+    state.drawn = true;
     render();
     expect(state.refresh).toHaveBeenCalledTimes(2);
   });

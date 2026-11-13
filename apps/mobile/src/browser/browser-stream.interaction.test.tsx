@@ -425,6 +425,38 @@ describe.each(["image", "picture"] as const)(
       );
     });
 
+    it("keeps its viewer and last picture off screen, taking no input, and shows it again on the same viewer", async () => {
+      const { container, decode, emit, hostClient, render, send, viewerRelease } = setup();
+      const shown = () => container.querySelector('img[alt="A page, example.com"]') !== null;
+      render("synchronized", true, { held: true });
+      emit();
+      await decode();
+      expect(shown()).toBe(true);
+      expect(hostClient.retainBrowserViewer).toHaveBeenCalledWith(sessionId, surfaceId, {
+        picture: false,
+      });
+      const holds = vi.mocked(hostClient.retainBrowserViewer).mock.calls.length;
+
+      render("synchronized", false, { held: true });
+      expect(viewerRelease).toHaveBeenCalledTimes(1);
+      expect(shown()).toBe(true);
+      const { event, gesture } = touch(200, 300);
+      act(() => {
+        native.gestures?.onPanResponderGrant?.(event, gesture);
+        native.gestures?.onPanResponderRelease?.(event, gesture);
+      });
+      expect(send).not.toHaveBeenCalled();
+
+      render("synchronized", true, { held: true });
+      expect(shown()).toBe(true);
+      expect(hostClient.retainBrowserViewer).toHaveBeenCalledTimes(holds + 1);
+      expect(viewerRelease).toHaveBeenCalledTimes(1);
+
+      render("synchronized", false);
+      expect(shown()).toBe(false);
+      expect(viewerRelease).toHaveBeenCalledTimes(3);
+    });
+
     it("drops a touch begun before the picture changed size, rather than aiming it at the old geometry", async () => {
       const { decode, emit, render, send } = setup();
       render("synchronized");

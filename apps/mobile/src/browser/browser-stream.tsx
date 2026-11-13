@@ -50,8 +50,13 @@ import { nativePictureView } from "../computers/phone-display-native.js";
 import { browserPictureFence, useNativeBrowserPicture } from "./native-browser-picture.js";
 
 export interface BrowserStreamProps {
-  /** True only while this viewer is focused, visible, and in the foreground. */
+  /** On screen in the foreground: pictures flow while it is. */
   readonly active: boolean;
+  /**
+   * An interactive view off screen keeps its viewer, without pictures, and its
+   * last picture, so it shows again at once without asking the Host anew.
+   */
+  readonly held?: boolean;
   readonly hostClient: Pick<
     HostClient,
     | "browserPresentationDeadline"
@@ -160,6 +165,7 @@ function BrowserStreamView({
   dragSelect = false,
   onDragEnd,
   preserveLastFrame = false,
+  held = false,
   tabId,
   documentId,
   zoom,
@@ -178,6 +184,9 @@ function BrowserStreamView({
     requestedActive && ready && interactive,
   );
   const active = requestedActive && !presentationError;
+  const kept = interactive && held;
+  // What is drawn: the live picture, or the last one while the view is kept off screen.
+  const drawn = active || kept;
   const preserve = preserveLastFrame && !interactive;
   const frames = interactive ? hostClient.browserFrames : hostClient.browserWatchFrames;
   // Fixed for the binary's lifetime, so one presenter owns this view's receipts.
@@ -193,7 +202,7 @@ function BrowserStreamView({
       [frames, session.id, tabId],
     ),
   );
-  const received = useBrowserFrame(frames, session.id, tabId, active && !native);
+  const received = useBrowserFrame(frames, session.id, tabId, drawn && !native);
   const [slots, setSlots] = useState<FrameSlots>(emptySlots);
   const slotsRef = useRef(slots);
   slotsRef.current = slots;
@@ -230,6 +239,16 @@ function BrowserStreamView({
         : undefined,
     [active, attempt, awake, hostClient, interactive, native, session.id, tabId],
   );
+  // Held apart from the picture, so the picture coming and going reuses this socket.
+  useEffect(() => {
+    if (!kept) return;
+    try {
+      return hostClient.retainBrowserViewer(session.id, tabId, { picture: false });
+    } catch {
+      // A Host without pictureless control reconnects when the picture returns.
+      return;
+    }
+  }, [hostClient, kept, session.id, tabId]);
 
   const finish = useCallback(
     (delivery: BrowserFrameView) => {
@@ -241,7 +260,7 @@ function BrowserStreamView({
   );
   const picture = useNativeBrowserPicture({
     enabled: native,
-    visible: active && ready,
+    visible: drawn && ready,
     frames,
     sessionId: session.id,
     tabId,
@@ -269,7 +288,7 @@ function BrowserStreamView({
   // hidden in render below.
   useLayoutEffect(() => {
     if (native) return;
-    if (!active || !ready || (frame === null && !preserve)) {
+    if (!drawn || !ready || (frame === null && !preserve)) {
       const decoding = slotsRef.current.decoding;
       if (decoding) decoding.settle();
       const discarded = received ?? frames.get(session.id, tabId);
@@ -299,7 +318,7 @@ function BrowserStreamView({
           : null,
     }));
   }, [
-    active,
+    drawn,
     finish,
     frame,
     frames,
@@ -316,9 +335,9 @@ function BrowserStreamView({
   // flight at a time, the feed's value once the slot frees is the latest.
   const decodingBusy = slots.decoding !== null;
   useEffect(() => {
-    if (native || !active || !ready || frame === null || decodingBusy) return;
+    if (native || !drawn || !ready || frame === null || decodingBusy) return;
     const next = nextMobileBrowserDecode({
-      active,
+      active: drawn,
       activeSurfaceId: frame.header.surfaceId,
       frame,
       inFlightFrameKey: null,
@@ -333,7 +352,7 @@ function BrowserStreamView({
       // Too large to convert here: dropped, so the feed can move on.
       finish(frame);
     }
-  }, [active, decodingBusy, finish, frame, frames, invalidation, native, ready]);
+  }, [drawn, decodingBusy, finish, frame, frames, invalidation, native, ready]);
 
   const loaded = (slot: FrameSlot) => {
     if (slotsRef.current.decoding !== slot) return;
@@ -359,7 +378,7 @@ function BrowserStreamView({
   };
 
   // Hidden in the render that loses the feed's picture, not an effect later.
-  const visible = active && ready && (frame !== null || preserve);
+  const visible = drawn && ready && (frame !== null || preserve);
   const displayedSlot =
     visible &&
     !native &&
@@ -692,7 +711,7 @@ function BrowserStreamView({
     if (shownWidth !== null && shownHeight !== null)
       onPageSize?.({ height: shownHeight, width: shownWidth });
   }, [onPageSize, shownHeight, shownWidth]);
-  if (!requestedActive) return null;
+  if (!requestedActive && !kept) return null;
   const words =
     presentationError ??
     (displayed === null ? streamLabel(session.state, feedState, feedError) : null);
