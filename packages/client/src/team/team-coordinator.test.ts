@@ -4,11 +4,7 @@ import type { HostedTeamSlug } from "@opensteer/control-plane-protocol/hosted-te
 import { TeamEntryRefusedError, TeamIdentityGrantUnsupportedError } from "../auth/native-oauth.js";
 import { MockTeamWorld } from "./mock-hosted-teams.js";
 import { MockTeamHost } from "./mock-team-host.js";
-import {
-  createTeamCoordinator,
-  readTeamInvite,
-  type TeamCoordinator,
-} from "./team-coordinator.js";
+import { createTeamCoordinator, readTeamInvite, type TeamCoordinator } from "./team-coordinator.js";
 
 const personal = DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-0000000000cc");
 

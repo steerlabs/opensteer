@@ -158,7 +158,10 @@ export function mobileTeamSessions(options: {
     },
     async joinInBrowser(team, invite) {
       await options.openUrl(
-        teamPageUrl({ origin: team.authority.canonicalOrigin, target: { kind: "invite", ...invite } }),
+        teamPageUrl({
+          origin: team.authority.canonicalOrigin,
+          target: { kind: "invite", ...invite },
+        }),
       );
     },
     previewInvite: (team, invite) =>

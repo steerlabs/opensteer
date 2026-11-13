@@ -793,7 +793,9 @@ it("finds another owner however many people the directory lists before them", as
   for (let index = 0; index < 55; index += 1)
     listed.push(await listedPerson(system, `member${index}@example.test`));
   // The owner sorts after every other listed person.
-  const ownerAccount = ControlPlaneAccountIdSchema.parse(`acct_${"f".repeat(8)}-ffff-4fff-bfff-${"f".repeat(12)}`);
+  const ownerAccount = ControlPlaneAccountIdSchema.parse(
+    `acct_${"f".repeat(8)}-ffff-4fff-bfff-${"f".repeat(12)}`,
+  );
   await system.accounts
     .insertInto("users")
     .values({

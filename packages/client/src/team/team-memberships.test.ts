@@ -42,7 +42,11 @@ describe("listedTeams", () => {
         // Joined on a phone, no agent: no link or intent on this computer.
         { teamDeploymentId: phoneTeam, origin: "https://acme.teams.opensteer.com", name: "Acme" },
         // Its agent is disconnecting; membership stays.
-        { teamDeploymentId: disconnecting, origin: "https://beta.teams.opensteer.com", name: "Beta" },
+        {
+          teamDeploymentId: disconnecting,
+          origin: "https://beta.teams.opensteer.com",
+          name: "Beta",
+        },
       ],
       links: [link(disconnecting, "leaving")],
       // Entered here a moment ago, before Account's directory lists it.

@@ -13,12 +13,7 @@ import { AppText, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
 import { ConnectOpensteerBody, JoinSheetBody, type ConnectView, type InviteView } from "./join.js";
 import type { TeamTileView } from "./team-models.js";
 import { readTeamLinkIntent, teamFailure, type TeamLinkIntent } from "./mobile-teams.js";
-import {
-  useCoordinatorSnapshot,
-  useMobileTeams,
-  useTeam,
-  useTeamEntry,
-} from "./team-context.js";
+import { useCoordinatorSnapshot, useMobileTeams, useTeam, useTeamEntry } from "./team-context.js";
 import { openTeamGeneral } from "./mobile-team-entry.js";
 
 type Navigation = NativeStackNavigationProp<RootParamList>;

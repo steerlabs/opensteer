@@ -615,7 +615,11 @@ integration("Hosted teams", () => {
       await database.selectFrom("users").select("id").where("id", "=", owner).execute(),
     ).toEqual([{ id: owner }]);
     expect(
-      await database.selectFrom("hostedTeams").select("state").where("slug", "=", "unsettled").execute(),
+      await database
+        .selectFrom("hostedTeams")
+        .select("state")
+        .where("slug", "=", "unsettled")
+        .execute(),
     ).toEqual([{ state: "active" }]);
   });
 
