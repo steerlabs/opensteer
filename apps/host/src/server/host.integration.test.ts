@@ -126,6 +126,7 @@ function createHostServer(dependencies: HostServerTestOverrides) {
       database: personalFixture.database,
       listPendingRunnerEnrollments: async () => [],
       listRunners: async () => ({ nextCursor: null, runners: [] }),
+      listActiveShellSessions: async () => [],
     },
     complete.store,
   ) as typeof complete.store;
@@ -148,6 +149,12 @@ function createHostServer(dependencies: HostServerTestOverrides) {
               surface: "canonical" as const,
             }),
           } as HostAuthenticator),
+    browser: Object.assign(
+      {
+        withRunnerAdmission: async <T>(_runnerId: RunnerId, action: () => Promise<T>) => action(),
+      },
+      complete.browser,
+    ),
     runners,
     store,
   });
@@ -382,6 +389,7 @@ describe("Host signing keys", () => {
         authority: testDiscovery,
         bootstrapMethods: ["password"],
         capabilities: [
+          "devices-v1",
           "automatic-models-v1",
           "task-attachments",
           "voice-run-v1",
@@ -532,6 +540,7 @@ describe("Host signing keys", () => {
       expect(discovery.json()).toMatchObject({
         apiVersion: hostApiVersion,
         capabilities: [
+          "devices-v1",
           "automatic-models-v1",
           "task-attachments",
           "voice-run-v1",
@@ -570,6 +579,7 @@ describe("Host signing keys", () => {
 
 describe("rpc envelope", () => {
   const testIdentity = {
+    announceSessionsEnded: vi.fn(),
     configuration: async () => ({ deployment: { kind: "hosted", name: "Test" } }),
     nativeOpenIdConfiguration: () => undefined,
   };
@@ -781,6 +791,7 @@ describe("rpc envelope", () => {
     };
     const runnerId = createId("runner");
     const revokeRunner = vi.fn(async () => ({
+      endedSessionIds: [],
       cancelledRequestIds: [],
       closedBrowserSessions: [],
       deletedBrowserProfiles: [],
@@ -893,6 +904,7 @@ describe("rpc envelope", () => {
       runners: { revoke: vi.fn(async () => undefined) } as never,
       store: {
         revokeRunner: vi.fn(async () => ({
+          endedSessionIds: [],
           cancelledRequestIds: [],
           closedBrowserSessions: [],
           deletedBrowserProfiles: [],
@@ -1173,6 +1185,7 @@ describe("rpc envelope", () => {
         revokeRunner: vi.fn(async () => {
           order.push("durable");
           return {
+            endedSessionIds: [],
             cancelledRequestIds: [],
             closedBrowserSessions: [],
             deletedBrowserProfiles: [],
@@ -1218,6 +1231,9 @@ describe("rpc envelope", () => {
     const updateMachineAccessPolicy = vi.fn(async () => ({
       outcome: "updated" as const,
       revision: 8,
+      changed: { shell: true, browser: false, apps: false },
+      requestEvents: [],
+      replayed: false,
     }));
     const end = vi.fn(async () => ({ ended: true }));
     const shellControl = {
@@ -1286,10 +1302,21 @@ describe("rpc envelope", () => {
     const updateMachineAccessPolicy = vi.fn(
       async (input: { readonly idempotency: { readonly key: string } }) => {
         const replay = recorded.get(input.idempotency.key);
-        if (replay) return { ...replay, replayed: true };
+        if (replay)
+          return {
+            ...replay,
+            changed: { shell: false, browser: false, apps: false },
+            requestEvents: [],
+            replayed: true,
+          };
         const result = { outcome: "updated" as const, revision: 9 };
         recorded.set(input.idempotency.key, result);
-        return { ...result, replayed: false };
+        return {
+          ...result,
+          changed: { shell: true, browser: false, apps: false },
+          requestEvents: [],
+          replayed: false,
+        };
       },
     );
     // What the machine is carrying at any moment, so "the session survived"
@@ -1379,7 +1406,11 @@ describe("rpc envelope", () => {
 
   it("allows header session revocation and protects cookie mutations", async () => {
     const session = testAuthenticatedSession(fixtureOwnerId);
-    const revokeSession = vi.fn(async () => undefined);
+    const revokeDeviceSession = vi.fn(async (input: { sessionId: string }) => ({
+      runnerId: null,
+      removed: null,
+      endedSessionIds: [input.sessionId],
+    }));
     const authenticator = new HostAuthenticator({
       identity: {
         ...testIdentity,
@@ -1393,13 +1424,16 @@ describe("rpc envelope", () => {
           subject: session.user.id,
         }),
         requireSession: async () => session,
-        revokeSession,
         userSessionProfile: async () => session.user,
       } as never,
       publicUrl: new URL("https://opensteer.example"),
     });
     const app = await createHostServer(
-      hostServerTestDependencies({ authenticator, discovery: testDiscovery }),
+      hostServerTestDependencies({
+        authenticator,
+        discovery: testDiscovery,
+        store: { revokeDeviceSession } as never,
+      }),
     );
     const command = {
       idempotencyKey: "revoke-a-session",
@@ -1418,14 +1452,17 @@ describe("rpc envelope", () => {
         origin: "https://hostile.example",
       });
       expect(hostile.statusCode).toBe(403);
-      expect(revokeSession).toHaveBeenCalledOnce();
+      expect(revokeDeviceSession).toHaveBeenCalledOnce();
 
       const fromBrowser = await injectRpcRequest(app, "commands.dispatch", command, {
         cookie: "opensteer.session=test",
         origin: "https://opensteer.example",
       });
       expect(fromBrowser.statusCode, fromBrowser.body).toBe(200);
-      expect(revokeSession).toHaveBeenCalledWith(session, command.sessionId, expect.any(Function));
+      expect(revokeDeviceSession).toHaveBeenCalledWith({
+        sessionId: command.sessionId,
+        userId: session.user.id,
+      });
     } finally {
       await app.close();
     }
@@ -1433,7 +1470,11 @@ describe("rpc envelope", () => {
 
   it("lets a header credential end its own session without a browser origin", async () => {
     const session = testAuthenticatedSession(fixtureOwnerId);
-    const revokeSession = vi.fn(async () => undefined);
+    const revokeDeviceSession = vi.fn(async (input: { sessionId: string }) => ({
+      runnerId: null,
+      removed: null,
+      endedSessionIds: [input.sessionId],
+    }));
     const authenticator = new HostAuthenticator({
       identity: {
         ...testIdentity,
@@ -1447,13 +1488,16 @@ describe("rpc envelope", () => {
           subject: session.user.id,
         }),
         requireSession: async () => session,
-        revokeSession,
         userSessionProfile: async () => session.user,
       } as never,
       publicUrl: new URL("https://opensteer.example"),
     });
     const app = await createHostServer(
-      hostServerTestDependencies({ authenticator, discovery: testDiscovery }),
+      hostServerTestDependencies({
+        authenticator,
+        discovery: testDiscovery,
+        store: { revokeDeviceSession } as never,
+      }),
     );
     try {
       // A phone has no page and therefore no Origin to send. Holding this to
@@ -1470,7 +1514,10 @@ describe("rpc envelope", () => {
       );
 
       expect(own.statusCode, own.body).toBe(200);
-      expect(revokeSession).toHaveBeenCalledWith(session, session.id, expect.any(Function));
+      expect(revokeDeviceSession).toHaveBeenCalledWith({
+        sessionId: session.id,
+        userId: session.user.id,
+      });
     } finally {
       await app.close();
     }
@@ -1478,9 +1525,13 @@ describe("rpc envelope", () => {
 
   it("lets a Personal remote session end itself, which is how a phone signs out", async () => {
     const session = testAuthenticatedSession(fixtureOwnerId);
-    const revokeSession = vi.fn(async () => undefined);
+    const revokeDeviceSession = vi.fn(async (input: { sessionId: string }) => ({
+      runnerId: null,
+      removed: null,
+      endedSessionIds: [input.sessionId],
+    }));
     const authenticator = new HostAuthenticator({
-      identity: { ...testIdentity, requireSession: async () => session, revokeSession } as never,
+      identity: { ...testIdentity, requireSession: async () => session } as never,
       personalRemote: {
         authenticateRemoteCredential: async () => session,
         authenticateRemoteSession: async () => null,
@@ -1488,7 +1539,11 @@ describe("rpc envelope", () => {
       publicUrl: new URL("https://opensteer.example"),
     });
     const app = await createHostServer(
-      hostServerTestDependencies({ authenticator, discovery: testDiscovery }),
+      hostServerTestDependencies({
+        authenticator,
+        discovery: testDiscovery,
+        store: { revokeDeviceSession } as never,
+      }),
     );
     try {
       const own = await injectRpcRequest(
@@ -1505,7 +1560,10 @@ describe("rpc envelope", () => {
       );
 
       expect(own.statusCode, own.body).toBe(200);
-      expect(revokeSession).toHaveBeenCalledWith(session, session.id, expect.any(Function));
+      expect(revokeDeviceSession).toHaveBeenCalledWith({
+        sessionId: session.id,
+        userId: session.user.id,
+      });
     } finally {
       await app.close();
     }
@@ -1513,7 +1571,11 @@ describe("rpc envelope", () => {
 
   it("allows a header credential to request removal of another session owned by its user", async () => {
     const session = testAuthenticatedSession(fixtureOwnerId);
-    const revokeSession = vi.fn(async () => undefined);
+    const revokeDeviceSession = vi.fn(async (input: { sessionId: string }) => ({
+      runnerId: null,
+      removed: null,
+      endedSessionIds: [input.sessionId],
+    }));
     const authenticator = new HostAuthenticator({
       identity: {
         ...testIdentity,
@@ -1527,13 +1589,16 @@ describe("rpc envelope", () => {
           subject: session.user.id,
         }),
         requireSession: async () => session,
-        revokeSession,
         userSessionProfile: async () => session.user,
       } as never,
       publicUrl: new URL("https://opensteer.example"),
     });
     const app = await createHostServer(
-      hostServerTestDependencies({ authenticator, discovery: testDiscovery }),
+      hostServerTestDependencies({
+        authenticator,
+        discovery: testDiscovery,
+        store: { revokeDeviceSession } as never,
+      }),
     );
     try {
       const other = await injectRpcRequest(
@@ -1550,7 +1615,7 @@ describe("rpc envelope", () => {
       // Signing this device out is one thing; ending another device's access
       // is the owner's move and still wants the owner's browser.
       expect(other.statusCode, other.body).toBe(200);
-      expect(revokeSession).toHaveBeenCalledOnce();
+      expect(revokeDeviceSession).toHaveBeenCalledOnce();
     } finally {
       await app.close();
     }

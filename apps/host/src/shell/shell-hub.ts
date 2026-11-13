@@ -568,7 +568,7 @@ export class ShellHub implements ShellControlStreamHandler {
           authority: reserved.session.authority,
           dataTicket: reserved.ticket,
           machineName: target.name,
-          policy: target.policy,
+          policy: shellPolicy(target.policy),
           sessionId: reserved.session.sessionId,
           type: "host.shell.session.open",
         }),

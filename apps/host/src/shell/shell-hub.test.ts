@@ -355,7 +355,18 @@ describe("ShellHub activation", () => {
 
   it("activates under unchanged shell authority after Browser or Apps changes", async () => {
     const context = harness();
+    context.store.state.machine.policy = {
+      ...context.store.state.machine.policy,
+      browser: true,
+      apps: true,
+    };
     const pending = await openSession(context);
+    expect(pending.open).toHaveProperty("policy", {
+      reach: context.store.state.machine.policy.reach,
+      commands: context.store.state.machine.policy.commands,
+      forwarding: context.store.state.machine.policy.forwarding,
+      shares: context.store.state.machine.policy.shares,
+    });
     context.store.state.machine.revision += 1;
     context.store.state.machine.policy = {
       ...context.store.state.machine.policy,

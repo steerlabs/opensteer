@@ -588,6 +588,7 @@ describeStore("MCP administration", (it) => {
       expect(runner.revokedAt).toBeInstanceOf(Date);
     });
     const deps = {
+      authenticator: { identity: { announceSessionsEnded: vi.fn() } },
       store: f.store,
       shellControl: {
         withMachineAdmission: async (_id: unknown, effect: () => Promise<unknown>) => effect(),

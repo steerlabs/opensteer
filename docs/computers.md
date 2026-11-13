@@ -19,7 +19,7 @@ When an owned online device has access off, the agent can ask in Needs you. Turn
 the device's persistent policy; Not now suppresses the same ask for that task. An offline device
 never opens a Request. Fulfillment resumes through a continuation Run with rebuilt routes; it does
 not add routes to the Run that asked. Which readers see it, and why push still carries it, is in
-[Compatibility](host-boundaries.md#compatibility). The separate owned-device inventory includes
+[Compatibility](host-boundaries.md#compatibility). The `computer_list` tool includes
 disabled devices and phones without making them shell targets. Per-app, profile and OS
 authorization still apply.
 

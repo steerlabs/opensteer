@@ -23,6 +23,7 @@ const callers = ["run", "connection"] as const;
 const id = z.string().min(1).max(256);
 const name = z.string().trim().min(1).max(120);
 const ok = { ok: z.literal(true) };
+const deviceAccessState = z.enum(["enabled", "disabled", "unsupported"]);
 const modelSettings = z.strictObject({
   contextWindow: z.number().int().positive().max(10_000_000),
   maxOutputTokens: z.number().int().positive().max(10_000_000).optional(),
@@ -133,7 +134,7 @@ export const computer_list = defineAgentTool({
   name: "computer_list",
   title: "List computers",
   description:
-    "List enrolled computers, online/revoked state and active access-session IDs. Returns machines/nextCursor; pass cursor as after. Grants no shell/app access.",
+    "List owned devices, online state, browser/apps/files switches and active session IDs, including access-off devices. Page with after/nextCursor. Grants no access.",
   input: z.strictObject({ after: RunnerIdSchema.optional() }),
   output: z.object({
     machines: z.array(
@@ -142,6 +143,11 @@ export const computer_list = defineAgentTool({
         name: z.string(),
         connected: z.boolean(),
         revoked: z.boolean(),
+        access: z.object({
+          browser: deviceAccessState,
+          apps: deviceAccessState,
+          files: deviceAccessState,
+        }),
         sessions: z.array(z.object({ id: z.string() })),
       }),
     ),

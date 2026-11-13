@@ -42,8 +42,22 @@ it("holds device access through MCP and resumes with rebuilt routes after the po
       title: "Read project",
     });
     expect(run.machineAccess.machines).toEqual([]);
-    expect(run.integrationTools.instructions).toContain(target.runnerId);
-    expect(run.integrationTools.instructions).toContain('"files":"disabled"');
+    expect(run.integrationTools.instructions).not.toContain(target.runnerId);
+    expect(await callMcpTool(host.origin, run.toolsToken, "computer_list", {})).toMatchObject({
+      structuredContent: {
+        machines: expect.arrayContaining([
+          expect.objectContaining({
+            id: target.runnerId,
+            connected: true,
+            access: { browser: "unsupported", apps: "unsupported", files: "disabled" },
+          }),
+          expect.objectContaining({
+            id: caller.runnerId,
+            access: expect.objectContaining({ files: "enabled" }),
+          }),
+        ]),
+      },
+    });
     const opened = Promise.withResolvers<string>();
     const create = host.store.requests.createDeviceAccessRequest.bind(host.store.requests);
     vi.spyOn(host.store.requests, "createDeviceAccessRequest").mockImplementation(
@@ -92,8 +106,27 @@ it("holds device access through MCP and resumes with rebuilt routes after the po
     expect(command.command.context.machineAccess.machines).toEqual(
       expect.arrayContaining([expect.objectContaining({ runnerId: target.runnerId })]),
     );
-    expect(command.command.context.agentTools.instructions).toContain('"files":"enabled"');
+    expect(command.command.context.agentTools.instructions).toBe(run.integrationTools.instructions);
     const continued = await acceptCallerRun(host, caller, command);
+    await target.disconnect();
+    await vi.waitFor(
+      async () => {
+        expect(
+          await callMcpTool(host.origin, continued.toolsToken, "computer_list", {}),
+        ).toMatchObject({
+          structuredContent: {
+            machines: expect.arrayContaining([
+              expect.objectContaining({
+                id: target.runnerId,
+                connected: false,
+                access: { browser: "unsupported", apps: "unsupported", files: "enabled" },
+              }),
+            ]),
+          },
+        });
+      },
+      { timeout: 5000 },
+    );
     await continued.complete();
     await held.catch(() => undefined);
     expect((await host.store.requests.get(RequestIdSchema.parse(requestId)))?.status).toBe(

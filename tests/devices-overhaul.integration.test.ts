@@ -768,7 +768,7 @@ it.each(["before", "after"] as const)(
       const command = {
         type: "runner.enrollment.createLocal" as const,
         name: "Prepared Mac",
-        allowedModules: boundary === "before" ? ["agents" as const] : ["shell" as const],
+        allowedModules: boundary === "before" ? ["integrations" as const] : ["shell" as const],
         preparedIdentity: prepared,
         idempotencyKey: "ambiguous",
       };
