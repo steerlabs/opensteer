@@ -48,7 +48,7 @@ function TeamLanding({ teamId }: { readonly teamId: string }) {
   const team = useTeamAttachment(teamId);
   const snapshot = useTeamSession(team?.client ?? null);
   const channels = snapshot?.sidebar?.channels ?? null;
-  if (!team) return <TeamUnavailable teamId={teamId} />;
+  if (!team?.client) return <TeamUnavailable teamId={teamId} />;
   if (!channels) return null;
   const general =
     channels.find((row) => row.channel.id === snapshot?.bootstrap?.generalChannelId) ??

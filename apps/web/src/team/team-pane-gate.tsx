@@ -70,9 +70,11 @@ function TeamPane({ teamId, children }: { readonly teamId: string; readonly chil
               {state === "sign-in" || state === "suppressed" ? "Sign in" : "Retry"}
             </button>
           ) : null}
-          <button className="btn" onClick={() => void forget(teamId)} type="button">
-            Remove from this computer
-          </button>
+          {surface === "team-web" ? null : (
+            <button className="btn" onClick={() => void forget(teamId)} type="button">
+              Remove from this computer
+            </button>
+          )}
         </>
       ) : null}
     </div>

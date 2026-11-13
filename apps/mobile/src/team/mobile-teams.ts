@@ -981,7 +981,11 @@ export function teamFailure(error: unknown): TeamState {
   if (error instanceof TeamEntryOutcomeError) {
     if (error.outcome.status === "sign-in-required" || error.outcome.status === "suppressed")
       return "signed-out";
-    if (error.outcome.status === "update-required") return "update-server";
+    if (error.outcome.status === "update-required")
+      return error.outcome.error instanceof HostVersionMismatchError &&
+        error.outcome.error.code === "client-too-old"
+        ? "update-app"
+        : "update-server";
   }
   if (
     error instanceof TeamEntryRefusedError &&

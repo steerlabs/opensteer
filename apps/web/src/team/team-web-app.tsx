@@ -18,6 +18,7 @@ import { useWorkspaceNavigation } from "../components/workspace/navigation.js";
 import { WorkspaceProvider } from "../components/workspace/workspace-context.js";
 import { TeamsProvider, createTeamWebAttachment, type TeamAttachment } from "./team-attachments.js";
 import { channelPath, teamPath } from "./team-paths.js";
+import { TeamPaneGate } from "./team-pane-gate.js";
 import { TeamRoutes } from "./team-routes.js";
 import { TeamDialogsProvider } from "./hosted-teams.js";
 import { TeamSettingsRoute } from "./team-settings-route.js";
@@ -256,17 +257,7 @@ function TeamWebShell({
     team.client!.subscribe,
     () => team.client!.getSnapshot().ended,
   );
-  if (ended)
-    return (
-      <OnboardingCard
-        title={ended === "removed" ? `You’re no longer in ${team.name}` : "Sign in to your team"}
-        description="Your saved team content has been cleared from this browser."
-      >
-        <button className="btn" onClick={() => window.location.reload()} type="button">
-          Sign in
-        </button>
-      </OnboardingCard>
-    );
+  if (ended) return <TeamPaneGate teamId={team.teamId}>{null}</TeamPaneGate>;
   const close = () => setDrawerOpen(false);
   return (
     <WorkspaceProvider attention={0} nav={nav} openDrawer={() => setDrawerOpen(true)}>

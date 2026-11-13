@@ -1,4 +1,5 @@
-import { TeamRuntimeOwner } from "@opensteer/client/team";
+import { TeamEntryOutcomeError, TeamRuntimeOwner } from "@opensteer/client/team";
+import { HostVersionMismatchError } from "@opensteer/client/connections";
 import { HostClientRequestError } from "@opensteer/client/host";
 import { TeamEntryRefusalReasonSchema } from "@opensteer/protocol";
 import { TeamEntryRefusedError } from "@opensteer/client/auth";
@@ -530,6 +531,17 @@ it.each([...TeamEntryRefusalReasonSchema.options, "removed", undefined])(
     );
   },
 );
+
+it.each([
+  ["client-too-old", "update-app"],
+  ["host-too-old", "update-server"],
+] as const)("tells the person who must update when entry finds %s", (code, state) => {
+  const error = new TeamEntryOutcomeError({
+    status: "update-required",
+    error: new HostVersionMismatchError(code),
+  });
+  expect(teamFailure(error)).toBe(state);
+});
 
 it("retires an Account runtime before its pending bootstrap can populate the replacement", async () => {
   const f = fixture();
