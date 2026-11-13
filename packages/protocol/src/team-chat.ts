@@ -130,6 +130,7 @@ export const TeamLinkPresenceSchema = z.strictObject({
   online: z.boolean(),
 });
 export const TeamAgentRecipientSchema = z.strictObject({
+  version: SequenceSchema.default("0" as z.infer<typeof SequenceSchema>),
   channelId: TeamChannelIdSchema,
   rootId: TeamMessageIdSchema,
   enabled: z.boolean(),

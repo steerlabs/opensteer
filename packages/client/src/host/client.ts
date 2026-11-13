@@ -543,6 +543,14 @@ export interface WithdrawnEntry {
  * page that holds the message lands the outcome on it. A null `delivery` is a
  * confirmation that clears a doubt an earlier page recorded.
  */
+export interface RunDeliveryEntry {
+  createdAt: string;
+  id: string;
+  kind: "run-delivery";
+  runId: string | null;
+  delivery: TeamRunDelivery;
+}
+
 export interface DeliveryEntry {
   teamSource?: TeamSource;
   published?: boolean;
@@ -596,6 +604,7 @@ export type TranscriptEntry =
   | AssignmentReturnEntry
   | DelegationEntry
   | DeliveryEntry
+  | RunDeliveryEntry
   | MessageEntry
   | PlaceEntry
   | ReasoningEntry

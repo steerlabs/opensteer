@@ -534,7 +534,6 @@ function TurnView({
         reveal={reveal?.id ?? null}
         live={live}
       />
-      {turn.reply && !turn.continued && turn.run?.delivery ? <TeamDelivery run={turn.run} /> : null}
       {placesShown && !placesUnderOutcome ? <ReplySurfaces turn={turn} turnKey={turnKey} /> : null}
       {renderTask?.(turn.assignments)}
       {turn.run && outcome ? <RunOutcome run={turn.run} /> : null}
@@ -1526,6 +1525,11 @@ function WorkRowView({
       return (
         <Reply
           copyable={answer}
+          caption={
+            row.entry.id === turn.reply?.id && !turn.continued && turn.run?.delivery ? (
+              <TeamDelivery run={turn.run} />
+            ) : null
+          }
           message={row.entry}
           streaming={live && row.entry.streaming === true}
         />
@@ -2024,10 +2028,12 @@ function ErrorCount({ count }: { count: number }) {
 
 function Reply({
   copyable = false,
+  caption,
   message,
   streaming,
 }: {
   copyable?: boolean;
+  caption?: ReactNode;
   message: MessageEntry;
   streaming: boolean;
 }) {
@@ -2040,6 +2046,7 @@ function Reply({
       ) : null}
       {streaming ? <span aria-hidden className="stream-caret" /> : null}
       <MessageAttachments attachments={message.attachments ?? []} />
+      {caption}
       {copyable && message.body ? (
         <div className="msg--assistant__marks">
           <CopyMark label="Copy reply" text={message.body} />

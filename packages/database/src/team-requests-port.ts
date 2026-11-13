@@ -39,6 +39,7 @@ export interface TeamRequestStorePort {
     input: {
       readonly channelId: import("@opensteer/core").TeamChannelId;
       readonly threadRootId?: TeamMessageId | undefined;
+      readonly runId?: RunId | undefined;
       readonly clientMessageId: string;
       readonly bodyMarkdown: string;
       readonly attachmentIds: readonly TeamBlobId[];

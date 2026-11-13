@@ -82,7 +82,12 @@ export class MockTeamSocket implements WebSocketClient {
 export class MockTeamHost {
   readonly agentRecipients = new Map<
     string,
-    { channelId: TeamChannelId; rootId: z.infer<typeof TeamMessageIdSchema>; enabled: boolean }
+    {
+      channelId: TeamChannelId;
+      rootId: z.infer<typeof TeamMessageIdSchema>;
+      enabled: boolean;
+      version: z.infer<typeof SequenceSchema>;
+    }
   >();
   readonly channels = new Map<string, z.infer<typeof TeamChannelSchema>>();
   readonly messages = new Map<string, TeamMessage>();
@@ -493,7 +498,12 @@ export class MockTeamHost {
     if (name === "team.agent.recipient.get") {
       const { channelId, rootId } = hostApi["team.agent.recipient.get"].payload.parse(input);
       return (
-        this.agentRecipients.get(`${channelId}:${rootId}`) ?? { channelId, rootId, enabled: false }
+        this.agentRecipients.get(`${channelId}:${rootId}`) ?? {
+          channelId,
+          rootId,
+          enabled: false,
+          version: SequenceSchema.parse("0"),
+        }
       );
     }
     if (name === "team.agent.requests.get") {
@@ -870,7 +880,13 @@ export class MockTeamHost {
       )
         return { type: command.type };
       if (command.type === "team.agent.recipient.set") {
+        const prior = this.agentRecipients.get(`${command.channelId}:${command.rootId}`);
         const recipient = {
+          version: SequenceSchema.parse(
+            prior?.enabled === command.enabled
+              ? prior.version
+              : String(BigInt(prior?.version ?? "0") + 1n),
+          ),
           channelId: command.channelId,
           rootId: command.rootId,
           enabled: command.enabled,

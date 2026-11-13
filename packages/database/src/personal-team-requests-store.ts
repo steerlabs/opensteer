@@ -153,6 +153,26 @@ export class PersonalTeamRequestsStore {
     return result;
   }
 
+  async clearFreeze(
+    teamId: DeploymentId,
+    requestId: TeamAgentRequestId,
+    clientMessageId: string,
+  ): Promise<void> {
+    await this.#change(teamId, requestId, (row) =>
+      row.publicationState === "pending" &&
+      row.deliveryVia === "tool" &&
+      row.clientMessageId === clientMessageId
+        ? {
+            answerPayload: null,
+            answerMessageId: null,
+            clientMessageId: null,
+            deliveryVia: null,
+            explicitReply: false,
+          }
+        : null,
+    );
+  }
+
   async publication(
     teamId: DeploymentId,
     requestId: TeamAgentRequestId,

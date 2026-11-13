@@ -205,10 +205,7 @@ export class PersonalTeamRequests {
         outcome.finalMessage,
         outcome.answerMessageId,
       );
-    if (
-      current.terminalState !== null ||
-      (await requests.get(request.teamId, request.requestId))?.publicationState === "pending"
-    )
+    if ((await requests.get(request.teamId, request.requestId))?.publicationState === "pending")
       return;
     try {
       await this.options

@@ -65,6 +65,24 @@ describeStore("personal team reply watermark", (it) => {
       const empty = { taskId: null, completedAt: null };
       expect(await requests.replyTask(personal.userId, input)).toEqual(empty);
       const run = await startPersonalQueuedRunFixture(f.store, admitted.receipt.runId!);
+      if (ending === "automatic") {
+        const operation = crypto.randomUUID();
+        await requests.freeze(teamId, requestId, {
+          runId: run.runId,
+          via: "tool",
+          answerMessageId: null,
+          clientMessageId: operation,
+          payload: { bodyMarkdown: "Rejected tool post", attachmentIds: [] },
+        });
+        await requests.clearFreeze(teamId, requestId, crypto.randomUUID());
+        expect((await requests.get(teamId, requestId))?.clientMessageId).toBe(operation);
+        await requests.clearFreeze(teamId, requestId, operation);
+        expect(await requests.get(teamId, requestId)).toMatchObject({
+          answerPayload: null,
+          clientMessageId: null,
+          deliveryVia: null,
+        });
+      }
       const replyId = createId("message");
       await f.store.commitRunnerEvent({
         environmentId: personal.environmentId,

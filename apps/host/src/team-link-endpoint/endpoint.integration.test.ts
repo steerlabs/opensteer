@@ -221,14 +221,20 @@ describe("standing team link authority", () => {
     };
   }
   it("reads, searches and posts without a ticket, audits attribution, and refuses live access loss", async () => {
-    const read = { type: "read" as const, id: randomUUID(), runId, channelId };
+    const read = {
+      type: "read" as const,
+      id: randomUUID(),
+      operationId: randomUUID(),
+      runId,
+      channelId,
+    };
     expect(await endpoint.call(linkId, read)).toMatchObject({
       kind: "read",
       result: { page: { messages: [] } },
     });
     const frame = post();
     const first = await endpoint.call(linkId, frame);
-    expect(await endpoint.call(linkId, frame)).toEqual(first);
+    expect(await endpoint.call(linkId, { ...frame, id: randomUUID() })).toEqual(first);
     expect(await endpoint.call(linkId, read)).toMatchObject({
       kind: "read",
       result: { page: { messages: [{ bodyMarkdown: frame.bodyMarkdown }] } },
@@ -244,12 +250,30 @@ describe("standing team link authority", () => {
       kind: "search",
       result: { results: [{ message: { bodyMarkdown: frame.bodyMarkdown } }] },
     });
+    expect(
+      await fixture.database
+        .selectFrom("teamMessages")
+        .selectAll()
+        .where("clientMessageId", "=", frame.clientMessageId)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({
+      agentLinkId: linkId,
+      callerRunId: runId,
+      operationId: frame.clientMessageId,
+      personalDeploymentId: (
+        await fixture.database
+          .selectFrom("teamLinks")
+          .select("personalDeploymentId")
+          .where("id", "=", linkId)
+          .executeTakeFirstOrThrow()
+      ).personalDeploymentId,
+    });
     const audit = await fixture.database
       .selectFrom("teamAudit")
       .selectAll()
-      .where("operationId", "=", frame.id)
+      .where("operationId", "=", frame.clientMessageId)
       .execute();
-    expect(audit).toHaveLength(2);
+    expect(audit).toHaveLength(1);
     expect(audit[0]).toMatchObject({
       actorUserId: fixture.userId,
       linkId,
@@ -258,6 +282,47 @@ describe("standing team link authority", () => {
       agentRequestId: null,
     });
     expect(audit[0]!.metadata).toHaveProperty("personalDeploymentId");
+    expect(
+      await fixture.database
+        .selectFrom("teamAudit")
+        .selectAll()
+        .where("operationId", "=", read.operationId)
+        .execute(),
+    ).toEqual([
+      expect.objectContaining({
+        linkId,
+        callerRunId: runId,
+        action: "agent.read",
+        outcome: "allowed",
+      }),
+      expect.objectContaining({
+        linkId,
+        callerRunId: runId,
+        action: "agent.read",
+        outcome: "allowed",
+      }),
+    ]);
+    const rejected = post();
+    await sql`create function reject_successful_agent_audit() returns trigger language plpgsql as $$
+      begin if new.action='agent.post' and new.outcome='allowed' then raise exception 'audit unavailable'; end if; return new; end $$;
+      create trigger reject_successful_agent_audit before insert on team_audit for each row execute function reject_successful_agent_audit()`.execute(
+      fixture.database,
+    );
+    try {
+      await expect(endpoint.call(linkId, rejected)).rejects.toThrow("audit unavailable");
+      expect(
+        await fixture.database
+          .selectFrom("teamMessages")
+          .select("id")
+          .where("clientMessageId", "=", rejected.clientMessageId)
+          .execute(),
+      ).toEqual([]);
+    } finally {
+      await sql`drop trigger reject_successful_agent_audit on team_audit; drop function reject_successful_agent_audit()`.execute(
+        fixture.database,
+      );
+    }
+
     await chat.update(human(), channelId, { peopleOnly: true });
     await expect(endpoint.call(linkId, read)).rejects.toMatchObject({ code: "forbidden" });
     await expect(endpoint.call(linkId, post())).rejects.toMatchObject({ code: "forbidden" });
@@ -423,9 +488,10 @@ describe("standing team link authority", () => {
       sha256: createHash("sha256").update("hello").digest("hex"),
       previewSizeBytes: 0,
     };
+    const uploadHeaders = headers();
     const uploaded = await binary.upload(
       {
-        ...headers(),
+        ...uploadHeaders,
         "content-type": "multipart/form-data; boundary=b",
         "x-opensteer-team-upload": JSON.stringify(metadata),
       },
@@ -441,6 +507,20 @@ describe("standing team link authority", () => {
         .where("id", "=", uploaded.file.id)
         .executeTakeFirstOrThrow(),
     ).toMatchObject({ agentLinkId: linkId, callerRunId: runId, agentRequestId: null });
+    expect(
+      await fixture.database
+        .selectFrom("teamAudit")
+        .selectAll()
+        .where("operationId", "=", uploadHeaders["x-opensteer-team-operation-id"])
+        .execute(),
+    ).toEqual([
+      expect.objectContaining({
+        action: "file.upload",
+        callerRunId: runId,
+        linkId,
+        outcome: "allowed",
+      }),
+    ]);
     const request = await wake();
     await endpoint.call(
       linkId,
@@ -492,14 +572,29 @@ describe("standing team link authority", () => {
         post({ requestId: request.id, threadRootId: request.threadRootId }),
       ),
     ).rejects.toThrow();
+    const downloadHeaders = headers();
     const download = await binary.download(
       {
-        ...headers(),
+        ...downloadHeaders,
         "x-opensteer-team-blob-id": uploaded.file.id,
         "x-opensteer-team-file-part": "original",
       },
       new AbortController().signal,
     );
+    expect(
+      await fixture.database
+        .selectFrom("teamAudit")
+        .selectAll()
+        .where("operationId", "=", downloadHeaders["x-opensteer-team-operation-id"])
+        .execute(),
+    ).toEqual([
+      expect.objectContaining({
+        action: "file.read",
+        callerRunId: runId,
+        linkId,
+        outcome: "allowed",
+      }),
+    ]);
     download.bytes.on("error", () => {});
     const closed = once(download.bytes, "close").catch(() => undefined);
     await chat.update(human(), channelId, { peopleOnly: true });

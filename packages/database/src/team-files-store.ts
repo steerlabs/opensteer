@@ -204,9 +204,10 @@ export class TeamFilesStore {
       .executeTakeFirstOrThrow();
     return this.access.contentWrite(actor, observed.channelId, async (t, a) => {
       requireTeam(a.post);
+      let link;
       if (actor.kind === "agent") {
         requireTeam(observed.agentLinkId);
-        await this.access.link(t, actor, observed.agentLinkId);
+        link = await this.access.link(t, actor, observed.agentLinkId);
       }
       const row = await t
         .selectFrom("teamBlobs")
@@ -241,6 +242,19 @@ export class TeamFilesStore {
         .where("id", "=", id)
         .returningAll()
         .executeTakeFirstOrThrow();
+      if (actor.kind === "agent")
+        await appendTeamAudit(t, {
+          actor,
+          action: "file.upload",
+          resourceKind: "file",
+          resourceId: row.id,
+          channelId: row.channelId,
+          linkId: link?.id,
+          runId: row.callerRunId ?? undefined,
+          operationId: row.operationId ?? undefined,
+          requestId: row.agentRequestId ?? undefined,
+          metadata: { personalDeploymentId: link?.personalDeploymentId ?? null },
+        });
       return teamFileView(complete);
     });
   }
@@ -309,11 +323,12 @@ export class TeamFilesStore {
         .execute();
     });
   }
-  async authorized(actor: TeamActor, id: TeamBlobId, agent?: TeamFileAgent) {
+  async authorized(actor: TeamActor, id: TeamBlobId, agent?: TeamFileAgent, recordRead = false) {
     return this.access.database.transaction().execute(async (t) => {
+      let link;
       if (actor.kind === "agent") {
         requireTeam(agent);
-        await this.access.link(t, actor, agent.linkId);
+        link = await this.access.link(t, actor, agent.linkId);
       }
       await this.access.checkSession(t);
       const row = await t
@@ -332,6 +347,17 @@ export class TeamFilesStore {
         .where("m.deletedAt", "is", null)
         .executeTakeFirst();
       requireTeam(bound, "Only sent attachments can be downloaded");
+      if (actor.kind === "agent" && recordRead)
+        await appendTeamAudit(t, {
+          actor,
+          ...agent,
+          linkId: link?.id,
+          action: "file.read",
+          resourceKind: "file",
+          resourceId: row.id,
+          channelId: row.channelId,
+          metadata: { personalDeploymentId: link?.personalDeploymentId ?? null },
+        });
       return { ...row, messageId: bound.messageId };
     });
   }

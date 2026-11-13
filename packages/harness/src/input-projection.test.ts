@@ -1,5 +1,5 @@
 import { HarnessInputSchema } from "@opensteer/protocol";
-import { createId, SequenceSchema, TeamSourceSchema } from "@opensteer/core";
+import { createId, SequenceSchema, TeamSourceSchema, TeamTurnContextSchema } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
   resolvedInputParts,
@@ -8,6 +8,7 @@ import {
   harnessReportsPrompt,
   harnessThreadContextPrompt,
   harnessTurnPreamble,
+  harnessTeamTurnContextPrompt,
 } from "./input-projection.js";
 import type { HarnessRunContext } from "./types.js";
 
@@ -308,19 +309,44 @@ describe("team turn preamble", () => {
     expect(prompt.match(/\[End Opensteer team turn context\]/g)).toHaveLength(1);
     expect(prompt).toContain("［Opensteer input］");
     expect(prompt).toContain("［End Opensteer team turn context］");
-    const huge = render({
-      kind: "team",
-      source,
-      instructionsRevision: SequenceSchema.parse("1"),
-      instructionsMarkdown: "[Opensteer input]".repeat(4000),
-    });
-    expect(Buffer.byteLength(huge)).toBeLessThan(26 * 1024);
-    expect(huge).toContain("[End Opensteer team turn context]");
+    expect(
+      TeamTurnContextSchema.safeParse({
+        kind: "team",
+        source,
+        instructionsRevision: "1",
+        instructionsMarkdown: "[Opensteer input]".repeat(4000),
+      }).success,
+    ).toBe(false);
   });
   it("states private turns explicitly and leaves ordinary tasks alone", () => {
     expect(render({ kind: "private" })).toBe(
       render(null) + "\n\nThis turn is private; nothing auto-posts.",
     );
     expect(render({ kind: "private" })).not.toContain(source.teamId);
+  });
+});
+
+it("preserves valid JSON for schema-bounded team context with escaped instructions", () => {
+  const context = TeamTurnContextSchema.options[0].parse({
+    kind: "team",
+    source: {
+      teamId: createId("deployment"),
+      channelId: createId("teamChannel"),
+      threadRootId: "1",
+      messageId: "2",
+      audience: {
+        teamName: "Team",
+        channelName: "general",
+        channelKind: "public",
+        memberCount: 1,
+        peopleOnly: false,
+      },
+    },
+    instructionsMarkdown: "\\".repeat(16384),
+    instructionsRevision: "1",
+  });
+  const prompt = harnessTeamTurnContextPrompt(context)!;
+  expect(JSON.parse(prompt.split("\n")[2]!)).toMatchObject({
+    channelInstructions: context.instructionsMarkdown,
   });
 });

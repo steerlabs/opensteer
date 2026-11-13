@@ -386,7 +386,8 @@ export class TeamLinkEndpoint {
           result = { kind: "search", result: await data.search(actor, linkId, frame) };
           break;
       }
-      await this.#audit(linkId, frame, "allowed");
+      if (frame.type === "context" || frame.type === "status")
+        await this.#audit(linkId, frame, "allowed");
       return { result };
     } catch (error) {
       await this.#audit(linkId, frame, "denied");
@@ -403,7 +404,10 @@ export class TeamLinkEndpoint {
       linkId,
       requestId: "requestId" in frame ? frame.requestId : undefined,
       ...("runId" in frame ? { runId: frame.runId } : {}),
-      operationId: frame.id,
+      operationId:
+        frame.type === "post"
+          ? frame.clientMessageId
+          : (("operationId" in frame ? frame.operationId : undefined) ?? frame.id),
       action: `agent.${frame.type}`,
       outcome,
       ...(frame.type === "read" || frame.type === "post" ? { channelId: frame.channelId } : {}),

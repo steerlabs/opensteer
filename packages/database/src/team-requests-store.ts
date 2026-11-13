@@ -322,6 +322,9 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         attachmentIds: input.attachmentIds,
         mentions: [],
         linkId,
+        ...(input.runId
+          ? { agent: { runId: input.runId, operationId: input.clientMessageId } }
+          : {}),
         ...(request && request.replyMessageId === null ? { agentRequestId: request.id } : {}),
       });
       if (request && request.replyMessageId === null) {

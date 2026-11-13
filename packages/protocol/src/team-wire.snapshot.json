@@ -2398,6 +2398,11 @@
     "rpc team.agent.recipient.get": {
       "type": "object",
       "properties": {
+        "version": {
+          "default": "0",
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
         "channelId": {
           "type": "string",
           "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -10280,6 +10285,11 @@
                       "items": {
                         "type": "object",
                         "properties": {
+                          "version": {
+                            "default": "0",
+                            "type": "string",
+                            "pattern": "^(0|[1-9][0-9]*)$"
+                          },
                           "channelId": {
                             "type": "string",
                             "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -11093,6 +11103,11 @@
                       "items": {
                         "type": "object",
                         "properties": {
+                          "version": {
+                            "default": "0",
+                            "type": "string",
+                            "pattern": "^(0|[1-9][0-9]*)$"
+                          },
                           "channelId": {
                             "type": "string",
                             "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -12244,6 +12259,11 @@
             "recipient": {
               "type": "object",
               "properties": {
+                "version": {
+                  "default": "0",
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)$"
+                },
                 "channelId": {
                   "type": "string",
                   "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -12462,6 +12482,11 @@
               "type": "string",
               "pattern": "^run_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
             },
+            "operationId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
             "type": {
               "type": "string",
               "const": "post"
@@ -12545,6 +12570,11 @@
               "type": "string",
               "pattern": "^run_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
             },
+            "operationId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
             "type": {
               "type": "string",
               "const": "read"
@@ -12591,6 +12621,11 @@
             "runId": {
               "type": "string",
               "pattern": "^run_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
             },
             "type": {
               "type": "string",
@@ -12795,6 +12830,11 @@
             "runId": {
               "type": "string",
               "pattern": "^run_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
             },
             "type": {
               "type": "string",

@@ -25,7 +25,10 @@ export function createTeamMachineAdapters(
         linkId: TeamLinkId,
         input: Extract<TeamLinkCall, { type: "channels" }>,
       ) {
-        const page = await chat.directory(actor, input.after, false, undefined, linkId);
+        const page = await chat.directory(actor, input.after, false, undefined, linkId, {
+          ...input,
+          operationId: input.operationId ?? input.id,
+        });
         return {
           channels: page.channels.map((entry) => entry.channel),
           hasMore: page.nextCursor !== null,
@@ -89,6 +92,7 @@ export function createTeamMachineAdapters(
             return TeamReadResultSchema.parse({ page, source });
           },
           linkId,
+          { ...input, operationId: input.operationId ?? input.id },
         );
       },
       async search(
@@ -96,7 +100,10 @@ export function createTeamMachineAdapters(
         linkId: TeamLinkId,
         input: Extract<TeamLinkCall, { type: "search" }>,
       ) {
-        return chat.search(actor, input.input, linkId);
+        return chat.search(actor, input.input, linkId, {
+          ...input,
+          operationId: input.operationId ?? input.id,
+        });
       },
     },
     files: {

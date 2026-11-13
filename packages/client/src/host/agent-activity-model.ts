@@ -96,6 +96,7 @@ export type ActivityFeedEntry = Exclude<
       | "assignment"
       | "assignment-return"
       | "delivery"
+      | "run-delivery"
       | "message"
       | "place"
       | "request-wait"
@@ -251,7 +252,12 @@ export function groupTranscriptEntries(
     // A withdrawn message left nothing to read, and an outcome whose message
     // is not loaded has nothing to sit on; their markers, and an open wait's,
     // only serve a page merge.
-    if (entry.kind === "withdrawn" || entry.kind === "delivery" || entry.kind === "request-wait")
+    if (
+      entry.kind === "withdrawn" ||
+      entry.kind === "delivery" ||
+      entry.kind === "run-delivery" ||
+      entry.kind === "request-wait"
+    )
       continue;
     if (entry.kind === "run" && entry.runId === null) continue;
     if (open === null || open.runId !== entry.runId) {

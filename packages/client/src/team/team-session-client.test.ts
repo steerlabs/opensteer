@@ -48,28 +48,50 @@ describe("team synchronization", () => {
       await f.client.setAgentRecipient(mockTeamChannelId, rootId, true);
       await f.client.setAgentRecipient(mockTeamChannelId, rootId, true);
       expect(f.client.getSnapshot().agentRecipients).toEqual([
-        { channelId: mockTeamChannelId, rootId, enabled: true },
+        { channelId: mockTeamChannelId, rootId, enabled: true, version: "1" },
       ]);
-      f.client.receive({
-        type: "team.agent.recipient",
-        recipient: { channelId: mockTeamChannelId, rootId, enabled: false },
-      });
-      expect(f.client.getSnapshot().agentRecipients[0]?.enabled).toBe(false);
       const cut = f.host.cut(
         channelScope,
         "channel",
         f.client.getSnapshot().channel!.generation,
         null,
       );
+      f.client.receive({
+        type: "team.agent.recipient",
+        recipient: {
+          channelId: mockTeamChannelId,
+          rootId,
+          enabled: false,
+          version: SequenceSchema.parse("2"),
+        },
+      });
+      expect(f.client.getSnapshot().agentRecipients[0]?.enabled).toBe(false);
       f.client.receive({ type: "team.cut", cut });
-      expect(f.client.getSnapshot().agentRecipients[0]?.enabled).toBe(true);
-      f.host.agentRecipients.clear();
+      expect(f.client.getSnapshot().agentRecipients[0]?.enabled).toBe(false);
+      f.client.receive({
+        type: "team.agent.recipient",
+        recipient: { ...cut.agentRecipients[0]!, enabled: true },
+      });
+      expect(f.client.getSnapshot().agentRecipients[0]?.enabled).toBe(false);
+      f.host.agentRecipients.set(`${mockTeamChannelId}:${rootId}`, {
+        channelId: mockTeamChannelId,
+        rootId,
+        enabled: false,
+        version: SequenceSchema.parse("2"),
+      });
       const resumed = f.host.cut(channelScope, "channel", cut.generation, cut.throughSeq);
       expect(resumed.type).toBe("resumed");
       f.client.receive({ type: "team.cut", cut: resumed });
-      expect(f.client.getSnapshot().agentRecipients).toEqual([]);
+      expect(f.client.getSnapshot().agentRecipients).toEqual([
+        { channelId: mockTeamChannelId, rootId, enabled: false, version: "2" },
+      ]);
       f.client.receive({ type: "team.cut", cut: { ...cut, generation: cut.generation + 1 } });
-      expect(f.client.getSnapshot().agentRecipients).toEqual([]);
+      expect(f.client.getSnapshot().agentRecipients[0]?.enabled).toBe(false);
+      await f.client.setAgentRecipient(mockTeamChannelId, rootId, true);
+      expect(f.client.getSnapshot().agentRecipients[0]).toMatchObject({
+        enabled: true,
+        version: "3",
+      });
     } finally {
       f.client.dispose();
       f.host.dispose();

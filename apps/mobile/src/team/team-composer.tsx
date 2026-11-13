@@ -66,7 +66,7 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
     (file) => file.progress !== null && file.refused === null,
   );
   const hasContent = props.text.trim() !== "" || props.attachments.length > 0;
-  const toMyAgent = props.toMyAgent && props.agent === "available";
+  const toMyAgent = props.toMyAgent;
   const open = focused || hasContent || toMyAgent;
   const askPill =
     props.agent === "people-only" ? (
@@ -77,8 +77,9 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
       <AskMyAgentPill
         on={toMyAgent}
         onPress={() => {
-          if (props.agent === "not-connected") props.onAgentUnavailable();
-          else props.onToMyAgentChange(!toMyAgent);
+          if (toMyAgent) props.onToMyAgentChange(false);
+          else if (props.agent === "not-connected") props.onAgentUnavailable();
+          else if (props.agent === "available") props.onToMyAgentChange(true);
         }}
       />
     );

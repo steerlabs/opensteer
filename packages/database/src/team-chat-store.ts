@@ -39,7 +39,7 @@ import {
   teamReadableChannels,
   teamReadableChannelIds,
 } from "./team-access-store.js";
-import { appendTeamAudit } from "./team-audit-store.js";
+import { appendTeamAudit, type TeamAgentOperation } from "./team-audit-store.js";
 import { bindTeamFiles, teamFileView } from "./team-files-store.js";
 
 type Mention = z.infer<typeof TeamMentionSchema>;
@@ -815,6 +815,7 @@ export class TeamChatStore {
       attachmentIds: readonly import("@opensteer/core").TeamBlobId[];
       agentRequestId?: import("@opensteer/core").TeamAgentRequestId;
       linkId?: TeamLinkId;
+      agent?: TeamAgentOperation;
     },
   ) {
     TeamMarkdownSchema.parse(input.bodyMarkdown);
@@ -823,9 +824,10 @@ export class TeamChatStore {
       "A message needs text or files",
     );
     requireTeam((await this.access.channel(transaction, actor, input.channelId)).post);
+    let link;
     if (actor.kind === "agent") {
       requireTeam(input.linkId);
-      await this.access.link(transaction, actor, input.linkId);
+      link = await this.access.link(transaction, actor, input.linkId);
     }
     const mentions = await this.#mentions(transaction, actor, input.channelId, input.mentions);
     if (input.threadRootId) {
@@ -855,6 +857,10 @@ export class TeamChatStore {
         threadRootId: input.threadRootId,
         authorUserId: actor.userId,
         authorKind: actor.kind,
+        agentLinkId: link?.id ?? null,
+        personalDeploymentId: link?.personalDeploymentId ?? null,
+        callerRunId: input.agent?.runId ?? null,
+        operationId: input.agent?.operationId ?? null,
         agentRequestId: input.agentRequestId ?? null,
         clientMessageId: input.clientMessageId,
         bodyMarkdown: input.bodyMarkdown,
@@ -940,9 +946,11 @@ export class TeamChatStore {
                 enabled: true,
               })
               .onConflict((c) =>
-                c
-                  .columns(["userId", "channelId", "rootId"])
-                  .doUpdateSet({ enabled: true, updatedAt: new Date() }),
+                c.columns(["userId", "channelId", "rootId"]).doUpdateSet({
+                  enabled: true,
+                  version: sql`case when team_agent_recipients.enabled then team_agent_recipients.version else team_agent_recipients.version+1 end`,
+                  updatedAt: new Date(),
+                }),
               )
               .execute();
           wakeLinkId = link.id;
@@ -985,6 +993,9 @@ export class TeamChatStore {
     if (actor.kind === "agent")
       await appendTeamAudit(transaction, {
         actor,
+        ...input.agent,
+        linkId: link?.id,
+        metadata: { personalDeploymentId: link?.personalDeploymentId ?? null },
         action: "agent.post",
         resourceKind: "message",
         resourceId: row.id,
@@ -1234,6 +1245,7 @@ export class TeamChatStore {
     channelId: TeamChannelId | undefined,
     read: (transaction: Transaction<DatabaseSchema>) => Promise<Value>,
     linkId?: TeamLinkId,
+    agent?: TeamAgentOperation,
   ): Promise<Value> {
     const revision = this.access.revision;
     try {
@@ -1241,7 +1253,7 @@ export class TeamChatStore {
         .transaction()
         .setIsolationLevel("repeatable read")
         .execute(async (transaction) => {
-          if (linkId) await this.access.link(transaction, actor, linkId);
+          const link = linkId ? await this.access.link(transaction, actor, linkId) : undefined;
           await this.access.member(transaction, actor.userId);
           await this.access.checkSession(transaction);
           if (channelId)
@@ -1250,6 +1262,9 @@ export class TeamChatStore {
           if (actor.kind === "agent")
             await appendTeamAudit(transaction, {
               actor,
+              ...agent,
+              linkId,
+              metadata: { personalDeploymentId: link?.personalDeploymentId ?? null },
               action: `agent.${action}`,
               resourceKind: channelId ? "channel" : "team",
               ...(channelId ? { resourceId: channelId, channelId } : {}),
@@ -1331,7 +1346,7 @@ export class TeamChatStore {
       const channel = await this.channelView(t, actor, input.scope.channelId);
       let recipientQuery = t
         .selectFrom("teamAgentRecipients")
-        .select(["channelId", "rootId", "enabled"])
+        .select(["channelId", "rootId", "enabled", "version"])
         .where("userId", "=", actor.userId)
         .where("channelId", "=", channel.id);
       if (input.scope.kind === "thread")
@@ -1423,6 +1438,7 @@ export class TeamChatStore {
     actor: TeamActor,
     input: z.infer<typeof TeamSearchInputSchema>,
     linkId?: TeamLinkId,
+    agent?: TeamAgentOperation,
   ) {
     const revision = this.access.revision;
     const result = await this.read(
@@ -1487,6 +1503,7 @@ export class TeamChatStore {
         };
       },
       linkId,
+      agent,
     );
     return this.access.handoff(
       revision,
@@ -1534,12 +1551,17 @@ export class TeamChatStore {
     return this.read(actor, "read", channelId, async (t) => {
       const row = await t
         .selectFrom("teamAgentRecipients")
-        .select("enabled")
+        .select(["enabled", "version"])
         .where("userId", "=", actor.userId)
         .where("channelId", "=", channelId)
         .where("rootId", "=", rootId)
         .executeTakeFirst();
-      return { channelId, rootId, enabled: row?.enabled ?? false };
+      return {
+        channelId,
+        rootId,
+        enabled: row?.enabled ?? false,
+        version: row?.version ?? SequenceSchema.parse("0"),
+      };
     });
   }
   async setAgentRecipient(
@@ -1548,7 +1570,7 @@ export class TeamChatStore {
     rootId: TeamMessageId,
     enabled: boolean,
   ) {
-    await this.access.contentWrite(actor, channelId, async (t, authority) => {
+    const recipient = await this.access.contentWrite(actor, channelId, async (t, authority) => {
       requireTeam(
         actor.kind === "human" &&
           authority.read &&
@@ -1561,18 +1583,21 @@ export class TeamChatStore {
         .where("id", "=", rootId)
         .executeTakeFirst();
       requireTeam(root && root.threadRootId === null && root.deletedAt === null);
-      await t
+      return t
         .insertInto("teamAgentRecipients")
         .values({ userId: actor.userId, channelId, rootId, enabled })
         .onConflict((c) =>
-          c
-            .columns(["userId", "channelId", "rootId"])
-            .doUpdateSet({ enabled, updatedAt: new Date() }),
+          c.columns(["userId", "channelId", "rootId"]).doUpdateSet({
+            enabled,
+            version: sql`case when team_agent_recipients.enabled=excluded.enabled then team_agent_recipients.version else team_agent_recipients.version+1 end`,
+            updatedAt: new Date(),
+          }),
         )
-        .execute();
+        .returning(["channelId", "rootId", "enabled", "version"])
+        .executeTakeFirstOrThrow();
     });
     this.changed(channelId);
-    return { channelId, rootId, enabled };
+    return recipient;
   }
   async preferences(
     actor: TeamActor,
@@ -1605,11 +1630,12 @@ export class TeamChatStore {
     sidebar = false,
     channelIds?: readonly TeamChannelId[],
     linkId?: TeamLinkId,
+    agent?: TeamAgentOperation,
   ) {
     for (;;) {
       const revision = this.access.revision;
       const result = await this.access.database.transaction().execute(async (t) => {
-        if (linkId) await this.access.link(t, actor, linkId);
+        const link = linkId ? await this.access.link(t, actor, linkId) : undefined;
         const member = await this.access.member(t, actor.userId);
         let query = t
           .selectFrom("teamChannels")
@@ -1706,7 +1732,14 @@ export class TeamChatStore {
           });
         }
         if (actor.kind === "agent")
-          await appendTeamAudit(t, { actor, action: "agent.directory", resourceKind: "team" });
+          await appendTeamAudit(t, {
+            actor,
+            ...agent,
+            linkId,
+            metadata: { personalDeploymentId: link?.personalDeploymentId ?? null },
+            action: "agent.channels",
+            resourceKind: "team",
+          });
         return {
           channels,
           totalMentionCount: Number(mentions.rows[0]!.total),

@@ -3,6 +3,7 @@ import { createId, OpensteerError, TeamMessageIdSchema, TeamSourceSchema } from 
 import { PersonalTeamRequestSchema } from "@opensteer/protocol";
 import type { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
 import type { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
+import { TeamRunTools } from "./tools.js";
 import { PersonalTeamRequests } from "./requests.js";
 import type { TeamLinkCallInput, TeamLinkResult } from "../team-link-endpoint/contracts.js";
 
@@ -44,6 +45,9 @@ function fixture() {
   let offline = false;
   const calls: TeamLinkCallInput[] = [];
   const requests = {
+    async forRun() {
+      return structuredClone(row);
+    },
     async get() {
       return structuredClone(row);
     },
@@ -52,6 +56,16 @@ function fixture() {
     },
     async terminal(_team, _request, runId, terminalState) {
       row = { ...row, runId, terminalState };
+    },
+    async clearFreeze(_team, _request, clientMessageId) {
+      if (row.clientMessageId === clientMessageId && row.publicationState === "pending")
+        row = {
+          ...row,
+          answerPayload: null,
+          answerMessageId: null,
+          clientMessageId: null,
+          deliveryVia: null,
+        };
     },
     async freeze(_team, _request, input) {
       if (!row.answerPayload)
@@ -79,7 +93,10 @@ function fixture() {
     if (offline) throw new OpensteerError({ code: "runner_offline", message: "Offline" });
     if (denied) throw new OpensteerError({ code: "forbidden", message: "people-only" });
     if (input.type === "receipt") return { kind: "receipt", messageId: remote };
+    if (input.type === "read") return { kind: "read", result: { source } } as TeamLinkResult;
     if (input.type === "post") {
+      if (!input.bodyMarkdown.trim() && !input.attachmentIds.length)
+        throw new OpensteerError({ code: "bad_request", message: "Empty post" });
       remote = TeamMessageIdSchema.parse("99");
       if (loseAck) {
         loseAck = false;
@@ -101,6 +118,11 @@ function fixture() {
     source,
     requests,
     publisher,
+    tools: new TeamRunTools(
+      {} as PersonalTeamLinksStore,
+      requests as unknown as PersonalTeamRequestsStore,
+      () => ({ call }),
+    ),
     outcome,
     calls,
     admission,
@@ -127,6 +149,48 @@ function fixture() {
 }
 
 describe("durable team publication", () => {
+  it("publishes the final answer after a definitively rejected tool post", async () => {
+    const f = fixture();
+    await expect(
+      f.tools.post({ runId: f.row().runId!, operationId: "empty-post" }, f.source.teamId, {
+        channelId: f.source.channelId,
+        threadRootId: f.source.threadRootId!,
+        bodyMarkdown: "",
+        attachmentIds: [],
+      }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    await f.publisher.reconcileOne(f.row());
+    expect(f.row()).toMatchObject({
+      publicationState: "accepted",
+      deliveryVia: "final",
+      answerPayload: { bodyMarkdown: "The completed answer" },
+    });
+  });
+  it("keeps the frozen tool payload when a post commits but its acknowledgement is lost", async () => {
+    const f = fixture();
+    f.loseAck();
+    await expect(
+      f.tools.post({ runId: f.row().runId!, operationId: "lost-ack" }, f.source.teamId, {
+        channelId: f.source.channelId,
+        threadRootId: f.source.threadRootId!,
+        bodyMarkdown: "Tool answer",
+        attachmentIds: [],
+      }),
+    ).rejects.toMatchObject({ code: "runner_offline" });
+    await f.publisher.reconnect(f.source.teamId);
+    expect(f.row()).toMatchObject({
+      publicationState: "accepted",
+      deliveryVia: "tool",
+      answerPayload: { bodyMarkdown: "Tool answer" },
+    });
+    expect(f.calls.filter((c) => c.type === "post")).toHaveLength(1);
+  });
+  it("delivers terminal status for a legacy row terminalized before publication", async () => {
+    const f = fixture();
+    await f.requests.terminal(f.source.teamId, f.row().requestId, f.row().runId, "done");
+    await f.publisher.reconnect(f.source.teamId);
+    expect(f.calls.map((c) => c.type)).toEqual(["receipt", "receipt", "post", "status"]);
+  });
   it("freezes the completion answer before posting and reports a finished Run", async () => {
     const f = fixture();
     await f.publisher.reconcileOne(f.row());

@@ -134,7 +134,7 @@ export const TeamBinaryDownloadHeadersSchema = TeamBinaryRouteHeadersSchema.exte
 });
 const request = { requestId: TeamAgentRequestIdSchema };
 const optionalRequest = { requestId: TeamAgentRequestIdSchema.optional() };
-const attribution = { runId: RunIdSchema };
+const attribution = { runId: RunIdSchema, operationId: z.string().min(1).max(128).optional() };
 const call = { id: z.string().min(1).max(128) };
 export const TeamLinkClientFrameSchema = z.discriminatedUnion("type", [
   z.strictObject({

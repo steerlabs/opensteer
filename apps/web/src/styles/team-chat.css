@@ -3291,6 +3291,10 @@ a.team-input-source:hover {
 }
 .team-run-delivery {
   display: block;
+  margin-top: 4px;
+}
+.turn--conversation > .team-run-delivery {
+  margin-top: calc(4px - var(--space-6));
 }
 .team-composer__recipient {
   align-self: flex-start;

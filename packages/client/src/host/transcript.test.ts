@@ -90,6 +90,20 @@ it("keeps delivery on the answering Run when later status and history events arr
       (entry) => entry.kind === "run",
     ),
   ).toMatchObject({ delivery: sent });
+  const started = event("run.started", { status: "running" });
+  const completed = event("run.completed", {
+    replyMessageId: answerMessageId,
+    status: "completed",
+  });
+  const delivery = event("run.delivery-updated", { delivery: sent });
+  const whole = fold([started, completed, delivery]);
+  expect(mergeTranscriptSegments(fold([started, completed]), fold([delivery]))).toEqual(whole);
+  expect(
+    mergeTranscriptSegments(
+      fold([started]),
+      mergeTranscriptSegments(fold([completed]), fold([delivery])),
+    ),
+  ).toEqual(whole);
   const blocked = { ...sent, state: "blocked" as const, reason: "Link revoked" };
   const updated = foldTranscriptEvent(
     entries,

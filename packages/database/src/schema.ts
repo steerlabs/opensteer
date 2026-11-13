@@ -1,4 +1,5 @@
 import type {
+  Sequence,
   KnowledgeNoteId,
   KnowledgeTopicId,
   TaskPurpose,
@@ -2513,6 +2514,7 @@ export interface PersonalTeamLinkTable {
   lastContactAt: NullableTimestamp;
 }
 export interface TeamAgentRecipientTable {
+  version: Generated<Sequence>;
   userId: UserId;
   channelId: TeamChannelId;
   rootId: TeamMessageId;

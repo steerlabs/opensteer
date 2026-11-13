@@ -1,9 +1,4 @@
-import {
-  TeamAgentRequestIdSchema,
-  type TeamAgentRequestId,
-  type TeamLinkId,
-  type TeamSource,
-} from "@opensteer/core";
+import { TeamAgentRequestIdSchema, type TeamSource } from "@opensteer/core";
 import {
   teamPreviewMaxBytes,
   teamUploadMaxBytes,
@@ -114,24 +109,6 @@ export class TeamLinkBinary {
     });
   }
 
-  async #audit(
-    linkId: TeamLinkId,
-    requestId: TeamAgentRequestId | undefined,
-    action: string,
-    source: TeamSource,
-    attribution: { readonly runId: import("@opensteer/core").RunId; readonly operationId: string },
-    outcome: "allowed" | "denied",
-  ): Promise<void> {
-    await auditTeamMachineCall(this.endpoint.options.links.database, {
-      linkId,
-      ...(requestId ? { requestId } : {}),
-      action,
-      outcome,
-      ...attribution,
-      channelId: source.channelId,
-    });
-  }
-
   async download(raw: Readonly<Record<string, unknown>>, signal: AbortSignal) {
     checkTeamVersion(raw["x-opensteer-team-api-version"]);
     const { link, requestId, actor, runId, operationId } = await this.#authority(raw);
@@ -173,14 +150,6 @@ export class TeamLinkBinary {
         cancel: () => controller.abort(),
       });
       combined.throwIfAborted();
-      await this.#audit(
-        link.id,
-        requestId,
-        "file.read",
-        metadata.source,
-        { runId, operationId },
-        "allowed",
-      );
       const preview = headers["x-opensteer-team-file-part"] === "preview";
       const size = preview ? metadata.file.preview?.sizeBytes : metadata.file.sizeBytes;
       if (size === undefined) throw linkError("bad_request");
@@ -267,14 +236,6 @@ export class TeamLinkBinary {
         result.file.sha256 !== metadata.sha256
       )
         throw linkError();
-      await this.#audit(
-        link.id,
-        requestId,
-        "file.upload",
-        result.source,
-        { runId, operationId },
-        "allowed",
-      );
       return await this.endpoint.options.access.handoff(
         revision,
         async () => {

@@ -488,11 +488,13 @@ describe("team transaction authority", () => {
       channelId: c.id,
       rootId: root.message.id,
       enabled: true,
+      version: "1",
     });
     expect(await chat.agentRecipient(member, c.id, root.message.id)).toEqual({
       channelId: c.id,
       rootId: root.message.id,
       enabled: false,
+      version: "0",
     });
     const input = {
       subscriptionId: "recipients",
@@ -502,13 +504,13 @@ describe("team transaction authority", () => {
     };
     const snapshot = await chat.resume(owner, input);
     expect(snapshot.agentRecipients).toEqual([
-      { channelId: c.id, rootId: root.message.id, enabled: true },
+      { channelId: c.id, rootId: root.message.id, enabled: true, version: "1" },
     ]);
     expect((await chat.resume(member, input)).agentRecipients).toEqual([]);
     await chat.setAgentRecipient(owner, c.id, root.message.id, false);
     expect(
       (await chat.resume(owner, { ...input, sinceSeq: snapshot.throughSeq })).agentRecipients,
-    ).toEqual([{ channelId: c.id, rootId: root.message.id, enabled: false }]);
+    ).toEqual([{ channelId: c.id, rootId: root.message.id, enabled: false, version: "2" }]);
     await chat.setAgentRecipient(owner, c.id, root.message.id, true);
     const hub = new TeamRealtimeHub(access, chat);
     const cuts: [TeamConsistentCut[], TeamConsistentCut[]] = [[], []];
@@ -527,7 +529,7 @@ describe("team transaction authority", () => {
       await send(c.id, "new reply", owner, [], root.message.id);
       await vi.waitFor(() => expect(cuts[1].length).toBeGreaterThan(1), { timeout: 3000 });
       expect(cuts[0].at(-1)!.agentRecipients).toEqual([
-        { channelId: c.id, rootId: root.message.id, enabled: true },
+        { channelId: c.id, rootId: root.message.id, enabled: true, version: "3" },
       ]);
       expect(cuts[1].at(-1)!.agentRecipients).toEqual([]);
     } finally {

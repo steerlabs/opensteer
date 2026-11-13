@@ -110,7 +110,14 @@ function foldTranscriptOwnEvent(
       return [...entries];
     case "run.delivery-updated": {
       const prior = entries.find((entry) => entry.kind === "run" && entry.runId === event.runId);
-      if (prior?.kind !== "run") return [...entries];
+      if (prior?.kind !== "run")
+        return upsertEntry(entries, {
+          kind: "run-delivery",
+          id: `run:${event.runId}`,
+          runId: event.runId,
+          createdAt: event.createdAt,
+          delivery: event.data.delivery,
+        });
       return upsertEntry(entries, { ...prior, delivery: event.data.delivery });
     }
     case "run.started":
@@ -709,6 +716,10 @@ function mergeLifecycle(previous: TranscriptEntry, next: TranscriptEntry): Trans
           : boundedStreamText(`${previous.text}${next.text}`),
     };
   }
+  if (previous.kind === "run" && next.kind === "run-delivery")
+    return { ...previous, delivery: next.delivery };
+  if (previous.kind === "run-delivery" && next.kind === "run")
+    return { ...next, delivery: next.delivery ?? previous.delivery };
   if (previous.kind === "run" && next.kind === "run") {
     const usage = next.usage ?? previous.usage;
     const startedBy = next.startedBy ?? previous.startedBy;
@@ -1001,6 +1012,7 @@ export function visibleTranscript(
       entry.kind === "selection" ||
       entry.kind === "withdrawn" ||
       entry.kind === "delivery" ||
+      entry.kind === "run-delivery" ||
       entry.kind === "request-wait"
     )
       continue;
@@ -1117,6 +1129,8 @@ function upsertRunEntry(
 ): TranscriptEntry[] {
   const id = event.runId ? `run:${event.runId}` : `event:${event.eventId}`;
   const prior = findEntry(entries, id, "run");
+  const fragment = findEntry(entries, id, "run-delivery");
+  const delivery = prior?.delivery ?? fragment?.delivery;
   const startedBy = "startedBy" in event.data ? event.data.startedBy : prior?.startedBy;
   return upsertEntry(entries, {
     ...runContext(prior, event),
@@ -1128,7 +1142,7 @@ function upsertRunEntry(
     status,
     // A Stop already asked for holds until the Run ends, whatever it reports meanwhile.
     ...(prior?.stopping === true && !isTerminalRunEntryStatus(status) ? { stopping: true } : {}),
-    ...(prior?.delivery ? { delivery: prior.delivery } : {}),
+    ...(delivery ? { delivery } : {}),
     ...(prior?.usage ? { usage: prior.usage } : {}),
     ...(prior?.attempt ? { attempt: prior.attempt } : {}),
     ...(startedBy ? { startedBy } : {}),

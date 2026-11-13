@@ -15,6 +15,8 @@ import { cloneTestDatabase, type TestDatabase } from "./test-database.test-suppo
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
 import { OpensteerStore } from "./store.js";
 import { createPersonalRunFixturePort } from "./personal-run-fixture.test-support.js";
+import { PersonalTeamRequestsStore } from "./personal-team-requests-store.js";
+import { personalTeamRunOutcome } from "./personal-team-run-store.js";
 import { AccountDirectoryStore } from "./account-directory-store.js";
 
 let clone: TestDatabase;
@@ -146,8 +148,8 @@ describe("fresh personal/team lineage", () => {
       values('migration-link',${teamId},${createId("hostInstance")},'fixture','https://team.invalid','{}','active')`.execute(
       database,
     );
-    await sql`insert into personal_team_requests(team_deployment_id,request_id,trigger_message_id,local_task_id,local_input_id,publication_state,source)
-      values(${teamId},${ledgerRequest},11,${thread.id},${ledger!.message.id},'pending',${JSON.stringify(source)}::jsonb)`.execute(
+    await sql`insert into personal_team_requests(team_deployment_id,request_id,trigger_message_id,local_task_id,local_input_id,terminal_state,publication_state,source)
+      values(${teamId},${ledgerRequest},11,${thread.id},${ledger!.message.id},'done','pending',${JSON.stringify(source)}::jsonb)`.execute(
       database,
     );
     const hydrated = [
@@ -171,6 +173,15 @@ describe("fresh personal/team lineage", () => {
       database,
     );
     await migrateToLatest(database);
+    const recovered = (await new PersonalTeamRequestsStore(database).get(teamId, ledgerRequest))!;
+    expect(recovered.terminalState).toBeNull();
+    expect(await personalTeamRunOutcome(database, recovered)).toMatchObject({
+      state: "pending",
+      runId: null,
+    });
+    expect(
+      (await new PersonalTeamRequestsStore(database).forTeam(teamId)).map((r) => r.requestId),
+    ).toContain(ledgerRequest);
     const targets = await database
       .selectFrom("threadInputs")
       .select(["messageId", "replyTarget", "teamSource"])

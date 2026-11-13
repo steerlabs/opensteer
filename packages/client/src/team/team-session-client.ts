@@ -122,7 +122,6 @@ export class TeamSessionClient {
   #disposed = false;
   #loading: Promise<void> | null = null;
   #stateRevision = 0;
-  #recipientRevision = 0;
   readonly #editedDrafts = new Set<string>();
   #attempt = 0;
   #typingAt = new Map<string, number>();
@@ -530,6 +529,7 @@ export class TeamSessionClient {
   ): Promise<void> {
     if (this.#removed || this.#disposed) throw new Error("Team session ended.");
     const lifetime = this.#lifetime;
+    const contentGeneration = this.#contentGeneration;
     await this.rpc["commands.dispatch"]({
       type: "team.agent.recipient.set",
       channelId,
@@ -537,19 +537,21 @@ export class TeamSessionClient {
       enabled,
     }).then(unwrapRpcResult);
     if (lifetime !== this.#lifetime) return;
-    const revision = this.#recipientRevision;
     const recipient = await this.rpc["team.agent.recipient.get"]({ channelId, rootId }).then(
       unwrapRpcResult,
     );
-    if (lifetime === this.#lifetime && revision === this.#recipientRevision)
+    if (lifetime === this.#lifetime && contentGeneration === this.#contentGeneration)
       this.#applyRecipients([recipient]);
   }
   #applyRecipients(recipients: readonly TeamAgentRecipient[]): void {
-    this.#recipientRevision++;
     const merged = new Map(
       this.#snapshot.agentRecipients.map((row) => [`${row.channelId}:${row.rootId}`, row]),
     );
-    for (const row of recipients) merged.set(`${row.channelId}:${row.rootId}`, row);
+    for (const row of recipients) {
+      const key = `${row.channelId}:${row.rootId}`;
+      const prior = merged.get(key);
+      if (!prior || BigInt(row.version) >= BigInt(prior.version)) merged.set(key, row);
+    }
     this.#update({ agentRecipients: [...merged.values()].slice(-1000) });
   }
   receive(frame: z.infer<typeof TeamServerFrameViewSchema>): void {
@@ -564,16 +566,8 @@ export class TeamSessionClient {
         if (!held) return;
         const next = reduceTeamCut(held, frame.cut);
         if (next !== held) {
-          this.#recipientRevision++;
-          const outsideScope = this.#snapshot.agentRecipients.filter(
-            (row) =>
-              row.channelId !== frame.cut.scope.channelId ||
-              (frame.cut.scope.kind === "thread" && row.rootId !== frame.cut.scope.rootId),
-          );
-          this.#update({
-            [view]: next,
-            agentRecipients: [...outsideScope, ...frame.cut.agentRecipients],
-          });
+          this.#update({ [view]: next });
+          this.#applyRecipients(frame.cut.agentRecipients);
           if (
             frame.cut.type === "snapshot" &&
             held.anchorId &&
@@ -590,7 +584,6 @@ export class TeamSessionClient {
         void this.#refreshSidebarRows(frame.channelIds).catch(() => undefined);
         break;
       case "team.access.changed": {
-        this.#recipientRevision++;
         this.#contentGeneration++;
         // Content is hidden until a new authorized cut; old pages cannot reinstall it.
         const channel = this.#snapshot.channel,

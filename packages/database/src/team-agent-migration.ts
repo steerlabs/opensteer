@@ -29,6 +29,8 @@ export async function migrateTeamAgents(database: Kysely<unknown>): Promise<void
       and r.team_request_id is not null and i.reply_target is null
       and i.team_source->>'teamId' is not null and i.team_source->>'channelId' is not null
       and i.team_source->>'threadRootId' is not null;
+    update thread_inputs set team_request_id=reply_target->>'requestId'
+      where reply_target->>'kind'='team' and team_request_id is null;
     update runs r set reply_target=i.reply_target from thread_inputs i
       where r.seed_input_id=i.message_id and r.thread_id=i.thread_id and i.reply_target->>'kind'='team';
     alter table runs drop column team_request_id;
@@ -42,11 +44,15 @@ export async function migrateTeamAgents(database: Kysely<unknown>): Promise<void
       add column blocked_reason text;
     update personal_team_requests set delivery_via=case when explicit_reply then 'tool' else 'final' end,
       blocked_reason=case when publication_state='blocked' then 'Publication was blocked before delivery tracking was available.' end;
+    -- Older terminal states preceded publication, not an acknowledged status.
+    update personal_team_requests set terminal_state=null,finished_at=null
+      where terminal_state in ('done','failed','stopped');
     create table team_agent_recipients (
       user_id text not null references team_members(user_id),
       channel_id text not null,
       root_id bigint not null,
       enabled boolean not null,
+      version bigint not null default 1,
       updated_at timestamptz not null default now(),
       primary key(user_id,channel_id,root_id),
       foreign key(channel_id,root_id) references team_messages(channel_id,id)

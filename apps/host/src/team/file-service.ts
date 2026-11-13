@@ -204,7 +204,7 @@ export class TeamFileService {
     agent?: TeamFileAgent,
   ): Promise<{ body: Readable; sizeBytes: number; headers: Record<string, string> }> {
     const revision = this.access.revision;
-    const row = await this.store.authorized(actor, id, agent);
+    const row = await this.store.authorized(actor, id, agent, true);
     requireTeam(part === "original" || row.previewStorageKey, "No image preview");
     const controller = new AbortController();
     let stream: Readable | undefined;
