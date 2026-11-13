@@ -9,7 +9,7 @@ export const person_message = defineAgentTool({
   name: "person_message",
   title: "Update the person",
   description:
-    "Send worthwhile news to this Run’s requester while work continues. May notify devices. Refused on Assignments: ask the assigner to tell the person. Put the completed answer in your final reply without a duplicate update.",
+    "Send worthwhile news to this Run’s requester while work continues. May notify devices. Refused on Assignments: ask the assigner to tell the person. On a background wake, briefly say what happened in your final reply; send real finds to the asking task with thread_send queue or email through a connected integration. Put the completed answer in your final reply without a duplicate update.",
   input: z
     .strictObject({ message: PersonMessageSchema })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),

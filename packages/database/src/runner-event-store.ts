@@ -1,6 +1,6 @@
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { recoverLostRunTransaction } from "./run-recovery.js";
-import { isPlaceContentPart } from "@opensteer/core";
+import { contentSaysSomething, isPlaceContentPart } from "@opensteer/core";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { isConstraintViolation } from "./connection.js";
@@ -75,7 +75,8 @@ function isExactRunnerEventReplay(
     row.environmentId === input.environmentId &&
     row.threadId === event.threadId &&
     row.type === event.type &&
-    row.createdAt.getTime() === Date.parse(event.emittedAt) &&
+    (event.type === "assistant.message" ||
+      row.createdAt.getTime() === Date.parse(event.emittedAt)) &&
     isDeepStrictEqual(runnerReportedData(row), event.data)
   );
 }
@@ -187,6 +188,14 @@ async function applyEventProjection(
         message: "Assistant message has no Run",
       });
     }
+  }
+  // A reply that says nothing stays in the Runner journal, where it still ends
+  // its live text, but never becomes a message.
+  if (
+    event.type === "assistant.message" &&
+    event.runId &&
+    contentSaysSomething(event.data.content)
+  ) {
     // A Run's actor is its authority principal, not the assistant's identity.
     const assistantPrincipal = await transaction
       .selectFrom("principals")
@@ -213,6 +222,7 @@ async function applyEventProjection(
             threadId: runContext.threadId,
           }),
         ),
+        createdAt: new Date(),
         content: jsonValue(event.data.content),
         id: event.data.messageId,
         kind: "assistant",
@@ -551,7 +561,7 @@ async function applyEventProjection(
         const status = event.type === "run.completed" ? "completed" : "interrupted";
         compensatingEvents.push(
           ...(await finalizeRunTransaction(transaction, {
-            completedAt: now,
+            completedAt: new Date(),
             links,
             source: "runner",
             queuedInputCancellation: "seed-input",
@@ -565,7 +575,7 @@ async function applyEventProjection(
       if (event.runId) {
         compensatingEvents.push(
           ...(await finalizeRunTransaction(transaction, {
-            completedAt: now,
+            completedAt: new Date(),
             failure: event.data,
             links,
             source: "runner",
@@ -1205,7 +1215,7 @@ export async function commitRunnerEvent(
     const inserted = await transaction
       .insertInto("deploymentEvents")
       .values({
-        createdAt: new Date(event.emittedAt),
+        createdAt: event.type === "assistant.message" ? new Date() : new Date(event.emittedAt),
         nodeDetailId: nodeDetailEventNodeId(event) ?? null,
         data: jsonValue(await stampRunContext(transaction, event.type, event.runId, stored)),
         environmentId: input.environmentId,

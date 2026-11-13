@@ -28,7 +28,6 @@ export interface ChannelDetailsActions {
   readonly onMembers: () => void;
   readonly onFiles: () => void;
   readonly onPinned: () => void;
-  readonly onKnowledge: () => void;
   readonly onInstructions: () => void;
   readonly onNotify: () => void;
   readonly onEditAbout: () => void;
@@ -40,8 +39,8 @@ export interface ChannelDetailsActions {
 
 /**
  * A channel's Details, pushed from its title. On a phone it holds what the
- * desktop's tabs and Details pane do: Members, Files, Pinned, Knowledge and
- * the instructions for agents, then the reader's own settings here, then, for
+ * desktop's tabs and Details pane do: Members, Files, Pinned and the
+ * instructions for agents, then the reader's own settings here, then, for
  * managers, Access (People only) and Archive.
  */
 export function ChannelDetailsBody(props: {
@@ -126,14 +125,6 @@ export function ChannelDetailsBody(props: {
             onPress={actions.onPinned}
             value={String(props.counts.pinned)}
           />,
-          dm ? null : (
-            <LinkRow
-              icon="tablecells"
-              key="knowledge"
-              label="Knowledge"
-              onPress={actions.onKnowledge}
-            />
-          ),
           dm || channel.peopleOnly ? null : (
             <LinkRow
               icon="sparkles"

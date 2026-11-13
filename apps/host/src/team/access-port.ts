@@ -20,7 +20,6 @@ export interface TeamTopicAuthority {
   readonly read: boolean;
   readonly write: boolean;
   readonly manage: boolean;
-  readonly peopleOnly: boolean;
 }
 export interface TeamAccessEffects {
   readonly users: readonly UserId[];
@@ -58,14 +57,9 @@ export interface TeamAccessLockPort {
       authority: TeamChannelAuthority,
     ) => Promise<Value>,
   ): Promise<Value>;
-  /** Lock access FOR SHARE and the associated channel, reauthorize the topic, and hold until the restricted executor commits. */
+  /** Lock access FOR SHARE, run the write (which authorizes inside), and hold the lock through its COMMIT. */
   knowledgeWrite<Value>(
-    actor: TeamActor,
-    topicId: KnowledgeTopicId,
-    write: (
-      transaction: Transaction<DatabaseSchema>,
-      authority: TeamTopicAuthority,
-    ) => Promise<Value>,
+    write: (transaction: Transaction<DatabaseSchema>) => Promise<Value>,
   ): Promise<Value>;
   readonly revision: Sequence;
   /** Reauthorize on revision change; discard the whole buffered result on access loss. */

@@ -36,6 +36,14 @@ import type {
   RunAttemptTable,
   ThreadInputTable,
 } from "./schema.js";
+import { latestRunCompletion } from "./thread-visits.js";
+export const threadVisitSelection = sql<Date | null>`(
+  select last_visited_at from thread_visits
+  where thread_id = threads.id and user_id = (select owner_id from personal_settings)
+)`.as("lastVisitedAt");
+export const threadLatestRunCompletedAtSelection = latestRunCompletion(sql`threads.id`).as(
+  "latestRunCompletedAt",
+);
 export const threadPendingRequestsSelection = sql<number>`threads.pending_request_count`.as(
   "pendingRequests",
 );
@@ -55,6 +63,8 @@ export const threadContinuationIdentitySelection = sql<Thread["continuationIdent
   where thread_id = threads.id and active
 )`.as("continuationIdentity");
 type ThreadReadRow = {
+  readonly lastVisitedAt?: Date | null;
+  readonly latestRunCompletedAt?: Date | null;
   readonly askedAt: Date;
   readonly doneAt: Date | null;
   readonly doneReason?: Thread["doneReason"];
@@ -92,6 +102,8 @@ export function threadsFromRows(rows: readonly ThreadReadRow[]): Thread[] {
 function threadValueFromRow(row: ThreadReadRow) {
   return {
     ...row,
+    lastVisitedAt: row.lastVisitedAt?.toISOString() ?? null,
+    latestRunCompletedAt: row.latestRunCompletedAt?.toISOString() ?? null,
     teamOrigin:
       row.teamId && row.channelId && row.threadRootId
         ? {
@@ -133,6 +145,7 @@ function messageValueFromRow(row: Selectable<MessageTable>) {
 }
 export function threadInputFromRow(row: Selectable<ThreadInputTable>): ThreadInput {
   return ThreadInputSchema.parse({
+    ...(row.freshContext ? { freshContext: true } : {}),
     teamRequestId: row.teamRequestId,
     teamSource: row.teamSource,
     assignmentId: row.assignmentId,

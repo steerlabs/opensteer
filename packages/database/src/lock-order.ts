@@ -23,8 +23,10 @@ export const databaseLockOrder = [
   "team_group_edges",
   "team_channel_members",
   "team_channel_member_state",
+  "team_topics",
   "team_topic_grants",
-  "team_channel_topics",
+  "team_notes",
+  "team_note_versions",
   "team_links",
   "team_messages",
   // Serializes team file reservations against the storage limit.
@@ -209,7 +211,7 @@ export const databaseLockOrder = [
   "personal_remote_account_link",
   "personal_remote_sessions",
   "security_audit",
-  "thread_read_markers",
+  "thread_visits",
   "trigger_revisions",
   // Host User fences precede auth sessions, adoption proofs and account reconciliation.
   "users",

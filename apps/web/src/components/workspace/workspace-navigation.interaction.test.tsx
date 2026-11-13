@@ -547,9 +547,10 @@ describe("sidebar Tasks until Done", () => {
   async function readTask() {
     const task = openTasks().ready.find((item) => item.canBeDone)!;
     expect(task).toBeDefined();
-    const read = client.getSnapshot().threadReadStates[task.threadId];
-    if (read?.unreadSequence)
-      await act(async () => client.markThreadRead(task.threadId, read.unreadSequence!));
+    const completedAt = client
+      .getSnapshot()
+      .threads.find((thread) => thread.id === task.threadId)?.latestRunCompletedAt;
+    if (completedAt) await act(async () => client.visitThread(task.threadId, completedAt));
     return task;
   }
   const shelf = () => element<HTMLButtonElement>(".side-done .side-done__main");

@@ -252,6 +252,7 @@ describe.skipIf(!qualify).each([
         threadId,
         threadStateDirectory: join(directory, "call-private"),
         wrapProcessLaunch: (value) => value,
+        commandEnvironment: {},
 
         workspacePath: directory,
         writableRoots: [directory],

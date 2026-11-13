@@ -35,7 +35,7 @@ import {
   taskLineMaxLength,
   type TaskPage,
 } from "@opensteer/protocol";
-import { CompiledQuery, PostgresQueryCompiler, sql, type KyselyPlugin } from "kysely";
+import { sql } from "kysely";
 import { describe, expect, it as baseIt } from "vitest";
 import { AccountDirectoryStore } from "./account-directory-store.js";
 import { createDatabase } from "./connection.js";
@@ -44,7 +44,7 @@ import {
   type DecidedNotification,
   type NotificationPublication,
 } from "./notification-store.js";
-import { threadInputFromRow, messageFromRow } from "./thread-row-mappers.js";
+import { messageFromRow } from "./thread-row-mappers.js";
 import { NotificationStateStore } from "./notification-state.js";
 import { issueRunGrant } from "./run-grants.js";
 import { jsonValue } from "./store-primitives.js";
@@ -352,6 +352,7 @@ integration("notification decision boundary", () => {
     ): Promise<{
       readonly id: MessageId;
       readonly sequence: string;
+      readonly createdAt: string;
     }> {
       return withPersonalTransaction(database, async (transaction) => {
         const context = await transaction
@@ -362,7 +363,7 @@ integration("notification decision boundary", () => {
           .forNoKeyUpdate("threads")
           .executeTakeFirstOrThrow();
         const id = createId("message");
-        await transaction
+        const message = await transaction
           .insertInto("messages")
           .values({
             actorPrincipalId: context.actorPrincipalId,
@@ -381,6 +382,7 @@ integration("notification decision boundary", () => {
             sequence: context.nextMessageSequence,
             threadId: target.threadId,
           })
+          .returning("createdAt")
           .executeTakeFirstOrThrow();
         await transaction
           .updateTable("threads")
@@ -393,6 +395,7 @@ integration("notification decision boundary", () => {
         return {
           id,
           sequence: String(context.nextMessageSequence),
+          createdAt: message.createdAt.toISOString(),
         };
       });
     }
@@ -441,6 +444,7 @@ integration("notification decision boundary", () => {
     ): Promise<{
       readonly id: MessageId;
       readonly sequence: string;
+      readonly createdAt: string;
     }> {
       const reply = await appendReply(fixture, content, target);
       await appendRunnerEvent(
@@ -723,8 +727,10 @@ integration("notification decision boundary", () => {
             userId: decision.userId,
             eventId: row.eventId,
             sequence: row.sequence,
-            occurredAt: new Date(row.createdAt),
-            expiresAt: new Date(row.createdAt.getTime() + notificationPushWindowMilliseconds),
+            occurredAt: new Date(decision.view.occurredAt),
+            expiresAt: new Date(
+              Date.parse(decision.view.occurredAt) + notificationPushWindowMilliseconds,
+            ),
           });
         }
       }
@@ -1354,15 +1360,8 @@ integration("notification decision boundary", () => {
       );
     });
     it("never alerts for a report, in Voice or anywhere else", async ({ storeFixture }) => {
-      const {
-        createFixture,
-        markRunning,
-        store,
-        text,
-        decideCommitted,
-        notificationState,
-        observedViews,
-      } = storeFixture;
+      const { createFixture, markRunning, store, text, decideCommitted, observedViews } =
+        storeFixture;
       const fixture = await createFixture("report", true);
       await markRunning(fixture);
       await store.enqueueThreadInput({
@@ -1378,13 +1377,8 @@ integration("notification decision boundary", () => {
       });
       await decideCommitted(fixture);
       expect(
-        await notificationState.getReadState({
-          threadId: fixture.threadId,
-          userId: fixture.ownerId,
-        }),
-      ).toMatchObject({
-        unreadSequence: null,
-      });
+        (await store.getThreadForOwner(fixture.threadId, fixture.ownerId))?.latestRunCompletedAt,
+      ).toBeNull();
       expect(await observedViews()).toEqual([]);
     });
     it("never tells a person about their own messages, and tells only the person a Run answers", async ({
@@ -1541,15 +1535,15 @@ integration("notification decision boundary", () => {
       } = storeFixture;
       const fixture = await createFixture("already-read", true);
       const reply = await appendCompletedReply(fixture, text("Read on another screen."));
-      await notificationState.markRead({
+      await notificationState.visit({
         threadId: fixture.threadId,
-        throughSequence: reply.sequence,
+        visitedAt: reply.createdAt,
         userId: fixture.ownerId,
       });
       await decideCommitted(fixture);
       expect(await observedViews()).toEqual([]);
     });
-    it("rechecks the read marker before publishing a decided reply", async ({ storeFixture }) => {
+    it("rechecks the visit before publishing a decided reply", async ({ storeFixture }) => {
       const {
         createFixture,
         appendCompletedReply,
@@ -1564,6 +1558,9 @@ integration("notification decision boundary", () => {
       } = storeFixture;
       const fixture = await createFixture("grace", true);
       const read = await appendCompletedReply(fixture, text("You saw this one."));
+      // A row written before millisecond stamps keeps its microseconds.
+      await sql`update messages set created_at = date_trunc('milliseconds', created_at) + interval '500 microseconds'
+        where id = ${read.id}`.execute(database);
       const unread = await appendCompletedReply(fixture, text("You did not see this one."));
       const active = await addThread(fixture, {
         suffix: "addressed-grace",
@@ -1594,14 +1591,14 @@ integration("notification decision boundary", () => {
       await decideCommitted(fixture);
       await decideCommitted(active);
       expect(BigInt(addressed.sequence)).toBe(BigInt(intermediate.sequence) + 1n);
-      await notificationState.markRead({
+      await notificationState.visit({
         threadId: fixture.threadId,
-        throughSequence: read.sequence,
+        visitedAt: read.createdAt,
         userId: fixture.ownerId,
       });
-      await notificationState.markRead({
+      await notificationState.visit({
         threadId: active.threadId,
-        throughSequence: addressed.sequence,
+        visitedAt: addressed.createdAt,
         userId: active.ownerId,
       });
       expect(await notifications.decide(addressedEvent)).toEqual([]);
@@ -2121,362 +2118,6 @@ integration("notification decision boundary", () => {
       await expect(notificationState.timeZoneFor(fixture.ownerId)).resolves.toBe(
         "America/Los_Angeles",
       );
-    });
-    it.for(
-      (["watch", "trigger", "agent"] as const).flatMap((kind) =>
-        [true, false].map((voice) => ({
-          kind,
-          voice,
-        })),
-      ),
-    )(
-      "preserves unread and legacy read positions for $kind inputs (Voice: $voice)",
-      async ({ kind, voice }, { storeFixture }) => {
-        const {
-          createFixture,
-          markRunning,
-          setRunSeedAuthor,
-          notificationState,
-          database,
-
-          appendCompletedReply,
-          text,
-          decideCommitted,
-          observedViews,
-        } = storeFixture;
-        const fixture = await createFixture(`automatic-${kind}-${voice}`, voice);
-        await setRunSeedAuthor(fixture, kind);
-        await markRunning(fixture);
-        await database
-          .updateTable("threadInputs")
-          .set({
-            state: "delivered",
-            deliveredAt: new Date(),
-            runId: fixture.runId,
-          })
-          .where("threadId", "=", fixture.threadId)
-          .execute();
-        const seed = await database
-          .selectFrom("runs")
-          .innerJoin("messages", "messages.id", "runs.seedInputId")
-          .select("messages.sequence")
-          .where("runs.id", "=", fixture.runId)
-          .executeTakeFirstOrThrow();
-        const state = await notificationState.getReadState({
-          threadId: fixture.threadId,
-          userId: fixture.ownerId,
-        });
-        expect(state.unreadSequence).toBe(voice ? null : seed.sequence);
-        if (voice) {
-          await decideCommitted(fixture);
-          expect(await observedViews()).toEqual([]);
-        }
-        expect(
-          await notificationState.markRead({
-            threadId: fixture.threadId,
-            userId: fixture.ownerId,
-            throughSequence: seed.sequence,
-          }),
-        ).toMatchObject({
-          readSequence: seed.sequence,
-          unreadSequence: null,
-        });
-        if (voice && kind === "watch") {
-          await sql`
-            insert into public.messages (id, thread_id, run_id, content, actor_principal_id,
-              sequence, kind, author)
-            select 'silent-' || source.id || '-' || n, source.thread_id, source.run_id,
-              source.content, source.actor_principal_id, source.sequence + n, 'input', source.author
-            from public.messages source cross join generate_series(1, 5000) n
-            where source.thread_id = ${fixture.threadId} and source.sequence = ${seed.sequence}
-          `.execute(database);
-          await sql`analyze public.messages; analyze public.thread_inputs`.execute(database);
-          const captured: CompiledQuery[] = [];
-          const capture: KyselyPlugin = {
-            transformQuery({ node, queryId }) {
-              captured.push(new PostgresQueryCompiler().compileQuery(node, queryId));
-              return node;
-            },
-            async transformResult({ result }) {
-              return result;
-            },
-          };
-          const measured = new NotificationStateStore(database.withPlugin(capture));
-          expect(
-            await measured.getReadState({
-              threadId: fixture.threadId,
-              userId: fixture.ownerId,
-            }),
-          ).toMatchObject({
-            readSequence: seed.sequence,
-            unreadSequence: null,
-          });
-          if (process.env.OPENSTEER_UNREAD_PLAN_BENCH === "1") {
-            for (const query of captured) {
-              const plan = await database.executeQuery(
-                CompiledQuery.raw("explain (analyze, buffers) " + query.sql, [...query.parameters]),
-              );
-              console.info("UNREAD_PLAN", JSON.stringify(plan.rows));
-            }
-          }
-          await database
-            .deleteFrom("messages")
-            .where("threadId", "=", fixture.threadId)
-            .where("sequence", ">", seed.sequence)
-            .execute();
-        }
-        const reply = await appendCompletedReply(fixture, text("Visible reply"));
-        expect(
-          await notificationState.getReadState({
-            threadId: fixture.threadId,
-            userId: fixture.ownerId,
-          }),
-        ).toMatchObject({
-          unreadSequence: reply.sequence,
-        });
-        await database
-          .updateTable("messages")
-          .set({
-            kind: "run-result",
-          })
-          .where("id", "=", reply.id)
-          .executeTakeFirstOrThrow();
-        expect(
-          await notificationState.getReadState({
-            threadId: fixture.threadId,
-            userId: fixture.ownerId,
-          }),
-        ).toMatchObject({
-          unreadSequence: reply.sequence,
-        });
-      },
-    );
-    it("retains the legacy human sender fallback and rejects an unrelated reader", async ({
-      storeFixture,
-    }) => {
-      const { createFixture, markRunning, anotherUser, notificationState, database } = storeFixture;
-      const fixture = await createFixture("channel-viewer-fallback", true);
-      await markRunning(fixture);
-      await database
-        .updateTable("threadInputs")
-        .set({
-          state: "delivered",
-          deliveredAt: new Date(),
-          runId: fixture.runId,
-        })
-        .where("threadId", "=", fixture.threadId)
-        .execute();
-      const other = await anotherUser(fixture, "Other viewer");
-      const seed = await database
-        .selectFrom("runs")
-        .innerJoin("messages", "messages.id", "runs.seedInputId")
-        .select(["messages.id", "messages.sequence"])
-        .where("runs.id", "=", fixture.runId)
-        .executeTakeFirstOrThrow();
-      // Channel principals without a linked user produce this human author shape.
-      await database
-        .updateTable("messages")
-        .set({
-          author: jsonValue(
-            MessageAuthorSchema.parse({
-              kind: "human",
-              displayName: "External sender",
-              principalId: "channel:external",
-            }),
-          ),
-        })
-        .where("id", "=", seed.id)
-        .executeTakeFirstOrThrow();
-      expect(
-        await notificationState.getReadState({
-          threadId: fixture.threadId,
-          userId: fixture.ownerId,
-        }),
-      ).toMatchObject({
-        unreadSequence: null,
-      });
-      await expect(
-        notificationState.getReadState({ threadId: fixture.threadId, userId: other }),
-      ).rejects.toMatchObject({ code: "not_found" });
-      await database
-        .updateTable("messages")
-        .set({
-          author: jsonValue(
-            MessageAuthorSchema.parse({
-              kind: "human",
-              displayName: "Other viewer",
-              principalId: "other",
-              userId: other,
-            }),
-          ),
-        })
-        .where("id", "=", seed.id)
-        .executeTakeFirstOrThrow();
-      expect(
-        await notificationState.getReadState({
-          threadId: fixture.threadId,
-          userId: fixture.ownerId,
-        }),
-      ).toMatchObject({
-        unreadSequence: seed.sequence,
-      });
-    });
-    it("keeps unread candidates private, ordered, and scoped to published incoming content", async ({
-      storeFixture,
-    }) => {
-      const {
-        createFixture,
-        markRunning,
-
-        store,
-        text,
-        notificationState,
-        database,
-      } = storeFixture;
-      const fixture = await createFixture("viewer-candidates");
-      await markRunning(fixture);
-      const secondUserId = fixture.ownerId;
-      const queued = await store.enqueueThreadInput({
-        content: text("Still queued"),
-        idempotencyKey: "viewer-candidates-queued",
-        policy: "queue",
-        requestedBy: fixture.ownerId,
-        source: {
-          kind: "human",
-        },
-        threadId: fixture.threadId,
-      });
-      const before = await notificationState.getReadState({
-        threadId: fixture.threadId,
-        userId: secondUserId,
-      });
-      expect(before.unreadSequence).not.toBe(queued.message.sequence);
-      const report = await store.enqueueThreadInput({
-        content: text("Published report"),
-        idempotencyKey: "viewer-candidates-report",
-        policy: "report",
-        requestedBy: fixture.ownerId,
-        source: {
-          kind: "agent",
-          runId: fixture.runId,
-        },
-        threadId: fixture.threadId,
-      });
-      const published = await notificationState.getReadState({
-        threadId: fixture.threadId,
-        userId: secondUserId,
-      });
-      expect(published.unreadSequence).toBe(report.message.sequence);
-      expect(BigInt(published.asOfSequence)).toBeGreaterThan(BigInt(before.asOfSequence));
-      await database
-        .updateTable("messages")
-        .set({
-          author: jsonValue(
-            MessageAuthorSchema.parse({
-              displayName: "Owner",
-              kind: "human",
-              principalId: "test-principal",
-              userId: fixture.ownerId,
-            }),
-          ),
-        })
-        .where("id", "=", report.message.id)
-        .executeTakeFirstOrThrow();
-      expect(
-        (
-          await notificationState.getReadState({
-            threadId: fixture.threadId,
-            userId: fixture.ownerId,
-          })
-        ).unreadSequence,
-      ).toBeNull();
-      await Promise.all([
-        notificationState.markRead({
-          threadId: fixture.threadId,
-          throughSequence: report.message.sequence,
-          userId: secondUserId,
-        }),
-        notificationState
-          .markRead({
-            threadId: fixture.threadId,
-            throughSequence: queued.message.sequence,
-            userId: secondUserId,
-          })
-          .catch(() => undefined),
-      ]);
-      expect(
-        (
-          await notificationState.getReadState({
-            threadId: fixture.threadId,
-            userId: secondUserId,
-          })
-        ).readSequence,
-      ).toBe(report.message.sequence);
-      const withdrawn = await store.enqueueThreadInput({
-        content: text("Withdrawn report"),
-        idempotencyKey: "viewer-candidates-withdrawn",
-        policy: "report",
-        requestedBy: fixture.ownerId,
-        source: {
-          kind: "agent",
-          runId: fixture.runId,
-        },
-        threadId: fixture.threadId,
-      });
-      const beforeWithdrawal = await notificationState.getReadState({
-        threadId: fixture.threadId,
-        userId: fixture.ownerId,
-      });
-      expect(beforeWithdrawal.unreadSequence).toBe(withdrawn.message.sequence);
-      await withPersonalTransaction(database, async (transaction) => {
-        const row = await transaction
-          .updateTable("threadInputs")
-          .set({ state: "cancelled", cancelReason: "report-withdrawn", updatedAt: new Date() })
-          .where("messageId", "=", withdrawn.message.id)
-          .returningAll()
-          .executeTakeFirstOrThrow();
-        await appendHostDeploymentEvent(transaction, {
-          type: "thread-input.updated",
-          environmentId: fixture.environmentId,
-          runId: row.runId,
-          threadId: fixture.threadId,
-          data: { input: threadInputFromRow(row) },
-        });
-      });
-      const cancelled = await notificationState.getReadState({
-        threadId: fixture.threadId,
-        userId: fixture.ownerId,
-      });
-      expect(cancelled.unreadSequence).toBeNull();
-      expect(BigInt(cancelled.asOfSequence)).toBeGreaterThan(BigInt(beforeWithdrawal.asOfSequence));
-    });
-
-    it("keeps the greatest read position under concurrent marks", async ({ storeFixture }) => {
-      const { createFixture, appendReply, text, notificationState } = storeFixture;
-      const fixture = await createFixture("concurrent-markers");
-      const first = await appendReply(fixture, text("First reply"));
-      const second = await appendReply(fixture, text("Second reply"));
-      await Promise.all([
-        notificationState.markRead({
-          threadId: fixture.threadId,
-          throughSequence: second.sequence,
-          userId: fixture.ownerId,
-        }),
-        notificationState.markRead({
-          threadId: fixture.threadId,
-          throughSequence: first.sequence,
-          userId: fixture.ownerId,
-        }),
-      ]);
-      expect(
-        await notificationState.getReadState({
-          threadId: fixture.threadId,
-          userId: fixture.ownerId,
-        }),
-      ).toMatchObject({
-        readSequence: second.sequence,
-        unreadSequence: null,
-      });
     });
   });
   describe("task list", () => {

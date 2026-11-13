@@ -217,6 +217,7 @@ function App() {
                 link: {
                   deploymentName: "Mac mini",
                   expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+                  extensionDirectory: null,
                   invitation: "opensteer-browser-source:preview",
                 },
               }

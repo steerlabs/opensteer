@@ -5,10 +5,10 @@ import type { TeamRunTools } from "./tools.js";
 import type { TeamRunFileTransfers } from "./files.js";
 
 export class PersonalTeamToolAdapter implements TeamToolPort {
-  readonly tools: Pick<TeamRunTools, "authority" | "receipt" | "read" | "search" | "reply" | "sql">;
+  readonly tools: Pick<TeamRunTools, "authority" | "receipt" | "read" | "search" | "reply">;
   readonly files: Pick<TeamRunFileTransfers, "fetch" | "uploadPath">;
   constructor(
-    tools: Pick<TeamRunTools, "authority" | "receipt" | "read" | "search" | "reply" | "sql">,
+    tools: Pick<TeamRunTools, "authority" | "receipt" | "read" | "search" | "reply">,
     files: Pick<TeamRunFileTransfers, "fetch" | "uploadPath">,
   ) {
     this.tools = tools;
@@ -68,12 +68,5 @@ export class PersonalTeamToolAdapter implements TeamToolPort {
     const result = await this.tools.reply(run.runId, input.bodyMarkdown, attachments);
     signal?.throwIfAborted();
     return result;
-  }
-
-  async sql(run: TeamToolRun, input: Parameters<TeamToolPort["sql"]>[1], signal?: AbortSignal) {
-    const request = await this.#authority(run, signal);
-    const result = await this.tools.sql(run.runId, input);
-    signal?.throwIfAborted();
-    return { ...result, source: request.source };
   }
 }

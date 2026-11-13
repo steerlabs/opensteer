@@ -1,3 +1,4 @@
+import { useThreadVisits } from "@opensteer/client/react";
 import {
   messageAuthorName,
   conversationActivityTurn,
@@ -58,7 +59,6 @@ import {
 } from "react";
 import {
   ActivityIndicator,
-  AppState,
   FlatList,
   Pressable,
   StyleSheet,
@@ -80,6 +80,7 @@ import {
 import { operationDetail } from "../client/mobile-client.js";
 import { color, material, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
+import { useAppForeground } from "../ui/foreground.js";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import { enter, exit } from "../ui/motion.js";
 import { AppText, Notice } from "../ui/primitives.js";
@@ -273,7 +274,6 @@ function selectThreadPane(snapshot: HostSnapshot, threadId: string) {
     window: snapshot.transcriptWindows[threadId],
     ownRequests: snapshot.requests[threadId],
     lookup: snapshot.threadLookups[threadId],
-    readState: snapshot.threadReadStates[threadId],
     runQueue: snapshot.runQueue.filter((run) => run.threadId === threadId),
     // These helpers read requester/worker Threads and delegated work. Select their
     // answers against the full store so unrelated transcript maps cannot go stale.
@@ -580,9 +580,6 @@ function ThreadPaneForUser(
   useEffect(() => {
     if (anchorMessageId === null || anchored.current === anchorMessageId) return;
     anchored.current = anchorMessageId;
-    // Before the fetch, not after: the client pins this Thread to the
-    // historical window as it answers, and a render in between would read the
-    // foot of the old page as the tail and mark it read.
     setHistorical(true);
     pinned.current = false;
     setAtTail(false);
@@ -1052,42 +1049,8 @@ function ThreadPaneForUser(
     if (pinned.current && !dragging.current) scrollToLatest(false);
   };
 
-  // Read is marked for what this reader actually reached: the foot of the
-  // conversation, on the screen in front of them, with the app in front of
-  // them. A background subscription observes nothing, and marks nothing.
-  const readState = snapshot.readState ?? null;
-  // What this screen has actually shown as published here. The Host's
-  // `unreadSequence` is not that: it names content no page may have rendered,
-  // so marking it would swallow history nobody saw.
-  const markedSequence = readState?.readSequence ?? null;
-  const readKnown = readState !== null;
-  const [appActive, setAppActive] = useState(() => AppState.currentState === "active");
-  useEffect(() => {
-    const subscription = AppState.addEventListener("change", (state) => {
-      setAppActive(state === "active");
-    });
-    return () => subscription.remove();
-  }, []);
-  useEffect(() => {
-    // Until this reader's position arrives, a mark could only repeat it.
-    if (!readKnown || !focused || !atTail || !appActive || historical) return;
-    if (observed === null) return;
-    if (markedSequence !== null && BigInt(markedSequence) >= BigInt(observed)) return;
-    void hostClient.markThreadRead(threadId, observed).catch(() => {
-      // The next time they reach the foot marks it again; a read marker is
-      // not worth interrupting anybody for.
-    });
-  }, [
-    appActive,
-    atTail,
-    focused,
-    historical,
-    hostClient,
-    markedSequence,
-    observed,
-    readKnown,
-    threadId,
-  ]);
+  const appForeground = useAppForeground();
+  useThreadVisits(hostClient, threadId, focused && appForeground);
 
   const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>): void => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;

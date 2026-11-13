@@ -14,7 +14,7 @@ import { assignmentActivityEventsForRun } from "./assignment-store.js";
 import { endAttempt } from "./run-attempts.js";
 import { cleanupRunAttemptTransaction, finalizeRunTransaction } from "./run-finalization.js";
 import { runWasStopped, type RevokedRunGrant } from "./run-grants.js";
-import { lockRunProjectionRows } from "./run-projection-locks.js";
+import { lockRunProjectionRows, lockThreadProviderSessions } from "./run-projection-locks.js";
 import type { DatabaseSchema } from "./schema.js";
 import {
   eventFromRow,
@@ -63,12 +63,10 @@ export async function recoverLostRunTransaction(
     .selectAll()
     .where("id", "=", run.threadId)
     .executeTakeFirstOrThrow();
-  const session = await transaction
-    .selectFrom("providerSessions")
-    .selectAll()
-    .where("id", "=", run.providerSessionId)
-    .forNoKeyUpdate()
-    .executeTakeFirstOrThrow();
+  const session = (await lockThreadProviderSessions(transaction, run.threadId)).find(
+    ({ id }) => id === run.providerSessionId,
+  );
+  if (!session) throw new Error("Run's provider session is missing");
   const attempts = await transaction
     .selectFrom("runAttempts")
     .selectAll()

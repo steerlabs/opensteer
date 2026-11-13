@@ -12,8 +12,6 @@ export default defineConfig(
     external: [
       // Native image decoder selects platform binaries at runtime.
       "sharp",
-      // Loads its WASM parser from a path relative to its own module.
-      "libpg-query",
       // CJS with dynamic requires of Node builtins; bundling breaks at load.
       "ws",
       // One schema registry per process: bundled copies fail instanceof checks.

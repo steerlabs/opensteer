@@ -574,6 +574,40 @@ describe("MockHostClient", () => {
     }
   });
 
+  it("records a fresh-context session rotation as the Host's selection marker", async () => {
+    const client = createClient();
+    try {
+      const thread = await client.createThread(threadInput(client));
+      const sent = unwrapSend(
+        await client.dispatch({
+          content: [{ type: "text", text: "Check again with fresh context" }],
+          delivery: "queue",
+          freshContext: true,
+          idempotencyKey: "fresh-context",
+          threadId: thread.id,
+          type: "thread.sendMessage",
+        }),
+      );
+      const selected = client.getSnapshot().threads.find(({ id }) => id === thread.id)!;
+      expect(selected.providerSessionId).not.toBe(thread.providerSessionId);
+      expect(sent.run?.providerSessionId).toBe(selected.providerSessionId);
+      expect(
+        (client.getSnapshot().transcripts[thread.id] ?? []).filter(
+          (entry) => entry.kind === "selection",
+        ),
+      ).toEqual([
+        expect.objectContaining({
+          harnessInstanceId: selected.harnessInstanceId,
+          modelSelection: selected.modelSelection,
+          providerSessionId: selected.providerSessionId,
+          runId: null,
+        }),
+      ]);
+    } finally {
+      client.dispose();
+    }
+  });
+
   it("reports the streams a reply is still writing through the live read", async () => {
     vi.useFakeTimers();
     const client = new MockHostClient({ latencyMs: 40, now: () => fixedNow });

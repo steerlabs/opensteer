@@ -1,4 +1,4 @@
-import { OpensteerError, type TeamActor } from "@opensteer/core";
+import type { TeamActor } from "@opensteer/core";
 import {
   TeamAccessStore,
   appendTeamAudit,
@@ -30,20 +30,12 @@ export function testTeamAccess(database: Kysely<DatabaseSchema>) {
       return super.mutateAs(actor, action, write, afterAuthority);
     }
     override async knowledgeWrite<Value>(
-      actor: Parameters<TeamAccessStore["knowledgeWrite"]>[0],
-      topicId: Parameters<TeamAccessStore["knowledgeWrite"]>[1],
-      write: (
-        transaction: import("kysely").Transaction<DatabaseSchema>,
-        authority: Awaited<ReturnType<TeamAccessStore["topic"]>>,
-      ) => Promise<Value>,
+      write: (transaction: Transaction<DatabaseSchema>) => Promise<Value>,
     ): Promise<Value> {
       await pauses.beforeWriteLock?.();
-      return super.knowledgeWrite(actor, topicId, async (transaction) => {
+      return super.knowledgeWrite(async (transaction) => {
         await pauses.insideWriteLock?.();
-        const authority = await this.topic(transaction, actor, topicId);
-        if (!authority.write)
-          throw new OpensteerError({ code: "forbidden", message: "Team access denied" });
-        return write(transaction, authority);
+        return write(transaction);
       });
     }
     override async handoff<Value>(

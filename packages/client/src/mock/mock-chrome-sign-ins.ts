@@ -93,7 +93,7 @@ export class MockChromeSignIns {
   }
 
   state(): BrowserSourcesState {
-    return { sites: [...this.#sites], sources: [...this.#sources] };
+    return { extensionDirectory: null, sites: [...this.#sites], sources: [...this.#sources] };
   }
 
   inspect(url: string): BrowserSourceInspection {

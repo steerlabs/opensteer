@@ -99,15 +99,14 @@ export async function runEngine(input: {
   await cp(join(input.checkout, "apps/runner/agent-skills"), bundlePath, { recursive: true });
   const bundle = await loadAgentSkillBundle(bundlePath);
   const selected = await Promise.all(
-    planAgentSkills(
-      bundle,
-      c.caller === "run" ? opensteerAgentSkillsFor({ teamBound: c.teamBound }) : [],
-    ).map(async (skill) => {
-      const { fullName, path } = skill;
-      const destination = join(p.workspace, ".eval-skills", fullName);
-      await cp(path, destination, { recursive: true });
-      return { ...skill, path: destination };
-    }),
+    planAgentSkills(bundle, c.caller === "run" ? opensteerAgentSkillsFor() : []).map(
+      async (skill) => {
+        const { fullName, path } = skill;
+        const destination = join(p.workspace, ".eval-skills", fullName);
+        await cp(path, destination, { recursive: true });
+        return { ...skill, path: destination };
+      },
+    ),
   );
   const skills = await resolveSkillPlan({
     bundled: selected,
@@ -117,8 +116,11 @@ export async function runEngine(input: {
   const instructions = [c.fixtures["AGENTS.md"], c.teamContext].filter(Boolean).join("\n\n");
   const guide =
     c.caller === "run"
-      ? platformGuideForRun({ purpose: c.purpose, teamBound: c.teamBound }) +
-        (c.voice ? `\n\n${voiceGuide}` : "")
+      ? platformGuideForRun({
+          purpose: c.purpose,
+          teamBound: c.teamBound,
+          knowledge: c.knowledge,
+        }) + (c.voice ? `\n\n${voiceGuide}` : "")
       : "";
   const treatment = {
     prompt: fingerprint({
@@ -148,6 +150,7 @@ export async function runEngine(input: {
         kind: c.caller,
         accessMode: "full-access",
         teamBound: c.teamBound,
+        knowledge: c.knowledge,
       }).map(({ name }) => name),
       toolsRevision: "eval-tools-v1",
       instructions: guide,
@@ -156,6 +159,7 @@ export async function runEngine(input: {
       url: new URL("/agent", host.url).href,
     },
     environmentId: host.scope.environmentId,
+    commandEnvironment: {},
     environment: p.environment,
     harnessInstanceId: p.instanceId,
     history: [],

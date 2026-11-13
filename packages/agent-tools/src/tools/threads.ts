@@ -103,7 +103,7 @@ export const delegate_task = defineAgentTool({
   targetFields: ["threadId"],
   title: "Start or continue a task",
   description:
-    "Start one task, or continue a finished one with `threadId`, keeping its engine/model. Starting context is only `task` and `places`; no secrets. Keep `assignmentId` for status, wait or cancel. mode async returns admission; mode wait uses thread_wait with timeoutMs. Results reach Runs/programs automatically unless the assigner read them first; a task that ends with no reply wakes no one, so ask conditional checks to end that way when nothing merits passing on. Connections get no Assignment: wait on threadId. Change active work with thread_send.",
+    "Start one task, or continue a finished one with `threadId`, keeping its engine/model. Starting context is only `task` and `places`; no secrets. Keep `assignmentId` for status, wait or cancel. mode async returns admission; mode wait uses thread_wait with timeoutMs. Results reach Runs/programs automatically unless the assigner read them first; ask checks for a brief result, including when nothing changed. Connections and `standalone: true` (a new listed task of its own, e.g. one per scheduled run) get no Assignment: wait on threadId. Change active work with thread_send.",
   input: z
     .strictObject({
       mode: z.enum(["async", "wait"]).default("async"),
@@ -148,6 +148,12 @@ export const delegate_task = defineAgentTool({
       threadId: ThreadIdSchema.optional().describe(
         "Finished task to continue; omit new-task selectors.",
       ),
+      standalone: z
+        .literal(true)
+        .optional()
+        .describe(
+          "Start a separate listed task with no parent or Assignment; nothing returns. Not with threadId or places.",
+        ),
     })
     .superRefine((input, context) => {
       if (input.threadId && (input.harnessInstanceId || input.model)) {
@@ -156,6 +162,11 @@ export const delegate_task = defineAgentTool({
           message: "An existing Thread keeps its execution selection",
         });
       }
+      if (input.standalone && (input.threadId || input.places?.length))
+        context.addIssue({
+          code: "custom",
+          message: "A standalone task is new and starts from task alone; omit threadId and places",
+        });
     })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: TaskSchema.extend({ wait: ThreadWaitOutputSchema.optional() }),
@@ -200,10 +211,16 @@ export const thread_send = defineAgentTool({
   targetFields: ["threadId"],
   title: "Message a Thread",
   description:
-    "Send to a task. `report`: context for its next turn, starts nothing. `queue`: starts its next turn, or waits for it. `steer`: its active Run now, never falls back. `assignmentId` names the task it joined. Null means nothing returns on its own, so to get a result from a finished task use `delegate_task` with `threadId` instead. Accepted is not read; `cancelled` will not run, so do not resend.",
+    "Send to a task. `report`: context for its next turn, starts nothing. `queue`: starts its next turn, or waits for it. `steer`: its active Run now, never falls back. `freshContext: true` with queue starts a fresh model session; include criteria, destination and state path in every wake. `assignmentId` names the task it joined. Null means nothing returns on its own, so to get a result from a finished task use `delegate_task` with `threadId` instead. Accepted is not read; `cancelled` will not run, so do not resend.",
   input: z
     .strictObject({
       delivery: z.enum(["report", "queue", "steer"]).describe("report, queue or steer."),
+      freshContext: z
+        .boolean()
+        .optional()
+        .describe(
+          "Queue only: start a fresh model session for this wake. Include criteria, destination and state path in the message.",
+        ),
       message: z
         .string()
         .trim()
@@ -218,7 +235,11 @@ export const thread_send = defineAgentTool({
         .describe("Watch observation identity; reuse for the same observation."),
       threadId: ThreadIdSchema,
     })
-    .safeExtend({ operationKey: OperationKeySchema.optional() }),
+    .safeExtend({ operationKey: OperationKeySchema.optional() })
+    .refine((input) => !input.freshContext || input.delivery === "queue", {
+      message: "freshContext requires queue delivery",
+      path: ["freshContext"],
+    }),
   output: ThreadMessageOutputSchema,
   access: "write",
   callers: ["run", "program", "connection"] as const,

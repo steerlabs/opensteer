@@ -20,7 +20,9 @@ export async function threadAllowsPersonalContext(
   threadId: ThreadId,
   ownerId: UserId,
 ): Promise<boolean> {
-  // Reused workers retain every assigning conversation's context restriction.
+  // Reused workers retain every assigning conversation's context restriction, a task linked
+  // under another (an automation's own task) retains its parent's, and work an automation's
+  // program sends anywhere retains its anchor's.
   const ancestors = await sql<{ threadId: ThreadId }>`
     with recursive context_threads(id) as (
       select ${threadId}::text
@@ -33,7 +35,24 @@ export async function threadAllowsPersonalContext(
         where input.thread_id = current.id and input.state <> 'cancelled'
           and input.authority_source->>'kind' = 'thread-agent'
         union
+        select trigger.anchor_thread_id as id
+        from thread_inputs input
+        join trigger_occurrences occurrence
+          on occurrence.id = input.authority_source->>'occurrenceId'
+        join triggers trigger on trigger.id = occurrence.trigger_id
+        where input.thread_id = current.id and input.state <> 'cancelled'
+          and input.authority_source->>'kind' = 'trigger-occurrence'
+        union
+        select trigger.anchor_thread_id as id
+        from thread_inputs input
+        join triggers trigger on trigger.id = input.authority_source->>'triggerId'
+        where input.thread_id = current.id and input.state <> 'cancelled'
+          and input.authority_source->>'kind' = 'watch-observation'
+        union
         select parent_thread_id as id from delegations where child_thread_id = current.id
+        union
+        select parent_thread_id as id from threads
+        where id = current.id and parent_thread_id is not null
       ) parent
     )
     select id as thread_id from context_threads

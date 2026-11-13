@@ -42,7 +42,7 @@ it("bounds Unicode subjects and retains the newest fifty across working, ready a
       ...snapshot,
       threads: [],
       activeTasks: [],
-      threadReadStates: {},
+      threadVisits: {},
       waitingRequests: [],
       tasks: {
         ...snapshot.tasks!,

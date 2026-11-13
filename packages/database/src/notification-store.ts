@@ -107,48 +107,51 @@ export class NotificationStore {
     this.#now = options.now ?? (() => new Date());
   }
   async decide(event: AgentEvent): Promise<readonly DecidedNotification[]> {
-    if (
-      !mayNotify(event) ||
-      Date.parse(event.createdAt) + notificationPushWindowMilliseconds <= this.#now().getTime()
-    )
-      return [];
+    if (!mayNotify(event)) return [];
     return withPersonalReadTransaction(this.#database, async (transaction) =>
-      (await candidatesFor(transaction, event)).map((candidate) => {
-        const subjectId =
-          candidate.kind === "reply-published"
-            ? candidate.messageId
-            : candidate.kind === "request-opened"
-              ? candidate.requestId
-              : candidate.runId;
-        if (!subjectId)
-          throw new OpensteerError({
-            code: "internal",
-            message: "Notification lacks a subject",
-          });
-        const digest = createHash("sha256")
-          .update(`${candidate.userId}|${candidate.kind}|${subjectId}`)
-          .digest();
-        // RFC 9562 version 8 reserves the version and variant bits for this
-        // application-defined hash; subjects shared by events retain one id.
-        digest[6] = (digest[6]! & 0x0f) | 0x80;
-        digest[8] = (digest[8]! & 0x3f) | 0x80;
-        const hex = digest.subarray(0, 16).toString("hex");
-        const id = NotificationIdSchema.parse(
-          `ntf_${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
-        );
-        return {
-          ...(event.type === "request.opened" && event.data.request.kind === "device.access"
-            ? { deviceAccessRequests: "include" as const }
-            : {}),
-          userId: candidate.userId,
-          view: NotificationViewSchema.parse({
-            ...candidate,
-            id,
-            occurredAt: event.createdAt,
-            threadId: event.threadId,
-          }),
-        };
-      }),
+      (await candidatesFor(transaction, event))
+        .filter(
+          (candidate) =>
+            Date.parse(candidate.occurredAt ?? event.createdAt) +
+              notificationPushWindowMilliseconds >
+            this.#now().getTime(),
+        )
+        .map((candidate) => {
+          const subjectId =
+            candidate.kind === "reply-published"
+              ? candidate.messageId
+              : candidate.kind === "request-opened"
+                ? candidate.requestId
+                : candidate.runId;
+          if (!subjectId)
+            throw new OpensteerError({
+              code: "internal",
+              message: "Notification lacks a subject",
+            });
+          const digest = createHash("sha256")
+            .update(`${candidate.userId}|${candidate.kind}|${subjectId}`)
+            .digest();
+          // RFC 9562 version 8 reserves the version and variant bits for this
+          // application-defined hash; subjects shared by events retain one id.
+          digest[6] = (digest[6]! & 0x0f) | 0x80;
+          digest[8] = (digest[8]! & 0x3f) | 0x80;
+          const hex = digest.subarray(0, 16).toString("hex");
+          const id = NotificationIdSchema.parse(
+            `ntf_${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+          );
+          return {
+            ...(event.type === "request.opened" && event.data.request.kind === "device.access"
+              ? { deviceAccessRequests: "include" as const }
+              : {}),
+            userId: candidate.userId,
+            view: NotificationViewSchema.parse({
+              ...candidate,
+              id,
+              occurredAt: candidate.occurredAt ?? event.createdAt,
+              threadId: event.threadId,
+            }),
+          };
+        }),
     );
   }
 
@@ -185,14 +188,17 @@ export class NotificationStore {
         if (!entry.messageId) return "Notification names no reply";
         const read = await this.#database
           .selectFrom("messages")
-          .innerJoin("threadReadMarkers", (join) =>
+          .innerJoin("threadVisits", (join) =>
             join
-              .onRef("threadReadMarkers.threadId", "=", "messages.threadId")
-              .on("threadReadMarkers.userId", "=", entry.userId),
+              .onRef("threadVisits.threadId", "=", "messages.threadId")
+              .on("threadVisits.userId", "=", entry.userId),
           )
           .select("messages.id")
           .where("messages.id", "=", entry.messageId)
-          .whereRef("threadReadMarkers.sequence", ">=", "messages.sequence")
+          // Older rows keep microseconds; visits carry the millisecond times clients see.
+          .where(
+            sql<boolean>`thread_visits.last_visited_at >= date_trunc('milliseconds', messages.created_at)`,
+          )
           .executeTakeFirst();
         return read ? "Reply was read before publication" : null;
       }
@@ -212,6 +218,7 @@ export class NotificationStore {
   }
 }
 interface NotificationCandidate {
+  readonly occurredAt?: string;
   readonly body: string;
   readonly kind: NotificationKind;
   readonly messageId: MessageId | null;
@@ -309,17 +316,17 @@ async function replyCandidates(
   if (!recipient) return [];
   const reply = await transaction
     .selectFrom("messages")
-    .leftJoin("threadReadMarkers", (join) =>
+    .leftJoin("threadVisits", (join) =>
       join
-        .onRef("threadReadMarkers.threadId", "=", "messages.threadId")
-        .on("threadReadMarkers.userId", "=", recipient.userId),
+        .onRef("threadVisits.threadId", "=", "messages.threadId")
+        .on("threadVisits.userId", "=", recipient.userId),
     )
     .select([
       "messages.content",
-      "messages.sequence",
+      "messages.createdAt",
       "messages.addressedToUserId",
       "messages.runId",
-      "threadReadMarkers.sequence as readSequence",
+      "threadVisits.lastVisitedAt as lastVisitedAt",
     ])
     .where("messages.kind", "=", "assistant")
     .where("messages.id", "=", replyMessageId)
@@ -331,7 +338,7 @@ async function replyCandidates(
       (reply.addressedToUserId !== addressed || reply.runId !== event.runId))
   )
     return [];
-  if (reply.readSequence !== null && BigInt(reply.readSequence) >= BigInt(reply.sequence)) {
+  if (reply.lastVisitedAt !== null && reply.lastVisitedAt >= reply.createdAt) {
     return [];
   }
   const content = ContentPartSchema.array().safeParse(reply.content);
@@ -342,6 +349,7 @@ async function replyCandidates(
     {
       body,
       kind: "reply-published",
+      occurredAt: reply.createdAt.toISOString(),
       messageId: replyMessageId,
       requestId: null,
       runId: event.runId,

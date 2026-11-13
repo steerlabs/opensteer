@@ -422,6 +422,7 @@ export class ProductToolsTestClient {
       apps: unavailable as never,
       triggers: new TriggerToolHandlers(options.triggers ?? (unavailable as AgentTriggerManager)),
       teamRequestForRun: async () => null,
+      personalContextForRun: async () => true,
       pluginInstall: async () => {
         throw new Error("Unexpected install");
       },

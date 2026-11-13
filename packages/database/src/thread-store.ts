@@ -103,6 +103,8 @@ import {
 import { isDeepStrictEqual } from "node:util";
 import {
   threadPendingRequestsSelection,
+  threadVisitSelection,
+  threadLatestRunCompletedAtSelection,
   threadProviderSessionSelection,
   threadContinuationIdentitySelection,
   threadFromRow,
@@ -219,6 +221,7 @@ export type ThreadInputSource =
       readonly principalId: string;
     };
 export interface EnqueueThreadInputRequest {
+  readonly freshContext?: boolean;
   readonly teamRequest?: {
     readonly id: import("@opensteer/core").TeamAgentRequestId;
     readonly triggerMessageId: import("@opensteer/core").TeamMessageId;
@@ -418,6 +421,8 @@ async function findExistingThreadCreation(
     .selectAll()
     .select([
       threadPendingRequestsSelection,
+      threadVisitSelection,
+      threadLatestRunCompletedAtSelection,
       threadProviderSessionSelection,
       threadContinuationIdentitySelection,
     ])
@@ -563,6 +568,8 @@ export async function listThreadsForOwner(
     .selectAll("threads")
     .select([
       threadPendingRequestsSelection,
+      threadVisitSelection,
+      threadLatestRunCompletedAtSelection,
       threadProviderSessionSelection,
       threadContinuationIdentitySelection,
     ])
@@ -594,6 +601,8 @@ export async function ownerThreadPageForOwner(
         .selectAll("threads")
         .select([
           threadPendingRequestsSelection,
+          threadVisitSelection,
+          threadLatestRunCompletedAtSelection,
           threadProviderSessionSelection,
           threadContinuationIdentitySelection,
         ]);
@@ -884,6 +893,8 @@ export async function agentThreadPageForOwner(
           )
           .select([
             threadPendingRequestsSelection,
+            threadVisitSelection,
+            threadLatestRunCompletedAtSelection,
             threadProviderSessionSelection,
             threadContinuationIdentitySelection,
           ])
@@ -932,6 +943,8 @@ export async function getThreadForOwner(
     .selectAll("threads")
     .select([
       threadPendingRequestsSelection,
+      threadVisitSelection,
+      threadLatestRunCompletedAtSelection,
       threadProviderSessionSelection,
       threadContinuationIdentitySelection,
     ])
@@ -969,6 +982,8 @@ export async function readThreadForOwner(
         .selectAll("threads")
         .select([
           threadPendingRequestsSelection,
+          threadVisitSelection,
+          threadLatestRunCompletedAtSelection,
           threadProviderSessionSelection,
           threadContinuationIdentitySelection,
         ])
@@ -1281,6 +1296,8 @@ export async function updateThreadExecutionSelection(
         .selectAll()
         .select([
           threadPendingRequestsSelection,
+          threadVisitSelection,
+          threadLatestRunCompletedAtSelection,
           threadProviderSessionSelection,
           threadContinuationIdentitySelection,
         ])
@@ -1327,6 +1344,8 @@ export async function updateThreadExecutionSelection(
       .selectAll()
       .select([
         threadPendingRequestsSelection,
+        threadVisitSelection,
+        threadLatestRunCompletedAtSelection,
         threadProviderSessionSelection,
         threadContinuationIdentitySelection,
       ])
@@ -1519,6 +1538,8 @@ export async function resumeThreadInputQueue(
       .selectAll()
       .select([
         threadPendingRequestsSelection,
+        threadVisitSelection,
+        threadLatestRunCompletedAtSelection,
         threadProviderSessionSelection,
         threadContinuationIdentitySelection,
       ])
@@ -1601,6 +1622,8 @@ export async function resumeThreadInputQueue(
       .selectAll()
       .select([
         threadPendingRequestsSelection,
+        threadVisitSelection,
+        threadLatestRunCompletedAtSelection,
         threadProviderSessionSelection,
         threadContinuationIdentitySelection,
       ])
@@ -1665,6 +1688,8 @@ export async function renameThread(
         .selectAll()
         .select([
           threadPendingRequestsSelection,
+          threadVisitSelection,
+          threadLatestRunCompletedAtSelection,
           threadProviderSessionSelection,
           threadContinuationIdentitySelection,
         ])
@@ -1803,6 +1828,8 @@ export async function setThreadIcon(
         .selectAll()
         .select([
           threadPendingRequestsSelection,
+          threadVisitSelection,
+          threadLatestRunCompletedAtSelection,
           threadProviderSessionSelection,
           threadContinuationIdentitySelection,
         ])
@@ -2019,6 +2046,8 @@ export async function updateThreadAccessMode(
       .selectAll()
       .select([
         threadPendingRequestsSelection,
+        threadVisitSelection,
+        threadLatestRunCompletedAtSelection,
         threadProviderSessionSelection,
         threadContinuationIdentitySelection,
       ])

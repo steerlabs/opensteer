@@ -42,12 +42,10 @@ const realtimeFrameLosses = {
   "host.synchronized": "replay",
   "host.node-watched": "replay",
   // Every subscribe streams all of these.
-  "host.read-markers": "replay",
+  "host.thread-visits": "replay",
   // Synchronizing reissues this invalidation whatever frame carried it.
   "host.personal-remote-access-changed": "replay",
 
-  // Resent only for Threads with events in the replay, which may be none.
-  "host.read-states": "snapshot",
   // Asked for by a live condition that is gone by the next subscribe.
   "host.resync-required": "snapshot",
   // Nothing resends these. They carry only `type`, so they cannot be unreadable.

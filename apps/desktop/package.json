@@ -82,6 +82,7 @@
     "@opensteer/runner-client": "workspace:*",
     "@opensteer/deployment-authority": "workspace:*",
     "@opensteer/shared": "workspace:*",
+    "fflate": "catalog:",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
     "cross-spawn": "7.0.6",

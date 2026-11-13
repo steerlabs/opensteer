@@ -3,6 +3,7 @@ import type { PersonalStreamCache, PersonalCacheScope } from "./personal-stream-
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { browserOpeningTimeoutMs } from "./browser-presentation-wait.js";
 import { BrowserTabStore } from "./browser-tab-store.js";
+import { familyAutomations } from "./task-family.js";
 import { BrowserSnapshotDerivation, personalTabLineage } from "./browser-snapshot.js";
 import { catalogModelDisplayName } from "./model-catalog.js";
 import { NodeDetailStore, type NodeDetailSubscription } from "./node-detail.js";
@@ -69,7 +70,7 @@ import {
   type ThreadAccessMode,
   type ThreadId,
   type ThreadInputQueue,
-  type ThreadReadState,
+  type ThreadVisit,
   type WaitingRequest,
   type IconName,
 } from "@opensteer/core";
@@ -147,8 +148,9 @@ import { reconcileBrowserLastPictures } from "./browser-last-picture.js";
 import { isActiveRunStatus, RunQueueProjection, toRunQueueEntry } from "./run-queue-state.js";
 import { mergeTaskEntries } from "./task-entries.js";
 import { threadStopTarget } from "./thread-activity.js";
-import { isThreadUnread, mergeThreadReadState } from "./thread-read-state.js";
+import { isThreadUnread } from "./thread-unread.js";
 import { ThreadStateProjection } from "./thread-state.js";
+import { withPublishedReplies } from "./thread-visits.js";
 import {
   drawnLiveStream,
   foldLiveRun,
@@ -280,8 +282,7 @@ function showsSubscriptionProgress(message: RealtimeMessage, channel: Deployment
     case "host.events":
     case "host.live":
     case "host.synchronized":
-    case "host.read-markers":
-    case "host.read-states":
+    case "host.thread-visits":
       return true;
     case "host.pong":
       return message.nonce === channel.probeNonce;
@@ -304,7 +305,7 @@ function queuedInputItem(
   return {
     canCancel: true,
     canMove: true,
-    canSteer: queue.steerRunId !== null,
+    canSteer: queue.steerRunId !== null && !result.input.freshContext,
     input: result.input,
     message: result.message,
   };
@@ -819,7 +820,6 @@ export class HttpHostClient {
 
   readonly #hydratedThreads = new Map<string, Sequence>();
   readonly #historicalThreads = new Set<string>();
-  readonly #readStateLoads = new Set<Map<string, Sequence>>();
 
   /**
    * Assignments the Host refused this viewer (403 or 404). Nothing held for
@@ -1295,8 +1295,8 @@ export class HttpHostClient {
         ) {
           const page = await this.#readThreadHistory(source.thread.id);
           if (!this.#viewerStillCurrent(generation, userId)) return result;
-          if (compareSequence(page.readState.asOfSequence, source.asOfSequence) >= 0)
-            source = { thread: page.thread, asOfSequence: page.readState.asOfSequence };
+          if (compareSequence(page.asOfSequence, source.asOfSequence) >= 0)
+            source = { thread: page.thread, asOfSequence: page.asOfSequence };
         }
         this.#update(
           applyOptimisticCommandPatch(this.#snapshot, {
@@ -1837,17 +1837,7 @@ export class HttpHostClient {
       );
       if (!this.#viewerStillCurrent(generation, userId)) return;
       if (this.#automationReads.get(threadId) !== read) return;
-      const automations = response.triggers
-        .filter(({ status }) => status !== "archived")
-        .map((trigger) => ({
-          id: trigger.id,
-          name: trigger.name,
-          kind: trigger.kind,
-          paused: trigger.status === "paused",
-          nextFireAt:
-            trigger.status === "active" && trigger.kind === "schedule" ? trigger.nextFireAt : null,
-        }))
-        .sort((a, b) => a.id.localeCompare(b.id));
+      const automations = familyAutomations(response.triggers, threadId);
       const held = this.#snapshot.threadAutomations[threadId] ?? [];
       if (JSON.stringify(held) === JSON.stringify(automations)) return;
       this.#update({
@@ -2344,56 +2334,48 @@ export class HttpHostClient {
     return () => this.#personShowListeners.delete(listener);
   }
 
-  #mergedReadStates(incoming: readonly ThreadReadState[], markers?: ReadonlyMap<string, Sequence>) {
-    const states = { ...this.#snapshot.threadReadStates };
-    for (const state of incoming) {
-      const marker = markers?.get(state.threadId);
-      const merged = mergeThreadReadState(states[state.threadId], state);
-      states[state.threadId] =
-        marker && compareSequence(marker, merged.readSequence ?? zeroSequence) > 0
-          ? { ...merged, readSequence: marker }
-          : merged;
-    }
-    return states;
-  }
-
-  #applyReadStates(
-    incoming: readonly ThreadReadState[],
-    markers?: ReadonlyMap<string, Sequence>,
-  ): void {
-    this.#update({
-      ...this.#snapshot,
-      threadReadStates: this.#mergedReadStates(incoming, markers),
-    });
-  }
-
-  #applyReadMarkers(markers: readonly { threadId: string; readSequence: Sequence }[]): void {
-    const states = { ...this.#snapshot.threadReadStates };
-    for (const { threadId, readSequence } of markers) {
-      for (const pending of this.#readStateLoads) {
-        pending.set(threadId, maxSequence(pending.get(threadId) ?? zeroSequence, readSequence));
+  #mergeVisits(
+    rows: readonly { readonly id: string; readonly lastVisitedAt: string | null }[],
+  ): boolean {
+    const current = this.#snapshot.threadVisits;
+    let merged: Record<string, string> | null = null;
+    for (const row of rows) {
+      if (row.lastVisitedAt && row.lastVisitedAt > ((merged ?? current)[row.id] ?? "")) {
+        merged ??= { ...current };
+        merged[row.id] = row.lastVisitedAt;
       }
-      const state = states[threadId];
-      if (state && compareSequence(readSequence, state.readSequence ?? zeroSequence) > 0)
-        states[threadId] = { ...state, readSequence };
     }
-    this.#update({ ...this.#snapshot, threadReadStates: states });
+    if (merged) this.#snapshot = { ...this.#snapshot, threadVisits: merged };
+    return merged !== null;
   }
 
-  async markThreadRead(threadId: string, throughSequence: string): Promise<void> {
+  #applyVisits(visits: readonly ThreadVisit[]): void {
+    if (
+      !this.#mergeVisits(
+        visits.map((visit) => ({ id: visit.threadId, lastVisitedAt: visit.lastVisitedAt })),
+      )
+    )
+      return;
+    this.#update(this.#snapshot);
+    const channel = this.#snapshot.deploymentId
+      ? this.#channels.get(this.#snapshot.deploymentId)
+      : undefined;
+    // Reconnect visit pages precede host.synchronized, whose checkpoint carries them.
+    if (channel?.synchronized) this.#persistCheckpoint(channel);
+  }
+
+  async visitThread(threadId: string, visitedAt: string): Promise<void> {
     const generation = this.#viewerGeneration;
     const userId = this.#snapshot.user?.id;
-    const known = this.#snapshot.threadReadStates[threadId]?.readSequence;
-    if (known !== null && known !== undefined && BigInt(known) >= BigInt(throughSequence)) return;
+    if ((this.#snapshot.threadVisits[threadId] ?? "") >= visitedAt) return;
     const result = await this.dispatch({
-      type: "thread.read.mark",
-      idempotencyKey: mutationIdempotencyKey(`read:${threadId}`),
+      type: "thread.visit",
+      idempotencyKey: mutationIdempotencyKey(`visit:${threadId}`),
       threadId,
-      throughSequence,
+      visitedAt,
     });
-    if (result.type !== "thread.read.mark") throw new Error("Read marker command mismatch.");
-    if (!this.#viewerStillCurrent(generation, userId)) return;
-    this.#applyReadStates([result.state]);
+    if (result.type !== "thread.visit") throw new Error("Visit command mismatch.");
+    if (this.#viewerStillCurrent(generation, userId)) this.#applyVisits([result]);
   }
 
   #ensureThreadHydration(threadId: string): void {
@@ -2448,33 +2430,23 @@ export class HttpHostClient {
     const userId = this.#snapshot.user?.id;
     const buffer: AgentEvent[] = [];
     this.#hydrationBuffers.set(threadId, buffer);
-    const markers = new Map<string, Sequence>();
-    this.#readStateLoads.add(markers);
     try {
       const first = await this.#readLatestHistory(threadId, generation, userId);
       if (!first) return;
       let latest = first;
       const overtaken = () => {
         const sequence = this.#invalidatedHydrations.get(threadId);
-        return (
-          sequence !== undefined &&
-          compareSequence(latest.page.readState.asOfSequence, sequence) < 0
-        );
+        return sequence !== undefined && compareSequence(latest.page.asOfSequence, sequence) < 0;
       };
       for (
         let attempt = 0;
         attempt < 3 &&
-        (overtaken() ||
-          this.#threadState.needsRead(latest.page.thread, latest.page.readState.asOfSequence));
+        (overtaken() || this.#threadState.needsRead(latest.page.thread, latest.page.asOfSequence));
         attempt += 1
       ) {
         const fresh = await this.#readLatestHistory(threadId, generation, userId);
         if (!fresh) return;
-        if (
-          compareSequence(fresh.page.readState.asOfSequence, latest.page.readState.asOfSequence) >=
-          0
-        )
-          latest = fresh;
+        if (compareSequence(fresh.page.asOfSequence, latest.page.asOfSequence) >= 0) latest = fresh;
       }
       if (overtaken())
         throw new Error("The connection changed while loading this conversation. Try again.");
@@ -2492,7 +2464,7 @@ export class HttpHostClient {
         entries.splice(index < 0 ? entries.length : index, 0, node);
       }
       const replayed = buffer.filter(
-        (event) => compareSequence(event.sequence, page.readState.asOfSequence) > 0,
+        (event) => compareSequence(event.sequence, page.asOfSequence) > 0,
       );
       for (const event of replayed) entries = foldTranscriptEvent(entries, event);
       // The page is durable history only; whatever the Thread's Runs are
@@ -2507,7 +2479,7 @@ export class HttpHostClient {
       // History paging must not reconstruct today's selection from an old creation event.
       const summary = this.#threadState.reconcile(
         toThreadSummary(page.thread, this.#snapshot.environments, this.#snapshot.harnesses),
-        page.readState.asOfSequence,
+        page.asOfSequence,
         this.#snapshot.threads.find(({ id }) => id === threadId),
       );
       const threads = this.#snapshot.threads.some(({ id }) => id === threadId)
@@ -2517,7 +2489,7 @@ export class HttpHostClient {
       const threadLookups = { ...this.#snapshot.threadLookups };
       delete threadLookups[threadId];
       if (restoreLatest) this.#historicalThreads.delete(threadId);
-      this.#hydratedThreads.set(threadId, page.readState.asOfSequence);
+      this.#hydratedThreads.set(threadId, page.asOfSequence);
       this.#update({
         ...this.#snapshot,
         assignments: withAssignmentsFrom(this.#snapshot.assignments, [...history, ...replayed]),
@@ -2528,14 +2500,13 @@ export class HttpHostClient {
       });
       if (deploymentId) this.#ensureDeploymentChannel(deploymentId);
       if (this.#observedThreads.has(threadId)) this.#ensureRequests(threadId);
-      this.#applyReadStates([page.readState], markers);
+      this.#mergeVisits([page.thread]);
     } catch (error) {
       // A worker the Host will not show this viewer takes its tasks with it.
       if (this.#viewerStillCurrent(generation, userId))
         this.#denyOnRefusal(error, this.#assignmentsOfWorker(threadId));
       throw error;
     } finally {
-      this.#readStateLoads.delete(markers);
       if (this.#hydrationBuffers.get(threadId) === buffer) {
         this.#hydrationBuffers.delete(threadId);
         this.#invalidatedHydrations.delete(threadId);
@@ -3445,12 +3416,9 @@ export class HttpHostClient {
   ): Promise<void> {
     const generation = this.#viewerGeneration,
       userId = this.#snapshot.user?.id;
-    const markers = new Map<string, Sequence>();
-    this.#readStateLoads.add(markers);
     try {
       let before = cursor,
         merged = cursor ? this.#heldTasks(scope) : null;
-      const states: ThreadReadState[] = [];
       for (let pageNumber = 0; pageNumber < 20; pageNumber++) {
         const page = unwrapRpcResult(
           await this.rpc["tasks.list"]({
@@ -3463,20 +3431,17 @@ export class HttpHostClient {
           }),
         );
         if (!this.#viewerStillCurrent(generation, userId)) return;
-        const positions = new Map(
-          page.readStates.map((state) => [state.threadId, state.asOfSequence]),
-        );
+        this.#mergeVisits(page.tasks.map((entry) => entry.thread));
         merged = mergeTasks(merged, {
           entries: page.tasks.map((entry) => ({
             ...entry,
             thread: this.#threadState.reconcile(
               toThreadSummary(entry.thread, this.#snapshot.environments, this.#snapshot.harnesses),
-              positions.get(entry.thread.id) ?? zeroSequence,
+              page.asOfSequence,
             ),
           })),
           window: page.window,
         });
-        states.push(...page.readStates);
         if (!page.window.hasMore || (scope !== "active" && merged.entries.length >= minimumItems))
           break;
         if (!page.window.nextBefore || page.window.nextBefore === before)
@@ -3485,16 +3450,14 @@ export class HttpHostClient {
       }
       if (!merged || !this.#viewerStillCurrent(generation, userId)) return;
       if (!scope) this.#savedViewReadiness = { ...this.#savedViewReadiness, tasksReady: true };
-      const threadReadStates = this.#mergedReadStates(states, markers);
       this.#update(
         scope === "active"
-          ? { ...this.#snapshot, threadReadStates, activeTasks: merged.entries }
+          ? { ...this.#snapshot, activeTasks: merged.entries }
           : scope
-            ? { ...this.#snapshot, threadReadStates, doneTasks: { [mainDoneTasks]: merged } }
-            : { ...this.#snapshot, threadReadStates, tasks: merged },
+            ? { ...this.#snapshot, doneTasks: { [mainDoneTasks]: merged } }
+            : { ...this.#snapshot, tasks: merged },
       );
     } finally {
-      this.#readStateLoads.delete(markers);
     }
   }
 
@@ -3513,7 +3476,17 @@ export class HttpHostClient {
       type: "thread.done.set",
     });
     if (result.type !== "thread.done.set") throw new Error("Done command mismatch.");
-    this.#applyReadStates([result.state]);
+    this.#mergeVisits([result.thread]);
+    const thread = this.#threadState.reconcile(
+      toThreadSummary(result.thread, this.#snapshot.environments, this.#snapshot.harnesses),
+      result.asOfSequence,
+    );
+    this.#update({
+      ...this.#snapshot,
+      threads: this.#snapshot.threads.map((current) =>
+        current.id === thread.id ? thread : current,
+      ),
+    });
     this.#rereadTasks();
   }
 
@@ -3681,7 +3654,7 @@ export class HttpHostClient {
         this.#savedViewReadiness = { tasksReady: true };
         this.#update({
           ...this.#snapshot,
-          threadReadStates: cached.snapshot.threadReadStates,
+          threadVisits: cached.snapshot.threadVisits,
           tasks: cached.snapshot.tasks,
           activeTasks: cached.snapshot.activeTasks,
           threads: cached.snapshot.threads,
@@ -4254,8 +4227,7 @@ export class HttpHostClient {
     const message = HostToClientMessageSchema.parse(value);
     if (
       (message.type === "host.show" ||
-        message.type === "host.read-states" ||
-        message.type === "host.read-markers" ||
+        message.type === "host.thread-visits" ||
         message.type === "host.triggers-changed" ||
         message.type === "host.browser-usage-changed" ||
         message.type === "host.synchronized") &&
@@ -4401,12 +4373,8 @@ export class HttpHostClient {
       });
       return;
     }
-    if (message.type === "host.read-states") {
-      this.#applyReadStates(message.states);
-      return;
-    }
-    if (message.type === "host.read-markers") {
-      this.#applyReadMarkers(message.markers);
+    if (message.type === "host.thread-visits") {
+      this.#applyVisits(message.visits);
       return;
     }
     if (message.type === "host.error") {
@@ -4587,6 +4555,12 @@ export class HttpHostClient {
       this.#historicalThreads.has(threadId) ||
       this.#showsThread(threadId) ||
       coversSnapshot(threadId);
+    this.#mergeVisits([
+      ...snapshot.threads,
+      ...snapshot.tasks.recent.tasks.map((entry) => entry.thread),
+      ...snapshot.tasks.active.tasks.map((entry) => entry.thread),
+      ...snapshot.tasks.done.tasks.map((entry) => entry.thread),
+    ]);
     this.#threadState.cover(snapshot.sequence);
     this.#runQueue.reconcile({
       runQueue: snapshot.runQueue,
@@ -4663,12 +4637,6 @@ export class HttpHostClient {
     this.#savedViewReadiness = { tasksReady: true };
     this.#update({
       ...this.#snapshot,
-      threadReadStates: this.#mergedReadStates([
-        ...snapshot.readStates,
-        ...snapshot.tasks.recent.readStates,
-        ...snapshot.tasks.active.readStates,
-        ...snapshot.tasks.done.readStates,
-      ]),
       threads,
       transcripts,
       transcriptWindows,
@@ -4740,17 +4708,20 @@ export class HttpHostClient {
     const threadId = input.progress.threadId;
     const retained = this.#showsThread(threadId) || this.#hydratedThreads.has(threadId);
     if (changed && retained && !this.#historicalThreads.has(threadId)) {
-      this.#update({
-        ...this.#snapshot,
-        transcripts: {
-          ...this.#snapshot.transcripts,
-          [threadId]: foldLiveRun(
-            this.#snapshot.transcripts[threadId] ?? [],
-            changed,
-            new Date().toISOString(),
-          ),
+      this.#update(
+        {
+          ...this.#snapshot,
+          transcripts: {
+            ...this.#snapshot.transcripts,
+            [threadId]: foldLiveRun(
+              this.#snapshot.transcripts[threadId] ?? [],
+              changed,
+              new Date().toISOString(),
+            ),
+          },
         },
-      });
+        threadId,
+      );
     }
     if (gap) this.#scheduleLiveRefresh(threadId, this.#snapshot.deploymentId!);
   }
@@ -5082,7 +5053,7 @@ export class HttpHostClient {
       const current = this.#snapshot.threads.find(({ id }) => id === threadId);
       const summary = this.#threadState.reconcile(
         toThreadSummary(page.thread, this.#snapshot.environments, this.#snapshot.harnesses),
-        page.readState.asOfSequence,
+        page.asOfSequence,
         current,
       );
       const olderEntries = page.events.reduce(foldTranscriptEvent, [] as TranscriptEntry[]);
@@ -5202,7 +5173,6 @@ export class HttpHostClient {
     this.#hydrationBuffers.clear();
     this.#hydratedThreads.clear();
     this.#invalidatedHydrations.clear();
-    this.#readStateLoads.clear();
     this.#stopRefresh();
     for (const channel of this.#channels.values()) this.#closeChannel(channel, false);
     this.#channels.clear();
@@ -5325,7 +5295,7 @@ export class HttpHostClient {
       requests,
       waitingRequests,
       needsYou,
-      threadReadStates,
+      threadVisits,
     } = this.#snapshot;
     const snapshot = {
       threads,
@@ -5336,7 +5306,7 @@ export class HttpHostClient {
       requests,
       waitingRequests,
       needsYou,
-      threadReadStates,
+      threadVisits,
     };
     const checkpoint = {
       scope,
@@ -5360,9 +5330,9 @@ export class HttpHostClient {
       );
   }
 
-  #update(snapshot: HostSnapshot): void {
+  #update(snapshot: HostSnapshot, liveThreadId?: string): void {
     if (this.#disposed) return;
-    snapshot = this.#withInterruption(snapshot);
+    snapshot = withPublishedReplies(this.#snapshot, this.#withInterruption(snapshot), liveThreadId);
     if (snapshot.session !== "authenticated") this.#savedViewReadiness = emptySavedViewReadiness();
     if (
       !this.#capabilities?.includes("task-family-v1") &&
@@ -5476,18 +5446,41 @@ export class HttpHostClient {
         this.#threadDeployment.set(thread.id, snapshot.deploymentId!);
     const hiddenAssignments = new Set(this.#deniedAssignments);
     if (hiddenAssignments.size > 0) snapshot = withoutAssignments(snapshot, hiddenAssignments);
+    const incoming = [
+      ...snapshot.threads,
+      ...(snapshot.tasks?.entries ?? []).map((entry) => entry.thread),
+      ...snapshot.activeTasks.map((entry) => entry.thread),
+      ...Object.values(snapshot.doneTasks).flatMap((list) =>
+        list.entries.map((entry) => entry.thread),
+      ),
+    ];
+    const previousVisits =
+      viewerScopeOf(snapshot) === viewerScopeOf(this.#snapshot)
+        ? this.#snapshot.threadVisits
+        : snapshot.threadVisits;
+    let visits = previousVisits;
+    for (const [id, at] of [
+      ...Object.entries(snapshot.threadVisits),
+      ...incoming.flatMap((row) =>
+        row.lastVisitedAt ? [[row.id, row.lastVisitedAt] as const] : [],
+      ),
+    ]) {
+      if (at <= (visits[id] ?? "")) continue;
+      if (visits === previousVisits) visits = { ...visits };
+      visits[id] = at;
+    }
+    snapshot = { ...snapshot, threadVisits: visits };
     this.#threadState.retainLoaded(snapshot.threads);
     snapshot = withThreadNames(snapshot, (thread) => ({
       ...this.#threadState.name(thread),
+      lastVisitedAt: snapshot.threadVisits[thread.id] ?? thread.lastVisitedAt,
       ...(this.#threadRenames.has(thread.id)
         ? { title: this.#threadRenames.get(thread.id)!.title }
         : {}),
       ...(this.#threadIcons.has(thread.id) ? { icon: this.#threadIcons.get(thread.id)!.icon } : {}),
     }));
     const threads = snapshot.threads.map((thread) => {
-      const state = snapshot.threadReadStates[thread.id];
-      if (!state) return thread;
-      const unread = isThreadUnread(state);
+      const unread = isThreadUnread(thread);
       return thread.unread === unread ? thread : { ...thread, unread };
     });
     this.#snapshot = {
@@ -5957,7 +5950,8 @@ function emptySnapshot(): HostSnapshot {
 
     voiceThreadId: null,
 
-    threadReadStates: {},
+    threadVisits: {},
+    publishedReplyAt: {},
     tasks: null,
     activeTasks: [],
 
@@ -6047,6 +6041,8 @@ function toThreadSummary(
     accessMode: thread.accessMode,
     continuationIdentity: thread.continuationIdentity,
     providerSessionId: thread.providerSessionId,
+    lastVisitedAt: thread.lastVisitedAt,
+    latestRunCompletedAt: thread.latestRunCompletedAt,
     askedAt: thread.askedAt ?? thread.createdAt,
     createdAt: thread.createdAt,
     environmentId: thread.environmentId,

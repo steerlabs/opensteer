@@ -487,6 +487,7 @@ async function setupTurn(scenario: TurnScenario, deadlineMs = 500) {
       token: "agent-token",
       url: "https://host/mcp",
     },
+    commandEnvironment: {},
     environment,
     environmentId: createId("environment"),
     harnessInstanceId: instanceId,

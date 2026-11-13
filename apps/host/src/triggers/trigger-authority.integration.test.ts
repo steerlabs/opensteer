@@ -558,6 +558,74 @@ integration.sequential("Trigger authority through real Host services and Postgre
       ).toEqual([]);
     },
   );
+  it("runs an agent's automation in its own task, and starts a program's standalone task", async () => {
+    const f = await fixture();
+    const ownTask = (token: string, anchor: Thread, requestId: string) =>
+      agents.handle(token, {
+        input: { ...createInput(anchor.id), ownTask: true },
+        requestId,
+        tool: "trigger.write",
+        type: "trigger.control",
+      });
+    const children = (parentThreadId: ThreadId) =>
+      database
+        .selectFrom("threads")
+        .selectAll()
+        .where("parentThreadId", "=", parentThreadId)
+        .execute();
+    await expect(ownTask(f.childToken, f.child, randomUUID())).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    expect(await children(f.child.id)).toEqual([]);
+    const requestId = randomUUID();
+    const created = await ownTask(f.fullChildToken, f.fullChild, requestId);
+    const replayed = await ownTask(f.fullChildToken, f.fullChild, requestId);
+    if (created.type !== "trigger.control.result" || replayed.type !== "trigger.control.result")
+      throw new Error("Expected Trigger creation");
+    const trigger = createdSchema.parse(created.result).trigger;
+    expect(createdSchema.parse(replayed.result).trigger.id).toBe(trigger.id);
+    expect(await children(f.fullChild.id)).toMatchObject([
+      {
+        id: trigger.anchorThreadId,
+        accessMode: "full-access",
+        listed: false,
+        title: "Authority acceptance Trigger",
+      },
+    ]);
+
+    const token = await startProgram(f, await personCreate(f, f.root));
+    const delegate = async (input: Record<string, unknown>, operationKey: string) =>
+      z
+        .object({ assignmentId: z.null(), parentThreadId: z.null(), threadId: z.string() })
+        .parse(await programs.service.callTool(token, "delegate_task", input, { operationKey }));
+    const briefing = { task: "Write today's briefing", title: "Daily briefing", standalone: true };
+    const started = await delegate(briefing, "briefing");
+    expect((await delegate(briefing, "briefing")).threadId).toBe(started.threadId);
+    expect(
+      await database
+        .selectFrom("threads")
+        .select(["accessMode", "listed", "parentThreadId", "title"])
+        .where("id", "=", started.threadId as ThreadId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ accessMode: "auto", listed: true, parentThreadId: null, title: "Daily briefing" });
+    expect(
+      await database
+        .selectFrom("delegations")
+        .select("id")
+        .where("childThreadId", "=", started.threadId as ThreadId)
+        .execute(),
+    ).toEqual([]);
+    expect(
+      await database
+        .selectFrom("threadInputs")
+        .select("policy")
+        .where("threadId", "=", started.threadId as ThreadId)
+        .execute(),
+    ).toEqual([{ policy: "queue" }]);
+    await expect(
+      delegate({ ...briefing, threadId: f.unrelated.id }, "briefing-into-another"),
+    ).rejects.toThrow("omit threadId and places");
+  });
   it("A5: program Trigger controls use current anchor authority", async () => {
     const f = await fixture();
     const own = await personCreate(f, f.isolatedChild);

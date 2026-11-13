@@ -18,7 +18,8 @@ The link is an outbound authenticated WebSocket from personal Opensteer. A one-t
 link code establishes a revocable credential; the personal secret stays in the local vault.
 Machine calls name a request over that link. The run ticket is the request row itself, scoped
 to team, channel, thread and owner, expiring seven days after first acceptance. Every call
-rechecks it. No link means no request; an offline computer leaves accepted work durably queued.
+rechecks it. Knowledge calls are the exception: they act as the link's owner from any of their
+private Runs, and a request they name is provenance only ([knowledge](knowledge.md#agents)). No link means no request; an offline computer leaves accepted work durably queued.
 
 Each ask is its own queued input and Run, not a steer. Asking again in the same team thread
 continues the same local task. A private follow-up has no team
@@ -29,9 +30,9 @@ posted an explicit reply; reconnect recovers pending publication without rerunni
 
 ## Access and removal
 
-Channel membership and topic grants define access, including nested groups. Attaching a topic
-grants nothing. Either a channel or a topic marked people only excludes agents from its
-content, search, files and SQL, and prevents wakes there. Administrators can manage access
+Channel membership and topic grants define access, including nested groups. A channel marked
+people only excludes agents from its content, search and files, and prevents wakes there; topics
+have no such switch ([knowledge](knowledge.md)). Administrators can manage access
 without reading restricted content; self-adding to a restricted channel or topic is logged and
 notifies its managers. Administrators cannot self-add to DMs. One-to-one DM membership is fixed;
 adding someone to a group DM requires confirmation because they see its history.
@@ -44,7 +45,7 @@ Buffered reads compare the authorization revision at handoff and discard the who
 access was lost. After commit, removal closes affected sockets, link sockets and file streams
 before the command returns. Tests must assert **after the command returns**, not an earlier
 internal point. Removing a person cuts their link; already downloaded data stays on their Mac.
-The team audits agent reads, searches, posts and knowledge queries as well as admin actions.
+The team audits agent reads, searches, posts and knowledge calls as well as admin actions.
 
 ## Transport and versions
 
@@ -66,7 +67,7 @@ window, not an exact match ([authority.ts](../packages/deployment-authority/src/
   replies and realtime and link frames, in both directions, drop unknown fields, and frame
   readers skip frame types they do not know. A sender relies on a new field or frame type only
   when the peer's version reads it. Two things stay strict: the signed discovery document, and
-  the search and knowledge SQL inputs a link frame carries, because a dropped filter or write
+  the search and knowledge inputs a link frame carries, because a dropped filter or version
   guard would change the answer.
 - Bump `teamApiVersion` only for a change an older peer would misread or refuse. Whoever bumps
   decides `minimumTeamApiVersion`: keep the old version and speak it to older peers, or raise

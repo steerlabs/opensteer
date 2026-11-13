@@ -18,6 +18,8 @@ const claudeModelSelection = ModelSelectionSchema.parse({
 
 const threads: ThreadSummary[] = [
   {
+    lastVisitedAt: null,
+    latestRunCompletedAt: null,
     teamOrigin: null,
     purpose: "task",
     doneAt: null,
@@ -47,6 +49,8 @@ const threads: ThreadSummary[] = [
     updatedAt: "2026-08-09T09:00:00.000Z",
   },
   {
+    lastVisitedAt: null,
+    latestRunCompletedAt: null,
     teamOrigin: null,
     purpose: "task",
     doneAt: null,
@@ -76,6 +80,8 @@ const threads: ThreadSummary[] = [
     updatedAt: "2026-08-09T10:00:00.000Z",
   },
   {
+    lastVisitedAt: null,
+    latestRunCompletedAt: null,
     teamOrigin: null,
     purpose: "task",
     doneAt: null,

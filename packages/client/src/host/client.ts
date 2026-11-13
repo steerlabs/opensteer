@@ -43,7 +43,6 @@ import type {
   QuietTaskDays,
   ThreadInputPolicy,
   ThreadInputQueue,
-  ThreadReadState,
   ThreadStatus,
   ToolIdentity,
   ToolOutput,
@@ -227,6 +226,8 @@ export interface HarnessSummary {
 }
 
 export interface ThreadSummary {
+  lastVisitedAt: string | null;
+  latestRunCompletedAt: string | null;
   /** When a person last asked for work; task lists order by this time. */
   askedAt: string;
   doneAt: string | null;
@@ -259,14 +260,19 @@ export interface ThreadSummary {
 }
 
 /**
- * An automation anchored to a conversation, as much of it as that
- * conversation shows: an archived one is gone, so it is never held.
+ * An automation in a conversation's family, as much of it as that
+ * conversation shows: one anchored to it, or one running in its own task
+ * linked under it. An archived one is held only in the second case, so its
+ * task stays reachable.
  */
 export interface ThreadAutomation {
   readonly id: string;
   readonly name: string;
   readonly kind: "schedule" | "webhook" | "watch";
   readonly paused: boolean;
+  readonly ended: boolean;
+  /** Its own task, linked under the conversation; null when it runs in the conversation itself. */
+  readonly taskId: string | null;
   /** When a schedule next fires; null for a watch, a webhook or a paused one. */
   readonly nextFireAt: string | null;
 }
@@ -860,7 +866,9 @@ export interface HostSnapshot {
   harnesses: HarnessSummary[];
   /** The person's Voice Thread, once it exists: their spoken manager. */
   voiceThreadId: string | null;
-  threadReadStates: Record<string, ThreadReadState>;
+  threadVisits: Record<string, string>;
+  /** Per loaded transcript, the Host time of its newest published, settled assistant reply. */
+  publishedReplyAt: Record<string, string>;
 
   tasks: TaskListState | null;
 
@@ -1150,7 +1158,7 @@ export interface HostClient {
   /** Told when this person approves or revokes a connected agent on any device. */
   subscribeConnectionsChanged(listener: () => void): () => void;
   subscribePersonShow(listener: (message: PersonShowMessage) => void): () => void;
-  markThreadRead(threadId: string, throughSequence: string): Promise<void>;
+  visitThread(threadId: string, visitedAt: string): Promise<void>;
   /** Sets shared Done or reopens the task. */
   setTaskDone(threadId: string, done: boolean): Promise<void>;
 

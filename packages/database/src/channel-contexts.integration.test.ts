@@ -7,6 +7,7 @@ import { createId, HarnessIdSchema, type UserId } from "@opensteer/core";
 import { expect } from "vitest";
 import { sql } from "kysely";
 import { ChannelStore } from "./channel-store.js";
+import { TriggerStore } from "./trigger-store.js";
 import { runAllowsPersonalContext, threadAllowsPersonalContext } from "./run-personal-context.js";
 import { startPersonalQueuedRunFixture } from "./personal-run-fixture.test-support.js";
 import {
@@ -313,6 +314,95 @@ describeStore("personal Messaging conversation contexts", (it) => {
       .where("externalUserId", "=", "owner")
       .execute();
     expect(await runAllowsPersonalContext(f.database, first.run.id)).toBe(false);
+  });
+  it("keeps a group conversation's restriction in a task linked under it", async ({
+    storeFixture: f,
+  }) => {
+    const p = await setup(f, "linked");
+    await p.link("owner", p.userId);
+    const linkedUnder = async (parentThreadId: typeof p.thread.id, key: string) =>
+      (
+        await f.store.createThread({
+          createdBy: p.userId,
+          environmentId: p.environmentId,
+          harnessInstanceId: p.harnessInstance.id,
+          idempotencyKey: key,
+          modelSelection: testModelSelection,
+          parentThreadId,
+          title: key,
+        })
+      ).thread.id;
+    const group = await p.adopt("group-asks-for-monitor", "owner", "group");
+    expect(
+      await threadAllowsPersonalContext(
+        f.database,
+        await linkedUnder(group.input.threadId, "group-monitor"),
+        p.userId,
+      ),
+    ).toBe(false);
+    expect(
+      await threadAllowsPersonalContext(
+        f.database,
+        await linkedUnder(p.thread.id, "personal-monitor"),
+        p.userId,
+      ),
+    ).toBe(true);
+  });
+  it("keeps a group conversation's restriction in work its automation's program sends", async ({
+    storeFixture: f,
+  }) => {
+    const p = await setup(f, "program");
+    await p.link("owner", p.userId);
+    const group = await p.adopt("group-asks-for-briefing", "owner", "group");
+    const trigger = await new TriggerStore(f.database).create({
+      actorThreadId: null,
+      anchorThreadId: group.input.threadId,
+      createdBy: p.userId,
+      idempotencyKey: "group-briefing",
+      name: "Group briefing",
+      program: {
+        toolContractVersion: 3,
+        language: "javascript",
+        source: "export default () => {}",
+      },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+      },
+    });
+    const occurrence = await new TriggerStore(f.database).enqueueManual({
+      actorThreadId: null,
+      ownerId: p.userId,
+      triggerId: trigger.trigger.id,
+    });
+    // A standalone task has no parent and no Assignment; only its input names the program.
+    const standalone = async (key: string, authoritySource: Record<string, string>) => {
+      const { thread } = await f.store.createThread({
+        createdBy: p.userId,
+        environmentId: p.environmentId,
+        harnessInstanceId: p.harnessInstance.id,
+        idempotencyKey: key,
+        modelSelection: testModelSelection,
+        title: key,
+      });
+      await f.enqueueHumanTrigger({
+        content: [{ type: "text", text: "Write the briefing" }],
+        idempotencyKey: key,
+        requestedBy: p.userId,
+        threadId: thread.id,
+      });
+      await sql`update thread_inputs set authority_source = ${JSON.stringify({ ...authoritySource, userId: p.userId })}::jsonb where thread_id = ${thread.id}`.execute(
+        f.database,
+      );
+      return thread.id;
+    };
+    for (const [key, source] of [
+      ["from-occurrence", { kind: "trigger-occurrence", occurrenceId: occurrence.id }],
+      ["from-watch", { kind: "watch-observation", triggerId: trigger.trigger.id }],
+    ] as const)
+      expect(
+        await threadAllowsPersonalContext(f.database, await standalone(key, source), p.userId),
+      ).toBe(false);
   });
   for (const conversation of ["channel", "group", "dm", "owner-dm"] as const) {
     it(`keeps ${conversation} personal context through delegation and later worker turns`, async ({

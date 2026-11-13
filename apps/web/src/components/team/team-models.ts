@@ -189,7 +189,7 @@ export interface ChannelView {
   readonly canManage: boolean;
 }
 
-export type ChannelTab = "messages" | "files" | "pinned" | "knowledge";
+export type ChannelTab = "messages" | "files" | "pinned";
 
 /** A channel or DM row in the sidebar. Unread is a dot of weight; only mentions are counted. */
 export interface ChannelRowView {
@@ -249,36 +249,6 @@ export interface TeamSend {
   readonly toMyAgent: boolean;
 }
 
-/* ---- Knowledge ---- */
-
-export interface TopicView {
-  readonly id: string;
-  readonly name: string;
-  readonly kind: "channel" | "shared";
-  readonly peopleOnly: boolean;
-  readonly factCount: number;
-  readonly thingCount: number;
-  /** "Same access as #support · 12 people and their agents" */
-  readonly access: string;
-}
-
-export interface FactView {
-  readonly id: string;
-  readonly property: string;
-  readonly value: string;
-  readonly writer: AuthorView;
-  readonly at: string;
-  /** The message it came from, when there is one. */
-  readonly sourceLabel?: string | null | undefined;
-}
-
-export interface ThingView {
-  readonly id: string;
-  readonly name: string;
-  readonly key: string;
-  readonly facts: readonly FactView[];
-}
-
 /* ---- Files and pins ---- */
 
 export interface ChannelFileView {
@@ -301,13 +271,6 @@ export interface PinView {
 /* ---- Details and members ---- */
 
 export type NotifyLevel = "everything" | "mentions" | "nothing";
-
-export interface ChannelTopicRef {
-  readonly id: string;
-  readonly name: string;
-  readonly kind: "channel" | "shared";
-  readonly detail: string;
-}
 
 export type MemberEntryView =
   | { readonly kind: "person"; readonly person: PersonView; readonly manager: boolean }

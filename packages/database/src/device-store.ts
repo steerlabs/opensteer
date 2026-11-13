@@ -46,7 +46,7 @@ export async function bindDeviceSession(
       .selectFrom("authSessions")
       .select(["deviceId", "expiresAt", "absoluteExpiresAt", "userId"])
       .where("id", "=", input.sessionId)
-      .forUpdate()
+      .forNoKeyUpdate()
       .executeTakeFirst();
     const ownership = await machineOwnershipIn(transaction, input.machineId);
     const deployment = await transaction
@@ -89,12 +89,12 @@ export async function revokeDeviceSession(
   },
 ) {
   return withPersonalTransaction(database, async (transaction) => {
+    // The personal event fence keeps the binding stable while runner teardown takes its locks.
     const session = await transaction
       .selectFrom("authSessions")
       .select("deviceId")
       .where("id", "=", input.sessionId)
       .where("userId", "=", input.userId)
-      .forUpdate()
       .executeTakeFirst();
     if (!session) return { runnerId: null, removed: null, endedSessionIds: [input.sessionId] };
     const runner = session.deviceId

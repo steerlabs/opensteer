@@ -38,7 +38,7 @@ export function devicesLegacyReaders() {
                 contents: readFileSync(
                   resolve(
                     import.meta.dirname,
-                    "fixtures/devices-ef2d57efc",
+                    "fixtures/devices-4e089994c",
                     `${basename(path)}.txt`,
                   ),
                   "utf8",

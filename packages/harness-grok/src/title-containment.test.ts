@@ -469,6 +469,7 @@ function sessionContext(
       token: "agent",
       url: "https://host/mcp",
     },
+    commandEnvironment: {},
     environment,
     environmentId: createId("environment"),
     harnessInstanceId: instanceId,

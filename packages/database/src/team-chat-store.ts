@@ -29,7 +29,6 @@ import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { z } from "zod";
 import type { DatabaseSchema, TeamAgentRequestTable, TeamMessageTable } from "./schema.js";
-import type { ChannelTopicPort } from "./team-topics-port.js";
 import {
   TeamAccessStore,
   bumpTeamChannel,
@@ -135,19 +134,13 @@ export class TeamChatStore {
   readonly #requestListeners = new Set<(event: TeamRequestChange) => Promise<void> | void>();
   readonly #listeners = new Set<(channelId: TeamChannelId) => void>();
   readonly access: TeamAccessStore;
-  readonly topics: ChannelTopicPort;
   readonly identity: {
     readonly teamId: DeploymentId;
     readonly teamName: string;
     readonly agentOnline?: (ownerUserId: UserId) => boolean;
   };
-  constructor(
-    access: TeamAccessStore,
-    topics: ChannelTopicPort,
-    identity: TeamChatStore["identity"],
-  ) {
+  constructor(access: TeamAccessStore, identity: TeamChatStore["identity"]) {
     this.access = access;
-    this.topics = topics;
     this.identity = identity;
   }
   onChange(listener: (channelId: TeamChannelId) => void) {
@@ -359,12 +352,6 @@ export class TeamChatStore {
         ...access,
         { subject: { kind: "person", userId: actor.userId }, level: "post", manage: true },
       ]);
-      await this.topics.createChannelTopic(transaction, {
-        channelId: input.id,
-        name: input.name,
-        createdBy: actor.userId,
-        peopleOnly: false,
-      });
       await appendTeamAudit(transaction, {
         actor,
         action: "channel.create",
@@ -421,12 +408,6 @@ export class TeamChatStore {
             manage: true,
           })),
         );
-        await this.topics.createChannelTopic(transaction, {
-          channelId: id,
-          name: "Direct message",
-          createdBy: actor.userId,
-          peopleOnly: false,
-        });
       }
       return {
         value: await this.channelView(transaction, actor, row.id),

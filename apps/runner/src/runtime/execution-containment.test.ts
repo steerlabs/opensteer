@@ -163,6 +163,33 @@ describe.runIf(platformVerifies)("ExecutionContainment", () => {
   });
 });
 
+describe("ExecutionContainment.liveRoots", () => {
+  it("counts the execution's process trees: none, one launch, or one with a detached escapee", async () => {
+    const listed: { identity: string; pid: number; ppid: number; scope: string | null }[] = [];
+    const containment = new ExecutionContainment({
+      bootId: "rbt_a",
+      dataDirectory: "/data",
+      listProcesses: async () => listed,
+    });
+    const scope = containment.scope("run_1");
+    // Another execution's tree and an unmarked process are not this one's.
+    listed.push(
+      { identity: "10@a", pid: 10, ppid: 1, scope: containment.scope("run_2") },
+      { identity: "11@a", pid: 11, ppid: 1, scope: null },
+    );
+    await expect(containment.liveRoots("run_1")).resolves.toBe(0);
+
+    listed.push(
+      { identity: "20@a", pid: 20, ppid: 5, scope },
+      { identity: "21@a", pid: 21, ppid: 20, scope: null },
+    );
+    await expect(containment.liveRoots("run_1")).resolves.toBe(1);
+
+    listed.push({ identity: "30@a", pid: 30, ppid: 1, scope });
+    await expect(containment.liveRoots("run_1")).resolves.toBe(2);
+  });
+});
+
 describe("ExecutionContainment without process environments", () => {
   it("says it cannot verify rather than claiming proof", async () => {
     const containment = new ExecutionContainment({
@@ -170,6 +197,7 @@ describe("ExecutionContainment without process environments", () => {
       dataDirectory: await dataDirectory(),
       platform: "win32",
     });
+    await expect(containment.liveRoots("run_1")).resolves.toBe("unverifiable");
     await expect(containment.terminate("run_1")).resolves.toBe("unverifiable");
     await expect(containment.reapEarlierBoots()).resolves.toBe("unverifiable");
     await expect(containment.reapBoot()).resolves.toBe("unverifiable");

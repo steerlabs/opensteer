@@ -277,6 +277,8 @@ async function installFixture(context: BrowserContext, working: boolean, family:
                           name,
                           nextFireAt: new Date(Date.now() + (index + 1) * 3_600_000).toISOString(),
                           paused: false,
+                          ended: false,
+                          taskId: null,
                         }),
                       ),
                     }

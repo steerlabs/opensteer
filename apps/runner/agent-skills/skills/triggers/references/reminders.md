@@ -16,6 +16,8 @@ export default async function ({ event, opensteer }) {
 
 A late reminder remains useful. Do not run it to test it; that sends it now. Confirm nextFireAt with trigger_read before promising it. A successful one-shot archives after its instant; get still reads it by id. An archived Trigger cannot resume: create another reminder when asked.
 
-Recurring and conditional updates use the same anchor with a cron source and the person's time zone. Compare with the last handled observation, queue only changed or actionable news, and return silently otherwise. When judgment or real work is needed, delegate_task; its result returns to the anchor. Ask checks to end with no reply when there is nothing worth passing on.
+For an ongoing monitor, create with `ownTask: true` and use a cron source with the person's time zone. Check in code first; store handled observations under `automations/<trigger-id>/` in Agent home. When a model must check, queue the monitor's task with `freshContext: true`, including the criteria, asking task's ID or email destination, and state path in every wake. Start any child checks from the monitor's task; their results return there automatically. Send real finds to the asking task with `thread_send` delivery `queue`, or email through a connected integration. A `report` never notifies. Briefly record what happened in each background wake, including no change.
+
+When each run should create a new listed task, have the program call `delegate_task` with `standalone: true`. Keep a one-shot reminder in the task where the person asked.
 
 If automation fails or is paused by failure, its anchor receives the failure. Inspect, repair or delegate repair, and resume only after verified repair. Preserve the person's pauses; ask only for missing decisions or access.

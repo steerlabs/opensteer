@@ -31,9 +31,9 @@ const channel = (name: string, extra = ""): string =>
   `<div class="tw-row${extra}"><span class="tw-hash">#</span>${name}</div>`;
 
 const TOPICS = [
-  { name: "Refund policy", who: "Everyone in #support", peopleOnly: false },
-  { name: "Pricing", who: "Sales, Support", peopleOnly: false },
-  { name: "Salaries", who: "Maya, Priya", peopleOnly: true },
+  { name: "Refund policy", about: "How we refund and when", who: "Everyone", leo: true },
+  { name: "Pricing", about: "Plans, discounts, exceptions", who: "Sales, Support", leo: true },
+  { name: "Salaries", about: "Pay bands and offers", who: "Maya, Priya", leo: false },
 ] as const;
 
 const WINDOW = `<div class="tw">
@@ -62,29 +62,31 @@ const WINDOW = `<div class="tw">
   </div>
   <aside class="tw-know">
     <header class="tw-head"><b>Knowledge</b></header>
-    <div class="topics-head"><span>Topic</span><span>People only</span></div>
+    <div class="topics-head"><span>Topic</span><span>Who can read</span></div>
     <div data-part="topics"></div>
-    <p class="knote" data-part="note">${icon("i-shield")}<span>Agents can't read or search a people-only topic.</span></p>
+    <p class="knote" data-part="note">${icon("i-shield")}<span>Leo's agent reads what Leo can, and nothing more.</span></p>
   </aside>
 </div>`;
 
-/** One #support thread in the team view, beside the channel's knowledge: who can see each topic, and whether agents can. */
+/** One #support thread in the team view, beside the team's knowledge: who can read each topic, and so whose agents can. */
 export function mountTeam(): void {
   const root = byId("teamStage");
   root.innerHTML = WINDOW;
   const list = find(root, '[data-part="topics"]');
   const note = find(root, '[data-part="note"]');
   TOPICS.forEach((topic) => {
-    const row = document.createElement("div");
+    const row = document.createElement("button");
+    row.type = "button";
     row.className = "topic";
-    row.innerHTML = `<span class="topic__name"><b>${topic.name}</b><small>${topic.who}</small></span><button class="switch" type="button" role="switch" aria-checked="${topic.peopleOnly}" aria-label="${topic.name}: people only"></button>`;
-    const toggle = find<HTMLButtonElement>(row, ".switch");
-    toggle.addEventListener("click", () => {
-      const on = toggle.getAttribute("aria-checked") !== "true";
-      toggle.setAttribute("aria-checked", String(on));
-      find(note, "span").textContent = on
-        ? `Only people can open ${topic.name}. Agents can't read or search it.`
-        : `Agents can look up ${topic.name} for anyone who can see it.`;
+    row.setAttribute("aria-pressed", "false");
+    row.innerHTML = `<span class="topic__name"><b>${topic.name}</b><small>${topic.about}</small></span><span class="topic__who">${topic.who}</span>`;
+    row.addEventListener("click", () => {
+      for (const other of list.querySelectorAll(".topic"))
+        other.setAttribute("aria-pressed", "false");
+      row.setAttribute("aria-pressed", "true");
+      find(note, "span").textContent = topic.leo
+        ? `Leo can read ${topic.name}, so his agent can look it up and keep it current.`
+        : `Leo can't read ${topic.name}, so neither can his agent.`;
       restart(note, "is-flash");
     });
     list.appendChild(row);

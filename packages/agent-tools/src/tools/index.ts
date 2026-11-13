@@ -32,7 +32,7 @@ import {
 import { device_access_request, machine_full_disk_access_request } from "./computer.js";
 import { trigger_read, trigger_write } from "./triggers.js";
 import { integrationTools } from "./integrations.js";
-import { sql } from "./knowledge.js";
+import { knowledge_read, knowledge_topics, knowledge_write } from "./knowledge.js";
 export const agentTools = [
   ...administrationTools,
   app_publish,
@@ -73,7 +73,9 @@ export const agentTools = [
   team_read,
   team_search,
   team_reply,
-  sql,
+  knowledge_topics,
+  knowledge_read,
+  knowledge_write,
 ] as const;
 export type AgentTool = (typeof agentTools)[number];
 export type AgentToolName = AgentTool["name"];

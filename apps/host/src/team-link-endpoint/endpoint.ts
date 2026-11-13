@@ -28,6 +28,7 @@ import { auditTeamMachineCall } from "./audit.js";
 import { TeamEndpointLinks } from "./links.js";
 import { TeamLinkLifetimes } from "./lifetimes.js";
 import { boundTeamReadPage } from "./read-page.js";
+import { TeamKnowledgeFailure } from "../knowledge/team-knowledge.js";
 import type { TeamAccessResolver, TeamAccessLockPort } from "../team/access-port.js";
 
 export interface TeamLinkEndpointOptions {
@@ -43,7 +44,9 @@ interface MachineResult {
   readonly result: TeamLinkResult;
   readonly reauthorize?: () => Promise<boolean>;
 }
-class TeamSqlFailure extends OpensteerError {}
+type KnowledgeCall = Extract<TeamLinkCall, { type: `knowledge.${string}` }>;
+const isKnowledgeCall = (frame: TeamLinkCall): frame is KnowledgeCall =>
+  frame.type.startsWith("knowledge.");
 
 export class TeamLinkEndpoint {
   readonly options: TeamLinkEndpointOptions;
@@ -201,7 +204,7 @@ export class TeamLinkEndpoint {
                 id: frame.id,
                 error: {
                   code:
-                    error instanceof TeamSqlFailure && error.code === "bad_request"
+                    error instanceof TeamKnowledgeFailure && error.code === "bad_request"
                       ? "bad_message"
                       : error instanceof OpensteerError && error.code === "forbidden"
                         ? "forbidden"
@@ -211,7 +214,7 @@ export class TeamLinkEndpoint {
                             ? "conflict"
                             : "internal",
                   message:
-                    error instanceof TeamSqlFailure
+                    error instanceof TeamKnowledgeFailure
                       ? [error.message, error.next].filter(Boolean).join("\n").slice(0, 2000)
                       : "Team request is unavailable",
                   retryable:
@@ -269,15 +272,10 @@ export class TeamLinkEndpoint {
             : [];
     const authorize = async () => {
       await links.assertActive(linkId);
-      if ("requestId" in frame) {
+      if (!isKnowledgeCall(frame) && "requestId" in frame) {
         if (["reply", "receipt", "status"].includes(frame.type))
           await requests.receipt(linkId, frame.requestId);
-        else
-          await requests.authorize(
-            linkId,
-            frame.requestId,
-            frame.type === "knowledge.sql" ? "knowledge" : "read",
-          );
+        else await requests.authorize(linkId, frame.requestId, "read");
       }
       if (buffered.reauthorize && !(await buffered.reauthorize())) throw linkError();
       for (const source of sources) await this.#source(link.ownerUserId, source);
@@ -287,7 +285,8 @@ export class TeamLinkEndpoint {
     try {
       return await access.handoff(revision, authorize, () => (deliver ? deliver(result) : result));
     } catch (error) {
-      if ("requestId" in frame) await this.#audit(linkId, frame, "denied");
+      if (!isKnowledgeCall(frame) && "requestId" in frame)
+        await this.#audit(linkId, frame, "denied");
       throw error;
     }
   }
@@ -332,14 +331,9 @@ export class TeamLinkEndpoint {
       if (completed?.state === frame.state && completed.finishedAt !== null)
         return { result: { kind: "ok" } };
     }
-    const action =
-      frame.type === "reply"
-        ? "post"
-        : frame.type === "knowledge.sql"
-          ? "knowledge"
-          : frame.type === "status"
-            ? "status"
-            : "read";
+    // Knowledge acts as the link's owner and records its own audit.
+    if (isKnowledgeCall(frame)) return data.knowledge(linkId, link.ownerUserId, frame);
+    const action = frame.type === "reply" ? "post" : frame.type === "status" ? "status" : "read";
     const actor: TeamActor = { kind: "agent", userId: link.ownerUserId };
     try {
       await requests.authorize(linkId, frame.requestId, action);
@@ -375,24 +369,6 @@ export class TeamLinkEndpoint {
             result: await data.search(actor, linkId, frame.requestId, frame.input),
           };
           break;
-        case "knowledge.sql": {
-          const query = await data
-            .sql(linkId, frame.requestId, frame.input)
-            .catch((error: unknown) => {
-              if (error instanceof OpensteerError)
-                throw new TeamSqlFailure({
-                  code: error.code,
-                  message: error.message,
-                  ...(error.next ? { next: error.next } : {}),
-                  retryable: error.retryable,
-                });
-              throw error;
-            });
-          return {
-            result: { kind: "knowledge.sql", result: query.result },
-            reauthorize: query.reauthorize,
-          };
-        }
       }
       if (["read", "search", "context"].includes(frame.type))
         await this.#audit(linkId, frame, "allowed");
@@ -405,7 +381,7 @@ export class TeamLinkEndpoint {
 
   async #audit(
     linkId: TeamLinkId,
-    frame: Exclude<TeamLinkCall, { type: "revoke" }>,
+    frame: Exclude<TeamLinkCall, { type: "revoke" } | KnowledgeCall>,
     outcome: "allowed" | "denied",
   ): Promise<void> {
     await auditTeamMachineCall(this.options.links.database, {

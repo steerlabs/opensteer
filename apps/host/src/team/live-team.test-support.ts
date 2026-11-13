@@ -8,7 +8,6 @@ import websocket from "@fastify/websocket";
 import { WebSocket } from "ws";
 import { expect, vi } from "vitest";
 import { createId, type TeamActor, type UserId, type AuthenticatedSession } from "@opensteer/core";
-import { teamChannelTopics } from "@opensteer/database";
 import { createTeamKnowledgeFixture } from "@opensteer/database/test-support/team-knowledge";
 import { ownTestDatabaseProducer } from "@opensteer/database/test-support/database";
 import { teamApiVersion } from "@opensteer/deployment-authority";
@@ -50,8 +49,6 @@ export async function createLiveTeamFixture() {
     hostKeyFingerprint: `sha256:${"A".repeat(43)}`,
     origin: "https://team.example.invalid",
     dataDirectory: directory,
-    topics: teamChannelTopics,
-    async ensureKnowledge() {},
     knowledge: {
       async read() {
         throw new Error("Unexpected knowledge read");
@@ -80,8 +77,14 @@ export async function createLiveTeamFixture() {
     resolver: team.access,
     lifetimes,
     ...createTeamMachineAdapters(team, {
-      async sql() {
-        throw new Error("Unexpected SQL");
+      async topics() {
+        throw new Error("Unexpected knowledge call");
+      },
+      async readNotes() {
+        throw new Error("Unexpected knowledge call");
+      },
+      async write() {
+        throw new Error("Unexpected knowledge call");
       },
     }),
     onPresence: (ownerUserId, online) => {

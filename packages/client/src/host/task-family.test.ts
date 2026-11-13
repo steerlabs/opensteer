@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createId, type AssignmentSummary } from "@opensteer/core";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import {
+  familyAutomations,
   taskFamily,
   taskFamilyGlance,
   sameTaskFamily,
@@ -29,6 +30,12 @@ function assignment(
     status,
   };
 }
+const live = {
+  kind: "schedule" as const,
+  paused: false,
+  ended: false,
+  taskId: null,
+};
 function reader(assignments: AssignmentSummary[]) {
   return {
     ...snapshot,
@@ -70,21 +77,9 @@ describe("task family", () => {
       ...reader([d, b, c, a]),
       threadAutomations: {
         [parent]: [
-          { id: "paused", name: "A", kind: "schedule" as const, paused: true, nextFireAt: null },
-          {
-            id: "later",
-            name: "B",
-            kind: "schedule" as const,
-            paused: false,
-            nextFireAt: b.createdAt,
-          },
-          {
-            id: "first",
-            name: "C",
-            kind: "schedule" as const,
-            paused: false,
-            nextFireAt: a.createdAt,
-          },
+          { ...live, id: "paused", name: "A", paused: true, nextFireAt: null },
+          { ...live, id: "later", name: "B", nextFireAt: b.createdAt },
+          { ...live, id: "first", name: "C", nextFireAt: a.createdAt },
         ],
       },
     };
@@ -93,6 +88,66 @@ describe("task family", () => {
     expect(family.earlier.map((a) => a.assignmentId)).toEqual([d.id, c.id]);
     expect(family.automations.map((a) => a.id)).toEqual(["first", "later", "paused"]);
     expect(sameTaskFamily(family, taskFamily(source, parent))).toBe(true);
+  });
+  it("holds automations of tasks linked under it, ended ones apart and counted as earlier", () => {
+    const own = createId("thread");
+    const ended = createId("thread");
+    const automations = familyAutomations(
+      [
+        {
+          anchorThreadId: parent,
+          id: "here",
+          kind: "schedule",
+          name: "Here",
+          nextFireAt: null,
+          status: "archived",
+        },
+        {
+          anchorThreadId: own,
+          id: "monitor",
+          kind: "watch",
+          name: "Monitor",
+          nextFireAt: null,
+          status: "active",
+        },
+        {
+          anchorThreadId: ended,
+          id: "once",
+          kind: "schedule",
+          name: "Once",
+          nextFireAt: null,
+          status: "archived",
+        },
+      ],
+      parent,
+    );
+    expect(automations).toEqual([
+      {
+        id: "monitor",
+        name: "Monitor",
+        kind: "watch",
+        paused: false,
+        ended: false,
+        taskId: own,
+        nextFireAt: null,
+      },
+      {
+        id: "once",
+        name: "Once",
+        kind: "schedule",
+        paused: false,
+        ended: true,
+        taskId: ended,
+        nextFireAt: null,
+      },
+    ]);
+    const source = { ...reader([]), threadAutomations: { [parent]: automations } };
+    const family = taskFamily(source, parent);
+    expect(family.automations.map(({ id }) => id)).toEqual(["monitor"]);
+    expect(family.ended.map(({ id }) => id)).toEqual(["once"]);
+    expect(taskFamilyGlance(source, parent)).toMatchObject({ automations: 1, earlier: 1 });
+    const endedOnly = { ...reader([]), threadAutomations: { [parent]: [automations[1]!] } };
+    expect(taskFamilyGlance(endedOnly, parent)).toMatchObject({ automations: 0, earlier: 1 });
   });
   it("rolls a grandchild question up its assignment chain and puts needs-you marks first, capped at three", () => {
     const assignments = [assignment(1), assignment(2), assignment(3), assignment(4)];

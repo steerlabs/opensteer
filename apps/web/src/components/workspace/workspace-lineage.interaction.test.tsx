@@ -171,6 +171,8 @@ function withFamily(
                   name: "Morning check",
                   kind: "schedule",
                   paused: false,
+                  ended: false,
+                  taskId: null,
                   nextFireAt: new Date(Date.now() + 3600_000).toISOString(),
                 },
               ],

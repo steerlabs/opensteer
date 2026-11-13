@@ -43,6 +43,8 @@ import {
   threadFromRow,
   threadInputFromRow,
   threadPendingRequestsSelection,
+  threadVisitSelection,
+  threadLatestRunCompletedAtSelection,
   threadProviderSessionSelection,
 } from "./thread-row-mappers.js";
 import { lockThreadChannelAuthorities } from "./channel-execution.js";
@@ -521,6 +523,8 @@ export async function setThreadDone(
         .selectAll()
         .select([
           threadPendingRequestsSelection,
+          threadVisitSelection,
+          threadLatestRunCompletedAtSelection,
           threadProviderSessionSelection,
           threadContinuationIdentitySelection,
         ])

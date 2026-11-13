@@ -1,23 +1,20 @@
-import { isLoopbackHostname } from "@opensteer/core";
 import {
-  HostDescriptorSchema,
+  isLoopbackHostname,
+  decodeBase64Url,
   browserSourceInvitationPrefix,
   decodeBrowserSourceInvitation,
-  isSameHost,
   verifyBrowserSourcePairChallenge,
-  verifyHostDiscoveryEnvelope,
   type BrowserSourceInvitation,
   type BrowserSourceInvitationDestination,
   type HostDiscoveryEnvelope,
-} from "@opensteer/deployment-authority";
+} from "@opensteer/browser-source-wire/frozen";
 import {
   BrowserSourcePairChallengeResultSchema,
   BrowserSourcePairInputSchema,
   BrowserSourcePairResultSchema,
-  browserSourceProtocolVersion,
-} from "@opensteer/protocol/browser-sources";
-import { decodeBase64Url } from "@opensteer/shared/base64url";
-import { readBoundedJson } from "@opensteer/shared/boundedJson";
+  browserSourceWireCurrent,
+} from "@opensteer/browser-source-wire/frames";
+import { readHostJson } from "./json.js";
 import { z } from "zod";
 import type { ConnectProblemCode } from "./messages.js";
 
@@ -39,54 +36,12 @@ export class ConnectProblem extends Error {
   }
 }
 
-const hostJson = {
-  maximumBytes: 16_384,
-  expectedContentType: "application/json",
-  emptyError: () => new Error("Opensteer sent an empty response."),
-  invalidContentLengthError: () => new Error("Opensteer sent an unexpected response."),
-  invalidJsonError: () => new Error("Opensteer sent an unexpected response."),
-  sizeError: () => new Error("Opensteer sent an unexpected response."),
-  unexpectedContentTypeError: () => new Error("Opensteer sent an unexpected response."),
-} as const;
-
-export async function fetchHostAuthority(
-  origin: string,
-  timeoutMs = 10_000,
-): Promise<HostDiscoveryEnvelope> {
-  const response = await fetch(new URL("/.well-known/opensteer", origin), {
-    cache: "no-store",
-    credentials: "omit",
-    method: "GET",
-    redirect: "manual",
-    referrerPolicy: "no-referrer",
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-  if (!response.ok || response.type === "opaqueredirect") {
-    throw new Error("Opensteer did not identify itself.");
-  }
-  const descriptor = HostDescriptorSchema.parse(await readBoundedJson(response, hostJson));
-  verifyHostDiscoveryEnvelope(descriptor.authority);
-  return descriptor.authority;
-}
-
-export function samePinnedAuthority(
-  pinned: HostDiscoveryEnvelope,
-  current: HostDiscoveryEnvelope,
-): boolean {
-  return (
-    isSameHost(pinned, current) &&
-    pinned.document.canonicalOrigin === current.document.canonicalOrigin
-  );
-}
-
-/** One Deployment keeps its signing key across addresses and restarts. */
-export function sameDeployment(left: HostDiscoveryEnvelope, right: HostDiscoveryEnvelope): boolean {
-  return left.publicKey.spki === right.publicKey.spki;
-}
+const hostJson = { maximumBytes: 16_384 } as const;
 
 export function websocketUrl(origin: string): string {
   const url = new URL("/internal/v1/browser-sources/connect", origin);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.searchParams.set("wire", String(browserSourceWireCurrent));
   return url.href;
 }
 
@@ -158,10 +113,15 @@ async function proveDestination(
     );
     if (!response.ok || response.type === "opaqueredirect") return false;
     const { signature } = BrowserSourcePairChallengeResultSchema.parse(
-      await readBoundedJson(response, hostJson),
+      await readHostJson(response, hostJson),
     );
     return verifyBrowserSourcePairChallenge({ ...challenge, authority, signature });
-  } catch {
+  } catch (error) {
+    if (
+      error instanceof TypeError ||
+      (error instanceof DOMException && error.name === "TimeoutError")
+    )
+      throw error;
     return false;
   }
 }
@@ -183,17 +143,10 @@ export async function chooseDestination(
   let impostor = false;
   for (const destination of ordered) {
     const timeoutMs = isLoopbackHostname(new URL(destination.origin).hostname) ? 4_000 : 10_000;
-    let authority: HostDiscoveryEnvelope;
     try {
-      authority = await fetchHostAuthority(destination.origin, timeoutMs);
+      if (await proveDestination(destination, invitation.authority, timeoutMs)) return destination;
     } catch {
       continue;
-    }
-    if (
-      samePinnedAuthority(invitation.authority, authority) &&
-      (await proveDestination(destination, invitation.authority, timeoutMs))
-    ) {
-      return destination;
     }
     impostor = true;
   }
@@ -209,6 +162,7 @@ export async function requestPairing(input: {
   destination: BrowserSourceInvitationDestination;
   name: string;
   replaces: { sourceId: string; token: string } | null;
+  version?: number;
 }): Promise<z.infer<typeof BrowserSourcePairResultSchema>> {
   const { destination } = input;
   const body = BrowserSourcePairInputSchema.parse({
@@ -217,7 +171,7 @@ export async function requestPairing(input: {
     origin: destination.origin,
     replaces: input.replaces,
     routeGeneration: destination.route?.document.route.generation ?? null,
-    version: browserSourceProtocolVersion,
+    version: input.version ?? browserSourceWireCurrent,
   });
   let response: Response;
   try {
@@ -239,13 +193,20 @@ export async function requestPairing(input: {
   }
   if (!response.ok) {
     const error = PairErrorSchema.safeParse(
-      await readBoundedJson(response, hostJson).catch(() => null),
+      await readHostJson(response, hostJson).catch(() => null),
     );
+    if (
+      error.success &&
+      error.data.error.reason === "unsupported-version" &&
+      input.version === undefined
+    ) {
+      return await requestPairing({ ...input, version: 4 });
+    }
     throw new ConnectProblem(
       error.success && error.data.error.reason === "unsupported-version" ? "update" : "rejected",
       destination.origin,
       input.deploymentName,
     );
   }
-  return BrowserSourcePairResultSchema.parse(await readBoundedJson(response, hostJson));
+  return BrowserSourcePairResultSchema.parse(await readHostJson(response, hostJson));
 }

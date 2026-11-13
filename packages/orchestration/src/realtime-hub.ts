@@ -15,7 +15,7 @@ import {
   type Sequence,
   type UserId,
   type ThreadId,
-  type ThreadReadState,
+  type ThreadVisit,
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import { requirePersonalOwner } from "@opensteer/database/personal-settings-store";
@@ -449,7 +449,7 @@ class Subscriber {
       if (isDeploymentNotice(message)) {
         const key = message.type;
         this.#syncNotices.set(key, mergeDeploymentNotices(this.#syncNotices.get(key), message));
-      } else if (message.type === "host.read-states" || message.type === "host.read-markers") {
+      } else if (message.type === "host.thread-visits") {
         const bytes = Buffer.byteLength(JSON.stringify(message));
         if (
           this.#viewerBufferedBytes + bytes > this.#options.maxBufferedBytes ||
@@ -679,13 +679,7 @@ export class RealtimeHub {
   readonly #maxReplayBytes: number;
   readonly #maxWireBytes: number;
   readonly #subscribers = new Set<Subscriber>();
-  readonly #readStateRefreshes = new Map<
-    string,
-    {
-      userId: UserId;
-      threadIds: Set<ThreadId>;
-    }
-  >();
+
   /**
    * Every authenticated client socket, whatever Deployment it is watching.
    *
@@ -833,11 +827,10 @@ export class RealtimeHub {
         }
       }
       await subscriber.synchronize(messages, cursor, async () => {
-        // Shared event replay cannot replay another device's private read mark.
-        // Markers are monotonic and cheap to stream, including retained older pages.
+        // Durable event replay cannot recover another device's private visits.
         let afterThreadId: ThreadId | undefined;
         do {
-          const page = await this.#store.notificationState.readMarkerPage({
+          const page = await this.#store.notificationState.visitPage({
             userId: input.userId,
             ...(afterThreadId
               ? {
@@ -845,30 +838,13 @@ export class RealtimeHub {
                 }
               : {}),
           });
-          if (page.markers.length)
+          if (page.visits.length)
             await input.sink.send({
-              type: "host.read-markers",
-              markers: [...page.markers],
+              type: "host.thread-visits",
+              visits: [...page.visits],
             });
           afterThreadId = page.nextAfterThreadId ?? undefined;
         } while (afterThreadId);
-        const replayThreads = new Set<ThreadId>();
-        for (const message of messages)
-          if (message.type === "host.events") {
-            for (const event of message.events)
-              if (changesReadState(event.type)) replayThreads.add(event.threadId);
-          }
-        if (replayThreads.size) {
-          const states = await this.#store.notificationState.listReadStates({
-            userId: input.userId,
-            threadIds: [...replayThreads],
-          });
-          for (let index = 0; index < states.length; index += 100)
-            await input.sink.send({
-              type: "host.read-states",
-              states: states.slice(index, index + 100),
-            });
-        }
       });
       return () => subscriber.close();
     } catch (error) {
@@ -981,7 +957,6 @@ export class RealtimeHub {
     for (const observer of this.#observers) observer(event);
     for (const subscriber of this.#subscribers) {
       subscriber.offer(event);
-      if (changesReadState(event.type)) this.#refreshReadStates(subscriber.userId, event.threadId);
     }
     // Whom a Request waits on can be someone following none of this
     // Deployment's Threads — the person whose task handed the work out — so
@@ -1004,12 +979,12 @@ export class RealtimeHub {
       subscriber.offerLive(frame);
     }
   }
-  publishReadState(userId: UserId, state: ThreadReadState): void {
+  publishThreadVisit(userId: UserId, visit: ThreadVisit): void {
     for (const subscriber of this.#subscribers) {
       if (subscriber.userId === userId)
         subscriber.enqueueMessage({
-          type: "host.read-states",
-          states: [state],
+          type: "host.thread-visits",
+          visits: [visit],
         });
     }
   }
@@ -1060,56 +1035,6 @@ export class RealtimeHub {
       }
       if (!queued)
         void sink.send(message).catch(() => sink.close(1011, "Viewer state delivery failed"));
-    }
-  }
-  #refreshReadStates(userId: UserId, threadId: ThreadId): void {
-    const key = userId;
-    const existing = this.#readStateRefreshes.get(key);
-    if (existing) {
-      existing.threadIds.add(threadId);
-      return;
-    }
-    const refresh = {
-      userId,
-      threadIds: new Set([threadId]),
-    };
-    this.#readStateRefreshes.set(key, refresh);
-    // One read for a burst of published changes and a viewer, shared by all
-    // their devices. Token deltas never enter this queue.
-    queueMicrotask(() => {
-      void this.#flushReadStates(key, refresh);
-    });
-  }
-  async #flushReadStates(
-    key: string,
-    refresh: {
-      userId: UserId;
-      threadIds: Set<ThreadId>;
-    },
-  ): Promise<void> {
-    try {
-      while (refresh.threadIds.size) {
-        const ids = [...refresh.threadIds].slice(0, 100);
-        for (const id of ids) refresh.threadIds.delete(id);
-        const states = await this.#store.notificationState.listReadStates({
-          userId: refresh.userId,
-          threadIds: ids,
-        });
-        for (const subscriber of this.#subscribers) {
-          if (subscriber.userId === refresh.userId)
-            subscriber.enqueueMessage({
-              type: "host.read-states",
-              states: [...states],
-            });
-        }
-      }
-    } catch {
-      // A failed projection must reconnect and re-establish its authoritative
-      // snapshot; keeping a synchronized stream would silently lose the update.
-      for (const subscriber of this.#subscribers)
-        if (subscriber.userId === refresh.userId) subscriber.resync("cursor-expired");
-    } finally {
-      this.#readStateRefreshes.delete(key);
     }
   }
   publishTriggersChanged(): void {

@@ -323,10 +323,14 @@ async function startAgentsRunner(input: {
     dataDirectory: config.dataDirectory,
     deploymentShape: config.deploymentShape,
     environmentId,
-    harnesses: createHarnessRegistry(execution.harnessExecutables, {
-      nodeExecutable: config.nodeExecutable,
-      runtimeCacheDirectory: resolve(config.dataDirectory, "runtime-cache"),
-    }),
+    harnesses: createHarnessRegistry(
+      execution.harnessExecutables,
+      {
+        nodeExecutable: config.nodeExecutable,
+        runtimeCacheDirectory: resolve(config.dataDirectory, "runtime-cache"),
+      },
+      logger,
+    ),
     harnessRuntimeBoundary,
     ...(harnessSandbox ? { harnessSandbox } : {}),
     plugins: cacheRunPlugins,

@@ -41,7 +41,6 @@
     "fastify": "catalog:",
     "jose": "catalog:",
     "kysely": "catalog:",
-    "libpg-query": "17.8.2",
     "quickjs-emscripten-core": "0.32.0",
     "sharp": "catalog:",
     "ws": "catalog:",
@@ -49,6 +48,7 @@
   },
   "devDependencies": {
     "@opensteer/browser-runtime-core": "workspace:*",
+    "@opensteer/browser-source-wire": "workspace:*",
     "@types/pg": "catalog:",
     "pg": "catalog:",
     "@opensteer/agent-phone-setup": "workspace:*",

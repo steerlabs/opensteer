@@ -1443,10 +1443,9 @@ class MemorySink implements RealtimeSink {
 }
 function snapshot(deploymentId: DeploymentId, value: string): DeploymentSnapshot {
   const window = { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 };
-  const tasks = { tasks: [], readStates: [], window };
+  const tasks = { tasks: [], asOfSequence: SequenceSchema.parse("0"), window };
   return {
     deploymentId,
-    readStates: [],
     messages: [],
     messageWindows: [],
     pendingRequests: [],
@@ -1472,11 +1471,10 @@ function snapshot(deploymentId: DeploymentId, value: string): DeploymentSnapshot
 }
 function viewerState() {
   return {
-    readMarkerPage: async () => ({
-      markers: [],
+    visitPage: async () => ({
+      visits: [],
       nextAfterThreadId: null,
     }),
-    listReadStates: async () => [],
     workspacePreferencePage: async () => ({
       preferences: [],
       nextAfterDeploymentId: null,

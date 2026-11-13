@@ -552,6 +552,7 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
       token: "agent-token",
       url: "https://host/mcp",
     },
+    commandEnvironment: {},
     environment,
     environmentId: createId("environment"),
     harnessInstanceId: instanceId,

@@ -77,7 +77,7 @@ describe.each(holdEngines)("$label held MCP", (engine) => {
       vi.spyOn(CodexStdioClient, "start").mockImplementation((options) =>
         start({
           ...options,
-          onMethodMessage: (message) => {
+          onMethodMessage: (message, bytes) => {
             const item = isRecord(message.params) ? message.params.item : undefined;
             if (isRecord(item) && ["item/started", "item/completed"].includes(message.method)) {
               nativeItems.push({
@@ -91,7 +91,7 @@ describe.each(holdEngines)("$label held MCP", (engine) => {
                   marker.length > 0 && JSON.stringify(item.result ?? null).includes(marker),
               });
             }
-            options.onMethodMessage(message);
+            options.onMethodMessage(message, bytes);
           },
         }),
       );

@@ -1,4 +1,4 @@
-import { createId, emptyExecutionPreferences } from "@opensteer/core";
+import { createId, emptyExecutionPreferences, SequenceSchema } from "@opensteer/core";
 import type { DesktopDeploymentSummary } from "@opensteer/protocol/desktop";
 
 /** The one moment every preview record claims, so nothing in it reads as live. */
@@ -103,12 +103,11 @@ export function previewBootstrap(
 /** An empty personal stream snapshot: no tasks, nothing waiting. */
 export function previewDeploymentSnapshot(deploymentId: string) {
   const window = { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 };
-  const page = { readStates: [], tasks: [], window };
+  const page = { asOfSequence: SequenceSchema.parse("0"), tasks: [], window };
   return {
     tasks: { recent: page, active: page, done: page },
     needsYou: { count: 0, entries: [], window },
     resources: { appTabs: [], browser: previewBrowser },
-    readStates: [],
     messages: [],
     messageWindows: [],
     pendingRequests: [],

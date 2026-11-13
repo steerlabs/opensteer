@@ -54,11 +54,13 @@ export const CodexHarnessConfigSchema = z.preprocess(
       .max(256 * 1_024 * 1_024)
       .default(16 * 1_024 * 1_024),
     maxEventItems: z.int().min(16).max(65_536).default(4_096),
+    // One shared app-server carries every task of an account, so an oversized
+    // line ends all of them. The bound only guards memory, as T3 Code's does.
     maxProtocolLineBytes: z
       .int()
       .min(16 * 1_024)
-      .max(64 * 1_024 * 1_024)
-      .default(8 * 1_024 * 1_024),
+      .max(256 * 1_024 * 1_024)
+      .default(128 * 1_024 * 1_024),
     maxStderrBytes: z
       .int()
       .min(1_024)

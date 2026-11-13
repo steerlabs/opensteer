@@ -165,6 +165,8 @@ async function renderOpensteer(): Promise<void> {
                 attach(acme, "https://chat.acme.example"),
                 attach(family, "https://family.example"),
               ];
+              // For journeys that play another member's change on the busy teams.
+              Object.assign(window, { opensteerMockTeams: [acme, family] });
               return mockClient();
             }
             if (search.has("mock-team"))

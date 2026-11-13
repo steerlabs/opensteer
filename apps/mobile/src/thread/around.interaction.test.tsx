@@ -624,8 +624,24 @@ describe("Around this thread", () => {
       assignments: Object.fromEntries(settled.map((task) => [task.id, task])),
       threadAutomations: {
         [parent]: [
-          { id: "watch", name: "Repository", kind: "watch", paused: false, nextFireAt: null },
-          { id: "paused", name: "Later", kind: "schedule", paused: true, nextFireAt: null },
+          {
+            id: "watch",
+            name: "Repository",
+            kind: "watch",
+            paused: false,
+            ended: false,
+            taskId: null,
+            nextFireAt: null,
+          },
+          {
+            id: "paused",
+            name: "Later",
+            kind: "schedule",
+            paused: true,
+            ended: false,
+            taskId: null,
+            nextFireAt: null,
+          },
         ],
       },
     });

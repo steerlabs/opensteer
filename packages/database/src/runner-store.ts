@@ -1147,6 +1147,14 @@ export async function revokeRunner(
           reason: "resource-deleted",
           resolvedAt: revokedAt,
         });
+        await transaction
+          .selectFrom("authSessions")
+          .select("id")
+          .where("deviceId", "=", runnerId)
+          .orderBy("id")
+          // FOR UPDATE: These bound sessions are deleted below.
+          .forUpdate()
+          .execute();
         const endedSessions = await transaction
           .deleteFrom("authSessions")
           .where("deviceId", "=", runnerId)

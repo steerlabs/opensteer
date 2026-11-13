@@ -334,6 +334,8 @@ export const ThreadSchema = z.object({
   /** The task's own colour, fixed at creation; see `MarkColorSchema`. */
   color: MarkColorSchema.optional(),
   updatedAt: IsoDateTimeSchema,
+  lastVisitedAt: IsoDateTimeSchema.nullable().default(null),
+  latestRunCompletedAt: IsoDateTimeSchema.nullable().default(null),
 });
 export const ThreadViewSchema = z.object({
   ...ThreadSchema.shape,
@@ -346,13 +348,11 @@ export const ThreadViewSchema = z.object({
 });
 export type Thread = z.infer<typeof ThreadSchema>;
 
-export const ThreadReadStateSchema = z.object({
+export const ThreadVisitSchema = z.object({
   threadId: ThreadIdSchema,
-  readSequence: SequenceSchema.nullable(),
-  unreadSequence: SequenceSchema.nullable(),
-  asOfSequence: SequenceSchema,
+  lastVisitedAt: IsoDateTimeSchema,
 });
-export type ThreadReadState = z.infer<typeof ThreadReadStateSchema>;
+export type ThreadVisit = z.infer<typeof ThreadVisitSchema>;
 
 const messageContentMaxParts = 64;
 export const messageContentMaxSerializedBytes = 350 * 1_024;
@@ -616,6 +616,7 @@ export const ThreadInputStateSchema = z.enum([
 export type ThreadInputState = z.infer<typeof ThreadInputStateSchema>;
 
 const threadInputShape = {
+  freshContext: z.boolean().optional(),
   assignmentId: AssignmentIdSchema.nullable(),
   cancelReason: z.string().max(500).nullable(),
   causalChainId: CausalChainIdSchema,
