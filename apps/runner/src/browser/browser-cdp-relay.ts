@@ -274,7 +274,11 @@ export class BrowserCdpRelay {
         response.writeHead(403).end();
         return;
       }
-      const refusal = z.object({ error: z.object({ message: z.string() }) }).safeParse(result);
+      const refusal = z
+        .object({
+          error: z.object({ message: z.string(), reason: z.string().max(128).optional() }),
+        })
+        .safeParse(result);
       response.writeHead(upstream.status, {
         "content-type": "application/json",
         "cache-control": "no-store",
@@ -284,11 +288,12 @@ export class BrowserCdpRelay {
           upstream.ok
             ? result
             : {
-                error: {
-                  message: refusal.success
-                    ? refusal.data.error.message
-                    : "The Host refused browser control.",
-                },
+                error: refusal.success
+                  ? {
+                      message: refusal.data.error.message,
+                      ...(refusal.data.error.reason ? { reason: refusal.data.error.reason } : {}),
+                    }
+                  : { message: "The Host refused browser control." },
               },
         ),
       );

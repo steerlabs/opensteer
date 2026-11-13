@@ -6,6 +6,8 @@ import { ActionsClient, createActionsHarness, negotiateBackend } from "./actions
 const VERSION = "0.5.0-opensteer";
 const USAGE = "usage: browser-harness [--tab <tabId>] < JavaScript on stdin";
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+/** Browsers a script stays connected to at once; the relay admits 16 connections per Run. */
+const OPEN_BROWSERS = 4;
 const NO_TAB =
   'Call switchTab(tabId) or newTab(url, { profile: "<name>" }) or newTab(url, { guest: true }) before using page helpers.';
 
@@ -50,7 +52,9 @@ function createFacade(base) {
       const error = new Error(
         body?.error?.message ?? `Browser request refused (HTTP ${response.status}).`,
       );
-      error.uncertain = response.status >= 500;
+      // A lost or unconfirmed outcome may still have taken effect; its key recovers it.
+      error.uncertain =
+        response.status >= 500 || body?.error?.reason === "browser-tab-open-outcome-unknown";
       throw error;
     }
     if (!body) throw new Error("Invalid browser response.");
@@ -65,9 +69,26 @@ function createFacade(base) {
       return agent(path, keyed);
     }
   };
+  const release = async (adapter) => {
+    try {
+      await adapter.harness.detach();
+    } finally {
+      adapter.client.close();
+    }
+  };
   const getAdapter = async (binding) => {
     let adapter = adapters.get(binding.sessionId);
-    if (!adapter) {
+    if (adapter) {
+      // Most recently used last, so the oldest idle browser is released first.
+      adapters.delete(binding.sessionId);
+      adapters.set(binding.sessionId, adapter);
+    } else {
+      for (const [sessionId, idle] of adapters) {
+        if (adapters.size < OPEN_BROWSERS) break;
+        if (idle === active) continue;
+        adapters.delete(sessionId);
+        await release(idle).catch(() => undefined);
+      }
       const backend = binding.backend ?? (await negotiateBackend(base, binding.sessionId));
       const client =
         backend === "actions"
@@ -287,15 +308,7 @@ function createFacade(base) {
   return {
     facade,
     close: async () => {
-      const results = await Promise.allSettled(
-        [...adapters.values()].map(async (adapter) => {
-          try {
-            await adapter.harness.detach();
-          } finally {
-            adapter.client.close();
-          }
-        }),
-      );
+      const results = await Promise.allSettled([...adapters.values()].map(release));
       const failed = results.find((result) => result.status === "rejected");
       if (failed) throw failed.reason;
     },

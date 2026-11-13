@@ -118,10 +118,15 @@ it("executes real stdin scripts, persists identity, wakes asleep tabs, and logs 
     ).toMatchObject({ code: 0, output: expect.stringContaining("Total 42") });
     expect(
       await run(
-        'console.log(await currentTab()); const id=await newTab("https://example.test/new"); console.log(id);',
+        'await switchTab("saved"); const id=await newTab("https://example.test/new"); console.log(id, (await currentTab()).tabId);',
       ),
-    ).toMatchObject({ code: 0, output: expect.stringContaining("eval-tab-1") });
+    ).toMatchObject({ code: 0, output: expect.stringContaining("eval-tab-1 eval-tab-1") });
+    // Each invocation starts without a tab, as the real Browser Harness does.
     expect(await run("console.log(await currentTab());")).toMatchObject({
+      code: 1,
+      output: expect.stringContaining("switchTab(tabId)"),
+    });
+    expect(await run("console.log(await currentTab());", ["--tab", "eval-tab-1"])).toMatchObject({
       code: 0,
       output: expect.stringContaining("eval-tab-1"),
     });

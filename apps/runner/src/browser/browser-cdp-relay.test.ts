@@ -89,7 +89,12 @@ describe("BrowserCdpRelay", () => {
         } else if (request.url?.endsWith("tabs/close")) {
           response.writeHead(403).end(
             JSON.stringify({
-              error: { code: "forbidden", message: "This tab is read-only.", retryable: false },
+              error: {
+                code: "conflict",
+                message: "Opening did not confirm its outcome.",
+                reason: "browser-tab-open-outcome-unknown",
+                retryable: false,
+              },
             }),
           );
         } else response.end(JSON.stringify({ tabs: [], total: 0, nextCursor: null }));
@@ -116,7 +121,12 @@ describe("BrowserCdpRelay", () => {
       }
       const refused = await fetch(`${base}/agent/tabs/close`, { method: "POST", body: "{}" });
       expect(refused.status).toBe(403);
-      expect(await refused.json()).toEqual({ error: { message: "This tab is read-only." } });
+      expect(await refused.json()).toEqual({
+        error: {
+          message: "Opening did not confirm its outcome.",
+          reason: "browser-tab-open-outcome-unknown",
+        },
+      });
       const plainRefusal = await fetch(`${base}/agent/tabs?plain-refusal=1`);
       expect(plainRefusal.status).toBe(503);
       expect(await plainRefusal.json()).toEqual({

@@ -499,9 +499,18 @@ export async function startTabJourney() {
           }
           if (uncertainOpen) {
             uncertainOpen = false;
+            // The Host's own uncertain-open refusal: a conflict naming its reason.
             return Response.json(
-              { error: { message: "Opening outcome unknown" } },
-              { status: 503 },
+              {
+                error: {
+                  code: "conflict",
+                  message:
+                    "Opening did not confirm its outcome. Retry this request to recover its original page.",
+                  reason: "browser-tab-open-outcome-unknown",
+                  retryable: false,
+                },
+              },
+              { status: 409 },
             );
           }
           return result;

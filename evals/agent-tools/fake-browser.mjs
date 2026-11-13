@@ -16,7 +16,8 @@ const bootstrap = `
 (() => {
 const state = ${JSON.stringify(fixture)};
 const log = [], output = [];
-let selected = state.tabs.find(t => t.current)?.tabId;
+// Like the real executable, each invocation starts with no tab unless --tab names one.
+let selected;
 const personActivity = (t) => t.tabId === state.personActiveTab ? {kind:'typing', at:new Date().toISOString(), sinceLastAgentCommand:true} : undefined;
 const notices = [];
 function record(call, args, fn) {
@@ -25,6 +26,7 @@ function record(call, args, fn) {
   catch(e) { entry.result = {error:e.message}; return Promise.reject(e); }
 }
 function tab(id = selected) {
+  if (id === undefined) throw new Error('Call switchTab(tabId) or newTab(url, { profile: "<name>" }) or newTab(url, { guest: true }) before using page helpers.');
   const t = state.tabs.find(t => t.tabId === id);
   if (!t) throw new Error('Tab ' + id + ' is closed or unavailable. Select a listed tab.');
   return t;
@@ -42,7 +44,7 @@ function switchTab(value) { const id = typeof value === 'string' ? value : value
 function newTab(url='about:blank', options={}) { return record('newTab', {url,...options}, () => {
   let profile = null, computer = options.computer ?? null;
   if (options.profile) { const matches = state.profiles.filter(p => p.id === options.profile || p.name.toLowerCase() === options.profile.toLowerCase()); if(matches.length !== 1) throw new Error('Profile not found or ambiguous'); log.at(-1).args.profile=matches[0].id; profile={id:matches[0].id,name:matches[0].name}; computer=matches[0].computer ?? null; }
-  else if (!options.guest) { if(!selected) throw new Error('No current browser. Use newTab(url, {profile}) or newTab(url, {guest:true}).'); const t = tab(); profile=t.profile; computer=t.computer; }
+  else if (!options.guest) { if(!selected) throw new Error('Call switchTab(tabId) or newTab(url, { profile: "<name>" }) or newTab(url, { guest: true }) before using page helpers.'); const t = tab(); profile=t.profile; computer=t.computer; }
   online({computer});
   const tabId = 'eval-tab-' + (state.nextTab = (state.nextTab ?? 0) + 1);
   state.tabs.push({tabId,title:url,url,profile,computer,state:'open',usedByThisTask:true,usedByOtherTask:false,groupId:null,pageText:state.tabs.find(t => t.url === url)?.pageText ?? 'Fixture page'});
@@ -90,7 +92,6 @@ try {
 }
 context.__evalSnapshot = bridge.snapshot;
 const result = JSON.parse(new Script("__evalSnapshot()").runInContext(context, { timeout: 1000 }));
-for (const t of result.state.tabs) t.current = t.tabId === result.selected;
 writeFileSync(statePath, JSON.stringify(result.state));
 for (const entry of result.log) appendFileSync(logPath, JSON.stringify(entry) + "\n");
 for (const line of result.output) process.stdout.write(line + "\n");
