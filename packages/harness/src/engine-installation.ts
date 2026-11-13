@@ -375,7 +375,7 @@ export class EngineInstallationResolver {
     return resolveCommand(command, {
       cwd: process.cwd(),
       environment: this.#environment,
-      platform: hostCommandPlatform(),
+      platform: hostCommandPlatform(this.#platform),
     })?.path;
   }
 

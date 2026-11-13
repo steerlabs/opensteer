@@ -4,10 +4,9 @@ import path from "node:path";
 export type CommandPlatform = "darwin" | "linux" | "win32";
 
 /** The platform this process runs on, for resolving the commands it starts. */
-export function hostCommandPlatform(): CommandPlatform {
-  if (process.platform === "darwin" || process.platform === "linux" || process.platform === "win32")
-    return process.platform;
-  throw new Error(`Opensteer does not run commands on ${process.platform}.`);
+export function hostCommandPlatform(platform: NodeJS.Platform = process.platform): CommandPlatform {
+  if (platform === "darwin" || platform === "linux" || platform === "win32") return platform;
+  throw new Error(`Opensteer does not run commands on ${platform}.`);
 }
 
 type Environment = Readonly<Record<string, string | undefined>>;
