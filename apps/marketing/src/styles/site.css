@@ -271,6 +271,13 @@ button {
 .pill:hover svg {
   transform: translateX(2px);
 }
+.pill svg.pill__mark {
+  width: 15px;
+  height: 15px;
+  margin-right: -2px;
+  color: currentColor;
+  transform: none;
+}
 .hero h1 em {
   font-style: italic;
   font-weight: 330;
