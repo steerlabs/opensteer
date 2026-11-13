@@ -21,6 +21,8 @@
   "vitest": [
     "vitest.windows.config.ts",
     "tests/process-supervisor-setup.test-support.ts",
-    "scripts/process-supervisor-path.ts"
+    "scripts/process-supervisor-path.ts",
+    "apps/host/src/main.ts",
+    "apps/runner/src/main.ts"
   ]
 }

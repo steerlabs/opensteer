@@ -40,6 +40,14 @@ function readEphemeralRange(): readonly [number, number] {
       ["-n", "net.inet.ip.portrange.first", "net.inet.ip.portrange.last"],
       { encoding: "utf8" },
     );
+  } else if (process.platform === "win32") {
+    const shown = execFileSync(
+      `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\netsh.exe`,
+      ["interface", "ipv4", "show", "dynamicport", "protocol=tcp"],
+      { encoding: "utf8" },
+    );
+    const [start, count] = [...shown.matchAll(/:\s*(\d+)/gu)].map((match) => Number(match[1]));
+    text = start && count ? `${start} ${start + count - 1}` : shown;
   } else {
     throw new Error(`Test loopback port allocation is unsupported on ${process.platform}`);
   }
