@@ -2,7 +2,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { spawnSupervised, type SupervisedProcess } from "@opensteer/harness";
+import {
+  runningSupervisedProcesses,
+  spawnSupervised,
+  type SupervisedProcess,
+} from "@opensteer/harness";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { ExecutionContainment } from "./execution-containment.js";
 
@@ -58,9 +62,7 @@ async function supervisedTree(
 
 const nodeDescendant = `process.execPath,["-e","console.log(1);setInterval(()=>{},1000)"],{stdio:["ignore","pipe","ignore"]}`;
 
-// Gives itself an empty DACL, so the supervisor cannot open it to end it, and starts in
-// its own process group, so the graceful CTRL_BREAK never reaches it: its drain fails.
-// libuv starts a detached child without breaking away, so it stays in the Job.
+// Gives itself an empty DACL, so the supervisor cannot open it to end it: a forced drain fails.
 const unopenableDescendant = `${JSON.stringify(
   join(
     process.env.SystemRoot ?? "C:\\Windows",
@@ -95,7 +97,7 @@ if ([Unopenable]::Become() -ne 0) { exit 72 }
 Start-Sleep -Seconds 600`,
     "utf16le",
   ).toString("base64"),
-)}],{detached:true,stdio:["ignore","pipe","ignore"]}`;
+)}],{stdio:["ignore","pipe","ignore"]}`;
 
 describe("ExecutionContainment of supervised Job trees", () => {
   it("proves a tree gone once its supervisor reports the drain, with the target's own status", async () => {
@@ -134,8 +136,12 @@ describe("ExecutionContainment of supervised Job trees", () => {
   it("leaves a tree unknown when its supervisor gives up draining", async () => {
     const owner = await containment();
     const supervised = await supervisedTree(owner, "run_1", unopenableDescendant, "");
-    await expect(owner.terminate("run_1")).resolves.toBe("unknown");
+    // Forced straight away, so how CTRL_BREAK reaches the descendant cannot end it first.
+    const running = runningSupervisedProcesses().find(({ pid }) => pid === supervised.child.pid);
+    if (!running) throw new Error("The supervised tree was never listed as running");
+    running.control("force");
     await expect(supervised.exited).resolves.toEqual({ code: 256, signal: null });
     await expect(owner.liveRoots("run_1")).resolves.toBe(1);
+    await expect(owner.terminate("run_1")).resolves.toBe("unknown");
   });
 });
