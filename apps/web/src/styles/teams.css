@@ -6,6 +6,7 @@
 
 .teams-nav,
 .team-side__invite,
+.team-side__action,
 .teams-setup-entry {
   display: flex;
   align-items: center;
@@ -30,6 +31,7 @@
 
 .teams-nav:hover,
 .team-side__invite:hover,
+.team-side__action:hover,
 .teams-setup-entry:hover,
 .teams-nav[aria-current="page"] {
   background-color: var(--fill-quiet);
@@ -37,10 +39,23 @@
 }
 
 .teams-nav > svg,
-.team-side__invite > svg {
+.team-side__invite > svg,
+.team-side__action > svg {
   width: 16px;
   height: 16px;
   color: var(--muted);
+}
+
+/* A quiet way in under a list: Browse channels, Message someone. */
+.team-side__action {
+  width: 100%;
+  margin: 0;
+  color: var(--muted);
+}
+
+/* Centred in the 20px glyph column the channel rows above use. */
+.team-side__action > svg {
+  margin-inline: var(--space-2);
 }
 
 .team-side__invite {

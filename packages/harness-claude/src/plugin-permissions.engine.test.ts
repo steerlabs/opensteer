@@ -195,6 +195,7 @@ console.log(JSON.stringify({ hookSpecificOutput: {
         ],
         context: {
           assignment: null,
+          teamTurnContext: null,
           requesterTimeZone: null,
           threadState: { previousAssignment: null, previousRun: null },
         },

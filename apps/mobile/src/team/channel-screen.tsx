@@ -1,7 +1,15 @@
 import type { ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
 import { ComposerDockLayout } from "../thread/composer-dock.js";
-import { color, controlFontScaleLimit, headerFontScaleLimit, space } from "../theme.js";
+import {
+  color,
+  controlFontScaleLimit,
+  headerFontScaleLimit,
+  material,
+  radius,
+  space,
+  touchTarget,
+} from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { ConnectionBanner } from "./connection-banner.js";
 import { MessageRow, wordsInset } from "./message-row.js";
@@ -20,6 +28,8 @@ interface PlaceBodyProps {
   readonly actions: TimelineActions;
   readonly banner: ConnectionBannerView | null;
   readonly composer: TeamComposerProps;
+  /** Why the reader can't post here, shown in the composer's place; null when they can. */
+  readonly closed: string | null;
   readonly items: readonly TimelineItem[];
   readonly jump: JumpView | null;
   /** The message a link named, once it has been loaded. */
@@ -97,7 +107,28 @@ function PlaceLayout(props: PlaceBodyProps & { readonly children: ReactNode }): 
   return (
     <View style={styles.fill}>
       {props.banner === null ? null : <ConnectionBanner banner={props.banner} />}
-      <ComposerDockLayout avoidKeyboard dock={<TeamComposer {...props.composer} />}>
+      <ComposerDockLayout
+        avoidKeyboard
+        dock={
+          props.closed === null ? (
+            <TeamComposer {...props.composer} />
+          ) : (
+            <View style={styles.closedStack}>
+              {props.composer.hint ?? null}
+              <View accessibilityRole="text" style={styles.closed}>
+                <AppText
+                  maxFontSizeMultiplier={controlFontScaleLimit}
+                  role="secondary"
+                  style={styles.closedText}
+                  tone="muted"
+                >
+                  {props.closed}
+                </AppText>
+              </View>
+            </View>
+          )
+        }
+      >
         {(clearance) => (
           <Timeline
             actions={props.actions}
@@ -157,7 +188,9 @@ export function ChannelTitle(props: { readonly channel: ChannelHeaderView }): Re
       : presence === "away"
         ? "Away"
         : null
-    : `${channel.memberCount} ${channel.memberCount === 1 ? "member" : "members"}`;
+    : channel.memberCount === null
+      ? null
+      : `${channel.memberCount} ${channel.memberCount === 1 ? "member" : "members"}`;
   return (
     <View accessibilityRole="header" style={styles.title}>
       <View style={styles.titleLine}>
@@ -207,6 +240,17 @@ export function ThreadTitle(props: { readonly place: string }): ReactNode {
 }
 
 const styles = StyleSheet.create({
+  closed: {
+    ...material.plate,
+    alignItems: "center",
+    borderRadius: radius.lg,
+    justifyContent: "center",
+    minHeight: touchTarget + 4,
+    paddingHorizontal: space[16],
+    paddingVertical: space[10],
+  },
+  closedStack: { gap: space[8] },
+  closedText: { textAlign: "center" },
   dmStart: {
     gap: space[6],
     paddingBottom: space[12],

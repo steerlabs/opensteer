@@ -160,7 +160,7 @@ export class PersonalTeamAttachments implements PersonalTeamAttachmentPort {
         expectedSha256: input.file.sha256,
       });
       input.signal.throwIfAborted();
-      await attachmentStore.bindRunImport({ ...scope, attachmentId: row.id, source: input.source });
+      await attachmentStore.bindRunImport({ ...scope, attachmentId: row.id });
       bound = true;
       const content = await attachments.contentForRun(tokens.issue(scope), row.id);
       const transfer = relay.open();

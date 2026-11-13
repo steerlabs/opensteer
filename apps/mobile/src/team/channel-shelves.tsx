@@ -14,7 +14,7 @@ import { Symbol } from "../ui/symbol.js";
 import { SearchField } from "./channel-details.js";
 import { MessageBody } from "./message-body.js";
 import { Avatar } from "./team-marks.js";
-import type { FileRowView, PinnedRowView } from "./team-models.js";
+import type { FileRowView, MessageView } from "./team-models.js";
 
 export type FileKindFilter = "all" | "images" | "documents" | "other";
 
@@ -57,7 +57,7 @@ export function FilesBody(props: {
           {props.files.map((file) => (
             <Pressable
               accessibilityHint="Opens the file"
-              accessibilityLabel={`${file.attachment.name}, ${file.attachment.size}, shared by ${file.sharedBy}, ${file.when}`}
+              accessibilityLabel={`${file.attachment.name}, ${file.attachment.size}`}
               accessibilityRole="button"
               key={file.id}
               onLongPress={() => props.onShowMessage(file.messageId)}
@@ -85,7 +85,7 @@ export function FilesBody(props: {
                   role="caption"
                   tone="muted"
                 >
-                  {file.sharedBy} · {file.when} · {file.attachment.size}
+                  {file.attachment.size}
                 </AppText>
               </View>
               {file.pinned ? (
@@ -101,7 +101,7 @@ export function FilesBody(props: {
 
 /** Pinned messages, newest pin first. Any member pins and unpins. */
 export function PinnedBody(props: {
-  readonly pins: readonly PinnedRowView[];
+  readonly pins: readonly MessageView[];
   readonly onShow: (messageId: string) => void;
   readonly onUnpin: (messageId: string) => void;
   readonly paddingBottom: number;
@@ -111,7 +111,7 @@ export function PinnedBody(props: {
   }
   return (
     <ScrollView contentContainerStyle={[styles.page, { paddingBottom: props.paddingBottom }]}>
-      {props.pins.map(({ message, pinnedBy }) => {
+      {props.pins.map((message) => {
         const author =
           message.author.kind === "agent" ? message.author.agent.owner : message.author.person;
         const name =
@@ -136,10 +136,8 @@ export function PinnedBody(props: {
             </View>
             <MessageBody mentions={message.mentions} text={message.text} />
             <View style={styles.pinFoot}>
-              <Symbol name="pin" size={12} tint={color.amber} />
-              <AppText role="caption" style={styles.pinBy} tone="muted">
-                {pinnedBy}
-              </AppText>
+              <Symbol accessibilityLabel="Pinned" name="pin" size={12} tint={color.amber} />
+              <View style={styles.grow} />
               <TextButton label="View in channel" onPress={() => props.onShow(message.id)} />
               <TextButton label="Unpin" onPress={() => props.onUnpin(message.id)} />
             </View>
@@ -217,6 +215,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[12],
     paddingVertical: space[8],
   },
+  grow: { flex: 1 },
   page: { gap: space[16], padding: space[16] },
   pin: {
     ...material.plate,
@@ -226,7 +225,6 @@ const styles = StyleSheet.create({
     gap: space[8],
     padding: space[12],
   },
-  pinBy: { flex: 1 },
   pinFoot: { alignItems: "center", flexDirection: "row", gap: space[12] },
   pinHead: { alignItems: "center", flexDirection: "row", gap: space[8] },
   pinName: { flexShrink: 1, fontWeight: "600" },

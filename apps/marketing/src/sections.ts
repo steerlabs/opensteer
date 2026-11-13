@@ -1,9 +1,7 @@
+import { aribaWorkbench } from "./demo/apps/ariba.js";
 import { browser } from "./demo/apps/browser.js";
-import { calendar } from "./demo/apps/calendar.js";
-import { gmail } from "./demo/apps/gmail.js";
-import { hubspot } from "./demo/apps/hubspot.js";
-import { stripe } from "./demo/apps/stripe.js";
-import { zendesk } from "./demo/apps/zendesk.js";
+import { cmecfQuery } from "./demo/apps/cmecf.js";
+import { adp, coupa } from "./demo/apps/portals.js";
 import { group } from "./demo/desktop.js";
 import { createPhone, PHONE, type TaskView } from "./demo/phone.js";
 import { byId, find, reducedMotion, restart, watchNav } from "./dom.js";
@@ -33,13 +31,13 @@ function whileVisible(root: Element, play: () => void, stop: () => void): void {
   ).observe(root);
 }
 
-const TABS = [stripe, gmail, hubspot, zendesk, calendar];
+const TABS = [aribaWorkbench, coupa, cmecfQuery, adp];
 const NARROW = "(max-width: 720px)";
 
 /** Chrome's top, cropped: the agent's cursor goes from tab to tab, and every site is already signed in. */
 function signedIn(): void {
   const root = byId("signedShot");
-  root.innerHTML = `<div class="shot__in">${group("support", "Dana's double charge", browser("left:0;top:0;width:1200px;height:708px", TABS))}</div>`;
+  root.innerHTML = `<div class="shot__in">${group("billing", "Bill Brightline", browser("left:0;top:0;width:1200px;height:708px", TABS))}</div>`;
   const inner = find(root, ".shot__in");
   const agent = find(inner, ".grp");
   const cursor = find(agent, ".acur");
@@ -99,37 +97,39 @@ function signedIn(): void {
 const SLACK = `<div class="slack">
   <div class="slack__bar"><i class="slack__app"><span class="orb"></span></i>Opensteer<em>APP</em></div>
   <div class="slack__feed">
-    <div class="slack__msg"><i>AR</i><div><b>Alex Rivera</b><time>9:41 AM</time><p>Refund Dana's duplicate charge.</p></div></div>
-    <div class="slack__msg" data-part="reply" hidden><i class="slack__app"><span class="orb"></span></i><div><b>Opensteer</b><em>APP</em><time>9:42 AM</time><p>Refunded $480 to Northwind and replied to Dana. Ticket #4821 is solved.</p></div></div>
+    <div class="slack__msg"><i>AR</i><div><b>Alex Rivera</b><time>9:41 AM</time><p>Bill Brightline for October.</p></div></div>
+    <div class="slack__msg" data-part="reply" hidden><i class="slack__app"><span class="orb"></span></i><div><b>Opensteer</b><em>APP</em><time>9:42 AM</time><p>Submitted invoice LUMEN-0143 for $12,675.00 in Brightline's supplier portal. It's due Dec 1.</p></div></div>
   </div>
   <div class="slack__box">Message Opensteer</div>
 </div>`;
 
 const ASKED: TaskView = {
-  id: "support",
-  title: "Dana's double charge",
+  id: "billing",
+  title: "Bill Brightline",
   status: "needs",
-  opener: { text: "Refund Dana's duplicate charge." },
+  opener: { text: "Bill Brightline for October." },
   steps: [
-    { icon: "globe", text: "Opened ticket #4821 in Zendesk" },
-    { icon: "globe", text: "Looked up Northwind in Stripe" },
+    { icon: "globe", text: "Read October hours in SAP" },
+    { icon: "globe", text: "Created invoice LUMEN-0143 in QuickBooks" },
+    { icon: "globe", text: "Keyed it into Brightline's supplier portal" },
   ],
   message: null,
-  worked: "Worked for 21s",
+  worked: "Worked for 23s",
 };
 const ANSWERED: TaskView = {
   ...ASKED,
   status: "done",
-  message: "I refunded the extra $480 and replied to Dana. Ticket #4821 is solved.",
+  message:
+    "Invoice LUMEN-0143 for $12,675.00 is in Brightline's portal against PO 4500018872. It's due Dec 1.",
 };
 const DENIED: TaskView = {
   ...ASKED,
   status: "stopped",
-  message: "I didn't refund anything. Dana's ticket is still open.",
+  message: "I didn't submit it. The invoice is saved as a draft in Brightline's portal.",
 };
 const REQUEST = {
-  title: "Refund $480 to Northwind?",
-  body: "Duplicate charge for invoice 2291 on Nov 3, Visa •••• 4242.",
+  title: "Submit invoice LUMEN-0143 for $12,675.00 to Brightline Health?",
+  body: "84.5 hours of the patient portal redesign in October, against PO 4500018872. Net 14, due Dec 1.",
 };
 
 /** Asked in Slack, approved on the phone, answered in Slack. */

@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -68,11 +69,7 @@ import { createThread, enqueueThreadInput } from "./thread-store.js";
 import { claimCommand } from "./command-store.js";
 import { acquireExecutionBinding, bindProviderSession } from "./execution-store.js";
 import { commitRunnerEvent } from "./runner-event-store.js";
-import {
-  admitTeamTaskRequest,
-  cancelTeamTaskRequest,
-  hydrateTeamTaskInput,
-} from "./task-admission-store.js";
+import { admitTeamTaskRequest, cancelTeamTaskRequest } from "./task-admission-store.js";
 import { openVoiceThread } from "./voice-store.js";
 import { createMemoryPass, memoryPassWakeContext } from "./memory-pass-store.js";
 import { TriggerStore } from "./trigger-store.js";
@@ -81,6 +78,8 @@ import { testRunnerDescriptor } from "./store.integration.test-support.js";
 import { personalTeamRunOutcome } from "./personal-team-run-store.js";
 import { PersonalTeamRequestsStore } from "./personal-team-requests-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
+import { readThreadInputQueue } from "./thread-inbox.js";
+import { runDeliverySelection } from "./thread-row-mappers.js";
 import { jsonValue, threadPathLinks } from "./store-primitives.js";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -161,11 +160,16 @@ async function fixture() {
       })
     ).thread;
   let nextMessage = 1;
-  const ask = async () => {
+  const ask = async (
+    bodyMarkdown = "Team ask",
+    attachments: readonly { id: string; filename: string }[] = [],
+  ) => {
     const requestId = createId("teamAgentRequest");
     return {
       requestId,
       ...(await admitTeamTaskRequest(database, {
+        bodyMarkdown,
+        attachments,
         origin,
         requestId,
         triggerMessageId: TeamMessageIdSchema.parse(String(++nextMessage)),
@@ -275,6 +279,103 @@ async function fixture() {
   return { ...personal, database, execution, origin, source, task, ask, start, finish, emit };
 }
 
+it("admits readable owner-authored words and file-only asks with immutable reply targets", async () => {
+  const f = await fixture();
+  const ask = await f.ask("Please review the launch checklist.");
+  const read = (messageId: typeof ask.receipt.inputId) =>
+    f.database
+      .selectFrom("messages")
+      .innerJoin("threadInputs", "threadInputs.messageId", "messages.id")
+      .select([
+        "messages.content",
+        "messages.author",
+        "threadInputs.teamSource",
+        "threadInputs.replyTarget",
+      ])
+      .where("messages.id", "=", messageId)
+      .executeTakeFirstOrThrow();
+  const first = await read(ask.receipt.inputId);
+  expect(first).toMatchObject({
+    content: [{ type: "text", text: "Please review the launch checklist." }],
+    author: { kind: "human", userId: f.userId },
+    teamSource: f.source,
+    replyTarget: { kind: "team-thread", ...f.origin, requestId: ask.requestId },
+  });
+  const file = await f.ask("", [{ id: createId("teamBlob"), filename: "checklist.pdf" }]);
+  const attached = await read(file.receipt.inputId);
+  expect(attached.content).toEqual([
+    { type: "text", text: expect.stringContaining('Attached team file: "checklist.pdf"') },
+  ]);
+  expect(attached.replyTarget).toMatchObject({ kind: "team-thread", requestId: file.requestId });
+  expect(first.content).not.toEqual(attached.content);
+});
+
+it("freezes publication once and projects Host delivery events and history", async () => {
+  const f = await fixture();
+  const ask = await f.ask();
+  const events: import("@opensteer/core").AgentEvent[] = [];
+  const ledger = new PersonalTeamRequestsStore(f.database, undefined, (event) =>
+    events.push(event),
+  );
+  const payload = { bodyMarkdown: "Frozen answer", attachmentIds: [] };
+  const run = await f.start(ask.receipt.runId!);
+  await f.emit(run.run.id, run.bindingGeneration, payload.bodyMarkdown);
+  await f.finish(run.run.id, run.bindingGeneration);
+  const answerMessageId = (
+    await personalTeamRunOutcome(f.database, (await ledger.get(f.origin.teamId, ask.requestId))!)
+  ).answerMessageId;
+  const clientMessageId = crypto.randomUUID();
+  await ledger.freeze(f.origin.teamId, ask.requestId, {
+    runId: ask.receipt.runId!,
+    via: "final",
+    answerMessageId,
+    clientMessageId,
+    payload,
+  });
+  await ledger.freeze(f.origin.teamId, ask.requestId, {
+    runId: ask.receipt.runId!,
+    via: "tool",
+    answerMessageId: null,
+    clientMessageId: crypto.randomUUID(),
+    payload: { bodyMarkdown: "Later private answer", attachmentIds: [] },
+  });
+  expect(await ledger.get(f.origin.teamId, ask.requestId)).toMatchObject({
+    answerPayload: payload,
+    clientMessageId,
+    answerMessageId,
+    deliveryVia: "final",
+  });
+  const teamMessageId = TeamMessageIdSchema.parse("42");
+  await ledger.publication(f.origin.teamId, ask.requestId, "accepted", teamMessageId);
+  await ledger.publication(f.origin.teamId, ask.requestId, "blocked", null, "late failure");
+  expect(
+    events.map((event) =>
+      event.type === "run.delivery-updated" ? event.data.delivery.state : null,
+    ),
+  ).toEqual(["sending", "sent"]);
+  expect(
+    await f.database
+      .selectFrom("runs")
+      .select(runDeliverySelection)
+      .where("id", "=", ask.receipt.runId!)
+      .executeTakeFirstOrThrow(),
+  ).toEqual({
+    delivery: { state: "sent", via: "final", answerMessageId, teamMessageId, reason: null },
+  });
+  const cancelled = await f.ask();
+  await ledger.publication(
+    f.origin.teamId,
+    cancelled.requestId,
+    "blocked",
+    null,
+    "The team link was revoked.",
+  );
+  expect(await ledger.get(f.origin.teamId, cancelled.requestId)).toMatchObject({
+    publicationState: "blocked",
+    blockedReason: "The team link was revoked.",
+  });
+});
+
 it("gives two team asks two Runs, while a private follow-up gets no request authority", async () => {
   const f = await fixture();
   const first = await f.ask();
@@ -295,7 +396,9 @@ it("gives two team asks two Runs, while a private follow-up gets no request auth
     .selectAll()
     .where("seedInputId", "=", second.receipt.inputId)
     .executeTakeFirstOrThrow();
-  expect(next.teamRequestId).toBe(second.requestId);
+  expect(next.replyTarget?.kind === "team-thread" ? next.replyTarget.requestId : null).toBe(
+    second.requestId,
+  );
   const startedSecond = await f.start(next.id);
   await f.finish(next.id, startedSecond.bindingGeneration);
   const privateRun = await f.database
@@ -303,12 +406,14 @@ it("gives two team asks two Runs, while a private follow-up gets no request auth
     .selectAll()
     .where("seedInputId", "=", privateInput.message.id)
     .executeTakeFirstOrThrow();
-  expect(privateRun.teamRequestId).toBeNull();
+  expect(
+    privateRun.replyTarget?.kind === "team-thread" ? privateRun.replyTarget.requestId : null,
+  ).toBeNull();
   expect(
     (
       await f.database
         .selectFrom("runs")
-        .select("teamRequestId")
+        .select(sql<string | null>`reply_target->>'requestId'`.as("teamRequestId"))
         .where("threadId", "=", first.receipt.taskId)
         .orderBy("runOrdinal")
         .execute()
@@ -542,7 +647,7 @@ it("publishes only the consuming Run's completion answer after an offline interv
   const privateRun = await f.start(privateInput.run!.id);
   await f.emit(privateRun.run.id, privateRun.bindingGeneration, "A private later answer");
   await f.finish(privateRun.run.id, privateRun.bindingGeneration);
-  expect(await personalTeamRunOutcome(f.database, receipt)).toEqual({
+  expect(await personalTeamRunOutcome(f.database, receipt)).toMatchObject({
     runId: run.run.id,
     state: "done",
     finalMessage: "The authoritative team answer",
@@ -567,7 +672,7 @@ it("removes only the pending team request and keeps another admitted ask", async
   expect(
     await f.database
       .selectFrom("runs")
-      .select("teamRequestId")
+      .select(sql<string | null>`reply_target->>'requestId'`.as("teamRequestId"))
       .where("seedInputId", "=", third.receipt.inputId)
       .executeTakeFirstOrThrow(),
   ).toEqual({ teamRequestId: third.requestId });
@@ -625,7 +730,7 @@ it("stops an active team Run without pausing later queued requests", async () =>
   expect(
     await f.database
       .selectFrom("runs")
-      .select("teamRequestId")
+      .select(sql<string | null>`reply_target->>'requestId'`.as("teamRequestId"))
       .where("seedInputId", "=", second.receipt.inputId)
       .executeTakeFirstOrThrow(),
   ).toEqual({ teamRequestId: second.requestId });
@@ -658,6 +763,21 @@ it("joins an explicit private steer to the active team Run without assigning a r
     })
     .where("id", "=", f.runnerId)
     .execute();
+  const queued = await enqueueThreadInput(f.database, {
+    threadId: first.receipt.taskId,
+    requestedBy: f.userId,
+    source: { kind: "human" },
+    policy: "queue",
+    content: [{ type: "text", text: "Queued private turn" }],
+    idempotencyKey: "queue-before-team-steer",
+  });
+  const queue = await withPersonalTransaction(f.database, (tx) =>
+    readThreadInputQueue(tx, {
+      threadId: first.receipt.taskId,
+      requestedBy: f.userId,
+    }),
+  );
+  expect(queue.items.find((item) => item.message.id === queued.message.id)?.canSteer).toBe(true);
   const steered = await enqueueThreadInput(f.database, {
     threadId: first.receipt.taskId,
     requestedBy: f.userId,
@@ -673,7 +793,7 @@ it("joins an explicit private steer to the active team Run without assigning a r
   expect(
     await f.database
       .selectFrom("runs")
-      .select("teamRequestId")
+      .select(sql<string | null>`reply_target->>'requestId'`.as("teamRequestId"))
       .where("id", "=", first.receipt.runId!)
       .executeTakeFirstOrThrow(),
   ).toEqual({ teamRequestId: first.requestId });
@@ -743,13 +863,15 @@ it("keeps external-agent and Trigger turns on a bound task free of team request 
     .selectAll()
     .where("seedInputId", "=", external.message.id)
     .executeTakeFirstOrThrow();
-  expect(externalRun.teamRequestId).toBeNull();
+  expect(
+    externalRun.replyTarget?.kind === "team-thread" ? externalRun.replyTarget.requestId : null,
+  ).toBeNull();
   const next = await f.start(externalRun.id);
   await f.finish(externalRun.id, next.bindingGeneration);
   expect(
     await f.database
       .selectFrom("runs")
-      .select("teamRequestId")
+      .select(sql<string | null>`reply_target->>'requestId'`.as("teamRequestId"))
       .where("seedInputId", "=", scheduled.message.id)
       .executeTakeFirstOrThrow(),
   ).toEqual({ teamRequestId: null });
@@ -923,6 +1045,7 @@ async function twoTeamsWithOneRequestId() {
     .execute();
   const origin = { ...f.origin, teamId: otherTeamId };
   const second = await admitTeamTaskRequest(f.database, {
+    bodyMarkdown: "Team ask",
     origin,
     requestId: first.requestId,
     triggerMessageId: TeamMessageIdSchema.parse("2"),
@@ -965,55 +1088,6 @@ it("cancels only the exact team input when two teams reuse a request ID", async 
       .where("messageId", "=", second.receipt.inputId)
       .executeTakeFirstOrThrow(),
   ).resolves.toEqual({ state: "cancelled" });
-});
-
-it("hydrates the exact team request input when request IDs collide across teams", async () => {
-  const { f, first, second, otherTeamId } = await twoTeamsWithOneRequestId();
-  const command = await f.database
-    .selectFrom("commands")
-    .select("id")
-    .where("runId", "=", second.receipt.runId!)
-    .where("type", "=", "run.execute")
-    .executeTakeFirstOrThrow();
-  await claimCommand(f.database, command.id, "fixture");
-  const source = {
-    ...f.source,
-    teamId: otherTeamId,
-    audience: {
-      ...f.source.audience,
-      channelName: "Renamed",
-      channelKind: "group_dm" as const,
-      memberCount: 7,
-      peopleOnly: true,
-    },
-  };
-  const hydrated = await hydrateTeamTaskInput(f.database, {
-    runId: second.receipt.runId!,
-    requestId: first.requestId,
-    source,
-    content: [{ type: "text", text: "The second team's current ask" }],
-  });
-  expect(hydrated.events).toMatchObject([
-    { type: "message.created", threadId: second.receipt.taskId },
-  ]);
-  const read = (messageId: typeof first.receipt.inputId) =>
-    f.database
-      .selectFrom("threadInputs")
-      .innerJoin("messages", "messages.id", "threadInputs.messageId")
-      .select(["threadInputs.teamSource", "messages.content"])
-      .where("messageId", "=", messageId)
-      .executeTakeFirstOrThrow();
-  expect(await read(second.receipt.inputId)).toEqual({
-    teamSource: { ...f.source, teamId: otherTeamId },
-    content: [
-      { type: "text", text: `Team source and audience: ${JSON.stringify(source)}` },
-      { type: "text", text: "The second team's current ask" },
-    ],
-  });
-  expect((await read(first.receipt.inputId)).teamSource?.teamId).toBe(f.origin.teamId);
-  expect(JSON.stringify((await read(first.receipt.inputId)).content)).not.toContain(
-    "The second team's current ask",
-  );
 });
 
 it("navigates a reused worker's Request to the current assigning task without changing its origin", async () => {

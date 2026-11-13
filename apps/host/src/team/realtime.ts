@@ -84,6 +84,20 @@ export class TeamRealtimeHub {
     this.#timer = setInterval(() => this.#expire(), 1000);
     this.#timer.unref();
   }
+  agentRecipient(
+    userId: UserId,
+    recipient: Extract<Frame, { type: "team.agent.recipient" }>["recipient"],
+  ) {
+    for (const peer of this.#peers) {
+      if (
+        peer.actor.userId === userId &&
+        [...peer.subscriptions.values()].some(
+          (subscription) => subscription.scope?.channelId === recipient.channelId,
+        )
+      )
+        this.#send(peer, { type: "team.agent.recipient", recipient });
+    }
+  }
   #snapshot(actor: TeamActor, subscription: Subscription) {
     const key = JSON.stringify([
       actor,
@@ -274,7 +288,7 @@ export class TeamRealtimeHub {
           }
           for (const subscription of peer.subscriptions.values()) {
             if (!subscription.scope || !dirty.includes(subscription.scope.channelId)) continue;
-            const key = JSON.stringify([subscription.scope, subscription.since]);
+            const key = JSON.stringify([peer.actor, subscription.scope, subscription.since]);
             const list = groups.get(key) ?? [];
             list.push({ peer, subscription });
             groups.set(key, list);

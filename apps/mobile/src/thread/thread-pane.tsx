@@ -36,8 +36,7 @@ import {
   type ThreadSummary,
 } from "@opensteer/client/host";
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
-import type { BrowserPageContentPart, TeamTaskOrigin } from "@opensteer/core";
-import { AudienceLine, TaskSourceChip } from "../home/task-source.js";
+import type { BrowserPageContentPart } from "@opensteer/core";
 import { useTeamsSnapshot } from "../team/team-context.js";
 import { useHostSnapshot, useThreadInputQueue } from "@opensteer/client/react";
 import { useHeaderHeight } from "@react-navigation/elements";
@@ -199,8 +198,6 @@ export function sameThreadHeader(
 
 /** How close to the bottom still counts as watching the newest entry. */
 const tailThreshold = 96;
-/** How close to the top asks for the page before this one. */
-const headThreshold = 160;
 
 interface ThreadPaneProps {
   readonly deploymentId: string;
@@ -627,6 +624,29 @@ function ThreadPaneForUser(
     () => (receiptId === null ? null : linkedPlace(receiptId, { conversational, drawn, groups })),
     [conversational, drawn, groups, receiptId],
   );
+  // The oldest turn loaded may still be missing its start, on the page before
+  // it. Drawn now, that page would grow it in place under a reader near the
+  // top, which no scroll anchor can hold still, so it waits for that page.
+  // A link into it, or a list with nothing else to show, draws it, and a turn
+  // once drawn stays drawn: the Run it belongs to names it across pages.
+  const shownHead = useRef<{ readonly key: string; readonly runId: string | null } | null>(null);
+  const head = drawn[0]?.group;
+  const heldHead =
+    canLoadEarlier &&
+    drawn.length > 1 &&
+    head?.kind === "turn" &&
+    anchor?.index !== 0 &&
+    receipt?.index !== 0 &&
+    !(
+      shownHead.current !== null &&
+      (head.key === shownHead.current.key ||
+        (head.turn.runId !== null && head.turn.runId === shownHead.current.runId))
+    )
+      ? 1
+      : 0;
+  if (heldHead === 0 && head?.kind === "turn") {
+    shownHead.current = { key: head.key, runId: head.turn.runId };
+  }
 
   const loadEarlier = useCallback(() => {
     if (paging.current || !canLoadEarlier) return;
@@ -732,7 +752,11 @@ function ThreadPaneForUser(
         scrollAttempts.current = 0;
         pinned.current = false;
         setAtTail(false);
-        listRef.current?.scrollToIndex({ animated: false, index: place.index, viewPosition: 0.5 });
+        listRef.current?.scrollToIndex({
+          animated: false,
+          index: place.index - heldHead,
+          viewPosition: 0.5,
+        });
       }
       const { openKey } = place;
       if (openKey !== null) {
@@ -742,7 +766,7 @@ function ThreadPaneForUser(
       }
       if (place.activityKey !== null) openActivity(place.activityKey, entryId);
     },
-    [openActivity],
+    [heldHead, openActivity],
   );
   useEffect(() => {
     if (anchorMessageId === null || anchor === null || anchorShown.current === anchorMessageId) {
@@ -901,6 +925,7 @@ function ThreadPaneForUser(
           {/* Rows open the files messages carry through this Thread's own client. */}
           <TranscriptHostClientContext value={hostClient}>
             <TranscriptGroupRow
+              deliveryChannelName={channelName ?? "channel"}
               activityKey={item.activityKey}
               continued={item.continued}
               conversation={conversational}
@@ -1004,8 +1029,9 @@ function ThreadPaneForUser(
       };
     });
     if (indicator !== null) rows.push({ indicator, key: "working", kind: "working" });
-    return rows;
-  }, [conversational, drawn, groups, indicator, outcomes, viewerUserId]);
+    // Spaced as if the held turn were drawn, so drawing it later changes nothing below it.
+    return heldHead === 0 ? rows : rows.slice(heldHead);
+  }, [conversational, drawn, groups, heldHead, indicator, outcomes, viewerUserId]);
 
   const queueCanRespond = canRespond && thread?.status !== "archived";
   const queueFooter = useMemo(
@@ -1072,7 +1098,13 @@ function ThreadPaneForUser(
     // Only a change repaints: a scroll fires many times a second and the pill
     // is the only thing on screen that depends on it.
     setAtTail((current) => (current === tail ? current : tail));
-    if (contentOffset.y < headThreshold && contentSize.height > layoutMeasurement.height && !tail)
+    // Asked for a screen ahead of the top, so the page lands above the reader,
+    // where the list keeps their place, instead of under them at the edge.
+    if (
+      contentOffset.y < layoutMeasurement.height &&
+      contentSize.height > layoutMeasurement.height &&
+      !tail
+    )
       loadEarlier();
   };
 
@@ -1364,9 +1396,6 @@ function ThreadPaneForUser(
             </>
           ) : (
             <View>
-              {teamOrigin === null ? null : (
-                <TeamTaskSource channelName={channelName} origin={teamOrigin} />
-              )}
               <Composer
                 variant={conversational ? "conversation" : "work"}
                 voice={false}
@@ -1658,12 +1687,18 @@ function EmptyThread(props: { readonly loading: boolean; readonly voice: boolean
 }
 
 const styles = StyleSheet.create({
-  teamSource: { gap: space[6], paddingBottom: space[6] },
   body: { flex: 1 },
   centred: { flex: 1, gap: space[12], justifyContent: "center" },
   // The title's menu sizes to its own words, so the column holds it at the
   // start rather than stretching it across the pane.
-  earlier: { alignItems: "center", paddingBottom: space[8] },
+  // One height whether it offers the page or shows it loading, so the swap
+  // never nudges the transcript under it.
+  earlier: {
+    alignItems: "center",
+    minHeight: touchTarget,
+    justifyContent: "center",
+    marginBottom: space[8],
+  },
   loadEarlier: { minHeight: touchTarget, justifyContent: "center", paddingHorizontal: space[12] },
   empty: { gap: space[12], paddingVertical: space[48] },
   header: { gap: space[8] },
@@ -1714,40 +1749,4 @@ function useChannelName(teamId: string | null, channelId: string | null): string
     [session],
   );
   return useSyncExternalStore(subscribe, read, read);
-}
-
-/**
- * Above a team task's composer: the way back to the thread that asked, and who
- * sees what the agent posts. Words typed here stay private to the task.
- */
-function TeamTaskSource(props: {
-  readonly origin: TeamTaskOrigin;
-  readonly channelName: string | null;
-}): ReactNode {
-  const navigation = useNavigation();
-  const team = useTeamsSnapshot().teams.find(
-    (candidate) => candidate.teamId === props.origin.teamId,
-  );
-  const place = `#${props.channelName ?? "channel"}`;
-  const available = team !== undefined && team.state !== "removed";
-  return (
-    <View style={styles.teamSource}>
-      <TaskSourceChip
-        onOpen={() =>
-          navigation.navigate("TeamThread", {
-            teamId: props.origin.teamId,
-            channelId: props.origin.channelId,
-            rootId: props.origin.threadRootId,
-          })
-        }
-        source={{
-          team: { id: props.origin.teamId, name: team?.name ?? "Team", imageUri: null },
-          place,
-          thread: "thread",
-          available,
-        }}
-      />
-      {available ? <AudienceLine text={`Replies post to ${place} in ${team.name}.`} /> : null}
-    </View>
-  );
 }

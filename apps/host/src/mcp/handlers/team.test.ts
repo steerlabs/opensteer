@@ -7,7 +7,7 @@ import {
   knowledge_write,
   team_read,
   team_search,
-  team_reply,
+  team_post,
 } from "@opensteer/agent-tools/tools";
 import type { RunCaller } from "../agent-caller.js";
 import type { TeamKnowledgePort, TeamToolPort } from "../team-tool-port.js";
@@ -28,12 +28,10 @@ function caller(runId = createId("run")): RunCaller {
     claims: { runId, threadId: thread.id },
   } as RunCaller;
 }
-describe("per-Run team authority", () => {
-  it("uses only the current Run's request, even when the task was used by another request", async () => {
+describe("standing owner team authority", () => {
+  it("attributes calls to the current Run without needing a team origin or request", async () => {
     const first = caller(),
-      second = { ...caller(), thread: first.thread };
-    const firstRequest = createId("teamAgentRequest"),
-      secondRequest = createId("teamAgentRequest");
+      second = { ...caller(), thread: { ...first.thread, teamOrigin: null } as Thread };
     const source = {
       ...origin,
       messageId: TeamMessageIdSchema.parse("1"),
@@ -46,31 +44,35 @@ describe("per-Run team authority", () => {
       },
     };
     const posted = vi
-      .fn<TeamToolPort["reply"]>()
+      .fn<TeamToolPort["post"]>()
       .mockResolvedValue({ messageId: TeamMessageIdSchema.parse("2"), source });
-    const port = { reply: posted } as unknown as TeamToolPort;
-    const requestForRun = vi.fn(async (runId) =>
-      runId === first.claims.runId ? firstRequest : secondRequest,
-    );
-    const handlers = teamToolHandlers({ port, requestForRun });
+    const port = { post: posted } as unknown as TeamToolPort;
+    const personalContext = vi.fn(async () => true);
+    const handlers = teamToolHandlers({ port, personalContext });
+
     for (const c of [first, second]) {
       expect(
-        await handlers.team_reply({
+        await handlers.team_post({
           caller: c,
-          input: { bodyMarkdown: "Result", attachmentPaths: [] },
+          input: {
+            channelId: origin.channelId,
+            threadRootId: origin.threadRootId,
+            bodyMarkdown: "Result",
+            attachmentPaths: [],
+          },
           operationKey: "post",
         }),
       ).toEqual({ messageId: TeamMessageIdSchema.parse("2"), source });
     }
-    expect(posted.mock.calls.map(([run]) => run.requestId)).toEqual([firstRequest, secondRequest]);
-    expect(requestForRun.mock.calls.map(([id]) => id)).toEqual([
+    expect(posted.mock.calls.map(([run]) => run.runId)).toEqual([
       first.claims.runId,
       second.claims.runId,
     ]);
+    expect(personalContext).toHaveBeenCalledTimes(2);
     for (const tool of [
       team_read,
       team_search,
-      team_reply,
+      team_post,
       knowledge_topics,
       knowledge_read,
       knowledge_write,
@@ -79,7 +81,7 @@ describe("per-Run team authority", () => {
         const input =
           tool.name === "team_search" || tool.name === "knowledge_read"
             ? { query: "help" }
-            : tool.name === "team_reply"
+            : tool.name === "team_post"
               ? { bodyMarkdown: "Result" }
               : tool.name === "knowledge_write"
                 ? { topicId: createId("knowledgeTopic"), title: "Note", body: "Text" }
@@ -88,13 +90,13 @@ describe("per-Run team authority", () => {
       }
     }
   });
-  it("denies a private follow-up in a bound task and every non-Run caller", async () => {
+  it("denies shared conversations and every non-Run caller", async () => {
     const port = { read: vi.fn() } as unknown as TeamToolPort;
-    const handlers = teamToolHandlers({ port, requestForRun: async () => null });
+    const handlers = teamToolHandlers({ port, personalContext: async () => false });
     const c = caller();
     await expect(
       handlers.team_read({ caller: c, input: {}, operationKey: "read" }),
-    ).rejects.toThrow("no team request in this turn");
+    ).rejects.toThrow("other people share");
     await expect(
       handlers.team_read({
         caller: {

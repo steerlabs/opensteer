@@ -4,6 +4,7 @@ export * from "./presentation.js";
 export * from "./team-session-client.js";
 export * from "./transport-registry.js";
 export * from "./knowledge.js";
+export * from "./channels.js";
 export * from "./mock-team-host.js";
 export * from "./mock-team-knowledge.js";
 export * from "./paged-list.js";

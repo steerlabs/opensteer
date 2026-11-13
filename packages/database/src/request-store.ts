@@ -3,7 +3,6 @@ import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalReadTransaction, withPersonalTransaction } from "./personal-transaction.js";
 import { lockBrowserHomeRunner } from "./browser-home-store.js";
 import { assertActiveGrant } from "./execution-authority.js";
-import { ReplyTargetSchema } from "@opensteer/core";
 import { enqueueChannelConversationStatus } from "./channel-deliveries.js";
 import { nearestListedThread } from "./thread-lineage.js";
 import { requestSettlementActor, readRequestSettlementProvenance } from "./request-settlement.js";
@@ -3455,8 +3454,8 @@ async function createRequestInTransaction(
       .where("status", "=", "pending")
       .where("id", "!=", canonical.id)
       .executeTakeFirst();
-    if (run.replyTarget && !sibling) {
-      const target = ReplyTargetSchema.parse(run.replyTarget);
+    if (run.replyTarget?.kind === "channel" && !sibling) {
+      const target = run.replyTarget;
       await enqueueChannelConversationStatus(transaction, {
         conversationId: target.conversationId,
         text: `The agent has asked for your input. Open the Thread in Opensteer: ${links.threadUrl(canonical.originatingThreadId)}`,

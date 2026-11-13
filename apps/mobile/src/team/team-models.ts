@@ -1,5 +1,3 @@
-import type { TaskMarkView } from "../home/home-models.js";
-
 /**
  * What team screens draw, as plain values.
  *
@@ -211,7 +209,8 @@ export interface ChannelHeaderView {
   /** "support", or the person's name in a DM, or "Leo, Priya". */
   readonly name: string;
   readonly description: string | null;
-  readonly memberCount: number;
+  /** People and groups on its list; null until read. */
+  readonly memberCount: number | null;
   readonly peopleOnly: boolean;
   /** The other people in a DM, for its faces. */
   readonly people: readonly PersonView[];
@@ -302,16 +301,7 @@ export interface FileRowView {
   readonly id: string;
   readonly messageId: string;
   readonly attachment: AttachmentView;
-  /** A person, or "Tim's agent". */
-  readonly sharedBy: string;
-  readonly when: string;
   readonly pinned: boolean;
-}
-
-export interface PinnedRowView {
-  readonly message: MessageView;
-  /** "Pinned by Sam · today". */
-  readonly pinnedBy: string;
 }
 
 export interface SearchMessageResult {
@@ -320,12 +310,6 @@ export interface SearchMessageResult {
   readonly where: string;
   /** The words matched, as they appear in the message's plain text. */
   readonly match: string;
-}
-
-export interface SearchTaskResult {
-  readonly id: string;
-  readonly title: string;
-  readonly mark: TaskMarkView;
 }
 
 export type SearchFilter = "channel" | "author" | "thread" | "file";

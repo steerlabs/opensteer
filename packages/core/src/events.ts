@@ -3,6 +3,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { AppIdSchema, AppTitleSchema } from "./apps.js";
 import { PlaceIdentitySchema, PlaceIdentityViewSchema } from "./places.js";
 import { z } from "zod";
+import { TeamRunDeliverySchema, TeamRunDeliveryViewSchema } from "./team.js";
 import {
   DelegationIdSchema,
   EnvironmentIdSchema,
@@ -184,6 +185,7 @@ const placeSiteSchema = z
   }, "Site must be an origin");
 
 const eventDataSchemas = {
+  "run.delivery-updated": z.strictObject({ delivery: TeamRunDeliverySchema }),
   "app.published": z.strictObject({
     appId: AppIdSchema,
     version: z.number().int().positive(),
@@ -485,6 +487,7 @@ const runnerEventDataSchemas = {
 } as const;
 
 const eventDataViewSchemas = {
+  "run.delivery-updated": z.object({ delivery: TeamRunDeliveryViewSchema }),
   "app.published": z.object(eventDataSchemas["app.published"].shape),
   "place.entered": z.object({
     ...eventDataSchemas["place.entered"].shape,
@@ -642,6 +645,7 @@ export const AgentEventSchema = z
     makeEventVariant("message.injected"),
     makeEventVariant("message.placed"),
     makeEventVariant("reasoning.completed"),
+    makeEventVariant("run.delivery-updated").extend({ runId: RunIdSchema }),
     makeEventVariant("run.queued"),
     makeEventVariant("run.completed"),
     makeEventVariant("run.failed"),
@@ -695,6 +699,7 @@ export const AgentEventViewSchema = z
     makeEventViewVariant("message.injected"),
     makeEventViewVariant("message.placed"),
     makeEventViewVariant("reasoning.completed"),
+    makeEventViewVariant("run.delivery-updated").extend({ runId: RunIdSchema }),
     makeEventViewVariant("run.queued"),
     makeEventViewVariant("run.completed"),
     makeEventViewVariant("run.failed"),

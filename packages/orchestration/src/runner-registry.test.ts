@@ -2268,6 +2268,7 @@ function executeCommand(
       taskPurpose: "task",
       accessMode: "full-access",
       assignment: null,
+      teamTurnContext: null,
       agentTools: {
         tools: ["thread_read", "integration_call", "computer"],
         toolsRevision: "test-tools-v1",

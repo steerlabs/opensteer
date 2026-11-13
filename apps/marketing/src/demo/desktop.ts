@@ -21,7 +21,7 @@ const WALLPAPER = `<svg class="wall" viewBox="0 0 1040 676" preserveAspectRatio=
 
 const use = (id: string): string => `<svg><use href="#${id}"/></svg>`;
 
-const MENU_BAR = `<div class="menubar" aria-hidden="true"><svg class="menubar__sys"><use href="#m-sys"/></svg><span class="menus"></span><span class="menubar__end"><span class="orb"></span><svg class="menubar__batt"><use href="#m-batt"/></svg>${use("m-wifi")}${use("m-search")}${use("m-cc")}<span class="menubar__date"><span>Tue Nov 10</span><span>9:41 AM</span></span></span></div>`;
+const MENU_BAR = `<div class="menubar" aria-hidden="true"><svg class="menubar__sys"><use href="#m-sys"/></svg><span class="menus"></span><span class="menubar__end"><span class="orb"></span><svg class="menubar__batt"><use href="#m-batt"/></svg>${use("m-wifi")}${use("m-search")}${use("m-cc")}<span class="menubar__date"><span>Tue Nov 17</span><span>9:41 AM</span></span></span></div>`;
 
 const DOCK_APPS = ["d-files", "d-web", "d-mail", "d-cols", "d-cal", "d-msgs", "d-term", "d-os"];
 const DOCK = `<div class="dock" aria-hidden="true">${DOCK_APPS.map((id) => `<span class="dock__app is-running">${use(id)}</span>`).join("")}<span class="dock__sep"></span><span class="dock__app">${use("d-trash")}</span></div>`;

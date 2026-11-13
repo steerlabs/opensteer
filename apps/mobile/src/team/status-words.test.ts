@@ -32,6 +32,17 @@ it("gives only the owner a control or a way into the private task, in every stat
     expect(others.opensTask, status.state).toBe(false);
     expect(statusFace(card(true), 120_000).opensTask, status.state).toBe(true);
   }
+  // The team has no retry: a failed card opens its task instead.
+  const failed = statusFace(
+    {
+      agent: { byline: "Your agent", mine: true, owner: maya },
+      id: "r",
+      status: states[4]!,
+      version: 1,
+    },
+    120_000,
+  );
+  expect(failed.action).toBeNull();
   const working = statusFace(
     {
       agent: { byline: "Your agent", mine: true, owner: maya },

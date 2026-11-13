@@ -1,4 +1,3 @@
-import { hydrateTeamTaskInput } from "@opensteer/database";
 import { dispatchNodeStop, NodeStopAuthoritySchema } from "@opensteer/database";
 import { agentToolsPlanForRun } from "./agent-tools-plan.js";
 import { SpecialistStore } from "@opensteer/database";
@@ -128,10 +127,9 @@ export type TeamRequestContextLoader = (
   },
   signal: AbortSignal,
 ) => Promise<{
-  readonly ownerDisplayName: string;
   readonly instructionsMarkdown: string;
   readonly source: import("@opensteer/core").TeamSource;
-  readonly content: readonly import("@opensteer/core").ContentPart[];
+  readonly instructionsRevision: import("@opensteer/core").Sequence;
 }>;
 export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #attachmentRunTokens: RunCapabilityTokenService<"opensteer-run-attachments">;
@@ -163,7 +161,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #triggerControlTokens: TriggerControlTokenService;
   readonly #triggers: TriggerStore;
   readonly #teamRequestContext: TeamRequestContextLoader;
-  readonly #teamKnowledgeAvailable: () => Promise<boolean>;
+  readonly #teamsAvailable: () => Promise<boolean>;
   constructor(options: {
     readonly attachmentRunTokens: RunCapabilityTokenService<"opensteer-run-attachments">;
     readonly attachments: Pick<AttachmentStore, "listForRun">;
@@ -193,8 +191,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly triggerControlTokens: TriggerControlTokenService;
     readonly triggers: TriggerStore;
     readonly teamRequestContext: TeamRequestContextLoader;
-    /** Whether the owner is linked to a team, so their private Runs get team knowledge. */
-    readonly teamKnowledgeAvailable?: () => Promise<boolean>;
+    /** Whether the owner has a durable local team link. */
+    readonly teamsAvailable?: () => Promise<boolean>;
   }) {
     this.#attachmentRunTokens = options.attachmentRunTokens;
     this.#attachments = options.attachments;
@@ -221,7 +219,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     this.#triggerControlTokens = options.triggerControlTokens;
     this.#triggers = options.triggers;
     this.#teamRequestContext = options.teamRequestContext;
-    this.#teamKnowledgeAvailable = options.teamKnowledgeAvailable ?? (async () => false);
+    this.#teamsAvailable = options.teamsAvailable ?? (async () => false);
   }
   isAvailable(command: PendingCommandRow, dispatchingRuns: number): boolean {
     if (!supportedCommandTypes.has(command.type) || command.environmentId === null) return false;
@@ -257,18 +255,22 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       return;
     }
     if (!command.runId) throw new CommandDispatchError("Run command is missing its run", "failed");
-    let context = await this.#store.loadRunDispatchContext(command.id);
-    let teamContext: Awaited<ReturnType<TeamRequestContextLoader>> | undefined;
-    if (context.run.teamRequestId) {
-      const input = { runId: context.run.id, requestId: context.run.teamRequestId };
-      teamContext = await this.#teamRequestContext(input, signal);
-      const hydrated = await hydrateTeamTaskInput(this.#store.database, {
-        ...input,
-        ...teamContext,
-      });
-      for (const event of hydrated.events) this.#onDeploymentEvent(event);
-      context = await this.#store.loadRunDispatchContext(command.id);
-    }
+    const context = await this.#store.loadRunDispatchContext(command.id);
+    const teamTurnContext: import("@opensteer/core").TeamTurnContext | null =
+      context.run.replyTarget?.kind === "team-thread"
+        ? {
+            kind: "team",
+            ...(await this.#teamRequestContext(
+              {
+                runId: context.run.id,
+                requestId: context.run.replyTarget.requestId,
+              },
+              signal,
+            )),
+          }
+        : context.thread.teamOrigin
+          ? { kind: "private" }
+          : null;
     this.#onRunAdmitted(context.thread.id);
     if (context.thread.specialistId) {
       try {
@@ -496,7 +498,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       });
     if (!binding) return;
     if (binding.continuationEvent) this.#onDeploymentEvent(binding.continuationEvent);
-    const knowledge = context.personalContext && (await this.#teamKnowledgeAvailable());
+    const teamsAvailable = await this.#teamsAvailable();
+    const knowledge = context.personalContext && teamsAvailable;
     const toolsToken = this.#runToolTokens.issue({
       bindingGeneration: binding.bindingGeneration,
       grantId: binding.grantId,
@@ -578,10 +581,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       token: toolsToken,
       url: this.#agentToolsUrl,
       purpose: context.thread.purpose,
-      teamBound: context.thread.teamOrigin !== null,
+      teamsAvailable,
       personalContext: context.personalContext,
       knowledge,
-      ...(teamContext ? { teamContext } : {}),
       accessMode: context.thread.accessMode,
     });
     const runnerCommandFor = (machineAccess: MachineAccessRunContext): RunnerCommand => ({
@@ -594,6 +596,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           : {}),
         accessMode: context.run.accessMode,
         taskPurpose: context.thread.purpose,
+        teamTurnContext,
         personalContext: context.personalContext,
         threadState,
         assignment: assignment

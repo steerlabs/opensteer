@@ -17,7 +17,7 @@ execution, baseline regressions and ordinary behavioral failures.
 [run.ts](../../../../evals/agent-tools/run.ts) owns selection and scoring;
 [cases.ts](../../../../evals/agent-tools/cases.ts) defines case fields.
 
-Team cases use the team-bound profile and a current Run request; private follow-ups must have no
-team authority. Re-run shared-guide consumers after guide changes, including memory and Messaging
+Team cases use standing linked-team access and per-turn team context; private follow-ups must never
+assume their final answer auto-posts. Re-run shared-guide consumers after guide changes, including memory and Messaging
 audience cases. Compare only baselines using the same fresh task and team tool contracts;
 a baseline from different authority or tool contracts is not comparable.

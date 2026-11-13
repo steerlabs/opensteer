@@ -136,9 +136,11 @@ it("offers every expected call and uses production-shaped control fixtures", asy
   const cases = await memoryCases();
   for (const c of cases) {
     const offered = new Set<string>(
-      toolsFor({ kind: c.caller, accessMode: "full-access", teamBound: c.teamBound }).map(
-        ({ name }) => name,
-      ),
+      toolsFor({
+        kind: c.caller,
+        accessMode: "full-access",
+        teamsAvailable: c.teamBound || c.knowledge,
+      }).map(({ name }) => name),
     );
     for (const call of c.expect.calls)
       expect(offered.has(call.tool), `${c.id}: ${call.tool}`).toBe(true);

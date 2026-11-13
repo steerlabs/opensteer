@@ -29,6 +29,7 @@ export const databaseLockOrder = [
   "team_note_versions",
   "team_links",
   "team_messages",
+  "team_agent_recipients",
   // Serializes team file reservations against the storage limit.
   "advisory:team-storage",
   "team_blobs",

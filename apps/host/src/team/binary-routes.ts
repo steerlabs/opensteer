@@ -4,7 +4,7 @@ import {
   type TeamActor,
   type AuthenticatedSession,
 } from "@opensteer/core";
-import { TeamBinaryUploadMetadataSchema } from "@opensteer/protocol";
+import { TeamUploadMetadataSchema } from "@opensteer/protocol";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { z } from "zod";
 import { z as schema } from "zod";
@@ -48,7 +48,7 @@ export function registerTeamBinaryRoutes(
             .string()
             .max(2048)
             .parse(request.headers["x-opensteer-team-upload"]);
-          const metadata = TeamBinaryUploadMetadataSchema.parse(JSON.parse(header));
+          const metadata = TeamUploadMetadataSchema.parse(JSON.parse(header));
           const controller = new AbortController(),
             abort = () => controller.abort(new Error("Upload disconnected"));
           request.raw.once("aborted", abort);
@@ -88,7 +88,7 @@ export function registerTeamBinaryRoutes(
 /** Human upload is the existing streamed binary body: original bytes followed by the bounded client preview. */
 export function splitTeamUpload(
   body: AsyncIterable<Uint8Array>,
-  metadata: z.infer<typeof TeamBinaryUploadMetadataSchema>,
+  metadata: z.infer<typeof TeamUploadMetadataSchema>,
 ) {
   const iterator = body[Symbol.asyncIterator]();
   let pending: Uint8Array = new Uint8Array(0);

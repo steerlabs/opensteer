@@ -7,10 +7,10 @@ import {
 import type { AgentToolHandlers, ToolCall } from "./types.js";
 import type { TeamKnowledgePort, TeamToolPort } from "../team-tool-port.js";
 
-type TeamToolName = "team_read" | "team_search" | "team_reply";
+type TeamToolName = "team_read" | "team_search" | "team_post";
 export function teamToolHandlers(options: {
   readonly port: TeamToolPort | undefined;
-  readonly requestForRun: (runId: RunId, threadId: ThreadId) => Promise<TeamAgentRequestId | null>;
+  readonly personalContext: (runId: RunId) => Promise<boolean>;
 }): Pick<AgentToolHandlers, TeamToolName> {
   const invoke = async <Name extends TeamToolName>(
     name: Name,
@@ -19,14 +19,15 @@ export function teamToolHandlers(options: {
     const caller = call.caller;
     if (caller.kind !== "run")
       throw new OpensteerError({ code: "forbidden", message: "This tool requires a live Run" });
-    const origin = caller.thread.teamOrigin;
-    const requestId = await options.requestForRun(caller.claims.runId, caller.thread.id);
-    if (!origin || !requestId)
-      throw new OpensteerError({ code: "forbidden", message: "no team request in this turn" });
+    if (!(await options.personalContext(caller.claims.runId)))
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Team access isn't available in a conversation other people share.",
+      });
     if (!options.port)
       throw new OpensteerError({ code: "conflict", message: "The team link is unavailable" });
     await call.checkLive?.();
-    const run = { teamId: origin.teamId, requestId, runId: caller.claims.runId };
+    const run = { operationId: call.operationKey, runId: caller.claims.runId };
     switch (name) {
       case "team_read":
         return options.port.read(run, call.input as ToolCall<"team_read">["input"], call.signal);
@@ -36,14 +37,14 @@ export function teamToolHandlers(options: {
           call.input as ToolCall<"team_search">["input"],
           call.signal,
         );
-      case "team_reply":
-        return options.port.reply(run, call.input as ToolCall<"team_reply">["input"], call.signal);
+      case "team_post":
+        return options.port.post(run, call.input as ToolCall<"team_post">["input"], call.signal);
     }
   };
   return {
     team_read: (call) => invoke("team_read", call),
     team_search: (call) => invoke("team_search", call),
-    team_reply: (call) => invoke("team_reply", call),
+    team_post: (call) => invoke("team_post", call),
   };
 }
 

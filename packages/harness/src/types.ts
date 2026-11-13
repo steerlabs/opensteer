@@ -3,6 +3,7 @@ import type {
   ExecutionNodeId,
   AgentEventType,
   AssignmentRunContext,
+  TeamTurnContext,
   DelegationModelChoice,
   DeploymentKind,
   EnvironmentId,
@@ -394,6 +395,7 @@ export function durableHistoryWindowNotice(context: HarnessSessionContext): stri
  * own history cannot show.
  */
 export interface HarnessRunContext {
+  readonly teamTurnContext: TeamTurnContext | null;
   readonly assignment: AssignmentRunContext | null;
   /** An IANA name as the Host accepted it, which this Runner may not know. */
   readonly requesterTimeZone: string | null;

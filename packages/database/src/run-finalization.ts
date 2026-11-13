@@ -149,7 +149,7 @@ export async function finalizeRunTransaction(
   // completed, which is all they are sent of what the agent wrote, and a
   // notice when it did not.
   const replyTarget = run.replyTarget ? ReplyTargetSchema.parse(run.replyTarget) : null;
-  if (replyTarget && input.status === "completed") {
+  if (replyTarget?.kind === "channel" && input.status === "completed") {
     const reply = await runReply(transaction, {
       id: run.id,
       threadId: run.threadId,
@@ -165,7 +165,7 @@ export async function finalizeRunTransaction(
       });
     }
   } else if (
-    replyTarget &&
+    replyTarget?.kind === "channel" &&
     (input.status !== "interrupted" ||
       !(await transaction
         .selectFrom("commands")

@@ -1,3 +1,4 @@
+import { runDeliverySelection } from "./thread-row-mappers.js";
 import { freshContextBoundary } from "./fresh-context.js";
 import { runAllowsPersonalContext } from "./run-personal-context.js";
 import { personalSettings } from "./personal-settings-store.js";
@@ -345,6 +346,7 @@ export async function loadRunDispatchContext(
   const runRow = await database
     .selectFrom("runs")
     .selectAll()
+    .select(runDeliverySelection)
     .where("id", "=", command.runId)
     .executeTakeFirstOrThrow();
   if (runRow.reportContext === null) {
@@ -1098,6 +1100,7 @@ export async function getThreadNamingInput(database: Kysely<DatabaseSchema>, thr
   const run = await database
     .selectFrom("runs")
     .selectAll()
+    .select(runDeliverySelection)
     .where("threadId", "=", threadId)
     .orderBy("runOrdinal", "asc")
     .limit(1)

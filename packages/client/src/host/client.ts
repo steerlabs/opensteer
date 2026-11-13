@@ -1,3 +1,4 @@
+import type { TeamRunDelivery, TeamSource } from "@opensteer/core";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import type { BrowserSignInPasswords } from "@opensteer/protocol/browser-sources";
 import type { DesktopUpdates } from "../connections/desktop-updates-contract.js";
@@ -304,6 +305,7 @@ export interface RunQueueEntry {
 }
 
 export interface MessageEntry {
+  teamSource?: TeamSource | null;
   addressedToUserId?: string;
   /** False for work drawn for its sender before the Run has received it. */
   published?: boolean;
@@ -487,6 +489,7 @@ export type RunEntryStatus =
   "completed" | "failed" | "interrupted" | "queued" | "running" | "starting" | "waiting";
 
 export interface RunEntry {
+  delivery?: TeamRunDelivery | null;
   /** Absent on an older Host: its waking input is unknown. */
   startedBy?: MessageAuthor;
   startedAt?: string;
@@ -540,7 +543,16 @@ export interface WithdrawnEntry {
  * page that holds the message lands the outcome on it. A null `delivery` is a
  * confirmation that clears a doubt an earlier page recorded.
  */
+export interface RunDeliveryEntry {
+  createdAt: string;
+  id: string;
+  kind: "run-delivery";
+  runId: string | null;
+  delivery: TeamRunDelivery;
+}
+
 export interface DeliveryEntry {
+  teamSource?: TeamSource;
   published?: boolean;
   /** The input's association, retained when its Message is on another history page. */
   inputRunId?: string | null;
@@ -592,6 +604,7 @@ export type TranscriptEntry =
   | AssignmentReturnEntry
   | DelegationEntry
   | DeliveryEntry
+  | RunDeliveryEntry
   | MessageEntry
   | PlaceEntry
   | ReasoningEntry

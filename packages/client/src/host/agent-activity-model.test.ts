@@ -2809,3 +2809,19 @@ describe("page stops", () => {
     });
   });
 });
+
+it("keeps a delivery-only turn visible after a Run ends without a reply", () => {
+  const entry = run({
+    startedBy: { kind: "platform", cause: "assignment-result" },
+    delivery: {
+      state: "blocked",
+      via: "final",
+      answerMessageId: null,
+      teamMessageId: null,
+      reason: "Channel unavailable",
+    },
+  });
+  expect(
+    conversationRows(groupTranscriptEntries([entry]), { live: false, atComputer: () => false }),
+  ).toHaveLength(1);
+});

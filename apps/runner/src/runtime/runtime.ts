@@ -2914,6 +2914,7 @@ export class RunnerRuntime {
         const execution = active.session.execute({
           attachments,
           context: {
+            teamTurnContext: context.teamTurnContext,
             assignment: context.assignment,
             requesterTimeZone: context.requesterTimeZone,
             threadState: context.threadState,

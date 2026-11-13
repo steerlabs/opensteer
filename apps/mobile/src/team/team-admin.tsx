@@ -1,4 +1,6 @@
+import type { TeamCanSchema } from "@opensteer/protocol";
 import type { ReactNode } from "react";
+import type { z } from "zod";
 import { Alert, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { color, controlFontScaleLimit, plateFill, radius, space, touchTarget } from "../theme.js";
 import { AppText, RowGroup, SectionLabel } from "../ui/primitives.js";
@@ -32,7 +34,7 @@ export interface TeamSettingsActions {
 
 /**
  * A team's page in Settings. Everyone sees themselves in it and their agent's
- * link; owners and admins also manage people, groups, invites, channels,
+ * link; the team's `can` facts add people, groups, invites, channels,
  * knowledge and the audit log. Admins never reach anyone's own Opensteer.
  */
 export function TeamSettingsBody(props: {
@@ -42,17 +44,20 @@ export function TeamSettingsBody(props: {
   readonly address: string;
   readonly me: PersonView;
   readonly role: TeamRole;
+  /** What the team lets the reader manage; the rows follow it, never the role. */
+  readonly can: z.infer<typeof TeamCanSchema>;
   /** Where the reader's agent stands here: "MacBook Pro", "Not connected". */
   readonly agent: {
     readonly value: string;
     readonly detail: string | null;
     readonly attention: boolean;
   };
-  readonly counts: { readonly people: number; readonly groups: number };
+  /** Groups is null until read. */
+  readonly counts: { readonly people: number; readonly groups: number | null };
   readonly paddingBottom: number;
 }): ReactNode {
-  const { actions, me, team } = props;
-  const admin = props.role !== "member";
+  const { actions, can, me, team } = props;
+  const admin = can.manageMembers || can.manageGroups || can.manageInvites || can.viewAudit;
   return (
     <ScrollView contentContainerStyle={[styles.page, { paddingBottom: props.paddingBottom }]}>
       <View style={styles.hero}>
@@ -97,21 +102,27 @@ export function TeamSettingsBody(props: {
           <SectionLabel>{`Manage ${team.name}`}</SectionLabel>
           <RowGroup>
             {[
-              <LinkRow
-                icon="person.2"
-                key="people"
-                label="People"
-                onPress={actions.onPeople}
-                value={String(props.counts.people)}
-              />,
-              <LinkRow
-                icon="person.3"
-                key="groups"
-                label="Groups"
-                onPress={actions.onGroups}
-                value={String(props.counts.groups)}
-              />,
-              <LinkRow icon="link" key="invites" label="Invites" onPress={actions.onInvites} />,
+              can.manageMembers ? (
+                <LinkRow
+                  icon="person.2"
+                  key="people"
+                  label="People"
+                  onPress={actions.onPeople}
+                  value={String(props.counts.people)}
+                />
+              ) : null,
+              can.manageGroups ? (
+                <LinkRow
+                  icon="person.3"
+                  key="groups"
+                  label="Groups"
+                  onPress={actions.onGroups}
+                  value={props.counts.groups === null ? null : String(props.counts.groups)}
+                />
+              ) : null,
+              can.manageInvites ? (
+                <LinkRow icon="link" key="invites" label="Invites" onPress={actions.onInvites} />
+              ) : null,
               <LinkRow
                 icon="number"
                 key="channels"
@@ -119,18 +130,20 @@ export function TeamSettingsBody(props: {
                 onPress={actions.onChannels}
               />,
               <LinkRow
-                icon="tablecells"
+                icon="lightbulb"
                 key="knowledge"
                 label="Knowledge"
                 onPress={actions.onKnowledge}
               />,
-              <LinkRow
-                icon="list.bullet"
-                key="audit"
-                label="Audit log"
-                onPress={actions.onAuditLog}
-              />,
-            ]}
+              can.viewAudit ? (
+                <LinkRow
+                  icon="list.bullet"
+                  key="audit"
+                  label="Audit log"
+                  onPress={actions.onAuditLog}
+                />
+              ) : null,
+            ].filter((row) => row !== null)}
           </RowGroup>
         </View>
       ) : null}

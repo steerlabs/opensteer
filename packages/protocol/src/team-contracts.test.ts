@@ -163,9 +163,11 @@ describe("team boundary contracts", () => {
       expect(TeamStatusStepSchema.safeParse({ kind: target, count: 1 }).success).toBe(false);
     }
     const headers = {
-      "x-opensteer-team-api-version": "1",
+      "x-opensteer-team-api-version": "4",
       authorization: `Bearer ost_link_${"x".repeat(43)}`,
       "x-opensteer-team-request-id": createId("teamAgentRequest"),
+      "x-opensteer-team-run-id": createId("run"),
+      "x-opensteer-team-operation-id": "download-operation",
       "x-opensteer-team-blob-id": createId("teamBlob"),
       "x-opensteer-team-file-part": "original",
     };
@@ -180,6 +182,12 @@ describe("team boundary contracts", () => {
       TeamBinaryDownloadHeadersSchema.safeParse({
         ...headers,
         "x-opensteer-team-request-id": undefined,
+      }).success,
+    ).toBe(true);
+    expect(
+      TeamBinaryDownloadHeadersSchema.safeParse({
+        ...headers,
+        "x-opensteer-team-run-id": undefined,
       }).success,
     ).toBe(false);
     expect(

@@ -97,6 +97,18 @@ a:hover {
   text-underline-offset: 3px;
 }
 
+/* An action inside a sentence: it reads as a link, and it is a button. */
+.link-button {
+  color: var(--ember);
+  font: inherit;
+  font-weight: var(--weight-medium);
+}
+
+.link-button:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 input,
 textarea,
 select {

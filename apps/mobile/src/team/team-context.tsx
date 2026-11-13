@@ -82,6 +82,7 @@ export function useTeam(teamId: string): MobileTeam | null {
 }
 
 const emptySnapshot: TeamSessionSnapshot = {
+  agentRecipients: [],
   bootstrap: null,
   sidebar: null,
   channel: null,
@@ -139,21 +140,48 @@ export function useTeamSession(teamId: string): {
 export function useTeamMembers(teamId: string): {
   readonly members: readonly TeamMember[];
   readonly directory: MemberDirectory;
+  /** Whether `members` has been read yet, so an empty list can be told from one not read. */
+  readonly status: "reading" | "read" | "failed";
+  /** The list didn't load; `members` holds what was read before, if anything. */
+  readonly failure: string | null;
+  /** Reads the list again from the team, as after changing someone's role. */
+  readonly reload: () => void;
 } {
   const teams = useMobileTeams();
-  const [members, setMembers] = useState<readonly TeamMember[]>([]);
+  const [read, setRead] = useState<{
+    readonly members: readonly TeamMember[];
+    readonly status: "reading" | "read" | "failed";
+    readonly failure: string | null;
+  }>({ members: [], status: "reading", failure: null });
+  const [generation, setGeneration] = useState(0);
   useEffect(() => {
     let current = true;
     void teams.members(teamId).then(
-      (people) => current && setMembers(people),
-      () => undefined,
+      (people) => current && setRead({ members: people, status: "read", failure: null }),
+      (error: unknown) =>
+        current &&
+        setRead((held) => ({
+          members: held.members,
+          status: held.status === "read" ? "read" : "failed",
+          failure: error instanceof Error ? error.message : "The team didn't answer.",
+        })),
     );
     return () => {
       current = false;
     };
+  }, [generation, teamId, teams]);
+  const reload = useCallback(() => {
+    teams.forgetMembers(teamId);
+    setGeneration((next) => next + 1);
   }, [teamId, teams]);
-  const directory = useMemo(() => memberDirectory(members), [members]);
-  return { members, directory };
+  const directory = useMemo(() => memberDirectory(read.members), [read.members]);
+  return {
+    members: read.members,
+    directory,
+    status: read.status,
+    failure: read.failure,
+    reload,
+  };
 }
 
 /**

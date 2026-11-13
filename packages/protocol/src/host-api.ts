@@ -1574,6 +1574,11 @@ export const hostApi = defineRpc({
     teamReadSchemas["team.knowledge.topic.access.get"].input,
     teamReadViews["team.knowledge.topic.access.get"],
   ),
+  "team.agent.recipient.get": declaration(
+    "POST",
+    teamReadSchemas["team.agent.recipient.get"].input,
+    teamReadViews["team.agent.recipient.get"],
+  ),
   "team.agent.requests.get": declaration(
     "POST",
     teamReadSchemas["team.agent.requests.get"].input,

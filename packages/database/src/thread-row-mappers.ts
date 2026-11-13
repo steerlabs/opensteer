@@ -189,8 +189,18 @@ export function assignmentFromRow(row: Selectable<DelegationTable>): Assignment 
     workerThreadId: row.childThreadId,
   });
 }
+export const runDeliverySelection = sql<import("@opensteer/core").TeamRunDelivery | null>`(
+  select jsonb_build_object(
+    'state',case p.publication_state when 'accepted' then 'sent' when 'blocked' then 'blocked' else 'sending' end,
+    'via',coalesce(p.delivery_via,case when p.explicit_reply then 'tool' else 'final' end),
+    'answerMessageId',p.answer_message_id,'teamMessageId',p.accepted_message_id::text,'reason',p.blocked_reason)
+  from personal_team_requests p where p.local_task_id=runs.thread_id and p.local_input_id=runs.seed_input_id
+    and runs.reply_target->>'kind'='team-thread' and runs.reply_target->>'teamId'=p.team_deployment_id
+    and runs.reply_target->>'requestId'=p.request_id
+    and (p.answer_payload is not null or p.publication_state in ('accepted','blocked'))
+)`.as("delivery");
 export function runFromRow(row: {
-  readonly teamRequestId: import("@opensteer/core").TeamAgentRequestId | null;
+  readonly delivery?: import("@opensteer/core").TeamRunDelivery | null;
   readonly accessMode: ThreadAccessMode;
   readonly activationInputId: MessageId;
   readonly assignmentId: AssignmentId | null;
@@ -219,7 +229,7 @@ export function runFromRow(row: {
 }): Run {
   const usage = runUsageFromRow(row);
   return RunSchema.parse({
-    teamRequestId: row.teamRequestId,
+    delivery: row.delivery ?? null,
     accessMode: row.accessMode,
     activationInputId: row.activationInputId,
     assignmentId: row.assignmentId,

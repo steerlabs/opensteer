@@ -18,6 +18,7 @@ import {
 } from "./team-access.js";
 import {
   TeamAgentRequestSchema,
+  TeamAgentRecipientSchema,
   TeamBootstrapSchema,
   TeamChannelSummarySchema,
   TeamClientFrameSchema,
@@ -121,6 +122,7 @@ export const TeamLinkViewViewSchema = z.object({ ...TeamLinkViewSchema.shape });
 export const PersonalTeamLinkViewSchema = z.object({ ...PersonalTeamLinkSchema.shape });
 
 export const TeamCommandResultViewSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("team.agent.recipient.set") }),
   z.object({ type: z.literal("team.channel.create"), channel: TeamChannelViewSchema }),
   z.object({ type: z.literal("team.channel.update") }),
   z.object({ type: z.literal("team.channel.access.set") }),
@@ -234,6 +236,7 @@ export const TeamTaskOriginViewSchema = z.object({ ...TeamTaskOriginSchema.shape
 export const TeamAudienceViewSchema = z.object({ ...TeamAudienceSchema.shape });
 
 export const TeamSourceViewSchema = TeamTaskOriginViewSchema.extend({
+  threadRootId: TeamMessageIdSchema.nullable(),
   messageId: TeamMessageIdSchema.nullable(),
   audience: TeamAudienceViewSchema,
 }).strip();
@@ -305,6 +308,7 @@ const TeamKnowledgeTopicViewViewSchema = z.object({
 });
 
 export const teamReadViews = {
+  "team.agent.recipient.get": teamReadSchemas["team.agent.recipient.get"].output.strip(),
   "team.bootstrap.get": TeamBootstrapViewSchema,
   "team.sidebar.get": TeamSidebarViewSchema,
   "team.channels.list": z.object({
@@ -389,6 +393,7 @@ const TeamSubscriptionScopeViewSchema = z.discriminatedUnion("kind", [
 
 const [snapshotCut, resumedCut] = TeamConsistentCutSchema.options;
 const cutView = {
+  agentRecipients: z.array(TeamAgentRecipientSchema.strip()).max(200).default([]),
   linkPresence: z.array(TeamLinkPresenceSchema.strip()).max(200),
   scope: TeamSubscriptionScopeViewSchema,
   channel: TeamChannelViewSchema,
@@ -412,7 +417,7 @@ export const TeamConsistentCutViewSchema = z.discriminatedUnion("type", [
  * Frame views are what a peer reads: unknown fields are dropped, and
  * readTeamFrame skips unknown frame types. Writers keep the strict schemas.
  */
-const [cut, sidebar, sidebarDirty, linkPresence, typing, presence, accessChanged] =
+const [cut, sidebar, sidebarDirty, linkPresence, typing, presence, accessChanged, recipient] =
   TeamServerFrameSchema.options;
 export const TeamServerFrameViewSchema = z.discriminatedUnion("type", [
   z.object({ ...cut.shape, cut: TeamConsistentCutViewSchema }),
@@ -422,6 +427,7 @@ export const TeamServerFrameViewSchema = z.discriminatedUnion("type", [
   typing.strip(),
   z.object({ ...presence.shape, people: z.array(presence.shape.people.element.strip()).max(50) }),
   accessChanged.strip(),
+  z.object({ ...recipient.shape, recipient: recipient.shape.recipient.strip() }),
 ]);
 
 const [subscribe, clientTyping, clientPresence] = TeamClientFrameSchema.options;
@@ -434,11 +440,10 @@ export const TeamClientFrameViewSchema = z.discriminatedUnion("type", [
 const TeamRequestContextViewSchema = z.object({
   ...TeamRequestContextSchema.shape,
   request: TeamAgentRequestViewSchema,
-  messages: z.array(TeamMessageViewSchema).max(50),
   source: TeamSourceViewSchema,
   audience: TeamAudienceViewSchema,
 });
-const [accepted, context, receipt, read, search, topics, knowledgeRead, write, file, ok] =
+const [accepted, context, receipt, read, search, topics, knowledgeRead, write, file, ok, channels] =
   TeamLinkResultSchema.options;
 const TeamLinkResultViewSchema = z.discriminatedUnion("kind", [
   z.object({ ...accepted.shape, request: TeamAgentRequestViewSchema }),
@@ -472,6 +477,13 @@ const TeamLinkResultViewSchema = z.discriminatedUnion("kind", [
   }),
   z.object({ ...file.shape, file: TeamFileViewSchema, source: TeamSourceViewSchema }),
   ok.strip(),
+  z.object({
+    ...channels.shape,
+    result: z.object({
+      ...channels.shape.result.shape,
+      channels: z.array(TeamChannelSummaryViewSchema).max(50),
+    }),
+  }),
 ]);
 const [ready, requests, cancel, result, error, revoked, pong] = TeamLinkServerFrameSchema.options;
 export const TeamLinkServerFrameViewSchema = z.discriminatedUnion("type", [
@@ -479,7 +491,14 @@ export const TeamLinkServerFrameViewSchema = z.discriminatedUnion("type", [
   z.object({
     ...requests.shape,
     requests: z
-      .array(z.object({ request: TeamAgentRequestViewSchema, source: TeamSourceViewSchema }))
+      .array(
+        z.object({
+          request: TeamAgentRequestViewSchema,
+          source: TeamSourceViewSchema,
+          bodyMarkdown: TeamMarkdownSchema,
+          attachments: z.array(TeamFileViewSchema).max(10),
+        }),
+      )
       .max(32),
   }),
   cancel.strip(),
@@ -501,6 +520,7 @@ const [
   topicsCall,
   knowledgeReadCall,
   knowledgeWriteCall,
+  channelsCall,
   revoke,
   ping,
 ] = TeamLinkClientFrameSchema.options;
@@ -520,6 +540,7 @@ export const TeamLinkClientFrameViewSchema = z.discriminatedUnion("type", [
   topicsCall.strip(),
   knowledgeReadCall.strip(),
   knowledgeWriteCall.strip(),
+  channelsCall.strip(),
   revoke.strip(),
   ping.strip(),
 ]);

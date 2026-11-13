@@ -33,16 +33,17 @@ export function unknownPerson(userId: string): PersonView {
   return { id: userId, name: "Someone", handle: "someone", tint: tintOf(userId) };
 }
 
-interface PeopleState {
+export interface PeopleState {
   readonly members: ReadonlyMap<string, TeamMember>;
-  readonly loading: boolean;
+  /** Whether the directory has been read yet; a failed reread keeps the people last read. */
+  readonly status: "reading" | "read" | "failed";
 }
 
 /** One team's member directory, read page by page once and again after an access change. */
 class TeamPeople {
   readonly #client: TeamSessionClient;
   readonly #listeners = new Set<() => void>();
-  #state: PeopleState = { members: new Map(), loading: false };
+  #state: PeopleState = { members: new Map(), status: "reading" };
   #load = 0;
   #revision: string | null = null;
 
@@ -62,7 +63,6 @@ class TeamPeople {
     if (revision !== null && revision === this.#revision) return;
     this.#revision = revision;
     const load = ++this.#load;
-    this.#set({ loading: true });
     void (async () => {
       const members = new Map<string, TeamMember>();
       let after: string | undefined;
@@ -74,9 +74,9 @@ class TeamPeople {
         for (const member of page.members) members.set(member.userId, member);
         after = page.hasMore ? page.members.at(-1)?.userId : undefined;
       } while (after && members.size < memberBound);
-      this.#set({ members, loading: false });
+      this.#set({ members, status: "read" });
     })().catch(() => {
-      if (load === this.#load) this.#set({ loading: false });
+      if (load === this.#load && this.#state.status !== "read") this.#set({ status: "failed" });
     });
   }
 
@@ -97,14 +97,14 @@ function directoryOf(client: TeamSessionClient): TeamPeople {
   return people;
 }
 
-const empty: PeopleState = { members: new Map(), loading: false };
+const empty: PeopleState = { members: new Map(), status: "reading" };
 const noSubscribe = () => () => {};
 
 /** The team's members by user id, kept fresh with its access revision. */
 export function useTeamMembers(
   client: TeamSessionClient | null,
   revision: string | null,
-): ReadonlyMap<string, TeamMember> {
+): PeopleState {
   const people = client ? directoryOf(client) : null;
   useEffect(() => {
     if (revision !== null) people?.refresh(revision);
@@ -113,5 +113,5 @@ export function useTeamMembers(
     people?.subscribe ?? noSubscribe,
     () => people?.getState() ?? empty,
     () => people?.getState() ?? empty,
-  ).members;
+  );
 }

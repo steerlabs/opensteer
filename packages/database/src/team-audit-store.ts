@@ -1,9 +1,23 @@
-import type { TeamActor, TeamAgentRequestId, TeamChannelId, TeamLinkId } from "@opensteer/core";
+import type {
+  TeamActor,
+  TeamAgentRequestId,
+  TeamChannelId,
+  TeamLinkId,
+  RunId,
+} from "@opensteer/core";
 import { TeamAuditSchema } from "@opensteer/protocol";
 import { sql, type Kysely, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
+export interface TeamAgentOperation {
+  readonly runId: RunId;
+  readonly operationId?: string | undefined;
+  readonly requestId?: TeamAgentRequestId | undefined;
+}
+
 export interface TeamAuditInput {
+  readonly runId?: RunId | undefined;
+  readonly operationId?: string | undefined;
   readonly actor: TeamActor | null;
   readonly action: string;
   readonly resourceKind:
@@ -23,6 +37,8 @@ export async function appendTeamAudit(
   const row = await database
     .insertInto("teamAudit")
     .values({
+      callerRunId: input.runId ?? null,
+      operationId: input.operationId ?? null,
       occurredAt: new Date(),
       actorUserId: input.actor?.userId ?? null,
       actorKind: input.actor?.kind ?? "system",

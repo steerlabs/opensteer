@@ -8,28 +8,34 @@ credentials or Mac. Families use the same team server. Operational steps live in
 
 ## One agent, owned by one person
 
-Only a person's own agent mention wakes their agent. Other people's agent mentions are inert
-references; agent messages never wake agents. Requests are limited to ten per minute and 32
-queued per owner per team. Replies always belong in the thread under the asking message,
-including DMs. The team sees posted replies and bounded status, never a streamed private
-transcript or arbitrary tool output.
+An own-agent @mention or a reply with the thread's agent recipient enabled wakes only the
+sender's own agent. Other people's agent mentions are inert references; agent messages never
+wake agents. The recipient belongs to one person and one thread: other people's replies and
+new threads inherit nothing. The team Host owns this state so it follows the person across
+devices. Requests are limited to ten per minute and 32 queued per owner per team.
 
 The link is an outbound authenticated WebSocket from personal Opensteer. A one-time, hashed
 link code establishes a revocable credential; the personal secret stays in the local vault.
-Machine calls name a request over that link. The run ticket is the request row itself, scoped
-to team, channel, thread and owner, expiring seven days after first acceptance. Every call
-rechecks it. Knowledge calls are the exception: they act as the link's owner from any of their
-private Runs, and a request they name is provenance only ([knowledge](knowledge.md#agents)). No
-link means no request; an offline computer leaves accepted work durably queued. Disconnecting an
-agent revokes the person's links at the team Host (`team.link.revoke`), not only on their
-computer, so it holds while that computer is off and for links made from any device.
+The owner's agent has standing access to linked teams from any private task. The team Host
+checks the owner's live membership and the agent's channel access on every read, search, file
+operation and post, and audits each call. A request identifies provenance and a reply destination;
+it grants no access. An unreachable durable link still makes the team available to the agent,
+but operations need a connection. Disconnecting an agent revokes the person's links at the team
+Host (`team.link.revoke`), so it holds while their computer is off and for links made from any device.
 
-Each ask is its own queued input and Run, not a steer. Asking again in the same team thread
-continues the same local task. A private follow-up has no team
-request authority. Channel instructions and recent thread context are read when the Run starts;
-the agent can fetch older context. Audience/source descriptors accompany team context, but
-instructions never grant access. Publication uses that Run's final reply unless it already
-posted an explicit reply; reconnect recovers pending publication without rerunning failed work.
+Each wake is its own queued input and Run, with an immutable destination in the thread under
+the asking message, including DMs. Asking again in the same team thread continues the same
+local task. The owner can steer that Run privately without changing its destination. Private
+follow-up Runs never auto-post, though the agent can explicitly post with standing access.
+The trigger's readable words stay in the private transcript with a link to the source message.
+Channel instructions accompany the turn; they never grant access. Thread history is fetched
+only when the agent needs it, keeping the per-turn context bounded and the engine prompt stable.
+
+A team Run's final answer posts to its destination unless an explicit post there has already
+claimed the reply. The team sees posted replies and bounded status, never a streamed private
+transcript or arbitrary tool output. The private task shows whether delivery is sending, sent
+or blocked, with a reason. Reconnect reconciles pending publication against its receipt without
+rerunning the work or duplicating the post; revoked access or cancellation cannot resurrect it.
 
 ## Entering a team
 
@@ -111,6 +117,7 @@ session exchange both admit through `TeamInvitesStore.acceptInTransaction`
 
 ## Transport and versions
 
+Team API version 4 requires version 4 peers for standing access and sticky recipients.
 A team Host checks only `teamApiVersion`, before authentication and parsing on every team
 surface, including bootstrap, subscriptions, binary routes and the link. Personal Hosts check
 only the personal Host epoch. Team updates use [deploy/team](../deploy/team/README.md); desktop
@@ -155,6 +162,6 @@ revocation. An optional team storage limit counts every stored or unfinished upl
 reserves its bytes before any are written, so concurrent uploads cannot overshoot it. A file
 stays reserved until its bytes leave the disk; deleting a message, cancelling an upload or
 removing a person frees the files no message holds before the command returns, and other unsent
-uploads expire after a day. Link credentials and request IDs belong in headers, never URLs. Mobile push uses
+uploads expire after a day. Link credentials and request provenance belong in headers, never URLs. Mobile push uses
 generic text and sealed previews through Account; no plaintext team content enters the push
 provider. Desktop notifications come from team sidebar sockets; there is no Web Push.

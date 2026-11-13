@@ -267,7 +267,7 @@ export async function readThreadInputQueue(
           steerable &&
           own &&
           !row.freshContext &&
-          isDeepStrictEqual(row.replyTarget, active.replyTarget),
+          compatibleSteeringTarget(active.replyTarget, row),
         ),
       };
     }),
@@ -337,13 +337,28 @@ function isPersonsMessage(input: {
   );
 }
 
+function compatibleSteeringTarget(
+  target: ReplyTarget | null,
+  input: {
+    readonly replyTarget: ReplyTarget | null;
+    readonly authoritySource: Readonly<Record<string, unknown>>;
+  },
+): boolean {
+  return (
+    isDeepStrictEqual(target, input.replyTarget) ||
+    (target?.kind === "team-thread" &&
+      input.replyTarget === null &&
+      input.authoritySource.kind === "user-session")
+  );
+}
+
 async function conversationalReply(
   transaction: Transaction<DatabaseSchema>,
   thread: Pick<ThreadRow, "purpose">,
   replyTarget: RunRow["replyTarget"],
 ): Promise<boolean> {
   if (thread.purpose === "voice") return true;
-  if (!replyTarget) return false;
+  if (replyTarget?.kind !== "channel") return false;
   const conversation = await transaction
     .selectFrom("channelConversations")
     .select("personalContext")
@@ -939,7 +954,7 @@ export async function steerThreadInputInTransaction(
     run.requestedBy !== request.requestedBy ||
     run.environmentId !== thread.environmentId ||
     run.harnessInstanceId !== thread.harnessInstanceId ||
-    !isDeepStrictEqual(run.replyTarget, row.replyTarget) ||
+    !compatibleSteeringTarget(run.replyTarget, row) ||
     !(await threadExecutionIsAvailableToUser(transaction, thread.id, request.requestedBy))
   ) {
     throw new OpensteerError({
@@ -2659,7 +2674,7 @@ export async function enqueueThreadInputInTransaction(
     !request.freshContext &&
     request.source.kind !== "channel" &&
     !request.teamRequest &&
-    !activeRun?.teamRequestId &&
+    activeRun?.replyTarget?.kind !== "team-thread" &&
     !conversational &&
     policy === "queue" &&
     activeRun?.phase === "background" &&
@@ -2672,7 +2687,9 @@ export async function enqueueThreadInputInTransaction(
     activeRun !== undefined &&
     activeRun.id === prelockedActiveRunId &&
     activeRun.requestedBy === request.requestedBy &&
-    isDeepStrictEqual(activeRun.replyTarget, facts.replyTarget)
+    (policy === "steer"
+      ? compatibleSteeringTarget(activeRun.replyTarget, facts)
+      : isDeepStrictEqual(activeRun.replyTarget, facts.replyTarget))
       ? await steerRoute(transaction, activeRun.id)
       : null;
   const steerRun =
@@ -2805,7 +2822,19 @@ export async function enqueueThreadInputInTransaction(
       messageId,
       policy,
       queueRank: thread.nextMessageSequence,
-      replyTarget: facts.replyTarget ? jsonValue(facts.replyTarget) : null,
+      replyTarget: request.teamRequest
+        ? jsonValue(
+            ReplyTargetSchema.parse({
+              kind: "team-thread",
+              teamId: request.teamRequest.source.teamId,
+              channelId: request.teamRequest.source.channelId,
+              threadRootId: request.teamRequest.source.threadRootId,
+              requestId: request.teamRequest.id,
+            }),
+          )
+        : facts.replyTarget
+          ? jsonValue(facts.replyTarget)
+          : null,
       requestedBy: request.requestedBy,
       requestFingerprint,
       ...(request.freshContext ? { freshContext: true } : {}),
@@ -3098,7 +3127,7 @@ async function resolveThreadInputFacts(
               access: channelAuthority!.source,
               bindingId: channelSource!.bindingId,
               bindingRevision: channelSource!.contextBindingRevision,
-              conversationId: replyTarget!.conversationId,
+              conversationId: source.conversationId,
               ingressId: source.ingressId,
               kind: "channel-ingress",
               principalId: principal.id,
@@ -3813,7 +3842,6 @@ export async function ensureQueuedRun(
   const runRow = await transaction
     .insertInto("runs")
     .values({
-      teamRequestId: seed.teamRequestId,
       accessMode: thread.accessMode,
       activationInputId: seed.messageId,
       assignmentId: seed.assignmentId,

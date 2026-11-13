@@ -45,6 +45,7 @@ const pickerLimit = 7;
 export function TeamComposer({
   agent,
   agentStartsOn = false,
+  onAgentRecipient,
   autoFocus = false,
   draft,
   onDraft,
@@ -61,8 +62,9 @@ export function TeamComposer({
   typing = [],
 }: {
   readonly agent: MyAgentHere;
-  /** The viewer's agent's task for this thread is still open: start with "to my agent" on. */
+  /** The team Host's current recipient state for this thread. */
   readonly agentStartsOn?: boolean;
+  readonly onAgentRecipient?: (enabled: boolean) => void;
   readonly autoFocus?: boolean;
   readonly draft?: string;
   readonly onDraft?: (text: string) => void;
@@ -92,7 +94,12 @@ export function TeamComposer({
   };
   const [sending, setSending] = useState(false);
   const sendingRef = useRef(false);
-  const [toAgent, setToAgent] = useState(ready && agentStartsOn);
+  const [localToAgent, setLocalToAgent] = useState(ready && agentStartsOn);
+  const toAgent = onAgentRecipient ? agentStartsOn : localToAgent;
+  const setToAgent = (enabled: boolean) => {
+    if (onAgentRecipient) onAgentRecipient(enabled);
+    else setLocalToAgent(enabled);
+  };
   const [mention, setMention] = useState<MentionQuery | null>(null);
   const [active, setActive] = useState(0);
   const [why, setWhy] = useState(false);
@@ -101,12 +108,6 @@ export function TeamComposer({
   const pill = useRef<HTMLButtonElement | null>(null);
   const files = useRef<HTMLInputElement | null>(null);
   const listId = useId();
-
-  // A thread whose task opens or closes moves the default; a choice already made stays.
-  useEffect(() => {
-    if (text === "") setToAgent(ready && agentStartsOn);
-    // Only the default follows; the reader's own toggle is kept until they send.
-  }, [agentStartsOn, ready]);
 
   useEffect(() => {
     const element = field.current;
@@ -139,10 +140,13 @@ export function TeamComposer({
     sendingRef.current = true;
     setSending(true);
     try {
-      await onSend({ body: text.trim(), toMyAgent: ready && (toAgent || forceAgent) });
+      await onSend({
+        body: text.trim(),
+        toMyAgent: ready && (forceAgent || (!onAgentRecipient && toAgent)),
+      });
       setText("");
       setMention(null);
-      setToAgent(ready && agentStartsOn);
+      if (!onAgentRecipient) setToAgent(ready && agentStartsOn);
     } catch {
       // The caller reports admission failure; the draft and files remain here.
     } finally {
@@ -248,11 +252,20 @@ export function TeamComposer({
   const shownPlaceholder = toAgent ? "Ask your agent…" : placeholder;
   return (
     <div className="team-composer">
+      {onAgentRecipient && (toAgent || ready) ? (
+        <button
+          className="team-composer__recipient"
+          type="button"
+          onClick={() => setToAgent(!toAgent)}
+        >
+          {toAgent ? "→ your agent ✕" : "+ your agent"}
+        </button>
+      ) : null}
       <div
         className={[
           "composer",
           "team-composer__box",
-          toAgent ? "team-composer__box--agent" : "",
+          toAgent && !onAgentRecipient ? "team-composer__box--agent" : "",
           dropping ? "composer--dropping" : "",
         ]
           .filter(Boolean)
@@ -274,7 +287,7 @@ export function TeamComposer({
         ) : null}
         {staged.length > 0 ? <StagedFiles files={staged} onRemove={onRemoveFile} /> : null}
         <div className="team-composer__line">
-          {toAgent ? (
+          {toAgent && !onAgentRecipient ? (
             <span className="mention mention--agent team-composer__chip">
               <span aria-hidden className="mention__dot" />
               @My agent
@@ -352,7 +365,7 @@ export function TeamComposer({
           >
             <Icon name="at" />
           </button>
-          {agent.kind === "people-only" ? (
+          {onAgentRecipient ? null : agent.kind === "people-only" ? (
             <span className="team-composer__people-only">
               <PeopleOnlyBadge />
               <span>Agents can’t be asked, read or search here.</span>

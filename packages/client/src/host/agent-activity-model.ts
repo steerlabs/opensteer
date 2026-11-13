@@ -96,6 +96,7 @@ export type ActivityFeedEntry = Exclude<
       | "assignment"
       | "assignment-return"
       | "delivery"
+      | "run-delivery"
       | "message"
       | "place"
       | "request-wait"
@@ -251,7 +252,12 @@ export function groupTranscriptEntries(
     // A withdrawn message left nothing to read, and an outcome whose message
     // is not loaded has nothing to sit on; their markers, and an open wait's,
     // only serve a page merge.
-    if (entry.kind === "withdrawn" || entry.kind === "delivery" || entry.kind === "request-wait")
+    if (
+      entry.kind === "withdrawn" ||
+      entry.kind === "delivery" ||
+      entry.kind === "run-delivery" ||
+      entry.kind === "request-wait"
+    )
       continue;
     if (entry.kind === "run" && entry.runId === null) continue;
     if (open === null || open.runId !== entry.runId) {
@@ -696,6 +702,7 @@ function conversationTurnShows(turn: Turn, { atComputer, live }: ConversationRow
       : hasRunOutcome(turn.run) || (turn.run.attempt ?? 1) > 1);
   return (
     reply !== null ||
+    (!turn.continued && turn.run?.delivery != null) ||
     turn.assignments.length > 0 ||
     ended ||
     (live && (composing || startHold !== null || atComputer(turn)))
@@ -2098,7 +2105,7 @@ const opensteerSteps = new Map<string, OpensteerStep>([
 
   ["team_read", said(["Reading team context", "Read team context"], "list")],
   ["team_search", said(["Searching team messages", "Searched team messages"], "search")],
-  ["team_reply", said(["Replying to the team", "Replied to the team"], "share")],
+  ["team_post", said(["Replying to the team", "Replied to the team"], "share")],
   ["knowledge_topics", said(["Looking up team topics", "Looked up team topics"], "list")],
   [
     "knowledge_read",
@@ -3137,4 +3144,14 @@ export function activityFeedPresentation(entry: ActivityFeedEntry): ActivityFeed
     label: head.label,
     marker: head.tone,
   };
+}
+
+export function teamDeliveryLabel(
+  delivery: NonNullable<RunEntry["delivery"]>,
+  channelName: string,
+): string {
+  if (delivery.state === "sent")
+    return `${delivery.via === "tool" ? "Replied in" : "Sent to"} #${channelName}`;
+  if (delivery.state === "sending") return "Sending…";
+  return `Not sent: ${delivery.reason ?? "Unavailable"}`;
 }

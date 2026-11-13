@@ -1,7 +1,26 @@
 {
-  "teamApiVersion": 3,
-  "minimumTeamApiVersion": 3,
+  "teamApiVersion": 4,
+  "minimumTeamApiVersion": 4,
   "input": {
+    "rpc team.agent.recipient.get": {
+      "type": "object",
+      "properties": {
+        "channelId": {
+          "type": "string",
+          "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "rootId": {
+          "type": "string",
+          "maxLength": 19,
+          "pattern": "^[1-9][0-9]*$"
+        }
+      },
+      "required": [
+        "channelId",
+        "rootId"
+      ],
+      "additionalProperties": false
+    },
     "rpc team.bootstrap.get": {
       "type": "object",
       "properties": {},
@@ -589,6 +608,34 @@
     "rpc sessions.list": {
       "type": "object",
       "properties": {},
+      "additionalProperties": false
+    },
+    "command team.agent.recipient.set": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.agent.recipient.set"
+        },
+        "channelId": {
+          "type": "string",
+          "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "rootId": {
+          "type": "string",
+          "maxLength": 19,
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "channelId",
+        "rootId",
+        "enabled"
+      ],
       "additionalProperties": false
     },
     "command team.channel.create": {
@@ -2172,6 +2219,15 @@
           "type": "string",
           "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
         },
+        "x-opensteer-team-run-id": {
+          "type": "string",
+          "pattern": "^run_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "x-opensteer-team-operation-id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
         "x-opensteer-team-blob-id": {
           "type": "string",
           "pattern": "^tbl_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -2187,7 +2243,8 @@
       "required": [
         "x-opensteer-team-api-version",
         "authorization",
-        "x-opensteer-team-request-id",
+        "x-opensteer-team-run-id",
+        "x-opensteer-team-operation-id",
         "x-opensteer-team-blob-id",
         "x-opensteer-team-file-part"
       ],
@@ -2208,6 +2265,15 @@
           "type": "string",
           "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
         },
+        "x-opensteer-team-run-id": {
+          "type": "string",
+          "pattern": "^run_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "x-opensteer-team-operation-id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
         "content-type": {
           "type": "string",
           "maxLength": 128,
@@ -2221,7 +2287,8 @@
       "required": [
         "x-opensteer-team-api-version",
         "authorization",
-        "x-opensteer-team-request-id",
+        "x-opensteer-team-run-id",
+        "x-opensteer-team-operation-id",
         "content-type",
         "x-opensteer-team-upload"
       ],
@@ -2258,6 +2325,10 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 65536
+        },
+        "channelId": {
+          "type": "string",
+          "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
         }
       },
       "required": [
@@ -2266,7 +2337,8 @@
         "mediaType",
         "sizeBytes",
         "sha256",
-        "previewSizeBytes"
+        "previewSizeBytes",
+        "channelId"
       ],
       "additionalProperties": false
     },
@@ -2323,6 +2395,33 @@
     }
   },
   "output": {
+    "rpc team.agent.recipient.get": {
+      "type": "object",
+      "properties": {
+        "version": {
+          "default": "0",
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "channelId": {
+          "type": "string",
+          "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "rootId": {
+          "type": "string",
+          "maxLength": 19,
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "channelId",
+        "rootId",
+        "enabled"
+      ]
+    },
     "rpc team.bootstrap.get": {
       "type": "object",
       "properties": {
@@ -5506,9 +5605,16 @@
                     "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                   },
                   "threadRootId": {
-                    "type": "string",
-                    "maxLength": 19,
-                    "pattern": "^[1-9][0-9]*$"
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 19,
+                        "pattern": "^[1-9][0-9]*$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "messageId": {
                     "anyOf": [
@@ -8193,6 +8299,18 @@
         "sessions"
       ]
     },
+    "command team.agent.recipient.set": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.agent.recipient.set"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
     "command team.channel.create": {
       "type": "object",
       "properties": {
@@ -10161,6 +10279,37 @@
                 {
                   "type": "object",
                   "properties": {
+                    "agentRecipients": {
+                      "maxItems": 200,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "version": {
+                            "default": "0",
+                            "type": "string",
+                            "pattern": "^(0|[1-9][0-9]*)$"
+                          },
+                          "channelId": {
+                            "type": "string",
+                            "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                          },
+                          "rootId": {
+                            "type": "string",
+                            "maxLength": 19,
+                            "pattern": "^[1-9][0-9]*$"
+                          },
+                          "enabled": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "channelId",
+                          "rootId",
+                          "enabled"
+                        ]
+                      }
+                    },
                     "linkPresence": {
                       "maxItems": 200,
                       "type": "array",
@@ -10948,6 +11097,37 @@
                 {
                   "type": "object",
                   "properties": {
+                    "agentRecipients": {
+                      "maxItems": 200,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "version": {
+                            "default": "0",
+                            "type": "string",
+                            "pattern": "^(0|[1-9][0-9]*)$"
+                          },
+                          "channelId": {
+                            "type": "string",
+                            "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                          },
+                          "rootId": {
+                            "type": "string",
+                            "maxLength": 19,
+                            "pattern": "^[1-9][0-9]*$"
+                          },
+                          "enabled": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "channelId",
+                          "rootId",
+                          "enabled"
+                        ]
+                      }
+                    },
                     "linkPresence": {
                       "maxItems": 200,
                       "type": "array",
@@ -12068,6 +12248,46 @@
             "type",
             "accessRevision"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "team.agent.recipient"
+            },
+            "recipient": {
+              "type": "object",
+              "properties": {
+                "version": {
+                  "default": "0",
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)$"
+                },
+                "channelId": {
+                  "type": "string",
+                  "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                "rootId": {
+                  "type": "string",
+                  "maxLength": 19,
+                  "pattern": "^[1-9][0-9]*$"
+                },
+                "enabled": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "channelId",
+                "rootId",
+                "enabled"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "recipient"
+          ]
         }
       ]
     },
@@ -12201,6 +12421,7 @@
               "enum": [
                 "working",
                 "needs_you",
+                "done",
                 "failed",
                 "stopped",
                 "cancelled"
@@ -12257,9 +12478,35 @@
               "type": "string",
               "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
             },
+            "runId": {
+              "type": "string",
+              "pattern": "^run_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
             "type": {
               "type": "string",
-              "const": "reply"
+              "const": "post"
+            },
+            "publication": {
+              "type": "boolean"
+            },
+            "clientMessageId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "channelId": {
+              "type": "string",
+              "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "threadRootId": {
+              "type": "string",
+              "maxLength": 19,
+              "pattern": "^[1-9][0-9]*$"
             },
             "bodyMarkdown": {
               "type": "string",
@@ -12276,8 +12523,10 @@
           },
           "required": [
             "id",
-            "requestId",
+            "runId",
             "type",
+            "clientMessageId",
+            "channelId",
             "bodyMarkdown",
             "attachmentIds"
           ]
@@ -12317,6 +12566,15 @@
               "type": "string",
               "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
             },
+            "runId": {
+              "type": "string",
+              "pattern": "^run_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
             "type": {
               "type": "string",
               "const": "read"
@@ -12334,11 +12592,16 @@
               "type": "string",
               "maxLength": 19,
               "pattern": "^[1-9][0-9]*$"
+            },
+            "after": {
+              "type": "string",
+              "maxLength": 19,
+              "pattern": "^[1-9][0-9]*$"
             }
           },
           "required": [
             "id",
-            "requestId",
+            "runId",
             "type",
             "channelId"
           ]
@@ -12354,6 +12617,15 @@
             "requestId": {
               "type": "string",
               "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "runId": {
+              "type": "string",
+              "pattern": "^run_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
             },
             "type": {
               "type": "string",
@@ -12400,7 +12672,7 @@
           },
           "required": [
             "id",
-            "requestId",
+            "runId",
             "type",
             "input"
           ]
@@ -12545,6 +12817,38 @@
             "id",
             "type",
             "input"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "runId": {
+              "type": "string",
+              "pattern": "^run_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "type": {
+              "type": "string",
+              "const": "channels"
+            },
+            "after": {
+              "type": "string",
+              "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "id",
+            "runId",
+            "type"
           ]
         },
         {
@@ -12858,9 +13162,16 @@
                         "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                       },
                       "threadRootId": {
-                        "type": "string",
-                        "maxLength": 19,
-                        "pattern": "^[1-9][0-9]*$"
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "maxLength": 19,
+                            "pattern": "^[1-9][0-9]*$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       },
                       "messageId": {
                         "anyOf": [
@@ -12921,11 +13232,91 @@
                       "messageId",
                       "audience"
                     ]
+                  },
+                  "bodyMarkdown": {
+                    "type": "string",
+                    "maxLength": 16384
+                  },
+                  "attachments": {
+                    "maxItems": 10,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^tbl_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                        },
+                        "channelId": {
+                          "type": "string",
+                          "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                        },
+                        "filename": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 255
+                        },
+                        "mediaType": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 255
+                        },
+                        "sizeBytes": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 104857600
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[a-f0-9]{64}$"
+                        },
+                        "preview": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "mediaType": {
+                                  "type": "string",
+                                  "enum": [
+                                    "image/jpeg",
+                                    "image/png",
+                                    "image/webp"
+                                  ]
+                                },
+                                "sizeBytes": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 65536
+                                }
+                              },
+                              "required": [
+                                "mediaType",
+                                "sizeBytes"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "channelId",
+                        "filename",
+                        "mediaType",
+                        "sizeBytes",
+                        "sha256",
+                        "preview"
+                      ]
+                    }
                   }
                 },
                 "required": [
                   "request",
-                  "source"
+                  "source",
+                  "bodyMarkdown",
+                  "attachments"
                 ]
               }
             }
@@ -13311,422 +13702,9 @@
                           "type": "string",
                           "maxLength": 16384
                         },
-                        "messages": {
-                          "maxItems": 50,
-                          "type": "array",
-                          "items": {
-                            "type": "object",
-                            "properties": {
-                              "id": {
-                                "type": "string",
-                                "maxLength": 19,
-                                "pattern": "^[1-9][0-9]*$"
-                              },
-                              "channelId": {
-                                "type": "string",
-                                "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-                              },
-                              "threadRootId": {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "maxLength": 19,
-                                    "pattern": "^[1-9][0-9]*$"
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              },
-                              "authorUserId": {
-                                "type": "string",
-                                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-                              },
-                              "authorKind": {
-                                "type": "string",
-                                "enum": [
-                                  "human",
-                                  "agent"
-                                ]
-                              },
-                              "agentRequestId": {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              },
-                              "clientMessageId": {
-                                "type": "string",
-                                "format": "uuid",
-                                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
-                              },
-                              "bodyMarkdown": {
-                                "type": "string",
-                                "maxLength": 16384
-                              },
-                              "plainText": {
-                                "type": "string",
-                                "maxLength": 32768
-                              },
-                              "createdAt": {
-                                "type": "string",
-                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                                "format": "date-time"
-                              },
-                              "editedAt": {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                                    "format": "date-time"
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              },
-                              "deletedAt": {
-                                "anyOf": [
-                                  {
-                                    "type": "string",
-                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                                    "format": "date-time"
-                                  },
-                                  {
-                                    "type": "null"
-                                  }
-                                ]
-                              },
-                              "changeSeq": {
-                                "type": "string",
-                                "pattern": "^(0|[1-9][0-9]*)$"
-                              },
-                              "mentions": {
-                                "maxItems": 20,
-                                "type": "array",
-                                "items": {
-                                  "type": "object",
-                                  "properties": {
-                                    "userId": {
-                                      "type": "string",
-                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-                                    },
-                                    "kind": {
-                                      "type": "string",
-                                      "enum": [
-                                        "person",
-                                        "agent"
-                                      ]
-                                    }
-                                  },
-                                  "required": [
-                                    "userId",
-                                    "kind"
-                                  ]
-                                }
-                              },
-                              "attachments": {
-                                "maxItems": 10,
-                                "type": "array",
-                                "items": {
-                                  "type": "object",
-                                  "properties": {
-                                    "id": {
-                                      "type": "string",
-                                      "pattern": "^tbl_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-                                    },
-                                    "channelId": {
-                                      "type": "string",
-                                      "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-                                    },
-                                    "filename": {
-                                      "type": "string",
-                                      "minLength": 1,
-                                      "maxLength": 255
-                                    },
-                                    "mediaType": {
-                                      "type": "string",
-                                      "minLength": 1,
-                                      "maxLength": 255
-                                    },
-                                    "sizeBytes": {
-                                      "type": "integer",
-                                      "minimum": 0,
-                                      "maximum": 104857600
-                                    },
-                                    "sha256": {
-                                      "type": "string",
-                                      "pattern": "^[a-f0-9]{64}$"
-                                    },
-                                    "preview": {
-                                      "anyOf": [
-                                        {
-                                          "type": "object",
-                                          "properties": {
-                                            "mediaType": {
-                                              "type": "string",
-                                              "enum": [
-                                                "image/jpeg",
-                                                "image/png",
-                                                "image/webp"
-                                              ]
-                                            },
-                                            "sizeBytes": {
-                                              "type": "integer",
-                                              "exclusiveMinimum": 0,
-                                              "maximum": 65536
-                                            }
-                                          },
-                                          "required": [
-                                            "mediaType",
-                                            "sizeBytes"
-                                          ]
-                                        },
-                                        {
-                                          "type": "null"
-                                        }
-                                      ]
-                                    }
-                                  },
-                                  "required": [
-                                    "id",
-                                    "channelId",
-                                    "filename",
-                                    "mediaType",
-                                    "sizeBytes",
-                                    "sha256",
-                                    "preview"
-                                  ]
-                                }
-                              },
-                              "pinned": {
-                                "type": "boolean"
-                              },
-                              "replySummary": {
-                                "type": "object",
-                                "properties": {
-                                  "count": {
-                                    "type": "integer",
-                                    "minimum": 0,
-                                    "maximum": 9007199254740991
-                                  },
-                                  "latestMessageId": {
-                                    "anyOf": [
-                                      {
-                                        "type": "string",
-                                        "maxLength": 19,
-                                        "pattern": "^[1-9][0-9]*$"
-                                      },
-                                      {
-                                        "type": "null"
-                                      }
-                                    ]
-                                  },
-                                  "repliers": {
-                                    "maxItems": 4,
-                                    "type": "array",
-                                    "items": {
-                                      "type": "string",
-                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-                                    }
-                                  }
-                                },
-                                "required": [
-                                  "count",
-                                  "latestMessageId",
-                                  "repliers"
-                                ]
-                              },
-                              "requests": {
-                                "maxItems": 32,
-                                "type": "array",
-                                "items": {
-                                  "type": "object",
-                                  "properties": {
-                                    "id": {
-                                      "type": "string",
-                                      "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-                                    },
-                                    "ownerUserId": {
-                                      "type": "string",
-                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-                                    },
-                                    "channelId": {
-                                      "type": "string",
-                                      "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-                                    },
-                                    "threadRootId": {
-                                      "type": "string",
-                                      "maxLength": 19,
-                                      "pattern": "^[1-9][0-9]*$"
-                                    },
-                                    "triggerMessageId": {
-                                      "type": "string",
-                                      "maxLength": 19,
-                                      "pattern": "^[1-9][0-9]*$"
-                                    },
-                                    "state": {
-                                      "type": "string",
-                                      "enum": [
-                                        "queued",
-                                        "working",
-                                        "needs_you",
-                                        "done",
-                                        "failed",
-                                        "cancelled",
-                                        "stopped"
-                                      ]
-                                    },
-                                    "steps": {
-                                      "maxItems": 8,
-                                      "type": "array",
-                                      "items": {
-                                        "type": "object",
-                                        "properties": {
-                                          "kind": {
-                                            "type": "string",
-                                            "enum": [
-                                              "browsed",
-                                              "read_files",
-                                              "edited_files",
-                                              "ran_commands",
-                                              "used_integration",
-                                              "searched_team",
-                                              "asked_you"
-                                            ]
-                                          },
-                                          "count": {
-                                            "type": "integer",
-                                            "minimum": 0,
-                                            "maximum": 9007199254740991
-                                          }
-                                        },
-                                        "required": [
-                                          "kind",
-                                          "count"
-                                        ]
-                                      }
-                                    },
-                                    "createdAt": {
-                                      "type": "string",
-                                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                                      "format": "date-time"
-                                    },
-                                    "acceptedAt": {
-                                      "anyOf": [
-                                        {
-                                          "type": "string",
-                                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                                          "format": "date-time"
-                                        },
-                                        {
-                                          "type": "null"
-                                        }
-                                      ]
-                                    },
-                                    "expiresAt": {
-                                      "anyOf": [
-                                        {
-                                          "type": "string",
-                                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                                          "format": "date-time"
-                                        },
-                                        {
-                                          "type": "null"
-                                        }
-                                      ]
-                                    },
-                                    "finishedAt": {
-                                      "anyOf": [
-                                        {
-                                          "type": "string",
-                                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-                                          "format": "date-time"
-                                        },
-                                        {
-                                          "type": "null"
-                                        }
-                                      ]
-                                    },
-                                    "replyMessageId": {
-                                      "anyOf": [
-                                        {
-                                          "type": "string",
-                                          "maxLength": 19,
-                                          "pattern": "^[1-9][0-9]*$"
-                                        },
-                                        {
-                                          "type": "null"
-                                        }
-                                      ]
-                                    },
-                                    "failureCode": {
-                                      "anyOf": [
-                                        {
-                                          "type": "string",
-                                          "enum": [
-                                            "expired",
-                                            "access_revoked",
-                                            "link_revoked",
-                                            "trigger_deleted",
-                                            "execution_failed"
-                                          ]
-                                        },
-                                        {
-                                          "type": "null"
-                                        }
-                                      ]
-                                    },
-                                    "changeSeq": {
-                                      "type": "string",
-                                      "pattern": "^(0|[1-9][0-9]*)$"
-                                    }
-                                  },
-                                  "required": [
-                                    "id",
-                                    "ownerUserId",
-                                    "channelId",
-                                    "threadRootId",
-                                    "triggerMessageId",
-                                    "state",
-                                    "steps",
-                                    "createdAt",
-                                    "acceptedAt",
-                                    "expiresAt",
-                                    "finishedAt",
-                                    "replyMessageId",
-                                    "failureCode",
-                                    "changeSeq"
-                                  ]
-                                }
-                              }
-                            },
-                            "required": [
-                              "id",
-                              "channelId",
-                              "threadRootId",
-                              "authorUserId",
-                              "authorKind",
-                              "agentRequestId",
-                              "clientMessageId",
-                              "bodyMarkdown",
-                              "plainText",
-                              "createdAt",
-                              "editedAt",
-                              "deletedAt",
-                              "changeSeq",
-                              "mentions",
-                              "attachments",
-                              "pinned",
-                              "replySummary",
-                              "requests"
-                            ]
-                          }
+                        "instructionsRevision": {
+                          "type": "string",
+                          "pattern": "^(0|[1-9][0-9]*)$"
                         },
                         "source": {
                           "type": "object",
@@ -13740,9 +13718,16 @@
                               "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                             },
                             "threadRootId": {
-                              "type": "string",
-                              "maxLength": 19,
-                              "pattern": "^[1-9][0-9]*$"
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "maxLength": 19,
+                                  "pattern": "^[1-9][0-9]*$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             },
                             "messageId": {
                               "anyOf": [
@@ -13847,7 +13832,7 @@
                       "required": [
                         "request",
                         "instructionsMarkdown",
-                        "messages",
+                        "instructionsRevision",
                         "source",
                         "audience"
                       ]
@@ -14445,9 +14430,16 @@
                               "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                             },
                             "threadRootId": {
-                              "type": "string",
-                              "maxLength": 19,
-                              "pattern": "^[1-9][0-9]*$"
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "maxLength": 19,
+                                  "pattern": "^[1-9][0-9]*$"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
                             },
                             "messageId": {
                               "anyOf": [
@@ -14962,9 +14954,16 @@
                                     "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                                   },
                                   "threadRootId": {
-                                    "type": "string",
-                                    "maxLength": 19,
-                                    "pattern": "^[1-9][0-9]*$"
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "maxLength": 19,
+                                        "pattern": "^[1-9][0-9]*$"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
                                   },
                                   "messageId": {
                                     "anyOf": [
@@ -15565,9 +15564,16 @@
                           "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                         },
                         "threadRootId": {
-                          "type": "string",
-                          "maxLength": 19,
-                          "pattern": "^[1-9][0-9]*$"
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "maxLength": 19,
+                              "pattern": "^[1-9][0-9]*$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "messageId": {
                           "anyOf": [
@@ -15646,6 +15652,142 @@
                   },
                   "required": [
                     "kind"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "channels"
+                    },
+                    "result": {
+                      "type": "object",
+                      "properties": {
+                        "channels": {
+                          "maxItems": 50,
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "public",
+                                  "private",
+                                  "dm",
+                                  "group_dm"
+                                ]
+                              },
+                              "name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 160
+                              },
+                              "peopleOnly": {
+                                "type": "boolean"
+                              },
+                              "archivedAt": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                                    "format": "date-time"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "changeSeq": {
+                                "type": "string",
+                                "pattern": "^(0|[1-9][0-9]*)$"
+                              },
+                              "latestMessageId": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "maxLength": 19,
+                                    "pattern": "^[1-9][0-9]*$"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "can": {
+                                "type": "object",
+                                "properties": {
+                                  "read": {
+                                    "type": "boolean"
+                                  },
+                                  "post": {
+                                    "type": "boolean"
+                                  },
+                                  "manage": {
+                                    "type": "boolean"
+                                  },
+                                  "join": {
+                                    "type": "boolean"
+                                  },
+                                  "leave": {
+                                    "type": "boolean"
+                                  },
+                                  "wakeOwnAgent": {
+                                    "type": "boolean"
+                                  }
+                                },
+                                "required": [
+                                  "read",
+                                  "post",
+                                  "manage",
+                                  "join",
+                                  "leave",
+                                  "wakeOwnAgent"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "kind",
+                              "name",
+                              "peopleOnly",
+                              "archivedAt",
+                              "changeSeq",
+                              "latestMessageId",
+                              "can"
+                            ]
+                          }
+                        },
+                        "hasMore": {
+                          "type": "boolean"
+                        },
+                        "nextAfter": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "channels",
+                        "hasMore",
+                        "nextAfter"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "result"
                   ]
                 }
               ]

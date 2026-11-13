@@ -580,7 +580,6 @@
   padding: 0 var(--space-2) var(--space-2);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  background: var(--surface);
 }
 
 /* The line along Tabs' top takes no height of its own: its grip reaches a
@@ -1322,11 +1321,23 @@ button.side-needs:hover {
   margin-inline: 2px;
 }
 
-/* Where the row runs, when the list spans devices: the name gives way before the title does. */
+/* Where the row runs, when it is not the main computer: its shape alone, named on hover. */
 .side-tab__device {
-  flex: 0 1 auto;
-  max-width: 42%;
-  font-size: var(--text-sm);
+  flex: none;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  opacity: 0.7;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.side-tab__device svg {
+  width: 14px;
+  height: 14px;
+}
+
+.side-tab:is(:hover, :focus-within, .is-active) .side-tab__device {
+  opacity: 1;
 }
 
 .side-tab__marks {

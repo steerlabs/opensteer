@@ -1,0 +1,377 @@
+/* NextGen CM/ECF, a district court's site as a PACER user sees it, at its real sizes: browser-default serif pages under the CM/ECF menu */
+.ecf {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+  background: #fff;
+  color: #000;
+  font:
+    15px/1.2 "Times New Roman",
+    Times,
+    serif;
+  letter-spacing: 0;
+}
+.ecf u {
+  color: #0000ee;
+}
+.ecf-head {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  width: 666px;
+  height: 40px;
+  padding-left: 4px;
+  border-bottom: 2px solid #182854;
+  box-sizing: border-box;
+}
+.ecf-logo {
+  display: flex;
+  align-items: center;
+  color: #1f3864;
+  font-size: 31px;
+  line-height: 1;
+  letter-spacing: -0.5px;
+}
+.ecf-logo svg {
+  width: 30px;
+  height: 26px;
+  margin: 0 1px;
+}
+.ecf-head nav {
+  display: flex;
+  gap: 20px;
+  color: #182890;
+  font:
+    700 14px/1 Arial,
+    Helvetica,
+    sans-serif;
+  white-space: nowrap;
+}
+.ecf-head nav u {
+  color: inherit;
+}
+.ecf-head nav i {
+  display: inline-block;
+  margin: 0 0 1px 4px;
+  border: solid transparent;
+  border-width: 4px 4px 0;
+  border-top-color: #cc0000;
+}
+.ecf-p {
+  display: none;
+}
+.ecf-u {
+  display: none;
+}
+.grp:not([data-ecf-menu]) .ecf-p--query,
+.grp[data-ecf-menu]:not([data-ecf-docket]) .ecf-p--menu,
+.grp[data-ecf-docket]:not([data-ecf-bill]) .ecf-p--docket,
+.grp[data-ecf-bill] .ecf-p--bill,
+.grp:not([data-ecf-menu]) .ecf-u--query,
+.grp[data-ecf-menu]:not([data-ecf-docket]) .ecf-u--menu,
+.grp[data-ecf-docket]:not([data-ecf-bill]) .ecf-u--docket,
+.grp[data-ecf-bill] .ecf-u--bill {
+  display: block;
+}
+
+/* Query */
+.ecf-p--query {
+  min-height: 600px;
+  padding: 0 4px;
+  background: #fffff0;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 13px;
+}
+.ecf-q {
+  margin: 4px 0 0;
+  color: #0000cc;
+  font-size: 17px;
+}
+.ecf-warn {
+  width: 420px;
+  margin: 10px 0 18px auto;
+  margin-right: 60px;
+  padding: 3px 6px;
+  border: 3px double #000;
+  font:
+    700 15px/1.25 "Times New Roman",
+    Times,
+    serif;
+  text-align: center;
+}
+.ecf-clues {
+  width: 760px;
+  border: 1px solid #d0d0d0;
+  border-top: 0;
+}
+.ecf-clues__bar {
+  display: flex;
+  justify-content: space-between;
+  height: 22px;
+  padding: 0 8px;
+  background: #e1e1e1;
+  line-height: 22px;
+}
+.ecf-clues__bar u {
+  color: #1a5fb4;
+  font-weight: 700;
+}
+.ecf-clues__body {
+  padding: 8px 8px 10px;
+  background: #ffffcc;
+}
+.ecf-f {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+}
+.ecf-f label {
+  width: 196px;
+  flex: none;
+}
+.ecf-row {
+  display: flex;
+  gap: 24px;
+}
+.ecf-row .ecf-f label {
+  width: auto;
+  min-width: 196px;
+}
+.ecf-row .ecf-f + .ecf-f label {
+  min-width: 0;
+}
+.ecf-row--lists .ecf-f {
+  align-items: flex-start;
+}
+.ecf-in,
+.ecf-sel {
+  display: inline-block;
+  height: 21px;
+  padding: 0 4px;
+  border: 1px solid #767676;
+  background: #fff;
+  font-size: 13px;
+  line-height: 19px;
+  vertical-align: middle;
+  box-sizing: border-box;
+}
+.ecf-sel {
+  border-radius: 3px;
+  background: #f0f0f0;
+}
+.grp[data-ecf-at-case] [data-h="ecf-case-field"] {
+  outline: 2px solid #005fcc;
+  outline-offset: -1px;
+}
+.ecf-check {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 132px;
+  padding-left: 204px;
+}
+.ecf-check i,
+.ecf-box {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  border: 1px solid #767676;
+  border-radius: 2px;
+  background: #fff;
+  box-sizing: border-box;
+}
+.ecf-list {
+  display: flex;
+  flex-direction: column;
+  width: 236px;
+  height: 62px;
+  padding: 1px 3px;
+  border: 1px solid #767676;
+  background: #fff;
+  overflow: hidden;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+.ecf-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.ecf-btn {
+  display: inline-block;
+  padding: 2px 8px;
+  border: 1px solid #767676;
+  border-radius: 3px;
+  background: #efefef;
+  color: #000;
+  font:
+    13px/16px Arial,
+    Helvetica,
+    sans-serif;
+  white-space: nowrap;
+}
+.grp[data-ecf-over-run] [data-h="ecf-run"],
+.grp[data-ecf-over-download] [data-h="ecf-download"],
+.grp[data-ecf-over-accept] [data-h="ecf-accept"] {
+  background: #e5e5e5;
+  border-color: #4f4f4f;
+}
+
+/* The case's query menu */
+.ecf-p--menu {
+  padding: 8px 6px;
+}
+.ecf-casehead {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.ecf-casehead span {
+  font-weight: 700;
+}
+.ecf-p--menu h5 {
+  margin: 18px 0 8px 6px;
+  font-size: 16px;
+}
+.ecf-links {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-left: 36px;
+}
+.ecf-links u {
+  align-self: flex-start;
+}
+.grp[data-ecf-over-docket] [data-h="ecf-docket-link"] {
+  color: #551a8b;
+}
+
+/* Docket report */
+.ecf-doc {
+  transition: transform 700ms cubic-bezier(0.3, 0, 0.15, 1);
+}
+/* The docket scrolled down to its entries; a new page opens at its top. */
+.grp[data-ecf-scroll]:not([data-ecf-bill]) .ecf-doc {
+  transform: translateY(-366px);
+}
+.ecf-p--docket {
+  padding: 4px 6px 30px;
+}
+.ecf-flags {
+  text-align: right;
+}
+.ecf-court {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin: 6px 0 14px;
+  font-size: 18px;
+}
+.ecf-facts,
+.ecf-party {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  font-size: 13px;
+  line-height: 1.25;
+}
+.ecf-facts div:last-child {
+  width: 300px;
+}
+.ecf-party div:last-child {
+  width: 520px;
+}
+.ecf-party u {
+  color: inherit;
+}
+.ecf-dkt {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.ecf-dkt th,
+.ecf-dkt td {
+  padding: 3px 4px;
+  border: 1px solid #999;
+  text-align: left;
+  vertical-align: top;
+}
+.ecf-dkt td:nth-child(1) {
+  width: 78px;
+  white-space: nowrap;
+}
+.ecf-dkt td:nth-child(2),
+.ecf-dkt td:nth-child(3) {
+  width: 16px;
+  text-align: center;
+}
+.ecf-box {
+  vertical-align: -2px;
+}
+.grp[data-ecf-c41] [data-h="ecf-box-41"],
+.grp[data-ecf-c42] [data-h="ecf-box-42"],
+.grp[data-ecf-c43] [data-h="ecf-box-43"] {
+  border-color: #0075ff;
+  background: #0075ff
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 6.2 5 8.6l4.6-5' fill='none' stroke='%23fff' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+    center / 11px no-repeat;
+}
+.ecf-multi {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+/* The charge to download */
+.ecf-p--bill {
+  padding: 2px 6px;
+  font-family: Arial, Helvetica, sans-serif;
+  font-size: 13px;
+}
+.ecf-p--bill p {
+  margin: 4px 0 12px;
+}
+.ecf-total {
+  font-weight: 700;
+}
+.ecf-p--bill hr {
+  margin: 14px 0;
+  border: 0;
+  border-top: 1px solid #999;
+}
+.ecf-receipt {
+  width: 400px;
+  margin: 0 auto;
+  border: 1px solid #000;
+  background: #fff;
+  color: #00008b;
+  font-family: "Times New Roman", Times, serif;
+  font-size: 13px;
+}
+.ecf-receipt th,
+.ecf-receipt td {
+  padding: 1px 3px;
+  border: 1px solid #808080;
+  text-align: left;
+}
+.ecf-receipt th[colspan] {
+  text-align: center;
+}
+.ecf-psc {
+  color: #8b0000;
+  font-size: 17px;
+}
+.ecf-when {
+  font-size: 12px;
+  text-align: center;
+}
+.br-url .ecf-u {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

@@ -5,6 +5,8 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
+import { TeamRealtimeHub } from "./realtime.js";
+import type { TeamConsistentCut } from "@opensteer/protocol";
 import { TeamLinkService } from "./link-service.js";
 import { parseTeamLinkOffer } from "@opensteer/protocol";
 import { TeamFileService } from "./file-service.js";
@@ -432,6 +434,8 @@ describe("team transaction authority", () => {
     expect(await requests.reply(l, accepted.id, { bodyMarkdown: "retry", attachmentIds: [] })).toBe(
       replyId,
     );
+    expect((await requests.authorize(l, accepted.id, "read")).state).toBe("working");
+    await requests.status(l, accepted.id, { state: "done", steps: [] });
     await expect(requests.authorize(l, accepted.id, "read")).rejects.toThrow();
     expect(await requests.receipt(l, accepted.id)).toBe(replyId);
     const cancelled = await send(c.id, "delete me", owner, [
@@ -473,7 +477,125 @@ describe("team transaction authority", () => {
     expect((await chat.openDm(owner, [member.userId])).id).toBe(dm.id);
     expect((await chat.page(member, dm.id)).messages[0]?.bodyMarkdown).toBe("Before departure");
   });
-  it("bounds request context while preserving the original ask after a long thread", async () => {
+  it("sets a thread recipient idempotently and returns only the viewer's state on resume", async () => {
+    const c = await channel("public");
+    const root = await send(c.id, "A thread");
+    const member = await person("recipient-viewer");
+    await chat.joinOrLeave(member, c.id, true);
+    await chat.setAgentRecipient(owner, c.id, root.message.id, true);
+    await chat.setAgentRecipient(owner, c.id, root.message.id, true);
+    expect(await chat.agentRecipient(owner, c.id, root.message.id)).toEqual({
+      channelId: c.id,
+      rootId: root.message.id,
+      enabled: true,
+      version: "1",
+    });
+    expect(await chat.agentRecipient(member, c.id, root.message.id)).toEqual({
+      channelId: c.id,
+      rootId: root.message.id,
+      enabled: false,
+      version: "0",
+    });
+    const input = {
+      subscriptionId: "recipients",
+      generation: 1,
+      scope: { kind: "thread" as const, channelId: c.id, rootId: root.message.id },
+      sinceSeq: null,
+    };
+    const snapshot = await chat.resume(owner, input);
+    expect(snapshot.agentRecipients).toEqual([
+      { channelId: c.id, rootId: root.message.id, enabled: true, version: "1" },
+    ]);
+    expect((await chat.resume(member, input)).agentRecipients).toEqual([]);
+    await chat.setAgentRecipient(owner, c.id, root.message.id, false);
+    expect(
+      (await chat.resume(owner, { ...input, sinceSeq: snapshot.throughSeq })).agentRecipients,
+    ).toEqual([{ channelId: c.id, rootId: root.message.id, enabled: false, version: "2" }]);
+    await chat.setAgentRecipient(owner, c.id, root.message.id, true);
+    const hub = new TeamRealtimeHub(access, chat);
+    const cuts: [TeamConsistentCut[], TeamConsistentCut[]] = [[], []];
+    const peers = [owner, member].map((actor, index) =>
+      hub.connect(actor, {
+        send(frame) {
+          if (frame.type === "team.cut") cuts[index]!.push(frame.cut);
+          return true;
+        },
+        close() {},
+      }),
+    );
+    try {
+      for (const peer of peers)
+        await peer.receive({ type: "team.subscribe", ...input, teamApiVersion, sidebar: false });
+      await send(c.id, "new reply", owner, [], root.message.id);
+      await vi.waitFor(() => expect(cuts[1].length).toBeGreaterThan(1), { timeout: 3000 });
+      expect(cuts[0].at(-1)!.agentRecipients).toEqual([
+        { channelId: c.id, rootId: root.message.id, enabled: true, version: "3" },
+      ]);
+      expect(cuts[1].at(-1)!.agentRecipients).toEqual([]);
+    } finally {
+      hub.close();
+    }
+  });
+  it.each(["tool", "publication", "none"] as const)(
+    "separates reply publication from terminal status with %s claim",
+    async (claim) => {
+      const c = await channel();
+      const l = await link();
+      const root = await send(c.id, "ask", owner, [{ kind: "agent", userId: owner.userId }]);
+      const request = (await requests.pending(l))[0]!.request;
+      await requests.accept(l, request.id);
+      const post = {
+        channelId: c.id,
+        threadRootId: root.message.id,
+        requestId: request.id,
+        clientMessageId: randomUUID(),
+        bodyMarkdown: "answer",
+        attachmentIds: [],
+      };
+      const replyId =
+        claim === "none"
+          ? null
+          : await requests.post(l, { ...post, publication: claim === "publication" });
+      if (claim !== "none") {
+        expect(
+          await requests.post(l, {
+            ...post,
+            clientMessageId: randomUUID(),
+            publication: true,
+            bodyMarkdown: "automatic final",
+          }),
+        ).toBe(replyId);
+      }
+      expect(await requests.receipt(l, request.id)).toBe(replyId);
+      expect((await requests.authorize(l, request.id, "read")).state).toBe("working");
+      const row = () =>
+        fixture.database
+          .selectFrom("teamAgentRequests")
+          .selectAll()
+          .where("id", "=", request.id)
+          .executeTakeFirstOrThrow();
+      expect((await row()).finishedAt).toBeNull();
+      await requests.status(l, request.id, { state: "done", steps: [] });
+      const finished = await row();
+      expect(finished).toMatchObject({ state: "done", replyMessageId: replyId });
+      expect(finished.finishedAt).not.toBeNull();
+      await requests.status(l, request.id, {
+        state: "done",
+        steps: [{ kind: "read_files", count: 1 }],
+      });
+      expect(await row()).toEqual(finished);
+      expect(
+        await fixture.database
+          .selectFrom("teamMessages")
+          .select("id")
+          .where("channelId", "=", c.id)
+          .where("authorKind", "=", "agent")
+          .execute(),
+      ).toEqual(replyId ? [{ id: replyId }] : []);
+    },
+  );
+
+  it("keeps history out of context and carries the original ask on request frames", async () => {
     const c = await channel();
     const l = await link();
     const root = await send(c.id, "original ask " + "x".repeat(12000), owner, [
@@ -483,9 +605,9 @@ describe("team transaction authority", () => {
     const request = (await requests.pending(l))[0]!.request;
     await requests.accept(l, request.id);
     const context = await requests.context(l, request.id);
-    expect(context.messages.length).toBeLessThanOrEqual(50);
-    expect(Buffer.byteLength(JSON.stringify(context.messages))).toBeLessThanOrEqual(32768);
-    expect(context.messages.some((m) => m.id === root.message.id)).toBe(true);
+    expect(context).not.toHaveProperty("messages");
+    expect(context.instructionsRevision).toBe(c.instructionsRevision);
+    expect((await requests.pending(l))[0]?.bodyMarkdown).toBe(root.message.bodyMarkdown);
     expect(context.request.triggerMessageId).toBe(root.message.id);
   });
 
@@ -997,6 +1119,51 @@ describe("team transaction authority", () => {
     ).toHaveLength(1);
   });
 
+  it("wakes only the sender's sticky agent and keeps retries and new roots independent", async () => {
+    const other = await person("StickyOther");
+    const c = await channel();
+    await chat.setAccess(owner, c.id, access.revision, [
+      { subject: { kind: "person", userId: owner.userId }, level: "post", manage: true },
+      { subject: { kind: "person", userId: other.userId }, level: "post", manage: false },
+    ]);
+    const l = await link();
+    const first = await send(c.id, "ask", owner, [{ kind: "agent", userId: owner.userId }]);
+    expect(first.wake).toBe("queued");
+    expect(await chat.agentRecipient(owner, c.id, first.message.id)).toMatchObject({
+      enabled: true,
+    });
+    expect((await send(c.id, "follow up", owner, [], first.message.id)).wake).toBe("queued");
+    expect((await send(c.id, "someone else", other, [], first.message.id)).wake).toBe(
+      "not-requested",
+    );
+    expect((await send(c.id, "new root")).wake).toBe("not-requested");
+    const retry = {
+      channelId: c.id,
+      threadRootId: first.message.id,
+      clientMessageId: randomUUID(),
+      bodyMarkdown: "retry",
+      mentions: [],
+      attachmentIds: [],
+    };
+    const sent = await chat.send(owner, retry);
+    expect(sent.wake).toBe("queued");
+    expect((await chat.send(owner, retry)).message.id).toBe(sent.message.id);
+    expect(await requests.pending(l)).toHaveLength(3);
+    await chat.setAgentRecipient(owner, c.id, first.message.id, false);
+    await chat.setAgentRecipient(owner, c.id, first.message.id, false);
+    expect((await send(c.id, "off", owner, [], first.message.id)).wake).toBe("not-requested");
+    const cut = await chat.resume(other, {
+      subscriptionId: "other",
+      generation: 1,
+      scope: { kind: "thread", channelId: c.id, rootId: first.message.id },
+      sinceSeq: null,
+    });
+    expect(cut.agentRecipients).toEqual([]);
+    await chat.setAgentRecipient(owner, c.id, first.message.id, true);
+    await chat.update(owner, c.id, { peopleOnly: true });
+    expect((await send(c.id, "people only", owner, [], first.message.id)).wake).toBe("people-only");
+  });
+
   it("keeps other-agent references inert and leaves refused rate-limit asks as stored messages", async () => {
     const member = await person("Mentioned");
     const c = await channel();
@@ -1008,11 +1175,11 @@ describe("team transaction authority", () => {
     expect(
       (await send(c.id, "other agent", owner, [{ kind: "agent", userId: member.userId }])).wake,
     ).toBe("not-requested");
-    for (let i = 0; i < 10; i++)
-      expect(
-        (await send(c.id, "own ask", owner, [{ kind: "agent", userId: owner.userId }])).wake,
-      ).toBe("queued");
-    const refused = await send(c.id, "limited", owner, [{ kind: "agent", userId: owner.userId }]);
+    const root = await send(c.id, "own ask", owner, [{ kind: "agent", userId: owner.userId }]);
+    expect(root.wake).toBe("queued");
+    for (let i = 0; i < 9; i++)
+      expect((await send(c.id, "own reply", owner, [], root.message.id)).wake).toBe("queued");
+    const refused = await send(c.id, "limited", owner, [], root.message.id);
     expect(refused.wake).toBe("rate-limited");
     expect((await chat.message(owner, c.id, refused.message.id)).bodyMarkdown).toBe("limited");
     const request = (await requests.pending(l))[0]!.request;
@@ -1029,13 +1196,9 @@ describe("team transaction authority", () => {
         .updateTable("teamAgentRequests")
         .set({ createdAt: new Date(Date.now() - 120000) })
         .execute();
-      expect(
-        (await send(c.id, "queued", owner, [{ kind: "agent", userId: owner.userId }])).wake,
-      ).toBe("queued");
+      expect((await send(c.id, "queued", owner, [], root.message.id)).wake).toBe("queued");
     }
-    expect(
-      (await send(c.id, "queue full", owner, [{ kind: "agent", userId: owner.userId }])).wake,
-    ).toBe("rate-limited");
+    expect((await send(c.id, "queue full", owner, [], root.message.id)).wake).toBe("rate-limited");
   });
 
   it("snapshots over 200 changed rows, resumes compacted rows, and carries request and metadata updates", async () => {
@@ -1232,13 +1395,24 @@ describe("team transaction authority", () => {
       });
       const request = (await requests.pending(l))[0]!.request;
       await requests.accept(l, request!.id);
+      const additional = await textUpload(files, owner, c.id);
+      await chat.send(owner, {
+        channelId: c.id,
+        threadRootId: request.threadRootId,
+        clientMessageId: randomUUID(),
+        bodyMarkdown: "another ask with an attachment",
+        mentions: [{ kind: "agent", userId: owner.userId }],
+        attachmentIds: [additional.id],
+      });
       const stranger = await person("Stranger");
       await expect(files.download(stranger, file.id, "original")).rejects.toThrow();
       const download = await files.download(
         { ...owner, kind: "agent" },
         file.id,
         "original",
-        request!.id,
+        undefined,
+        undefined,
+        { linkId: l, runId: createId("run"), operationId: randomUUID() },
       );
       download.body.on("error", () => {});
       const closed = once(download.body, "close").catch(() => undefined);
@@ -1369,6 +1543,7 @@ describe("team transaction authority", () => {
       expect.objectContaining({ userId: owner.userId, kind: "team-agent-needs-you" }),
     );
     await requests.reply(l, request.id, { bodyMarkdown: "agent reply", attachmentIds: [] });
+    await requests.status(l, request.id, { state: "done", steps: [] });
     delivered.length = 0;
     await outbox.drain(async (delivery) => {
       delivered.push(delivery);

@@ -3,13 +3,15 @@ import { acceptsTeamApiVersion } from "@opensteer/deployment-authority";
 import {
   TeamFileSchema,
   TeamAgentRequestSchema,
-  TeamBinaryUploadMetadataSchema,
+  TeamUploadMetadataSchema,
   serializeTeamLinkOffer,
   TeamChannelAccessSchema,
   TeamGroupSchema,
   TeamInviteSchema,
   TeamCurrentInviteSchema,
   TeamLinkViewSchema,
+  teamChannelNameKey,
+  teamChannelNameTakenReason,
   type TeamCurrentInvite,
   type TeamInvitePreviewResponse,
 } from "@opensteer/protocol";
@@ -80,6 +82,15 @@ export class MockTeamSocket implements WebSocketClient {
   }
 }
 export class MockTeamHost {
+  readonly agentRecipients = new Map<
+    string,
+    {
+      channelId: TeamChannelId;
+      rootId: z.infer<typeof TeamMessageIdSchema>;
+      enabled: boolean;
+      version: z.infer<typeof SequenceSchema>;
+    }
+  >();
   readonly channels = new Map<string, z.infer<typeof TeamChannelSchema>>();
   readonly messages = new Map<string, TeamMessage>();
   readonly calls: string[] = [];
@@ -264,6 +275,23 @@ export class MockTeamHost {
       ),
     };
   }
+  /** A live channel's name is the team's alone, as the real team keeps it. */
+  #requireFreeName(name: string, except: string | null): void {
+    const key = teamChannelNameKey(name);
+    for (const channel of this.channels.values())
+      if (
+        channel.id !== except &&
+        (channel.kind === "public" || channel.kind === "private") &&
+        channel.archivedAt === null &&
+        teamChannelNameKey(channel.name) === key
+      )
+        throw new OpensteerError({
+          code: "conflict",
+          reason: teamChannelNameTakenReason,
+          message: `There’s already a channel called #${name.trim()}.`,
+        });
+  }
+
   #sidebarPage(after?: string, channelIds?: readonly TeamChannelId[]): TeamSidebar {
     const sidebar = this.sidebar(),
       rows = sidebar.channels
@@ -279,7 +307,7 @@ export class MockTeamHost {
     };
   }
   uploadFile = async (input: TeamFileUpload) => {
-    const metadata = TeamBinaryUploadMetadataSchema.parse(input.metadata);
+    const metadata = TeamUploadMetadataSchema.parse(input.metadata);
     const key = JSON.stringify([input.channelId, metadata.clientUploadId]);
     const existing = this.#uploads.get(key);
     if (existing) return existing;
@@ -389,6 +417,11 @@ export class MockTeamHost {
       generation,
       scope,
       requests: recent,
+      agentRecipients: [...this.agentRecipients.values()].filter(
+        (recipient) =>
+          recipient.channelId === scope.channelId &&
+          (scope.kind === "channel" || recipient.rootId === scope.rootId),
+      ),
       linkPresence: presence(recent),
     };
     if (since !== null) {
@@ -481,6 +514,17 @@ export class MockTeamHost {
     if (name === "team.audit.page") return { audit: [], hasMore: false };
     if (name === "team.notices.page") return { notices: [], hasMore: false };
     if (name.startsWith("team.knowledge.")) return this.knowledge.read(name, input);
+    if (name === "team.agent.recipient.get") {
+      const { channelId, rootId } = hostApi["team.agent.recipient.get"].payload.parse(input);
+      return (
+        this.agentRecipients.get(`${channelId}:${rootId}`) ?? {
+          channelId,
+          rootId,
+          enabled: false,
+          version: SequenceSchema.parse("0"),
+        }
+      );
+    }
     if (name === "team.agent.requests.get") {
       const { channelId, rootId } = hostApi[name].payload.parse(input);
       return {
@@ -694,6 +738,7 @@ export class MockTeamHost {
         return { type: command.type };
       }
       if (command.type === "team.channel.create") {
+        this.#requireFreeName(command.name, null);
         const channel = TeamChannelSchema.parse({
           ...this.channels.get(mockTeamChannelId),
           id: command.id,
@@ -707,9 +752,15 @@ export class MockTeamHost {
           changeSeq: String(++this.#seq),
         });
         this.channels.set(channel.id, channel);
+        // As the team does: its maker manages it, whatever the list says about them.
         this.#access.set(channel.id, {
           revision: channel.changeSeq,
-          entries: command.access,
+          entries: [
+            ...command.access.filter(
+              (entry) => entry.subject.kind !== "person" || entry.subject.userId !== this.userId,
+            ),
+            { subject: { kind: "person", userId: this.userId }, level: "post", manage: true },
+          ],
           can: channel.can,
         });
         this.publish();
@@ -718,6 +769,7 @@ export class MockTeamHost {
       if (command.type === "team.channel.update") {
         const channel = this.channels.get(command.channelId);
         if (!channel) throw new Error("Unknown channel.");
+        if (channel.archivedAt === null) this.#requireFreeName(command.name, channel.id);
         this.channels.set(channel.id, {
           ...channel,
           name: command.name,
@@ -752,6 +804,8 @@ export class MockTeamHost {
       ) {
         const channel = this.channels.get(command.channelId);
         if (!channel) throw new Error("Unknown channel.");
+        if (command.type === "team.channel.restore" && channel.archivedAt !== null)
+          this.#requireFreeName(channel.name, channel.id);
         this.channels.set(channel.id, {
           ...channel,
           archivedAt:
@@ -854,6 +908,25 @@ export class MockTeamHost {
         command.type === "team.notice.read"
       )
         return { type: command.type };
+      if (command.type === "team.agent.recipient.set") {
+        const prior = this.agentRecipients.get(`${command.channelId}:${command.rootId}`);
+        const recipient = {
+          version: SequenceSchema.parse(
+            prior?.enabled === command.enabled
+              ? prior.version
+              : String(BigInt(prior?.version ?? "0") + 1n),
+          ),
+          channelId: command.channelId,
+          rootId: command.rootId,
+          enabled: command.enabled,
+        };
+        this.agentRecipients.set(`${command.channelId}:${command.rootId}`, recipient);
+        for (const socket of this.#sockets.keys())
+          socket.emit("message", {
+            data: JSON.stringify({ type: "team.agent.recipient", recipient }),
+          });
+        return { type: command.type };
+      }
       if (command.type === "team.message.send") {
         let message = [...this.messages.values()].find(
           (row) =>

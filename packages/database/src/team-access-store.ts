@@ -36,8 +36,8 @@ export const emptyTeamAccessEffects: TeamStoreAccessEffects = {
 export function requireTeam(condition: unknown, message = "Team access denied"): asserts condition {
   if (!condition) throw new OpensteerError({ code: "forbidden", message });
 }
-export function teamConflict(message: string): never {
-  throw new OpensteerError({ code: "conflict", message });
+export function teamConflict(message: string, reason?: string): never {
+  throw new OpensteerError({ code: "conflict", message, ...(reason ? { reason } : {}) });
 }
 
 export function teamGroupPaths(userId: UserId | RawBuilder<unknown>) {
@@ -119,6 +119,26 @@ export class TeamAccessStore {
     return () => {
       this.#closers.delete(close);
     };
+  }
+  async link(transaction: Transaction<DatabaseSchema>, actor: TeamActor, linkId: TeamLinkId) {
+    await transaction
+      .selectFrom("teamAccessState")
+      .select("revision")
+      .where("singletonKey", "=", "team")
+      .forShare()
+      .executeTakeFirstOrThrow();
+    requireTeam(actor.kind === "agent");
+    const link = await transaction
+      .selectFrom("teamLinks as l")
+      .innerJoin("teamMembers as m", "m.userId", "l.ownerUserId")
+      .selectAll("l")
+      .where("l.id", "=", linkId)
+      .where("l.ownerUserId", "=", actor.userId)
+      .where("l.state", "=", "active")
+      .where("m.state", "=", "active")
+      .executeTakeFirst();
+    requireTeam(link, "Active owner link required");
+    return link;
   }
   async member(transaction: Transaction<DatabaseSchema>, userId: UserId) {
     const member = await transaction

@@ -256,6 +256,8 @@ export function SystemLine(props: { readonly text: string }): ReactNode {
 export function messageActions(input: {
   readonly canAskAgent: boolean;
   readonly canModerate: boolean;
+  /** Edits are written in the composer, which is closed where the reader can't post. */
+  readonly canPost: boolean;
   readonly inThread: boolean;
   readonly message: MessageView;
 }): readonly {
@@ -273,7 +275,7 @@ export function messageActions(input: {
       title: message.pinned ? "Unpin" : "Pin",
     },
     { id: "copy-link" as const, title: "Copy link" },
-    ...(own ? [{ id: "edit" as const, title: "Edit" }] : []),
+    ...(own && input.canPost ? [{ id: "edit" as const, title: "Edit" }] : []),
     ...(own || input.canModerate
       ? [{ destructive: true as const, id: "delete" as const, title: "Delete" }]
       : []),
