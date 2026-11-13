@@ -193,7 +193,7 @@ describe("fresh personal/team lineage", () => {
       [ledger!, ledgerRequest],
     ] as const)
       expect(targets.find((row) => row.messageId === input.message.id)?.replyTarget).toEqual({
-        kind: "team",
+        kind: "team-thread",
         teamId,
         channelId,
         threadRootId: "10",
@@ -242,7 +242,7 @@ describe("fresh personal/team lineage", () => {
     expect(projections.rows.length).toBeGreaterThan(0);
     for (const projection of projections.rows) {
       expect(projection.content).toEqual([{ type: "text", text: "Please review **this**." }]);
-      expect(projection.target).toMatchObject({ kind: "team", requestId });
+      expect(projection.target).toMatchObject({ kind: "team-thread", requestId });
     }
     expect(
       (

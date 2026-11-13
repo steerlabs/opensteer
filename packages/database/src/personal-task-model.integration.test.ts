@@ -299,14 +299,14 @@ it("admits readable owner-authored words and file-only asks with immutable reply
     content: [{ type: "text", text: "Please review the launch checklist." }],
     author: { kind: "human", userId: f.userId },
     teamSource: f.source,
-    replyTarget: { kind: "team", ...f.origin, requestId: ask.requestId },
+    replyTarget: { kind: "team-thread", ...f.origin, requestId: ask.requestId },
   });
   const file = await f.ask("", [{ id: createId("teamBlob"), filename: "checklist.pdf" }]);
   const attached = await read(file.receipt.inputId);
   expect(attached.content).toEqual([
     { type: "text", text: expect.stringContaining('Attached team file: "checklist.pdf"') },
   ]);
-  expect(attached.replyTarget).toMatchObject({ kind: "team", requestId: file.requestId });
+  expect(attached.replyTarget).toMatchObject({ kind: "team-thread", requestId: file.requestId });
   expect(first.content).not.toEqual(attached.content);
 });
 
@@ -396,7 +396,7 @@ it("gives two team asks two Runs, while a private follow-up gets no request auth
     .selectAll()
     .where("seedInputId", "=", second.receipt.inputId)
     .executeTakeFirstOrThrow();
-  expect(next.replyTarget?.kind === "team" ? next.replyTarget.requestId : null).toBe(
+  expect(next.replyTarget?.kind === "team-thread" ? next.replyTarget.requestId : null).toBe(
     second.requestId,
   );
   const startedSecond = await f.start(next.id);
@@ -407,7 +407,7 @@ it("gives two team asks two Runs, while a private follow-up gets no request auth
     .where("seedInputId", "=", privateInput.message.id)
     .executeTakeFirstOrThrow();
   expect(
-    privateRun.replyTarget?.kind === "team" ? privateRun.replyTarget.requestId : null,
+    privateRun.replyTarget?.kind === "team-thread" ? privateRun.replyTarget.requestId : null,
   ).toBeNull();
   expect(
     (
@@ -864,7 +864,7 @@ it("keeps external-agent and Trigger turns on a bound task free of team request 
     .where("seedInputId", "=", external.message.id)
     .executeTakeFirstOrThrow();
   expect(
-    externalRun.replyTarget?.kind === "team" ? externalRun.replyTarget.requestId : null,
+    externalRun.replyTarget?.kind === "team-thread" ? externalRun.replyTarget.requestId : null,
   ).toBeNull();
   const next = await f.start(externalRun.id);
   await f.finish(externalRun.id, next.bindingGeneration);

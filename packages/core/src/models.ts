@@ -562,7 +562,7 @@ const replyTargetShape = {
   kind: z.literal("channel"),
 } as const;
 const teamReplyTargetShape = {
-  kind: z.literal("team"),
+  kind: z.literal("team-thread"),
   teamId: DeploymentIdSchema,
   channelId: TeamChannelIdSchema,
   threadRootId: TeamMessageIdSchema,

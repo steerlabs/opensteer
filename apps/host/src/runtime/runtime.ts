@@ -2364,7 +2364,7 @@ export async function createHostRuntime(
             .where("id", "=", runId)
             .where("threadId", "=", threadId)
             .executeTakeFirst();
-          return run?.replyTarget?.kind === "team" ? run.replyTarget.requestId : null;
+          return run?.replyTarget?.kind === "team-thread" ? run.replyTarget.requestId : null;
         },
         team: {
           read: async (...args) => (await ensureLinks()).teamTools.read(...args),

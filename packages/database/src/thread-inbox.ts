@@ -346,7 +346,7 @@ function compatibleSteeringTarget(
 ): boolean {
   return (
     isDeepStrictEqual(target, input.replyTarget) ||
-    (target?.kind === "team" &&
+    (target?.kind === "team-thread" &&
       input.replyTarget === null &&
       input.authoritySource.kind === "user-session")
   );
@@ -2674,7 +2674,7 @@ export async function enqueueThreadInputInTransaction(
     !request.freshContext &&
     request.source.kind !== "channel" &&
     !request.teamRequest &&
-    activeRun?.replyTarget?.kind !== "team" &&
+    activeRun?.replyTarget?.kind !== "team-thread" &&
     !conversational &&
     policy === "queue" &&
     activeRun?.phase === "background" &&
@@ -2825,7 +2825,7 @@ export async function enqueueThreadInputInTransaction(
       replyTarget: request.teamRequest
         ? jsonValue(
             ReplyTargetSchema.parse({
-              kind: "team",
+              kind: "team-thread",
               teamId: request.teamRequest.source.teamId,
               channelId: request.teamRequest.source.channelId,
               threadRootId: request.teamRequest.source.threadRootId,

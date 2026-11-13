@@ -257,7 +257,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     if (!command.runId) throw new CommandDispatchError("Run command is missing its run", "failed");
     const context = await this.#store.loadRunDispatchContext(command.id);
     const teamTurnContext: import("@opensteer/core").TeamTurnContext | null =
-      context.run.replyTarget?.kind === "team"
+      context.run.replyTarget?.kind === "team-thread"
         ? {
             kind: "team",
             ...(await this.#teamRequestContext(

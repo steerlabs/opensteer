@@ -626,7 +626,7 @@ export async function createTwoHostLinkFixture() {
       const runId = createId("run");
       runCount++;
       startedContexts.push(await requestStore.context(linkId, request.id));
-      await sql`insert into runs(id,thread_id,environment_id,harness_instance_id,access_mode,activation_input_id,causal_chain_id,model_selection,requested_by,actor_principal_id,authority_source,run_ordinal,seed_input_id,status,reply_target) values(${runId},${saved.taskId},${personal.environmentId},${harnessId},'full-access',${input.messageId},${input.causalChainId},'{}',${personal.userId},${principalId},'{}',${runCount},${input.messageId},'running',${JSON.stringify({ kind: "team", teamId: team.deploymentId, channelId: request.channelId, threadRootId: request.threadRootId, requestId: request.id })}::jsonb)`.execute(
+      await sql`insert into runs(id,thread_id,environment_id,harness_instance_id,access_mode,activation_input_id,causal_chain_id,model_selection,requested_by,actor_principal_id,authority_source,run_ordinal,seed_input_id,status,reply_target) values(${runId},${saved.taskId},${personal.environmentId},${harnessId},'full-access',${input.messageId},${input.causalChainId},'{}',${personal.userId},${principalId},'{}',${runCount},${input.messageId},'running',${JSON.stringify({ kind: "team-thread", teamId: team.deploymentId, channelId: request.channelId, threadRootId: request.threadRootId, requestId: request.id })}::jsonb)`.execute(
         database,
       );
       await database

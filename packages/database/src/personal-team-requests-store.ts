@@ -101,7 +101,7 @@ export class PersonalTeamRequestsStore {
       .select(["replyTarget", "threadId"])
       .where("id", "=", runId)
       .executeTakeFirst();
-    if (run?.replyTarget?.kind !== "team") return null;
+    if (run?.replyTarget?.kind !== "team-thread") return null;
     const row = await this.database
       .selectFrom("personalTeamRequests")
       .selectAll()

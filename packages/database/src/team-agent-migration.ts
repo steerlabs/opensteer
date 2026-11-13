@@ -13,29 +13,29 @@ const legacyMessages = z.array(
 export async function migrateTeamAgents(database: Kysely<unknown>): Promise<void> {
   await sql`
     update thread_inputs i set reply_target = jsonb_build_object(
-      'kind','team','teamId',i.team_source->>'teamId','channelId',i.team_source->>'channelId',
+      'kind','team-thread','teamId',i.team_source->>'teamId','channelId',i.team_source->>'channelId',
       'threadRootId',i.team_source->>'threadRootId','requestId',i.team_request_id)
     where i.team_request_id is not null and i.team_source->>'teamId' is not null
       and i.team_source->>'channelId' is not null and i.team_source->>'threadRootId' is not null;
     update thread_inputs i set reply_target = jsonb_build_object(
-      'kind','team','teamId',p.team_deployment_id,'channelId',p.source->>'channelId',
+      'kind','team-thread','teamId',p.team_deployment_id,'channelId',p.source->>'channelId',
       'threadRootId',p.source->>'threadRootId','requestId',p.request_id),team_source=coalesce(i.team_source,p.source)
     from personal_team_requests p where p.local_input_id=i.message_id and p.local_task_id=i.thread_id
       and i.reply_target is null and p.source->>'channelId' is not null and p.source->>'threadRootId' is not null;
     update thread_inputs i set reply_target = jsonb_build_object(
-      'kind','team','teamId',i.team_source->>'teamId','channelId',i.team_source->>'channelId',
+      'kind','team-thread','teamId',i.team_source->>'teamId','channelId',i.team_source->>'channelId',
       'threadRootId',i.team_source->>'threadRootId','requestId',r.team_request_id)
     from runs r where r.seed_input_id=i.message_id and r.thread_id=i.thread_id
       and r.team_request_id is not null and i.reply_target is null
       and i.team_source->>'teamId' is not null and i.team_source->>'channelId' is not null
       and i.team_source->>'threadRootId' is not null;
     update thread_inputs set team_request_id=reply_target->>'requestId'
-      where reply_target->>'kind'='team' and team_request_id is null;
+      where reply_target->>'kind'='team-thread' and team_request_id is null;
     update runs r set reply_target=i.reply_target from thread_inputs i
-      where r.seed_input_id=i.message_id and r.thread_id=i.thread_id and i.reply_target->>'kind'='team';
+      where r.seed_input_id=i.message_id and r.thread_id=i.thread_id and i.reply_target->>'kind'='team-thread';
     alter table runs drop column team_request_id;
     create unique index runs_team_reply_target on runs(thread_id,(reply_target->>'teamId'),(reply_target->>'requestId'))
-      where reply_target->>'kind'='team';
+      where reply_target->>'kind'='team-thread';
     alter table personal_team_requests
       add column answer_message_id text references messages(id),
       add column answer_payload jsonb,
@@ -75,7 +75,7 @@ export async function migrateTeamAgents(database: Kysely<unknown>): Promise<void
     select m.id,m.content,coalesce(i.team_source,p.source) as source,coalesce(p.trigger_message_id::text,i.team_source->>'messageId') as trigger_id
     from messages m join thread_inputs i on i.message_id=m.id
     left join personal_team_requests p on p.local_input_id=i.message_id and p.local_task_id=i.thread_id
-    where i.reply_target->>'kind'='team'
+    where i.reply_target->>'kind'='team-thread'
   `.execute(database);
   for (const input of inputs.rows) {
     const parsed = MessageContentSchema.safeParse(input.content);
@@ -135,7 +135,7 @@ export async function migrateTeamAgents(database: Kysely<unknown>): Promise<void
         and e.data->'message'->'content' is distinct from m.content;
     update deployment_events e set data=jsonb_set(jsonb_set(e.data,'{input,replyTarget}',i.reply_target),'{input,teamSource}',coalesce(i.team_source,'null'::jsonb))
       from thread_inputs i where e.type in ('message.created','thread-input.updated')
-        and e.data->'input'->>'messageId'=i.message_id and i.reply_target->>'kind'='team'
+        and e.data->'input'->>'messageId'=i.message_id and i.reply_target->>'kind'='team-thread'
         and (e.data->'input'->'replyTarget' is distinct from i.reply_target or e.data->'input'->'teamSource' is distinct from i.team_source);
   `.execute(database);
 }
