@@ -13,6 +13,7 @@ import {
   type WebSocketClient,
 } from "@opensteer/client/host";
 import {
+  listedTeams,
   NativeTeamEntry,
   TeamSavedStateSchema,
   TeamTransportRegistry,
@@ -68,11 +69,11 @@ export interface MobileTeam {
 }
 
 export interface MobileTeamsSnapshot {
-  /** The computer the phone is showing; its teams are the ones listed. */
+  /** The computer the phone is showing; its agent links add to the teams listed. */
   readonly computerId: string | null;
-  /** The teams the computer being shown is in. */
+  /** The teams Account lists the person in, then any the computer being shown is linked to. */
   readonly teams: readonly MobileTeam[];
-  /** Teams this phone holds that no known computer of the reader's is in. */
+  /** Teams this phone holds that neither Account nor a known computer of the reader's lists. */
   readonly unlinked: readonly MobileTeam[];
   /** The one team this phone keeps a socket to. */
   readonly selected: string | null;
@@ -830,11 +831,30 @@ export class MobileTeams {
       state.teams.map((entry) => [entry.connection.authority.document.deploymentId, entry]),
     );
     const computers = this.#memo?.computers ?? {};
-    const linked = computerId === null ? [] : (computers[computerId] ?? []);
-    const known = new Set(Object.values(computers).flatMap((teams) => teams.map((t) => t.teamId)));
+    const listed = listedTeams({
+      account: state.teams
+        .filter(({ connection }) => connection.accountAccess !== null)
+        .map(({ connection }) => ({
+          teamDeploymentId: connection.authority.document.deploymentId,
+          origin: connection.authority.document.canonicalOrigin,
+          name: connection.name,
+        })),
+      links: computerId === null ? [] : (computers[computerId] ?? []),
+      intents: [],
+    });
+    const known = new Set([
+      ...listed.map((team) => team.teamDeploymentId),
+      ...Object.values(computers).flatMap((teams) => teams.map((t) => t.teamId)),
+    ]);
     this.#snapshot = {
       computerId,
-      teams: linked.map((team) => this.#describe(team, catalog.get(team.teamId) ?? null)),
+      teams: listed.map((team) => {
+        const teamId = DeploymentIdSchema.parse(team.teamDeploymentId);
+        return this.#describe(
+          { teamId, origin: team.origin, teamName: team.name },
+          catalog.get(teamId) ?? null,
+        );
+      }),
       unlinked: state.teams
         .filter((entry) => !known.has(entry.connection.authority.document.deploymentId))
         .map((entry) =>

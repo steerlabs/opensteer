@@ -235,8 +235,9 @@ export function TeamSideFor({
   readonly onNavigate: () => void;
   readonly teamId: string;
 }) {
-  const { teams, forget, surface } = useTeams();
+  const { teams, forget, enter, surface } = useTeams();
   const team = teams.find((candidate) => candidate.teamId === teamId) ?? null;
+  const [entering, setEntering] = useState(false);
   const client = team?.client ?? null;
   // Only what the side draws: a message, typing or presence elsewhere never redraws it.
   const sidebar = useTeamSessionValue(client, selectSidebar);
@@ -282,11 +283,29 @@ export function TeamSideFor({
         <TeamTile tile={teamTile(team.teamId, team.name)} />
         <div className="team-left__text">
           <p className="team-left__title">{team.name}</p>
-          <p className="team-left__detail">Opens at {new URL(team.origin).host}</p>
+          <p className="team-left__detail">
+            {enter ? "Not signed in on this computer" : `Opens at ${new URL(team.origin).host}`}
+          </p>
         </div>
-        <a className="btn btn--small" href={team.origin} rel="noreferrer" target="_blank">
-          Open
-        </a>
+        {enter ? (
+          <button
+            className="btn btn--small"
+            disabled={entering}
+            onClick={() => {
+              setEntering(true);
+              void enter(team.teamId)
+                .catch((error: unknown) => toast.error(actionErrorMessage(error)))
+                .finally(() => setEntering(false));
+            }}
+            type="button"
+          >
+            {entering ? "Signing in…" : "Sign in"}
+          </button>
+        ) : (
+          <a className="btn btn--small" href={team.origin} rel="noreferrer" target="_blank">
+            Open
+          </a>
+        )}
       </div>
     );
   const open = pathname.startsWith(`/teams/${team.teamId}/c/`)

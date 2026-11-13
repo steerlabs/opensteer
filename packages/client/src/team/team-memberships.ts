@@ -16,7 +16,9 @@ export interface TeamMembership {
  */
 export function listedTeams(input: {
   readonly account: readonly TeamMembership[];
-  readonly links: readonly PersonalTeamLink[];
+  /** Agent links; a phone passes what it last learnt of the computer being shown. */
+  readonly links: readonly (Pick<PersonalTeamLink, "teamId" | "origin" | "teamName"> &
+    Partial<Pick<PersonalTeamLink, "state">>)[];
   readonly intents: readonly TeamConnectionIntent[];
 }): readonly TeamMembership[] {
   const byTeam = new Map<string, TeamMembership>();

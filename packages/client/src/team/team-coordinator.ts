@@ -233,6 +233,11 @@ export interface TeamCoordinator {
     readonly inviteUrl: string;
     readonly personalDeploymentId: DeploymentId | null;
   }): Promise<TeamEntered>;
+  /**
+   * A session here on a team the person is already in, such as one Account lists from another
+   * device: Account vouches where it can, else the team's own sign-in. Connects no agent.
+   */
+  enterTeam(origin: string): Promise<void>;
   /** The person is back from joining in their browser: sign in to the team here. */
   continueJoinInBrowser(): void;
   /** Stops a join waiting on the browser; that join rejects. */
@@ -681,6 +686,10 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
         admitted: established.admitted,
         intent,
       };
+    },
+
+    async enterTeam(origin) {
+      await enter(origin, null);
     },
 
     continueJoinInBrowser() {

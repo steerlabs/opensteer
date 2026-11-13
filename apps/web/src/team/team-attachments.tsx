@@ -88,6 +88,11 @@ interface TeamsValue {
   /** Ends membership on the team Host, then removes this viewer’s saved state. */
   readonly leave: (teamId: string) => Promise<void>;
   readonly forget: (teamId: string) => Promise<void>;
+  /**
+   * Signs in here to a listed team this computer holds no session for, such as one joined on
+   * another device; null where teams open at their own address instead.
+   */
+  readonly enter: ((teamId: string) => Promise<void>) | null;
   /** Creating and joining hosted teams in this app; null where they open in the browser. */
   readonly coordination: WebTeamCoordination | null;
   readonly account: TeamAccount | null;
@@ -102,6 +107,7 @@ const TeamsContext = createContext<TeamsValue>({
   reload: async () => undefined,
   leave: async () => undefined,
   forget: async () => undefined,
+  enter: null,
   coordination: null,
   account: null,
   navigator: { current: null },
@@ -171,6 +177,8 @@ export function TeamsProvider({
   const [clients, setClients] = useState<ReadonlyMap<string, TeamSessionClient>>(new Map());
   const navigator = useRef<((path: string) => void) | null>(null);
   const [forgotten, setForgotten] = useState<ReadonlySet<string>>(new Set());
+  /** Bumped by each sign-in here, so the sidebar sockets are joined again. */
+  const [entered, setEntered] = useState(0);
   const world = surface.kind === "preview" ? (surface.world ?? null) : null;
   const accountSubject = account?.subject ?? null;
   // Made in the effect so React's double effects never resume a disposed coordinator.
@@ -292,7 +300,7 @@ export function TeamsProvider({
     return () => {
       live = false;
     };
-  }, [members, linked, registry, bridge]);
+  }, [members, linked, registry, bridge, entered]);
 
   const sessionOf = useCallback(
     (teamId: string) =>
@@ -333,12 +341,25 @@ export function TeamsProvider({
     [sessionOf, linked, registry],
   );
 
+  const enter = useMemo(
+    () =>
+      coordination && (bridge || world)
+        ? async (teamId: string) => {
+            const team = memberRef.current.get(teamId);
+            if (!team) throw new Error("This team is not on this computer.");
+            await coordination.coordinator.enterTeam(team.origin);
+            setEntered((count) => count + 1);
+          }
+        : null,
+    [bridge, world, coordination],
+  );
+
   const value = useMemo<TeamsValue>(() => {
     const teams: readonly TeamAttachment[] =
       surface.kind === "team-web"
         ? [surface.attachment]
         : surface.kind === "preview"
-          ? [...surface.teams, ...worldTeams]
+          ? withAccountTeams([...surface.teams, ...worldTeams], accountKey)
           : [...members].map(([teamId, team]) => ({
               teamId,
               name: team.name,
@@ -353,6 +374,7 @@ export function TeamsProvider({
       reload,
       leave,
       forget,
+      enter,
       coordination,
       account,
       navigator,
@@ -363,6 +385,7 @@ export function TeamsProvider({
     coordination,
     leave,
     forget,
+    enter,
     forgotten,
     linked,
     links,
@@ -370,8 +393,27 @@ export function TeamsProvider({
     reload,
     surface,
     worldTeams,
+    accountKey,
   ]);
   return <TeamsContext value={value}>{children}</TeamsContext>;
+}
+
+/** The mock build lists teams Account names beside the ones it holds sessions for, as desktop does. */
+function withAccountTeams(
+  held: readonly TeamAttachment[],
+  accountKey: string,
+): readonly TeamAttachment[] {
+  const ids = new Set(held.map((team) => team.teamId));
+  const listed = (JSON.parse(accountKey) as readonly TeamMembership[])
+    .filter((team) => !ids.has(team.teamDeploymentId))
+    .map((team) => ({
+      teamId: team.teamDeploymentId,
+      name: team.name,
+      origin: team.origin,
+      client: null,
+      link: null,
+    }));
+  return [...held, ...listed];
 }
 
 const noIntents: readonly TeamConnectionIntent[] = [];

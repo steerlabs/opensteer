@@ -331,8 +331,8 @@ function mobileClient(): MobileRoot {
       void previews.reconcile().catch(() => {});
     });
   }
-  // The teams of the computer being shown, each its own Host reached directly,
-  // so team chat keeps working when that computer is off.
+  // The person's teams, each its own Host reached directly, so team chat keeps
+  // working when their computer is off.
   const mockTeams = new Map<string, MockTeamHost>();
   const teams = new MobileTeams({
     client,

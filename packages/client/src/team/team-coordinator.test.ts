@@ -123,6 +123,17 @@ describe("TeamCoordinator", () => {
     await vi.advanceTimersByTimeAsync(5_000);
     expect(coordinator.getSnapshot()).toMatchObject({ hostedTeams: [], intents: [], ready: [] });
     expect(exchange).not.toHaveBeenCalled();
+    // Opened here: Account vouches for a session, and no agent is connected or recorded.
+    await coordinator.enterTeam(view.origin);
+    expect(exchange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authority: expect.objectContaining({ deploymentId: view.deploymentId }),
+      }),
+      null,
+      undefined,
+    );
+    expect(world.joined().map((host) => host.teamId)).toEqual([view.deploymentId]);
+    expect(coordinator.getSnapshot().intents).toEqual([]);
   });
 
   it("keeps an offline computer pending and retries with a fresh code", async () => {

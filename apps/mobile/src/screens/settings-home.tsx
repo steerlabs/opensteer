@@ -22,7 +22,7 @@ import type { SettingsPage } from "./settings-form.types.js";
 export function SettingsScreen() {
   const navigation = useNavigation();
   const { teams } = useTeamsSnapshot();
-  // One row per team of the computer being shown, then a way into another.
+  // One row per team the person is in, then a way into another.
   const group: SettingsHomeTeam = {
     name: "Teams",
     rows: [

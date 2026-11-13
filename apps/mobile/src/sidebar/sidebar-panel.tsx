@@ -582,7 +582,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
 });
 
 /**
- * One row per team the computer being shown is in: the team's name and the
+ * One row per team the person is in, as `MobileTeams` lists them: the team's name and the
  * mentions of the reader waiting there. It opens the team's own page. Each row
  * reads its own team's count, so a badge changing redraws only that row.
  */

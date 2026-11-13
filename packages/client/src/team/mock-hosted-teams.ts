@@ -23,6 +23,7 @@ import { TeamEntryRefusedError } from "../auth/native-oauth.js";
 import { unwrapRpcResult } from "../host/host-session-client.js";
 import type { AccountTeamsClient } from "./account-teams.js";
 import { MockTeamHost } from "./mock-team-host.js";
+import type { TeamMembership } from "./team-memberships.js";
 import {
   revokeOwnAgentLinks,
   type PersonalTeamLinksPort,
@@ -59,6 +60,8 @@ interface MockTeamRecord {
   readonly invite: TeamInviteSecret | null;
   /** A team the preview shows by itself; it is reached through these ports but not listed. */
   readonly seeded?: true;
+  /** Joined on another device: Account lists it, and it admits the person without an invite. */
+  readonly member?: true;
 }
 
 const fingerprint = (seed: string) =>
@@ -88,6 +91,10 @@ export class MockTeamWorld {
       readonly pace?: number;
       /** Teams the preview already shows (`?mock-team`, mobile's seeded teams). */
       readonly seeded?: () => Iterable<MockTeamHost>;
+      /** A team the person joined on another device, with no session or agent link here. */
+      readonly joinedElsewhere?: { readonly name: string; readonly origin: string };
+      /** The sample invite's team is an older server: joining it goes through the browser. */
+      readonly olderInviteTeam?: boolean;
     } = {},
   ) {
     this.#pace = options.pace ?? 1;
@@ -98,16 +105,46 @@ export class MockTeamWorld {
     };
     const origin = "https://northwind.teams.opensteer.com";
     this.sampleInviteUrl = `${origin}/invite/${invite.selector}#${invite.verifier}`;
+    const northwind = this.#verified(origin, DeploymentIdSchema.parse(createId("deployment")));
     this.#records.set(origin, {
-      verified: this.#verified(origin, DeploymentIdSchema.parse(createId("deployment"))),
+      verified: options.olderInviteTeam
+        ? { ...northwind, capabilities: ["team-reusable-invites-v1"] }
+        : northwind,
       name: "Northwind",
       hostedTeamId: null,
       host: null,
       invite,
     });
+    if (options.joinedElsewhere)
+      this.#records.set(options.joinedElsewhere.origin, {
+        verified: this.#verified(
+          options.joinedElsewhere.origin,
+          DeploymentIdSchema.parse(createId("deployment")),
+        ),
+        name: options.joinedElsewhere.name,
+        hostedTeamId: null,
+        host: null,
+        invite: null,
+        member: true,
+      });
   }
 
   readonly accountSubject = (): ControlPlaneAccountId => mockAccountSubject;
+
+  /** The teams Account lists the person in that this device hasn't entered. */
+  memberships(): readonly TeamMembership[] {
+    return [...this.#records.values()].flatMap((record) =>
+      record.member
+        ? [
+            {
+              teamDeploymentId: record.verified.authority.deploymentId,
+              origin: record.verified.authority.canonicalOrigin,
+              name: record.name,
+            },
+          ]
+        : [],
+    );
+  }
 
   /** Teams the person holds a session in, newest last. */
   joined(): readonly MockTeamHost[] {
@@ -277,7 +314,7 @@ export class MockTeamWorld {
       let admitted = false;
       if (!record.host) {
         const owner = record.hostedTeamId !== null;
-        if (!owner) {
+        if (!owner && !record.member) {
           if (
             !invite ||
             !record.invite ||

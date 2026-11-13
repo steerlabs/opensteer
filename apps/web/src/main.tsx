@@ -172,7 +172,20 @@ async function renderOpensteer(): Promise<void> {
             // Every preview can create and join hosted teams in memory; the seeded teams are
             // part of that world, so connecting an agent or leaving reaches them the same way.
             preview = {
-              world: new MockTeamWorld({ seeded: () => seeded }),
+              world: new MockTeamWorld({
+                seeded: () => seeded,
+                // `?mock-joined-elsewhere`: a team joined on the phone, with no session here.
+                ...(search.has("mock-joined-elsewhere")
+                  ? {
+                      joinedElsewhere: {
+                        name: "Harbor",
+                        origin: "https://harbor.teams.opensteer.com",
+                      },
+                    }
+                  : {}),
+                // `?mock-older-team`: the sample invite's team joins through the browser.
+                olderInviteTeam: search.has("mock-older-team"),
+              }),
               teams: seeded.map((team) => attach(team, team.origin)),
             };
             return mockClient();
