@@ -43,13 +43,16 @@ export class NotificationStateStore {
   constructor(database: Kysely<DatabaseSchema>) {
     this.#database = database;
   }
-  attention(userId: UserId): Promise<{ needsYou: number; unread: boolean }> {
+  attention(
+    userId: UserId,
+    input: { readonly deviceAccessRequests?: "include" } = {},
+  ): Promise<{ needsYou: number; unread: boolean }> {
     return withPersonalReadTransaction(this.#database, async (transaction) => {
       await requirePersonalOwner(transaction, userId);
       const {
         rows: [row],
       } = await sql<{ needsYou: string; unread: boolean }>`
-        select (select count(*) from public.requests where status = 'pending')::text as needs_you,
+        select (select count(*) from public.requests where status = 'pending' and (${input.deviceAccessRequests === "include"} or kind <> 'device.access'))::text as needs_you,
           exists (
             select 1 from public.threads thread
             join public.messages message on message.thread_id = thread.id

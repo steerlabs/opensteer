@@ -1014,6 +1014,7 @@ export const AssignmentSummarySchema = z.object({
     environmentId: EnvironmentIdSchema,
     id: ThreadIdSchema,
     pendingRequests: z.number().int().nonnegative(),
+    pendingDeviceAccessRequests: z.number().int().nonnegative().optional(),
     status: ThreadStatusSchema,
     title: z.string().trim().min(1).max(240),
     /** The worker's mark, as on `Thread`; absent from summaries written before marks. */

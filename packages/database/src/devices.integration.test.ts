@@ -224,6 +224,25 @@ it("applies initial access only on first redemption and conflicts when replayed 
   ).rejects.toMatchObject({ code: "conflict" });
 });
 
+it("retains usable shell defaults when Files starts off and its master switch turns on", async () => {
+  const target = await device({ browser: true, apps: true, files: false });
+  const saved = (await policy(target.runnerId)).accessPolicy;
+  expect(saved).toMatchObject({ reach: "nobody", commands: true, forwarding: true, shares: [] });
+  await store.updateMachineAccessPolicy({
+    allowDeployment: true,
+    ownerId: fixture.userId,
+    runnerId: target.runnerId,
+    expectedRevision: 1,
+    policy: { ...saved, reach: "owner" },
+  });
+  expect((await policy(target.runnerId)).accessPolicy).toMatchObject({
+    reach: "owner",
+    commands: true,
+    forwarding: true,
+    shares: [],
+  });
+});
+
 it("binds only the effective owner, refuses cross-runner, expired proof/session, and replays harmlessly", async () => {
   const target = await device();
   const other = await device();

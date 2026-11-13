@@ -1440,7 +1440,7 @@ const declaration = <Payload extends z.ZodType, Success extends z.ZodType>(
 export const hostApi = defineRpc({
   "attention.get": declaration(
     "POST",
-    z.strictObject({}),
+    z.strictObject({ deviceAccessRequests: z.literal("include").optional() }),
     z.object({ needsYou: z.number().int().nonnegative(), unread: z.boolean() }),
   ),
   "needsYou.get": declaration(
@@ -1938,7 +1938,7 @@ export const hostApi = defineRpc({
 
   "requests.list": declaration(
     "GET",
-    durablePageInputSchema,
+    durablePageInputSchema.extend({ deviceAccessRequests: z.literal("include").optional() }),
     z.object({
       requests: readableRequestList(WaitingRequestViewSchema, 100),
       window: DurableWindowSchema,
@@ -1951,6 +1951,7 @@ export const hostApi = defineRpc({
       .strictObject({
         active: z.boolean().optional(),
         done: z.boolean().optional(),
+        deviceAccessRequests: z.literal("include").optional(),
       })
       .extend(durablePageInputSchema.shape)
       .refine((input) => !(input.active && input.done), "Active work is never Done"),
@@ -2030,6 +2031,7 @@ export const hostApi = defineRpc({
       .strictObject({
         /** Only work still under way, however far back it was handed out. Needs `task-family-v1`. */
         open: z.boolean().optional(),
+        deviceAccessRequests: z.literal("include").optional(),
         threadId: ThreadIdSchema,
       })
       .extend(durablePageInputSchema.shape),
@@ -2090,7 +2092,12 @@ export const hostApi = defineRpc({
   ),
   "thread.requests.list": declaration(
     "GET",
-    z.strictObject({ threadId: ThreadIdSchema }).extend(durablePageInputSchema.shape),
+    z
+      .strictObject({
+        threadId: ThreadIdSchema,
+        deviceAccessRequests: z.literal("include").optional(),
+      })
+      .extend(durablePageInputSchema.shape),
     z.object({
       requests: readableRequestList(RequestViewSchema, 100),
       threadId: ThreadIdSchema,

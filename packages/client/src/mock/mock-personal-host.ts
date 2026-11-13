@@ -3,6 +3,7 @@ import {
   ClientToHostMessageSchema,
   hostApi,
   isDeviceAccessRequestEvent,
+  projectDeviceAccessRequestEvent,
   type HostToClientMessage,
 } from "@opensteer/protocol";
 import { hostApiVersion } from "@opensteer/deployment-authority";
@@ -102,9 +103,11 @@ export class MockPersonalHost {
       )
         socket.deliver({
           type: "host.events",
-          events: rows.filter(
-            (event) => this.#subscribed.get(socket) || !isDeviceAccessRequestEvent(event),
-          ),
+          events: rows
+            .filter((event) => this.#subscribed.get(socket) || !isDeviceAccessRequestEvent(event))
+            .map((event) =>
+              projectDeviceAccessRequestEvent(event, this.#subscribed.get(socket) === true),
+            ),
           throughSequence: this.#through,
         });
       else this.#snapshot(socket);
@@ -138,9 +141,9 @@ export class MockPersonalHost {
     for (const [socket, supportsDeviceAccess] of this.#subscribed)
       socket.deliver({
         type: "host.events",
-        events: events.filter(
-          (event) => supportsDeviceAccess || !isDeviceAccessRequestEvent(event),
-        ),
+        events: events
+          .filter((event) => supportsDeviceAccess || !isDeviceAccessRequestEvent(event))
+          .map((event) => projectDeviceAccessRequestEvent(event, supportsDeviceAccess)),
         throughSequence: through,
       });
   }

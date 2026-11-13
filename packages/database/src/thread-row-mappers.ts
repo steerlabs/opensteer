@@ -39,6 +39,13 @@ import type {
 export const threadPendingRequestsSelection = sql<number>`threads.pending_request_count`.as(
   "pendingRequests",
 );
+export function threadPendingRequestsForReader(deviceAccessRequests?: "include") {
+  return sql<number>`(select count(*)::integer from requests
+    where originating_thread_id = threads.id and status = 'pending'
+      and (${deviceAccessRequests === "include"} or kind <> 'device.access'))`.as(
+    "pendingRequests",
+  );
+}
 export const threadProviderSessionSelection = sql<ProviderSessionId | null>`(
   select id from provider_sessions
   where thread_id = threads.id and active

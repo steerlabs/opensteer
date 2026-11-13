@@ -117,11 +117,18 @@ boundary. Older personal database lineages require Start fresh. Within an epoch:
 - Ignore unknown capabilities, never let one gate mandatory behavior, and never rely on an optional
   feature a peer did not advertise.
 
-Released Needs you readers require known Request kinds. Device-access Requests therefore need
-explicit reader opt-in through the [client contract](../packages/protocol/src/client.ts), negotiated
-only with a Host advertising `devices-v1`. Legacy pages, snapshots and event delivery omit them;
-the device remains visible and the durable Request still holds its Run. Filtering never prevents
-the event cursor from advancing.
+Released Needs you readers require known Request kinds. A surface opts into `device.access` only
+when its UI can render and answer it; Host support alone is insufficient. Web and desktop declare
+`deviceAccessRequests: "include"` in their `HttpHostClient` options. The shared client sends the
+reader option only with a Host advertising `devices-v1`; mobile stays opted out until its sheet
+supports the kind. Legacy lists, snapshots, history, counts and live notifications omit it. Event
+counts retain their excluded-kind count at the original sequence so replay remains consistent after
+settlement. The durable Request still holds its Run, and filtering advances the event cursor.
+
+Account push installations do not negotiate Request kinds. Device-access Requests therefore produce
+no Account push publication, including generic alerts, previews and push badges, for any installation.
+Supported connected surfaces still receive live notifications. This keeps installed legacy phones
+from opening an unreadable question without requiring an Account or phone update.
 
 Runner proof format 2 is its own security boundary, separate from the epoch. The Host authenticates
 the complete raw descriptor JSON before one domain parse, so defaults, trimming and filtering cannot

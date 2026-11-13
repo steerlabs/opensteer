@@ -1053,6 +1053,7 @@ export class OpensteerStore {
     return threadStore.getAssignmentForOwner(this.#database, input);
   }
   async listThreadAssignmentsForOwner(input: {
+    readonly deviceAccessRequests?: "include";
     readonly before?: string;
     readonly maxBytes?: number;
     readonly maxItems?: number;
@@ -1600,6 +1601,7 @@ export class OpensteerStore {
     });
   }
   async taskPageForUser(input: {
+    readonly deviceAccessRequests?: "include";
     readonly active?: boolean;
     readonly before?: string;
     readonly done?: boolean;
@@ -1622,6 +1624,7 @@ export class OpensteerStore {
     return snapshotStore.nodeEventPageForOwner(this.#database, input);
   }
   async threadEventPageForOwner(input: {
+    readonly deviceAccessRequests?: "include";
     readonly view?: "conversation";
     readonly placeEvents?: "include";
     readonly aroundMessageId?: MessageId;

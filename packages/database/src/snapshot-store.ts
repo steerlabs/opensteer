@@ -57,7 +57,7 @@ import { type Kysely, type Transaction, sql } from "kysely";
 import { type DatabaseSchema } from "./schema.js";
 import { NotificationStateStore } from "./notification-state.js";
 import {
-  threadPendingRequestsSelection,
+  threadPendingRequestsForReader,
   threadProviderSessionSelection,
   threadContinuationIdentitySelection,
   threadsFromRows,
@@ -226,17 +226,26 @@ export async function deploymentSnapshot(
       const [recent, active, done, needsYou, resources] = await Promise.all([
         taskPageForUser(transaction, notificationState, {
           userId: ownerId,
+          ...(options.deviceAccessRequests
+            ? { deviceAccessRequests: options.deviceAccessRequests }
+            : {}),
           maxItems: 25,
           maxBytes: 48 * 1024,
         }),
         taskPageForUser(transaction, notificationState, {
           userId: ownerId,
+          ...(options.deviceAccessRequests
+            ? { deviceAccessRequests: options.deviceAccessRequests }
+            : {}),
           active: true,
           maxItems: 25,
           maxBytes: 48 * 1024,
         }),
         taskPageForUser(transaction, notificationState, {
           userId: ownerId,
+          ...(options.deviceAccessRequests
+            ? { deviceAccessRequests: options.deviceAccessRequests }
+            : {}),
           done: true,
           maxItems: 25,
           maxBytes: 48 * 1024,
@@ -295,7 +304,7 @@ export async function deploymentSnapshot(
           .selectFrom("threads")
           .selectAll()
           .select([
-            threadPendingRequestsSelection,
+            threadPendingRequestsForReader(options.deviceAccessRequests),
             threadProviderSessionSelection,
             threadContinuationIdentitySelection,
           ])
@@ -510,6 +519,7 @@ export async function taskPageForUser(
   notificationState: NotificationStateStore,
   input: {
     readonly active?: boolean;
+    readonly deviceAccessRequests?: "include";
     readonly before?: string;
     readonly done?: boolean;
     readonly maxBytes?: number;
@@ -542,7 +552,7 @@ export async function taskPageForUser(
       let page = tasks
         .selectAll("threads")
         .select([
-          threadPendingRequestsSelection,
+          threadPendingRequestsForReader(input.deviceAccessRequests),
           threadProviderSessionSelection,
           threadContinuationIdentitySelection,
         ]);
@@ -748,6 +758,7 @@ export async function threadEventPageForOwner(
   notificationState: NotificationStateStore,
   input: {
     readonly placeEvents?: "include";
+    readonly deviceAccessRequests?: "include";
     readonly aroundMessageId?: MessageId;
     readonly before?: string;
     readonly maxBytes?: number;
@@ -786,7 +797,7 @@ export async function threadEventPageForOwner(
         .selectFrom("threads")
         .selectAll("threads")
         .select([
-          threadPendingRequestsSelection,
+          threadPendingRequestsForReader(input.deviceAccessRequests),
           threadProviderSessionSelection,
           threadContinuationIdentitySelection,
         ])

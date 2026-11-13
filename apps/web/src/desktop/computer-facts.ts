@@ -31,7 +31,9 @@ export async function readComputerFacts(
     onAuthenticationRequired: () => undefined,
   });
   const [attention, linked] = await Promise.all([
-    rpc["attention.get"]({}).then(unwrapRpcResult),
+    rpc["attention.get"](
+      computer.capabilities?.includes("devices-v1") ? { deviceAccessRequests: "include" } : {},
+    ).then(unwrapRpcResult),
     rpc["teams.links.list"]({}).then(unwrapRpcResult),
   ]);
   const teams = await Promise.all(

@@ -1877,12 +1877,27 @@ function mockNeedsYou(
   };
 }
 
+function mockReaderThread<Thread extends { readonly id: string; readonly pendingRequests: number }>(
+  snapshot: Pick<PublicHostSnapshot, "requests">,
+  thread: Thread,
+  deviceAccessRequests?: "include" | "omit",
+): Thread {
+  if (deviceAccessRequests === "include") return thread;
+  const hidden = (snapshot.requests[thread.id] ?? []).filter(
+    (request) => request.kind === "device.access",
+  ).length;
+  return { ...thread, pendingRequests: Math.max(0, thread.pendingRequests - hidden) };
+}
+
 function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
   const handlers: Partial<HostApiHandlers> = {
-    "attention.get": async () => {
+    "attention.get": async (input) => {
       const snapshot = client.getSnapshot();
       return rpcSuccess({
-        needsYou: snapshot.waitingRequests.length,
+        needsYou: snapshot.waitingRequests.filter(
+          ({ request }) =>
+            input.deviceAccessRequests === "include" || request.kind !== "device.access",
+        ).length,
         unread: snapshot.threads.some(
           (thread) =>
             thread.listed &&
@@ -2220,7 +2235,12 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       return rpcSuccess(
         hostApi["tasks.list"].success.parse({
           readStates: page.map(({ thread }) => client.threadReadState(thread.id)),
-          tasks: page.map((entry) => ({ ...entry, thread: mockThread(entry.thread) })),
+          tasks: page.map((entry) => ({
+            ...entry,
+            thread: mockThread(
+              mockReaderThread(snapshot, entry.thread, input.deviceAccessRequests),
+            ),
+          })),
           window: {
             byteCount: 2,
             hasMore: end < entries.length,
@@ -2231,8 +2251,13 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         }),
       );
     },
-    "requests.list": async () => {
-      const { waitingRequests } = client.getSnapshot();
+    "requests.list": async (input) => {
+      const waitingRequests = client
+        .getSnapshot()
+        .waitingRequests.filter(
+          ({ request }) =>
+            input.deviceAccessRequests === "include" || request.kind !== "device.access",
+        );
       return rpcSuccess(
         hostApi["requests.list"].success.parse({
           requests: waitingRequests,
@@ -2340,13 +2365,13 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       if (!output) throw new Error("Tool output not found");
       return rpcSuccess({ output });
     },
-    "thread.events.list": async ({ threadId }) => {
+    "thread.events.list": async ({ threadId, deviceAccessRequests }) => {
       const thread = client.getSnapshot().threads.find((item) => item.id === threadId);
       if (!thread) throw new Error("Thread not found.");
       return rpcSuccess(
         hostApi["thread.events.list"].success.parse({
           readState: client.threadReadState(threadId),
-          thread: mockThread(thread),
+          thread: mockThread(mockReaderThread(client.getSnapshot(), thread, deviceAccessRequests)),
           events: [],
           threadId,
           window: { ...mockWindow(0), threadId },
@@ -2416,10 +2441,18 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         }),
       );
     },
-    "thread.assignments.list": async ({ open, threadId }) => {
+    "thread.assignments.list": async ({ open, threadId, deviceAccessRequests }) => {
       const assignments = client
         .listThreadAssignments(threadId)
-        .filter(({ status }) => !open || status === "open");
+        .filter(({ status }) => !open || status === "open")
+        .map((assignment) => ({
+          ...assignment,
+          workerThread: mockReaderThread(
+            client.getSnapshot(),
+            assignment.workerThread,
+            deviceAccessRequests,
+          ),
+        }));
       return rpcSuccess(
         hostApi["thread.assignments.list"].success.parse({
           assignments,
@@ -2483,7 +2516,9 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess(client.loadThreadInputQueue(input.threadId)),
     "thread.live.get": async (input) => rpcSuccess(client.liveStreams(input.threadId)),
     "thread.requests.list": async (input) => {
-      const requests = client.getSnapshot().requests[input.threadId] ?? [];
+      const requests = (client.getSnapshot().requests[input.threadId] ?? []).filter(
+        (request) => input.deviceAccessRequests === "include" || request.kind !== "device.access",
+      );
       return rpcSuccess(
         hostApi["thread.requests.list"].success.parse({
           requests,
@@ -3637,9 +3672,10 @@ export class MockHostClient implements HostClient {
         readStates: entries
           .slice(0, 100)
           .map(({ thread }) => this.#state.threadReadState(thread.id)),
-        tasks: entries
-          .slice(0, 100)
-          .map((entry) => ({ ...entry, thread: mockThread(entry.thread) })),
+        tasks: entries.slice(0, 100).map((entry) => ({
+          ...entry,
+          thread: mockThread(mockReaderThread(snapshot, entry.thread, deviceAccessRequests)),
+        })),
         window: {
           ...mockWindow(Math.min(100, entries.length)),
           hasMore: entries.length > 100,
@@ -3652,7 +3688,9 @@ export class MockHostClient implements HostClient {
       deploymentId: snapshot.deploymentId,
       sequence,
       serializedBytes: 1,
-      threads: snapshot.threads.slice(0, 100).map(mockThread),
+      threads: snapshot.threads
+        .slice(0, 100)
+        .map((thread) => mockThread(mockReaderThread(snapshot, thread, deviceAccessRequests))),
       threadWindow: mockWindow(Math.min(100, snapshot.threads.length)),
       messages: [],
       messageWindows: [],
@@ -7764,14 +7802,34 @@ class MockHostState {
     if (this.snapshot.machines.find((machine) => machine.id === machineId)?.kind === "home")
       throw new Error("Home cannot be removed");
     this.sessions = this.sessions.filter((session) => session.deviceId !== machineId);
+    let snapshot = this.snapshot;
+    for (const request of Object.values(snapshot.requests).flat()) {
+      if (
+        request.status !== "pending" ||
+        request.payload.kind !== "device.access" ||
+        request.payload.machineId !== machineId
+      )
+        continue;
+      snapshot = this.settledRequestSnapshot(
+        {
+          ...request,
+          status: "cancelled",
+          cancellationReason: "resource-deleted",
+          resolvedAt: this.now().toISOString(),
+          resolvedBy: null,
+          response: null,
+        },
+        snapshot,
+      );
+    }
     // The profiles that live on it go with it, as the Host deletes them.
     this.update({
-      ...this.snapshot,
-      browserProfileHomes: this.snapshot.browserProfileHomes?.filter((id) => id !== machineId),
-      browserProfiles: this.snapshot.browserProfiles.filter(
+      ...snapshot,
+      browserProfileHomes: snapshot.browserProfileHomes?.filter((id) => id !== machineId),
+      browserProfiles: snapshot.browserProfiles.filter(
         (profile) => profile.homeRunnerId !== machineId,
       ),
-      machines: this.snapshot.machines.filter((machine) => machine.id !== machineId),
+      machines: snapshot.machines.filter((machine) => machine.id !== machineId),
     });
   }
 
@@ -8601,7 +8659,6 @@ class MockHostState {
     status: "declined" | "fulfilled",
     value: Readonly<Record<string, string | null>>,
   ): void {
-    const threadId = request.originatingThreadId;
     const timestamp = this.now().toISOString();
     const resolved = ResolvedRequestSchema.parse({
       ...request,
@@ -8610,24 +8667,33 @@ class MockHostState {
       response: { kind: "external", value },
       status,
     });
-    this.update({
-      ...this.snapshot,
+    this.update(this.settledRequestSnapshot(resolved));
+  }
+
+  private settledRequestSnapshot(
+    resolved: Exclude<Request, { status: "pending" }>,
+    snapshot = this.snapshot,
+  ): HostSnapshot {
+    const threadId = resolved.originatingThreadId;
+    const request = resolved;
+    return {
+      ...snapshot,
       requests: {
-        ...this.snapshot.requests,
-        [threadId]: (this.snapshot.requests[threadId] ?? []).filter(
+        ...snapshot.requests,
+        [threadId]: (snapshot.requests[threadId] ?? []).filter(
           (candidate) => candidate.id !== request.id,
         ),
       },
-      threads: this.snapshot.threads.map((thread) =>
+      threads: snapshot.threads.map((thread) =>
         thread.id === threadId
           ? { ...thread, pendingRequests: Math.max(0, thread.pendingRequests - 1) }
           : thread,
       ),
       transcripts: {
-        ...this.snapshot.transcripts,
-        [threadId]: [...(this.snapshot.transcripts[threadId] ?? []), requestReceipt(resolved)],
+        ...snapshot.transcripts,
+        [threadId]: [...(snapshot.transcripts[threadId] ?? []), requestReceipt(resolved)],
       },
-    });
+    };
   }
 
   private settleComputerAppAccess(request: Request, decision: "declined" | "fulfilled"): void {
@@ -8804,8 +8870,8 @@ class MockHostState {
                   browser: access.browser,
                   apps: access.apps,
                   reach: access.files ? "owner" : "nobody",
-                  commands: access.files,
-                  forwarding: access.files,
+                  commands: true,
+                  forwarding: true,
                   shares: [],
                 },
               }
@@ -9001,8 +9067,8 @@ class MockHostState {
                   browser: access.browser,
                   apps: access.apps,
                   reach: access.files ? "owner" : "nobody",
-                  commands: access.files,
-                  forwarding: access.files,
+                  commands: true,
+                  forwarding: true,
                   shares: [],
                 },
               }
