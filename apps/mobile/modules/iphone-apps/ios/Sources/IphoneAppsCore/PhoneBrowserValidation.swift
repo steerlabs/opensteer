@@ -45,4 +45,28 @@ enum PhoneBrowserValidation {
     }
     _ = try WireField.int(object, "connectionGeneration", range: 1...safeInteger)
   }
+
+  /// The browser module JavaScript advertises (`descriptor.ts`), admitted only as the native
+  /// qualification allows; `phone-descriptors.v1.json` keeps both sides on one wire. Returns its storage.
+  static func descriptor(_ descriptor: [String: Any], qualification: [String: Any]) throws -> String {
+    guard qualification["browser"] as? Bool == true, qualification["sharedControl"] as? Bool == true,
+      qualification["platform"] as? String == "ios",
+      descriptor["runtimeId"] as? String == qualification["runtimeId"] as? String,
+      let storage = descriptor["localProfileStorage"] as? [String: Any], storage["engine"] as? String == "wkwebview",
+      Set(storage.keys) == Set(["storageInstanceId", "engine"]),
+      storage["storageInstanceId"] as? String == qualification["storageInstanceId"] as? String,
+      let storageId = storage["storageInstanceId"] as? String, UUID(uuidString: storageId) != nil else { throw PhoneBrowserFailure.forbidden }
+    let expected = ["wireVersion", "navigationVersion", "navigationAttributionVersion", "tabRestoreVersion", "popupFollowVersion", "sharedControl", "targetControl", "rasterDemand", "basicInput", "surfaceState"]
+    guard Set(descriptor.keys).isSubset(of: Set(expected + ["runtimeId", "localProfileStorage", "fileStaging", "agentActions"])) else { throw PhoneBrowserFailure.forbidden }
+    for field in expected { _ = try WireField.int(descriptor, field, range: field == "wireVersion" ? 2...2 : 1...1) }
+    if descriptor["agentActions"] != nil {
+      guard qualification["agentActions"] as? Bool == true else { throw PhoneBrowserFailure.forbidden }
+      _ = try WireField.int(descriptor, "agentActions", range: 1...1)
+    }
+    if descriptor["fileStaging"] != nil {
+      guard #available(iOS 18.4, *), qualification["fileStaging"] as? Bool == true,
+        boolean(descriptor["fileStaging"]), descriptor["fileStaging"] as? Bool == true else { throw PhoneBrowserFailure.forbidden }
+    }
+    return storageId
+  }
 }

@@ -23,9 +23,14 @@ class CoreTest {
         for (entry in vector["cases"]!!.jsonArray) {
             val case = entry.jsonObject
             val accepted = case["accepted"]!!.jsonPrimitive.boolean
-            if (accepted) assertEquals(vector.obj("claims"), AttachTickets.verifyToken(case.text("token", max = 16384), vector.text("runtimeId"), vector.number("now"), keys))
+            if (accepted) assertEquals(case["claims"] ?: vector.obj("claims"), AttachTickets.verifyToken(case.text("token", max = 16384), vector.text("runtimeId"), vector.number("now"), keys))
             else refused { AttachTickets.verifyToken(case.text("token", max = 16384), vector.text("runtimeId"), vector.number("now"), keys) }
         }
+    }
+    @Test fun `native browser descriptor is the one JavaScript writes`() {
+        val android = vector("phone-descriptors").obj("android")
+        assertEquals(android.obj("browser"), BrowserDescriptor.from(android.obj("qualification")))
+        refused("unsupported") { BrowserDescriptor.from(JsonObject(android.obj("qualification") + ("sharedControl" to JsonPrimitive(false)))) }
     }
     @Test fun `native auxiliary state consumes shared fences and refuses expired equal fences`() {
         val vector = vector("fences")

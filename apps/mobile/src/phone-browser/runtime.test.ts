@@ -91,3 +91,33 @@ test("erasure waits for lifecycle disposal instead of racing a second native del
   expect(confirmed).toBe(true);
   expect(state.dispose).toHaveBeenCalledOnce();
 });
+
+test("a browser that failed to start tries again the next time the app opens", async () => {
+  vi.resetModules();
+  vi.clearAllMocks();
+  state.dispose.mockResolvedValue();
+  state.initialize.mockRejectedValueOnce(new Error("forbidden")).mockResolvedValue();
+  const { startPhoneBrowserRuntime } = await import("./runtime.js");
+  startPhoneBrowserRuntime({
+    getEnrollment: () => ({ deploymentId: "deployment", runnerId: "runner" }),
+    subscribeEnrollment: () => () => {},
+    loadNativePort: async () => new FakePhoneBrowserNative(),
+    subscribeErasure: () => () => {},
+    retryErasure: async () => {},
+  });
+  await vi.waitFor(() => expect(state.dispose).toHaveBeenCalledOnce(), {
+    timeout: 2_000,
+    interval: 5,
+  });
+  // Each switch settles (every queued microtask) long before a person makes the next one.
+  const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+  await settle();
+  state.change("background");
+  await settle();
+  state.change("active");
+  await vi.waitFor(() => expect(state.foreground).toHaveBeenCalledWith(true), {
+    timeout: 2_000,
+    interval: 5,
+  });
+  expect(state.initialize).toHaveBeenCalledTimes(2);
+});
