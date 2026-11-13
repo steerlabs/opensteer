@@ -55,7 +55,7 @@ class PhoneDisplayModule : Module() {
     }
     View(PhoneDisplayPictureView::class) {
       Name("PhoneDisplayPicture")
-      Events("onCleared")
+      Events("onCleared", "onShown")
       OnViewDestroys { view: PhoneDisplayPictureView -> view.destroy() }
       AsyncFunction("clear") { view: PhoneDisplayPictureView, generation: Int -> view.clear(generation) }
       AsyncFunction("present") { view: PhoneDisplayPictureView, bytes: ByteArray, metadata: PictureMetadata, promise: Promise ->
@@ -283,6 +283,7 @@ class PhoneDisplayView(context: Context, appContext: AppContext) : ExpoView(cont
  */
 class PhoneDisplayPictureView(context: Context, appContext: AppContext) : ExpoView(context, appContext) {
   val onCleared by EventDispatcher()
+  val onShown by EventDispatcher()
   private val thread = HandlerThread("opensteer-picture-decoder").apply { start() }
   private val worker = Handler(thread.looper)
   private val main = Handler(Looper.getMainLooper())
@@ -300,6 +301,10 @@ class PhoneDisplayPictureView(context: Context, appContext: AppContext) : ExpoVi
   fun clear(generation: Int) {
     queue.clear(generation)
     picture.show(null, null)
+  }
+  /** JavaScript may draw again what this view dropped while it could not show. */
+  private fun shownAgain() {
+    if (showing) onShown(mapOf("generation" to queue.generation))
   }
   /** Leaves the generation alone: the same deliveries may draw once the view is shown again. */
   private fun blank() {
@@ -324,7 +329,7 @@ class PhoneDisplayPictureView(context: Context, appContext: AppContext) : ExpoVi
       }
     }
   }
-  override fun onAttachedToWindow() { super.onAttachedToWindow(); attached = true }
+  override fun onAttachedToWindow() { super.onAttachedToWindow(); attached = true; shownAgain() }
   override fun onDetachedFromWindow() {
     attached = false; blank()
     super.onDetachedFromWindow()
@@ -332,7 +337,7 @@ class PhoneDisplayPictureView(context: Context, appContext: AppContext) : ExpoVi
   override fun onWindowVisibilityChanged(visibility: Int) {
     super.onWindowVisibilityChanged(visibility)
     visible = visibility == View.VISIBLE
-    if (!visible) blank()
+    if (!visible) blank() else shownAgain()
   }
   fun destroy() {
     destroyed = true

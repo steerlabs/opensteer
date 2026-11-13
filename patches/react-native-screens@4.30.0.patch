@@ -1,3 +1,19 @@
+diff --git a/RNScreens.podspec b/RNScreens.podspec
+index 3f20bfee9bed3e96275be0d5ecb04596c66966ef..f5c297cbe9e3cf2a204127051464de1f08401c89 100644
+--- a/RNScreens.podspec
++++ b/RNScreens.podspec
+@@ -52,7 +52,10 @@ Pod::Spec.new do |s|
+   s.requires_arc = true
+ 
+   if !gamma_project_enabled
+-    s.exclude_files = "ios/gamma/**/*.#{source_files_exts}"
++    # The scroll-to-top guard stands alone, and iOS 27 bars need it outside Gamma.
++    s.exclude_files = Dir.children(File.join(__dir__, "ios/gamma"))
++      .reject { |entry| entry == "scroll-to-top-guard" }
++      .map { |entry| "ios/gamma/#{entry}/**/*.#{source_files_exts}" }
+   else
+     s.exclude_files = "ios/stubs/**/*.#{source_files_exts}"
+     Pod::UI.puts "[RNScreens] Gamma project enabled. Including source files."
 diff --git a/ios/RNSScreenStackHeaderConfig.mm b/ios/RNSScreenStackHeaderConfig.mm
 index e217b2411d20c85db3ec84bb87765c1e9407fd3b..4dc60669c04dd549bf9c9d9252642ff2588fb970 100644
 --- a/ios/RNSScreenStackHeaderConfig.mm
@@ -38,3 +54,26 @@ index e217b2411d20c85db3ec84bb87765c1e9407fd3b..4dc60669c04dd549bf9c9d9252642ff2
    };
  
    return edgeInsets;
+diff --git a/ios/stubs/RNSGammaStubs.h b/ios/stubs/RNSGammaStubs.h
+index 816a4e64d978802c5a6e50c358ca224c3522622b..ce49c9ae035d9869e00a7fdafd45fd66888240c5 100644
+--- a/ios/stubs/RNSGammaStubs.h
++++ b/ios/stubs/RNSGammaStubs.h
+@@ -39,7 +39,4 @@ NS_ASSUME_NONNULL_BEGIN
+ @interface RNSStackHeaderItemSpacerComponentView : NSObject
+ @end
+ 
+-@interface RNSScrollToTopGuard : NSObject
+-@end
+-
+ NS_ASSUME_NONNULL_END
+diff --git a/ios/stubs/RNSGammaStubs.mm b/ios/stubs/RNSGammaStubs.mm
+index c35697943e21e22237edc4908730e1640a89c0f3..7b168c4892a7ca4f65647a0a97ce173422ce6f61 100644
+--- a/ios/stubs/RNSGammaStubs.mm
++++ b/ios/stubs/RNSGammaStubs.mm
+@@ -29,6 +29,3 @@
+ 
+ @implementation RNSStackHeaderItemSpacerComponentView
+ @end
+-
+-@implementation RNSScrollToTopGuard
+-@end

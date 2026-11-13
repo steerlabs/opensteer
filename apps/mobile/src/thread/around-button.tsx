@@ -7,6 +7,7 @@ import { ActingDot } from "../browser/acting-dot.js";
 import { color, headerFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
+import { BarControl } from "../ui/bar-control.js";
 import { appear } from "../ui/motion.js";
 import { TaskMark } from "../ui/task-mark.js";
 import {
@@ -53,10 +54,10 @@ export function barOverContentOptions(glass: boolean): NativeStackNavigationOpti
  * navigator merges options, so a slot left out would keep the last control.
  */
 export function aroundHeaderOptions(control: ReactElement | null): NativeStackNavigationOptions {
+  const item = control === null ? null : <BarControl>{control}</BarControl>;
   return {
-    headerRight: () => control,
-    unstable_headerRightItems: () =>
-      control === null ? [] : [{ element: control, type: "custom" }],
+    headerRight: () => item,
+    unstable_headerRightItems: () => (item === null ? [] : [{ element: item, type: "custom" }]),
   };
 }
 

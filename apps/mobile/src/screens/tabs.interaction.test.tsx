@@ -432,6 +432,7 @@ vi.mock("@react-navigation/native", async () => {
     useNavigation: () => React.useContext(ScreenContext).navigation,
     useNavigationState: (select: (state: object) => unknown) =>
       select({ index: 0, routes: [{ key: "home", name: "Home", params: {} }] }),
+    useRoute: () => ({ key: "home", name: "Home", params: {} }),
   };
 });
 vi.mock("expo", async () => {

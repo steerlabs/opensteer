@@ -24,7 +24,7 @@ public final class PhoneDisplayModule: Module {
     }
     View(PhoneDisplayPictureView.self) {
       ViewName("PhoneDisplayPicture")
-      Events("onCleared")
+      Events("onCleared", "onShown")
       AsyncFunction("clear") { (view: PhoneDisplayPictureView, generation: Int) in view.clear(generation) }
       AsyncFunction("present") { (view: PhoneDisplayPictureView, bytes: Data, metadata: PictureMetadata, promise: Promise) in
         view.present(bytes, metadata.request) { promise.resolve($0.rawValue) }
@@ -208,6 +208,7 @@ final class PhoneDisplayView: ExpoView {
 /// this view, and clear before anything else may aim input at them.
 final class PhoneDisplayPictureView: ExpoView {
   let onCleared = EventDispatcher()
+  let onShown = EventDispatcher()
   private static let decoder = DispatchQueue(label: "com.opensteer.display.picture", qos: .userInteractive)
   private let picture = CALayer()
   private let queue = PictureQueue<Data>()
@@ -218,17 +219,21 @@ final class PhoneDisplayPictureView: ExpoView {
   /// replaces or removes the picture settles it at once: a commit's completion
   /// may wait indefinitely while the view is off screen or the app is inactive.
   private var undrawn: PictureReceipt?
-  private var observer: NSObjectProtocol?
+  private var observers: [NSObjectProtocol] = []
   required init(appContext: AppContext? = nil) {
     super.init(appContext: appContext)
     clipsToBounds = true
     picture.contentsGravity = .resize
     picture.masksToBounds = true
     layer.addSublayer(picture)
-    observer = NotificationCenter.default.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.blank() }
+    let center = NotificationCenter.default
+    observers = [
+      center.addObserver(forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.blank() },
+      center.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in self?.shownAgain() },
+    ]
   }
   deinit {
-    if let observer { NotificationCenter.default.removeObserver(observer) }
+    for observer in observers { NotificationCenter.default.removeObserver(observer) }
     queue.clear(queue.generation)
     undrawn?(.dropped)
   }
@@ -241,12 +246,16 @@ final class PhoneDisplayPictureView: ExpoView {
   }
   override func didMoveToWindow() {
     super.didMoveToWindow()
-    if window == nil { blank() }
+    if window == nil { blank() } else { shownAgain() }
   }
   private var showing: Bool { window != nil && UIApplication.shared.applicationState == .active }
   func clear(_ generation: Int) {
     queue.clear(generation)
     remove()
+  }
+  /// JavaScript may draw again what this view dropped while it could not show.
+  private func shownAgain() {
+    if showing { onShown(["generation": queue.generation]) }
   }
   /// Leaves the generation alone: the same deliveries may draw once the view is shown again.
   private func blank() {

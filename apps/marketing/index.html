@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>Opensteer</title>
+    <title>Opensteer: turn your computer into an AI computer</title>
     <meta
       name="description"
-      content="Turn your computer into a team of AI employees. Give them real work in the apps and accounts already on your Mac, and steer it all from your phone."
+      content="Opensteer turns your computer into an AI computer you can use from anywhere. Agents work in the browser, logins, apps and files already on your Mac, on the AI you already pay for. Free and open source."
     />
   </head>
   <body>
@@ -205,6 +205,45 @@
           stroke-linecap="round"
         />
       </symbol>
+      <symbol id="i-cloud" viewBox="0 0 16 16">
+        <path
+          d="M4.5 12.5h7a3 3 0 0 0 .4-5.97A4.5 4.5 0 0 0 3.6 6.6 3 3 0 0 0 4.5 12.5z"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linejoin="round"
+        />
+      </symbol>
+      <symbol id="i-chip" viewBox="0 0 24 24">
+        <rect
+          x="6"
+          y="6"
+          width="12"
+          height="12"
+          rx="2.5"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+        />
+        <rect x="9.5" y="9.5" width="5" height="5" rx="1" fill="currentColor" />
+        <path
+          d="M9.5 2.5V6M14.5 2.5V6M9.5 18v3.5M14.5 18v3.5M2.5 9.5H6M2.5 14.5H6M18 9.5h3.5M18 14.5h3.5"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+        />
+      </symbol>
+      <symbol id="d-key" viewBox="0 0 48 48">
+        <rect x="2" y="2" width="44" height="44" rx="10.5" fill="url(#dg-blue)" />
+        <circle cx="18" cy="24" r="7" fill="none" stroke="#fff" stroke-width="3.4" />
+        <path
+          d="M25 24h12M33 24v5M37.5 24v4"
+          fill="none"
+          stroke="#fff"
+          stroke-width="3.4"
+          stroke-linecap="round"
+        />
+      </symbol>
       <symbol id="i-xmark" viewBox="0 0 16 16">
         <path
           d="M4.5 4.5l7 7M11.5 4.5l-7 7"
@@ -251,6 +290,20 @@
         <linearGradient id="dg-orb" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0" stop-color="#dcdcdc" />
           <stop offset="1" stop-color="#e9c3b5" />
+        </linearGradient>
+        <linearGradient
+          id="sap-lg"
+          x1="206.19"
+          y1="0"
+          x2="206.19"
+          y2="204"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop offset="0" stop-color="#00b1eb" />
+          <stop offset=".212" stop-color="#009ad9" />
+          <stop offset=".519" stop-color="#007fc4" />
+          <stop offset=".792" stop-color="#006eb8" />
+          <stop offset="1" stop-color="#0069b4" />
         </linearGradient>
         <linearGradient id="dg-globe" x1="0" y1="0" x2="1" y2="1">
           <stop offset="0" stop-color="#6fd0ff" />
@@ -319,16 +372,6 @@
           stroke-linejoin="round"
         />
       </symbol>
-      <symbol id="d-msgs" viewBox="0 0 48 48">
-        <rect x="2" y="2" width="44" height="44" rx="10.5" fill="url(#dg-teal)" />
-        <path
-          d="M24 12c-8 0-14 5-14 11.5 0 3.6 1.9 6.8 4.9 8.9L13.5 37l5.8-2.7c1.5.4 3 .6 4.7.6 8 0 14-5 14-11.4S32 12 24 12z"
-          fill="#fff"
-        />
-        <circle cx="18" cy="23.5" r="1.9" fill="#15a595" />
-        <circle cx="24" cy="23.5" r="1.9" fill="#15a595" />
-        <circle cx="30" cy="23.5" r="1.9" fill="#15a595" />
-      </symbol>
       <symbol id="d-cal" viewBox="0 0 48 48">
         <rect x="2" y="2" width="44" height="44" rx="10.5" fill="#fff" />
         <path d="M2 12.5A10.5 10.5 0 0 1 12.5 2h23A10.5 10.5 0 0 1 46 12.5V15H2z" fill="#f0453a" />
@@ -353,8 +396,18 @@
           font-weight="300"
           fill="#1d1d1f"
         >
-          10
+          17
         </text>
+      </symbol>
+      <symbol id="d-msgs" viewBox="0 0 48 48">
+        <rect x="2" y="2" width="44" height="44" rx="10.5" fill="url(#dg-teal)" />
+        <path
+          d="M24 12c-8 0-14 5-14 11.5 0 3.6 1.9 6.8 4.9 8.9L13.5 37l5.8-2.7c1.5.4 3 .6 4.7.6 8 0 14-5 14-11.4S32 12 24 12z"
+          fill="#fff"
+        />
+        <circle cx="18" cy="23.5" r="1.9" fill="#15a595" />
+        <circle cx="24" cy="23.5" r="1.9" fill="#15a595" />
+        <circle cx="30" cy="23.5" r="1.9" fill="#15a595" />
       </symbol>
       <symbol id="d-os" viewBox="0 0 48 48">
         <rect x="2" y="2" width="44" height="44" rx="10.5" fill="url(#dg-os)" />
@@ -478,12 +531,15 @@
           stroke-linejoin="round"
         />
       </symbol>
-      <symbol id="t-support" viewBox="0 0 16 16">
-        <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-          <circle cx="8" cy="8" r="6" />
-          <circle cx="8" cy="8" r="2.4" />
-          <path d="M3.8 3.8l2.5 2.5M9.7 9.7l2.5 2.5M12.2 3.8L9.7 6.3M6.3 9.7l-2.5 2.5" />
-        </g>
+      <symbol id="t-billing" viewBox="0 0 16 16">
+        <path
+          d="M3.5 1.8h9v12.4l-1.5-1-1.5 1-1.5-1-1.5 1-1.5-1-1.5 1zM6 5.5h4M6 8h4M6 10.5h2.5"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
       </symbol>
       <symbol id="t-engineer" viewBox="0 0 16 16">
         <path
@@ -495,11 +551,15 @@
           stroke-linejoin="round"
         />
       </symbol>
-      <symbol id="t-sales" viewBox="0 0 16 16">
-        <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
-          <rect x="1.8" y="5" width="12.4" height="8.2" rx="1.8" />
-          <path d="M5.8 5V3.6a1 1 0 0 1 1-1h2.4a1 1 0 0 1 1 1V5M1.8 9h12.4" />
-        </g>
+      <symbol id="t-legal" viewBox="0 0 16 16">
+        <path
+          d="M8 2v11.5M5 13.8h6M3 4.5h10M3 4.5 1.2 9a1.9 1.9 0 0 0 3.6 0zM13 4.5 11.2 9a1.9 1.9 0 0 0 3.6 0z"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
       </symbol>
       <symbol id="t-doc" viewBox="0 0 16 16">
         <path
@@ -589,11 +649,11 @@
             source<svg><use href="#m-chevr" /></svg
           ></a>
           <h1 data-in style="--d: 1">
-            Turn your computer into <br />a team of <em>AI employees.</em>
+            Turn your computer <br />into an <em>AI&nbsp;computer.</em>
           </h1>
           <p class="hero__sub" data-in style="--d: 2">
-            Give them real work in the apps and accounts already on your Mac, and steer it all from
-            your phone. Nothing to set up.
+            Agents work in the browser, logins, apps and files already on your Mac. Use it from
+            anywhere.
           </p>
           <div class="hero__ctas" data-in style="--d: 3">
             <a class="btn btn--accent" href="{{macDownload}}"
@@ -613,8 +673,50 @@
       <section class="show" aria-label="Demo: three agents at work on a Mac, steered from a phone">
         <div class="wrap" id="demo"></div>
         <div class="rail">
-          <span>Runs on the agents you already pay for</span>
+          <span>Run it on</span>
           <div class="rail__set" id="rail" role="group" aria-label="Agent engines"></div>
+        </div>
+      </section>
+
+      <section class="row" id="why">
+        <div class="wrap">
+          <div class="row__head reveal">
+            <h2>
+              Your agent doesn't need <br />a cloud computer. It&nbsp;needs&nbsp;<em>yours.</em>
+            </h2>
+          </div>
+          <div class="vs reveal">
+            <div class="vs__side vs__side--cloud">
+              <p class="vs__who">
+                <svg><use href="#i-cloud" /></svg>A cloud computer
+              </p>
+              <ul>
+                <li>
+                  <svg><use href="#i-xmark" /></svg>Starts empty
+                </li>
+                <li>
+                  <svg><use href="#i-xmark" /></svg>Connect and sign in to everything. Again.
+                </li>
+                <li>
+                  <svg><use href="#i-xmark" /></svg>Then it gets blocked
+                </li>
+              </ul>
+            </div>
+            <div class="vs__side vs__side--yours">
+              <p class="vs__who"><span class="orb"></span>Your computer</p>
+              <ul>
+                <li>
+                  <svg><use href="#i-check" /></svg>Your apps and files are already there
+                </li>
+                <li>
+                  <svg><use href="#i-check" /></svg>Already signed in
+                </li>
+                <li>
+                  <svg><use href="#i-check" /></svg>Your own browser, from your own IP
+                </li>
+              </ul>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -622,8 +724,23 @@
         <div class="wrap">
           <div class="row__head reveal">
             <h2>Already signed in.</h2>
+            <ul class="haves" aria-label="What your agents use">
+              <li>
+                <svg><use href="#d-web" /></svg>Your browser
+              </li>
+              <li>
+                <svg><use href="#d-key" /></svg>Your logins
+              </li>
+              <li>
+                <svg><use href="#d-cols" /></svg>Your apps
+              </li>
+              <li>
+                <svg><use href="#d-files" /></svg>Your files
+              </li>
+            </ul>
             <p>
-              Your agents use the Chrome sessions, saved logins, apps and files already on your Mac.
+              Agents work in the portals, desktop apps and saved logins already on your Mac, even
+              the ones with no API.
             </p>
           </div>
           <div class="shot shot--chrome reveal" id="signedShot" aria-hidden="true"></div>
@@ -633,10 +750,158 @@
       <section class="row" id="anywhere">
         <div class="wrap">
           <div class="row__head reveal">
-            <h2>Steer from anywhere.</h2>
-            <p>Phone, voice, web, Slack or iMessage. It asks before it spends, sends or ships.</p>
+            <h2>Watch it work. <br />Approve from <em>anywhere.</em></h2>
+            <p>
+              Say it on your phone, or message it in Slack. When it needs you, answer with a tap.
+            </p>
           </div>
           <div class="steer reveal" id="steerShot" aria-hidden="true"></div>
+        </div>
+      </section>
+
+      <section class="row" id="devices">
+        <div class="wrap">
+          <div class="row__head reveal">
+            <h2>Connect <em>your devices.</em></h2>
+            <p>
+              Your agent lives on your Mac. Give it your phone, your other computers and your home.
+            </p>
+          </div>
+          <ul class="devs reveal">
+            <li class="dev">
+              <div class="dev__pic dev__pic--chat" aria-hidden="true">
+                <div class="msgs">
+                  <div class="msgs__who"><span class="msgs__av">M</span>Maya · Brightline</div>
+                  <p class="bub">Did our invoice go out?</p>
+                  <p class="bub bub--me">Sent this morning. LUMEN-0143, $12,675, due Dec 1.</p>
+                  <span class="msgs__sent">Delivered by your agent</span>
+                </div>
+              </div>
+              <h3>Integrate iMessage</h3>
+              <p>Your agent reads your texts and replies in iMessage directly.</p>
+            </li>
+            <li class="dev">
+              <div class="dev__pic dev__pic--droid" aria-hidden="true">
+                <div class="droid">
+                  <span class="droid__state">Calling…</span>
+                  <span class="droid__av">DP</span>
+                  <span class="droid__name">Dr. Patel's office</span>
+                  <span class="droid__time">0:42</span>
+                  <span class="droid__keys">
+                    <i
+                      ><svg viewBox="0 0 24 24">
+                        <rect x="9" y="3" width="6" height="11" rx="3" />
+                        <path d="M6 10v1a6 6 0 0 0 12 0v-1M12 17v4M9 21h6" /></svg
+                    ></i>
+                    <i
+                      ><svg viewBox="0 0 24 24">
+                        <path
+                          d="m11 5-5 4H3v6h3l5 4zM15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14"
+                        /></svg
+                    ></i>
+                    <i class="droid__end"
+                      ><svg viewBox="0 0 24 24">
+                        <path d="M3 13v-3c5-4 13-4 18 0v3l-5 1v-4a14 14 0 0 0-8 0v4z" /></svg
+                    ></i>
+                  </span>
+                </div>
+              </div>
+              <h3>Give it its own phone</h3>
+              <p>
+                Your agent deserves a phone of its own. On an Android Agent Phone it uses real apps,
+                sends texts and makes calls.
+              </p>
+            </li>
+            <li class="dev">
+              <div class="dev__pic dev__pic--home" aria-hidden="true">
+                <ul class="tiles">
+                  <li>
+                    <svg viewBox="0 0 20 20">
+                      <rect x="3" y="4" width="14" height="9" rx="1.5" />
+                      <path d="m3 13-1.5 3h17L17 13M8 16h4" />
+                    </svg>
+                    <b>Work laptop</b><span>Online</span>
+                  </li>
+                  <li>
+                    <svg viewBox="0 0 20 20">
+                      <rect x="2.5" y="5.5" width="15" height="9" rx="3" />
+                      <path d="M5 12h5M14.5 12h.01" />
+                    </svg>
+                    <b>Mac mini</b><span>Online</span>
+                  </li>
+                  <li class="tiles__on">
+                    <svg viewBox="0 0 20 20">
+                      <path
+                        d="M8 14h4M8.5 17h3M7 11.5a5 5 0 1 1 6 0c-.7.5-1 1.2-1 2.5H8c0-1.3-.3-2-1-2.5Z"
+                      />
+                    </svg>
+                    <b>Lights</b><span>On</span>
+                  </li>
+                  <li>
+                    <svg viewBox="0 0 20 20">
+                      <circle cx="10" cy="10" r="7.5" />
+                      <path d="m10 10 3-3M5.5 10h.01M10 5.5h.01" />
+                    </svg>
+                    <b>Thermostat</b><span>68°</span>
+                  </li>
+                  <li>
+                    <svg viewBox="0 0 20 20">
+                      <rect x="4" y="9" width="12" height="9" rx="2" />
+                      <path d="M7 9V6.5a3 3 0 0 1 6 0V9" />
+                    </svg>
+                    <b>Front door</b><span>Locked</span>
+                  </li>
+                  <li>
+                    <svg viewBox="0 0 20 20">
+                      <path d="M2.5 8 10 3l7.5 5v9h-15z" />
+                      <path d="M5.5 17V9.5h9V17M5.5 12h9M5.5 14.5h9" />
+                    </svg>
+                    <b>Garage</b><span>Closed</span>
+                  </li>
+                </ul>
+              </div>
+              <h3>Your computers and your home</h3>
+              <p>
+                Your work laptop, the Mac mini in the closet, the lights and the front door.
+                Automate everything in your life.
+              </p>
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="row" id="ai">
+        <div class="wrap">
+          <div class="row__head reveal">
+            <h2>Bring <em>any</em> AI.</h2>
+            <p>
+              On the subscriptions you already pay for, with no API bills. Or keep it fully local
+              with open models on your own hardware.
+            </p>
+          </div>
+          <ul class="ais reveal">
+            <li>
+              <svg><use href="#e-anthropic" /></svg>Claude Code
+            </li>
+            <li>
+              <svg><use href="#e-openai" /></svg>Codex
+            </li>
+            <li>
+              <svg><use href="#e-cursor" /></svg>Cursor
+            </li>
+            <li>
+              <svg><use href="#e-xai" /></svg>Grok
+            </li>
+            <li>
+              <svg><use href="#e-opencode" /></svg>OpenCode
+            </li>
+            <li>
+              <svg><use href="#e-pi" /></svg>Pi
+            </li>
+            <li class="ais__local">
+              <svg><use href="#i-chip" /></svg>Open models<b>Local</b>
+            </li>
+          </ul>
         </div>
       </section>
 
@@ -656,8 +921,8 @@
       <section class="row" id="yours">
         <div class="wrap">
           <div class="row__head reveal">
-            <h2>Where everything lives.</h2>
-            <p>Your work stays on your Mac. Opensteer's servers never hold it.</p>
+            <h2>Your work stays on <em>your Mac.</em></h2>
+            <p>Your agents run on your computer. Opensteer's servers never hold your work.</p>
           </div>
           <div class="lives reveal">
             <div style="--i: 0"><span>Your files</span><b>This Mac</b></div>
@@ -697,18 +962,18 @@
       <section class="closing">
         <div class="wrap reveal">
           <span class="closing__icon" aria-hidden="true"><span class="orb"></span></span>
-          <h2>Opensteer for Mac</h2>
-          <p>Free and open source.</p>
+          <h2>Free and <em>open source.</em></h2>
+          <p>Opensteer turns the Mac you already have into an AI computer.</p>
           <a class="btn btn--accent" href="{{macDownload}}"
             ><svg><use href="#i-download" /></svg>Download for Mac</a
           >
-          <small>Requires macOS 13 or later · Apple silicon</small>
+          <small>Requires macOS 13 or later · Apple silicon · MIT licensed</small>
           <a
             class="closing__link"
             href="https://github.com/steerlabs/opensteer"
             target="_blank"
             rel="noopener"
-            >View on GitHub</a
+            ><svg><use href="#i-github" /></svg>View on GitHub</a
           >
         </div>
       </section>
