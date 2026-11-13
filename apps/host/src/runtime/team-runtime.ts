@@ -5,7 +5,7 @@ import websocket from "@fastify/websocket";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
-import { type Deployment, type HostKeyFingerprint } from "@opensteer/core";
+import { deploymentPolicy, type Deployment, type HostKeyFingerprint } from "@opensteer/core";
 import {
   HostDescriptorSchema,
   apiNegotiation,
@@ -125,7 +125,7 @@ export async function createTeamHostRuntime(input: {
       ...(options.accountDirectoryFetch ? { fetch: options.accountDirectoryFetch } : {}),
     });
     directory = new AccountDirectoryPublisher({
-      store: new AccountDirectoryStore(database, { kind: "team" }),
+      store: new AccountDirectoryStore(database, deploymentPolicy({ kind: "team" })),
       publish: (projection) => client.publish(projection),
       onError: () => report("team-directory"),
       ...(options.accountDirectoryIntervalMs
