@@ -14,7 +14,6 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
@@ -195,31 +194,34 @@ export function useTeamPreviews(
   messages: readonly TeamMessage[],
 ): ReadonlyMap<string, string> {
   const [previews, setPreviews] = useState<ReadonlyMap<string, string>>(new Map());
-  const asked = useRef(new Set<string>());
+  const lifetime = useMemo(() => ({ current: true, asked: new Set<string>() }), [session]);
+  useEffect(() => {
+    lifetime.current = true;
+    setPreviews(new Map());
+    return () => {
+      lifetime.current = false;
+    };
+  }, [lifetime]);
   useEffect(() => {
     if (session === null) return;
-    let current = true;
     for (const message of messages) {
       for (const file of message.attachments) {
-        if (file.preview === null || asked.current.has(file.id)) continue;
-        asked.current.add(file.id);
+        if (file.preview === null || lifetime.asked.has(file.id)) continue;
+        lifetime.asked.add(file.id);
         void session
           .file(file)
-          .then((blob) => (blob === null ? null : dataUri(blob, session.owner?.signal)))
+          .then((blob) => (blob === null ? null : dataUri(blob, session.signal)))
           .then(
             (uri) => {
-              if (current && !session.owner?.signal.aborted && uri !== null)
+              if (lifetime.current && !session.signal.aborted && uri !== null)
                 setPreviews((held) => new Map(held).set(file.id, uri));
             },
-            () => asked.current.delete(file.id),
+            () => lifetime.asked.delete(file.id),
           );
       }
     }
-    return () => {
-      current = false;
-    };
-  }, [messages, session]);
-  return session?.owner?.signal.aborted ? new Map() : previews;
+  }, [messages, session, lifetime]);
+  return session?.signal.aborted ? new Map() : previews;
 }
 
 /** A Blob the platform made, as something an Image can draw. */

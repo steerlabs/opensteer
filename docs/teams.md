@@ -40,7 +40,12 @@ rerunning the work or duplicating the post; revoked access or cancellation canno
 ## Entering a team
 
 Desktop and mobile share `NativeTeamEntry.authorize` for startup, explicit entry and recovery.
-Its short-lived attempt fence handles single-flight entry, supersession and explicit team sign-out.
+Its short-lived attempt fence handles single-flight entry, supersession and explicit team sign-out,
+including queued continuations and retries. Passive callers may use or refresh a credential while
+browser entry is pending; browser entry releases its slot on callback, expiry or supersession.
+Recovery refreshes a rejected credential before discovery and replays only with a different
+authorization. Native token refresh never exchanges an assertion or publishes logout on refusal.
+Obsolete entry cleanup removes only the catalog revision that attempt created.
 It is independent of Account authorization and persistent viewer state. Entry verifies fresh signed
 discovery before updating the catalog or reusing a credential. With an Account session, they
 enter a team advertising `team-session-exchange-v1` without a
@@ -87,8 +92,9 @@ discovery until Account's directory lists it, and is restored from the device's 
 if the app restarts before then; the intent is kept even when no agent connects from that device.
 
 Within the Account partition, the device scopes cached team state to the viewer returned by
-authenticated team bootstrap. An
-agent link's owner can be a different person and never supplies the device's team identity.
+authenticated team bootstrap. Upgrade adopts legacy drafts and pending sends only after that
+bootstrap confirms the same team user, then removes the legacy copy. An agent link's owner can
+be a different person and never supplies the device's team identity.
 
 ## Access and removal
 

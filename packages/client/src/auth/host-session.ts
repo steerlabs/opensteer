@@ -115,7 +115,8 @@ export type HostSessionRecoveryOutcome =
   | "recovered"
   | "unavailable"
   | "unsupported"
-  | TeamEntryRefusedError;
+  | TeamEntryRefusedError
+  | TeamEntryOutcomeError;
 
 export interface HostSessionRecovery {
   assertSessionAllowed?(deploymentId: string): Promise<void>;
@@ -649,6 +650,8 @@ function observationFromRecovery(
   resolved: ResolvedConnection,
   outcome: HostSessionRecoveryOutcome,
 ): HostSessionObservation {
+  if (outcome instanceof TeamEntryOutcomeError)
+    return observation(resolved, "blocked", outcome.message);
   if (outcome instanceof TeamEntryRefusedError) {
     if (teamEntryRefusalOutcome(outcome.reason) === "membership")
       return observation(resolved, "blocked", outcome.message);
@@ -713,6 +716,8 @@ function recoveryFromObservation(
 }
 
 function recoveryFailure(error: unknown): HostSessionRecoveryOutcome {
+  if (error instanceof TeamEntryOutcomeError && error.outcome.status === "update-required")
+    return error;
   if (error instanceof TeamEntryRefusedError) return error;
   if (error instanceof HostSessionExchangeError) return error.outcome;
   if (error instanceof AccountRequestError) {

@@ -262,6 +262,7 @@ export function TeamsProvider({
         : bridge && hostClient
           ? desktopTeamCoordination({
               bridge,
+              owner,
               hostClient,
               accountSubject: () => {
                 const parsed = ControlPlaneAccountIdSchema.safeParse(accountSubject);
@@ -386,8 +387,15 @@ export function TeamsProvider({
             teamEntryRefusalOutcome(error.reason) === "membership"
               ? "join"
               : error instanceof HostClientRequestError &&
-                  ["version_mismatch", "upgrade_required"].includes(error.code)
-                ? "update-app"
+                  [
+                    "host-too-old",
+                    "client-too-old",
+                    "unsupported-version",
+                    "api-version-mismatch",
+                  ].includes(error.reason ?? "")
+                ? error.reason === "host-too-old"
+                  ? "update-server"
+                  : "update-app"
                 : error instanceof HostClientRequestError && error.code === "unauthorized"
                   ? "sign-in"
                   : "unavailable";
@@ -452,13 +460,17 @@ export function TeamsProvider({
             const team = memberRef.current.get(teamId);
             if (!team) throw new Error("This team is not on this computer.");
             if (bridge?.teamSessions) {
-              const sessions = desktopTeamSessions({
-                ...bridge,
-                teamSessions: bridge.teamSessions,
-              });
-              await owner.run(async () =>
-                sessions.signIn(await sessions.verify(team.origin), null),
+              const sessions = desktopTeamSessions(
+                {
+                  ...bridge,
+                  teamSessions: bridge.teamSessions,
+                },
+                undefined,
+                owner,
               );
+              const verified = await owner.run(() => sessions.verify(team.origin));
+              owner.assertCurrent();
+              await owner.run(() => sessions.signIn(verified, null));
             } else await coordination.coordinator.enterTeam(team.origin);
             setEntered((count) => count + 1);
           }

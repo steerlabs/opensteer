@@ -24,7 +24,7 @@ it("scopes desktop team state to the authenticated viewer rather than the person
   const host = new MockTeamHost();
   const persistence = createMemoryTeamPersistence();
   const ownerUserId = createId("user");
-  let unavailable = false;
+  let unavailable: false | "outage" | "update" = false;
   transport.create.mockImplementation((options: TeamSessionOptions) => ({
     ...options,
     rpc: new Proxy(host.rpc, {
@@ -33,8 +33,8 @@ it("scopes desktop team state to the authenticated viewer rather than the person
           ? async () => ({
               ok: false,
               error: {
-                code: "internal",
-                reason: "transport-unreachable",
+                code: unavailable === "update" ? "conflict" : "internal",
+                reason: unavailable === "update" ? "host-too-old" : "transport-unreachable",
                 message: "Team unavailable",
                 retryable: true,
               },
@@ -91,7 +91,7 @@ it("scopes desktop team state to the authenticated viewer rather than the person
     );
     expect(viewer).not.toBe(ownerUserId);
     const held = attachment?.client;
-    unavailable = true;
+    unavailable = "outage";
     await act(async () =>
       root.render(
         <TeamsProvider
@@ -106,6 +106,22 @@ it("scopes desktop team state to the authenticated viewer rather than the person
       { timeout: 1000 },
     );
     expect(attachment?.client).toBe(held);
+    unavailable = "update";
+    await act(async () =>
+      root.render(
+        <TeamsProvider
+          surface={{ kind: "desktop", bridge, hostClient: { ...hostClient } as HostClient }}
+        >
+          <Read />
+        </TeamsProvider>,
+      ),
+    );
+    await vi.waitFor(
+      () =>
+        expect(attachment?.failure, "server update was hidden as an outage").toBe("update-server"),
+      { timeout: 1000 },
+    );
+    expect(attachment?.client).toBeNull();
   } finally {
     await act(async () => root.unmount());
     host.dispose();
@@ -218,5 +234,64 @@ it("discards a team notification invalidated while permission was pending", asyn
     expect(shown).not.toHaveBeenCalled();
   } finally {
     vi.unstubAllGlobals();
+  }
+});
+
+it("stops desktop sign-in if the Account switches while team verification is pending", async () => {
+  const host = new MockTeamHost();
+  transport.create.mockImplementation((options: TeamSessionOptions) => ({
+    ...options,
+    rpc: host.rpc,
+    connect: host.connect,
+    persistence: createMemoryTeamPersistence(),
+  }));
+  const verification = Promise.withResolvers<unknown>();
+  const calls = vi.fn(async (input: { call: string }) =>
+    input.call === "verify" ? verification.promise : { ok: true, data: null },
+  );
+  const bridge = {
+    teamSessions: calls,
+    accountTeams: vi.fn(),
+  } as unknown as OpensteerDesktopBridge;
+  const hostClient = {
+    rpc: { "teams.links.list": async () => ({ ok: true, data: { links: [] } }) },
+  } as unknown as HostClient;
+  let value: ReturnType<typeof useTeams>;
+  function Read() {
+    value = useTeams();
+    return null;
+  }
+  const root = createRoot(document.createElement("div"));
+  const render = (subject: string) =>
+    root.render(
+      <TeamsProvider
+        account={{ subject, email: null }}
+        accountTeams={[{ teamDeploymentId: host.teamId, origin: host.origin, name: "Team" }]}
+        surface={{ kind: "desktop", bridge, hostClient }}
+      >
+        <Read />
+      </TeamsProvider>,
+    );
+  try {
+    await act(async () => render("A"));
+    const pending = value!.enter!(host.teamId).catch((error: unknown) => error);
+    await vi.waitFor(
+      () => expect(calls).toHaveBeenCalledWith({ call: "verify", origin: host.origin }),
+      { timeout: 1000 },
+    );
+    await act(async () => render("B"));
+    const authority = {
+      deploymentId: host.teamId,
+      canonicalOrigin: host.origin,
+      hostInstanceId: createId("hostInstance"),
+      hostKeyFingerprint: "sha256:" + "a".repeat(43),
+    };
+    verification.resolve({ ok: true, data: { authority, capabilities: [] } });
+    await pending;
+    expect(calls.mock.calls.map(([input]) => input.call)).not.toContain("sign-in");
+  } finally {
+    verification.resolve({ ok: false, error: { message: "Cancelled" } });
+    await act(async () => root.unmount());
+    host.dispose();
   }
 });

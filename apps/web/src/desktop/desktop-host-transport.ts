@@ -33,6 +33,7 @@ export function createDesktopHostFetch(
       return binaryHostRequest(bridge, request, url, headers);
     }
     const body = request.method === "GET" ? undefined : await request.text();
+    request.signal.throwIfAborted();
     const result = await hostBridgeResult(
       bridge.hostRequest({
         ...(expectedDeploymentId ? { expectedDeploymentId } : {}),

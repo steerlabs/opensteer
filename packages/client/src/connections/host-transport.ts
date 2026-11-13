@@ -1,3 +1,5 @@
+import { HostVersionMismatchError } from "./deployment-catalog.js";
+import { TeamEntryOutcomeError } from "../team/native-team-entry.js";
 import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { TeamEntryRefusedError } from "../auth/native-oauth.js";
 import {
@@ -518,6 +520,22 @@ export class HostTransport {
       });
       const outcome = await Promise.race([sessions.recoverUnauthorized(selected), abandoned]);
       signal.throwIfAborted();
+      if (outcome instanceof TeamEntryOutcomeError && outcome.outcome.status === "update-required")
+        return Response.json(
+          {
+            ok: false,
+            error: {
+              code: "conflict",
+              message: outcome.message,
+              retryable: false,
+              reason:
+                outcome.outcome.error instanceof HostVersionMismatchError
+                  ? outcome.outcome.error.code
+                  : "host-too-old",
+            },
+          },
+          { status: 426 },
+        );
       if (outcome instanceof TeamEntryRefusedError)
         return Response.json(
           {

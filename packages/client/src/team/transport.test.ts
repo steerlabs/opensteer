@@ -94,14 +94,18 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
     >[0][] = [];
   let token = "Bearer mock-session";
   let rejectCredentials = false;
-  let recoveryOutcome: "recovered" | "unavailable" | "account-required" | TeamEntryRefusalReason =
+  let recoveryOutcome:
+    "recovered" | "unavailable" | "account-required" | "update-required" | TeamEntryRefusalReason =
     "recovered";
   const { TeamEntryRefusedError } = await import("../auth/native-oauth.js");
   const { HostSession } = await import("../auth/host-session.js");
+  const { TeamEntryOutcomeError } = await import("./native-team-entry.js");
   const sessions: InstanceType<typeof HostSession>[] = [];
   const refresh = vi.fn(async () => {
     const reason = TeamEntryRefusalReasonSchema.safeParse(recoveryOutcome);
     if (reason.success) throw new TeamEntryRefusedError(reason.data, "Ask for an invite");
+    if (recoveryOutcome === "update-required")
+      throw new TeamEntryOutcomeError({ status: "update-required" });
     if (recoveryOutcome === "unavailable") throw new Error("Offline");
     if (recoveryOutcome === "account-required") return false;
     token = "Bearer refreshed";
@@ -315,6 +319,16 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
         },
       });
       classified.transport.closeAllSockets();
+    }
+    recoveryOutcome = "update-required";
+    const outdated = pinnedTeamTransport(options, new URL("https://team.example"));
+    try {
+      await expect(outdated.rpc["team.bootstrap.get"]({})).resolves.toMatchObject({
+        ok: false,
+        error: { code: "conflict", reason: "host-too-old", retryable: false },
+      });
+    } finally {
+      outdated.transport.closeAllSockets();
     }
     // A separate attachment has no cooldown from the unavailable attempt.
     recoveryOutcome = "account-required";

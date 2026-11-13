@@ -11,7 +11,8 @@ export function TeamPaneGate({
   readonly teamId: string;
   readonly children: ReactNode;
 }) {
-  const { owner } = useTeams();
+  const { owner, surface } = useTeams();
+  if (surface === "personal-web") return <Fragment>{children}</Fragment>;
   return (
     <TeamPane key={owner?.id} teamId={teamId}>
       {children}
@@ -19,7 +20,7 @@ export function TeamPaneGate({
   );
 }
 function TeamPane({ teamId, children }: { readonly teamId: string; readonly children: ReactNode }) {
-  const { enter, forget, reload } = useTeams();
+  const { enter, forget, reload, surface } = useTeams();
   const team = useTeamAttachment(teamId);
   const snapshot = useTeamSession(team?.client ?? null);
   const [busy, setBusy] = useState(false);
@@ -47,7 +48,13 @@ function TeamPane({ teamId, children }: { readonly teamId: string; readonly chil
   const attempt = () => {
     setBusy(true);
     setError(null);
-    void (enter ? enter(teamId) : reload())
+    void (
+      surface === "team-web"
+        ? Promise.resolve(window.location.reload())
+        : enter
+          ? enter(teamId)
+          : reload()
+    )
       .catch((failure: unknown) => setError(actionErrorMessage(failure)))
       .finally(() => setBusy(false));
   };

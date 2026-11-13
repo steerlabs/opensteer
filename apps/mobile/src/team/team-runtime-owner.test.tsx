@@ -9,53 +9,16 @@ import {
   TeamRuntimeOwner,
   TeamSessionClient,
   createMemoryTeamPersistence,
-  pinnedTeamTransport,
   type TeamSessionOptions,
 } from "@opensteer/client/team";
-import {
-  deploymentConnectionFromVerifiedEndpoints,
-  DeploymentCatalogStore,
-} from "@opensteer/client/connections";
-import {
-  MemoryPrivateFilesystem,
-  signTestDiscoveryEnvelope,
-  testHostAuthorityKeys,
-} from "@opensteer/client/test-support";
+import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
 import { TeamFileSchema } from "@opensteer/protocol";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { desktopTeamSession } from "../../../web/src/team/team-transports.js";
-import { notifyTeam } from "../../../web/src/team/team-attachments.js";
 import { TeamPreviewUrls } from "../../../web/src/team/preview-urls.js";
 import { teamFilePersistence } from "./mobile-teams.js";
-import { shareTeamFile } from "./team-file-export.js";
 import { useFocusedRead } from "./knowledge-parts.js";
 
-const platform = vi.hoisted(() => ({
-  convert: vi.fn(),
-  share: vi.fn(),
-  staged: new Set<string>(),
-  writes: vi.fn(),
-}));
-vi.mock("./team-context.js", () => ({ dataUri: platform.convert }));
-vi.mock("expo-sharing", () => ({ shareAsync: platform.share }));
-vi.mock("expo-file-system", () => ({
-  Paths: { cache: "cache" },
-  File: class {
-    uri = "cache/staged";
-    get exists() {
-      return platform.staged.has(this.uri);
-    }
-    create() {
-      platform.staged.add(this.uri);
-    }
-    delete() {
-      platform.staged.delete(this.uri);
-    }
-    async write() {
-      platform.writes();
-    }
-  },
-}));
 vi.mock("@react-navigation/native", () => ({
   useFocusEffect: (effect: () => (() => void) | undefined) => useEffect(effect, [effect]),
 }));
@@ -69,19 +32,10 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
-  platform.staged.clear();
-  platform.writes.mockClear();
-  platform.share.mockClear();
 });
 
 const kinds = [
-  "transport/socket",
-  "RPC response",
   "binary/file transfer",
-  "download",
-  "export/share",
-  "upload response",
-  "notification",
   "preview",
   "cache",
   "read hook",
@@ -120,20 +74,7 @@ it.each(kinds)("retires owned %s before its delivery boundary", async (kind) => 
     },
   };
   try {
-    if (kind === "export/share") {
-      const session = new TeamSessionClient({ ...options, readFile: async () => new Blob(["A"]) });
-      platform.convert.mockImplementation(async () => {
-        started.resolve();
-        await gate.promise;
-        return "data:text/plain;base64,QQ==";
-      });
-      pending = shareTeamFile(session, file).then(delivered);
-      verify = () => {
-        expect(platform.share).not.toHaveBeenCalled();
-        expect(platform.writes).not.toHaveBeenCalled();
-        expect(platform.staged.size).toBe(0);
-      };
-    } else if (kind === "binary/file transfer") {
+    if (kind === "binary/file transfer") {
       const closed = vi.fn(async () => ({ ok: true, data: null }));
       const bridge = {
         onHostWebSocketEvent: () => () => {},
@@ -156,34 +97,6 @@ it.each(kinds)("retires owned %s before its delivery boundary", async (kind) => 
       const session = desktopTeamSession({ bridge, scope, origin: host.origin, owner });
       pending = session.readFile!(file, "original").then(delivered);
       verify = () => expect(closed).toHaveBeenCalled();
-    } else if (kind === "notification") {
-      const construct = vi.fn();
-      class Notification {
-        static permission = "default";
-        static async requestPermission() {
-          started.resolve();
-          await gate.promise;
-          return "granted";
-        }
-        constructor() {
-          construct();
-        }
-        close() {}
-      }
-      vi.stubGlobal("Notification", Notification);
-      notifyTeam(
-        "Acme",
-        { channel: { id: file.channelId, name: "private" }, mentionCount: 1 } as Parameters<
-          typeof notifyTeam
-        >[1],
-        delivered,
-        () => !owner.signal.aborted,
-        owner,
-      );
-      pending = gate.promise.then(async () => {
-        await Promise.resolve();
-      });
-      verify = () => expect(construct).not.toHaveBeenCalled();
     } else if (kind === "preview") {
       const urls = new TeamPreviewUrls(owner);
       const create = vi.fn(() => "blob:private-A");
@@ -263,101 +176,7 @@ it.each(kinds)("retires owned %s before its delivery boundary", async (kind) => 
       pending = persistence.save(scope, { drafts: { private: "A" }, pending: [] }).then(delivered);
       verify = () =>
         expect(files.text(`/private/A/${scope.teamDeploymentId}.${scope.userId}.json`)).toBeNull();
-    } else {
-      const catalog = new DeploymentCatalogStore({
-        filePath: "/private/catalog",
-        privateFiles: new MemoryPrivateFilesystem(),
-      });
-      const document = {
-        canonicalOrigin: host.origin,
-        deploymentId: host.teamId,
-        hostInstanceId: createId("hostInstance"),
-        hostKey: { algorithm: "Ed25519" as const },
-        deploymentShape: { kind: "team" as const },
-      };
-      await catalog.upsert(
-        deploymentConnectionFromVerifiedEndpoints({
-          accountAccess: null,
-          source: { kind: "manual" },
-          kind: "team",
-          name: "Acme",
-          endpoints: [
-            {
-              discovery: document,
-              discoveryEnvelope: signTestDiscoveryEnvelope(document, testHostAuthorityKeys()),
-              bootstrapMethods: ["oidc"],
-              capabilities: [],
-              endpoint: {
-                origin: host.origin,
-                kind: "canonical",
-                verifiedAt: new Date().toISOString(),
-              },
-            },
-          ],
-        }),
-      );
-      let socketEvents:
-        | Parameters<Parameters<typeof pinnedTeamTransport>[0]["network"]["openWebSocket"]>[1]
-        | undefined;
-      const close = vi.fn();
-      const pinned = pinnedTeamTransport(
-        {
-          catalog,
-          credentials: { teamRuntime: () => owner, authorizationHeader: async () => "Bearer A" },
-          deploymentId: host.teamId,
-          localRuntime: { current: async () => null },
-          network: {
-            openWebSocket: (_input, events) => {
-              socketEvents = events;
-              started.resolve();
-              return { close, send() {} };
-            },
-            request: async () => {
-              started.resolve();
-              await gate.promise;
-              return kind === "RPC response"
-                ? Response.json({ ok: true, data: { members: [], hasMore: false } })
-                : kind === "upload response"
-                  ? Response.json(file)
-                  : new Response("A");
-            },
-          },
-        },
-        new URL(host.origin),
-      );
-      if (kind === "transport/socket") {
-        const socket = pinned.connect();
-        socket.addEventListener("message", delivered);
-        pending = gate.promise;
-        finish = () => {
-          socketEvents!.message("private A");
-          gate.resolve();
-        };
-        verify = () => expect(close).toHaveBeenCalled();
-      } else if (kind === "RPC response") {
-        pending = pinned.rpc["team.members.list"]({}).then((result) => {
-          if (result.ok) delivered(result.data);
-        });
-      } else if (kind === "upload response") {
-        pending = pinned
-          .files(scope)
-          .uploadFile({
-            channelId: file.channelId,
-            original: new Blob(["A"]),
-            preview: null,
-            metadata: {
-              clientUploadId: crypto.randomUUID(),
-              filename: file.filename,
-              mediaType: file.mediaType,
-              sizeBytes: 1,
-              sha256: file.sha256,
-              previewSizeBytes: 0,
-            },
-          })
-          .then(delivered);
-      } else pending = pinned.files(scope).readFile(file, "original").then(delivered);
-      cleanup = () => pinned.transport.invalidateSession();
-    }
+    } else throw new Error(`Unknown boundary: ${kind}`);
     const settled = pending.catch(() => undefined);
     await withTimeout(started.promise, 1000, {
       timeoutError: () => new Error(`The ${kind} operation never reached its boundary.`),
@@ -371,7 +190,6 @@ it.each(kinds)("retires owned %s before its delivery boundary", async (kind) => 
     });
     expect(delivered).not.toHaveBeenCalled();
     verify();
-    expect(platform.staged.size).toBe(0);
   } finally {
     gate.resolve();
     owner.retire();

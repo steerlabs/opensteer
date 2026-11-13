@@ -211,18 +211,5 @@ and a failed refresh never renews stale evidence. Only the Account refusing the 
 its session; network failure, rate limiting and outage stay retryable
 ([`deployment-access-service.ts`](../apps/desktop/src/connections/deployment-access-service.ts)).
 
-Native team entry and Account runtime ownership are separate lifetimes
-([team entry](teams.md#entering-a-team)). `NativeTeamEntry.authorize` owns startup, explicit
-entry and pinned 401 recovery. Passive callers can use or refresh a valid credential while
-browser entry is pending; they never open a browser or clear explicit sign-out suppression.
-Recovery refreshes a rejected credential before discovery and replays only with a different
-authorization. Browser entry releases its single-flight slot on callback, expiry or attempt
-supersession even if the platform browser never returns.
-
-The Account runtime owns native team transports, sockets, clients, caches and persistence
-handles. An issuer or subject change, including a transition to or from no Account, retires it
-synchronously. Delivery boundaries use that owner's signal or assertion; token rotation and
-same-Account reauthorization keep it. Initial resolution captures the owner before any await,
-so it cannot start an old caller's request under a new Account. Personal Host attachments and
-maintenance requests are excluded. Credential reads and refreshes still enforce the stored
-Account binding, independently of transport disposal and best-effort credential deletion.
+Native team entry, Account runtime ownership and their independent lifetimes are described in
+[Team entry](teams.md#entering-a-team).

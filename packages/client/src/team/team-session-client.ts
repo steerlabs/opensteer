@@ -72,6 +72,8 @@ export interface TeamSessionOptions {
   readonly scope: TeamCacheScope;
   readonly rpc: HostApiClient;
   readonly persistence: TeamPersistence;
+  /** Upgrade-only state, adopted after authenticated bootstrap confirms this viewer. */
+  readonly legacyPersistence?: TeamPersistence;
   readonly connect: () => WebSocketClient;
   readonly readFile?: (
     file: z.infer<typeof TeamFileSchema>,
@@ -166,7 +168,7 @@ export class TeamSessionClient {
       const lifetime = this.#lifetime,
         revision = this.#stateRevision;
       this.#loading = (async () => {
-        const [saved, bootstrap] = await Promise.all([
+        let [saved, bootstrap] = await Promise.all([
           this.#options.persistence.load(this.#options.scope),
           this.#bootstrap(),
         ]);
@@ -178,6 +180,16 @@ export class TeamSessionClient {
           await this.remove("viewer-changed");
           return;
         }
+        if (!saved && this.#options.legacyPersistence) {
+          saved = await this.#options.legacyPersistence.load(this.#options.scope);
+          if (lifetime !== this.#lifetime) return;
+          if (saved) {
+            await this.#options.persistence.save(this.#options.scope, saved);
+            if (lifetime !== this.#lifetime) return;
+            await this.#options.legacyPersistence.remove(this.#options.scope);
+          }
+        }
+        if (lifetime !== this.#lifetime) return;
         const state = saved ? TeamSavedStateSchema.parse(saved) : { drafts: {}, pending: [] };
         const pending =
           revision === this.#stateRevision

@@ -645,7 +645,7 @@ function TeamRows(props: {
   );
 }
 
-export const TeamRow = memo(function TeamRow(props: {
+const TeamRow = memo(function TeamRow(props: {
   readonly current: boolean;
   readonly onOpen: (teamId: string) => void;
   readonly team: MobileTeam;

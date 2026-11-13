@@ -174,6 +174,7 @@ export function desktopTeamSession(input: {
       signal?.throwIfAborted();
       if (body) {
         const bytes = new Uint8Array(await body.arrayBuffer());
+        signal?.throwIfAborted();
         for (let offset = 0; offset < bytes.byteLength; offset += 256 * 1024) {
           const written = await input.bridge.hostBinaryWrite({
             bytes: bytes.subarray(offset, offset + 256 * 1024),
@@ -218,6 +219,7 @@ export function desktopTeamSession(input: {
     scope: input.scope,
     ...(owner ? { owner } : {}),
     persistence: owner ? ownedLocalTeamPersistence(owner) : localTeamPersistence,
+    ...(owner ? { legacyPersistence: localTeamPersistence } : {}),
     rpc: createHttpHostApiClient({
       baseUrl: new URL(input.origin),
       bufferedResponses: true,
@@ -265,9 +267,7 @@ export function desktopTeamSession(input: {
 }
 
 function ownedLocalTeamPersistence(owner: TeamRuntimeOwner): TeamPersistence {
-  const scoped = (scope: TeamCacheScope) => ({ ...scope, userId: scope.userId });
-  const key = (scope: TeamCacheScope) =>
-    savedPrefix + owner.partition + ":" + teamCacheKey(scoped(scope));
+  const key = (scope: TeamCacheScope) => savedPrefix + owner.partition + ":" + teamCacheKey(scope);
   return {
     async load(scope) {
       owner.assertCurrent();

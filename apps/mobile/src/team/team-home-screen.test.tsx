@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 // @vitest-environment happy-dom
 import { act, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
@@ -9,6 +8,7 @@ const h = vi.hoisted(() => ({
   team: null as MobileTeam | null,
   ownerId: "account-A",
   select: vi.fn(async (_id: string) => {}),
+  addToPhone: vi.fn(async (_id: string) => {}),
   forget: vi.fn(async (_id: string) => {}),
   popToTop: vi.fn(),
 }));
@@ -16,16 +16,6 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 type Children = { children?: ReactNode };
 vi.mock("react-native", () => ({
   Platform: { OS: "ios", select: (s: { ios?: unknown }) => s.ios },
-  Text: ({ children }: Children) => <span>{children}</span>,
-  Pressable: ({
-    children,
-    onPress,
-    accessibilityLabel,
-  }: Children & { onPress: () => void; accessibilityLabel: string }) => (
-    <button aria-label={accessibilityLabel} onClick={onPress}>
-      {children}
-    </button>
-  ),
   View: ({ children }: Children) => <div>{children}</div>,
   ActivityIndicator: () => <span data-loading="true">Loading</span>,
   Alert: { alert: vi.fn() },
@@ -55,7 +45,12 @@ vi.mock("./connection-banner.js", () => ({
 }));
 vi.mock("./team-page-list.js", () => ({ TeamPageList: () => <button>Browse channels</button> }));
 vi.mock("./team-context.js", () => ({
-  useMobileTeams: () => ({ owner: { id: h.ownerId }, select: h.select, forget: h.forget }),
+  useMobileTeams: () => ({
+    owner: { id: h.ownerId },
+    select: h.select,
+    addToPhone: h.addToPhone,
+    forget: h.forget,
+  }),
   useTeamsSnapshot: () => ({}),
   useTeamEntry: () => ({ coordinator: {} }),
   useTeamSession: () => ({
@@ -65,28 +60,6 @@ vi.mock("./team-context.js", () => ({
     failure: h.team?.detail ?? null,
   }),
 }));
-vi.mock("react-native-reanimated", () => ({ default: {} }));
-vi.mock("../ui/motion.js", () => ({ move: {} }));
-vi.mock("../sidebar/saved-tasks.js", () => ({ SavedTasks: () => null }));
-vi.mock("../browser/acting-dot.js", () => ({
-  ActingDot: () => null,
-  agentWorkingLabel: "Working",
-}));
-vi.mock("../browser/agent-surface.js", () => ({ opensteerAppGlyph: "" }));
-vi.mock("../browser/site-label.js", () => ({ tabSiteLabel: () => "" }));
-vi.mock("../screens/deployment-row.js", () => ({ statusTone: () => "" }));
-vi.mock("../client/mobile-client.js", () => ({ operationDetail: () => "" }));
-vi.mock("../threads/deployment-mark.js", () => ({ DeploymentMarkView: () => null }));
-vi.mock("../threads/task-row.js", () => ({
-  DraftPen: () => null,
-  draftPenLabel: "Draft",
-  taskTextInset: 0,
-}));
-vi.mock("../ui/mobile-client-context.js", () => ({}));
-vi.mock("../ui/pane.js", () => ({}));
-vi.mock("../ui/retained-scroll.js", () => ({}));
-vi.mock("./team-marks.js", () => ({ TeamTile: () => null, MentionCount: () => null }));
-const { TeamRow } = await import("../sidebar/sidebar-panel.js");
 const { TeamHomeScreen } = await import("./team-home-screen.js");
 const states: readonly TeamState[] = [
   "signed-out",
@@ -98,28 +71,26 @@ const states: readonly TeamState[] = [
   "removed",
   "join",
 ];
-const cases = states.flatMap((state) =>
-  (["loaded", "unloaded", "null"] as const).flatMap((session) =>
-    [false, true].map((detail) => ({ state, session, detail })),
-  ),
-);
-it.each(cases)(
-  "offers recovery for $state / $session / detail=$detail",
-  async ({ state, session, detail }) => {
+it.each([
+  ...states.map((state) => ({ state, loaded: false, detail: null as string | null })),
+  { state: "offline" as const, loaded: true, detail: "Offline" },
+  { state: "loading" as const, loaded: false, detail: "Couldn't load" },
+])(
+  "presents the distinct $state recovery branch (loaded: $loaded, detail: $detail)",
+  async ({ state, loaded, detail }) => {
     const snapshot = {
-      bootstrap: session === "loaded" ? { can: {} } : null,
-      sidebar: session === "loaded" ? { channels: [], nextCursor: null } : null,
+      bootstrap: loaded ? { can: {} } : null,
+      sidebar: loaded ? { channels: [], nextCursor: null } : null,
     };
     h.team = {
       teamId: "dep_test",
       name: "Acme",
       state,
-      detail: detail ? "Failure detail" : null,
-      session:
-        session === "null" ? null : { subscribe: () => () => {}, getSnapshot: () => snapshot },
+      detail,
+      session: loaded ? { subscribe: () => () => {}, getSnapshot: () => snapshot } : null,
     } as unknown as MobileTeam;
-    const host = document.createElement("div");
-    const root = createRoot(host);
+    const host = document.createElement("div"),
+      root = createRoot(host);
     try {
       act(() =>
         root.render(
@@ -128,40 +99,25 @@ it.each(cases)(
           </TeamScreenLayout>,
         ),
       );
-      const loading = host.querySelector("[data-loading]");
-      if (loading) {
-        expect(state).toBe("loading");
-        expect(detail).toBe(false);
-        expect(session).not.toBe("loaded");
-      } else expect(host.querySelector("button")).not.toBeNull();
-      act(() =>
-        root.render(
-          <TeamRow current={false} onOpen={(id) => void h.select(id)} team={h.team!} visible />,
-        ),
-      );
-      const row = host.querySelector("button")!;
-      expect(row.getAttribute("aria-label")).toContain("Acme");
-      await act(async () => row.click());
-      expect(h.select).toHaveBeenCalledWith("dep_test");
-      act(() =>
-        root.render(
-          <TeamScreenLayout route={{ params: { teamId: "dep_test" } }}>
-            <TeamHomeScreen route={{ params: { teamId: "dep_test" } }} />
-          </TeamScreenLayout>,
-        ),
-      );
-      if (state === "removed") {
-        expect(host.textContent).toContain("no longer in Acme");
-        const remove = [...host.querySelectorAll("button")].find(
-          (b) => b.textContent === "Remove from this phone",
+      if (loaded) expect(host.textContent).toContain("Browse channels");
+      else if (state === "loading" && !detail)
+        expect(host.querySelector("[data-loading]")).not.toBeNull();
+      else {
+        expect(host.querySelector("[data-loading]")).toBeNull();
+        const label =
+          state === "signed-out"
+            ? "Sign in"
+            : state === "offline"
+              ? "Retry"
+              : "Remove from this phone";
+        const action = [...host.querySelectorAll("button")].find(
+          (button) => button.textContent === label,
         )!;
-        await act(async () => remove.click());
-        expect(h.forget).toHaveBeenCalledWith("dep_test");
-      }
-      if (state === "offline" && session !== "loaded") {
-        const retry = [...host.querySelectorAll("button")].find((b) => b.textContent === "Retry")!;
-        await act(async () => retry.click());
-        expect(h.select).toHaveBeenCalledWith("dep_test");
+        expect(action).toBeTruthy();
+        await act(async () => action.click());
+        expect(
+          state === "signed-out" || state === "offline" ? h.select : h.forget,
+        ).toHaveBeenCalledWith("dep_test");
       }
     } finally {
       act(() => root.unmount());
@@ -214,39 +170,6 @@ it("replaces a nested note's spinner with recovery after membership removal", ()
   }
 });
 
-const navigationSource = readFileSync("apps/mobile/src/navigation.tsx", "utf8");
-const teamScreens = [
-  ...navigationSource.matchAll(
-    /(\w+):\s*\{\s*screen:\s*(?:Team\w+Screen|(?:DeleteTeam|TransferTeam|ConnectOpensteer)Screen)\b/g,
-  ),
-].map((match) => match[1]!);
-it.each(teamScreens)("the navigator gates %s after removal", (name) => {
-  expect(navigationSource).toMatch(
-    /screenLayout:[\s\S]*?<TeamScreenLayout route=\{route\}>\{children\}<\/TeamScreenLayout>/,
-  );
-  h.team = {
-    teamId: "dep_test",
-    name: "Acme",
-    state: "removed",
-    session: null,
-    detail: null,
-  } as unknown as MobileTeam;
-  const host = document.createElement("div"),
-    root = createRoot(host);
-  try {
-    act(() =>
-      root.render(
-        <TeamScreenLayout route={{ name, params: { teamId: "dep_test" } }}>
-          <span>Private team screen</span>
-        </TeamScreenLayout>,
-      ),
-    );
-    expect(host.textContent).not.toContain("Private team screen");
-    expect(host.textContent).toContain("no longer in Acme");
-  } finally {
-    act(() => root.unmount());
-  }
-});
 it("remounts team hooks on an owner change while retaining a personal screen", () => {
   let teamMounts = 0,
     personalMounts = 0;

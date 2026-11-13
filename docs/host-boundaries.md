@@ -157,31 +157,5 @@ owner authority ends on Host restart and is never restored. Lease and retention 
 [Computer use](computer-use.md). Computer app approvals use authenticated owner sessions on every
 device, and only the Host admits local MCP launches against current owner consent.
 
-Account team identity assertions travel only to the verified team authority through the existing
-team session exchange. Account access and refresh tokens stay on the device and Account service.
-The team decides membership; the assertion grants no personal Host access. All native team credentials
-are bound to the device Account identity at issuance (browser flows pin their starting identity),
-or explicitly to no Account. Legacy credentials without a binding cannot authorize requests. The binding is enforced even
-when local deletion or remote revocation fails.
-
-Native token refresh never exchanges an Account assertion or publishes logout on refusal. The shared
-team entry operation owns fallback; passive recovery cannot open a browser or clear team sign-out.
-Obsolete entry cleanup can remove only the catalog revision that attempt created.
-
-Native team entry retains its short-lived attempt fence across queued continuations and retries;
-a superseded caller cannot start entry under a replacement identity or undo explicit sign-out.
-Account identity has a separate runtime owner on desktop main, the desktop renderer team UI
-and mobile. Changing issuer or subject (including no Account) synchronously retires that owner
-and its team resources before credential cleanup. IPC, storage, response and OS delivery check
-its signal; staged exports are removed on abort or completion. Token rotation and same-Account
-reauthorization retain the runtime and drafts. Personal Host transports and maintenance are
-never owned by it. Credential binding at read and refresh remains the security backstop even
-when deletion or remote revocation fails.
-Native browser entry, including invites, requires the descriptor capability
-`team-native-browser-return-v1`; otherwise entry requires a team server update or an Account
-sign-in on this device when exchange is supported. Passive entry never opens a browser and
-presents an explicit Sign in action when browser return is supported.
-Membership reasons permit erasing a viewer partition, as do reasonless forbidden
-refusals at authenticated bootstrap for compatibility with older team servers. Channel permission
-failures do not establish membership removal
-([team entry](teams.md)).
+[Team entry](teams.md#entering-a-team) defines Account-bound credentials, runtime retirement,
+entry supersession and the limits of membership refusals. These grant no personal Host access.

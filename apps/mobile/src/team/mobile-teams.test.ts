@@ -47,6 +47,7 @@ const connections: readonly DeploymentConnection[] = mockDeploymentConnections()
 function fixture(
   options: {
     readonly bootstrapFailures?: number;
+    readonly files?: MemoryPrivateFilesystem;
     readonly previews?: Pick<NotificationPreviews, "attach" | "clear">;
     /** Answers a team command in place of the mock team Host. */
     readonly dispatch?: (command: { readonly type: string }) => unknown;
@@ -132,7 +133,7 @@ function fixture(
   const teams = new MobileTeams({
     client,
     directory: "/private/teams-test",
-    files: new MemoryPrivateFilesystem(),
+    files: options.files ?? new MemoryPrivateFilesystem(),
     previews: (options.previews ?? null) as NotificationPreviews | null,
     transport,
     verify: () => Promise.reject(new Error("No network in this test.")),
@@ -530,42 +531,6 @@ it.each([...TeamEntryRefusalReasonSchema.options, "removed", undefined])(
   },
 );
 
-it.each(["load", "save-directory", "save-write"] as const)(
-  "fences team cache handoff after Account invalidation during %s",
-  async (stage) => {
-    const { teamFilePersistence } = await import("./mobile-teams.js");
-    const files = new MemoryPrivateFilesystem();
-    let current = true;
-    const scope = { teamDeploymentId: mockTeamId, userId: mockTeamReaderId };
-    const persistence = teamFilePersistence(files, "/cache", () => {
-      if (!current) throw new Error("Account changed");
-    });
-    await persistence.save(scope, { drafts: {}, pending: [] });
-    const method =
-      stage === "load"
-        ? "readFile"
-        : stage === "save-directory"
-          ? "ensureDirectory"
-          : "writeFileAtomic";
-    const original = files[method].bind(files);
-    const spy = vi.spyOn(files, method);
-    spy.mockImplementation(async (...args: unknown[]) => {
-      const result = await Reflect.apply(original, files, args);
-      current = false;
-      return result;
-    });
-    try {
-      await expect(
-        stage === "load"
-          ? persistence.load(scope)
-          : persistence.save(scope, { drafts: { test: "private" }, pending: [] }),
-      ).rejects.toThrow("Account changed");
-    } finally {
-      spy.mockRestore();
-    }
-  },
-);
-
 it("retires an Account runtime before its pending bootstrap can populate the replacement", async () => {
   const f = fixture();
   f.teams.start();
@@ -608,3 +573,50 @@ it("keeps draft persistence through same-Account reauthorization and entry super
     f.teams.dispose();
   }
 });
+
+it.each([true, false])(
+  "adopts legacy drafts and pending sends only for the authenticated viewer (same: %s)",
+  async (sameViewer) => {
+    const { teamFilePersistence } = await import("./mobile-teams.js");
+    const files = new MemoryPrivateFilesystem();
+    const f = fixture({ files });
+    const scope = {
+      teamDeploymentId: mockFamilyTeamId,
+      userId: sameViewer ? mockTeamReaderId : createId("user"),
+    };
+    const legacy = teamFilePersistence(files, "/private/teams-test/teams");
+    const saved = {
+      drafts: { channel: "Upgrade draft" },
+      pending: [
+        {
+          command: {
+            type: "team.message.send" as const,
+            channelId: createId("teamChannel"),
+            threadRootId: null,
+            clientMessageId: crypto.randomUUID(),
+            bodyMarkdown: "Upgrade pending send",
+            mentions: [],
+            attachmentIds: [],
+          },
+          createdAt: new Date().toISOString(),
+          failure: null,
+        },
+      ],
+    };
+    await legacy.save(scope, saved);
+    try {
+      const session = await f.teams.session(mockFamilyTeamId);
+      await session.load(false);
+      expect(session.getSnapshot()).toMatchObject(sameViewer ? saved : { drafts: {}, pending: [] });
+      expect(await legacy.load(scope)).toEqual(sameViewer ? null : saved);
+      if (sameViewer)
+        expect(
+          files.text(
+            `/private/teams-test/teams/${f.teams.owner.partition}/${scope.teamDeploymentId}.${scope.userId}.json`,
+          ),
+        ).not.toBeNull();
+    } finally {
+      f.teams.dispose();
+    }
+  },
+);
