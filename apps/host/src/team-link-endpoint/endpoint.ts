@@ -351,16 +351,6 @@ export class TeamLinkEndpoint {
       return {
         result: { kind: "accepted", request: await requests.accept(linkId, frame.requestId) },
       };
-    if (frame.type === "status" && ["failed", "stopped", "cancelled"].includes(frame.state)) {
-      const completed = await links.database
-        .selectFrom("teamAgentRequests")
-        .select(["state", "finishedAt"])
-        .where("id", "=", frame.requestId)
-        .where("linkId", "=", linkId)
-        .executeTakeFirst();
-      if (completed?.state === frame.state && completed.finishedAt !== null)
-        return { result: { kind: "ok" } };
-    }
     // Knowledge acts as the link's owner and records its own audit.
     if (isKnowledgeCall(frame)) return data.knowledge(linkId, link.ownerUserId, frame);
     const actor: TeamActor = { kind: "agent", userId: link.ownerUserId };

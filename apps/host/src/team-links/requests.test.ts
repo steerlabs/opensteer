@@ -140,6 +140,7 @@ describe("durable team publication", () => {
     });
     expect(f.calls.map((c) => c.type)).toEqual(["receipt", "post", "status"]);
     expect(f.calls[1]).toMatchObject({
+      publication: true,
       clientMessageId: f.row().clientMessageId,
       requestId: f.row().requestId,
     });

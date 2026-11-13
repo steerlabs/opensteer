@@ -286,6 +286,7 @@ export class PersonalTeamRequests {
       if (request.answerPayload && request.clientMessageId && request.runId) {
         const result = await this.options.rpc(request.teamId).call({
           type: "post",
+          publication: true,
           runId: request.runId,
           clientMessageId: request.clientMessageId,
           channelId: request.source.channelId,

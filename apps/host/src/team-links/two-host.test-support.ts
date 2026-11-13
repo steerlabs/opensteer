@@ -16,6 +16,9 @@ import {
   type TeamSource,
 } from "@opensteer/core";
 import type { TeamRequestStorePort } from "@opensteer/database/team-requests-port";
+import { TeamAccessStore } from "@opensteer/database/team-access";
+import { TeamChatStore } from "@opensteer/database/team-chat";
+import { TeamRequestsStore } from "@opensteer/database/team-requests";
 import { createTeamFixture } from "@opensteer/database/test-support/team";
 import {
   cloneTestDatabase,
@@ -58,7 +61,6 @@ import { TeamLinkConnection } from "./connection.js";
 import { PersonalTeamLinks } from "./service.js";
 import { TeamRunTools } from "./tools.js";
 
-// P and T are port fakes backed by the two fresh databases; R is scripted through HarnessSession.
 export async function createTwoHostLinkFixture() {
   const team = await createTeamFixture();
   const clone = await cloneTestDatabase("host");
@@ -254,195 +256,10 @@ export async function createTwoHostLinkFixture() {
       .where("id", "=", id)
       .executeTakeFirstOrThrow();
   }
-  async function authorize(id: TeamAgentRequestId, currentLink = linkId) {
-    await links.assertActive(currentLink);
-    const row = await teamRequestRow(id);
-    if (
-      row.linkId !== currentLink ||
-      ["done", "failed", "stopped", "cancelled"].includes(row.state) ||
-      (row.expiresAt && new Date(row.expiresAt).getTime() <= Date.now())
-    )
-      throw linkError();
-    await team.database.transaction().execute(async (tx) => {
-      const rights = await resolver.channel(
-        tx,
-        { kind: "agent", userId: row.ownerUserId },
-        row.channelId,
-      );
-      if (!rights.read || !rights.post || rights.peopleOnly) throw linkError();
-    });
-    return rawView(row);
-  }
-  const requestStore: TeamRequestStorePort = {
-    authorize: (currentLink, id) => authorize(id, currentLink),
-    async pending(currentLink) {
-      const rows = await team.database
-        .selectFrom("teamAgentRequests")
-        .selectAll()
-        .where("linkId", "=", currentLink)
-        .where("state", "in", ["queued", "working", "needs_you"])
-        .orderBy("createdAt")
-        .execute();
-      return Promise.all(
-        rows.map(async (row) => ({
-          request: rawView(row),
-          source: sourceFor(rawView(row)),
-          bodyMarkdown: (
-            await team.database
-              .selectFrom("teamMessages")
-              .select("bodyMarkdown")
-              .where("id", "=", row.triggerMessageId)
-              .executeTakeFirstOrThrow()
-          ).bodyMarkdown,
-          attachments: [],
-        })),
-      );
-    },
-    async accept(currentLink, id) {
-      await authorize(id, currentLink);
-      await sql`update team_agent_requests set accepted_at=now(),expires_at=now()+interval '7 days',state='working' where id=${id} and accepted_at is null`.execute(
-        team.database,
-      );
-      return rawView(await teamRequestRow(id));
-    },
-    async context(currentLink, id) {
-      const request = await authorize(id, currentLink);
-      const channel = await team.database
-        .selectFrom("teamChannels")
-        .selectAll()
-        .where("id", "=", request.channelId)
-        .executeTakeFirstOrThrow();
-      return {
-        request,
-        instructionsMarkdown: channel.instructionsMarkdown,
-        instructionsRevision: SequenceSchema.parse(channel.instructionsRevision),
-        source: sourceFor(request),
-        audience: sourceFor(request).audience,
-      };
-    },
-    async status(currentLink, id, input) {
-      const row = await teamRequestRow(id);
-      if (row.linkId === currentLink && row.state === input.state && row.finishedAt !== null)
-        return;
-      await authorize(id, currentLink);
-      await team.database
-        .updateTable("teamAgentRequests")
-        .set({
-          state: input.state,
-          steps: sql`${JSON.stringify(input.steps)}::jsonb`,
-          finishedAt: ["failed", "stopped", "cancelled"].includes(input.state)
-            ? new Date().toISOString()
-            : null,
-        })
-        .where("id", "=", id)
-        .execute();
-    },
-    async post(currentLink, input) {
-      const link = await links.assertActive(currentLink);
-      return access.contentWrite(
-        { kind: "agent", userId: link.ownerUserId },
-        input.channelId,
-        async (tx, rights) => {
-          if (!rights.post || rights.peopleOnly) throw linkError();
-          const request = input.requestId
-            ? await tx
-                .selectFrom("teamAgentRequests")
-                .selectAll()
-                .where("id", "=", input.requestId)
-                .where("linkId", "=", currentLink)
-                .executeTakeFirst()
-            : undefined;
-          if (
-            input.requestId &&
-            (!request ||
-              request.channelId !== input.channelId ||
-              request.threadRootId !== input.threadRootId)
-          )
-            throw linkError();
-          if (input.publication && request?.replyMessageId) return request.replyMessageId;
-          const existing = await tx
-            .selectFrom("teamMessages")
-            .select("id")
-            .where("channelId", "=", input.channelId)
-            .where("authorUserId", "=", link.ownerUserId)
-            .where("authorKind", "=", "agent")
-            .where("clientMessageId", "=", input.clientMessageId)
-            .executeTakeFirst();
-          if (existing) return existing.id;
-          const channel = await tx
-            .updateTable("teamChannels")
-            .set({ changeSeq: sql`change_seq+1` })
-            .where("id", "=", input.channelId)
-            .returning("changeSeq")
-            .executeTakeFirstOrThrow();
-          const message = await tx
-            .insertInto("teamMessages")
-            .values({
-              channelId: input.channelId,
-              threadRootId: input.threadRootId ?? null,
-              authorUserId: link.ownerUserId,
-              authorKind: "agent",
-              agentRequestId: request && !request.replyMessageId ? request.id : null,
-              clientMessageId: input.clientMessageId,
-              bodyMarkdown: input.bodyMarkdown,
-              plainText: input.bodyMarkdown,
-              changeSeq: channel.changeSeq,
-              createdAt: new Date(),
-              editedAt: null,
-              deletedAt: null,
-            })
-            .returning("id")
-            .executeTakeFirstOrThrow();
-          if (request && !request.replyMessageId)
-            await tx
-              .updateTable("teamAgentRequests")
-              .set({
-                replyMessageId: message.id,
-                ...(input.publication ? { state: "done" as const, finishedAt: new Date() } : {}),
-              })
-              .where("id", "=", request.id)
-              .execute();
-          return message.id;
-        },
-      );
-    },
-    async reply(currentLink, id, input) {
-      const request = await authorize(id, currentLink);
-      return access.contentWrite(
-        { kind: "agent", userId: request.ownerUserId },
-        request.channelId,
-        async (tx) => {
-          const channel = await tx
-            .updateTable("teamChannels")
-            .set({ changeSeq: sql`change_seq+1` })
-            .where("id", "=", request.channelId)
-            .returning("changeSeq")
-            .executeTakeFirstOrThrow();
-          const message = await sql<{
-            id: TeamMessageId;
-          }>`insert into team_messages(channel_id,thread_root_id,author_user_id,author_kind,agent_request_id,client_message_id,body_markdown,plain_text,change_seq) values(${request.channelId},${request.threadRootId},${request.ownerUserId},'agent',${id},${randomUUID()},${input.bodyMarkdown},${input.bodyMarkdown},${channel.changeSeq}) returning id`.execute(
-            tx,
-          );
-          const messageId = message.rows[0]!.id;
-          await tx
-            .updateTable("teamAgentRequests")
-            .set({ state: "done", finishedAt: new Date().toISOString(), replyMessageId: messageId })
-            .where("id", "=", id)
-            .execute();
-          return messageId;
-        },
-      );
-    },
-    async receipt(currentLink, id) {
-      await links.assertActive(currentLink);
-      const row = await teamRequestRow(id);
-      if (row.linkId !== currentLink) throw linkError();
-      return row.replyMessageId;
-    },
-    async cancel(currentLink, id) {
-      await this.status(currentLink, id, { state: "cancelled", steps: [] });
-    },
-  };
+  const chatAccess = new TeamAccessStore(team.database);
+  await chatAccess.initialize();
+  const chat = new TeamChatStore(chatAccess, { teamId: team.deploymentId, teamName: "Acme" });
+  const requestStore = new TeamRequestsStore(chatAccess, chat);
   let knowledgeAllowed = true;
   let beforeKnowledgeReturn: (() => Promise<void>) | undefined;
   const endpoint = new TeamLinkEndpoint({
@@ -452,14 +269,38 @@ export async function createTwoHostLinkFixture() {
     lifetimes,
     resolver,
     data: {
-      async channels() {
-        return { channels: [], hasMore: false, nextAfter: null };
+      async channels(actor, currentLink, input) {
+        const page = await chat.directory(actor, input.after, false, undefined, currentLink);
+        return {
+          channels: page.channels.map((entry) => entry.channel),
+          hasMore: page.nextCursor !== null,
+          nextAfter: page.nextCursor,
+        };
       },
-      async read() {
-        throw new Error("Chat paging belongs to T");
+      async read(actor, currentLink, input) {
+        return chat.read(
+          actor,
+          "read",
+          input.channelId,
+          async (tx) => ({
+            page: await chat.pageIn(
+              tx,
+              actor,
+              input.channelId,
+              input.after
+                ? { direction: "after", messageId: input.after }
+                : input.before
+                  ? { direction: "before", messageId: input.before }
+                  : { direction: "newest" },
+              input.threadRootId,
+            ),
+            source: await chat.source(tx, actor, input.channelId, input.threadRootId ?? null),
+          }),
+          currentLink,
+        );
       },
-      async search() {
-        return { results: [], hasMore: false };
+      async search(actor, currentLink, input) {
+        return chat.search(actor, input.input, currentLink);
       },
       async knowledge() {
         await beforeKnowledgeReturn?.();
@@ -616,27 +457,44 @@ export async function createTwoHostLinkFixture() {
   };
   let stream: Readable | undefined;
   let fileSourceChannel = channelId;
+  async function fileSource(
+    input:
+      Parameters<TeamMachineFilesPort["open"]>[0] | Parameters<TeamMachineFilesPort["upload"]>[0],
+  ) {
+    await links.assertActive(input.linkId);
+    if (input.requestId) {
+      const request = await team.database
+        .selectFrom("teamAgentRequests")
+        .selectAll()
+        .where("id", "=", input.requestId)
+        .where("linkId", "=", input.linkId)
+        .executeTakeFirst();
+      if (!request) throw linkError();
+      return sourceFor(rawView(request));
+    }
+    return team.database
+      .transaction()
+      .execute((tx) => chat.source(tx, input.actor, channelId, null));
+  }
   const files: TeamMachineFilesPort = {
     async open(input) {
-      if (!input.requestId) throw linkError();
-      const request = await authorize(input.requestId, input.linkId);
+      const source = await fileSource(input);
       return {
         file: { ...file, channelId: fileSourceChannel },
-        source: { ...sourceFor(request), channelId: fileSourceChannel },
+        source: { ...source, channelId: fileSourceChannel },
         bytes: stream ?? Readable.from([Buffer.from("hello")]),
       };
     },
     async upload(input) {
-      if (!input.requestId) throw linkError();
+      const source = await fileSource(input);
       const chunks: Buffer[] = [];
       for await (const part of input.parts) {
         for await (const chunk of part.bytes)
           if (part.name === "original") chunks.push(Buffer.from(chunk));
       }
-      await authorize(input.requestId, input.linkId);
       const body = Buffer.concat(chunks).toString();
       if (body !== "hello") throw linkError("bad_request");
-      return { file, source: sourceFor(await authorize(input.requestId, input.linkId)) };
+      return { file, source };
     },
   };
   const binary = new TeamLinkBinary(endpoint, files, resolver);
@@ -951,6 +809,33 @@ export async function createTwoHostLinkFixture() {
       const tools = new TeamRunTools(personalLinks, requests, () => ({ call }));
       expect((await tools.context(runId)).source.audience.teamName).toBe("Acme");
       await expect(tools.context(privateRun)).rejects.toMatchObject({ code: "forbidden" });
+      const standing = { runId: privateRun, operationId: "standing" };
+      expect(
+        (await tools.channels(standing, team.deploymentId)).channels.map((channel) => channel.id),
+      ).toContain(request.channelId);
+      expect(
+        (
+          await tools.read(standing, team.deploymentId, {
+            channelId: request.channelId,
+            threadRootId: request.threadRootId,
+          })
+        ).page.messages.map((message) => message.id),
+      ).toContain(request.triggerMessageId);
+      expect(
+        (
+          await tools.search(standing, team.deploymentId, {
+            channelId: request.channelId,
+            query: "Question",
+          })
+        ).results.map((result) => result.message.id),
+      ).toContain(request.triggerMessageId);
+      await tools.post(standing, team.deploymentId, {
+        channelId: request.channelId,
+        threadRootId: request.threadRootId,
+        bodyMarkdown: "A private turn's explicit post",
+        attachmentIds: [],
+      });
+      expect(await requestStore.receipt(linkId, request.id)).toBeNull();
       await tools.post({ runId, operationId: "explicit" }, team.deploymentId, {
         channelId: request.channelId,
         threadRootId: request.threadRootId,
@@ -1123,7 +1008,6 @@ export async function createTwoHostLinkFixture() {
     async binaryMatrix(request: TeamAgentRequest, removal: "revoke" | "remove" = "revoke") {
       const base = {
         [teamApiVersionHeader]: String(teamApiVersion),
-        "x-opensteer-team-request-id": request.id,
         "x-opensteer-team-run-id": createId("run"),
         "x-opensteer-team-operation-id": "file-operation",
         "x-opensteer-team-blob-id": file.id,
@@ -1184,7 +1068,6 @@ export async function createTwoHostLinkFixture() {
         headers: {
           authorization: correct.authorization,
           [teamApiVersionHeader]: base[teamApiVersionHeader],
-          "x-opensteer-team-request-id": request.id,
           "x-opensteer-team-run-id": createId("run"),
           "x-opensteer-team-operation-id": "file-operation",
           "content-type": `multipart/form-data; boundary=${boundary}`,

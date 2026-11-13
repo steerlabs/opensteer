@@ -434,6 +434,8 @@ describe("team transaction authority", () => {
     expect(await requests.reply(l, accepted.id, { bodyMarkdown: "retry", attachmentIds: [] })).toBe(
       replyId,
     );
+    expect((await requests.authorize(l, accepted.id, "read")).state).toBe("working");
+    await requests.status(l, accepted.id, { state: "done", steps: [] });
     await expect(requests.authorize(l, accepted.id, "read")).rejects.toThrow();
     expect(await requests.receipt(l, accepted.id)).toBe(replyId);
     const cancelled = await send(c.id, "delete me", owner, [
@@ -532,6 +534,65 @@ describe("team transaction authority", () => {
       hub.close();
     }
   });
+  it.each(["tool", "publication", "none"] as const)(
+    "separates reply publication from terminal status with %s claim",
+    async (claim) => {
+      const c = await channel();
+      const l = await link();
+      const root = await send(c.id, "ask", owner, [{ kind: "agent", userId: owner.userId }]);
+      const request = (await requests.pending(l))[0]!.request;
+      await requests.accept(l, request.id);
+      const post = {
+        channelId: c.id,
+        threadRootId: root.message.id,
+        requestId: request.id,
+        clientMessageId: randomUUID(),
+        bodyMarkdown: "answer",
+        attachmentIds: [],
+      };
+      const replyId =
+        claim === "none"
+          ? null
+          : await requests.post(l, { ...post, publication: claim === "publication" });
+      if (claim !== "none") {
+        expect(
+          await requests.post(l, {
+            ...post,
+            clientMessageId: randomUUID(),
+            publication: true,
+            bodyMarkdown: "automatic final",
+          }),
+        ).toBe(replyId);
+      }
+      expect(await requests.receipt(l, request.id)).toBe(replyId);
+      expect((await requests.authorize(l, request.id, "read")).state).toBe("working");
+      const row = () =>
+        fixture.database
+          .selectFrom("teamAgentRequests")
+          .selectAll()
+          .where("id", "=", request.id)
+          .executeTakeFirstOrThrow();
+      expect((await row()).finishedAt).toBeNull();
+      await requests.status(l, request.id, { state: "done", steps: [] });
+      const finished = await row();
+      expect(finished).toMatchObject({ state: "done", replyMessageId: replyId });
+      expect(finished.finishedAt).not.toBeNull();
+      await requests.status(l, request.id, {
+        state: "done",
+        steps: [{ kind: "read_files", count: 1 }],
+      });
+      expect(await row()).toEqual(finished);
+      expect(
+        await fixture.database
+          .selectFrom("teamMessages")
+          .select("id")
+          .where("channelId", "=", c.id)
+          .where("authorKind", "=", "agent")
+          .execute(),
+      ).toEqual(replyId ? [{ id: replyId }] : []);
+    },
+  );
+
   it("keeps history out of context and carries the original ask on request frames", async () => {
     const c = await channel();
     const l = await link();
@@ -1477,6 +1538,7 @@ describe("team transaction authority", () => {
       expect.objectContaining({ userId: owner.userId, kind: "team-agent-needs-you" }),
     );
     await requests.reply(l, request.id, { bodyMarkdown: "agent reply", attachmentIds: [] });
+    await requests.status(l, request.id, { state: "done", steps: [] });
     delivered.length = 0;
     await outbox.drain(async (delivery) => {
       delivered.push(delivery);

@@ -200,6 +200,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
     input: Parameters<TeamRequestStorePort["status"]>[2],
   ) {
     const steps = TeamStatusStepSchema.array().max(8).parse(input.steps);
+    const terminal = ["done", "failed", "stopped", "cancelled"].includes(input.state);
     const observed = await this.access.database
       .selectFrom("teamAgentRequests")
       .selectAll()
@@ -218,7 +219,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         if (
           (current.state === input.state &&
             JSON.stringify(current.steps) === JSON.stringify(steps)) ||
-          (input.state === "cancelled" && current.finishedAt !== null)
+          (terminal && current.finishedAt !== null)
         ) {
           requireTeam(
             await t
@@ -233,7 +234,6 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         const row = await this.#record(t, linkId, id, input.state === "cancelled");
         await lockTeamMessages(t, [row.threadRootId]);
         const { changeSeq } = await bumpTeamChannel(t, row.channelId);
-        const terminal = ["failed", "stopped", "cancelled"].includes(input.state);
         await t
           .updateTable("teamAgentRequests")
           .set({
@@ -294,23 +294,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
             request.threadRootId === input.threadRootId,
           "Reply destination does not match request",
         );
-        if (input.publication && request.replyMessageId) {
-          if (request.state === "working" || request.state === "needs_you") {
-            await lockTeamMessages(t, [request.threadRootId]);
-            const { changeSeq } = await bumpTeamChannel(t, request.channelId);
-            await t
-              .updateTable("teamAgentRequests")
-              .set({ state: "done", finishedAt: new Date(), changeSeq })
-              .where("id", "=", request.id)
-              .execute();
-            await t
-              .updateTable("teamMessages")
-              .set({ changeSeq })
-              .where("id", "=", request.threadRootId)
-              .execute();
-          }
-          return request.replyMessageId;
-        }
+        if (input.publication && request.replyMessageId) return request.replyMessageId;
         if (!request.replyMessageId) await this.#record(t, linkId, request.id);
       }
       const existing = await t
@@ -346,7 +330,6 @@ export class TeamRequestsStore implements TeamRequestStorePort {
           .set({
             replyMessageId: sent.message.id,
             changeSeq: sent.message.changeSeq,
-            ...(input.publication ? { state: "done" as const, finishedAt: new Date() } : {}),
           })
           .where("id", "=", request.id)
           .where("replyMessageId", "is", null)
