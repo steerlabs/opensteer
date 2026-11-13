@@ -145,8 +145,8 @@ func prepareHiddenConsole() error {
 	if allocated == 0 && !errors.Is(allocationError, windows.ERROR_ACCESS_DENIED) {
 		return allocationError
 	}
-	window, _, _ := procedureGetConsoleWindow.Call()
-	if window != 0 {
+	// Only a console this wrapper allocated is hidden; an inherited one is the person's terminal.
+	if window, _, _ := procedureGetConsoleWindow.Call(); allocated != 0 && window != 0 {
 		const hideWindow = 0
 		procedureShowWindow.Call(window, hideWindow)
 	}
