@@ -90,6 +90,11 @@ export const MessageRow = memo(
               <TextAction label="Delete" onPress={() => actions.onUnsent(message.id, "delete")} />
             </View>
           ) : null}
+          {message.askStatuses?.map((status) => (
+            <AppText key={status.id} role="caption" tone="muted">
+              {status.label}
+            </AppText>
+          ))}
           {message.agentRun === null ? null : (
             <View style={styles.runFoot}>
               <AppText role="caption" tone="muted">
@@ -114,6 +119,7 @@ export const MessageRow = memo(
     left.actions === right.actions &&
     left.message.id === right.message.id &&
     left.message.version === right.message.version &&
+    JSON.stringify(left.message.askStatuses) === JSON.stringify(right.message.askStatuses) &&
     left.message.continued === right.message.continued &&
     left.message.send === right.message.send,
 );

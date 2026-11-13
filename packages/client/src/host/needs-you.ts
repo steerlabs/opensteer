@@ -19,3 +19,23 @@ export function needsYouEntryKey(entry: NeedsYouEntry): string {
     ? `request:${entry.request.id}`
     : `team-ask:${entry.teamId}:${entry.requestId}`;
 }
+
+export function settleTeamAsk(
+  page: NeedsYouPage | null,
+  teamId: string,
+  requestId: string,
+): NeedsYouPage | null {
+  if (!page) return page;
+  const entries = page.entries.filter(
+    (entry) =>
+      entry.kind !== "team-ask" || entry.teamId !== teamId || entry.requestId !== requestId,
+  );
+  const removed = page.entries.length - entries.length;
+  if (!removed) return page;
+  return {
+    ...page,
+    entries,
+    count: Math.max(0, page.count - removed),
+    window: { ...page.window, totalItems: Math.max(0, page.window.totalItems - removed) },
+  };
+}

@@ -1,4 +1,4 @@
-import { needsYouEntryKey } from "./needs-you.js";
+import { needsYouEntryKey, settleTeamAsk } from "./needs-you.js";
 import type { MachineSummary } from "@opensteer/protocol";
 import type { PersonalStreamCache, PersonalCacheScope } from "./personal-stream-cache.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -1208,6 +1208,19 @@ export class HttpHostClient {
         );
     const result = await this.#dispatch(parsedCommand);
     switch (result.type) {
+      case "teams.ask.decide":
+        this.#update({
+          ...this.#snapshot,
+          needsYou:
+            parsedCommand.type === "teams.ask.decide"
+              ? settleTeamAsk(
+                  this.#snapshot.needsYou,
+                  parsedCommand.teamId,
+                  parsedCommand.requestId,
+                )
+              : this.#snapshot.needsYou,
+        });
+        break;
       case "assignment.cancel":
         this.#update({
           ...this.#snapshot,

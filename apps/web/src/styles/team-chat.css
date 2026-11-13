@@ -3829,3 +3829,9 @@ a.team-input-source:hover {
   font-size: var(--text-lg);
   line-height: 1.5;
 }
+
+.team-ask-status {
+  margin: 4px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
