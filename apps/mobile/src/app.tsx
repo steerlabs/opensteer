@@ -36,6 +36,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { AppState, Platform, StyleSheet, View } from "react-native";
 import { NavigationContainerRefContext, type InitialState } from "@react-navigation/native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import { mockIphoneRunnerId, type MockHostClient } from "@opensteer/client/mock";
 import type { MockTeamHost } from "@opensteer/client/team";
@@ -847,64 +848,66 @@ export function App(): ReactNode {
   // lives inside the stack as its layout — is recognised on the UI thread.
   return (
     <GestureHandlerRootView style={styles.root}>
-      <DictationProvider>
-        <MobileClientProvider client={client}>
-          <AiSharingProvider
-            create={(confirm) => {
-              const file = new File(Paths.document, `${storeName}-ai-sharing.json`);
-              return new AiSharing({
-                records: readAiSharing(file),
-                confirm,
-                now: () => new Date().toISOString(),
-                save: (records) => {
-                  if (!file.exists) file.create({ intermediates: true });
-                  file.writeSync(JSON.stringify(records));
-                },
-              });
-            }}
-          >
-            <VoiceProvider>
-              <IphoneAppsProvider controller={iphone}>
-                <MobileNotificationsProvider notifications={notifications}>
-                  <SafeAreaProvider>
-                    <StatusBar style="light" />
-                    <IphoneAppsNotice controller={iphone} />
-                    {linkFailure === null ? null : (
-                      <LinkFailure detail={linkFailure} onDismiss={() => setLinkFailure(null)} />
-                    )}
-                    {integrationNotice === null ? null : (
-                      <IntegrationNotice
-                        detail={integrationNotice.detail}
-                        onDismiss={() => setIntegrationNotice(null)}
-                        title={integrationNotice.title}
-                      />
-                    )}
-                    <AppLinksProvider value={appLinks}>
-                      <MobileTeamsProvider entry={entry} teams={teams}>
-                        <Navigation
-                          initialState={initialNavigationState}
-                          onReady={handleNavigatorReady}
-                          onStateChange={syncDeferredRootSelection}
-                          ref={navigationRef}
-                          theme={navigationTheme}
+      <KeyboardProvider>
+        <DictationProvider>
+          <MobileClientProvider client={client}>
+            <AiSharingProvider
+              create={(confirm) => {
+                const file = new File(Paths.document, `${storeName}-ai-sharing.json`);
+                return new AiSharing({
+                  records: readAiSharing(file),
+                  confirm,
+                  now: () => new Date().toISOString(),
+                  save: (records) => {
+                    if (!file.exists) file.create({ intermediates: true });
+                    file.writeSync(JSON.stringify(records));
+                  },
+                });
+              }}
+            >
+              <VoiceProvider>
+                <IphoneAppsProvider controller={iphone}>
+                  <MobileNotificationsProvider notifications={notifications}>
+                    <SafeAreaProvider>
+                      <StatusBar style="light" />
+                      <IphoneAppsNotice controller={iphone} />
+                      {linkFailure === null ? null : (
+                        <LinkFailure detail={linkFailure} onDismiss={() => setLinkFailure(null)} />
+                      )}
+                      {integrationNotice === null ? null : (
+                        <IntegrationNotice
+                          detail={integrationNotice.detail}
+                          onDismiss={() => setIntegrationNotice(null)}
+                          title={integrationNotice.title}
                         />
-                        <TeamReadyNotices />
-                      </MobileTeamsProvider>
-                    </AppLinksProvider>
-                    <ConnectionPill />
-                    <OpenComputer />
-                    {/* Outside the navigator: a Request card on the bar still navigates. */}
-                    <NavigationContainerRefContext value={navigationRef}>
-                      <VoiceOverlay />
-                    </NavigationContainerRefContext>
-                    <IphoneAppsPrompt controller={iphone} />
-                  </SafeAreaProvider>
-                </MobileNotificationsProvider>
-              </IphoneAppsProvider>
-            </VoiceProvider>
-          </AiSharingProvider>
-        </MobileClientProvider>
-      </DictationProvider>
+                      )}
+                      <AppLinksProvider value={appLinks}>
+                        <MobileTeamsProvider entry={entry} teams={teams}>
+                          <Navigation
+                            initialState={initialNavigationState}
+                            onReady={handleNavigatorReady}
+                            onStateChange={syncDeferredRootSelection}
+                            ref={navigationRef}
+                            theme={navigationTheme}
+                          />
+                          <TeamReadyNotices />
+                        </MobileTeamsProvider>
+                      </AppLinksProvider>
+                      <ConnectionPill />
+                      <OpenComputer />
+                      {/* Outside the navigator: a Request card on the bar still navigates. */}
+                      <NavigationContainerRefContext value={navigationRef}>
+                        <VoiceOverlay />
+                      </NavigationContainerRefContext>
+                      <IphoneAppsPrompt controller={iphone} />
+                    </SafeAreaProvider>
+                  </MobileNotificationsProvider>
+                </IphoneAppsProvider>
+              </VoiceProvider>
+            </AiSharingProvider>
+          </MobileClientProvider>
+        </DictationProvider>
+      </KeyboardProvider>
     </GestureHandlerRootView>
   );
 }

@@ -168,6 +168,10 @@ vi.mock("../thread/composer-menu.js", () => ({
   ),
 }));
 vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 0 }));
+vi.mock("react-native-keyboard-controller", () => ({
+  KeyboardChatScrollView: () => null,
+  useReanimatedKeyboardAnimation: () => ({ height: { value: 0 }, progress: { value: 0 } }),
+}));
 vi.mock("react-native-reanimated", () => {
   const View = ({ children }: { readonly children?: ReactNode }) => <div>{children}</div>;
   const transition = { duration: () => transition };

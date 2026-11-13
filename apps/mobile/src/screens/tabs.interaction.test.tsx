@@ -311,6 +311,10 @@ vi.mock("react-native", async () => {
     ),
   };
 });
+vi.mock("react-native-keyboard-controller", () => ({
+  KeyboardChatScrollView: () => null,
+  useReanimatedKeyboardAnimation: () => ({ height: { value: 0 }, progress: { value: 0 } }),
+}));
 vi.mock("react-native-reanimated", () => {
   const View = (props: Children & { readonly accessibilityLabel?: string }) => (
     <div aria-label={props.accessibilityLabel}>{props.children}</div>

@@ -113,6 +113,7 @@ vi.mock("../thread/composer-dock.js", () => ({
       <footer>{props.dock}</footer>
     </>
   ),
+  DockScrollView: ({ children }: { readonly children?: ReactNode }) => <div>{children}</div>,
 }));
 vi.mock("../thread/transcript.js", () => ({ SubagentSteps: () => <section data-steps /> }));
 vi.mock("../thread/waiting-questions.js", () => ({

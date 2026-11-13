@@ -66,6 +66,7 @@ import {
   type ListRenderItemInfo,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type ScrollViewProps,
 } from "react-native";
 import Animated from "react-native-reanimated";
 import { canRespondToRequests, showsHostLive } from "@opensteer/client/host";
@@ -108,7 +109,7 @@ import {
 import { TranscriptHostClientContext } from "./attachment-views.js";
 import { Composer } from "./composer.js";
 import { ConversationLinksProvider } from "./conversation-links.js";
-import { ComposerDockLayout } from "./composer-dock.js";
+import { ComposerDockLayout, DockScrollView, OverDock } from "./composer-dock.js";
 import { AgentEngine } from "./agent-mark.js";
 import { AgentListNestedContext, AgentMemoryContext } from "./subagent-rows.js";
 import { RunningNowCapsule } from "./running-now.js";
@@ -210,14 +211,6 @@ interface ThreadPaneProps {
    */
   readonly headerClearance?: number;
   readonly hostClient: HostClient;
-  /**
-   * Parent offset in screen coordinates. It is zero in both layouts this app
-   * ships, and for the same reason: `KeyboardAvoidingView` measures itself
-   * against its parent, and under a transparent header — the Thread screen's —
-   * or a large-title one — the split's — that parent already starts at the top
-   * of the window, so the header contributes nothing to add back.
-   */
-  readonly keyboardVerticalOffset?: number;
   /**
    * The exact update this screen was opened for, when a notification or link
    * named one. The transcript is loaded around it and the reader is left
@@ -372,13 +365,24 @@ function ThreadPaneForUser(
   const flinging = useRef(false);
   // The list's real extent, as the native scroll view reports it. FlatList's
   // own `scrollToEnd` aims at the last row's estimated place and leaves out
-  // the content's padding, so until every row above has been measured it
-  // stops short of the newest entry; these two numbers never do.
-  const extent = useRef({ content: 0, viewport: 0 });
+  // the content's padding and the keyboard's inset, so until every row above
+  // has been measured it stops short of the newest entry; these never do.
+  const extent = useRef({ content: 0, inset: 0, viewport: 0 });
   const scrollToLatest = useCallback((animated: boolean): void => {
-    const { content, viewport } = extent.current;
-    listRef.current?.scrollToOffset({ animated, offset: Math.max(0, content - viewport) });
+    const { content, inset, viewport } = extent.current;
+    listRef.current?.scrollToOffset({ animated, offset: Math.max(0, content - viewport + inset) });
   }, []);
+  const renderScroll = useCallback(
+    (scrollProps: ScrollViewProps) => (
+      <DockScrollView
+        {...scrollProps}
+        onContentInsetChange={({ bottom }) => {
+          extent.current.inset = bottom;
+        }}
+      />
+    ),
+    [],
+  );
   const [atTail, setAtTail] = useState(true);
   // How far below the bar the transcript starts, under the Run's page.
   const [pageInset, setPageInset] = useState(0);
@@ -1054,7 +1058,8 @@ function ThreadPaneForUser(
 
   const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>): void => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-    const fromTail = contentSize.height - contentOffset.y - layoutMeasurement.height;
+    const fromTail =
+      contentSize.height + extent.current.inset - contentOffset.y - layoutMeasurement.height;
     const tail = fromTail < tailThreshold;
     // Only the reader's own finger takes them off the newest entry. The list
     // also moves by itself — rows measured after the jump to the end, a page
@@ -1186,8 +1191,6 @@ function ThreadPaneForUser(
           extent.current.content = height;
           keepPinned();
         }}
-        // The list also changes height on its own as the keyboard opens; the
-        // composer growing changes its content's clearance instead.
         onLayout={(event) => {
           extent.current.viewport = event.nativeEvent.layout.height;
           keepPinned();
@@ -1224,6 +1227,7 @@ function ThreadPaneForUser(
         }}
         ref={listRef}
         renderItem={renderItem}
+        renderScrollComponent={renderScroll}
         // The pill and the load-earlier trigger both read scroll position, so
         // the list reports it every frame rather than every fourth one.
         scrollEventThrottle={16}
@@ -1246,48 +1250,50 @@ function ThreadPaneForUser(
       {/* An older window has to be left deliberately, and the way out is to
           load the live conversation — so the offer stands there whether or
           not anything new has arrived since. */}
-      {!historical && atTail ? null : (
-        <Animated.View
-          entering={enter}
-          exiting={exit}
-          style={[styles.jumpHome, { bottom: clearance + space[12] }]}
-        >
-          {/* An opaque capsule, not glass: it floats over whatever the
+      <OverDock>
+        {!historical && atTail ? null : (
+          <Animated.View
+            entering={enter}
+            exiting={exit}
+            style={[styles.jumpHome, { bottom: clearance + space[12] }]}
+          >
+            {/* An opaque capsule, not glass: it floats over whatever the
               reader scrolled to, their own ember messages included, and its
               words have to read over all of it. */}
-          <Pressable
-            accessibilityHint={jumpToMac === null ? undefined : "Jumps to the newest activity"}
-            accessibilityLabel={
-              jumpToMac ?? (pendingMessages > 0 ? "Jump to new messages" : "Jump to latest")
-            }
-            accessibilityRole="button"
-            disabled={returning}
-            onPress={() => {
-              if (historical) {
-                returnToLatest();
-                return;
+            <Pressable
+              accessibilityHint={jumpToMac === null ? undefined : "Jumps to the newest activity"}
+              accessibilityLabel={
+                jumpToMac ?? (pendingMessages > 0 ? "Jump to new messages" : "Jump to latest")
               }
-              pinned.current = true;
-              scrollToLatest(true);
-            }}
-            style={({ pressed }) => [styles.jump, pressed && styles.jumpPressed]}
-          >
-            <AppText numberOfLines={1} role="secondaryMedium" tone="ember">
-              {returning
-                ? "Loading…"
-                : historical
-                  ? "Back to latest"
-                  : (jumpToMac ??
-                    (pendingMessages > 0
-                      ? pendingMessages === 1
-                        ? "New message"
-                        : `${pendingMessages} new messages`
-                      : "Jump to latest"))}
-            </AppText>
-            <Symbol name="chevron.down" size={14} tint={color.ember} />
-          </Pressable>
-        </Animated.View>
-      )}
+              accessibilityRole="button"
+              disabled={returning}
+              onPress={() => {
+                if (historical) {
+                  returnToLatest();
+                  return;
+                }
+                pinned.current = true;
+                scrollToLatest(true);
+              }}
+              style={({ pressed }) => [styles.jump, pressed && styles.jumpPressed]}
+            >
+              <AppText numberOfLines={1} role="secondaryMedium" tone="ember">
+                {returning
+                  ? "Loading…"
+                  : historical
+                    ? "Back to latest"
+                    : (jumpToMac ??
+                      (pendingMessages > 0
+                        ? pendingMessages === 1
+                          ? "New message"
+                          : `${pendingMessages} new messages`
+                        : "Jump to latest"))}
+              </AppText>
+              <Symbol name="chevron.down" size={14} tint={color.ember} />
+            </Pressable>
+          </Animated.View>
+        )}
+      </OverDock>
     </View>
   );
   const dock = (
@@ -1456,11 +1462,7 @@ function ThreadPaneForUser(
                     hostClient={hostClient}
                     threadId={threadId}
                   >
-                    <ComposerDockLayout
-                      avoidKeyboard={companion === null}
-                      dock={dock}
-                      keyboardVerticalOffset={props.keyboardVerticalOffset ?? 0}
-                    >
+                    <ComposerDockLayout avoidKeyboard={companion === null} dock={dock}>
                       {transcript}
                     </ComposerDockLayout>
                   </ConversationLinksProvider>
