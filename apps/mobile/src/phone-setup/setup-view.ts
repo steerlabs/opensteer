@@ -26,7 +26,7 @@ export interface SetupFormProps {
   readonly failure: string | null;
   readonly continueLabel: string;
   readonly onContinue: () => void;
-  /** Offered only once setup failed, so a Host problem never traps the person here. */
+  /** Offered after failure or on resume, so unfinished setup never traps the person here. */
   readonly onNotNow: (() => void) | null;
   readonly onOpenSettings: () => void;
   readonly disclosure: string;
