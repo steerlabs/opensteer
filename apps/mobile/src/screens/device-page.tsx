@@ -141,12 +141,13 @@ function DevicePage(props: {
     rows.find((row) => row.deploymentId === props.deploymentId)?.name ?? "Opensteer",
   );
   const connections = computerConnectionsOn(apps.data?.connections ?? [], machine.id);
+  // Only an iPhone's own build lends these apps; Android lends its browser alone.
   const appRows: NativeSettingsRow[] = thisDevice
     ? iphoneAppIds.flatMap((app) => {
         const permission = iphonePermissionOf(iphone.snapshot, app);
+        if (permission === null) return [];
         const definition = apps.data?.definitions.find(({ id }) => id === app) ?? null;
         const connection = connections.find(({ definitionId }) => definitionId === app) ?? null;
-        if (permission === null && definition === null && connection === null) return [];
         const view = iphoneAppRow({
           access: connection?.computer?.access ?? null,
           app,

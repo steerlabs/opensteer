@@ -2,7 +2,14 @@ import { useHeaderHeight } from "@react-navigation/elements";
 import type { ReactNode } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { color, space } from "../theme.js";
-import { AppText, Notice, PrimaryButton, RowGroup, SectionLabel } from "../ui/primitives.js";
+import {
+  AppText,
+  Notice,
+  PrimaryButton,
+  RowGroup,
+  SecondaryButton,
+  SectionLabel,
+} from "../ui/primitives.js";
 import { Screen, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
@@ -47,11 +54,11 @@ export function Welcome(props: WelcomeProps): ReactNode {
             prominent
           />
         )}
-        <PrimaryButton
-          label={welcomeCopy.scan}
-          onPress={props.onScan}
-          prominent={view.macLink === null}
-        />
+        {view.macLink === null ? (
+          <PrimaryButton label={welcomeCopy.scan} onPress={props.onScan} prominent />
+        ) : (
+          <SecondaryButton label={welcomeCopy.scan} onPress={props.onScan} />
+        )}
         <View style={styles.section}>
           <SectionLabel>{welcomeCopy.otherWays}</SectionLabel>
           <RowGroup>

@@ -34,6 +34,9 @@ vi.mock("../ui/primitives.js", () => ({
     <button onClick={onPress}>{label}</button>
   ),
   RowGroup: ({ children }: { children: readonly ReactNode[] }) => <div>{children}</div>,
+  SecondaryButton: ({ label, onPress }: { label: string; onPress: () => void }) => (
+    <button onClick={onPress}>{label}</button>
+  ),
   SectionLabel: ({ children }: { children: string }) => <span>{children}</span>,
 }));
 vi.mock("../ui/screen.js", () => ({
