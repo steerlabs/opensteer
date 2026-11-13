@@ -19,6 +19,7 @@ import { z } from "zod";
 import {
   antigravityPlatform,
   antigravityReleaseManifest,
+  antigravityUnavailableReason,
   type AntigravityPlatform,
   type AntigravityReleaseAsset,
 } from "./release.js";
@@ -232,11 +233,7 @@ export async function prepareAntigravityRuntime(
   options: PrepareAntigravityRuntimeOptions,
 ): Promise<PreparedAntigravityRuntime> {
   const platform = options.platform ?? antigravityPlatform();
-  if (!platform) {
-    throw new Error(
-      `Google does not publish Antigravity 1.4.1 for ${process.platform}-${process.arch}`,
-    );
-  }
+  if (!platform) throw new Error(antigravityUnavailableReason());
   const asset = antigravityReleaseManifest.platforms[platform];
   return prepareAntigravityRuntimeRelease({
     ...options,

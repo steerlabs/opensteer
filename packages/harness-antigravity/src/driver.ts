@@ -76,7 +76,11 @@ import {
   isAntigravityAuthenticationRequired,
   transformAntigravityStdout,
 } from "./output.js";
-import { antigravityPlatform, antigravityReleaseManifest } from "./release.js";
+import {
+  antigravityPlatform,
+  antigravityReleaseManifest,
+  antigravityUnavailableReason,
+} from "./release.js";
 import {
   prepareAntigravityRuntime,
   type AntigravityRuntimeIdentity,
@@ -583,6 +587,8 @@ export class AntigravityHarnessDriver implements HarnessDriver {
 
   async prepare(context: HarnessInspectionContext): Promise<void> {
     assertNativeUser(context);
+    // `inspect` reports the missing release; there is nothing to download.
+    if (antigravityUnavailableReason()) return;
     const config = AntigravityHarnessConfigSchema.parse(context.config);
     const source = antigravitySource(context.sourceId);
     this.#runtime = await prepareAntigravityRuntime({
@@ -627,6 +633,8 @@ export class AntigravityHarnessDriver implements HarnessDriver {
         status: "unavailable",
       };
     }
+    const unavailable = antigravityUnavailableReason();
+    if (unavailable) return { detail: unavailable, status: "unavailable" };
     const runtime = this.#requireRuntime();
     const config = AntigravityHarnessConfigSchema.parse(context.config);
     const source = antigravitySource(context.sourceId);
@@ -932,7 +940,11 @@ export class AntigravityHarnessDriver implements HarnessDriver {
   }
 
   #requireRuntime(): PreparedAntigravityRuntime {
-    if (!this.#runtime) throw new Error("Antigravity runtime has not been prepared");
+    if (!this.#runtime) {
+      throw new Error(
+        antigravityUnavailableReason() ?? "Antigravity runtime has not been prepared",
+      );
+    }
     return this.#runtime;
   }
 

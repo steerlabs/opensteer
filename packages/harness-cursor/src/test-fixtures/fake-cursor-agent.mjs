@@ -194,16 +194,11 @@ function blockedReason(verdict) {
 }
 
 let interrupted = false;
-if (scenario === "ignore-sigint") {
-  // A CLI that will not stop on SIGINT, so the driver has to escalate.
-  process.on("SIGINT", () => undefined);
-} else {
-  process.on("SIGINT", () => {
-    interrupted = true;
-    process.stderr.write("\nAborting operation...\n");
-    process.exit(130);
-  });
-}
+process.on("SIGINT", () => {
+  interrupted = true;
+  process.stderr.write("\nAborting operation...\n");
+  process.exit(130);
+});
 if (scenario === "hang") process.on("SIGTERM", () => undefined);
 
 await main();
@@ -239,12 +234,6 @@ async function main() {
       usage: usage(),
     });
     process.exit(0);
-  }
-
-  if (scenario === "ignore-sigint") {
-    emit({ text: "Working", timestamp_ms: Date.now(), type: "thinking", subtype: "delta" });
-    setInterval(() => undefined, 1_000);
-    return;
   }
 
   if (scenario === "hang") {
