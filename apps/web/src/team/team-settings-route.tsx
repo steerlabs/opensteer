@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router";
 import {
   createId,
@@ -30,19 +30,31 @@ import { useTeamRead, useTeamView, type TeamView } from "./team-view.js";
 import { person } from "./team-view-models.js";
 
 const noPreviews: ReadonlyMap<string, string> = new Map();
+
+/** Scrolls a sideways tab row so its current tab shows whenever `tabs` (what it holds) changes. */
+function useCurrentTabInView(tabs: string) {
+  const nav = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    nav.current
+      ?.querySelector('[aria-current="page"]')
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [tabs]);
+  return nav;
+}
 const adminPages = ["people", "groups", "invites", "channels", "audit"] as const;
 
 /** Settings → a team: everyone's profile and notifications; admins' people, groups, invites, channels and audit log. */
 export function TeamSettingsRoute() {
   const { teamId = "", page = "profile" } = useParams();
   const view = useTeamView(teamId, noPreviews);
-  if (!view) return <p className="team-empty">You aren’t in this team on this computer.</p>;
-  const can = view.snapshot.bootstrap?.can;
+  const can = view?.snapshot.bootstrap?.can;
   const admin =
     !!can && (can.manageMembers || can.manageGroups || can.manageInvites || can.viewAudit);
+  const navRef = useCurrentTabInView(`${page}:${view !== null}:${admin}`);
+  if (!view) return <p className="team-empty">You aren’t in this team on this computer.</p>;
   const name = view.snapshot.bootstrap?.teamName ?? view.team.name;
   const nav = (
-    <nav aria-label={`${name} settings`} className="team-settings-nav">
+    <nav aria-label={`${name} settings`} className="team-settings-nav" ref={navRef}>
       {(["profile", "notifications", ...(admin ? adminPages : [])] as const).map((key) => (
         <Link
           aria-current={key === page ? "page" : undefined}
