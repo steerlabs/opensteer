@@ -478,7 +478,6 @@ export class HostSession implements HostSessionRecovery {
 
     if (supportsHostNativeSignIn(resolved.bootstrapMethods)) {
       const before = this.#oauth.hostCredentialState(connection);
-      if (before.status === "signed-in") return observation(resolved, "ready");
       if (before.status === "authorizing") {
         return observation(resolved, "authorizing", before.detail ?? undefined);
       }

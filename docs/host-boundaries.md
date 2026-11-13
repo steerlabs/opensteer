@@ -163,3 +163,7 @@ The team decides membership; the assertion grants no personal Host access. All n
 are bound to the device Account identity at issuance (browser flows pin their starting identity),
 or explicitly to no Account. Legacy credentials without a binding cannot authorize requests. The binding is enforced even
 when local deletion or remote revocation fails.
+
+Native token refresh never exchanges an Account assertion or publishes logout on refusal. The shared
+team entry operation owns fallback; passive recovery cannot open a browser or clear team sign-out.
+Obsolete entry cleanup can remove only the catalog revision that attempt created.

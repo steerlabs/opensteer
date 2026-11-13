@@ -110,13 +110,26 @@ export function desktopTeamSessions(
     },
     exchange: async (team, invite) => ({
       ...(await call(
-        { call: "enter", origin: team.authority.canonicalOrigin, invite },
+        {
+          call: "enter",
+          deploymentId: team.authority.deploymentId,
+          origin: team.authority.canonicalOrigin,
+          invite,
+        },
         DesktopTeamEnteredSchema,
       )),
       team,
     }),
     signIn: async (team, invite) => {
-      await call({ call: "sign-in", origin: team.authority.canonicalOrigin, invite }, z.null());
+      await call(
+        {
+          call: "sign-in",
+          deploymentId: team.authority.deploymentId,
+          origin: team.authority.canonicalOrigin,
+          invite,
+        },
+        z.null(),
+      );
       const { member } = unwrapRpcResult(
         await rpc(team.authority.deploymentId)["team.bootstrap.get"]({}),
       );

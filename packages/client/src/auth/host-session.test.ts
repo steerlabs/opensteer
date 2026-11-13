@@ -271,9 +271,10 @@ describe("HostSession", () => {
     );
   });
 
-  it("marks returning attachment authorization as passive", async () => {
+  it("routes returning native credentials through passive entry", async () => {
     const connection = connectionOfKind("team");
     const fixture = hostSessionFixture(connection);
+    fixture.oauth.emit(connection, "signed-in");
     await fixture.sessions.establish(connection.authority.document.deploymentId, false);
     expect(fixture.oauth.signInTeam).toHaveBeenCalledWith(connection, undefined, false);
   });

@@ -211,7 +211,8 @@ and a failed refresh never renews stale evidence. Only the Account refusing the 
 its session; network failure, rate limiting and outage stay retryable
 ([`deployment-access-service.ts`](../apps/desktop/src/connections/deployment-access-service.ts)).
 
-Native team entry reuses or refreshes a credential before the Account identity exchange, then
+Native team entry owns startup, explicit entry and pinned 401 recovery. Each attempt fences before
+fresh discovery and catalog updates, reuses or refreshes a credential, permits one Account identity exchange, then
 falls back to browser sign-in only when interactive authorization is needed. An Account outage
 leaves entry retryable. Explicit team sign-out survives restart and suppresses silent entry
 until explicit sign-in. Passive attachment never opens a browser. Real Account identity changes

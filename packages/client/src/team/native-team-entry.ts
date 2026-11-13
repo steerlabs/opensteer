@@ -22,6 +22,7 @@ import {
   type NativeOAuthManager,
 } from "../auth/native-oauth.js";
 import {
+  HostVersionMismatchError,
   deploymentConnectionFromVerifiedEndpoints,
   verifyAccessEndpoint,
   type DeploymentCatalogStore,
@@ -93,8 +94,10 @@ type TeamEntryOAuth = Pick<
   NativeOAuthManager,
   | "teamEntryLease"
   | "authorizationHeader"
+  | "refreshTeamAuthorization"
   | "isTeamSignInSuppressed"
   | "resumeTeamSignIn"
+  | "accountIdentity"
   | "accountAuthorizationLease"
   | "beginHostSignIn"
   | "exchangeTeamSession"
@@ -106,65 +109,129 @@ type TeamEntryCatalog = Pick<
   "addPendingAccountDeployment" | "load" | "remove" | "upsert"
 >;
 
-/** Shared by device entry and an attachment's explicit authorization action. */
-export async function authorizeTeamCredential(
-  oauth: TeamEntryOAuth,
-  connection: DeploymentConnection,
-  invite: TeamInviteSecret | null,
-  interactive: boolean,
-  entry = oauth.teamEntryLease(connection.authority.document.deploymentId),
-): Promise<Pick<TeamSessionExchangeResponse, "admitted" | "member"> | null | false> {
-  entry.assertCurrent();
-  if (interactive) await oauth.resumeTeamSignIn(connection);
-  else if (oauth.isTeamSignInSuppressed(connection)) return null;
-  entry.assertCurrent();
-  const existing = await oauth.authorizationHeader(connection, invite ?? undefined);
-  entry.assertCurrent();
-  if (existing && !invite) return null;
-  if (
-    connection.capabilities?.includes("team-session-exchange-v1") &&
-    (await oauth.accountAuthorizationLease())
-  ) {
-    entry.assertCurrent();
-    try {
-      return await oauth.exchangeTeamSession(connection, invite ?? undefined, entry);
-    } catch (error) {
-      if (!(error instanceof TeamIdentityGrantUnsupportedError)) throw error;
-    }
-  }
-  entry.assertCurrent();
-  return false;
-}
+export type TeamEntryOutcome =
+  | { readonly status: "authorized"; readonly admitted: boolean; readonly member?: TeamMember }
+  | { readonly status: "join-required"; readonly error: TeamEntryRefusedError }
+  | {
+      readonly status:
+        "retryable" | "update-required" | "sign-in-required" | "suppressed" | "superseded";
+      readonly error?: unknown;
+    };
 
-/**
- * Entering a team as the signed-in Account, where this device keeps its credentials (desktop
- * main, the phone). The team stays on the device as an Account entry until Account's directory
- * lists it, which happens shortly after membership is published.
- */
 export class NativeTeamEntry {
   readonly #oauth: TeamEntryOAuth;
   readonly #catalog: TeamEntryCatalog;
   readonly #bootstrap: (connection: DeploymentConnection) => Promise<TeamMember>;
+  readonly #verify: (origin: string) => Promise<VerifiedHostEndpoint>;
 
   constructor(options: {
     readonly oauth: TeamEntryOAuth;
     readonly catalog: TeamEntryCatalog;
     readonly bootstrap: (connection: DeploymentConnection) => Promise<TeamMember>;
+    readonly verify: (origin: string) => Promise<VerifiedHostEndpoint>;
   }) {
     this.#oauth = options.oauth;
     this.#catalog = options.catalog;
     this.#bootstrap = options.bootstrap;
+    this.#verify = options.verify;
+  }
+
+  async authorize(input: {
+    readonly deploymentId: DeploymentId;
+    readonly origin: string;
+    readonly mode: "passive" | "interactive";
+    readonly invite?: TeamInviteSecret | null;
+    readonly recover?: boolean;
+  }): Promise<TeamEntryOutcome> {
+    const entry = this.#oauth.teamEntryLease(input.deploymentId, true);
+    let createdRevision: number | undefined;
+    try {
+      const verified = await this.#verify(input.origin);
+      entry.assertCurrent();
+      if (verified.discovery.deploymentId !== input.deploymentId)
+        throw new Error("That address now answers as a different team.");
+      const held = await this.#held(input.deploymentId);
+      entry.assertCurrent();
+      const identity = this.#oauth.accountIdentity();
+      const connectionInput = deploymentConnectionFromVerifiedEndpoints({
+        accountAccess: held?.accountAccess ?? null,
+        endpoints: [verified],
+        kind: "team",
+        name: held?.name ?? new URL(input.origin).hostname,
+        source:
+          held?.source ??
+          (identity && verified.capabilities.includes("team-session-exchange-v1")
+            ? { kind: "account", issuer: identity.issuer, subject: identity.subject }
+            : { kind: "manual" }),
+      });
+      const catalog = await (held || connectionInput.source.kind !== "account"
+        ? this.#catalog.upsert(connectionInput)
+        : this.#catalog.addPendingAccountDeployment(connectionInput));
+      if (!held) createdRevision = catalog.revision;
+      entry.assertCurrent();
+      const connection = catalog.deployments.find(
+        ({ authority }) => authority.document.deploymentId === input.deploymentId,
+      )!;
+      if (input.mode === "interactive") await this.#oauth.resumeTeamSignIn(connection, entry);
+      else if (this.#oauth.isTeamSignInSuppressed(connection)) return { status: "suppressed" };
+      entry.assertCurrent();
+      const existing = input.recover
+        ? await this.#oauth.refreshTeamAuthorization(connection)
+        : await this.#oauth.authorizationHeader(connection);
+      entry.assertCurrent();
+      if (existing && !input.invite) return { status: "authorized", admitted: false };
+      if (
+        verified.capabilities.includes("team-session-exchange-v1") &&
+        (await this.#oauth.accountAuthorizationLease())
+      ) {
+        entry.assertCurrent();
+        try {
+          const result = await this.#oauth.exchangeTeamSession(
+            connection,
+            input.invite ?? undefined,
+            entry,
+          );
+          entry.assertCurrent();
+          return { status: "authorized", ...result };
+        } catch (error) {
+          if (!(error instanceof TeamIdentityGrantUnsupportedError)) throw error;
+        }
+      }
+      entry.assertCurrent();
+      if (input.mode === "passive") return { status: "sign-in-required" };
+      await this.#browserSignIn(connection, input.invite ?? null, entry);
+      entry.assertCurrent();
+      return { status: "authorized", admitted: false };
+    } catch (error) {
+      try {
+        entry.assertCurrent();
+      } catch {
+        return { status: "superseded" };
+      }
+      if (createdRevision !== undefined)
+        await this.#catalog.remove(input.deploymentId, createdRevision).catch(() => undefined);
+      if (error instanceof TeamEntryRefusedError) return { status: "join-required", error };
+      return {
+        status: error instanceof HostVersionMismatchError ? "update-required" : "retryable",
+        error,
+      };
+    }
   }
 
   async enter(
     verified: VerifiedHostEndpoint,
     invite: TeamInviteSecret | null,
   ): Promise<Pick<TeamSessionExchangeResponse, "admitted" | "member">> {
-    const entry = this.#oauth.teamEntryLease(verified.discovery.deploymentId, true);
-    const entered = await this.ensureAuthorized(verified, invite, true, entry);
-    entry.assertCurrent();
-    if (entered) return entered;
-    const connection = (await this.#held(verified.discovery.deploymentId))!;
+    const result = await this.ensureAuthorized(verified, invite);
+    if (result) return result;
+    return this.bootstrap(verified.discovery.deploymentId);
+  }
+
+  async bootstrap(
+    deploymentId: DeploymentId,
+  ): Promise<Pick<TeamSessionExchangeResponse, "admitted" | "member">> {
+    const entry = this.#oauth.teamEntryLease(deploymentId);
+    const connection = (await this.#held(deploymentId))!;
     entry.assertCurrent();
     const member = await this.#bootstrap(connection);
     entry.assertCurrent();
@@ -175,84 +242,21 @@ export class NativeTeamEntry {
     verified: VerifiedHostEndpoint,
     invite: TeamInviteSecret | null = null,
     interactive = true,
-    entry = this.#oauth.teamEntryLease(verified.discovery.deploymentId, true),
   ): Promise<Pick<TeamSessionExchangeResponse, "admitted" | "member"> | null> {
-    const deploymentId = verified.discovery.deploymentId;
-    const held = await this.#held(deploymentId);
-    entry.assertCurrent();
-    try {
-      if (held) {
-        const catalog = await this.#catalog.upsert(
-          deploymentConnectionFromVerifiedEndpoints({
-            accountAccess: held.accountAccess,
-            endpoints: [verified],
-            kind: "team",
-            name: held.name,
-            source: held.source,
-          }),
-        );
-        const refreshed = catalog.deployments.find(
-          (entry) => entry.authority.document.deploymentId === deploymentId,
-        )!;
-        entry.assertCurrent();
-        const authorized = await authorizeTeamCredential(
-          this.#oauth,
-          refreshed,
-          invite,
-          interactive,
-          entry,
-        );
-        entry.assertCurrent();
-        if (authorized !== false) return authorized;
-        if (interactive) await this.#browserSignIn(refreshed, invite, entry);
-        return null;
-      }
-      const canExchange =
-        verified.capabilities.includes("team-session-exchange-v1") &&
-        (await this.#oauth.accountAuthorizationLease());
-      entry.assertCurrent();
-      const connection = canExchange
-        ? await this.#keep(verified, entry)
-        : await this.#keepManual(verified);
-      const authorized = await authorizeTeamCredential(
-        this.#oauth,
-        connection,
-        invite,
-        interactive,
-        entry,
-      );
-      entry.assertCurrent();
-      if (authorized !== false) return authorized;
-      if (interactive) await this.#browserSignIn(connection, invite, entry);
-      return null;
-    } catch (error) {
-      if (held === null) await this.#catalog.remove(deploymentId).catch(() => undefined);
-      throw error;
-    }
+    const outcome = await this.authorize({
+      deploymentId: verified.discovery.deploymentId,
+      origin: verified.discovery.canonicalOrigin,
+      mode: interactive ? "interactive" : "passive",
+      invite,
+    });
+    assertTeamEntryOutcome(outcome);
+    return outcome.status === "authorized" && outcome.member
+      ? { admitted: outcome.admitted, member: outcome.member }
+      : null;
   }
 
-  /**
-   * After a restart, before Account's directory lists a team entered here: the entry again, and a
-   * session again only if its credential is gone. Teams the directory lists need nothing.
-   */
-  async restore(
-    deploymentId: DeploymentId,
-    verify: () => Promise<VerifiedHostEndpoint>,
-  ): Promise<void> {
-    const entry = this.#oauth.teamEntryLease(deploymentId);
-    const held = await this.#held(deploymentId);
-    entry.assertCurrent();
-    if (
-      held &&
-      (this.#oauth.isTeamSignInSuppressed(held) || (await this.#oauth.authorizationHeader(held)))
-    )
-      return;
-    entry.assertCurrent();
-    const verified = await verify();
-    entry.assertCurrent();
-    if (verified.discovery.deploymentId !== deploymentId)
-      throw new Error("That address now answers as a different team.");
-    await this.ensureAuthorized(verified, null, false, entry);
+  async restore(deploymentId: DeploymentId, origin: string): Promise<void> {
+    assertTeamEntryOutcome(await this.authorize({ deploymentId, origin, mode: "passive" }));
   }
 
   /** Drops this device's credential and entry for the team. */
@@ -269,24 +273,6 @@ export class NativeTeamEntry {
         (connection) => connection.authority.document.deploymentId === deploymentId,
       ) ?? null
     );
-  }
-
-  async #keepManual(verified: VerifiedHostEndpoint): Promise<DeploymentConnection> {
-    const deploymentId = verified.discovery.deploymentId;
-    const catalog = await this.#catalog.upsert(
-      deploymentConnectionFromVerifiedEndpoints({
-        accountAccess: null,
-        endpoints: [verified],
-        kind: "team",
-        name: new URL(verified.discovery.canonicalOrigin).hostname,
-        source: { kind: "manual" },
-      }),
-    );
-    const kept = catalog.deployments.find(
-      (connection) => connection.authority.document.deploymentId === deploymentId,
-    );
-    if (!kept) throw new Error("The team couldn’t be kept on this device.");
-    return kept;
   }
 
   async #browserSignIn(
@@ -317,32 +303,17 @@ export class NativeTeamEntry {
       stop();
     }
   }
+}
 
-  async #keep(
-    verified: VerifiedHostEndpoint,
-    entry: TeamEntryLease,
-  ): Promise<DeploymentConnection> {
-    const lease = await this.#oauth.accountAuthorizationLease();
-    entry.assertCurrent();
-    if (!lease)
-      throw new ClientOperationError(
-        "Sign in to your Opensteer account to join a team.",
-        "blocked",
-      );
-    const deploymentId = verified.discovery.deploymentId;
-    const catalog = await this.#catalog.addPendingAccountDeployment(
-      deploymentConnectionFromVerifiedEndpoints({
-        accountAccess: null,
-        endpoints: [verified],
-        kind: "team",
-        name: new URL(verified.discovery.canonicalOrigin).hostname,
-        source: { kind: "account", issuer: lease.issuer, subject: lease.subject },
-      }),
-    );
-    const kept = catalog.deployments.find(
-      (connection) => connection.authority.document.deploymentId === deploymentId,
-    );
-    if (!kept) throw new Error("The team couldn’t be kept on this device.");
-    return kept;
-  }
+export function assertTeamEntryOutcome(outcome: TeamEntryOutcome): void {
+  if (outcome.status === "authorized" || outcome.status === "suppressed") return;
+  throw (
+    ("error" in outcome && outcome.error) ||
+    new ClientOperationError(
+      outcome.status === "sign-in-required"
+        ? "Sign in to this team."
+        : "Team authorization changed. Try again.",
+      outcome.status === "sign-in-required" ? "blocked" : "transient",
+    )
+  );
 }

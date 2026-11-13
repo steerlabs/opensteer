@@ -1,4 +1,8 @@
-import { authorizeTeamCredential } from "../team/native-team-entry.js";
+import {
+  NativeTeamEntry,
+  assertTeamEntryOutcome,
+  verifyTeamEndpoint,
+} from "../team/native-team-entry.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { encodeBase64Url, decodeBase64Url } from "@opensteer/shared/base64url";
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
@@ -230,7 +234,10 @@ export class NativeOAuthManager implements HostCredentialProvider {
     removeAllAccountIdentities(): Promise<void>;
     removeOtherAccountIdentities(source: AccountDeploymentConnectionSource): Promise<void>;
   };
-  readonly #catalog: Pick<DeploymentCatalogStore, "load">;
+  readonly #catalog: Pick<
+    DeploymentCatalogStore,
+    "load" | "upsert" | "addPendingAccountDeployment" | "remove"
+  >;
   readonly #fetch: OAuthFetch;
   readonly #accountListeners = new Set<AccountAuthStateListener>();
   readonly #flowExpiries = new Map<string, () => void>();
@@ -270,7 +277,10 @@ export class NativeOAuthManager implements HostCredentialProvider {
       removeAllAccountIdentities(): Promise<void>;
       removeOtherAccountIdentities(source: AccountDeploymentConnectionSource): Promise<void>;
     };
-    readonly catalog: Pick<DeploymentCatalogStore, "load">;
+    readonly catalog: Pick<
+      DeploymentCatalogStore,
+      "load" | "upsert" | "addPendingAccountDeployment" | "remove"
+    >;
     readonly fetch?: OAuthFetch;
     readonly now?: () => Date;
     readonly networkTimeoutMs?: number;
@@ -589,12 +599,19 @@ export class NativeOAuthManager implements HostCredentialProvider {
     return this.#signedOutTeams.has(connection.authority.document.deploymentId);
   }
 
-  async resumeTeamSignIn(connection: DeploymentConnection): Promise<void> {
-    this.#signedOutTeams.delete(connection.authority.document.deploymentId);
-    await this.#store.setTeamSignOutSuppression?.(
-      connection.authority.document.deploymentId,
-      false,
-    );
+  async resumeTeamSignIn(
+    connection: DeploymentConnection,
+    entry = this.teamEntryLease(connection.authority.document.deploymentId),
+  ): Promise<void> {
+    entry.assertCurrent();
+    await this.#mutateCredentials(async () => {
+      entry.assertCurrent();
+      this.#signedOutTeams.delete(connection.authority.document.deploymentId);
+      await this.#store.setTeamSignOutSuppression?.(
+        connection.authority.document.deploymentId,
+        false,
+      );
+    });
   }
 
   async signInTeam(
@@ -602,17 +619,28 @@ export class NativeOAuthManager implements HostCredentialProvider {
     invite?: TeamInviteSecret,
     interactive = true,
   ): Promise<HostOAuthState> {
-    const entry = this.teamEntryLease(connection.authority.document.deploymentId, true);
-    const authorized = await authorizeTeamCredential(
-      this,
-      connection,
-      invite ?? null,
-      interactive,
-      entry,
-    );
-    entry.assertCurrent();
-    if (authorized !== false || !interactive) return this.hostCredentialState(connection);
-    return this.beginHostSignIn(connection, invite, entry);
+    const outcome = await this.#teamEntry().authorize({
+      deploymentId: connection.authority.document.deploymentId,
+      origin: connection.authority.document.canonicalOrigin,
+      mode: interactive ? "interactive" : "passive",
+      invite: invite ?? null,
+    });
+    assertTeamEntryOutcome(outcome);
+    return this.hostCredentialState(connection);
+  }
+
+  #teamEntry(): NativeTeamEntry {
+    return new NativeTeamEntry({
+      oauth: this,
+      catalog: this.#catalog,
+      verify: (origin) =>
+        verifyTeamEndpoint(origin, {
+          fetch: (input, init) => this.#fetch(String(input), init ?? {}),
+        }),
+      bootstrap: async () => {
+        throw new Error("Entry bootstrap belongs to the attachment.");
+      },
+    });
   }
 
   /**
@@ -983,10 +1011,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     return true;
   }
 
-  async authorizationHeader(
-    connection: DeploymentConnection,
-    invite?: TeamInviteSecret,
-  ): Promise<string | null> {
+  async authorizationHeader(connection: DeploymentConnection): Promise<string | null> {
     this.#assertStorageReady();
     // Personal connections ride the partition session cookie, so they must
     // never also carry a self-hosted bearer token.
@@ -1004,7 +1029,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     ) {
       return `Bearer ${credential.accessToken}`;
     }
-    return this.#refreshHostCredential(connection, credential, invite);
+    return this.#refreshHostCredential(connection, credential);
   }
 
   /**
@@ -1012,27 +1037,28 @@ export class NativeOAuthManager implements HostCredentialProvider {
    * Account's identity is entered again without a browser once refreshing cannot help.
    */
   async recoverHostAuthorization(connection: DeploymentConnection): Promise<boolean> {
+    const outcome = await this.#teamEntry().authorize({
+      deploymentId: connection.authority.document.deploymentId,
+      origin: connection.authority.document.canonicalOrigin,
+      mode: "passive",
+      recover: true,
+    });
+    if (outcome.status === "suppressed" || outcome.status === "sign-in-required") return false;
+    assertTeamEntryOutcome(outcome);
+    return outcome.status === "authorized";
+  }
+
+  async refreshTeamAuthorization(connection: DeploymentConnection): Promise<string | null> {
     this.#assertStorageReady();
-    if (connection.kind !== "team") return false;
-    const entry = this.teamEntryLease(connection.authority.document.deploymentId);
-    await this.#retryCredentialWrite(connection.authority.document.deploymentId);
-    entry.assertCurrent();
     const credential = this.#hostCredential(connection.authority.document.deploymentId);
-    if (
-      credential &&
-      credentialMatchesConnection(credential, connection) &&
-      (await this.#refreshHostCredential(connection, credential)) !== null
-    )
-      return true;
-    if (this.isTeamSignInSuppressed(connection)) return false;
-    entry.assertCurrent();
-    return (await authorizeTeamCredential(this, connection, null, false, entry)) !== false;
+    return credential && credentialMatchesConnection(credential, connection)
+      ? this.#refreshHostCredential(connection, credential)
+      : null;
   }
 
   async #refreshHostCredential(
     connection: DeploymentConnection,
     credential: HostCredential,
-    invite?: TeamInviteSecret,
   ): Promise<string | null> {
     const deploymentId = connection.authority.document.deploymentId;
     const key = hostAttachmentKey(connection);
@@ -1047,29 +1073,6 @@ export class NativeOAuthManager implements HostCredentialProvider {
       ) {
         return null;
       }
-      const clear = async (): Promise<null> => {
-        const cleared = await this.#mutateCredentials(async () => {
-          if (
-            this.#hostGeneration(deploymentId) !== generation ||
-            this.#hostCredential(deploymentId)?.refreshToken !== credential.refreshToken
-          ) {
-            return false;
-          }
-          await this.#beforeHostChange(connection);
-          if (
-            this.#hostGeneration(deploymentId) !== generation ||
-            this.#hostCredential(deploymentId)?.refreshToken !== credential.refreshToken
-          )
-            return false;
-          const state = await this.#store.clearHost(deploymentId);
-          this.#pendingHostWrites.delete(deploymentId);
-          this.#adoptHostCredentials(state.hosts);
-          this.#hostDetails.set(key, "Your sign-in to this server expired. Sign in again.");
-          return true;
-        });
-        if (cleared) this.#emitHost(connection);
-        return null;
-      };
       let refreshed: OAuthCredentialFields;
       try {
         refreshed = await this.#refreshCredential(
@@ -1082,19 +1085,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
         // As for the Account: an unanswered refresh keeps the credential.
         if (error instanceof OAuthGrantRefusedError) {
           entry.assertCurrent();
-          if (
-            supportsTeamSessionExchange(connection) &&
-            !this.isTeamSignInSuppressed(connection) &&
-            (await this.accountAuthorizationLease())
-          ) {
-            try {
-              await this.exchangeTeamSession(connection, invite, entry);
-              return this.authorizationHeader(connection);
-            } catch (failure) {
-              if (!(failure instanceof TeamIdentityGrantUnsupportedError)) throw failure;
-            }
-          }
-          return clear();
+          return null;
         }
         throw new ClientOperationError(hostUnreachableDetail, "transient", { cause: error });
       }
@@ -1102,7 +1093,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
       try {
         next = HostCredentialSchema.parse({ ...credential, ...refreshed });
       } catch {
-        return clear();
+        return null;
       }
       const committed = await this.#mutateCredentials(async () => {
         if (

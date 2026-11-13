@@ -1,3 +1,5 @@
+import { TeamMemberSchema } from "@opensteer/protocol";
+import * as teamEntryModule from "../team/native-team-entry.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import { createId, opensteerAccountOAuthScopes } from "@opensteer/core";
@@ -599,7 +601,7 @@ describe("NativeOAuthManager", () => {
     );
   });
 
-  it("clears a Host credential the Host refuses to refresh", async () => {
+  it("reports refused refresh without exchanging or publishing logout", async () => {
     const fixture = await managerFixture({ refreshStatuses: [400], tokenLifetimeSeconds: 61 });
     await fixture.manager.initialize();
     await fixture.manager.beginHostSignIn(fixture.connection);
@@ -610,7 +612,7 @@ describe("NativeOAuthManager", () => {
     fixture.clock.now = new Date("2026-08-11T19:00:02.000Z");
 
     await expect(fixture.manager.authorizationHeader(fixture.connection)).resolves.toBeNull();
-    await expect(fixture.store.load()).resolves.toMatchObject({ hosts: [] });
+    expect((await fixture.store.load()).hosts).toHaveLength(1);
   });
 
   it("binds a consumed Host callback to the exact requested authority", async () => {
@@ -1143,9 +1145,24 @@ describe("NativeOAuthManager team session exchange", () => {
         callbackUrl("host", new URL(f.opened.at(-1)!).searchParams.get("state")!, "code"),
       );
       f.clock.now = new Date(f.clock.now.getTime() + 600_000);
-      await expect(f.manager.authorizationHeader(f.connection, invite)).resolves.toBe(
-        `Bearer ${"a".repeat(32)}`,
-      );
+      const entry = new teamEntryModule.NativeTeamEntry({
+        oauth: f.manager,
+        catalog: f.catalog,
+        verify: (origin) => teamEntryModule.verifyTeamEndpoint(origin, { fetch: globalThis.fetch }),
+        bootstrap: async () => TeamMemberSchema.parse(member),
+      });
+      await expect(
+        entry.enter(
+          {
+            discovery: f.connection.authority.document,
+            discoveryEnvelope: f.connection.authority,
+            capabilities: f.connection.capabilities ?? [],
+            bootstrapMethods: f.connection.bootstrapMethods,
+            endpoint: f.connection.endpoints[0]!,
+          },
+          invite,
+        ),
+      ).resolves.toMatchObject({ admitted: true });
       expect(exchanges).toEqual([{ assertion, invite }]);
     } finally {
       f.manager.dispose();
@@ -1360,7 +1377,7 @@ describe("NativeOAuthManager team session exchange", () => {
     expect(fixture.manager.hostCredentialState(fixture.connection).status).toBe("signed-out");
   });
 
-  it("keeps a refusal's reason and stores nothing", async () => {
+  it("refreshes manual-row capabilities during passive entry and keeps membership refusal", async () => {
     const fixture = await managerFixture({
       capabilities: exchangeCapability,
       route: (url) =>
@@ -1382,7 +1399,13 @@ describe("NativeOAuthManager team session exchange", () => {
     });
     await fixture.manager.initialize();
     await fixture.signInAccount();
-    await expect(fixture.manager.signInTeam(fixture.connection)).rejects.toMatchObject({
+    const fresh = await teamEntryModule.verifyTeamEndpoint("https://host.opensteer.test", {
+      fetch: globalThis.fetch,
+    });
+    const stale = { ...fixture.connection, capabilities: [] };
+    fixture.catalog.current = catalogFor(stale);
+    vi.mocked(teamEntryModule.verifyTeamEndpoint).mockResolvedValue(fresh);
+    await expect(fixture.manager.signInTeam(stale, undefined, false)).rejects.toMatchObject({
       name: "TeamEntryRefusedError",
       reason: "not-a-member",
     });
@@ -1470,9 +1493,12 @@ describe("NativeOAuthManager team session exchange", () => {
     const fixture = await managerFixture({ route });
     await fixture.manager.initialize();
     await fixture.signInAccount();
-    await expect(fixture.manager.signInTeam(fixture.connection)).resolves.toMatchObject({
-      status: "authorizing",
-    });
+    const signingIn = fixture.manager.signInTeam(fixture.connection);
+    await vi.waitFor(() => expect(fixture.opened).toHaveLength(2));
+    await fixture.manager.handleCallback(
+      callbackUrl("host", new URL(fixture.opened.at(-1)!).searchParams.get("state")!, "code"),
+    );
+    await expect(signingIn).resolves.toMatchObject({ status: "signed-in" });
     expect(new URL(fixture.opened.at(-1)!).pathname).toBe("/v1/auth/native/oauth2/authorize");
     expect(route.mock.calls.filter(([url]) => url.includes("team"))).toEqual([]);
   });
@@ -1743,7 +1769,25 @@ async function managerFixture(
   } = {},
 ) {
   const connection = deploymentConnection("team", options.capabilities);
+  vi.spyOn(teamEntryModule, "verifyTeamEndpoint").mockResolvedValue({
+    discovery: connection.authority.document,
+    discoveryEnvelope: connection.authority,
+    capabilities: connection.capabilities ?? [],
+    bootstrapMethods: connection.bootstrapMethods,
+    endpoint: connection.endpoints[0]!,
+  });
   const catalog = {
+    upsert: async (
+      input: import("../connections/deployment-catalog.js").DeploymentConnectionInput,
+    ) => {
+      catalog.current = {
+        ...catalog.current,
+        deployments: [DeploymentConnectionSchema.parse({ ...connection, ...input })],
+      };
+      return catalog.current;
+    },
+    addPendingAccountDeployment: async () => catalog.current,
+    remove: async () => catalog.current,
     current: catalogFor(connection),
     load: async () => catalog.current,
     removeAccountDeployments: vi.fn(

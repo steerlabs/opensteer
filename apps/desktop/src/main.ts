@@ -1,6 +1,10 @@
 import { deploymentPolicy } from "@opensteer/core";
 import { DesktopTeamLinks } from "./app/team-links.js";
-import { HttpAccountTeamsClient, NativeTeamEntry } from "@opensteer/client/team";
+import {
+  HttpAccountTeamsClient,
+  NativeTeamEntry,
+  verifyTeamEndpoint,
+} from "@opensteer/client/team";
 import { DesktopTeamSessions } from "./app/team-sessions.js";
 import { PersonalDataReset } from "./supervisor/personal-data-reset.js";
 import { desktopPersonalDataReset } from "./app/personal-data-reset.js";
@@ -1155,6 +1159,8 @@ async function runDesktop(
       ? new DesktopTeamSessions({
           entry: new NativeTeamEntry({
             oauth: nativeAuth,
+            verify: (origin) =>
+              verifyTeamEndpoint(origin, { fetch: serviceNetwork.fetch.bind(serviceNetwork) }),
             catalog: deploymentCatalog,
             bootstrap: (connection) =>
               hostTransport.bootstrapTeam(connection.authority.document.deploymentId),

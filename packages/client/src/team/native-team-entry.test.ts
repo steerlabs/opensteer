@@ -15,6 +15,7 @@ import {
 } from "../test-support/index.js";
 import { NativeTeamEntry } from "./native-team-entry.js";
 
+let latestVerified: VerifiedHostEndpoint;
 const keys = testHostAuthorityKeys();
 const lease = {
   authorization: "Bearer account",
@@ -42,13 +43,14 @@ function team(): VerifiedHostEndpoint {
     hostKey: { algorithm: "Ed25519" as const },
     deploymentShape: { kind: "team" as const },
   };
-  return {
+  latestVerified = {
     bootstrapMethods: ["oidc"],
     capabilities: ["native-oauth", "team-session-exchange-v1"],
     discovery,
     discoveryEnvelope: signTestDiscoveryEnvelope(discovery, keys),
     endpoint: { kind: "canonical", origin, verifiedAt: new Date().toISOString() },
   };
+  return latestVerified;
 }
 
 function setup() {
@@ -57,16 +59,19 @@ function setup() {
     privateFiles: new MemoryPrivateFilesystem(),
   });
   let signedIn = false;
+  const verify = vi.fn(async () => latestVerified);
   const listeners = new Set<(state: HostOAuthState) => void>();
   const state = (connection: DeploymentConnection, status: HostOAuthState["status"]) =>
     ({ connection, detail: null, key: "", status }) as HostOAuthState;
   const oauth = {
+    refreshTeamAuthorization: vi.fn(async (): Promise<string | null> => null),
     teamEntryLease: () => ({ generation: 0, assertCurrent: () => {} }),
     resumeTeamSignIn: vi.fn(async () => {}),
     isTeamSignInSuppressed: vi.fn(() => false),
     authorizationHeader: vi.fn(async (): Promise<string | null> =>
       signedIn ? "Bearer team" : null,
     ),
+    accountIdentity: () => lease,
     accountAuthorizationLease: async () => lease,
     // Like desktop: the browser opens and the call returns; the callback lands later.
     beginHostSignIn: vi.fn(async (connection: DeploymentConnection) => {
@@ -101,11 +106,52 @@ function setup() {
     callback,
     listeners,
     signOut: () => (signedIn = false),
-    entry: new NativeTeamEntry({ oauth, catalog, bootstrap }),
+    entry: new NativeTeamEntry({ oauth, catalog, bootstrap, verify }),
+    verify,
+    discover: (verified: VerifiedHostEndpoint) => {
+      latestVerified = verified;
+    },
   };
 }
 
 describe("NativeTeamEntry", () => {
+  it("does not remove a newer entry when an obsolete exchange refuses", async () => {
+    const { entry, oauth, catalog } = setup();
+    const verified = team();
+    const pending = Promise.withResolvers<{ admitted: boolean; member: typeof member }>();
+    oauth.exchangeTeamSession.mockImplementationOnce(() => pending.promise);
+    const first = entry.ensureAuthorized(verified);
+    const rejected = expect(first).rejects.toThrow();
+    await vi.waitFor(() => expect(oauth.exchangeTeamSession).toHaveBeenCalledOnce());
+    await entry.ensureAuthorized(verified);
+    pending.reject(new Error("obsolete refusal"));
+    await rejected;
+    expect((await catalog.load()).deployments).toHaveLength(1);
+  });
+
+  it("claims entry before verification and ignores sign-out during discovery", async () => {
+    const { entry, oauth, verify } = setup();
+    const verified = team();
+    const pending = Promise.withResolvers<VerifiedHostEndpoint>();
+    verify.mockReturnValueOnce(pending.promise);
+    let current = true;
+    oauth.teamEntryLease = () => ({
+      generation: 0,
+      assertCurrent: () => {
+        if (!current) throw new Error("superseded");
+      },
+    });
+    const restoring = entry.restore(
+      verified.discovery.deploymentId,
+      verified.discovery.canonicalOrigin,
+    );
+    const rejected = expect(restoring).rejects.toThrow();
+    current = false;
+    pending.resolve(verified);
+    await rejected;
+    expect(oauth.exchangeTeamSession).not.toHaveBeenCalled();
+  });
+
   it("fences entry before the initial catalog lookup can resume", async () => {
     const { entry, oauth, catalog } = setup();
     const verified = team();
@@ -120,7 +166,7 @@ describe("NativeTeamEntry", () => {
     });
     vi.spyOn(catalog, "load").mockReturnValueOnce(lookup.promise);
     const entering = entry.ensureAuthorized(verified);
-    const rejected = expect(entering).rejects.toThrow("Entry changed");
+    const rejected = expect(entering).rejects.toThrow("Team authorization changed");
     invalidated = true;
     lookup.resolve(original);
     await rejected;
@@ -138,6 +184,7 @@ describe("NativeTeamEntry", () => {
       capabilities: ["native-oauth", "team-invite-native-continuation-v1"] as const,
     };
     const invite = { selector: "s".repeat(32), verifier: "v".repeat(43) };
+    latestVerified = older;
     const entering = entry.enter(older, invite);
     await vi.waitFor(() => expect(oauth.beginHostSignIn).toHaveBeenCalledOnce(), { timeout: 1000 });
     callback((await catalog.load()).deployments[0]!, "signed-in");
@@ -179,20 +226,20 @@ describe("NativeTeamEntry", () => {
   });
 
   it("restores only a team the directory doesn't list yet, entering again without a credential", async () => {
-    const { catalog, entry, ids, oauth, signOut } = setup();
+    const { catalog, entry, ids, oauth, signOut, verify } = setup();
     const joined = team();
     const id: DeploymentId = joined.discovery.deploymentId;
-    const verify = vi.fn(async () => joined);
+    verify.mockResolvedValue(joined);
     // A restart dropped the pending entry and its credential.
     await entry.enter(joined, null);
     await catalog.remove(id);
     signOut();
     oauth.exchangeTeamSession.mockClear();
-    await entry.restore(id, verify);
+    await entry.restore(id, joined.discovery.canonicalOrigin);
     expect(await ids()).toEqual([id]);
     expect(oauth.exchangeTeamSession).toHaveBeenCalledTimes(1);
 
-    // Once Account's directory lists it, a launch asks nothing of the network.
+    // Even directory-listed entries verify discovery on passive entry.
     const {
       createdAt: _c,
       lastUsedAt: _l,
@@ -201,8 +248,8 @@ describe("NativeTeamEntry", () => {
     } = (await catalog.load()).deployments[0]!;
     await catalog.upsert({ ...held, accountAccess: "member" });
     verify.mockClear();
-    await entry.restore(id, verify);
-    expect(verify).not.toHaveBeenCalled();
+    await entry.restore(id, joined.discovery.canonicalOrigin);
+    expect(verify).toHaveBeenCalledOnce();
   });
 
   it("bootstraps cached credentials through the supplied pinned transport", async () => {
@@ -277,6 +324,7 @@ describe("NativeTeamEntry", () => {
     const older = { ...team(), capabilities: ["native-oauth"] as const };
     const settled = vi.fn();
     const invite = { selector: "s".repeat(32), verifier: "v".repeat(43) };
+    latestVerified = older;
     const signingIn = entry.ensureAuthorized(older, invite).then(settled, settled);
     await vi.waitFor(() => expect(oauth.beginHostSignIn).toHaveBeenCalledOnce());
     const [kept] = (await catalog.load()).deployments;
@@ -294,6 +342,7 @@ describe("NativeTeamEntry", () => {
     // Stopped or expired in the browser: an error, and nothing kept of a team never entered.
     signOut();
     const stopped = { ...team(), capabilities: ["native-oauth"] as const };
+    latestVerified = stopped;
     const failing = entry.ensureAuthorized(stopped, null);
     await vi.waitFor(() => expect(oauth.beginHostSignIn).toHaveBeenCalledTimes(2));
     const held = (await catalog.load()).deployments.find(

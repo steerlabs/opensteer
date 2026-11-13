@@ -15,6 +15,7 @@ import {
 import {
   listedTeams,
   NativeTeamEntry,
+  assertTeamEntryOutcome,
   TeamSavedStateSchema,
   TeamTransportRegistry,
   type TeamCacheScope,
@@ -224,6 +225,7 @@ export class MobileTeams {
     this.#verify = options.verify;
     this.#entry = new NativeTeamEntry({
       oauth: options.client.oauth,
+      verify: options.verify,
       catalog: options.client.catalog,
       bootstrap: async (connection) =>
         unwrapRpcResult(
@@ -398,10 +400,12 @@ export class MobileTeams {
     if (this.#signedIn(teamId)) return;
     this.#setState(teamId, "loading", null);
     try {
-      const verified = await this.#verify(team.origin);
-      if (verified.discovery.deploymentId !== teamId)
-        throw new Error("That address now answers as a different team.");
-      await this.#entry.ensureAuthorized(verified, null, interactive);
+      const outcome = await this.#entry.authorize({
+        deploymentId: DeploymentIdSchema.parse(teamId),
+        origin: team.origin,
+        mode: interactive ? "interactive" : "passive",
+      });
+      assertTeamEntryOutcome(outcome);
       this.#states.delete(teamId);
       this.#publish();
     } catch (error) {
@@ -642,7 +646,7 @@ export class MobileTeams {
 
   /** A team entered before a restart stays on this phone until Account's directory lists it. */
   async restore(origin: string, teamId: DeploymentId): Promise<void> {
-    await this.#entry.restore(teamId, () => this.verifyTeam(origin));
+    await this.#entry.restore(teamId, origin);
   }
 
   /** Learns the team's name and who the reader is, and shows it on the computer being shown. */

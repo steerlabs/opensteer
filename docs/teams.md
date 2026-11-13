@@ -33,7 +33,8 @@ posted an explicit reply; reconnect recovers pending publication without rerunni
 
 ## Entering a team
 
-Desktop and mobile first reuse or refresh their team credential. With an Account session, they
+Desktop and mobile share one entry operation. It claims the Account and team sign-out fence before
+fetching fresh signed discovery, including for manually added teams, then reuses or refreshes their team credential. With an Account session, they
 enter a team advertising `team-session-exchange-v1` without a
 browser. Account signs a single-use assertion, valid for one minute, of who the person is for
 that exact team Host and app; it proves identity, never membership. The team Host verifies it

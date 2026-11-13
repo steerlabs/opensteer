@@ -781,17 +781,19 @@ export class MobileClient {
     invite: TeamInviteSecret | null = null,
   ): Promise<void> {
     const id = DeploymentIdSchema.parse(deploymentId);
+    const team = this.#state.catalog.deployments.find(
+      (connection) =>
+        connection.authority.document.deploymentId === id && connection.kind === "team",
+    );
+    if (team) {
+      await this.oauth.signInTeam(team, invite ?? undefined);
+      return;
+    }
     const connection = this.#requireConnection(id, await this.catalog.load());
     const verification = this.#verification.get(id);
     if (verification !== undefined) throw new Error(verificationFailureDetail(verification));
     await this.#clearSignOutSuppression(id);
     this.#sessionFailures.delete(id);
-    if (connection.kind === "team") {
-      // The credential subscription publishes the team credential state, whether the Account
-      // vouched for this phone or the browser adapter waited for the callback.
-      await this.oauth.signInTeam(connection, invite ?? undefined);
-      return;
-    }
     const resolved = resolveConnection(connection, null, { authorization: null });
     if (resolved.access !== "connect" || !this.sessionExchange.supports(resolved)) {
       throw new Error("This deployment has no address this phone can sign in to.");

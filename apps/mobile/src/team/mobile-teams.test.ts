@@ -325,97 +325,117 @@ describe("the teams a phone lists", () => {
 });
 
 describe("adding a computer's team to the phone", () => {
-  it.each(["member", "no-account", "old-team", "not-member", "outage"])(
-    "uses the shared entry policy for %s",
-    async (mode) => {
-      const connection = connections[0]!;
-      const teamId = connection.authority.document.deploymentId;
-      const verifying = Promise.withResolvers<void>();
-      const verified: VerifiedHostEndpoint = {
-        discovery: connection.authority.document,
-        discoveryEnvelope: connection.authority,
-        endpoint: connection.endpoints[0]!,
-        bootstrapMethods: ["oidc"],
-        capabilities:
-          mode === "old-team" ? ["native-oauth"] : ["native-oauth", "team-session-exchange-v1"],
-      };
-      const catalog = new DeploymentCatalogStore({
-        filePath: "/private/mobile-entry/catalog.json",
-        privateFiles: new MemoryPrivateFilesystem(),
-      });
-      const lease = {
-        issuer: "https://account.example",
-        subject: ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`),
-        authorization: "Bearer account",
-        signal: new AbortController().signal,
-      };
-      const exchange = vi.fn(async () => {
-        if (mode === "not-member")
-          throw new TeamEntryRefusedError("not-a-member", "Ask for an invite");
-        if (mode === "outage") throw new Error("Account unreachable");
-        return { admitted: false, member: {} };
-      });
-      const browser = vi.fn(async (held: DeploymentConnection) => ({
-        status: "signed-in",
-        connection: held,
-      }));
-      const client = {
-        catalog,
-        oauth: {
-          subscribeAccountIdentityChanges: () => () => undefined,
-          accountIdentity: () => null,
-          teamEntryLease: () => ({ generation: 0, assertCurrent: () => {} }),
-          accountAuthorizationLease: async () => (mode === "no-account" ? null : lease),
-          authorizationHeader: async () => null,
-          resumeTeamSignIn: async () => {},
-          isTeamSignInSuppressed: () => false,
-          exchangeTeamSession: exchange,
-          beginHostSignIn: browser,
-          hostCredentialState: () => ({ status: "signed-out" }),
-          subscribeHostCredentials: () => () => {},
+  it.each([
+    "member",
+    "no-account",
+    "old-team",
+    "not-member",
+    "outage",
+    "sign-out-during-discovery",
+    "account-switch-during-discovery",
+  ])("uses the shared entry policy for %s", async (mode) => {
+    const connection = connections[0]!;
+    const teamId = connection.authority.document.deploymentId;
+    const verifying = Promise.withResolvers<void>();
+    const verified: VerifiedHostEndpoint = {
+      discovery: connection.authority.document,
+      discoveryEnvelope: connection.authority,
+      endpoint: connection.endpoints[0]!,
+      bootstrapMethods: ["oidc"],
+      capabilities:
+        mode === "old-team" ? ["native-oauth"] : ["native-oauth", "team-session-exchange-v1"],
+    };
+    const catalog = new DeploymentCatalogStore({
+      filePath: "/private/mobile-entry/catalog.json",
+      privateFiles: new MemoryPrivateFilesystem(),
+    });
+    const lease = {
+      issuer: "https://account.example",
+      subject: ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`),
+      authorization: "Bearer account",
+      signal: new AbortController().signal,
+    };
+    const exchange = vi.fn(async () => {
+      if (mode === "not-member")
+        throw new TeamEntryRefusedError("not-a-member", "Ask for an invite");
+      if (mode === "outage") throw new Error("Account unreachable");
+      return { admitted: false, member: {} };
+    });
+    const browser = vi.fn(async (held: DeploymentConnection) => ({
+      status: "signed-in",
+      connection: held,
+    }));
+    let entryCurrent = true;
+    const client = {
+      catalog,
+      oauth: {
+        subscribeAccountIdentityChanges: () => () => undefined,
+        accountIdentity: () => null,
+        teamEntryLease: () => {
+          const captured = entryCurrent;
+          return {
+            generation: 0,
+            assertCurrent: () => {
+              if (captured !== entryCurrent) throw new Error("Entry changed");
+            },
+          };
         },
-        subscribe: () => () => {},
-        getSnapshot: () => ({
-          selection: { deploymentId: mockDeploymentId, hostClient: null },
-          teams: [],
-        }),
-      } as unknown as MobileClient;
-      const teams = new MobileTeams({
-        client,
-        directory: "/private/mobile-entry",
-        files: new MemoryPrivateFilesystem(),
-        transport: () => {
-          throw new Error("No socket needed for entry");
-        },
-        verify: async () => {
-          await verifying.promise;
-          return verified;
-        },
-        seed: {
-          [mockDeploymentId]: [
-            { teamId, origin: connection.authority.document.canonicalOrigin, teamName: "Acme" },
-          ],
-        },
-      });
-      teams.start();
-      await vi.waitFor(() => expect(teams.team(teamId), "team row never loaded").not.toBeNull(), {
-        timeout: 1000,
-      });
-      const adding = teams.addToPhone(teamId);
-      expect(teams.team(teamId)?.state).toBe("loading");
-      verifying.resolve();
-      try {
-        if (mode === "not-member" || mode === "outage") {
-          await expect(adding).rejects.toThrow();
-          expect(teams.team(teamId)?.state).toBe(mode === "not-member" ? "join" : "offline");
-        } else await adding;
-        expect(browser).toHaveBeenCalledTimes(mode === "no-account" || mode === "old-team" ? 1 : 0);
-        expect(exchange).toHaveBeenCalledTimes(
-          mode === "no-account" || mode === "old-team" ? 0 : 1,
-        );
-      } finally {
-        teams.dispose();
+        accountAuthorizationLease: async () => (mode === "no-account" ? null : lease),
+        authorizationHeader: async () => null,
+        resumeTeamSignIn: async () => {},
+        isTeamSignInSuppressed: () => false,
+        exchangeTeamSession: exchange,
+        beginHostSignIn: browser,
+        hostCredentialState: () => ({ status: "signed-out" }),
+        subscribeHostCredentials: () => () => {},
+      },
+      subscribe: () => () => {},
+      getSnapshot: () => ({
+        selection: { deploymentId: mockDeploymentId, hostClient: null },
+        teams: [],
+      }),
+    } as unknown as MobileClient;
+    const teams = new MobileTeams({
+      client,
+      directory: "/private/mobile-entry",
+      files: new MemoryPrivateFilesystem(),
+      transport: () => {
+        throw new Error("No socket needed for entry");
+      },
+      verify: async () => {
+        await verifying.promise;
+        return verified;
+      },
+      seed: {
+        [mockDeploymentId]: [
+          { teamId, origin: connection.authority.document.canonicalOrigin, teamName: "Acme" },
+        ],
+      },
+    });
+    teams.start();
+    await vi.waitFor(() => expect(teams.team(teamId), "team row never loaded").not.toBeNull(), {
+      timeout: 1000,
+    });
+    const adding = teams.addToPhone(teamId);
+    expect(teams.team(teamId)?.state).toBe("loading");
+    if (mode.endsWith("during-discovery")) entryCurrent = false;
+    verifying.resolve();
+    try {
+      if (mode.endsWith("during-discovery")) {
+        await expect(adding).rejects.toThrow();
+        expect((await catalog.load()).deployments).toHaveLength(0);
+        expect(exchange).not.toHaveBeenCalled();
+        expect(browser).not.toHaveBeenCalled();
+        return;
       }
-    },
-  );
+      if (mode === "not-member" || mode === "outage") {
+        await expect(adding).rejects.toThrow();
+        expect(teams.team(teamId)?.state).toBe(mode === "not-member" ? "join" : "offline");
+      } else await adding;
+      expect(browser).toHaveBeenCalledTimes(mode === "no-account" || mode === "old-team" ? 1 : 0);
+      expect(exchange).toHaveBeenCalledTimes(mode === "no-account" || mode === "old-team" ? 0 : 1);
+    } finally {
+      teams.dispose();
+    }
+  });
 });
