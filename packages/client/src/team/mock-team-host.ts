@@ -727,9 +727,15 @@ export class MockTeamHost {
           changeSeq: String(++this.#seq),
         });
         this.channels.set(channel.id, channel);
+        // As the team does: its maker manages it, whatever the list says about them.
         this.#access.set(channel.id, {
           revision: channel.changeSeq,
-          entries: command.access,
+          entries: [
+            ...command.access.filter(
+              (entry) => entry.subject.kind !== "person" || entry.subject.userId !== this.userId,
+            ),
+            { subject: { kind: "person", userId: this.userId }, level: "post", manage: true },
+          ],
           can: channel.can,
         });
         this.publish();
@@ -773,6 +779,8 @@ export class MockTeamHost {
       ) {
         const channel = this.channels.get(command.channelId);
         if (!channel) throw new Error("Unknown channel.");
+        if (command.type === "team.channel.restore" && channel.archivedAt !== null)
+          this.#requireFreeName(channel.name, channel.id);
         this.channels.set(channel.id, {
           ...channel,
           archivedAt:

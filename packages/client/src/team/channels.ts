@@ -15,16 +15,21 @@ export function channelNameFromInput(input: string): string {
   return input.trim().replace(/^#+/u, "").trim();
 }
 
-/** The live channel in `channels` already called `input`, when the reader can see it. */
-export function channelNamed<Channel extends Pick<TeamChannelSummary, "name" | "archivedAt">>(
-  channels: readonly Channel[],
-  input: string,
-): Channel | null {
+/**
+ * The live channel in `channels` already called `input`, when the reader can see it. A
+ * direct message's name is its people's, never a channel name, so it never matches.
+ */
+export function channelNamed<
+  Channel extends Pick<TeamChannelSummary, "kind" | "name" | "archivedAt">,
+>(channels: readonly Channel[], input: string): Channel | null {
   const key = teamChannelNameKey(channelNameFromInput(input));
   if (key === "") return null;
   return (
     channels.find(
-      (channel) => channel.archivedAt === null && teamChannelNameKey(channel.name) === key,
+      (channel) =>
+        (channel.kind === "public" || channel.kind === "private") &&
+        channel.archivedAt === null &&
+        teamChannelNameKey(channel.name) === key,
     ) ?? null
   );
 }

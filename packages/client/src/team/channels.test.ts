@@ -23,9 +23,14 @@ const person = (displayName: string, state: "active" | "removed" = "active") => 
 
 describe("a new channel's name", () => {
   it("matches a live channel the way the team keeps names unique", () => {
-    const channels = [channel("Général"), channel("old", "public", true)];
+    const channels = [
+      channel("Général"),
+      channel("old", "public", true),
+      channel("Direct message", "dm"),
+    ];
     expect(channelNamed(channels, "  #GÉNÉRAL ")).toBe(channels[0]);
     expect(channelNamed(channels, "old")).toBeNull();
+    expect(channelNamed(channels, "direct message")).toBeNull();
     expect(channelNamed(channels, "#")).toBeNull();
   });
 

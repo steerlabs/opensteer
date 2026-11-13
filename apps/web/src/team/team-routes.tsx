@@ -297,7 +297,13 @@ function BrowseChannels({ view }: { readonly view: TeamView }) {
         ) : null
       ) : channels.length === 0 ? (
         <div className="team-browse__empty">
-          <p>{words ? `No channel called “${words}”.` : `${teamName} has no channels yet.`}</p>
+          <p>
+            {!words
+              ? `${teamName} has no channels yet.`
+              : directory.capped
+                ? `No channel called “${words}” among the first 1,000.`
+                : `No channel called “${words}”.`}
+          </p>
           {canCreate ? (
             <button
               className="btn btn--small"

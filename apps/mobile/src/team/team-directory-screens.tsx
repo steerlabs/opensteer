@@ -180,7 +180,11 @@ export function TeamChannelsScreen(props: TeamParams): ReactNode {
     ) : (
       <View style={styles.state}>
         <AppText role="secondary" style={styles.centered} tone="muted">
-          {words === "" ? "No channels yet." : `No channel called “${words}”.`}
+          {words === ""
+            ? "No channels yet."
+            : directory.capped
+              ? `No channel called “${words}” among the first 1,000.`
+              : `No channel called “${words}”.`}
         </AppText>
         {canCreate ? (
           <SecondaryButton
