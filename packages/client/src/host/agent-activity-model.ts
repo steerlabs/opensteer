@@ -1203,37 +1203,20 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
   const result: (Exclude<WorkRow, { kind: "steps" }> | Steps)[] = [];
 
   let pending: PlaceEntry[] = [];
-  let session: string | null = null;
   // A tab is entered while a command runs, so it joins the browser row still
-  // open (reasoning doesn't close it), else its session's next command. Only a
-  // tab with no row of its session before the next message, Request or subagent
-  // stands alone. A row whose command named its session through a variable is
-  // on the session of the first tab it meets.
+  // open (reasoning doesn't close it), else the next browser command's row.
+  // Only a tab with no browser row before the next message, Request or
+  // subagent stands alone.
   let open: Steps | null = null;
-  const sessionRows = new Map<string, Steps>();
-  const unknownSession = JSON.stringify(["browser", null]);
-  const ownerOf = (row: Steps | null | undefined, key: string): Steps | null => {
-    if (!row || (row.joinKey !== key && row.joinKey !== unknownSession)) return null;
-    if (row.joinKey === unknownSession) {
-      sessionRows.delete(unknownSession);
-      row.joinKey = key;
-      sessionRows.set(key, row);
-    }
-    return row;
-  };
+  let browserRow: Steps | null = null;
   const flushPlaces = () => {
     for (const entry of pending) {
-      const key = JSON.stringify([
-        "browser",
-        entry.place.kind === "browser" ? entry.place.sessionId : null,
-      ]);
-      const owner = ownerOf(sessionRows.get(key) ?? sessionRows.get(unknownSession), key);
-      if (owner) owner.entries.push(entry);
+      if (browserRow) browserRow.entries.push(entry);
       else result.push({ entry, key: `place:${entry.id}`, kind: "place" });
     }
     pending = [];
     open = null;
-    sessionRows.clear();
+    browserRow = null;
   };
   for (const entry of work) {
     if (entry.kind === "place") {
@@ -1242,9 +1225,7 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
         result.push({ entry, key: `place:${entry.id}`, kind: "place" });
         continue;
       }
-      session = entry.place.sessionId;
-      const owner = ownerOf(open, JSON.stringify(["browser", session]));
-      if (owner) owner.entries.push(entry);
+      if (open) open.entries.push(entry);
       else pending.push(entry);
       continue;
     }
@@ -1275,17 +1256,9 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
         : presentation
           ? stepGroup(presentation.kind)
           : null;
-    const joinKey =
-      entry.kind === "tool" && group !== null ? groupJoinKey(entry, group, session) : null;
-    const places =
-      group === "browser"
-        ? pending.filter(
-            (place) =>
-              place.place.kind === "browser" &&
-              JSON.stringify([group, place.place.sessionId]) === joinKey,
-          )
-        : [];
-    if (group === "browser") pending = pending.filter((place) => !places.includes(place));
+    const joinKey = entry.kind === "tool" && group !== null ? groupJoinKey(entry, group) : null;
+    const places = group === "browser" ? pending : [];
+    if (group === "browser") pending = [];
     let row: Steps;
     if (last?.kind === "steps" && joinKey !== null && last.joinKey === joinKey) {
       row = last;
@@ -1295,7 +1268,7 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
       result.push(row);
     }
     open = group === "browser" ? row : null;
-    if (open && joinKey !== null) sessionRows.set(joinKey, open);
+    if (open) browserRow = open;
   }
   flushPlaces();
 
@@ -1318,12 +1291,7 @@ export function workRows(work: readonly WorkEntry[]): WorkRow[] {
  * Computer use folds steps on one app or phone. Runner ids keep computers
  * apart even when they share a display name.
  */
-function groupJoinKey(tool: ToolEntry, group: StepGroup, session: string | null): string | null {
-  if (group === "browser") {
-    const command = commandFrom(effectiveArguments(tool)) ?? "";
-    const literal = /--session(?:=|\s+)(?:"([^"$]+)"|'([^'$]+)'|([^\s"'$`]+))/.exec(command);
-    return JSON.stringify([group, literal?.[1] ?? literal?.[2] ?? literal?.[3] ?? session]);
-  }
+function groupJoinKey(tool: ToolEntry, group: StepGroup): string | null {
   if (group === "integration-call") {
     const subject = tool.integration;
     if (!subject || subject.effect !== "read") return null;

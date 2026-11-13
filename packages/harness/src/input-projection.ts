@@ -140,8 +140,7 @@ function lineText(value: string, limit: number): string {
 
 /**
  * A browser page included with an input, as one plain line. It names the
- * exact session and page so the agent can find it, and says what to do when
- * it is gone. The title and address came from the page, not from whoever sent
+ * exact tab so the agent can use it, and says what to do when it is gone. The title and address came from the page, not from whoever sent
  * the input, so they are quoted, bounded and kept from forging a marker even
  * in a person's message.
  */
@@ -151,7 +150,7 @@ function browserPageLine(
 ): string {
   const who = input.author.kind === "human" ? "The person included" : "This input includes";
   return escapeOpensteerPromptMarkers(
-    `${who} this browser page: ${JSON.stringify(lineText(page.title, 256))} ${JSON.stringify(lineText(page.url, 2048))} (Browser Session ${page.sessionId}, page ${JSON.stringify(lineText(page.tabId, 512))}). Find it with Browser Harness listTabs() by surfaceId; if it is gone, say so.`,
+    `${who} this browser page: ${JSON.stringify(lineText(page.title, 256))} ${JSON.stringify(lineText(page.url, 2048))} (tab ${JSON.stringify(lineText(page.tabId, 512))}). Use it with Browser Harness --tab or switchTab; if it is gone, say so.`,
   );
 }
 

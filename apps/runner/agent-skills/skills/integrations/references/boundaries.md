@@ -17,7 +17,7 @@ not permit approving an Opensteer Request, granting access or retrieving passwor
 A webhook creation result can include its setup address and secret. Use them only for the requested
 webhook setup; never commit the secret, put it in memory or send it to an unrelated recipient.
 
-Do not substitute a Browser Session merely because an account is not connected:
+Do not substitute the browser merely because an account is not connected:
 use the browser only when the user asks for website interaction, the work is inherently visual, or
 no integration applies.
 
