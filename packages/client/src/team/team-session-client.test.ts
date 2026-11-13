@@ -40,6 +40,39 @@ function fixture() {
   return { host, persistence, client };
 }
 describe("team synchronization", () => {
+  it.each(["Active team membership required", "Team session generation changed"])(
+    "removes the partition for an older server's bootstrap refusal: %s",
+    async (message) => {
+      const code = "forbidden";
+      const host = new MockTeamHost();
+      const persistence = createMemoryTeamPersistence();
+      const client = new TeamSessionClient({
+        scope,
+        persistence,
+        connect: host.connect,
+        rpc: new Proxy(host.rpc, {
+          get(target, key, receiver) {
+            if (key === "team.bootstrap.get")
+              return async () => ({
+                ok: false,
+                error: { code, message, retryable: false },
+              });
+            return Reflect.get(target, key, receiver);
+          },
+        }),
+      });
+      try {
+        await client.setDraft(channelScope, "Draft");
+        await expect(client.load(false)).rejects.toMatchObject({ code });
+        expect(client.getSnapshot().ended).toBe("removed");
+        expect(await persistence.load(scope)).toBeNull();
+      } finally {
+        client.dispose();
+        host.dispose();
+      }
+    },
+  );
+
   it.each([...TeamEntryRefusalReasonSchema.options, "removed"])(
     "preserves the partition unless %s is membership refusal",
     async (reason) => {

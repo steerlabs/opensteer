@@ -32,6 +32,76 @@ import { testPersonalHostRuntime } from "../supervisor/personal-host-runtime-tes
 import { DesktopLocalRunnerTargetResolver } from "../supervisor/local-runner-authority.js";
 
 describe("DesktopHostTransport", () => {
+  it.each([false, true])(
+    "isolates personal transports during team invalidation (team: %s)",
+    async (withTeam) => {
+      const personal = deployment("Home", "https://home.example", "personal");
+      const manual = deployment("Work", "https://work.example", "personal");
+      const team = deployment("Team", "https://team.example");
+      const catalog = catalogStore(
+        [personal, manual, ...(withTeam ? [team] : [])],
+        personal.authority.document.deploymentId,
+      );
+      const gate = Promise.withResolvers<Response>();
+      const started: HostNetworkRequest[] = [];
+      const closes = new Map<DeploymentId, ReturnType<typeof vi.fn>>();
+      const transport = desktopHostTransport({
+        catalog,
+        network: {
+          request: async (input) => {
+            started.push(input);
+            return gate.promise.then((response) => response.clone());
+          },
+          openWebSocket: (input) => {
+            const close = vi.fn();
+            closes.set(input.deploymentId, close);
+            return { ...socket(), close };
+          },
+        },
+      });
+      try {
+        await transport.openWebSocket(1, { path: "/v1/realtime" }, () => {});
+        if (withTeam)
+          await transport.openWebSocket(
+            2,
+            { expectedDeploymentId: team.authority.document.deploymentId, path: "/v1/realtime" },
+            () => {},
+          );
+        const request = { headers: {}, method: "POST", path: "/v1/rpc/attention.get", body: "{}" };
+        const selected = expect(transport.request(request)).resolves.toBeDefined();
+        const summary = expect(
+          transport.request({
+            ...request,
+            expectedDeploymentId: manual.authority.document.deploymentId,
+          }),
+        ).resolves.toBeDefined();
+        void selected.catch(() => {});
+        void summary.catch(() => {});
+        const teamRequest = withTeam
+          ? transport.request({
+              ...request,
+              expectedDeploymentId: team.authority.document.deploymentId,
+            })
+          : null;
+        const rejected = teamRequest
+          ? expect(teamRequest).rejects.toMatchObject({ code: "deployment-changed" })
+          : null;
+        await vi.waitFor(() => expect(started).toHaveLength(withTeam ? 3 : 2), { timeout: 1000 });
+        transport.invalidateTeamSessions();
+        expect(closes.get(personal.authority.document.deploymentId)).not.toHaveBeenCalled();
+        if (withTeam)
+          expect(closes.get(team.authority.document.deploymentId)).toHaveBeenCalledOnce();
+        gate.resolve(Response.json({ ok: true, data: {} }));
+        await selected;
+        await summary;
+        await rejected;
+      } finally {
+        gate.resolve(Response.json({}));
+        transport.dispose();
+      }
+    },
+  );
+
   it("observes binding only after a successful Host command, using the request's exact Deployment", async () => {
     const selected = deployment("Home", "https://home.connect.opensteer.test");
     const observeCommand = vi.fn(async () => undefined);

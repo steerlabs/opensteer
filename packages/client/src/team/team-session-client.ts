@@ -154,7 +154,7 @@ export class TeamSessionClient {
       this.#loading = (async () => {
         const [saved, bootstrap] = await Promise.all([
           this.#options.persistence.load(this.#options.scope),
-          this.rpc["team.bootstrap.get"]({}).then(unwrapRpcResult),
+          this.#bootstrap(),
         ]);
         if (lifetime !== this.#lifetime) return;
         if (
@@ -277,6 +277,16 @@ export class TeamSessionClient {
       (ceiling * (1 + (this.#options.random ?? Math.random)())) / 2,
     );
   }
+  async #bootstrap() {
+    try {
+      return await this.rpc["team.bootstrap.get"]({}).then(unwrapRpcResult);
+    } catch (error) {
+      // Older team servers omit the membership reason at authenticated bootstrap.
+      if (error instanceof OpensteerError && !error.reason && error.code === "forbidden")
+        await this.remove("removed");
+      throw error;
+    }
+  }
   async #authorizationFailure(error: unknown): Promise<void> {
     if (!(error instanceof OpensteerError)) return;
     const refusal = teamEntryRefusalOutcome(error.reason);
@@ -290,7 +300,7 @@ export class TeamSessionClient {
   async #revalidate(): Promise<boolean> {
     const lifetime = this.#lifetime;
     try {
-      const bootstrap = await this.rpc["team.bootstrap.get"]({}).then(unwrapRpcResult);
+      const bootstrap = await this.#bootstrap();
       if (lifetime !== this.#lifetime) return false;
       if (
         bootstrap.teamId !== this.#options.scope.teamDeploymentId ||

@@ -168,7 +168,12 @@ Native token refresh never exchanges an Account assertion or publishes logout on
 team entry operation owns fallback; passive recovery cannot open a browser or clear team sign-out.
 Obsolete entry cleanup can remove only the catalog revision that attempt created.
 
-Account identity changes invalidate all native team transports independently of credential storage;
-late socket events and outstanding responses cannot cross that boundary. Authorization refusals
-do not establish membership removal: only membership reasons permit erasing a viewer partition
+Each native team entry call retains its arrival fence across queued continuations and retries;
+an invalidated caller cannot start entry under a replacement identity or undo team sign-out.
+Account identity changes synchronously invalidate active native team transports independently of
+credential storage; late socket events and outstanding responses cannot cross that boundary. Team
+invalidation excludes personal Host transports and personal maintenance requests.
+Membership reasons permit erasing a viewer partition, as do reasonless forbidden
+refusals at authenticated bootstrap for compatibility with older team servers. Channel permission
+failures do not establish membership removal
 ([team entry](teams.md)).

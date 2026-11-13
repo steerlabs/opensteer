@@ -167,6 +167,7 @@ export class DesktopHostTransport extends HostTransport {
   readonly #socketGenerations = new WeakMap<HostTransport, number>();
   #openingBinary = 0;
   #selectedDeploymentId: DeploymentId | null = null;
+  #selectedKind: "personal" | "team" | null = null;
   #disposed = false;
   readonly #bootstrapDiagnostics = new BootstrapNoticeDiagnostics();
 
@@ -944,19 +945,18 @@ export class DesktopHostTransport extends HostTransport {
   override async current(): Promise<import("@opensteer/client/auth").SelectedAttachment> {
     const selected = await super.current();
     this.#selectedDeploymentId = selected.resolved.deploymentId;
+    this.#selectedKind = selected.connection.kind;
     return selected;
   }
 
   invalidateTeamSessions(): void {
     for (const id of this.#teams.keys()) this.closeDeploymentConnections(id);
-    for (const id of this.#summaries.keys()) this.closeDeploymentConnections(id);
-    this.invalidateSession();
+    if (this.#selectedKind === "team") this.invalidateSession();
   }
 
   closeDeploymentConnections(deploymentId: DeploymentId): void {
     // The selected transport caches its identity; do not resolve a different route during fencing.
-    if (this.#selectedDeploymentId === null || this.#selectedDeploymentId === deploymentId)
-      this.invalidateSession();
+    if (this.#selectedDeploymentId === deploymentId) this.invalidateSession();
     const summary = this.#summaries.get(deploymentId);
     if (summary) {
       this.#closeTransportSockets(summary);

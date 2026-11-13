@@ -157,41 +157,64 @@ export class NativeTeamEntry {
     readonly invite?: TeamInviteSecret | null;
     readonly recover?: { readonly authorization: string | null | undefined };
   }): Promise<TeamEntryOutcome> {
-    let attempts = entryAttempts.get(this.#oauth);
-    if (!attempts) entryAttempts.set(this.#oauth, (attempts = new Map()));
-    const held = attempts.get(input.deploymentId);
-    if (held) {
-      if (input.mode === "passive" && held.mode === "interactive")
-        return this.#passiveDuringBrowser(input, held.promise);
-      if (
-        input.mode === "passive" ||
-        (held.mode === "interactive" && sameInvite(held.invite, input.invite))
-      )
-        return held.promise.then(async (outcome) => {
-          if (!input.recover || outcome.status !== "authorized") return outcome;
-          const connection = await this.#held(input.deploymentId);
-          if (!connection) return { status: "retryable" };
-          const authorization = await this.#oauth.authorizationHeader(connection);
-          if (authorization && authorization !== input.recover.authorization) return outcome;
-          return this.authorize(input);
-        });
-      return held.promise.then((outcome) =>
-        outcome.status === "authorized" && !input.invite ? outcome : this.authorize(input),
-      );
+    return this.#enqueue(input, this.#oauth.teamEntryLease(input.deploymentId));
+  }
+
+  async #enqueue(
+    input: Parameters<NativeTeamEntry["authorize"]>[0],
+    lease: TeamEntryLease,
+  ): Promise<TeamEntryOutcome> {
+    try {
+      lease.assertCurrent();
+      let attempts = entryAttempts.get(this.#oauth);
+      if (!attempts) entryAttempts.set(this.#oauth, (attempts = new Map()));
+      const held = attempts.get(input.deploymentId);
+      if (held) {
+        if (input.mode === "passive" && held.mode === "interactive")
+          return this.#passiveDuringBrowser(input, held.promise, lease);
+        if (
+          input.mode === "passive" ||
+          (held.mode === "interactive" && sameInvite(held.invite, input.invite))
+        )
+          return await held.promise.then(async (outcome) => {
+            lease.assertCurrent();
+            if (!input.recover || outcome.status !== "authorized") return outcome;
+            const connection = await this.#held(input.deploymentId);
+            lease.assertCurrent();
+            if (!connection) return { status: "retryable" };
+            const authorization = await this.#oauth.authorizationHeader(connection);
+            lease.assertCurrent();
+            if (authorization && authorization !== input.recover.authorization) return outcome;
+            return this.#enqueue(input, lease);
+          });
+        const outcome = await held.promise;
+        lease.assertCurrent();
+        return outcome.status === "authorized" && !input.invite
+          ? outcome
+          : this.#enqueue(input, lease);
+      }
+      const promise = this.#authorize(input).finally(() => {
+        if (attempts.get(input.deploymentId)?.promise === promise)
+          attempts.delete(input.deploymentId);
+      });
+      attempts.set(input.deploymentId, { mode: input.mode, invite: input.invite ?? null, promise });
+      return promise;
+    } catch (error) {
+      try {
+        lease.assertCurrent();
+      } catch {
+        return { status: "superseded" };
+      }
+      throw error;
     }
-    const promise = this.#authorize(input).finally(() => {
-      if (attempts.get(input.deploymentId)?.promise === promise)
-        attempts.delete(input.deploymentId);
-    });
-    attempts.set(input.deploymentId, { mode: input.mode, invite: input.invite ?? null, promise });
-    return promise;
   }
 
   async #passiveDuringBrowser(
     input: Parameters<NativeTeamEntry["authorize"]>[0],
     pending: Promise<TeamEntryOutcome>,
+    lease: TeamEntryLease,
   ): Promise<TeamEntryOutcome> {
-    const entry = this.#oauth.teamEntryLease(input.deploymentId);
+    const entry = lease;
     try {
       const connection = await this.#held(input.deploymentId);
       entry.assertCurrent();
@@ -204,9 +227,14 @@ export class NativeTeamEntry {
           return { status: "authorized", admitted: false };
       }
     } catch (error) {
+      try {
+        lease.assertCurrent();
+      } catch {
+        return { status: "superseded" };
+      }
       return { status: "retryable", error };
     }
-    return pending.then(() => this.authorize(input));
+    return pending.then(() => this.#enqueue(input, lease));
   }
 
   async #authorize(input: Parameters<NativeTeamEntry["authorize"]>[0]): Promise<TeamEntryOutcome> {

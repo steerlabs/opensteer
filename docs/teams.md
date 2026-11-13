@@ -33,8 +33,10 @@ posted an explicit reply; reconnect recovers pending publication without rerunni
 
 ## Entering a team
 
-Desktop and mobile share one entry operation. It claims the Account and team sign-out fence before
-fetching fresh signed discovery, including for manually added teams, then reuses or refreshes their team credential. With an Account session, they
+Desktop and mobile share one entry operation. Each call captures the current Account and team
+sign-out fence on arrival; queued continuations and recovery retries retain it and return
+superseded if it changes. An interactive attempt advances the team fence when it starts. Entry checks
+the fence after fetching fresh signed discovery, including for manually added teams, then reuses or refreshes their team credential. With an Account session, they
 enter a team advertising `team-session-exchange-v1` without a
 browser. Account signs a single-use assertion, valid for one minute, of who the person is for
 that exact team Host and app; it proves identity, never membership. The team Host verifies it
@@ -46,13 +48,16 @@ after an identity change. Legacy credentials without a binding never authorize a
 are stored separately from the previous credential format so Stable/Beta downgrades preserve Account
 authorization; missing or mismatched binding metadata requires silent reauthorization.
 Credential reads and refreshes enforce the binding even if deletion or revocation fails. Real
-identity changes synchronously invalidate every native team transport, including teams with no
+identity changes synchronously invalidate active native team transports, including teams with no
 stored credential: sockets close and late events and outstanding responses cannot be delivered.
+Team invalidation leaves personal Host transports and personal maintenance requests alone.
 Mobile also retires active team viewer clients at that boundary. Credential cleanup is best-effort;
 loading the same saved Account is hydration and preserves its credentials. Explicit team
 sign-out suppresses silent entry until an explicit sign-in. Account or JWKS outages remain
 retryable; membership refusals ask for an invite without a browser loop. Among entry refusals, only membership
-refusals (not-a-member or removed) erase the viewer partition. Assertion, authority and invite
+refusals (not-a-member or removed) erase the viewer partition. For older servers, a reasonless
+forbidden at authenticated bootstrap also removes it; channel permission failures
+do not. Assertion, authority and invite
 refusals preserve drafts and pending sends. An expired assertion is renewed once; another
 assertion expiry remains retryable. Silent entry sends no
 invite unless the person explicitly joins with one. Older teams keep the browser sign-in; the

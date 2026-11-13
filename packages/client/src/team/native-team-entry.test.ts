@@ -121,6 +121,43 @@ function setup() {
 }
 
 describe("NativeTeamEntry", () => {
+  it.each(["Account change", "team sign-out"])(
+    "supersedes an invite queued before %s",
+    async (fence) => {
+      const { entry, oauth, verify } = setup();
+      const verified = team();
+      let controller = new AbortController();
+      oauth.teamEntryLease = () => {
+        const captured = controller;
+        return {
+          generation: 0,
+          signal: captured.signal,
+          assertCurrent: () => captured.signal.throwIfAborted(),
+        };
+      };
+      const gate = Promise.withResolvers<VerifiedHostEndpoint>();
+      verify.mockReturnValueOnce(gate.promise);
+      const input = {
+        deploymentId: verified.discovery.deploymentId,
+        origin: verified.discovery.canonicalOrigin,
+        mode: "interactive" as const,
+      };
+      const active = entry.authorize(input);
+      const queued = entry.authorize({
+        ...input,
+        invite: { selector: "s".repeat(32), verifier: "v".repeat(43) },
+      });
+      controller.abort(new Error(fence));
+      controller = new AbortController();
+      gate.resolve(verified);
+      await expect(active).resolves.toMatchObject({ status: "superseded" });
+      await expect(queued).resolves.toMatchObject({ status: "superseded" });
+      expect(verify).toHaveBeenCalledOnce();
+      expect(oauth.resumeTeamSignIn).not.toHaveBeenCalled();
+      expect(oauth.exchangeTeamSession).not.toHaveBeenCalled();
+    },
+  );
+
   it("forces refresh when recovery joins startup using the rejected token", async () => {
     const { entry, oauth, verify } = setup();
     const verified = team();

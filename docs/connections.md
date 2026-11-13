@@ -213,8 +213,9 @@ its session; network failure, rate limiting and outage stay retryable
 
 Native team entry owns startup, explicit entry and pinned 401 recovery. Passive callers join entry in flight, but can use or refresh a valid credential while a browser
 entry is pending; interactive callers join interactive work or await passive work before proceeding
-if needed. Attempts capture the current fence; Account identity changes, explicit team sign-out and
-a new interactive attempt advance it. Recovery refreshes the rejected credential before discovery
+if needed. Every public call captures a non-advancing arrival lease and keeps it through queued
+continuations and retries; invalidated callers return superseded. Account identity changes, explicit
+team sign-out and a new interactive attempt starting advance the fence. Recovery refreshes the rejected credential before discovery
 and skips discovery when refresh succeeds. A joined attempt only recovers a request when its
 authorization differs from the rejected authorization. Definitively refused credentials are dropped without
 erasing drafts or suppressing entry. Other entry verifies fresh discovery before catalog updates
@@ -222,10 +223,13 @@ and credential reuse, permits Account identity exchange, then
 falls back to browser sign-in only when interactive authorization is needed. An Account outage
 leaves entry retryable. Explicit team sign-out survives restart and suppresses silent entry
 until explicit sign-in. Passive attachment never opens a browser. Real Account identity changes
-synchronously invalidate every native team transport, regardless of whether
+synchronously invalidate active native team transports, regardless of whether
 a credential remains stored, before asynchronous credential cleanup. This closes sockets and
-suppresses their late events and outstanding responses. Browser entry releases its shared slot
+suppresses their late events and outstanding responses. Desktop maintenance services fence team
+requests after resolving their deployment kind. Personal Host transports and maintenance requests
+are excluded from team invalidation. Browser entry releases its shared slot
 on committed callback, flow expiry or fence invalidation, even if the platform browser never returns.
 
 Team entry refusal handling preserves drafts and pending sends except for confirmed membership
-refusals ([team entry](teams.md)). Explicit sign-out and viewer replacement retain their own cleanup rules.
+refusals, including reasonless forbidden at authenticated bootstrap from older servers
+([team entry](teams.md)). Channel permission failures remain nonterminal. Explicit sign-out and viewer replacement retain their own cleanup rules.
