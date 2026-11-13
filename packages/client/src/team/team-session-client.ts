@@ -14,6 +14,7 @@ import {
   type HostApiClient,
   type HostApiCommandInput,
   type TeamMessage,
+  type TeamAgentRecipient,
 } from "@opensteer/protocol";
 import type { z } from "zod";
 import type {
@@ -48,6 +49,7 @@ type TeamBootstrap = z.infer<typeof TeamBootstrapSchema>;
 type SearchInput = z.infer<typeof TeamSearchInputSchema>;
 type SearchPage = z.infer<typeof TeamSearchPageSchema>;
 export interface TeamSessionSnapshot {
+  readonly agentRecipients: readonly TeamAgentRecipient[];
   readonly bootstrap: TeamBootstrap | null;
   readonly sidebar: TeamSidebar | null;
   readonly channel: TeamTimeline | null;
@@ -92,6 +94,7 @@ export class TeamSessionClient {
   readonly #options: TeamSessionOptions;
   readonly #listeners = new Set<() => void>();
   #snapshot: TeamSessionSnapshot = {
+    agentRecipients: [],
     bootstrap: null,
     sidebar: null,
     channel: null,
@@ -119,6 +122,7 @@ export class TeamSessionClient {
   #disposed = false;
   #loading: Promise<void> | null = null;
   #stateRevision = 0;
+  #recipientRevision = 0;
   readonly #editedDrafts = new Set<string>();
   #attempt = 0;
   #typingAt = new Map<string, number>();
@@ -519,16 +523,57 @@ export class TeamSessionClient {
     this.#update({ [view]: { ...next, hasMore: before.hasMore, anchorId: message.id } });
     return message;
   }
+  async setAgentRecipient(
+    channelId: TeamChannelId,
+    rootId: TeamMessageId,
+    enabled: boolean,
+  ): Promise<void> {
+    if (this.#removed || this.#disposed) throw new Error("Team session ended.");
+    const lifetime = this.#lifetime;
+    await this.rpc["commands.dispatch"]({
+      type: "team.agent.recipient.set",
+      channelId,
+      rootId,
+      enabled,
+    }).then(unwrapRpcResult);
+    if (lifetime !== this.#lifetime) return;
+    const revision = this.#recipientRevision;
+    const recipient = await this.rpc["team.agent.recipient.get"]({ channelId, rootId }).then(
+      unwrapRpcResult,
+    );
+    if (lifetime === this.#lifetime && revision === this.#recipientRevision)
+      this.#applyRecipients([recipient]);
+  }
+  #applyRecipients(recipients: readonly TeamAgentRecipient[]): void {
+    this.#recipientRevision++;
+    const merged = new Map(
+      this.#snapshot.agentRecipients.map((row) => [`${row.channelId}:${row.rootId}`, row]),
+    );
+    for (const row of recipients) merged.set(`${row.channelId}:${row.rootId}`, row);
+    this.#update({ agentRecipients: [...merged.values()].slice(-1000) });
+  }
   receive(frame: z.infer<typeof TeamServerFrameViewSchema>): void {
     if (this.#removed) return;
     switch (frame.type) {
+      case "team.agent.recipient":
+        this.#applyRecipients([frame.recipient]);
+        break;
       case "team.cut": {
         const view = frame.cut.scope.kind === "channel" ? "channel" : "thread";
         const held = this.#snapshot[view];
         if (!held) return;
         const next = reduceTeamCut(held, frame.cut);
         if (next !== held) {
-          this.#update({ [view]: next });
+          this.#recipientRevision++;
+          const outsideScope = this.#snapshot.agentRecipients.filter(
+            (row) =>
+              row.channelId !== frame.cut.scope.channelId ||
+              (frame.cut.scope.kind === "thread" && row.rootId !== frame.cut.scope.rootId),
+          );
+          this.#update({
+            [view]: next,
+            agentRecipients: [...outsideScope, ...frame.cut.agentRecipients],
+          });
           if (
             frame.cut.type === "snapshot" &&
             held.anchorId &&
@@ -545,11 +590,13 @@ export class TeamSessionClient {
         void this.#refreshSidebarRows(frame.channelIds).catch(() => undefined);
         break;
       case "team.access.changed": {
+        this.#recipientRevision++;
         this.#contentGeneration++;
         // Content is hidden until a new authorized cut; old pages cannot reinstall it.
         const channel = this.#snapshot.channel,
           thread = this.#snapshot.thread;
         this.#update({
+          agentRecipients: [],
           sidebar: null,
           channel: channel ? emptyTeamTimeline("channel", ++this.#generation, channel.scope) : null,
           thread: thread ? emptyTeamTimeline("thread", ++this.#generation, thread.scope) : null,
@@ -1034,6 +1081,7 @@ export class TeamSessionClient {
     this.#searchMore = null;
     this.#typingAt.clear();
     this.#update({
+      agentRecipients: [],
       bootstrap: null,
       sidebar: null,
       channel: null,

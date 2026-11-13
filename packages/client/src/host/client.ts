@@ -1,4 +1,4 @@
-import type { TeamRunDelivery } from "@opensteer/core";
+import type { TeamRunDelivery, TeamSource } from "@opensteer/core";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import type { BrowserSignInPasswords } from "@opensteer/protocol/browser-sources";
 import type { DesktopUpdates } from "../connections/desktop-updates-contract.js";
@@ -305,6 +305,7 @@ export interface RunQueueEntry {
 }
 
 export interface MessageEntry {
+  teamSource?: TeamSource | null;
   addressedToUserId?: string;
   /** False for work drawn for its sender before the Run has received it. */
   published?: boolean;
@@ -543,6 +544,7 @@ export interface WithdrawnEntry {
  * confirmation that clears a doubt an earlier page recorded.
  */
 export interface DeliveryEntry {
+  teamSource?: TeamSource;
   published?: boolean;
   /** The input's association, retained when its Message is on another history page. */
   inputRunId?: string | null;

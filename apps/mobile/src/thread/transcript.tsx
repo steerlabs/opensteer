@@ -1,3 +1,6 @@
+import { useNavigation } from "@react-navigation/native";
+import { useTeamsSnapshot } from "../team/team-context.js";
+import type { TeamSource } from "@opensteer/core";
 import {
   incomingMessageAction,
   activityStepHead,
@@ -90,6 +93,7 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
    * and keeps everything else it did in its Activity, opened from that
    * message's menu.
    */
+  readonly deliveryChannelName?: string;
   readonly conversation?: boolean;
   /**
    * In a conversation, the Activity this turn's reply opens: the key from
@@ -182,6 +186,18 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
           viewerUserId={props.viewerUserId}
         />
       )}
+      {group.kind === "turn" &&
+      group.turn.reply &&
+      !group.turn.continued &&
+      group.turn.run?.delivery ? (
+        <AppText role="caption" tone="muted">
+          {group.turn.run.delivery.state === "sent"
+            ? `Sent to #${props.deliveryChannelName ?? "channel"}`
+            : group.turn.run.delivery.state === "sending"
+              ? "Sending…"
+              : `Not sent: ${group.turn.run.delivery.reason ?? "Unavailable"}`}
+        </AppText>
+      ) : null}
     </View>
   );
 });
@@ -1402,6 +1418,7 @@ export function Message(props: {
           {fold}
         </View>
       )}
+      {message.teamSource ? <TeamInputSource source={message.teamSource} /> : null}
       {message.delivery ? (
         <View accessibilityRole="alert" style={styles.failure}>
           <AppText role="secondaryMedium" tone="danger">
@@ -1835,3 +1852,28 @@ const styles = StyleSheet.create({
   turn: { gap: space[4] },
   working: { alignItems: "center", flexDirection: "row", gap: space[8], minHeight: touchTarget },
 });
+
+function TeamInputSource({ source }: { readonly source: TeamSource }): ReactNode {
+  const navigation = useNavigation();
+  const team = useTeamsSnapshot().teams.find((row) => row.teamId === source.teamId);
+  const label = (
+    <AppText role="caption" tone="muted">{`#${source.audience.channelName} ↗`}</AppText>
+  );
+  const rootId = source.threadRootId ?? source.messageId;
+  if (!team || team.state === "removed" || !rootId) return label;
+  return (
+    <Pressable
+      accessibilityRole="link"
+      onPress={() =>
+        navigation.navigate("TeamThread", {
+          teamId: source.teamId,
+          channelId: source.channelId,
+          rootId,
+          ...(source.messageId && source.messageId !== rootId ? { replyId: source.messageId } : {}),
+        })
+      }
+    >
+      {label}
+    </Pressable>
+  );
+}

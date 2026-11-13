@@ -700,7 +700,7 @@ describe("a channel and back", () => {
     expect(history.at(-1)).toMatchObject({ path: channel.path, search: channel.search });
     expect(document.querySelector(".place")).toBeNull();
   });
-  it("the source chip restores a docked channel exactly after Open task", async () => {
+  it("the input source opens its team message after Open task", async () => {
     await mount("/", {
       team: true,
       hostClient: (source) => {
@@ -718,8 +718,33 @@ describe("a channel and back", () => {
             const snapshot = originalRead();
             if (snapshot !== held) {
               held = snapshot;
+              const ask = Object.values(snapshot.transcripts)
+                .flat()
+                .find((entry) => entry.kind === "message" && entry.messageKind === "input");
               published = {
                 ...snapshot,
+                transcripts: {
+                  ...snapshot.transcripts,
+                  [taskId]: [...(ask ? [ask] : []), ...(snapshot.transcripts[taskId] ?? [])].map(
+                    (entry) =>
+                      entry.kind === "message" && entry.messageKind === "input"
+                        ? {
+                            ...entry,
+                            teamSource: {
+                              ...origin,
+                              messageId: origin.threadRootId,
+                              audience: {
+                                teamName: "Team",
+                                channelName: "general",
+                                channelKind: "public",
+                                memberCount: 2,
+                                peopleOnly: false,
+                              },
+                            },
+                          }
+                        : entry,
+                  ),
+                },
                 threads: snapshot.threads.map((thread) =>
                   thread.id === taskId ? { ...thread, teamOrigin: origin } : thread,
                 ),
@@ -780,8 +805,11 @@ describe("a channel and back", () => {
     expect(open).toBeTruthy();
     await click(open!);
     expect(history.at(-1)!.path).toBe(`/tasks/${taskId}`);
-    await click(element(".task-source-chip"));
-    expect(history.at(-1)).toMatchObject({ path: before.path, search: before.search });
+    await click(element(".team-input-source"));
+    expect(history.at(-1)).toMatchObject({
+      path: before.path,
+      search: before.search,
+    });
     expect(element(".workspace__conversation .thread-pane")).toBeTruthy();
     expect(element(".place")).toBeTruthy();
   });

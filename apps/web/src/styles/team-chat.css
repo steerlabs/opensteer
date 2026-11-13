@@ -3276,3 +3276,26 @@ a.team-row__main:hover {
 .connection-line--amber > svg {
   color: var(--amber);
 }
+
+.team-input-source,
+.team-run-delivery,
+.team-composer__recipient {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.team-input-source {
+  text-decoration: none;
+}
+a.team-input-source:hover {
+  text-decoration: underline;
+}
+.team-run-delivery {
+  display: block;
+}
+.team-composer__recipient {
+  align-self: flex-start;
+  background: none;
+  border: 0;
+  padding: 4px 0;
+  cursor: pointer;
+}
