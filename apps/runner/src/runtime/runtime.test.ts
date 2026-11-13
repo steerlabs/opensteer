@@ -73,7 +73,7 @@ import { prepareHarnessProviderState } from "../harness/harness-provider-state.j
 import { createHarnessRegistry } from "../harness/harness-registry.js";
 import type { HarnessProcessSandbox, HarnessSandboxRunPlan } from "../sandbox/harness-sandbox.js";
 import { ExecutionContainment, executionScopeVariable } from "./execution-containment.js";
-import { RunnerRuntime, type RunnerMessageSink } from "./runtime.js";
+import { RunnerRuntime, harnessProcessEnvironment, type RunnerMessageSink } from "./runtime.js";
 import { warmEngineKey, WarmEnginePool } from "./warm-engine-pool.js";
 import { providerContinuationIdentityProjector } from "@opensteer/runner-client";
 
@@ -5299,6 +5299,32 @@ describe("RunnerRuntime", () => {
       }
     },
   );
+});
+
+describe("harness process environment", () => {
+  it("keeps the Windows baseline and engine variables but no Runner credentials", () => {
+    const source = {
+      CLAUDE_CONFIG_DIR: "C:\\Users\\Ada\\.claude",
+      ComSpec: "C:\\Windows\\system32\\cmd.exe",
+      NODE_OPTIONS: "--require evil.js",
+      OPENSTEER_RUNNER_TOKEN: "private",
+      PATHEXT: ".COM;.EXE;.BAT;.CMD",
+      Path: "C:\\Windows\\system32",
+      SystemRoot: "C:\\Windows",
+      USERPROFILE: "C:\\Users\\Ada",
+    };
+    expect(harnessProcessEnvironment(source, ["CLAUDE_CONFIG_DIR"], "win32")).toEqual({
+      CLAUDE_CONFIG_DIR: "C:\\Users\\Ada\\.claude",
+      ComSpec: "C:\\Windows\\system32\\cmd.exe",
+      PATH: "C:\\Windows\\system32",
+      PATHEXT: ".COM;.EXE;.BAT;.CMD",
+      SystemRoot: "C:\\Windows",
+      USERPROFILE: "C:\\Users\\Ada",
+    });
+    expect(harnessProcessEnvironment(source, [], "darwin")).toEqual({
+      USERPROFILE: "C:\\Users\\Ada",
+    });
+  });
 });
 
 describe("Runner runtime test waits", () => {

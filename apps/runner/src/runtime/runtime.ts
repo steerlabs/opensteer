@@ -6,6 +6,7 @@ import { VoiceCalls } from "../voice/voice-calls.js";
 import { systemClock, type Clock } from "@opensteer/shared/clock";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
 import { safeMessage } from "@opensteer/shared/safeMessage";
+import { selectEnvironment } from "@opensteer/shared/userEnvironment";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, readFile, lstat } from "node:fs/promises";
@@ -3548,33 +3549,44 @@ export class RunnerRuntime {
   }
 
   async #harnessEnvironment(driverKind: HarnessId): Promise<Readonly<Record<string, string>>> {
-    const output: Record<string, string> = {};
-    for (const name of [
-      "APPDATA",
-      "HOME",
-      "LANG",
-      "LC_ALL",
-      "LOCALAPPDATA",
-      "LOGNAME",
-      "NODE_EXTRA_CA_CERTS",
-      "PATH",
-      "SHELL",
-      "TERM",
-      "TMPDIR",
-      "USER",
-      "USERPROFILE",
-      "XDG_CONFIG_HOME",
-      "XDG_DATA_HOME",
-    ] as const) {
-      const value = process.env[name];
-      if (value) output[name] = value;
-    }
-    for (const name of this.#harnesses.environmentVariables(driverKind)) {
-      const value = process.env[name];
-      if (value) output[name] = value;
-    }
-    return Object.freeze(output);
+    return harnessProcessEnvironment(
+      process.env,
+      this.#harnesses.environmentVariables(driverKind),
+      process.platform,
+    );
   }
+}
+
+/** What a harness process inherits from the Runner: process setup and its engine's own variables. */
+export function harnessProcessEnvironment(
+  source: NodeJS.ProcessEnv,
+  engineVariables: Iterable<string>,
+  platform: NodeJS.Platform,
+): Readonly<Record<string, string>> {
+  return Object.freeze(
+    selectEnvironment(
+      source,
+      [
+        "APPDATA",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "LOCALAPPDATA",
+        "LOGNAME",
+        "NODE_EXTRA_CA_CERTS",
+        "PATH",
+        "SHELL",
+        "TERM",
+        "TMPDIR",
+        "USER",
+        "USERPROFILE",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        ...engineVariables,
+      ],
+      platform,
+    ),
+  );
 }
 
 /**
