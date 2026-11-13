@@ -100,6 +100,9 @@ it("holds device access through MCP and resumes with rebuilt routes after the po
       "fulfilled",
     );
   } finally {
+    await cleanup();
+  }
+  async function cleanup() {
     vi.restoreAllMocks();
     const errors: unknown[] = [];
     for (const close of closers) {
