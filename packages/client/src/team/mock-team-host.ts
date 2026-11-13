@@ -33,6 +33,7 @@ import {
 } from "@opensteer/protocol";
 import type { z } from "zod";
 import type { WebSocketClient } from "../host/host-session-client.js";
+import { MockTeamKnowledge, isMockKnowledgeCommand } from "./mock-team-knowledge.js";
 import type { TeamScope, TeamSidebar } from "./reducers.js";
 
 export const mockTeamId = DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-000000000001");
@@ -87,6 +88,11 @@ export class MockTeamHost {
   readonly linkPresence: TeamConsistentCut["linkPresence"] = [];
   readonly groups = new Map<string, z.infer<typeof TeamGroupSchema>>();
   readonly invites = new Map<string, z.infer<typeof TeamInviteSchema>>();
+  readonly knowledge = new MockTeamKnowledge({
+    people: () => this.members,
+    groups: () => this.groups,
+    viewer: () => this.userId,
+  });
   readonly #uploads = new Map<string, z.infer<typeof TeamFileSchema>>();
   readonly #directParticipants = new Map<string, string[]>();
   readonly #access = new Map<string, z.infer<typeof TeamChannelAccessSchema>>();
@@ -165,6 +171,9 @@ export class MockTeamHost {
                     error: {
                       code: error instanceof OpensteerError ? error.code : "internal",
                       message: error instanceof Error ? error.message : "Mock team request failed.",
+                      ...(error instanceof OpensteerError && error.reason
+                        ? { reason: error.reason }
+                        : {}),
                       retryable: error instanceof OpensteerError ? error.retryable : true,
                     },
                   };
@@ -417,9 +426,7 @@ export class MockTeamHost {
     if (name === "team.links.list") return { links: [] };
     if (name === "team.audit.page") return { audit: [], hasMore: false };
     if (name === "team.notices.page") return { notices: [], hasMore: false };
-    if (name === "team.knowledge.topics.list") return { topics: [], hasMore: false };
-    if (name === "team.knowledge.facts.page" || name === "team.knowledge.history.page")
-      return { facts: [], hasMore: false };
+    if (name.startsWith("team.knowledge.")) return this.knowledge.read(name, input);
     if (name === "team.agent.requests.get") {
       const { channelId, rootId } = hostApi[name].payload.parse(input);
       return {
@@ -461,6 +468,12 @@ export class MockTeamHost {
           registered: true,
         };
       const command = TeamCommandSchema.parse(common);
+      if (isMockKnowledgeCommand(command))
+        return this.knowledge.command(command, {
+          kind: "human",
+          userId: this.userId,
+          name: this.bootstrap.member.displayName,
+        });
       if (command.type === "team.member.remove") {
         const member = this.members.find((row) => row.userId === command.userId);
         if (!member) throw new OpensteerError({ code: "not_found", message: "Member not found" });

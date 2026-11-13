@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createId, TeamMessageIdSchema, TeamSourceSchema } from "@opensteer/core";
-import { team_read, team_reply, team_search, sql } from "@opensteer/agent-tools/tools";
+import { team_read, team_reply, team_search } from "@opensteer/agent-tools/tools";
 import {
   PersonalTeamRequestSchema,
   TeamMessagePageSchema,
@@ -99,10 +99,6 @@ function fixture() {
     async search() {
       return { results: [], hasMore: false };
     },
-    async sql(_id, input) {
-      wire.push(input);
-      return { columns: [], rows: [], truncated: false };
-    },
     async reply(_id, bodyMarkdown, attachmentIds) {
       wire.push({ bodyMarkdown, attachmentIds });
       replyId = TeamMessageIdSchema.parse("99");
@@ -164,30 +160,20 @@ function fixture() {
 }
 
 describe("Run-bound team tool adapter", () => {
-  it("keeps provenance on empty search/SQL and forwards write mode without widening Run authority", async () => {
+  it("keeps provenance on empty search without widening Run authority", async () => {
     const f = fixture();
-    const found = await f.adapter.search(f.run, team_search.input.parse({ query: "missing" }));
+    const input = team_search.input.parse({ query: "missing" });
+    const found = await f.adapter.search(f.run, input);
     expect(team_search.output.parse(found)).toMatchObject({ results: [], source: f.source });
-    const input = sql.input.parse({
-      mode: "write",
-      sql: "select 1",
-      operationId: crypto.randomUUID(),
-    });
-    expect(sql.output.parse(await f.adapter.sql(f.run, input))).toMatchObject({
-      rows: [],
-      source: f.source,
-    });
-    expect(f.wire).toEqual([input]);
     await expect(
-      f.adapter.sql({ ...f.run, requestId: createId("teamAgentRequest") }, input),
+      f.adapter.search({ ...f.run, requestId: createId("teamAgentRequest") }, input),
     ).rejects.toMatchObject({ code: "forbidden" });
     await expect(
-      f.adapter.sql({ ...f.run, teamId: createId("deployment") }, input),
+      f.adapter.search({ ...f.run, teamId: createId("deployment") }, input),
     ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(f.adapter.sql({ ...f.run, runId: createId("run") }, input)).rejects.toThrow(
+    await expect(f.adapter.search({ ...f.run, runId: createId("run") }, input)).rejects.toThrow(
       "no team request in this turn",
     );
-    expect(f.wire).toHaveLength(1);
   });
 
   it("paginates a byte-bounded asking-thread page without losing messages or its snapshot fence", async () => {
@@ -246,16 +232,9 @@ describe("Run-bound team tool adapter", () => {
       results: [{ message: f.messages[0]!, source: other }],
       hasMore: false,
     });
-    f.tools.sql = async () => ({ columns: [], rows: [], truncated: false });
     expect(
       (await f.adapter.search(f.run, team_search.input.parse({ query: "a" }))).results[0]!.source,
     ).toEqual(other);
-    expect(await f.adapter.sql(f.run, sql.input.parse({}))).toEqual({
-      columns: [],
-      rows: [],
-      truncated: false,
-      source: f.source,
-    });
     await expect(
       f.adapter.reply(
         f.run,

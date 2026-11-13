@@ -20,8 +20,8 @@ import { trigger_read, trigger_write } from "./triggers.js";
 
 describe("Opensteer tool registry", () => {
   it("has one specification per product and integration tool", () => {
-    expect(agentTools).toHaveLength(51);
-    expect(new Set(agentTools.map(({ name }) => name)).size).toBe(51);
+    expect(agentTools).toHaveLength(53);
+    expect(new Set(agentTools.map(({ name }) => name)).size).toBe(53);
     const runs = agentTools.filter((t) => t.callers.some((c) => c === "run")).map((t) => t.name);
     expect(runs).toContain("integration_call");
     expect(runs).toEqual(

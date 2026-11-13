@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
 import { sql } from "kysely";
 import { createId } from "@opensteer/core";
-import { teamChannelTopics } from "@opensteer/database";
 import { createTeamKnowledgeFixture } from "@opensteer/database/test-support/team-knowledge";
 import { TeamAccessStore } from "@opensteer/database/team-access";
 import { TeamChatStore } from "@opensteer/database/team-chat";
@@ -16,7 +15,7 @@ it("accepts a queued request over the machine endpoint before granting content a
   try {
     const access = new TeamAccessStore(fixture.database);
     await access.initialize();
-    const chat = new TeamChatStore(access, teamChannelTopics, {
+    const chat = new TeamChatStore(access, {
       teamId: fixture.deploymentId,
       teamName: "Acme",
     });
@@ -42,6 +41,7 @@ it("accepts a queued request over the machine endpoint before granting content a
       attachmentIds: [],
     });
     const request = (await requests.pending(linkId))[0]!.request;
+    const knowledgeCalls: unknown[] = [];
     const unavailable = async (): Promise<never> => {
       throw new Error("Unexpected data call");
     };
@@ -51,7 +51,14 @@ it("accepts a queued request over the machine endpoint before granting content a
       access,
       resolver: access,
       lifetimes: new TeamLinkLifetimes(),
-      data: { read: unavailable, search: unavailable, sql: unavailable },
+      data: {
+        read: unavailable,
+        search: unavailable,
+        async knowledge(id, ownerUserId, frame) {
+          knowledgeCalls.push({ linkId: id, ownerUserId, frame });
+          return { result: { kind: "knowledge.topics", result: { topics: [] } } };
+        },
+      },
     });
     const context = () =>
       endpoint.call(linkId, { type: "context", id: randomUUID(), requestId: request.id });
@@ -67,6 +74,21 @@ it("accepts a queued request over the machine endpoint before granting content a
     });
     await chat.update(actor, channel.id, { peopleOnly: true });
     await expect(accept()).rejects.toMatchObject({ code: "forbidden" });
+    // Knowledge acts as the link's owner from any of their Runs: no live request is needed,
+    // and one that is named only travels on as provenance.
+    const topics = { type: "knowledge.topics" as const, id: randomUUID() };
+    expect(await endpoint.call(linkId, topics)).toEqual({
+      kind: "knowledge.topics",
+      result: { topics: [] },
+    });
+    await endpoint.call(linkId, { ...topics, requestId: request.id });
+    expect(knowledgeCalls).toEqual([
+      { linkId, ownerUserId: fixture.userId, frame: topics },
+      { linkId, ownerUserId: fixture.userId, frame: { ...topics, requestId: request.id } },
+    ]);
+    await sql`update team_links set state='revoked' where id=${linkId}`.execute(fixture.database);
+    await expect(endpoint.call(linkId, topics)).rejects.toThrow();
+    expect(knowledgeCalls).toHaveLength(2);
   } finally {
     await fixture.close();
   }

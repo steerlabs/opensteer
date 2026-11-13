@@ -314,35 +314,6 @@ export interface PinnedRowView {
   readonly pinnedBy: string;
 }
 
-export interface TopicSummaryView {
-  readonly id: string;
-  readonly name: string;
-  /** This channel's own topic, or one attached to it. */
-  readonly kind: "channel" | "shared";
-  /** "Same as #support", "Leadership group and 2 people". */
-  readonly access: string;
-  readonly factCount: number;
-  readonly peopleOnly: boolean;
-}
-
-export interface FactView {
-  readonly id: string;
-  readonly property: string;
-  readonly value: string;
-  /** A person, or "Tim's agent". */
-  readonly writer: string;
-  readonly when: string;
-  /** The message it came from, when it came from one. */
-  readonly sourceMessageId: string | null;
-}
-
-export interface ThingView {
-  readonly id: string;
-  readonly name: string;
-  readonly key: string;
-  readonly facts: readonly FactView[];
-}
-
 export interface SearchMessageResult {
   readonly message: MessageView;
   /** "#support", "#support thread". */

@@ -1,7 +1,6 @@
 import { expect, it } from "vitest";
 import { TeamAccessStore } from "../packages/database/src/team-access-store.js";
 import { TeamChatStore } from "../packages/database/src/team-chat-store.js";
-import { teamChannelTopics } from "../packages/database/src/team-topics-store.js";
 import { startTeamSystem } from "./team-system.test-support.js";
 import { perfChannels } from "./team-performance.test-support.js";
 import { teamApiVersion } from "../packages/deployment-authority/src/authority.js";
@@ -23,7 +22,7 @@ it("loads 50 sidebar channels with a bounded number of database round trips", as
     });
     const access = new TeamAccessStore(database);
     await access.initialize();
-    const chat = new TeamChatStore(access, teamChannelTopics, {
+    const chat = new TeamChatStore(access, {
       teamId: team.host.deployment.id,
       teamName: "Acme",
     });
@@ -60,7 +59,7 @@ it("coalesces overlapping device snapshots while retaining each subscription ide
     });
     const access = new TeamAccessStore(database);
     await access.initialize();
-    const chat = new TeamChatStore(access, teamChannelTopics, {
+    const chat = new TeamChatStore(access, {
       teamId: team.host.deployment.id,
       teamName: "Acme",
     });
