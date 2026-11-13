@@ -10,8 +10,45 @@ import {
 } from "./deployment-policy.test-support.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "..");
-const clientPolicyDerivations: Record<string, { count: number; reason: string }> = {};
+const clientPolicyDerivations: Record<string, { count: number; reason: string }> = {
+  "apps/web/src/components/devices/this-device.tsx": {
+    count: 1,
+    reason:
+      "The native membership controller selects device setup from the signed catalog before a Host is attached.",
+  },
+  "apps/web/src/components/places/desktop-entry.tsx": {
+    count: 1,
+    reason:
+      "The native entry chooser selects personal catalog destinations before a Host is attached.",
+  },
+  "apps/web/src/desktop/desktop-app.tsx": {
+    count: 1,
+    reason:
+      "The native app observes membership only for a personal destination from its signed catalog.",
+  },
+  "apps/desktop/src/main.ts": {
+    count: 2,
+    reason:
+      "Desktop main owns device membership and fences ended personal sessions using signed authority.",
+  },
+};
 const exceptions: Record<string, { counts: Record<string, number>; reason: string }> = {
+  "apps/host/src/runtime/machines.ts": {
+    counts: { "runner.device?.form": 1 },
+    reason: "The runner hardware form labels a headless device, not a Deployment.",
+  },
+  "apps/mobile/src/screens/devices-model.ts": {
+    counts: { "machine.kind": 2 },
+    reason: "Device presentation kind selects a hardware label and icon, not Deployment policy.",
+  },
+  "apps/web/src/components/devices/add-device-dialog.tsx": {
+    counts: { choice: 2 },
+    reason: "The add-device choice selects headless enrollment, not a Deployment kind.",
+  },
+  "apps/web/src/components/devices/devices-page.tsx": {
+    counts: { "machine.kind": 1 },
+    reason: "Device presentation kind labels headless hardware, not a Deployment.",
+  },
   "apps/control-plane/src/database/store.ts": {
     counts: {
       "team.data.document.deploymentShape.kind": 1,

@@ -1,3 +1,4 @@
+import { deploymentPolicy } from "@opensteer/core";
 import { useState, type FormEvent } from "react";
 import { DeploymentIdSchema } from "@opensteer/core";
 import {
@@ -218,7 +219,7 @@ export function DesktopChooser({
   usePlaceChecks(bridge, true);
   const facts = useComputerFacts(
     bridge,
-    snapshot.deployments.filter((row) => row.kind === "personal"),
+    snapshot.deployments.filter((row) => deploymentPolicy({ kind: row.kind }).services.personal),
   );
   const rows = placeRows(snapshot, { thisComputer: thisComputerLabel(), facts });
   const run = (operation: () => Promise<void>) => {

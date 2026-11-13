@@ -1,6 +1,6 @@
 # Computer access and refusals
 
-The separate owned-device inventory includes disabled devices and phones, without granting shell routes. For an online disabled capability or a `device-access-off` refusal, call `device_access_request` with the stable `machineId`, capability as `access`, and the task's reason. It asks the person in Needs you. Never request access for `device-offline`, or re-ask after Not now in this task. Fulfillment resumes in a new Run with rebuilt routes; use that Run's note. Per-app, profile, OS and finer file/command permissions still apply.
+Owned-device inventory lists disabled devices without granting routes. For an online disabled capability or `device-access-off`, call `device_access_request` with `machineId`, capability as `access`, and a reason. Never ask for `device-offline` or re-ask after Not now in this task. Fulfillment resumes a new Run; use its rebuilt routes. Finer permissions still apply.
 
 The note says per Mac whether macOS Full Disk Access is on for the process running that computer's Opensteer Runner. It lets separately authorized commands reach protected files; it does not authorize commands, integrations, or computer access by itself.
 

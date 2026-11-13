@@ -1,3 +1,4 @@
+import { deploymentPolicy } from "@opensteer/core";
 import { DesktopTeamLinks } from "./app/team-links.js";
 import { PersonalDataReset } from "./supervisor/personal-data-reset.js";
 import { desktopPersonalDataReset } from "./app/personal-data-reset.js";
@@ -602,14 +603,16 @@ async function runDesktop(
     },
     onSessionEnded: async (attachment: import("@opensteer/client/auth").SelectedAttachment) => {
       if (
-        attachment.connection.authority.document.deploymentShape.kind === "personal" &&
+        deploymentPolicy(attachment.connection.authority.document.deploymentShape).services
+          .personal &&
         attachment.resolved.access !== "owner"
       )
         await deviceLifecycle?.sessionLost(attachment.resolved.deploymentId);
     },
     onUnauthorized: async (attachment: import("@opensteer/client/auth").SelectedAttachment) => {
       if (
-        attachment.connection.authority.document.deploymentShape.kind === "personal" &&
+        deploymentPolicy(attachment.connection.authority.document.deploymentShape).services
+          .personal &&
         attachment.resolved.access !== "owner"
       )
         await deviceLifecycle?.sessionLost(attachment.resolved.deploymentId);

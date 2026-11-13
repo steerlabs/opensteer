@@ -1,3 +1,4 @@
+import { deploymentPolicy } from "@opensteer/core";
 import type { AgentConnectionAuthorizationTarget } from "@opensteer/protocol";
 import type { DesktopLocalExecutionStatus } from "@opensteer/protocol/desktop";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
@@ -197,7 +198,11 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   // signs in again, whichever arrived first: the session ending or the 4010.
   const [membership, setMembership] = useState<DesktopLocalExecutionStatus | null>(null);
   const membershipDeploymentId =
-    selected && selected.kind === "personal" && !selected.onThisComputer ? selected.id : null;
+    selected &&
+    deploymentPolicy({ kind: selected.kind }).services.personal &&
+    !selected.onThisComputer
+      ? selected.id
+      : null;
   useEffect(() => {
     setMembership(null);
     if (!membershipDeploymentId) return;

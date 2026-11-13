@@ -1,3 +1,4 @@
+import { deploymentPolicy } from "@opensteer/core";
 import {
   createContext,
   useCallback,
@@ -110,7 +111,7 @@ export function useThisDeviceLifecycle(input: {
   const applicable =
     bridge !== null &&
     deployment !== null &&
-    deployment.kind === "personal" &&
+    deploymentPolicy({ kind: deployment.kind }).services.personal &&
     (hosting || (localStatus !== null && localStatus.platform !== "windows"));
   const devicesAvailable = snapshot.devicesAvailable === true;
   const record = membershipRecord(localStatus);

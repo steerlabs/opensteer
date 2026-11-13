@@ -209,7 +209,7 @@ function host(manage = true, empty = false) {
         computerId: string;
         state: "pending-computer" | "pending-restart";
       }[],
-      browserTabGroups: [],
+      browserTabGroups: { groups: [], order: [] },
       tabRestoreVersion: 1,
       activatingPersonalTabs: [],
       browserSessions: [],
