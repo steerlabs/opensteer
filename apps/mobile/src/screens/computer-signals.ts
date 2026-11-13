@@ -4,6 +4,22 @@ import type { DeploymentStatus } from "../client/deployment-rows.js";
 export interface ComputerAttention {
   readonly needsYou: number;
   readonly unread: boolean;
+  /** The Mac a personal Opensteer lives on; older Hosts omit it. */
+  readonly homeName?: string | null | undefined;
+}
+
+export const sameAttention = (left: ComputerAttention, right: ComputerAttention): boolean =>
+  left.needsYou === right.needsYou &&
+  left.unread === right.unread &&
+  (left.homeName ?? null) === (right.homeName ?? null);
+
+/** Names Home only when that says more than the row's own name, as the desktop chooser does. */
+export function homeLine(
+  attention: ComputerAttention | null | undefined,
+  deploymentName: string,
+): string | null {
+  const home = attention?.homeName;
+  return home && home !== deploymentName ? `Home: ${home}` : null;
 }
 
 /** The drawer's two signals: the amber Needs you count, else the ember unread dot. */
