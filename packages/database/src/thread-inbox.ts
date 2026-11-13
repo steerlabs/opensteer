@@ -3080,7 +3080,13 @@ async function resolveThreadInputFacts(
       .executeTakeFirstOrThrow();
     return {
       actorPrincipalId: principal.id,
-      author: MessageAuthorSchema.parse({ kind: "team-member", teamId: source.teamId, ...asker }),
+      author: MessageAuthorSchema.parse({
+        kind: "team-member",
+        teamId: source.teamId,
+        teamUserId: asker.teamUserId,
+        displayName: asker.displayName,
+        actor: asker.actor,
+      }),
       authoritySource: {
         kind: "team-request",
         teamId: source.teamId,

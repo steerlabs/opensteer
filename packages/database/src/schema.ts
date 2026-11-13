@@ -1999,6 +1999,11 @@ export interface DatabaseSchema {
     channelId: TeamChannelId;
     threadRootId: TeamMessageId | null;
     targetUserIds: readonly UserId[];
+    mentionedAgentHandles: readonly string[];
+    bodyMarkdown: string;
+    attachmentIds: JsonColumn<readonly TeamBlobId[]>;
+    requestId: TeamAgentRequestId | null;
+    createdAt: Timestamp;
   };
   personalTeamRequests: PersonalTeamRequestTable;
   teamAgentRecipients: TeamAgentRecipientTable;

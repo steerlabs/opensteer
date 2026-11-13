@@ -14,6 +14,7 @@ import {
   TeamChannelIdSchema,
   TeamChannelKindSchema,
   TeamMessageIdSchema,
+  TeamHandleSchema,
   TeamSourceSchema,
   TeamStatusStepSchema,
   UserIdSchema,
@@ -222,6 +223,7 @@ export const TeamSearchPageSchema = z.strictObject({
   hasMore: z.boolean(),
 });
 export const TeamReadResultSchema = z.strictObject({
+  ownerHandle: TeamHandleSchema.optional(),
   page: TeamMessagePageSchema,
   source: TeamSourceSchema,
 });

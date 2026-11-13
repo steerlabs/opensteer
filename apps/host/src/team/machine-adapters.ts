@@ -89,7 +89,12 @@ export function createTeamMachineAdapters(
             const rootId =
               input.threadRootId ?? page.messages[0]?.threadRootId ?? page.messages[0]?.id;
             const source = await chat.source(t, actor, input.channelId, rootId ?? null);
-            return TeamReadResultSchema.parse({ page, source });
+            const owner = await t
+              .selectFrom("teamMembers")
+              .select("handle")
+              .where("userId", "=", actor.userId)
+              .executeTakeFirstOrThrow();
+            return TeamReadResultSchema.parse({ page, source, ownerHandle: owner.handle });
           },
           linkId,
           { ...input, operationId: input.operationId ?? input.id },

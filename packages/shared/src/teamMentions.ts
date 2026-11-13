@@ -24,8 +24,7 @@ export function teamMentions<UserId extends string>(
 ): readonly TeamMention<UserId>[] {
   const byHandle = new Map([...members].map((member) => [member.handle, member]));
   const mentions = new Map<string, TeamMention<UserId>>();
-  for (const match of bodyMarkdown.matchAll(/(?:^|\s)@([a-z0-9]+(?:-[a-z0-9]+)*)/gu)) {
-    const handle = match[1]!;
+  for (const handle of teamMentionHandles(bodyMarkdown)) {
     const person = byHandle.get(handle);
     const owner = handle.endsWith("-agent") ? byHandle.get(handle.slice(0, -6)) : undefined;
     const mention: TeamMention<UserId> | null = person
@@ -36,4 +35,10 @@ export function teamMentions<UserId extends string>(
     if (mention) mentions.set(`${mention.kind}:${mention.userId}`, mention);
   }
   return [...mentions.values()].slice(0, mentionLimit);
+}
+
+export function teamMentionHandles(bodyMarkdown: string): readonly string[] {
+  return [...bodyMarkdown.matchAll(/(?:^|\s)@([a-z0-9]+(?:-[a-z0-9]+)*)/gu)].map(
+    (match) => match[1]!,
+  );
 }

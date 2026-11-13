@@ -12,7 +12,7 @@ import {
   type TeamTaskOrigin,
   type UserId,
 } from "@opensteer/core";
-import type { Kysely } from "kysely";
+import type { Kysely, Transaction } from "kysely";
 import { enqueueRunnerControlInTransaction } from "./command-store.js";
 import { appendHostDeploymentEvent } from "./deployment-events.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
@@ -335,31 +335,38 @@ export async function admitTeamReturn(
         .where("teamDeploymentId", "=", input.teamId)
         .where("requestId", "=", input.requestId)
         .executeTakeFirstOrThrow();
-      const payload = mirror.returnPayload;
-      if (mirror.kind !== "return" || !payload?.author || payload.author.actor !== "agent")
-        throw new OpensteerError({
-          code: "bad_request",
-          message: "Team return has no answering agent.",
-        });
-      await lockCommandIdempotency(
-        tx,
-        input.ownerId,
-        `team-return:${input.teamId}:${payload.originAskId}`,
-      );
-      const prior = await tx
-        .selectFrom("personalTeamRequests")
-        .selectAll()
-        .where("teamDeploymentId", "=", input.teamId)
-        .where("requestId", "=", input.requestId)
-        .executeTakeFirstOrThrow();
-      if (prior.returnAdmission || prior.terminalState) return { events: [] };
+      if (mirror.kind !== "return")
+        throw new OpensteerError({ code: "bad_request", message: "Not a team return." });
+      if (mirror.returnAdmission || mirror.terminalState) return { events: [] };
       const link = await tx
         .selectFrom("personalTeamLinks")
         .selectAll()
         .where("teamDeploymentId", "=", input.teamId)
         .executeTakeFirst();
       if (!link || !["active", "unreachable"].includes(link.state)) return { events: [] };
-      if (!payload.triggerClientMessageId) return { events: [] };
+      const reject = async () => {
+        await tx
+          .updateTable("personalTeamRequests")
+          .set({
+            returnAdmission: "undeliverable",
+            publicationState: "blocked",
+            terminalState: "done",
+            finishedAt: new Date(),
+            blockedReason: "Return does not match an outstanding local ask.",
+          })
+          .where("teamDeploymentId", "=", input.teamId)
+          .where("requestId", "=", input.requestId)
+          .execute();
+        return { events: [] };
+      };
+      const payload = mirror.returnPayload;
+      if (!payload?.author || payload.author.actor !== "agent" || !payload.triggerClientMessageId)
+        return reject();
+      await lockCommandIdempotency(
+        tx,
+        input.ownerId,
+        `team-return:${input.teamId}:${payload.originAskId}`,
+      );
       const post = await tx
         .selectFrom("personalTeamPosts")
         .selectAll()
@@ -368,28 +375,37 @@ export async function admitTeamReturn(
         .where("localLinkId", "=", link.id)
         .where("remoteLinkId", "=", link.remoteLinkId)
         .where("runId", "=", payload.resumeRunId)
-        .where("messageId", "=", mirror.triggerMessageId)
         .where("channelId", "=", mirror.source.channelId)
+        .where("createdAt", ">", new Date(Date.now() - 14 * 86400000))
         .executeTakeFirst();
       if (
         !post ||
+        payload.author.teamUserId === link.remoteOwnerUserId ||
+        !payload.author.handle ||
+        !post.mentionedAgentHandles.includes(`${payload.author.handle}-agent`) ||
+        (post.threadRootId !== null && post.threadRootId !== mirror.source.threadRootId)
+      )
+        return reject();
+      if (post.messageId === null) return { events: [] };
+      if (
         !post.targetUserIds.includes(payload.author.teamUserId) ||
+        post.messageId !== mirror.triggerMessageId ||
         (post.threadRootId ?? post.messageId) !== mirror.source.threadRootId
       )
-        return { events: [] };
+        return reject();
       const consumed = await tx
         .selectFrom("personalTeamRequests")
         .select("requestId")
         .where("teamDeploymentId", "=", input.teamId)
-        .where("returnAdmission", "is not", null)
+        .where("returnAdmission", "=", "admitted")
         .where(
           sql<string>`return_payload->>'triggerClientMessageId'`,
           "=",
           payload.triggerClientMessageId,
         )
-        .where(sql<string>`return_payload->'author'->>'teamUserId'`, "=", payload.author.teamUserId)
+        .where(sql<string>`return_payload->'author'->>'handle'`, "=", payload.author.handle)
         .executeTakeFirst();
-      if (consumed) return { events: [] };
+      if (consumed) return reject();
       const run = await tx
         .selectFrom("runs")
         .select(["threadId", "requestedBy"])
@@ -444,6 +460,12 @@ export async function admitTeamReturn(
         .where("teamDeploymentId", "=", input.teamId)
         .where("requestId", "=", input.requestId)
         .execute();
+      await consumeTeamPost(
+        tx,
+        input.teamId,
+        payload.triggerClientMessageId,
+        payload.author.teamUserId,
+      );
       return { events: queued.events };
     });
   } catch (error) {
@@ -470,7 +492,41 @@ export async function admitTeamReturn(
         .where("returnAdmission", "is", null)
         .where("terminalState", "is", null)
         .execute();
+      const mirror = await tx
+        .selectFrom("personalTeamRequests")
+        .select("returnPayload")
+        .where("teamDeploymentId", "=", input.teamId)
+        .where("requestId", "=", input.requestId)
+        .executeTakeFirst();
+      const payload = mirror?.returnPayload;
+      if (payload?.triggerClientMessageId && payload.author)
+        await consumeTeamPost(
+          tx,
+          input.teamId,
+          payload.triggerClientMessageId,
+          payload.author.teamUserId,
+        );
     });
     return { events: [] };
   }
+}
+
+async function consumeTeamPost(
+  tx: Transaction<DatabaseSchema>,
+  teamId: DeploymentId,
+  clientMessageId: string,
+  userId: UserId,
+) {
+  await tx
+    .updateTable("personalTeamPosts")
+    .set({ targetUserIds: sql`array_remove(target_user_ids, ${userId})` })
+    .where("teamDeploymentId", "=", teamId)
+    .where("clientMessageId", "=", clientMessageId)
+    .execute();
+  await tx
+    .deleteFrom("personalTeamPosts")
+    .where("teamDeploymentId", "=", teamId)
+    .where("clientMessageId", "=", clientMessageId)
+    .where(sql<number>`cardinality(target_user_ids)`, "=", 0)
+    .execute();
 }

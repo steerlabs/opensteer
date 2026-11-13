@@ -33,6 +33,7 @@ export interface TeamRequestStorePort {
   pending(
     linkId: TeamLinkId,
     excludeRequestIds?: readonly TeamAgentRequestId[],
+    limit?: number,
   ): Promise<readonly TeamRunRequest[]>;
   /** First accept fixes expiry at seven days; repeated accepts never extend it. */
   accept(

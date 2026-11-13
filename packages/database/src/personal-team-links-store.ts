@@ -48,18 +48,24 @@ export class PersonalTeamLinksStore {
   ): Promise<void> {
     await withPersonalTransaction(this.database, async (tx) => {
       await tx.insertInto("credentials").values(credential).execute();
+      const id = createId("credential");
       await tx
         .insertInto("personalTeamLinks")
         .values({
           ...input,
-          id: createId("credential"),
+          id,
           createdAt: new Date().toISOString(),
         })
         .onConflict((conflict) =>
           conflict.column("teamDeploymentId").doUpdateSet({
             ...input,
+            id,
           }),
         )
+        .execute();
+      await tx
+        .deleteFrom("personalTeamPosts")
+        .where("teamDeploymentId", "=", input.teamDeploymentId)
         .execute();
     });
   }
