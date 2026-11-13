@@ -1,4 +1,5 @@
 import { answerDeviceAccessRequest } from "../computers/device-access-request.js";
+import { devicesView } from "../computers/devices.js";
 import { expect, it } from "vitest";
 import { createId } from "@opensteer/core";
 import { MockHostClient } from "./mock-host-client.js";
@@ -24,6 +25,27 @@ it("preserves disabled switches when a legacy editor saves folders", async () =>
     expect(
       client.getSnapshot().machines.find((entry) => entry.id === machine.id)?.access?.policy,
     ).toMatchObject({ browser: false, apps: false });
+  } finally {
+    client.dispose();
+  }
+});
+it("lists each seeded device once, and an older phone app's session under Also signed in", async () => {
+  const client = new MockHostClient({ latencyMs: 0, devices: "seeded" });
+  try {
+    const sessions = await client.rpc["sessions.list"]({});
+    if (!sessions.ok) throw new Error(sessions.error.message);
+    const view = devicesView({
+      machines: client.getSnapshot().machines,
+      sessions: sessions.data.sessions,
+      hereId: null,
+    });
+    const ids = view.devices.map((row) => row.machine.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(view.devices.filter((row) => row.machine.kind === "home")).toHaveLength(1);
+    expect(view.alsoSignedIn.map((row) => [row.label, row.status])).toContainEqual([
+      "Opensteer for iPhone",
+      "Update to finish setup",
+    ]);
   } finally {
     client.dispose();
   }

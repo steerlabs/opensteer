@@ -5,6 +5,8 @@
    Sizes sit one step tighter than Settings: this is a short, focused task. */
 
 .setup-frame {
+  --setup-column: 26.25rem;
+  --setup-gutter: var(--space-20);
   min-height: 100dvh;
   display: flex;
   flex-direction: column;
@@ -18,11 +20,11 @@
   display: flex;
   justify-content: center;
   padding: calc(clamp(var(--space-24), 9vh, var(--space-64)) + env(safe-area-inset-top, 0px))
-    var(--space-20) var(--space-28);
+    var(--setup-gutter) var(--space-28);
 }
 
 .setup-frame__column {
-  width: min(100%, 26.25rem);
+  width: min(100%, var(--setup-column));
   display: flex;
   flex-direction: column;
   gap: var(--space-14);
@@ -85,7 +87,9 @@
   display: flex;
   align-items: center;
   gap: var(--space-6);
-  padding: var(--space-10) var(--space-14) calc(var(--space-10) + env(safe-area-inset-bottom, 0px));
+  /* The moves line up with the column above, as a sheet's buttons do, on any width. */
+  padding: var(--space-10) max(var(--setup-gutter), calc((100% - var(--setup-column)) / 2))
+    calc(var(--space-10) + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--line);
   background: var(--bg);
 }
