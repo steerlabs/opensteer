@@ -16,10 +16,8 @@ export async function prepareBrowserHarness(directory: string, browser: EvalCase
     state,
     JSON.stringify({
       ...fixture,
-      tabs: fixture.tabs.map((tab) => ({
-        ...tab,
-        current: tab.current || tab.tabId === fixture.personActiveTab,
-      })),
+      // `current` is the tab an earlier script left the agent in, never the person's.
+      tabs: fixture.tabs,
     }),
   );
   await writeFile(log, "");

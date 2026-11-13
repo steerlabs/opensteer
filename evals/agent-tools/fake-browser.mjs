@@ -17,10 +17,12 @@ const bootstrap = `
 const state = ${JSON.stringify(fixture)};
 const log = [], output = [];
 let selected = state.tabs.find(t => t.current)?.tabId;
+const personActivity = (t) => t.tabId === state.personActiveTab ? {kind:'typing', at:new Date().toISOString(), sinceLastAgentCommand:true} : undefined;
+const notices = [];
 function record(call, args, fn) {
-  const entry = {tool:'harness:' + call, args, at:Date.now(), valid:false}; log.push(entry);
-  try { const result = fn(); entry.valid = true; return result; }
-  catch(e) { entry.result = {error:e.message}; throw e; }
+  const entry = {tool:'harness:' + call, args: {...(selected && !('tabId' in args) ? {tabId: selected} : {}), ...args}, at:Date.now(), valid:false}; log.push(entry);
+  try { const result = fn(); entry.valid = true; return Promise.resolve(result); }
+  catch(e) { entry.result = {error:e.message}; return Promise.reject(e); }
 }
 function tab(id = selected) {
   const t = state.tabs.find(t => t.tabId === id);
@@ -36,7 +38,7 @@ function listTabs(options = {}) { return record('listTabs', options, () => {
   const rows = state.tabs.filter(t => (!options.state || t.state === options.state) && [t.title,t.url,t.profile?.name,t.groupId].some(v => (v ?? '').toLowerCase().includes(q)));
   return rows.slice(0, options.all ? undefined : options.limit ?? 50).map(({pageText,pageTitle,current,...t}) => ({...t, ...(t.tabId === selected ? {current:true} : {})}));
 }); }
-function switchTab(value) { const id = typeof value === 'string' ? value : value.tabId; return record('switchTab', {tabId:id}, () => { const t = tab(id); online(t); selected = id; t.state='open'; t.usedByThisTask=true; return id; }); }
+function switchTab(value) { const id = typeof value === 'string' ? value : value.tabId; return record('switchTab', {tabId:id}, () => { const t = tab(id); online(t); selected = id; t.state='open'; t.usedByThisTask=true; if (personActivity(t)) notices.push('[opensteer] The person typed in this page 3s ago. Look at the page again before continuing.'); return id; }); }
 function newTab(url='about:blank', options={}) { return record('newTab', {url,...options}, () => {
   let profile = null, computer = options.computer ?? null;
   if (options.profile) { const matches = state.profiles.filter(p => p.id === options.profile || p.name.toLowerCase() === options.profile.toLowerCase()); if(matches.length !== 1) throw new Error('Profile not found or ambiguous'); log.at(-1).args.profile=matches[0].id; profile={id:matches[0].id,name:matches[0].name}; computer=matches[0].computer ?? null; }
@@ -55,8 +57,8 @@ function organizeTabs(input) { return record('organizeTabs', input, () => {
   else if(input.action !== 'update_group') throw new Error('Use group, ungroup, move or update_group');
   return {status:'ok'};
 }); }
-function currentTab() { return record('currentTab', {}, () => { const {pageText,pageTitle,...t}=tab(); return t; }); }
-function pageInfo() { return record('pageInfo', {}, () => {const t=tab(); return {tabId:t.tabId,url:t.url,title:t.pageTitle ?? t.title,text:t.pageText ?? ''};}); }
+function currentTab() { return record('currentTab', {}, () => { const {pageText,pageTitle,...t}=tab(); return {...t, ...(personActivity(t) ? {userActivity: personActivity(t)} : {})}; }); }
+function pageInfo() { return record('pageInfo', {}, () => {const t=tab(); return {tabId:t.tabId,url:t.url,title:t.pageTitle ?? t.title,text:t.pageText ?? '', ...(personActivity(t) ? {userActivity: personActivity(t)} : {})};}); }
 function gotoUrl(url) { return record('gotoUrl', {url}, () => {const t=tab(); online(t);t.url=url;return {url,title:t.pageTitle ?? t.title,text:t.pageText ?? ''};}); }
 function js(source) { return record('js', {source:String(source)}, () => tab().pageText ?? ''); }
 const console = {log:(...args)=>output.push(args.map(v=>typeof v==='string'?v:JSON.stringify(v)).join(' '))};
@@ -72,7 +74,7 @@ function pressKey(key) {return record('pressKey',{key},()=>true);}
 function scroll(...args) {return record('scroll',{args},()=>true);}
 function waitForLoad() {return record('waitForLoad',{},()=>true);}
 function captureScreenshot() {return record('captureScreenshot',{},()=>({image:'fixture screenshot'}));}
-return { helpers: {listTabs,switchTab,newTab,closeTab,organizeTabs,currentTab,pageInfo,gotoUrl,js,console,page,clickAt,typeText,fillInput,fillLogin,fillCard,pressKey,scroll,waitForLoad,captureScreenshot}, snapshot: () => JSON.stringify({state,log,output,selected,failed:globalThis.failed,finished:globalThis.finished}) };
+return { helpers: {listTabs,switchTab,newTab,closeTab,organizeTabs,currentTab,pageInfo,gotoUrl,js,console,page,clickAt,typeText,fillInput,fillLogin,fillCard,pressKey,scroll,waitForLoad,captureScreenshot}, snapshot: () => JSON.stringify({state,log,output,notices,selected,failed:globalThis.failed,finished:globalThis.finished}) };
 })()
 `;
 const bridge = new Script(bootstrap).runInContext(context, { timeout: 1000 });
@@ -81,7 +83,7 @@ Object.assign(context, bridge.helpers);
 let failure;
 try {
   new Script(
-    `(async () => { ${args[1] ? `switchTab(${JSON.stringify(args[1])});` : ""} ${readFileSync(0, "utf8")}\n })().then(() => {globalThis.finished=true;}, e => { console.log(e.message); globalThis.failed=true;globalThis.finished=true; });`,
+    `(async () => { ${args[1] ? `await switchTab(${JSON.stringify(args[1])});` : ""} ${readFileSync(0, "utf8")}\n })().then(() => {globalThis.finished=true;}, e => { console.log(e.message); globalThis.failed=true;globalThis.finished=true; });`,
   ).runInContext(context, { timeout: 1000 });
 } catch (e) {
   failure = String(e);
@@ -92,6 +94,7 @@ for (const t of result.state.tabs) t.current = t.tabId === result.selected;
 writeFileSync(statePath, JSON.stringify(result.state));
 for (const entry of result.log) appendFileSync(logPath, JSON.stringify(entry) + "\n");
 for (const line of result.output) process.stdout.write(line + "\n");
+for (const line of result.notices) process.stderr.write(line + "\n");
 if (failure || result.failed || !result.finished) {
   if (!failure && !result.failed) failure = "Browser script did not finish";
   if (failure) process.stderr.write(failure + "\n");
