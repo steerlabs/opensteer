@@ -936,8 +936,18 @@ it("lets a dead deletion's fence lapse, and an attempt clear only its own fence"
   await expect(system.teams.transfer(system.creator, system.created.id, sam)).rejects.toMatchObject(
     { reason: "account-deletion-in-progress" },
   );
+  // A stalled attempt that wakes after another took over can't finish the deletion either.
+  await expect(system.store.deleteAccount(sam, dead)).rejects.toMatchObject({
+    code: "unavailable",
+  });
+  expect(
+    await system.accounts.selectFrom("users").select("id").where("id", "=", sam).execute(),
+  ).toHaveLength(1);
   // A live attempt that falls behind can't pick its lapsed fence back up either.
   await elapse(system, sam, 11);
+  await expect(system.store.deleteAccount(sam, live)).rejects.toMatchObject({
+    code: "unavailable",
+  });
   await expect(system.store.renewAccountDeletion(sam, live)).rejects.toMatchObject({
     code: "unavailable",
   });

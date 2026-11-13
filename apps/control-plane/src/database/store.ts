@@ -1560,17 +1560,24 @@ export class ControlPlaneStore {
    * names it. Hosts learn nothing here, so they keep running and find out on their next call.
    * A hosted team the Account still holds refuses it; `beginAccountDeletion` refuses that first.
    */
-  async deleteAccount(accountId: ControlPlaneAccountId): Promise<void> {
+  async deleteAccount(accountId: ControlPlaneAccountId, attemptId: string): Promise<void> {
     await this.#database.transaction().execute(async (transaction) => {
       await transaction.deleteFrom("authAccounts").where("userId", "=", accountId).execute();
       const account = await transaction
         .selectFrom("users")
-        .select("id")
+        .select(["id", "deletionAttemptId", "deletionFencedUntil"])
         .where("id", "=", accountId)
         // FOR UPDATE: Delete this Account user and its dependent rows.
         .forUpdate()
         .executeTakeFirst();
       if (!account) throw new ControlPlaneError("not_found", "Account was not found");
+      // Only the attempt whose fence is still up may finish; a stalled one lost it to another.
+      if (
+        account.deletionAttemptId !== attemptId ||
+        !account.deletionFencedUntil ||
+        account.deletionFencedUntil <= new Date()
+      )
+        throw new ControlPlaneError("unavailable", "Deleting your Account stopped. Try again.");
       await transaction
         .selectFrom("authSessions")
         .select("id")

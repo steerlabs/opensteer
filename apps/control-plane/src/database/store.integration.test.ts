@@ -1000,7 +1000,8 @@ integration("control-plane PostgreSQL boundary", () => {
       fixture.deploymentId,
       new URL(fixture.registration.deployment.canonicalOrigin).hostname,
     );
-    await expect(store.deleteAccount(ownerId)).rejects.toMatchObject({
+    const attempt = await store.beginAccountDeletion(ownerId);
+    await expect(store.deleteAccount(ownerId, attempt)).rejects.toMatchObject({
       code: "conflict",
       reason: "connect-resource-active",
     });
@@ -1011,7 +1012,7 @@ integration("control-plane PostgreSQL boundary", () => {
       .where("deploymentId", "=", fixture.deploymentId)
       .execute();
 
-    await store.deleteAccount(ownerId);
+    await store.deleteAccount(ownerId, attempt);
     expect(await accountExists(database, ownerId)).toBe(false);
     expect(await accountExists(database, memberId)).toBe(true);
     expect(await database.selectFrom("deployments").selectAll().execute()).toEqual([]);

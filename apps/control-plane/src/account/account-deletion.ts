@@ -72,7 +72,7 @@ export class AccountDeletionService {
         ? await this.#store.oauthRefreshToken(accountId, "apple")
         : null;
       await this.#store.renewAccountDeletion(accountId, attemptId);
-      await this.#store.deleteAccount(accountId);
+      await this.#store.deleteAccount(accountId, attemptId);
     } catch (error) {
       await this.#store.abandonAccountDeletion(accountId, attemptId).catch(() => undefined);
       if (isNotFound(error)) return;
