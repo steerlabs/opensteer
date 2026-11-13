@@ -199,8 +199,6 @@ export function sameThreadHeader(
 
 /** How close to the bottom still counts as watching the newest entry. */
 const tailThreshold = 96;
-/** How close to the top asks for the page before this one. */
-const headThreshold = 160;
 
 interface ThreadPaneProps {
   readonly deploymentId: string;
@@ -627,6 +625,18 @@ function ThreadPaneForUser(
     () => (receiptId === null ? null : linkedPlace(receiptId, { conversational, drawn, groups })),
     [conversational, drawn, groups, receiptId],
   );
+  // The oldest turn loaded may still be missing its start, on the page before
+  // it. Drawn now, that page would grow it in place under a reader near the
+  // top, which no scroll anchor can hold still, so it waits for that page.
+  // A link into it, or a list with nothing else to show, draws it.
+  const heldHead =
+    canLoadEarlier &&
+    drawn.length > 1 &&
+    drawn[0]!.group.kind === "turn" &&
+    anchor?.index !== 0 &&
+    receipt?.index !== 0
+      ? 1
+      : 0;
 
   const loadEarlier = useCallback(() => {
     if (paging.current || !canLoadEarlier) return;
@@ -732,7 +742,11 @@ function ThreadPaneForUser(
         scrollAttempts.current = 0;
         pinned.current = false;
         setAtTail(false);
-        listRef.current?.scrollToIndex({ animated: false, index: place.index, viewPosition: 0.5 });
+        listRef.current?.scrollToIndex({
+          animated: false,
+          index: place.index - heldHead,
+          viewPosition: 0.5,
+        });
       }
       const { openKey } = place;
       if (openKey !== null) {
@@ -742,7 +756,7 @@ function ThreadPaneForUser(
       }
       if (place.activityKey !== null) openActivity(place.activityKey, entryId);
     },
-    [openActivity],
+    [heldHead, openActivity],
   );
   useEffect(() => {
     if (anchorMessageId === null || anchor === null || anchorShown.current === anchorMessageId) {
@@ -1004,8 +1018,9 @@ function ThreadPaneForUser(
       };
     });
     if (indicator !== null) rows.push({ indicator, key: "working", kind: "working" });
-    return rows;
-  }, [conversational, drawn, groups, indicator, outcomes, viewerUserId]);
+    // Spaced as if the held turn were drawn, so drawing it later changes nothing below it.
+    return heldHead === 0 ? rows : rows.slice(heldHead);
+  }, [conversational, drawn, groups, heldHead, indicator, outcomes, viewerUserId]);
 
   const queueCanRespond = canRespond && thread?.status !== "archived";
   const queueFooter = useMemo(
@@ -1072,7 +1087,13 @@ function ThreadPaneForUser(
     // Only a change repaints: a scroll fires many times a second and the pill
     // is the only thing on screen that depends on it.
     setAtTail((current) => (current === tail ? current : tail));
-    if (contentOffset.y < headThreshold && contentSize.height > layoutMeasurement.height && !tail)
+    // Asked for a screen ahead of the top, so the page lands above the reader,
+    // where the list keeps their place, instead of under them at the edge.
+    if (
+      contentOffset.y < layoutMeasurement.height &&
+      contentSize.height > layoutMeasurement.height &&
+      !tail
+    )
       loadEarlier();
   };
 
@@ -1663,7 +1684,14 @@ const styles = StyleSheet.create({
   centred: { flex: 1, gap: space[12], justifyContent: "center" },
   // The title's menu sizes to its own words, so the column holds it at the
   // start rather than stretching it across the pane.
-  earlier: { alignItems: "center", paddingBottom: space[8] },
+  // One height whether it offers the page or shows it loading, so the swap
+  // never nudges the transcript under it.
+  earlier: {
+    alignItems: "center",
+    height: touchTarget,
+    justifyContent: "center",
+    marginBottom: space[8],
+  },
   loadEarlier: { minHeight: touchTarget, justifyContent: "center", paddingHorizontal: space[12] },
   empty: { gap: space[12], paddingVertical: space[48] },
   header: { gap: space[8] },

@@ -3162,6 +3162,79 @@ describe("a task", () => {
 // drawn transcript is a window from before the ending, and nothing on screen,
 // nor its accessible name, says the task ended; or the bar keeps a second
 // status line beside a menu that already says it.
+describe("paging back through a long task", () => {
+  it("keeps a turn the page edge cut off out of view until the page before it completes it", async () => {
+    const runA = createId("run");
+    const runB = createId("run");
+    const askA = said("Audit the repo", runA);
+    const askB = said("Now fix what you found", runB);
+    // The page edge falls inside the first turn: its start is on the page before.
+    const latest = [
+      command(runA, "git log"),
+      askB,
+      ran(runB, { status: "completed" }),
+      command(runB, "git push"),
+    ];
+    const host = fakeHost(
+      snapshotFor({ earlier: true, entries: latest, run: null, threadId: workId }),
+    );
+    host.holdEarlier(
+      snapshotFor({
+        earlier: true,
+        entries: [askA, ran(runA, { status: "completed" }), command(runA, "git status"), ...latest],
+        run: null,
+        threadId: workId,
+      }),
+    );
+    const { container } = await mount(host, workId);
+    const keys = () => rows(container).map(({ key }) => key);
+    expect(keys()).toEqual([askB.id, `turn:run:${runB}`]);
+
+    await act(async () => button(container, "Load earlier activity").click());
+    await settle();
+    // Whole, it arrives above what was there, which the list holds still.
+    expect(keys()).toEqual([askA.id, `turn:run:${runA}`, askB.id, `turn:run:${runB}`]);
+  });
+
+  it("asks for the page before a screen ahead of the reader, only as they scroll", async () => {
+    const host = fakeHost(
+      snapshotFor({
+        earlier: true,
+        entries: [said("First", null), said("Second", null)],
+        run: null,
+        threadId: workId,
+      }),
+    );
+    await mount(host, workId);
+    const list = () => {
+      if (harness.list === null) throw new Error("No transcript list.");
+      return harness.list;
+    };
+    const at = (y: number) => ({
+      nativeEvent: {
+        contentOffset: { x: 0, y },
+        contentSize: { height: 3000, width: 390 },
+        layoutMeasurement: { height: 600, width: 390 },
+      },
+    });
+    const drag = (y: number) =>
+      act(() => {
+        list().onScrollBeginDrag?.();
+        list().onScroll?.(at(y));
+        list().onScrollEndDrag?.();
+      });
+    // The list keeping the reader's place is not the reader scrolling.
+    act(() => list().onScroll?.(at(100)));
+    expect(host.loadEarlierTranscript).not.toHaveBeenCalled();
+    drag(700);
+    expect(host.loadEarlierTranscript).not.toHaveBeenCalled();
+    // Within a screen of the top, well before its edge.
+    drag(500);
+    await settle();
+    expect(host.loadEarlierTranscript).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("a finished task's title", () => {
   it.each([
     ["a menu to mark Done", false, false],
