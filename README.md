@@ -15,7 +15,7 @@ from anywhere.
   their own.
 - **It knows what your team knows.** One knowledge base for the whole team. Each
   person and agent sees only what they're allowed to.
-- **Open source and self-hostable.** MIT licensed. It runs on your Mac, and your
+- **Open source and self-hostable.** MIT licensed. It runs on your computer, and your
   work and data stay with you.
 
 ## Get started
