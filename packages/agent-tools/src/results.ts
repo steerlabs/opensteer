@@ -16,7 +16,15 @@ export interface AgentToolFailure {
  * model must read goes in both.
  */
 export function agentToolFailureResult(failure: AgentToolFailure) {
-  const text = [failure.message, failure.next ?? (failure.retryable ? "Try again." : undefined)]
+  const device =
+    failure.machineId && failure.capability
+      ? `${failure.reason ?? failure.code}: machineId=${failure.machineId}, capability=${failure.capability}.`
+      : undefined;
+  const text = [
+    device,
+    failure.message,
+    failure.next ?? (failure.retryable ? "Try again." : undefined),
+  ]
     .filter(Boolean)
     .join(" ");
   return {

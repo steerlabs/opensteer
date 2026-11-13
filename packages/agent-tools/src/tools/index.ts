@@ -29,7 +29,7 @@ import {
   browser_session_open,
   browser_session_close,
 } from "./browser.js";
-import { machine_full_disk_access_request } from "./computer.js";
+import { device_access_request, machine_full_disk_access_request } from "./computer.js";
 import { trigger_read, trigger_write } from "./triggers.js";
 import { integrationTools } from "./integrations.js";
 import { sql } from "./knowledge.js";
@@ -61,6 +61,7 @@ export const agentTools = [
   use_card,
   browser_profile_request,
   machine_full_disk_access_request,
+  device_access_request,
   browser_tab_read,
   browser_tab_write,
   browser_session_list,
@@ -83,6 +84,7 @@ export const requestToolNames = [
   "integration_propose",
   "integration_request",
   "machine_full_disk_access_request",
+  "device_access_request",
   "sign_in",
   "use_card",
 ] as const satisfies readonly AgentToolName[];

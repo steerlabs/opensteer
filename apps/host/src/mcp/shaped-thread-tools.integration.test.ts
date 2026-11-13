@@ -148,6 +148,7 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     harnessAccessModes: () => ThreadAccessModeSchema.options,
     onEvent: () => {},
     browserSources: {} as never,
+    deviceAccess: {} as never,
     machineFullDiskAccess: {} as never,
     execution: personalTestExecution(store, f),
   });

@@ -1,3 +1,4 @@
+import { answerDeviceAccessRequest } from "../computers/device-access-request.js";
 import { expect, it } from "vitest";
 import { createId } from "@opensteer/core";
 import { MockHostClient } from "./mock-host-client.js";
@@ -56,6 +57,77 @@ it("binds a session idempotently and refuses a different device", async () => {
     await expect(client.bindDeviceSession({ machineId: machines[1]!.id, proof })).rejects.toThrow(
       "already bound",
     );
+  } finally {
+    client.dispose();
+  }
+});
+
+it.each(["fulfilled", "declined"] as const)(
+  "answers device access with %s through the shared client",
+  async (decision) => {
+    const client = new MockHostClient({ latencyMs: 0, devices: "seeded" });
+    try {
+      const request = Object.values(client.getSnapshot().requests)
+        .flat()
+        .find((entry) => entry.payload.kind === "device.access")!;
+      if (request.payload.kind !== "device.access")
+        throw new Error("Expected device access fixture");
+      const { machineId, access } = request.payload;
+      const machine = client.getSnapshot().machines.find((entry) => entry.id === machineId)!;
+      const before = machine.access!;
+      const result = await answerDeviceAccessRequest(client, request, decision);
+      expect(
+        Object.values(client.getSnapshot().requests)
+          .flat()
+          .find((entry) => entry.id === request.id),
+      ).toBeUndefined();
+      const after = client.getSnapshot().machines.find((entry) => entry.id === machineId)!.access!;
+      if (decision === "fulfilled") {
+        expect(result).toMatchObject({ outcome: "updated" });
+        expect(after.revision).toBe(before.revision + 1);
+        expect(after.policy[access === "files" ? "commands" : access]).toBe(true);
+      } else expect(after).toEqual(before);
+    } finally {
+      client.dispose();
+    }
+  },
+);
+
+it("turns Files on while preserving saved folders, commands and forwarding", async () => {
+  const seed = new MockHostClient({ latencyMs: 0, devices: "seeded" });
+  const original = Object.values(seed.getSnapshot().requests)
+    .flat()
+    .find((entry) => entry.payload.kind === "device.access")!;
+  seed.dispose();
+  if (original.payload.kind !== "device.access") throw new Error("Expected device access fixture");
+  const request = { ...original, payload: { ...original.payload, access: "files" as const } };
+  const client = new MockHostClient({ latencyMs: 0, pendingRequests: [request] });
+  try {
+    const machine = client
+      .getSnapshot()
+      .machines.find((entry) => entry.id === request.payload.machineId)!;
+    await client.updateMachineAccess({
+      runnerId: machine.id,
+      expectedRevision: machine.access!.revision,
+      policy: {
+        ...machine.access!.policy,
+        reach: "nobody",
+        commands: false,
+        forwarding: false,
+        shares: [{ path: "/tmp/project", mode: "read" }],
+      },
+    });
+    const before = client.getSnapshot().machines.find((entry) => entry.id === machine.id)!.access!
+      .policy;
+    await answerDeviceAccessRequest(client, request, "fulfilled");
+    expect(
+      client.getSnapshot().machines.find((entry) => entry.id === machine.id)!.access!.policy,
+    ).toEqual({ ...before, reach: "owner" });
+    expect(
+      Object.values(client.getSnapshot().requests)
+        .flat()
+        .find((entry) => entry.id === request.id),
+    ).toBeUndefined();
   } finally {
     client.dispose();
   }

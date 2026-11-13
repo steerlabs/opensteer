@@ -1212,6 +1212,7 @@ export interface AgentControlRequestTable {
   sourceThreadId: ThreadId;
   action:
     | "assignment.cancel"
+    | "device.access.request"
     | "machine.full-disk-access.request"
     | "browser.access.request"
     | "browser.profile.create"
@@ -1238,6 +1239,7 @@ export interface AgentControlRequestTable {
   actionClass:
     | "person.show"
     | "assignment.cancel"
+    | "device.access.request"
     | "machine.full-disk-access.request"
     | "browser.access.request"
     | "browser.profile.create"

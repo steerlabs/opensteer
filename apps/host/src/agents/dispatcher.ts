@@ -1,3 +1,4 @@
+import { ownedDeviceInventory } from "./owned-device-inventory.js";
 import { hydrateTeamTaskInput } from "@opensteer/database";
 import { dispatchNodeStop, NodeStopAuthoritySchema } from "@opensteer/database";
 import { agentToolsPlanForRun } from "./agent-tools-plan.js";
@@ -568,6 +569,21 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const requesterTimeZone = await this.#store.notificationState.timeZoneFor(
       context.run.requestedBy,
     );
+    const deviceInventory = await ownedDeviceInventory({
+      store: this.#store,
+      runners: this.#runners,
+      requestedBy: context.run.requestedBy,
+    });
+    const toolsPlan = agentToolsPlanForRun({
+      voiceCall: Boolean(context.voiceCall),
+      token: toolsToken,
+      url: this.#agentToolsUrl,
+      purpose: context.thread.purpose,
+      teamBound: context.thread.teamOrigin !== null,
+      personalContext: context.personalContext,
+      ...(teamContext ? { teamContext } : {}),
+      accessMode: context.thread.accessMode,
+    });
     const runnerCommandFor = (machineAccess: MachineAccessRunContext): RunnerCommand => ({
       commandId: command.id,
       context: {
@@ -593,16 +609,10 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
               attachments: attachmentPlan,
             }
           : {}),
-        agentTools: agentToolsPlanForRun({
-          voiceCall: Boolean(context.voiceCall),
-          token: toolsToken,
-          url: this.#agentToolsUrl,
-          purpose: context.thread.purpose,
-          teamBound: context.thread.teamOrigin !== null,
-          personalContext: context.personalContext,
-          ...(teamContext ? { teamContext } : {}),
-          accessMode: context.thread.accessMode,
-        }),
+        agentTools: {
+          ...toolsPlan,
+          instructions: [toolsPlan.instructions, deviceInventory].filter(Boolean).join("\n\n"),
+        },
         browserCdp: {
           url: this.#agentBrowserCdpUrl,
         },

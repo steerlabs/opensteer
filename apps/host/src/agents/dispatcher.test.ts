@@ -949,6 +949,7 @@ describe("HostCommandDispatcher model selection", () => {
         }),
         assertActiveGrant: async () => undefined,
         renewActiveExecutionBindings: async () => [],
+        listOwnedDevices: async () => [],
         listReachableMachines: async () => [],
         getHarnessInstance: async () => ({
           config: {},
@@ -1127,6 +1128,7 @@ describe("HostCommandDispatcher run planning", () => {
           assertActiveGrant: async () => undefined,
           renewActiveExecutionBindings: async () => [],
           // No computer this Run may reach, so the command carries only its own computer name.
+          listOwnedDevices: async () => [],
           listReachableMachines: async () => [],
           getHarnessInstance: async () => ({
             config: {},

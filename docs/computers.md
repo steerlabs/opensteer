@@ -15,6 +15,12 @@ Apps gates agent computer use, phone data apps and computer-hosted MCP; a write 
 have an unknown outcome when access is withdrawn. Files and commands uses the existing shell policy.
 Legacy policy edits preserve omitted switches inside the revision transaction.
 
+When an owned online device has access off, the agent can ask in Needs you. Turning it on changes
+the device's persistent policy; Not now suppresses the same ask for that task. An offline device
+never opens a Request. Fulfillment resumes through a continuation Run with rebuilt routes; it does
+not add routes to the Run that asked. The separate owned-device inventory includes disabled devices
+and phones without making them shell targets. Per-app, profile and OS authorization still apply.
+
 Initial setup choices apply only at first redemption. Replaying enrollment cannot reset later access
 edits. A self-setup enrollment may pin its prepared runner key; signed leave then retires that exact
 attempt against redemption. Tokens minted for other computers are independent.

@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { canonicalRunnerPublicKeyPem } from "@opensteer/runner-auth";
+import { cancelPending } from "./request-cancellation.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 
 import { lockBrowserProfile } from "./browser-profile-storage-store.js";
@@ -1134,6 +1135,18 @@ export async function revokeRunner(
           )
           .where("consumedAt", "is", null)
           .execute();
+        const deviceRequests = await transaction
+          .selectFrom("requests")
+          .select("id")
+          .where("kind", "=", "device.access")
+          .where("status", "=", "pending")
+          .where(sql<string>`payload->>'machineId'`, "=", runnerId)
+          .execute();
+        const deviceRequestEvents = await cancelPending(transaction, {
+          requestIds: deviceRequests.map((row) => row.id),
+          reason: "resource-deleted",
+          resolvedAt: revokedAt,
+        });
         const endedSessions = await transaction
           .deleteFrom("authSessions")
           .where("deviceId", "=", runnerId)
@@ -1145,10 +1158,13 @@ export async function revokeRunner(
             id,
             ownerId,
           })),
-          cancelledRequestIds: revokedComputerConnections.cancelledRequestIds,
+          cancelledRequestIds: [
+            ...revokedComputerConnections.cancelledRequestIds,
+            ...deviceRequests.map((row) => row.id),
+          ],
           closedBrowserSessions,
           events: runEvents,
-          requestEvents: revokedComputerConnections.requestEvents,
+          requestEvents: [...revokedComputerConnections.requestEvents, ...deviceRequestEvents],
           revokedComputerConnectionIds: revokedComputerConnections.connectionIds,
         };
       }))(personalTransaction);

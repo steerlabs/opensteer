@@ -71,6 +71,25 @@ function fixture() {
 afterEach(() => vi.useRealTimers());
 
 describe("Request hold", () => {
+  it("leaves device fulfillment for a new Run instead of delivering it to stale routes", async () => {
+    const f = fixture();
+    f.snapshot.request = {
+      ...f.snapshot.request,
+      kind: "device.access",
+      status: "fulfilled",
+      payload: {
+        kind: "device.access",
+        machineId: createId("runner"),
+        machineName: "Laptop",
+        access: "files",
+        reason: "Read project",
+      },
+    } as Request;
+    await expect(f.hold.wait({ ...f.input, tool: "device_access_request" })).rejects.toThrow();
+    expect(f.stopHeldRun).toHaveBeenCalledWith(f.input.caller.claims, "device-access");
+    expect(f.markToolDelivered).not.toHaveBeenCalled();
+  });
+
   it("waits through a parallel live Request and preserves metadata on settlement", async () => {
     vi.useFakeTimers();
     const f = fixture();

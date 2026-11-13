@@ -466,7 +466,7 @@ describeStore("Request continuation admission", (it) => {
       (await store.requests.listPendingContinuations()).map(({ request }) => request.id),
     ).toEqual([opened.request.id]);
   });
-  for (const reason of ["limit", "queued-input"] as const) {
+  for (const reason of ["limit", "queued-input", "device-access"] as const) {
     it(`stops a held Run for ${reason} without pausing or closing its Request`, async ({
       storeFixture,
     }) => {

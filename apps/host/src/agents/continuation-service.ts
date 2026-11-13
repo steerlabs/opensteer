@@ -311,8 +311,14 @@ export async function continuationMessage(
     throw new Error("The Request continuation outbox contains an ineligible Request");
   }
   switch (request.kind) {
-    case "device.access":
-      throw new Error("Device access continuations are not yet supported");
+    case "device.access": {
+      if (request.payload.kind !== "device.access")
+        throw new Error("Device access Request payload is invalid");
+      const { machineId, machineName, access } = request.payload;
+      return request.status === "fulfilled"
+        ? `Request ${request.id} was fulfilled. ${access} access is now on for ${machineName} (${machineId}). This continuation Run rebuilds device routes. Per-app, profile or OS authorization may still be needed. Continue the task using this Run's inventory.`
+        : `Request ${request.id} was declined (Not now). Continue without ${access} on ${machineName} (${machineId}); do not request it again in this task.`;
+    }
     case "integration.input":
       throw new Error("Device input returns inside its tool call and cannot have a continuation");
     case "machine.full-disk-access": {

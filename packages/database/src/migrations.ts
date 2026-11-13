@@ -25,6 +25,16 @@ export function migrationProvider(): MigrationProvider {
             `.execute(database);
           },
         },
+        "0004_device_access_requests": {
+          async up(database) {
+            await sql`
+              alter table agent_control_requests drop constraint agent_control_requests_action_check;
+              alter table agent_control_requests add constraint agent_control_requests_action_check check (action in ('device.access.request', 'assignment.cancel', 'machine.full-disk-access.request', 'browser.access.request', 'browser.profile.create', 'browser.profile.list', 'browser.sign-in', 'browser.session.close', 'browser.session.list', 'browser.session.open', 'browser.tab.read', 'browser.tab.write', 'request.list', 'request.withdraw', 'thread.delegate', 'thread.list', 'thread.message', 'person.message', 'person.show', 'thread.read', 'thread.write', 'trigger.read', 'trigger.write', 'environment.list'));
+              alter table agent_control_requests drop constraint agent_control_requests_action_class_check;
+              alter table agent_control_requests add constraint agent_control_requests_action_class_check check (action_class in ('device.access.request', 'person.show', 'assignment.cancel', 'machine.full-disk-access.request', 'browser.access.request', 'browser.profile.create', 'browser.profile.list', 'browser.sign-in', 'browser.session.close', 'browser.session.list', 'browser.session.open', 'browser.tab.read', 'browser.tab.write', 'request.list', 'request.withdraw', 'thread.delegate', 'thread.list', 'thread.message', 'thread.read', 'thread.write', 'trigger.read', 'trigger.write', 'environment.list'));
+            `.execute(database);
+          },
+        },
       };
     },
   };

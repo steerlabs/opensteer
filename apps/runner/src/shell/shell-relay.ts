@@ -13,7 +13,7 @@ import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
 import type { IncomingMessage } from "node:http";
 import { createServer, type Server, type Socket } from "node:net";
 import WebSocket, { type RawData } from "ws";
-import { shellSentence } from "./shell-transport.js";
+import { shellConnectRefusalMessage, shellSentence } from "./shell-transport.js";
 
 const maximumRelayLineBytes = 4 * 1024;
 const relayLineTimeoutMs = 10_000;
@@ -451,8 +451,9 @@ async function readRejectionMessage(response: IncomingMessage): Promise<string> 
     chunks.push(chunk);
   }
   try {
-    return ShellConnectErrorSchema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8"))).error
-      .message;
+    return shellConnectRefusalMessage(
+      ShellConnectErrorSchema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8"))).error,
+    );
   } catch {
     return "The Host rejected the shell connection.";
   }

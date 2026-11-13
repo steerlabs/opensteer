@@ -1,4 +1,9 @@
-import { bindDeviceSession, revokeDeviceSession, leaveDevice } from "./device-store.js";
+import {
+  bindDeviceSession,
+  revokeDeviceSession,
+  leaveDevice,
+  listOwnedDevices,
+} from "./device-store.js";
 import { enqueueNodeStop } from "./node-control.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
 import * as backgroundModelStore from "./background-model-store.js";
@@ -357,6 +362,9 @@ export class OpensteerStore {
   }> {
     return runnerStore.revokeRunner(this.#database, this.#links, runnerId, ownerId, options);
   }
+  listOwnedDevices(userId: UserId) {
+    return listOwnedDevices(this.database, userId);
+  }
   async bindDeviceSession(input: Parameters<typeof bindDeviceSession>[1]) {
     return bindDeviceSession(this.#database, input);
   }
@@ -402,6 +410,7 @@ export class OpensteerStore {
         readonly outcome: "updated";
         readonly replayed: boolean;
         readonly revision: number;
+        readonly requestEvents: readonly AgentEvent[];
         readonly changed: {
           readonly shell: boolean;
           readonly browser: boolean;
@@ -1532,7 +1541,7 @@ export class OpensteerStore {
   }
   async stopHeldRun(
     claims: Parameters<OpensteerStore["assertActiveGrant"]>[0],
-    reason: "limit" | "queued-input",
+    reason: "limit" | "queued-input" | "device-access",
   ): Promise<BackgroundDeadlineStop | null> {
     const stopped = await executionRecovery.stopHeldRun(
       this.#database,

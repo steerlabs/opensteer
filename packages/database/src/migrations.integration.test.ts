@@ -221,7 +221,11 @@ describe("fresh personal/team lineage", () => {
     expect(await catalog()).toEqual(before);
     expect(
       (await sql<{ name: string }>`select name from kysely_migration`.execute(database)).rows,
-    ).toEqual([{ name: personalTeamBaselineName }, { name: "0003_devices" }]);
+    ).toEqual([
+      { name: personalTeamBaselineName },
+      { name: "0003_devices" },
+      { name: "0004_device_access_requests" },
+    ]);
   });
   it.each([
     ["app_versions", "size_bytes", "integer", "NO"],

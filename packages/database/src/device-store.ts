@@ -5,7 +5,14 @@ import {
   type RunnerId,
   type UserId,
 } from "@opensteer/core";
-import type { DeviceSessionBindingProof, RunnerLeaveRequest } from "@opensteer/protocol";
+import {
+  deviceAccess,
+  type DeviceSessionBindingProof,
+  type RunnerLeaveRequest,
+  type MachineAccessPolicy,
+  type RunnerModuleName,
+  type RunnerDescriptor,
+} from "@opensteer/protocol";
 import {
   verifyDeviceLeaveSignature,
   verifyDeviceSessionBindingSignature,
@@ -162,4 +169,64 @@ export async function leaveDevice(
     }
     return { runnerId: runnerId, removed: null };
   });
+}
+
+export type DeviceAccessState = "enabled" | "disabled" | "unsupported";
+export function deviceAccessStates(
+  policy: MachineAccessPolicy,
+  modules: readonly RunnerModuleName[],
+  descriptors: RunnerDescriptor["modules"],
+  home: boolean,
+) {
+  const access = deviceAccess(policy);
+  const state = (supported: boolean, enabled: boolean): DeviceAccessState =>
+    !supported ? "unsupported" : enabled ? "enabled" : "disabled";
+  return {
+    browser: state(
+      modules.includes("browser") && descriptors.browser !== undefined,
+      access.browser,
+    ),
+    apps: state(
+      modules.includes("integrations") && descriptors.integrations !== undefined,
+      access.apps,
+    ),
+    files: home
+      ? ("enabled" as const)
+      : state(modules.includes("shell") && descriptors.shell !== undefined, access.files),
+  };
+}
+export async function listOwnedDevices(database: Kysely<DatabaseSchema>, userId: UserId) {
+  if ((await personalDeploymentOwner(database)) !== userId) return [];
+  const rows = await database
+    .selectFrom("runners")
+    .select([
+      "id",
+      "name",
+      "kind",
+      "ownerKind",
+      "accessPolicy",
+      "allowedModules",
+      "moduleDescriptors",
+    ])
+    .where("revokedAt", "is", null)
+    .where("kind", "!=", "managed")
+    .where((eb) =>
+      eb.or([
+        eb.and([eb("ownerKind", "=", "user"), eb("ownerUserId", "=", userId)]),
+        eb.and([eb("kind", "=", "main"), eb("ownerKind", "=", "deployment")]),
+      ]),
+    )
+    .orderBy("name")
+    .orderBy("id")
+    .execute();
+  return rows.map((row) => ({
+    machineId: row.id,
+    name: row.name,
+    access: deviceAccessStates(
+      row.accessPolicy,
+      row.allowedModules,
+      row.moduleDescriptors,
+      row.kind === "main" && row.ownerKind === "deployment",
+    ),
+  }));
 }
