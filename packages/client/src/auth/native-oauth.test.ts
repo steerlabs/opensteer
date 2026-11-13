@@ -206,9 +206,20 @@ describe("NativeOAuthManager", () => {
   });
 
   it("proves an invite in the browser before the team's own sign-in, so its callback admits", async () => {
-    const fixture = await managerFixture();
-    await fixture.manager.initialize();
+    const older = await managerFixture();
+    await older.manager.initialize();
     const invite = { selector: "s".repeat(32), verifier: "v".repeat(43) };
+    // An older invite page drops `authorize` and would leave this sign-in waiting forever.
+    await expect(older.manager.beginHostSignIn(older.connection, invite)).rejects.toThrow(
+      /browser/iu,
+    );
+    expect(older.opened).toEqual([]);
+    older.manager.dispose();
+
+    const fixture = await managerFixture({
+      capabilities: ["native-oauth", "team-invite-native-continuation-v1"],
+    });
+    await fixture.manager.initialize();
     await fixture.manager.beginHostSignIn(fixture.connection, invite);
     const opened = new URL(fixture.opened[0]!);
     // The team's invite page, verifier only in the fragment, carrying the native sign-in.

@@ -114,6 +114,11 @@ export interface TeamSessionPort {
    * that can't vouch yet. The browser proves `invite` first, so the team admits the person there.
    */
   signIn(team: VerifiedTeam, invite: TeamInviteSecret | null): Promise<TeamSessionEstablished>;
+  /**
+   * Opens the team's invite page in the system browser, for a team whose page can't continue to
+   * this app's sign-in (no `team-invite-native-continuation-v1`): the person joins there.
+   */
+  joinInBrowser(team: VerifiedTeam, invite: TeamInviteSecret): Promise<void>;
   previewInvite(team: VerifiedTeam, invite: TeamInviteSecret): Promise<TeamInvitePreviewResponse>;
   /**
    * Revokes every agent link of the person's on the team, as the team itself lists them
@@ -185,6 +190,11 @@ export interface TeamCoordinatorSnapshot {
   readonly watching: HostedTeamId | null;
   /** Teams that became ready while the person kept working, until they open or dismiss them. */
   readonly ready: readonly TeamReadyNotice[];
+  /**
+   * The origin of an older team the person is joining in their browser; the join waits for
+   * `continueJoinInBrowser` (or `cancelJoinInBrowser`) before signing in to it here.
+   */
+  readonly joiningInBrowser: string | null;
 }
 
 export interface TeamReadyNotice {
@@ -223,6 +233,10 @@ export interface TeamCoordinator {
     readonly inviteUrl: string;
     readonly personalDeploymentId: DeploymentId | null;
   }): Promise<TeamEntered>;
+  /** The person is back from joining in their browser: sign in to the team here. */
+  continueJoinInBrowser(): void;
+  /** Stops a join waiting on the browser; that join rejects. */
+  cancelJoinInBrowser(): void;
   connectAgent(input: {
     readonly teamDeploymentId: DeploymentId;
     readonly origin: string;
@@ -270,6 +284,7 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
     intents: [],
     watching: null,
     ready: [],
+    joiningInBrowser: null,
   };
   let disposed = false;
   /** Every intent of every Account this device has held; the snapshot shows the signed-in one's. */
@@ -357,6 +372,34 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
       updatedAt: new Date().toISOString(),
     });
 
+  let browserJoin: { readonly settle: (continued: boolean) => void } | null = null;
+  /**
+   * The team's own sign-in. A team whose invite page can't continue to it has the person join in
+   * the browser first; they are a member by the time they come back to sign in here.
+   */
+  const signIn = async (
+    team: VerifiedTeam,
+    invite: TeamInviteSecret | null,
+  ): Promise<TeamSessionEstablished> => {
+    if (invite === null || team.capabilities.includes("team-invite-native-continuation-v1"))
+      return ports.sessions.signIn(team, invite);
+    browserJoin?.settle(false);
+    let held!: { readonly settle: (continued: boolean) => void };
+    const continued = new Promise<boolean>((settle) => (held = { settle }));
+    browserJoin = held;
+    publish({ joiningInBrowser: team.authority.canonicalOrigin });
+    try {
+      await ports.sessions.joinInBrowser(team, invite);
+      if (!(await continued)) throw new Error("Joining was cancelled.");
+    } finally {
+      if (browserJoin === held) {
+        browserJoin = null;
+        publish({ joiningInBrowser: null });
+      }
+    }
+    return { ...(await ports.sessions.signIn(team, null)), admitted: true };
+  };
+
   /** A session on the team for the signed-in Account, admitting with `invite` when given. */
   const enter = async (
     origin: string,
@@ -364,14 +407,13 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
     signal?: AbortSignal,
   ): Promise<TeamSessionEstablished> => {
     const team = await ports.sessions.verify(origin, signal);
-    if (!team.capabilities.includes("team-session-exchange-v1"))
-      return ports.sessions.signIn(team, invite);
+    if (!team.capabilities.includes("team-session-exchange-v1")) return signIn(team, invite);
     try {
       return await ports.sessions.exchange(team, invite, signal);
     } catch (error) {
       // Account can't vouch yet (an older replica), so the team's own sign-in, with the invite.
       if (!(error instanceof TeamIdentityGrantUnsupportedError)) throw error;
-      return ports.sessions.signIn(team, invite);
+      return signIn(team, invite);
     }
   };
 
@@ -641,6 +683,14 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
       };
     },
 
+    continueJoinInBrowser() {
+      browserJoin?.settle(true);
+    },
+
+    cancelJoinInBrowser() {
+      browserJoin?.settle(false);
+    },
+
     async connectAgent(input) {
       await load();
       const held = intentFor((intent) => intent.teamOrigin === input.origin);
@@ -721,6 +771,7 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
 
     dispose() {
       disposed = true;
+      browserJoin?.settle(false);
       for (const controller of following.values()) controller.abort();
       following.clear();
       for (const timer of retries.values()) clearTimeout(timer);

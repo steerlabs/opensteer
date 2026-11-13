@@ -5,7 +5,7 @@ import { StackActions, useNavigation, type StaticScreenProps } from "@react-navi
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import * as Linking from "expo-linking";
 import { useEffect, useState, type ReactNode } from "react";
-import { StyleSheet, TextInput, View } from "react-native";
+import { AppState, StyleSheet, TextInput, View } from "react-native";
 import type { RootParamList } from "../navigation.js";
 import { color, radius, space, type } from "../theme.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
@@ -13,7 +13,12 @@ import { AppText, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
 import { ConnectOpensteerBody, JoinSheetBody, type ConnectView, type InviteView } from "./join.js";
 import type { TeamTileView } from "./team-models.js";
 import { readTeamLinkIntent, teamFailure, type TeamLinkIntent } from "./mobile-teams.js";
-import { useMobileTeams, useTeam, useTeamEntry } from "./team-context.js";
+import {
+  useCoordinatorSnapshot,
+  useMobileTeams,
+  useTeam,
+  useTeamEntry,
+} from "./team-context.js";
 import { openTeamGeneral } from "./mobile-team-entry.js";
 
 type Navigation = NativeStackNavigationProp<RootParamList>;
@@ -150,14 +155,32 @@ function Invite(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attempt, coordinator, intent.origin, props.link, teams]);
 
+  // An older team has the person join in the browser; coming back to the app continues.
+  const inBrowser = useCoordinatorSnapshot().joiningInBrowser === intent.origin;
+  useEffect(() => {
+    if (!inBrowser) return;
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next === "active") coordinator.continueJoinInBrowser();
+    });
+    return () => subscription.remove();
+  }, [coordinator, inBrowser]);
+
   const shownInvite: InviteView =
-    invite.kind === "ready" ? { ...invite, computers, computerId } : invite;
+    invite.kind === "ready"
+      ? inBrowser
+        ? { kind: "in-browser", team: invite.team }
+        : { ...invite, computers, computerId }
+      : invite;
 
   return (
     <JoinSheetBody
       invite={shownInvite}
       onChooseComputer={setComputerId}
-      onClose={() => navigation.goBack()}
+      onClose={() => {
+        if (inBrowser) coordinator.cancelJoinInBrowser();
+        navigation.goBack();
+      }}
+      onContinue={() => coordinator.continueJoinInBrowser()}
       onJoin={() => {
         if (invite.kind !== "ready") return;
         setInvite({ ...invite, joining: true });

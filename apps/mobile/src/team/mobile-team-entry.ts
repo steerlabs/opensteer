@@ -10,6 +10,7 @@ import {
 } from "@opensteer/client/team";
 import { DeploymentIdSchema, type DeploymentId } from "@opensteer/core";
 import { StackActions } from "@react-navigation/native";
+import * as Linking from "expo-linking";
 import type { MobileClient, MobileClientState } from "../client/mobile-client.js";
 import { mockTeamConnection } from "../client/mock-mode.js";
 import { navigationRef } from "../navigation-ref.js";
@@ -82,6 +83,7 @@ export function createMobileTeamEntry(options: {
       mobileTeamSessions({
         teams,
         fetch: (input, init) => globalThis.fetch(input as RequestInfo, init),
+        openUrl: (url) => Linking.openURL(url),
       }),
     personal: world?.personal ?? mobilePersonalTeamLinks(personal),
     intents:

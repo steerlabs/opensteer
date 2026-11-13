@@ -25,7 +25,7 @@ import {
   type TeamSessionPort,
   type VerifiedTeam,
 } from "@opensteer/client/team";
-import { DeploymentIdSchema, type DeploymentId } from "@opensteer/core";
+import { DeploymentIdSchema, teamPageUrl, type DeploymentId } from "@opensteer/core";
 import {
   TeamEntryRefusalReasonSchema,
   TeamInvitePreviewResponseSchema,
@@ -117,6 +117,14 @@ export function desktopTeamSessions(
         await rpc(team.authority.deploymentId)["team.bootstrap.get"]({}),
       );
       return { admitted: invite !== null, member, team };
+    },
+    joinInBrowser: async (team, invite) => {
+      await bridge.openExternalUrl({
+        url: teamPageUrl({
+          origin: team.authority.canonicalOrigin,
+          target: { kind: "invite", ...invite },
+        }),
+      });
     },
     restore: async ({ origin, teamDeploymentId }) => {
       await call({ call: "restore", origin, deploymentId: teamDeploymentId }, z.null());

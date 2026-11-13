@@ -175,6 +175,11 @@ export const HostCapabilitySchema = z.enum([
   "team-reusable-invites-v1",
   /** Team Hosts: setup adoption completion accepts Account's `hostedBootstrap`. */
   "team-hosted-bootstrap-v1",
+  /**
+   * Team Hosts: the invite page's `?authorize=` proves the invite, then continues to the app's
+   * native sign-in (`teamInviteSignInUrl`). Older pages drop it and never return to the app.
+   */
+  "team-invite-native-continuation-v1",
 ]);
 export type HostCapability = z.infer<typeof HostCapabilitySchema>;
 

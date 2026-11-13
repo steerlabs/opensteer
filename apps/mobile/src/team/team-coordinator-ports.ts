@@ -21,7 +21,7 @@ import {
   type TeamSessionPort,
   type VerifiedTeam,
 } from "@opensteer/client/team";
-import type { TeamInviteSecret } from "@opensteer/core";
+import { teamPageUrl, type TeamInviteSecret } from "@opensteer/core";
 import { z } from "zod";
 import type { MobileTeams } from "./mobile-teams.js";
 
@@ -133,6 +133,8 @@ export function mobilePersonalTeamLinks(
 export function mobileTeamSessions(options: {
   readonly teams: MobileTeams;
   readonly fetch: typeof globalThis.fetch;
+  /** The system browser, whose cookies the team's sign-in shares afterwards. */
+  readonly openUrl: (url: string) => Promise<unknown>;
 }): TeamSessionPort {
   const { teams } = options;
   const verified = new Map<string, VerifiedHostEndpoint>();
@@ -153,6 +155,11 @@ export function mobileTeamSessions(options: {
       const endpoint = verified.get(origin) ?? (await teams.verifyTeam(origin));
       const member = await teams.signIn(endpoint, invite);
       return { admitted: invite !== null, member, team };
+    },
+    async joinInBrowser(team, invite) {
+      await options.openUrl(
+        teamPageUrl({ origin: team.authority.canonicalOrigin, target: { kind: "invite", ...invite } }),
+      );
     },
     previewInvite: (team, invite) =>
       previewTeamInvite(team.authority.canonicalOrigin, invite, options.fetch),

@@ -107,6 +107,14 @@ export function supportsTeamSessionExchange(connection: DeploymentConnection): b
   );
 }
 
+/** Whether a team's invite page continues to this app's sign-in once it proved the invite. */
+export function supportsTeamInviteContinuation(connection: DeploymentConnection): boolean {
+  return (
+    connection.kind === "team" &&
+    (connection.capabilities ?? []).includes("team-invite-native-continuation-v1")
+  );
+}
+
 const authorizationFlowLifetimeMs = 5 * 60_000;
 const accessTokenRefreshSkewMs = 60_000;
 const idTokenExpiryHorizonMs = 5_000;
@@ -478,7 +486,9 @@ export class NativeOAuthManager implements HostCredentialProvider {
   /**
    * The team's own sign-in in the system browser. With `invite`, the browser opens the team's
    * invite page first, which proves the invite there and continues to this sign-in, so a person
-   * who isn't a member yet is admitted when the team's callback lands.
+   * who isn't a member yet is admitted when the team's callback lands. Only a team advertising
+   * `team-invite-native-continuation-v1` takes `invite`; elsewhere the person joins in the browser
+   * first.
    */
   async beginHostSignIn(
     connectionInput: DeploymentConnection,
@@ -488,6 +498,8 @@ export class NativeOAuthManager implements HostCredentialProvider {
     if (connection.kind !== "team") {
       throw new Error("Only a team server uses deployment-native OAuth.");
     }
+    if (invite && !supportsTeamInviteContinuation(connection))
+      throw new Error("Join this team in the browser first, then sign in to it here.");
     const deploymentId = connection.authority.document.deploymentId;
     // Claimed before the first await. Protected storage can take long enough
     // for a person to leave the flow, and only this fence sees that boundary.

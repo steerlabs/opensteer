@@ -351,6 +351,7 @@ export async function createTeamHostRuntime(input: {
           "notification-preview-v1",
           "team-hosted-bootstrap-v1",
           "team-reusable-invites-v1",
+          "team-invite-native-continuation-v1",
         ],
       }),
     );

@@ -75,6 +75,7 @@ const noSnapshot: TeamCoordinatorSnapshot = {
   intents: [],
   watching: null,
   ready: [],
+  joiningInBrowser: null,
 };
 const noSubscribe = () => () => undefined;
 
@@ -621,13 +622,44 @@ function JoinDialog({ onClose, url }: { readonly onClose: () => void; readonly u
         setState({ ...state, joining: false, error: actionErrorMessage(error) }),
       );
   };
-  const title = state.kind === "ready" ? `Join ${state.name}` : "Join a team";
+  // An older team has the person join in the browser; coming back to this window continues.
+  const inBrowser =
+    useCoordinatorSnapshot().joiningInBrowser === (readTeamInvite(url)?.origin ?? null);
+  useEffect(() => {
+    if (!inBrowser || !coordination) return;
+    const back = () => coordination.coordinator.continueJoinInBrowser();
+    window.addEventListener("focus", back);
+    return () => window.removeEventListener("focus", back);
+  }, [coordination, inBrowser]);
+  const close = () => {
+    if (inBrowser) coordination?.coordinator.cancelJoinInBrowser();
+    onClose();
+  };
+  const title =
+    state.kind === "ready"
+      ? inBrowser
+        ? "Finish joining in your browser"
+        : `Join ${state.name}`
+      : "Join a team";
   return (
     <Dialog
       footer={
-        state.kind === "ready" ? (
+        state.kind === "ready" && inBrowser ? (
           <>
-            <button className="btn btn--ghost" onClick={onClose} type="button">
+            <button className="btn btn--ghost" onClick={close} type="button">
+              Cancel
+            </button>
+            <button
+              className="btn btn--primary"
+              onClick={() => coordination?.coordinator.continueJoinInBrowser()}
+              type="button"
+            >
+              Continue
+            </button>
+          </>
+        ) : state.kind === "ready" ? (
+          <>
+            <button className="btn btn--ghost" onClick={close} type="button">
               Cancel
             </button>
             <button
@@ -646,10 +678,14 @@ function JoinDialog({ onClose, url }: { readonly onClose: () => void; readonly u
         )
       }
       labelledBy="join-team-title"
-      onClose={onClose}
+      onClose={close}
       title={title}
     >
-      {state.kind === "checking" ? (
+      {state.kind === "ready" && inBrowser ? (
+        <p className="teams-form__lede">
+          Join {state.name} on the page that opened, then come back here.
+        </p>
+      ) : state.kind === "checking" ? (
         <p aria-live="polite" className="teams-form__lede">
           Opening the invite…
         </p>

@@ -32,6 +32,8 @@ export type InviteView =
       readonly team: TeamTileView;
       readonly inviter: string | null;
     }
+  /** An older team: the person joins on its invite page in the browser, then comes back. */
+  | { readonly kind: "in-browser"; readonly team: TeamTileView }
   | { readonly kind: "already-member"; readonly team: TeamTileView }
   | { readonly kind: "update-app"; readonly team: TeamTileView }
   | { readonly kind: "update-server"; readonly team: TeamTileView }
@@ -47,6 +49,8 @@ export function JoinSheetBody(props: {
   readonly invite: InviteView;
   readonly onChooseComputer: (computerId: string) => void;
   readonly onJoin: () => void;
+  /** Back from joining in the browser. */
+  readonly onContinue: () => void;
   readonly onClose: () => void;
   readonly onOpenTeam: () => void;
   readonly onUpdate: () => void;
@@ -135,6 +139,24 @@ export function JoinSheetBody(props: {
           team={invite.team}
           title="This invite no longer works"
         />
+      );
+    case "in-browser":
+      return (
+        <View style={styles.sheet}>
+          <View style={styles.hero}>
+            <TeamTile size={56} team={invite.team} />
+            <AppText role="title" style={styles.centerText}>
+              Finish joining in your browser
+            </AppText>
+            <AppText role="secondary" style={styles.centerText} tone="muted">
+              Join {invite.team.name} on the page that opened, then come back here.
+            </AppText>
+          </View>
+          <View style={styles.buttons}>
+            <PrimaryButton label="Continue" onPress={props.onContinue} prominent />
+            <SecondaryButton label="Cancel" onPress={props.onClose} />
+          </View>
+        </View>
       );
     case "already-member":
       return (

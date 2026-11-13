@@ -4,7 +4,11 @@ import type { HostedTeamSlug } from "@opensteer/control-plane-protocol/hosted-te
 import { TeamEntryRefusedError, TeamIdentityGrantUnsupportedError } from "../auth/native-oauth.js";
 import { MockTeamWorld } from "./mock-hosted-teams.js";
 import { MockTeamHost } from "./mock-team-host.js";
-import { createTeamCoordinator, type TeamCoordinator } from "./team-coordinator.js";
+import {
+  createTeamCoordinator,
+  readTeamInvite,
+  type TeamCoordinator,
+} from "./team-coordinator.js";
 
 const personal = DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-0000000000cc");
 
@@ -362,7 +366,7 @@ describe("TeamCoordinator", () => {
     expect(entered).toMatchObject({ admitted: true, intent: { state: "connected" } });
   });
 
-  it("refuses a bad invite without recording anything, and signs in to old servers in the browser", async () => {
+  it("refuses a bad invite without recording anything", async () => {
     const { coordinator, world } = track(start());
     await expect(
       coordinator.joinWithInvite({
@@ -371,18 +375,45 @@ describe("TeamCoordinator", () => {
       }),
     ).rejects.toThrow(/no longer works/u);
     expect(coordinator.getSnapshot().intents).toEqual([]);
+  });
+
+  it("joins an older team in the browser first, then signs in to it in the app", async () => {
+    const { coordinator, world } = track(start());
     const verify = world.sessions.verify.bind(world.sessions);
     world.sessions.verify = async (origin) => ({ ...(await verify(origin)), capabilities: [] });
-    const signIn = vi.spyOn(world.sessions, "signIn");
-    const entered = await coordinator.joinWithInvite({
+    const exchange = world.sessions.exchange.bind(world.sessions);
+    // The previous invite page drops the app's `authorize` and never resumes its sign-in; only
+    // its own "Join in the browser" admits the person, after which the app's sign-in works.
+    const signIn = vi
+      .spyOn(world.sessions, "signIn")
+      .mockImplementation((team, invite) =>
+        invite === null ? exchange(team, null) : new Promise(() => {}),
+      );
+    const invite = readTeamInvite(world.sampleInviteUrl)!;
+
+    const cancelled = coordinator.joinWithInvite({
       inviteUrl: world.sampleInviteUrl,
       personalDeploymentId: personal,
     });
-    // The same in-app flow after the browser: admitted, agent connected, team opened.
-    expect(signIn).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ selector: expect.any(String) }),
-    );
+    await until(() => Boolean(coordinator.getSnapshot().joiningInBrowser), "the browser join");
+    coordinator.cancelJoinInBrowser();
+    await expect(cancelled).rejects.toThrow(/cancel/iu);
+    expect(coordinator.getSnapshot().joiningInBrowser).toBeNull();
+    expect(coordinator.getSnapshot().intents).toEqual([]);
+
+    const browser = vi.spyOn(world.sessions, "joinInBrowser");
+    const joining = coordinator.joinWithInvite({
+      inviteUrl: world.sampleInviteUrl,
+      personalDeploymentId: personal,
+    });
+    await until(() => Boolean(coordinator.getSnapshot().joiningInBrowser), "the browser join");
+    expect(coordinator.getSnapshot().joiningInBrowser).toBe(invite.origin);
+    expect(browser).toHaveBeenLastCalledWith(expect.anything(), invite.invite);
+    expect(signIn).not.toHaveBeenCalled();
+    coordinator.continueJoinInBrowser();
+    const entered = await joining;
+    expect(signIn.mock.calls.map(([, sent]) => sent)).toEqual([null]);
     expect(entered).toMatchObject({ admitted: true, intent: { state: "connected" } });
+    expect(coordinator.getSnapshot().joiningInBrowser).toBeNull();
   });
 });

@@ -151,7 +151,11 @@ export class MockTeamWorld {
         canonicalOrigin: origin,
         hostKeyFingerprint: fingerprint(deploymentId),
       },
-      capabilities: ["team-session-exchange-v1", "team-reusable-invites-v1"],
+      capabilities: [
+        "team-session-exchange-v1",
+        "team-reusable-invites-v1",
+        "team-invite-native-continuation-v1",
+      ],
     };
   }
 
@@ -301,6 +305,10 @@ export class MockTeamWorld {
     },
     // The browser sign-in of an older team server ends the same way in memory.
     signIn: (team, invite) => this.sessions.exchange(team, invite),
+    // The person joins on the team's invite page in the browser.
+    joinInBrowser: async (team, invite) => {
+      await this.sessions.exchange(team, invite);
+    },
     previewInvite: async (team, invite) => {
       const record = this.#reachable().get(team.authority.canonicalOrigin);
       if (!record?.invite || record.invite.verifier !== invite.verifier)

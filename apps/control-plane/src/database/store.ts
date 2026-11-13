@@ -34,7 +34,6 @@ import {
   type PublishHostAuthorityRequest,
   type PublishHostAuthorityResponse,
 } from "@opensteer/control-plane-protocol";
-import type { HostedTeamId } from "@opensteer/control-plane-protocol/hosted-teams";
 import {
   DeploymentIdSchema,
   HostInstanceIdSchema,

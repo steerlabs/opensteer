@@ -36,7 +36,10 @@ browser. Account signs a single-use assertion, valid for one minute, of who the 
 that exact team Host and app; it proves identity, never membership. The team Host verifies it
 against Account's published keys and, in one transaction, spends it and either signs in an active
 member or admits a newcomer through the invite sent beside it. It then issues the same native
-tokens a browser sign-in would. Older teams keep the browser sign-in. An invite re-admits a
+tokens a browser sign-in would. Older teams keep the browser sign-in; the app carries an invite
+through it only when the team advertises `team-invite-native-continuation-v1`, because older invite
+pages drop the app's sign-in. Otherwise the person joins on the invite page in their browser and
+the app signs in once they come back, a member by then. An invite re-admits a
 removed person only if it was created after their removal, on every admission path. The
 assertion is requested and exchanged where the credential lives (desktop main, the phone's secure
 storage); neither it nor the tokens reach a renderer. A team just joined shows from its verified
