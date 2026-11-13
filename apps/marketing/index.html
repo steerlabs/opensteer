@@ -8,8 +8,6 @@
       name="description"
       content="Turn your computer into a team of AI employees. Give them real work in the apps and accounts already on your Mac, and steer it all from your phone."
     />
-    <meta name="theme-color" content="#080808" />
-    <link rel="icon" type="image/png" href="/opensteer.png" />
   </head>
   <body>
     <svg width="0" height="0" style="position: absolute" aria-hidden="true">
@@ -567,32 +565,7 @@
       </symbol>
     </svg>
 
-    <header class="nav" id="nav">
-      <div class="wrap nav__inner">
-        <a class="brand" href="#top"><span class="orb"></span>opensteer</a>
-        <nav class="nav__links" aria-label="Sections">
-          <a href="#signed-in">Product</a>
-          <a href="#team">Teams</a>
-          <a href="#yours">Private</a>
-        </nav>
-        <div class="nav__end">
-          <a
-            class="btn btn--sm nav__gh"
-            href="https://github.com/steerlabs/opensteer"
-            target="_blank"
-            rel="noopener"
-            ><svg><use href="#i-star" /></svg>Star on GitHub</a
-          >
-          <a
-            class="btn btn--sm btn--accent"
-            href="https://github.com/steerlabs/opensteer/releases"
-            target="_blank"
-            rel="noopener"
-            >Download</a
-          >
-        </div>
-      </div>
-    </header>
+    <!-- site:nav -->
 
     <main id="top">
       <section class="hero">
@@ -615,11 +588,7 @@
             your phone. Nothing to set up.
           </p>
           <div class="hero__ctas" data-in style="--d: 3">
-            <a
-              class="btn btn--accent"
-              href="https://github.com/steerlabs/opensteer/releases"
-              target="_blank"
-              rel="noopener"
+            <a class="btn btn--accent" href="{{macDownload}}"
               ><svg><use href="#i-download" /></svg>Download for Mac</a
             >
             <a
@@ -722,11 +691,7 @@
           <span class="closing__icon" aria-hidden="true"><span class="orb"></span></span>
           <h2>Opensteer for Mac</h2>
           <p>Free and open source.</p>
-          <a
-            class="btn btn--accent"
-            href="https://github.com/steerlabs/opensteer/releases"
-            target="_blank"
-            rel="noopener"
+          <a class="btn btn--accent" href="{{macDownload}}"
             ><svg><use href="#i-download" /></svg>Download for Mac</a
           >
           <small>Requires macOS 13 or later · Apple silicon</small>
@@ -741,26 +706,7 @@
       </section>
     </main>
 
-    <footer class="footer">
-      <div class="wrap footer__inner">
-        <a class="brand" href="#top" style="font-size: 14px"
-          ><span class="orb" style="width: 16px; height: 16px"></span>opensteer</a
-        >
-        <span>MIT licensed · Runs on your machines</span>
-        <div class="footer__links">
-          <a href="https://github.com/steerlabs/opensteer" target="_blank" rel="noopener">GitHub</a>
-          <a href="https://github.com/steerlabs/opensteer/releases" target="_blank" rel="noopener"
-            >Releases</a
-          >
-          <a
-            href="https://github.com/steerlabs/opensteer/blob/main/SECURITY.md"
-            target="_blank"
-            rel="noopener"
-            >Security</a
-          >
-        </div>
-      </div>
-    </footer>
+    <!-- site:footer -->
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

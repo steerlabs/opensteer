@@ -6,14 +6,7 @@ import { stripe } from "./demo/apps/stripe.js";
 import { zendesk } from "./demo/apps/zendesk.js";
 import { group } from "./demo/desktop.js";
 import { createPhone, PHONE, type TaskView } from "./demo/phone.js";
-import { byId, find, reducedMotion, restart } from "./dom.js";
-
-function nav(): void {
-  const bar = byId("nav");
-  addEventListener("scroll", () => bar.classList.toggle("is-scrolled", scrollY > 8), {
-    passive: true,
-  });
-}
+import { byId, find, reducedMotion, restart, watchNav } from "./dom.js";
 
 function reveal(): void {
   const seen = new IntersectionObserver(
@@ -182,7 +175,7 @@ function steer(): void {
 
 export function startSections(): void {
   document.documentElement.classList.add("js");
-  nav();
+  watchNav();
   reveal();
   signedIn();
   steer();
