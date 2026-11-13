@@ -56,13 +56,21 @@ func TestMain(testingMain *testing.M) {
 		fmt.Printf("inherit=%d\n", flags&windows.HANDLE_FLAG_INHERIT)
 		os.Exit(0)
 	case "root":
-		runWindowsTreeRoot(false)
+		runWindowsTreeRoot("descendant", false)
 	case "root-graceful":
-		runWindowsTreeRoot(true)
+		runWindowsTreeRoot("descendant-graceful", true)
+	case "root-protected":
+		runWindowsTreeRoot("descendant-protected", false)
 	case "descendant":
 		runWindowsTreeDescendant(false)
 	case "descendant-graceful":
 		runWindowsTreeDescendant(true)
+	case "descendant-protected":
+		if err := denyAllAccessToThisProcess(); err != nil {
+			fmt.Fprintf(os.Stderr, "protect descendant: %v\n", err)
+			os.Exit(72)
+		}
+		runWindowsTreeDescendant(false)
 	case "print-arguments":
 		encoded, _ := json.Marshal(os.Args[1:])
 		fmt.Printf("%s\n", encoded)
@@ -101,8 +109,8 @@ func TestWindowsSupervisorFailsClosedWithoutTheControlBlock(t *testing.T) {
 	command.Stderr = &stderr
 	err := command.Run()
 	exitError, ok := err.(*exec.ExitError)
-	if !ok || exitError.ExitCode() != 70 || !strings.Contains(stderr.String(), "control channel is unavailable") {
-		t.Fatalf("supervisor without a control block returned %v, stderr %q; want exit 70", err, stderr.String())
+	if !ok || uint32(exitError.ExitCode()) != drainedStatus(t, 70) || !strings.Contains(stderr.String(), "control channel is unavailable") {
+		t.Fatalf("supervisor without a control block returned %v, stderr %q; want drained exit 70", err, stderr.String())
 	}
 }
 
@@ -113,8 +121,8 @@ func TestWindowsSupervisorFailsClosedOnANonPipeControlHandle(t *testing.T) {
 	}
 	defer file.Close()
 	process := launchWithControl(t, "wrapper", "root", windows.Handle(file.Fd()), "--", testExecutable(t))
-	if code := process.wait(t); code != 70 {
-		t.Fatalf("supervisor exited %d with a file as control; want 70", code)
+	if code := process.wait(t); code != drainedStatus(t, 70) {
+		t.Fatalf("supervisor exited %#x with a file as control; want drained 70", code)
 	}
 	process.waitForOutputEnd(t)
 	if !strings.Contains(process.stderr.String(), "not a pipe") {
@@ -126,8 +134,8 @@ func TestWindowsGracefulStopReachesTheWholeTargetGroup(t *testing.T) {
 	process := launchWithControlPipe(t, "wrapper", "root-graceful", "--", testExecutable(t))
 	tree := process.readTree(t)
 	process.writeControl(t, "graceful\n")
-	if code := process.wait(t); code != 0 {
-		t.Fatalf("supervisor exited %d after a graceful tree exit; want 0; stderr %q", code, process.stderr.String())
+	if code := process.wait(t); code != drainedStatus(t, 0) {
+		t.Fatalf("supervisor exited %#x after a graceful tree exit; want drained 0; stderr %q", code, process.stderr.String())
 	}
 	tree.requireAlreadyGone(t)
 }
@@ -137,8 +145,8 @@ func TestWindowsForceStopsTheCompleteTree(t *testing.T) {
 	tree := process.readTree(t)
 	process.writeControl(t, "graceful\n")
 	process.writeControl(t, "force\n")
-	if code := process.wait(t); code != forcedExitCode {
-		t.Fatalf("supervisor exited %d after force; want %d", code, forcedExitCode)
+	if code := process.wait(t); code != drainedStatus(t, forcedExitCode) {
+		t.Fatalf("supervisor exited %#x after force; want drained %d", code, forcedExitCode)
 	}
 	tree.requireAlreadyGone(t)
 }
@@ -149,8 +157,8 @@ func TestWindowsControlEndOfFileStopsTheCompleteTree(t *testing.T) {
 	if err := process.control.Close(); err != nil {
 		t.Fatalf("close control channel: %v", err)
 	}
-	if code := process.wait(t); code != forcedExitCode {
-		t.Fatalf("supervisor exited %d after owner death; want %d", code, forcedExitCode)
+	if code := process.wait(t); code != drainedStatus(t, forcedExitCode) {
+		t.Fatalf("supervisor exited %#x after owner death; want drained %d", code, forcedExitCode)
 	}
 	tree.requireAlreadyGone(t)
 }
@@ -161,10 +169,23 @@ func TestWindowsRootExitStopsResidualDescendants(t *testing.T) {
 	if _, err := io.WriteString(process.stdin, "exit\n"); err != nil {
 		t.Fatalf("ask the root to exit: %v", err)
 	}
-	if code := process.wait(t); code != rootExitCode {
-		t.Fatalf("supervisor exited %d after its root exited %d; stderr %q", code, rootExitCode, process.stderr.String())
+	if code := process.wait(t); code != drainedStatus(t, rootExitCode) {
+		t.Fatalf("supervisor exited %#x after its root exited %d; stderr %q", code, rootExitCode, process.stderr.String())
 	}
 	tree.requireAlreadyGone(t)
+}
+
+func TestWindowsAnUnprovenDrainNeverReportsTheDrainedTag(t *testing.T) {
+	process := launchWithControlPipe(t, "wrapper", "root-protected", "--", testExecutable(t))
+	process.nextLine(t)
+	process.writeControl(t, "force\n")
+	if code := process.wait(t); code != undrainedExitCode {
+		t.Fatalf("supervisor exited %#x after a member refused to be opened; want %d; stderr %q", code, undrainedExitCode, process.stderr.String())
+	}
+	process.waitForOutputEnd(t)
+	if !strings.Contains(process.stderr.String(), "containment drain failed") {
+		t.Fatalf("stderr %q does not say the drain failed", process.stderr.String())
+	}
 }
 
 func TestWindowsCommandLineReachesTheTargetVerbatim(t *testing.T) {
@@ -182,8 +203,8 @@ func TestWindowsCommandLineReachesTheTargetVerbatim(t *testing.T) {
 	process := launchWithControlPipe(t, "wrapper", "print-arguments",
 		"--windows-command-line", line, "--", filepath.Join(system, "cmd.exe"))
 	output := process.nextLine(t)
-	if code := process.wait(t); code != 0 {
-		t.Fatalf("supervisor exited %d; stderr %q", code, process.stderr.String())
+	if code := process.wait(t); code != drainedStatus(t, 0) {
+		t.Fatalf("supervisor exited %#x; stderr %q", code, process.stderr.String())
 	}
 	var arguments []string
 	if err := json.Unmarshal([]byte(output), &arguments); err != nil {
@@ -212,13 +233,42 @@ func (tree windowsTree) requireAlreadyGone(t *testing.T) {
 	}
 }
 
-func runWindowsTreeRoot(graceful bool) {
+// drainedStatus is the exit code that proves the Job drained with the target
+// status `status`, checked to carry that status back out unchanged.
+func drainedStatus(t *testing.T, status int) uint32 {
+	t.Helper()
+	code := uint32(drainedExitCode(status))
+	if code&^0xFF != drainedExitTag || int(code&0xFF) != status {
+		t.Fatalf("drained exit code %#x does not carry target status %d", code, status)
+	}
+	return code
+}
+
+// denyAllAccessToThisProcess gives this process an empty DACL, so the
+// supervisor, which holds no debug privilege, cannot open it to end it.
+func denyAllAccessToThisProcess() error {
+	descriptor, err := windows.SecurityDescriptorFromString("D:P")
+	if err != nil {
+		return err
+	}
+	dacl, _, err := descriptor.DACL()
+	if err != nil {
+		return err
+	}
+	return windows.SetSecurityInfo(
+		windows.CurrentProcess(),
+		windows.SE_KERNEL_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil,
+		nil,
+		dacl,
+		nil,
+	)
+}
+
+func runWindowsTreeRoot(descendantMode string, graceful bool) {
 	signals := make(chan os.Signal, 4)
 	signal.Notify(signals, os.Interrupt)
-	descendantMode := "descendant"
-	if graceful {
-		descendantMode = "descendant-graceful"
-	}
 	descendant := exec.Command(os.Args[0])
 	descendant.Env = replaceEnvironment(os.Environ(), helperModeEnvironment, descendantMode)
 	descendant.Stderr = os.Stderr

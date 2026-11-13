@@ -51,19 +51,19 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer
 	target, err := parseLaunch(arguments, runtime.GOOS == "windows")
 	if err != nil {
 		fmt.Fprintf(stderr, "opensteer-process-supervisor: %v\n", err)
-		return 64
+		return drainedExitCode(64)
 	}
 	control, err := openControlChannel()
 	if err != nil {
 		fmt.Fprintf(stderr, "opensteer-process-supervisor: control channel is unavailable: %v\n", err)
-		return 70
+		return drainedExitCode(70)
 	}
 	defer control.Close()
 
 	containment, err := newProcessContainment()
 	if err != nil {
 		fmt.Fprintf(stderr, "opensteer-process-supervisor: containment setup failed: %v\n", err)
-		return 70
+		return drainedExitCode(70)
 	}
 	command := targetCommand(target)
 	command.Stdin = stdin
@@ -72,16 +72,17 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer
 	command.Env = os.Environ()
 	if err := containment.prepare(command); err != nil {
 		fmt.Fprintf(stderr, "opensteer-process-supervisor: target preparation failed: %v\n", err)
-		return 70
+		return drainedExitCode(70)
 	}
 	if err := command.Start(); err != nil {
 		fmt.Fprintf(stderr, "opensteer-process-supervisor: target start failed: %v\n", err)
-		return 71
+		return drainedExitCode(71)
 	}
 	if err := containment.started(command); err != nil {
 		_ = command.Process.Kill()
 		_, _ = command.Process.Wait()
 		fmt.Fprintf(stderr, "opensteer-process-supervisor: containment activation failed: %v\n", err)
+		// The target may have started others before it was killed.
 		return 70
 	}
 
@@ -179,7 +180,7 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer
 				return undrainedExitCode
 			}
 			if isEmpty {
-				return targetExitCode(targetResult)
+				return drainedExitCode(targetExitCode(targetResult))
 			}
 		}
 	}

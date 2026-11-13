@@ -1,5 +1,6 @@
 import { OpensteerError } from "@opensteer/core";
 import { readBoundedJson, readBoundedText } from "@opensteer/shared/boundedJson";
+import { supervisedExitCode } from "@opensteer/shared/processControl";
 import {
   spawnSupervised,
   type HarnessProcessLaunchWrapper,
@@ -222,9 +223,8 @@ export class OpencodeServer {
   /** Why a server that never announced an address did not. */
   #startupFailure(): string {
     const tail = this.stderrTail.trim();
-    const exit =
-      this.#process.child.signalCode ??
-      (this.#process.child.exitCode === null ? undefined : `exit ${this.#process.child.exitCode}`);
+    const code = supervisedExitCode(this.#process.child.exitCode, process.platform);
+    const exit = this.#process.child.signalCode ?? (code === null ? undefined : `exit ${code}`);
     if (!exit) return "OpenCode did not announce a listening address";
     return `OpenCode exited before it started listening (${exit})${tail ? `: ${lastLine(tail)}` : ""}`;
   }

@@ -19,6 +19,11 @@ func newProcessContainment() (processContainment, error) {
 	return &posixProcessContainment{}, nil
 }
 
+// A POSIX owner proves its tree gone from the process group, not from this status.
+func drainedExitCode(status int) int {
+	return status
+}
+
 func targetCommand(target launch) *exec.Cmd {
 	return exec.Command(target.executable, target.arguments...)
 }

@@ -19,6 +19,10 @@ const (
 	// Outside 0-255, where every target status is reported: the Job was ended
 	// without proof that its other members finished terminating.
 	undrainedExitCode = 256
+	// Added to the 0-255 status only once this supervisor saw its Job drain. It is
+	// a customer-defined NTSTATUS, which Windows never assigns, so a supervisor
+	// that was killed, crashed or gave up draining cannot exit with it.
+	drainedExitTag = 0x2F530000
 	// Within the owner's own settle budget after it asks for a force stop.
 	drainDeadline      = 2 * time.Second
 	drainPollInterval  = 10 * time.Millisecond
@@ -76,6 +80,10 @@ func newProcessContainment() (processContainment, error) {
 		return nil, err
 	}
 	return &windowsProcessContainment{job: job}, nil
+}
+
+func drainedExitCode(status int) int {
+	return drainedExitTag | status
 }
 
 func targetCommand(target launch) *exec.Cmd {
