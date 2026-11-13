@@ -17,6 +17,16 @@ async function cli(version = "2.1.295") {
   return { root, executable };
 }
 
+function windowsFiles(...files: string[]) {
+  const isFile = (candidate: string) => files.includes(candidate);
+  return {
+    isExecutable: isFile,
+    isExecutionAlias: () => false,
+    isFile,
+    readStart: () => undefined,
+  };
+}
+
 describe("installed Claude executable", () => {
   it("uses the supplied login-shell PATH, even when the process PATH differs", async () => {
     const { root, executable } = await cli();
@@ -37,30 +47,28 @@ describe("installed Claude executable", () => {
       const shim = `C:\\Users\\person\\npm\\claude.${extension}`;
       const native =
         "C:\\Users\\person\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe";
-      expect(
-        resolveClaudeExecutable(shim, {}, "win32", {
-          locate: () => shim,
-          isFile: (candidate) => candidate === native,
-        }),
-      ).toBe(native);
+      expect(resolveClaudeExecutable(shim, {}, "win32", windowsFiles(shim, native))).toBe(native);
     },
   );
   it("supports older Windows npm packages with cli.js", () => {
-    const shim = "C:\\npm\\claude.cmd";
     const script = "C:\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js";
     expect(
-      resolveClaudeExecutable("claude", { PATH: "C:\\npm" }, "win32", {
-        locate: () => shim,
-        isFile: (candidate) => candidate === script,
-      }),
+      resolveClaudeExecutable(
+        "claude",
+        { Path: "C:\\npm" },
+        "win32",
+        windowsFiles("C:\\npm\\claude.cmd", script),
+      ),
     ).toBe(script);
   });
   it("does not return a Windows launcher when its target is absent", () => {
     expect(
-      resolveClaudeExecutable("C:\\npm\\claude.cmd", {}, "win32", {
-        locate: () => undefined,
-        isFile: () => false,
-      }),
+      resolveClaudeExecutable(
+        "C:\\npm\\claude.cmd",
+        {},
+        "win32",
+        windowsFiles("C:\\npm\\claude.cmd"),
+      ),
     ).toBeUndefined();
   });
   it("uses the Runner's Node port when probing a legacy JavaScript CLI", async () => {

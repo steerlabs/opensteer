@@ -83,12 +83,13 @@ import {
   type HarnessSessionContext,
   type ResolvedAttachment,
   renderHarnessSkillCatalog,
+  materializeResource,
   renderNativeHarnessSkill,
   type HarnessSkill,
   SubagentNodes,
 } from "@opensteer/harness";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
-import { mkdir, readdir, rm, symlink, writeFile, copyFile } from "node:fs/promises";
+import { mkdir, readdir, rm, writeFile, copyFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
@@ -2369,7 +2370,7 @@ async function materializeOpencodeSkills(context: HarnessSessionContext): Promis
         await writeFile(join(target, entry), await renderNativeHarnessSkill(skill), {
           mode: 0o600,
         });
-      } else await symlink(join(skill.path, entry), join(target, entry));
+      } else await materializeResource(join(skill.path, entry), join(target, entry));
     }
   }
   return directory;

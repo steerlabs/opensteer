@@ -1,7 +1,9 @@
 import type { HarnessInstallation } from "@opensteer/protocol";
 import { readFile, realpath, stat } from "node:fs/promises";
-import { basename, join, normalize, resolve, sep } from "node:path";
-import { findExecutableOnPath, meetsMinimumVersion } from "./installed-engine.js";
+import { basename, dirname, join, normalize, resolve, sep } from "node:path";
+import { hostCommandPlatform, resolveCommand } from "@opensteer/shared/command";
+import { mergeEnvironment, selectEnvironment } from "@opensteer/shared/userEnvironment";
+import { meetsMinimumVersion } from "./installed-engine.js";
 import { spawnSupervised } from "./process-supervisor.js";
 
 export type EnginePackageManager = "bun" | "homebrew" | "npm" | "pnpm" | "volta" | "yarn";
@@ -63,6 +65,7 @@ export interface EngineInstallationResolverOptions {
   readonly environment?: NodeJS.ProcessEnv;
   readonly inspectionTimeoutMs?: number;
   readonly now?: () => number;
+  readonly platform?: NodeJS.Platform;
   readonly run?: (
     executable: string,
     args: readonly string[],
@@ -95,6 +98,7 @@ const defaultInspectionTimeoutMs = 5_000;
 export class EngineInstallationResolver {
   readonly #cache = new Map<string, CachedResolution>();
   readonly #environment: NodeJS.ProcessEnv;
+  readonly #platform: NodeJS.Platform;
   readonly #inspectionTimeoutMs: number;
   readonly #now: () => number;
   readonly #run: NonNullable<EngineInstallationResolverOptions["run"]>;
@@ -102,6 +106,7 @@ export class EngineInstallationResolver {
 
   constructor(options: EngineInstallationResolverOptions = {}) {
     this.#environment = options.environment ?? process.env;
+    this.#platform = options.platform ?? process.platform;
     this.#inspectionTimeoutMs = options.inspectionTimeoutMs ?? defaultInspectionTimeoutMs;
     this.#now = options.now ?? Date.now;
     this.#run = options.run ?? runSupervised;
@@ -172,7 +177,7 @@ export class EngineInstallationResolver {
     const result = await this.#runInspection(
       executable,
       facts.version.args,
-      processEnvironment(this.#environment),
+      processEnvironment(this.#environment, this.#platform),
     );
     const match = facts.version.pattern.exec(`${result.stdout}\n${result.stderr}`);
     if (result.code !== 0 || !match?.[1])
@@ -192,7 +197,7 @@ export class EngineInstallationResolver {
 
     if (facts.packageName) {
       const manager = await this.#nodePackageOwnership(executable, facts.packageName);
-      if (manager) return packageManagerPlan(manager, facts, this.#environment);
+      if (manager) return packageManagerPlan(manager, facts, this.#environment, this.#platform);
     }
 
     const brew = await this.#homebrewOwnership(executable, facts);
@@ -210,7 +215,7 @@ export class EngineInstallationResolver {
         kind: "native",
         plan: {
           args: facts.native.updateArgs,
-          environment: updateEnvironment(this.#environment, facts),
+          environment: updateEnvironment(this.#environment, facts, this.#platform),
           executable: visibleExecutable,
           serializationKey: `native:${executable}`,
         },
@@ -229,12 +234,11 @@ export class EngineInstallationResolver {
     | { readonly kind: Exclude<EnginePackageManager, "homebrew">; readonly executable: string }
     | undefined
   > {
-    const path = this.#environment.PATH;
     const normalized = slash(executable).toLowerCase();
     const packagePath = packageName.toLowerCase().replace("@", "@");
     const containsPackage = normalized.includes(`/node_modules/${packagePath}/`);
     if (normalized.includes("/.bun/bin/") && containsPackage) {
-      const command = findExecutableOnPath("bun", path);
+      const command = this.#onPath("bun");
       if (command) return { executable: command, kind: "bun" };
     }
     const pnpmPatterns = [
@@ -245,37 +249,40 @@ export class EngineInstallationResolver {
       "/pnpm/global/",
     ];
     if (pnpmPatterns.some((part) => normalized.includes(part)) && containsPackage) {
-      const command = findExecutableOnPath("pnpm", path);
+      const command = this.#onPath("pnpm");
       if (command) return { executable: command, kind: "pnpm" };
     }
     if (/\/yarn\/(?:data\/)?global\/node_modules\//.test(normalized) && containsPackage) {
-      const command = findExecutableOnPath("yarn", path);
+      const command = this.#onPath("yarn");
       if (command) return { executable: command, kind: "yarn" };
     }
     const volta = this.#environment.VOLTA_HOME;
     if (volta && normalized.endsWith("/volta-shim")) {
       const packageDirectory = join(volta, "tools", "image", "packages", packageName);
       if (await isDirectory(packageDirectory)) {
-        const command = findExecutableOnPath("volta", path);
+        const command = this.#onPath("volta");
         if (command) return { executable: command, kind: "volta" };
       }
     }
-    const npm = findExecutableOnPath("npm", path);
+    const npm = this.#onPath("npm");
     if (npm) {
-      const prefixResult = await this.#runInspection(
+      const rootResult = await this.#runInspection(
         npm,
-        ["prefix", "--global"],
-        processEnvironment(this.#environment),
+        ["root", "--global"],
+        processEnvironment(this.#environment, this.#platform),
       );
-      const prefix = prefixResult.code === 0 ? prefixResult.stdout.trim() : "";
-      if (prefix) {
-        const resolvedPrefix = await realpath(prefix).catch(() => prefix);
-        const root = slash(
-          resolve(resolvedPrefix, "lib", "node_modules", packageName),
-        ).toLowerCase();
-        if (normalized === root || normalized.startsWith(`${root}/`)) {
+      const root = rootResult.code === 0 ? rootResult.stdout.trim() : "";
+      if (root) {
+        const resolvedRoot = await realpath(root).catch(() => root);
+        const packageRoot = slash(resolve(resolvedRoot, packageName)).toLowerCase();
+        if (normalized === packageRoot || normalized.startsWith(`${packageRoot}/`))
           return { executable: npm, kind: "npm" };
-        }
+        // On Windows npm's global commands are batch shims in the directory above its root.
+        if (
+          slash(dirname(executable)).toLowerCase() === slash(dirname(resolvedRoot)).toLowerCase() &&
+          (await isDirectory(join(resolvedRoot, packageName)))
+        )
+          return { executable: npm, kind: "npm" };
       }
     }
     return undefined;
@@ -300,14 +307,12 @@ export class EngineInstallationResolver {
     const expected = brewType === "cask" ? facts.homebrew?.cask : facts.homebrew?.formula;
     if (!expected || expected.toLowerCase() !== match[3].toLowerCase()) return undefined;
     const candidate = join(match[1], "bin", "brew");
-    const manager = (await isFile(candidate))
-      ? candidate
-      : findExecutableOnPath("brew", this.#environment.PATH);
+    const manager = (await isFile(candidate)) ? candidate : this.#onPath("brew");
     if (!manager) return undefined;
     const prefix = await this.#runInspection(
       manager,
       ["--prefix"],
-      processEnvironment(this.#environment),
+      processEnvironment(this.#environment, this.#platform),
     );
     const vouchedPrefix = await realpath(prefix.stdout.trim()).catch(() =>
       normalize(prefix.stdout.trim()),
@@ -321,7 +326,7 @@ export class EngineInstallationResolver {
       manager,
       plan: {
         args: ["upgrade", ...(brewType === "cask" ? ["--cask"] : []), expected],
-        environment: processEnvironment(this.#environment),
+        environment: processEnvironment(this.#environment, this.#platform),
         executable: manager,
         serializationKey: `homebrew:${ownedPrefix}`,
       },
@@ -341,7 +346,7 @@ export class EngineInstallationResolver {
       const result = await this.#runInspection(
         ownership.manager,
         ["info", "--json=v2", ownership.brewName],
-        processEnvironment(this.#environment),
+        processEnvironment(this.#environment, this.#platform),
       );
       if (result.code !== 0) return null;
       return parseBrewLatestVersion(result.stdout, ownership.brewType);
@@ -356,14 +361,22 @@ export class EngineInstallationResolver {
       return readStringField(manifest, facts.latest.versionField);
     }
     if (!facts.packageName) return null;
-    const npm = findExecutableOnPath("npm", this.#environment.PATH);
+    const npm = this.#onPath("npm");
     if (!npm) return null;
     const result = await this.#runInspection(
       npm,
       ["view", "--json", `${facts.packageName}@latest`, "version"],
-      processEnvironment(this.#environment),
+      processEnvironment(this.#environment, this.#platform),
     );
     return result.code === 0 ? parseNpmLatestVersion(result.stdout) : null;
+  }
+
+  #onPath(command: string): string | undefined {
+    return resolveCommand(command, {
+      cwd: process.cwd(),
+      environment: this.#environment,
+      platform: hostCommandPlatform(this.#platform),
+    })?.path;
   }
 
   #runInspection(
@@ -388,6 +401,7 @@ function packageManagerPlan(
   },
   facts: InstalledEngineUpdateFacts,
   environment: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
 ) {
   const packageName = facts.packageName;
   if (!packageName) return {};
@@ -406,7 +420,7 @@ function packageManagerPlan(
     kind: manager.kind,
     plan: {
       args,
-      environment: updateEnvironment(environment, facts),
+      environment: updateEnvironment(environment, facts, platform),
       executable: manager.executable,
       serializationKey: `${manager.kind}:${manager.executable}`,
     },
@@ -416,67 +430,62 @@ function packageManagerPlan(
 function updateEnvironment(
   source: NodeJS.ProcessEnv,
   facts: InstalledEngineUpdateFacts,
+  platform: NodeJS.Platform,
 ): Readonly<Record<string, string>> {
-  return { ...processEnvironment(source), ...facts.updateEnvironment };
+  return mergeEnvironment(
+    processEnvironment(source, platform),
+    facts.updateEnvironment ?? {},
+    platform,
+  );
 }
 
-function processEnvironment(source: NodeJS.ProcessEnv): Readonly<Record<string, string>> {
-  const exact = new Set([
-    "APPDATA",
-    "BUN_INSTALL",
-    "ComSpec",
-    "HOME",
-    "HOMEDRIVE",
-    "HOMEPATH",
-    "HOMEBREW_BREW_FILE",
-    "HOMEBREW_CACHE",
-    "HOMEBREW_CELLAR",
-    "HOMEBREW_LIBRARY",
-    "HOMEBREW_PREFIX",
-    "HOMEBREW_REPOSITORY",
-    "HTTPS_PROXY",
-    "HTTP_PROXY",
-    "LANG",
-    "LANGUAGE",
-    "LOCALAPPDATA",
-    "LOGNAME",
-    "MISE_CACHE_DIR",
-    "MISE_CONFIG_DIR",
-    "MISE_DATA_DIR",
-    "MISE_INSTALL_PATH",
-    "MISE_STATE_DIR",
-    "MUSE_CHANNEL",
-    "NODE_EXTRA_CA_CERTS",
-    "NO_PROXY",
-    "NPM_CONFIG_PREFIX",
-    "PATH",
-    "PATHEXT",
-    "PNPM_HOME",
-    "PWD",
-    "Path",
-    "SHELL",
-    "SSL_CERT_DIR",
-    "SSL_CERT_FILE",
-    "SystemRoot",
-    "TEMP",
-    "TERM",
-    "TMP",
-    "TMPDIR",
-    "USER",
-    "USERNAME",
-    "VOLTA_HOME",
-    "WINDIR",
-    "http_proxy",
-    "https_proxy",
-    "no_proxy",
-    "npm_config_prefix",
-  ]);
-  return Object.fromEntries(
-    Object.entries(source).filter(
-      (entry): entry is [string, string] =>
-        entry[1] !== undefined && (exact.has(entry[0]) || entry[0].startsWith("LC_")),
-    ),
-  );
+const updateEnvironmentNames = [
+  "BUN_INSTALL",
+  "HOME",
+  "HOMEBREW_BREW_FILE",
+  "HOMEBREW_CACHE",
+  "HOMEBREW_CELLAR",
+  "HOMEBREW_LIBRARY",
+  "HOMEBREW_PREFIX",
+  "HOMEBREW_REPOSITORY",
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "LANG",
+  "LANGUAGE",
+  "LOGNAME",
+  "MISE_CACHE_DIR",
+  "MISE_CONFIG_DIR",
+  "MISE_DATA_DIR",
+  "MISE_INSTALL_PATH",
+  "MISE_STATE_DIR",
+  "MUSE_CHANNEL",
+  "NODE_EXTRA_CA_CERTS",
+  "NO_PROXY",
+  "NPM_CONFIG_PREFIX",
+  "PATH",
+  "PNPM_HOME",
+  "PWD",
+  "SHELL",
+  "SSL_CERT_DIR",
+  "SSL_CERT_FILE",
+  "TEMP",
+  "TERM",
+  "TMP",
+  "TMPDIR",
+  "USER",
+  "VOLTA_HOME",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "npm_config_prefix",
+] as const;
+
+function processEnvironment(
+  source: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): Readonly<Record<string, string>> {
+  const locale = Object.keys(source).filter((name) => name.startsWith("LC_"));
+  return selectEnvironment(source, [...updateEnvironmentNames, ...locale], platform);
 }
 
 async function runSupervised(

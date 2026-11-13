@@ -9,7 +9,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist *.tsbuildinfo",
+    "clean": "node ../../scripts/clean.mjs dist *.tsbuildinfo",
     "reset-local-password": "tsx src/reset-local-password.ts"
   },
   "dependencies": {

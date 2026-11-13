@@ -1,5 +1,6 @@
 import { OpensteerError } from "@opensteer/core";
 import { setPrivateDirectoryMode, setFileMode } from "@opensteer/shared/privateFiles";
+import { randomBytes } from "node:crypto";
 import { createServer, type Server, type Socket } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,9 +8,21 @@ import { join } from "node:path";
 
 export const cursorHookSocketFileName = "cursor-hook.sock";
 
+/** Where the hook program reaches the Run, and how that address is kept private and removed. */
+export interface CursorHookEndpoint {
+  readonly path: string;
+  /** Applied once the bridge listens, before any hook can connect. */
+  restrict(): Promise<void>;
+  remove(): Promise<void>;
+}
+
+export function createCursorHookEndpoint(
+  platform: NodeJS.Platform = process.platform,
+): Promise<CursorHookEndpoint> {
+  return platform === "win32" ? Promise.resolve(windowsHookEndpoint()) : unixHookEndpoint();
+}
+
 /**
- * The approval socket's own directory.
- *
  * A Unix socket address is a fixed-size struct — 104 bytes of path on macOS —
  * and a Thread state directory under the Runner's data directory routinely
  * exceeds that on its own, so the socket cannot live beside the plugin. It
@@ -18,24 +31,39 @@ export const cursorHookSocketFileName = "cursor-hook.sock";
  * directory is the same trust domain as the plugin directory, so this changes
  * nothing about who can reach the socket.
  */
-export async function createCursorHookSocketDirectory(): Promise<string> {
+async function unixHookEndpoint(): Promise<CursorHookEndpoint> {
   const directory = await mkdtemp(join(tmpdir(), "opensteer-cursor-"));
   await setPrivateDirectoryMode(directory);
-  return directory;
-}
-
-export function cursorHookSocketPath(socketDirectory: string): string {
-  const path = join(socketDirectory, cursorHookSocketFileName);
+  const path = join(directory, cursorHookSocketFileName);
   // Defensive: a temporary directory this long is a machine nobody can bind a
   // socket on at all, and an ENAMETOOLONG from bind() mid-Run says far less
   // than the path does.
   if (Buffer.byteLength(path, "utf8") >= 100) {
+    await rm(directory, { force: true, recursive: true });
     throw new OpensteerError({
       code: "harness_error",
       message: `Cursor approval socket path is too long for this computer: ${path}`,
     });
   }
-  return path;
+  return {
+    path,
+    restrict: () => setFileMode(path, 0o600),
+    remove: () => rm(directory, { force: true, recursive: true }),
+  };
+}
+
+/**
+ * Windows has no socket file: Node listens on a named pipe, which disappears
+ * with its server. The pipe's default access lets only this user, SYSTEM and
+ * administrators open it for writing, and its unguessable name cannot be
+ * claimed first because Node creates the pipe's first instance exclusively.
+ */
+function windowsHookEndpoint(): CursorHookEndpoint {
+  return {
+    path: `\\\\.\\pipe\\opensteer-cursor-${randomBytes(16).toString("hex")}`,
+    restrict: async () => undefined,
+    remove: async () => undefined,
+  };
 }
 
 /** What the hook program prints back to Cursor. */
@@ -58,8 +86,8 @@ export interface CursorHookBridgeOptions {
     payload: CursorHookPayload,
     abandoned: AbortSignal,
   ) => Promise<CursorHookVerdict>;
+  readonly endpoint: CursorHookEndpoint;
   readonly maximumPayloadBytes: number;
-  readonly socketPath: string;
 }
 
 /**
@@ -78,30 +106,33 @@ export interface CursorHookBridgeOptions {
 export class CursorHookBridge {
   readonly #server: Server;
   readonly #sockets = new Set<Socket>();
-  readonly socketPath: string;
   #closed = false;
 
-  private constructor(server: Server, socketPath: string) {
+  private constructor(server: Server) {
     this.#server = server;
-    this.socketPath = socketPath;
   }
 
+  /** Listens on `endpoint`; the caller removes the endpoint once the bridge is closed. */
   static async listen(options: CursorHookBridgeOptions): Promise<CursorHookBridge> {
-    await rm(options.socketPath, { force: true });
     const server = createServer();
-    const bridge = new CursorHookBridge(server, options.socketPath);
+    const bridge = new CursorHookBridge(server);
     server.on("connection", (socket) => bridge.#serve(socket, options));
     // A listener that throws after startup would otherwise reach the Runner as
     // an unhandled error; a broken approval channel denies instead.
     server.on("error", () => undefined);
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
-      server.listen(options.socketPath, () => {
+      server.listen(options.endpoint.path, () => {
         server.removeListener("error", reject);
         resolve();
       });
     });
-    await setFileMode(options.socketPath, 0o600);
+    try {
+      await options.endpoint.restrict();
+    } catch (error) {
+      await bridge.close();
+      throw error;
+    }
     return bridge;
   }
 
@@ -111,7 +142,6 @@ export class CursorHookBridge {
     for (const socket of this.#sockets) socket.destroy();
     this.#sockets.clear();
     await new Promise<void>((resolve) => this.#server.close(() => resolve()));
-    await rm(this.socketPath, { force: true });
   }
 
   #serve(socket: Socket, options: CursorHookBridgeOptions): void {

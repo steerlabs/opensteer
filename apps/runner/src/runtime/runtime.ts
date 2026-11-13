@@ -3,9 +3,12 @@ import { RunFileError, type RunFileAccess } from "../attachments/run-files.js";
 import { AppServerManager } from "../apps/app-server-manager.js";
 import { VoiceCalls } from "../voice/voice-calls.js";
 
+import { appHostingGuide } from "@opensteer/agent-tools";
 import { systemClock, type Clock } from "@opensteer/shared/clock";
+import { hostCommandPlatform } from "@opensteer/shared/command";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
 import { safeMessage } from "@opensteer/shared/safeMessage";
+import { selectEnvironment } from "@opensteer/shared/userEnvironment";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, readFile, lstat } from "node:fs/promises";
@@ -185,6 +188,7 @@ export interface RunnerRuntimeOptions {
    * their own computer. Tests point it at a temporary home.
    */
   readonly modelServerHome?: string;
+  readonly nativeFsHelperBinary?: string;
   readonly nodeExecutable?: string;
   readonly privateStateDirectory: string;
   readonly projectContinuationIdentity: ProviderContinuationIdentityProjector;
@@ -2798,7 +2802,12 @@ export class RunnerRuntime {
         machineAccessPlatform: launch?.machineAccessPlatform,
         machineAccessRelaySocket: launch?.machineAccessRelaySocket,
         modelSelection: context.modelSelection,
-        platformGuide: context.agentTools.instructions,
+        platformGuide: [
+          context.agentTools.instructions,
+          appHostingGuide({ platform: hostCommandPlatform(), tools: context.agentTools.tools }),
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
         providerState,
         runtimeBoundary: this.#harnessRuntimeBoundary,
         ...(sharedEngine ? { sharedEngine } : {}),
@@ -3548,33 +3557,44 @@ export class RunnerRuntime {
   }
 
   async #harnessEnvironment(driverKind: HarnessId): Promise<Readonly<Record<string, string>>> {
-    const output: Record<string, string> = {};
-    for (const name of [
-      "APPDATA",
-      "HOME",
-      "LANG",
-      "LC_ALL",
-      "LOCALAPPDATA",
-      "LOGNAME",
-      "NODE_EXTRA_CA_CERTS",
-      "PATH",
-      "SHELL",
-      "TERM",
-      "TMPDIR",
-      "USER",
-      "USERPROFILE",
-      "XDG_CONFIG_HOME",
-      "XDG_DATA_HOME",
-    ] as const) {
-      const value = process.env[name];
-      if (value) output[name] = value;
-    }
-    for (const name of this.#harnesses.environmentVariables(driverKind)) {
-      const value = process.env[name];
-      if (value) output[name] = value;
-    }
-    return Object.freeze(output);
+    return harnessProcessEnvironment(
+      process.env,
+      this.#harnesses.environmentVariables(driverKind),
+      process.platform,
+    );
   }
+}
+
+/** What a harness process inherits from the Runner: process setup and its engine's own variables. */
+export function harnessProcessEnvironment(
+  source: NodeJS.ProcessEnv,
+  engineVariables: Iterable<string>,
+  platform: NodeJS.Platform,
+): Readonly<Record<string, string>> {
+  return Object.freeze(
+    selectEnvironment(
+      source,
+      [
+        "APPDATA",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "LOCALAPPDATA",
+        "LOGNAME",
+        "NODE_EXTRA_CA_CERTS",
+        "PATH",
+        "SHELL",
+        "TERM",
+        "TMPDIR",
+        "USER",
+        "USERPROFILE",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        ...engineVariables,
+      ],
+      platform,
+    ),
+  );
 }
 
 /**
@@ -3602,17 +3622,20 @@ function reject(code: ProtocolError["code"], message: string, retryable: boolean
 
 /**
  * A Runner that cannot run Trigger programs must not start at all: the Node
- * executable is resolved and verified before the runtime exists, so its
- * absence here is a composition bug rather than a runtime condition.
+ * executable and native filesystem helper are resolved before the runtime
+ * exists, so their absence here is a composition bug rather than a runtime condition.
  */
 function programExecutorFor(
-  options: Pick<RunnerRuntimeOptions, "nodeExecutable">,
+  options: Pick<RunnerRuntimeOptions, "nativeFsHelperBinary" | "nodeExecutable">,
   privateStateDirectory: string,
 ): TriggerProgramExecutor {
-  if (!options.nodeExecutable) {
-    throw new TypeError("RunnerRuntime requires a verified nodeExecutable for Trigger programs");
+  if (!options.nodeExecutable || !options.nativeFsHelperBinary) {
+    throw new TypeError(
+      "RunnerRuntime requires a verified nodeExecutable and nativeFsHelperBinary for Trigger programs",
+    );
   }
   return new TriggerProgramExecutor({
+    nativeFsHelperBinary: options.nativeFsHelperBinary,
     nodeExecutable: options.nodeExecutable,
     privateDirectory: resolve(privateStateDirectory, "trigger-programs"),
   });

@@ -1087,8 +1087,8 @@ describe("Cursor interruption and lifetime", () => {
     await fixture.adapter.close();
   });
 
-  it("escalates to SIGKILL when the CLI ignores SIGINT, without waiting forever", async () => {
-    const fixture = await setup({ config: { shutdownGraceMs: 100 }, scenario: "ignore-sigint" });
+  it("forces the CLI's tree down when it ignores the graceful stop, without waiting forever", async () => {
+    const fixture = await setup({ config: { shutdownGraceMs: 100 }, scenario: "hang" });
     const session = await fixture.adapter.startSession(fixture.context);
     const observer = observe(session.events);
     const turn = session.execute(fixture.turn("Work forever"));
@@ -1105,7 +1105,7 @@ describe("Cursor interruption and lifetime", () => {
     await fixture.adapter.close();
   });
 
-  it("does not hold the grace timer open when the CLI stops on SIGINT", async () => {
+  it("returns as soon as the CLI stops on the graceful stop", async () => {
     // A grace long enough that a timer left running would outlive the test.
     const fixture = await setup({ config: { shutdownGraceMs: 60_000 }, scenario: "slow" });
     const session = await fixture.adapter.startSession(fixture.context);

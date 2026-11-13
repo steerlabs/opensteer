@@ -52,7 +52,7 @@ test("a failing or missing matrix lane cannot pass Check", () => {
     ...Object.fromEntries(lanes.map((k) => [k, { result: "success" }])),
   };
   assert.doesNotThrow(() => validateResults(selected, needs, "push"));
-  for (const lane of ["native-mac", "tests", "integration", "browser-journeys"]) {
+  for (const lane of ["native-mac", "native-windows", "tests", "integration", "browser-journeys"]) {
     for (const result of ["failure", "cancelled", "skipped"]) {
       assert.throws(() => validateResults(selected, { ...needs, [lane]: { result } }, "push"));
     }
@@ -411,4 +411,27 @@ test("real-browser command fails its existing job and Check and uploads inventor
   assert.match(aggregate, /checkInventories\(\[inventory\], 1, "browser"\)/);
   assert.match(aggregate, /inventory.discovered/);
   assert.match(aggregate, /realBrowserTests/);
+});
+
+test("main may skip native-windows for an unrelated push; scheduled and manual runs may not", () => {
+  const needs = structuredClone(results);
+  for (const lane of lanes) {
+    needs.changes.outputs[lane] = String(!lane.startsWith("native-"));
+    needs[lane] = { result: lane.startsWith("native-") ? "skipped" : "success" };
+  }
+  const push = {
+    ...plan,
+    lanes: Object.fromEntries(lanes.map((k) => [k, !k.startsWith("native-")])),
+  };
+  assert.doesNotThrow(() => validateResults(push, needs, "push"));
+  for (const event of ["schedule", "workflow_dispatch"]) {
+    const full = structuredClone({ plan: { ...push, nativeMac: allNativeMacTasks }, needs });
+    full.plan.lanes["native-mac"] = true;
+    full.needs.changes.outputs["native-mac"] = "true";
+    full.needs.changes.outputs["native-mac-tasks"] = JSON.stringify(
+      nativeMacMatrix(allNativeMacTasks),
+    );
+    full.needs["native-mac"] = { result: "success" };
+    assert.throws(() => validateResults(full.plan, full.needs, event), /forbids skips/);
+  }
 });

@@ -1,8 +1,10 @@
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { setFileMode } from "@opensteer/shared/privateFiles";
 import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-import type { ThreadAccessMode } from "@opensteer/core";
+import { join, win32 } from "node:path";
+import { OpensteerError, type ThreadAccessMode } from "@opensteer/core";
+import { getEnvironmentValue } from "@opensteer/shared/command";
+import { mergeEnvironment } from "@opensteer/shared/userEnvironment";
 import { cursorHookProgramFileName, cursorHookProgramSource } from "./hook-program.js";
 
 /**
@@ -180,16 +182,55 @@ export async function materializeCursorPlugin(plan: CursorPluginPlan): Promise<C
 /**
  * Cursor runs a command hook through a shell, so every path is quoted rather
  * than passed as argv. The socket path travels as an argument because the
- * hook's environment is Cursor's to build, not the driver's.
+ * hook's environment is Cursor's to build, not the driver's. On Windows the
+ * shell is Windows PowerShell (see `cursorHookShellEnvironment`), which runs
+ * the command as a line of a script and needs `&` to call a quoted path.
  */
 export function cursorHookCommand(
   nodeExecutable: string,
   hookProgramPath: string,
   hookSocketPath: string,
+  platform: NodeJS.Platform = process.platform,
 ): string {
-  return [nodeExecutable, hookProgramPath, hookSocketPath].map(shellQuote).join(" ");
+  const words = [nodeExecutable, hookProgramPath, hookSocketPath];
+  return platform === "win32"
+    ? `& ${words.map(powerShellQuote).join(" ")}`
+    : words.map(shellQuote).join(" ");
+}
+
+/**
+ * The Cursor CLI runs hooks in the shell it picks from `SHELL`, and probes
+ * PATH (where WSL's `bash.exe` may answer) when `SHELL` names none it knows.
+ * On Windows the Run names Windows PowerShell, the shell `cursorHookCommand`
+ * quotes for; Cursor's own shell tool follows the same setting.
+ */
+export function cursorHookShellEnvironment(
+  environment: Readonly<Record<string, string>>,
+  platform: NodeJS.Platform = process.platform,
+): Readonly<Record<string, string>> {
+  if (platform !== "win32") return environment;
+  const systemRoot = getEnvironmentValue(environment, "SystemRoot", "win32");
+  if (!systemRoot) {
+    throw new OpensteerError({
+      code: "harness_error",
+      message: "Cursor's approval hooks need SystemRoot to find Windows PowerShell",
+    });
+  }
+  const powerShell = win32.join(
+    systemRoot,
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
+  return mergeEnvironment(environment, { SHELL: powerShell }, "win32");
 }
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+/** PowerShell ends a single-quoted string at any of these quotes unless it is doubled. */
+function powerShellQuote(value: string): string {
+  return `'${value.replace(/['\u2018\u2019\u201a\u201b]/gu, (quote) => quote + quote)}'`;
 }

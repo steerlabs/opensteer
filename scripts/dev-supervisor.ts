@@ -1,11 +1,12 @@
 import { DeploymentKindSchema } from "../packages/core/src/index.js";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
 import { isNodeError } from "@opensteer/shared/nodeError";
-import { spawn, type ChildProcess } from "node:child_process";
+import { supervisedExitCode, writeProcessControl } from "@opensteer/shared/processControl";
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, open, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 
 const maximumLockBytes = 4 * 1_024;
 
@@ -128,35 +129,63 @@ export async function assertDevelopmentListenersAvailable(
   for (const listener of listeners) await assertListenerAvailable(listener);
 }
 
-export function spawnInProcessGroup(
-  command: string,
-  arguments_: readonly string[],
-  options: Parameters<typeof spawn>[2],
-): ChildProcess {
-  return spawn(command, [...arguments_], {
-    ...options,
-    detached: process.platform !== "win32",
-    shell: false,
-  });
+export interface DevelopmentProcess {
+  /** Settles once the supervisor has seen the whole process tree end. */
+  readonly exited: Promise<{
+    readonly code: number | null;
+    readonly signal: NodeJS.Signals | null;
+  }>;
+  stop(mode: "force" | "graceful"): void;
 }
 
-export function signalProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
-  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
-  try {
-    if (process.platform === "win32") {
-      const arguments_ = ["/pid", String(child.pid), "/t", ...(signal === "SIGKILL" ? ["/f"] : [])];
-      const killer = spawn("taskkill.exe", arguments_, {
-        shell: false,
-        stdio: "ignore",
-        windowsHide: true,
-      });
-      killer.unref();
-    } else {
-      process.kill(-child.pid, signal);
-    }
-  } catch (error) {
-    if (!isNodeError(error) || error.code !== "ESRCH") throw error;
+/**
+ * Runs `command` under the process supervisor with this terminal's standard
+ * streams. The supervisor owns the whole tree: it stops it on request, and
+ * when this process dies its control pipe closes and the supervisor kills it.
+ */
+export function spawnDevelopmentProcess(
+  supervisor: string,
+  command: readonly [string, ...string[]],
+  options: { readonly cwd: string; readonly env: NodeJS.ProcessEnv },
+): DevelopmentProcess {
+  const [executable, ...arguments_] = command;
+  if (!isAbsolute(supervisor) || !isAbsolute(executable))
+    throw new TypeError("The supervisor and its target must be absolute");
+  const child = spawn(supervisor, ["--", executable, ...arguments_], {
+    cwd: options.cwd,
+    // Terminal interrupts reach only this process, which stops the tree over
+    // control: here a new session; on Windows the target's own process group.
+    detached: process.platform !== "win32",
+    env: options.env,
+    shell: false,
+    stdio: ["inherit", "inherit", "inherit", "pipe"],
+  });
+  const control = child.stdio[3];
+  if (!control || !("write" in control)) {
+    child.kill("SIGKILL");
+    throw new Error("The process supervisor control pipe was not created");
   }
+  let running = true;
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+    (resolvePromise, rejectPromise) => {
+      child.once("error", (error) => {
+        running = false;
+        rejectPromise(error);
+      });
+      child.once("exit", (code, signal) => {
+        running = false;
+        resolvePromise({ code: supervisedExitCode(code, process.platform), signal });
+      });
+    },
+  );
+  // A write racing the supervisor's exit fails harmlessly; the exit settles `exited`.
+  control.on("error", () => undefined);
+  return {
+    exited,
+    stop(mode) {
+      if (running) void writeProcessControl(control, mode).catch(() => undefined);
+    },
+  };
 }
 
 async function assertListenerAvailable(listener: DevelopmentListener): Promise<void> {

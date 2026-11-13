@@ -22,6 +22,16 @@ func ensureDesktopPrivateRoot(rootPath string) (bool, error) {
 	if strings.EqualFold(cleaned, filepath.Clean(volumeRoot)) {
 		return false, userError("invalid-root", "Desktop private filesystem root cannot be the volume root")
 	}
+	relative, err := filepath.Rel(volumeRoot, cleaned)
+	if err != nil || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, `..\`) {
+		return false, userError("invalid-root", "Desktop private filesystem root is outside its volume")
+	}
+	components := strings.Split(relative, `\`)
+	for _, component := range components {
+		if !validWindowsComponent(component) {
+			return false, userError("invalid-root", "Desktop private filesystem root contains an invalid component")
+		}
+	}
 	current, err := openAbsoluteDirectory(volumeRoot)
 	if err != nil {
 		return false, err
@@ -33,53 +43,63 @@ func ensureDesktopPrivateRoot(rootPath string) (bool, error) {
 	}
 	root := &filesystemRoot{containment: platformContainment, handle: current, volumeID: baseStat.identity.volumeID}
 	defer root.close()
-	relative, err := filepath.Rel(volumeRoot, cleaned)
-	if err != nil || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, `..\`) {
-		return false, userError("invalid-root", "Desktop private filesystem root is outside its volume")
-	}
-	components := strings.Split(relative, `\`)
-	createdFinal := false
-	createdAncestor := false
 	for index, component := range components {
-		if !validWindowsComponent(component) {
-			return false, userError("invalid-root", "Desktop private filesystem root contains an invalid component")
-		}
-		final := index == len(components)-1
 		var next windows.Handle
-		if final || createdAncestor {
+		if index == len(components)-1 {
 			next, err = root.openDesktopDirectoryAt(root.handle, component)
 		} else {
 			next, err = root.openDirectoryAt(root.handle, component)
 		}
 		if isWindowsNotFound(err) {
-			next, err = root.createDesktopDirectoryAt(root.handle, component)
-			if err == nil {
-				createdAncestor = true
-				createdFinal = final
-			}
-		} else if err == nil && createdAncestor {
-			windows.CloseHandle(next)
-			return false, userError("unsafe-permissions", "Desktop private root setup collided with an existing path")
+			return root.bootstrapDesktopPrivateRoot(components[index:])
 		}
 		if err != nil {
 			return false, err
 		}
-		if final || createdAncestor {
-			var permissionErr error
-			if createdAncestor {
-				permissionErr = secureDesktopPrivateNode(next, true)
-			} else {
-				permissionErr = assertDesktopPrivateNode(next, true)
-			}
-			if permissionErr != nil {
-				windows.CloseHandle(next)
-				return false, permissionErr
-			}
-		}
 		windows.CloseHandle(root.handle)
 		root.handle = next
 	}
-	return createdFinal, nil
+	return false, assertDesktopPrivateNode(root.handle, true)
+}
+
+// bootstrapDesktopPrivateRoot creates the missing root components below
+// root.handle, an ordinary existing folder whose ACL is never read or changed.
+// Each component is private from creation; on failure the ones made here are removed.
+func (root *filesystemRoot) bootstrapDesktopPrivateRoot(missing []string) (bool, error) {
+	held := make([]windows.Handle, 0, len(missing))
+	made := make([]bool, 0, len(missing))
+	succeeded := false
+	defer func() {
+		for index := len(held) - 1; index >= 0; index-- {
+			if !succeeded && made[index] {
+				_ = markHandleForDeletion(held[index])
+			}
+			closeNode(held[index])
+		}
+	}()
+	parent := root.handle
+	created := false
+	for _, name := range missing {
+		next, err := root.newDesktopPrivateDirectoryAt(parent, name)
+		isNew := err == nil
+		if isAlreadyExists(err) {
+			next, err = root.openDesktopDirectoryAt(parent, name)
+		}
+		if err != nil {
+			return false, err
+		}
+		held = append(held, next)
+		made = append(made, isNew)
+		if !isNew {
+			if err := assertDesktopPrivateNode(next, true); err != nil {
+				return false, err
+			}
+		}
+		created = created || isNew
+		parent = next
+	}
+	succeeded = true
+	return created, nil
 }
 
 func openDesktopPrivateRoot(rootPath string) (*filesystemRoot, error) {
@@ -167,6 +187,19 @@ func (root *filesystemRoot) openDesktopDirectoryAt(parent nodeHandle, name strin
 }
 
 func (root *filesystemRoot) createDesktopDirectoryAt(parent nodeHandle, name string) (nodeHandle, error) {
+	handle, err := root.newDesktopPrivateDirectoryAt(parent, name)
+	if err != nil {
+		return windows.InvalidHandle, err
+	}
+	if err := assertDesktopPrivateNode(parent, true); err != nil {
+		_ = markHandleForDeletion(handle)
+		closeNode(handle)
+		return windows.InvalidHandle, err
+	}
+	return handle, nil
+}
+
+func (root *filesystemRoot) newDesktopPrivateDirectoryAt(parent nodeHandle, name string) (nodeHandle, error) {
 	descriptor, err := desktopPrivateSecurityDescriptor(true)
 	if err != nil {
 		return windows.InvalidHandle, err
@@ -176,11 +209,6 @@ func (root *filesystemRoot) createDesktopDirectoryAt(parent nodeHandle, name str
 		return windows.InvalidHandle, err
 	}
 	if err := secureDesktopPrivateNode(handle, true); err != nil {
-		_ = markHandleForDeletion(handle)
-		closeNode(handle)
-		return windows.InvalidHandle, err
-	}
-	if err := assertDesktopPrivateNode(parent, true); err != nil {
 		_ = markHandleForDeletion(handle)
 		closeNode(handle)
 		return windows.InvalidHandle, err
@@ -205,7 +233,7 @@ func ntCreateDesktopDirectoryAt(parent windows.Handle, name string, descriptor *
 	var handle windows.Handle
 	err = windows.NtCreateFile(
 		&handle,
-		windows.FILE_LIST_DIRECTORY|windows.FILE_TRAVERSE|windows.FILE_READ_ATTRIBUTES|windows.READ_CONTROL|windows.WRITE_DAC|windows.SYNCHRONIZE,
+		windows.FILE_LIST_DIRECTORY|windows.FILE_TRAVERSE|windows.FILE_READ_ATTRIBUTES|windows.READ_CONTROL|windows.WRITE_DAC|windows.DELETE|windows.SYNCHRONIZE,
 		&attributes,
 		&status,
 		&allocationSize,

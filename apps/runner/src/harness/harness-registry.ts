@@ -1,6 +1,7 @@
 import { claudeInstallGuidance } from "@opensteer/harness-claude";
 import { harnessCatalog } from "@opensteer/core";
-import { HarnessRegistry, findExecutableOnPath } from "@opensteer/harness";
+import { HarnessRegistry } from "@opensteer/harness";
+import { hostCommandPlatform, resolveCommand } from "@opensteer/shared/command";
 import type { AgentExecutionConfig } from "../app-config.js";
 import type { RunnerLogger } from "../host/host-connection.js";
 import { harnessDriverFactories, type HarnessDriverRuntime } from "./harness-drivers.js";
@@ -45,7 +46,12 @@ export function createHarnessRegistry(
       installed && {
         // The Runner's PATH is the one every engine process inherits; on a
         // person's own computer it is their login shell's.
-        locate: () => findExecutableOnPath(installed.command, process.env.PATH),
+        locate: () =>
+          resolveCommand(installed.command, {
+            cwd: process.cwd(),
+            environment: process.env,
+            platform: hostCommandPlatform(),
+          })?.path,
         create: (executable) => factory.create(executable, runtime),
         missing:
           entry.kind === "claude"

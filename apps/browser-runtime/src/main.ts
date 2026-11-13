@@ -22,6 +22,7 @@ import { createPublicKey, randomUUID, type KeyObject } from "node:crypto";
 import { PlaywrightChromiumLauncher } from "./browser/playwright-launcher.js";
 import { readBrowserRuntimeConfig } from "./config.js";
 import { acquireProfileRootLock } from "./profile-root-lock.js";
+import { shutdownSignals } from "@opensteer/shared/processControl";
 
 async function main(): Promise<void> {
   const config = readBrowserRuntimeConfig();
@@ -142,8 +143,7 @@ async function start(config: ReturnType<typeof readBrowserRuntimeConfig>): Promi
     await server.close();
     // The OS closes the root-lock descriptor when this process exits.
   };
-  process.once("SIGINT", () => void close().catch(fail));
-  process.once("SIGTERM", () => void close().catch(fail));
+  for (const signal of shutdownSignals) process.once(signal, () => void close().catch(fail));
   // Another process reclaimed the data directory lease: this runtime no longer
   // owns the profile root it is relaying, so it stops and says why.
   relay?.onLost((reason) => {

@@ -1,5 +1,5 @@
-import { programEnvironment } from "@opensteer/harness";
-import { spawn, type ChildProcess } from "node:child_process";
+import { programEnvironment, spawnSupervised, type SupervisedProcess } from "@opensteer/harness";
+import { hostCommandPlatform, planShellLaunch } from "@opensteer/shared/command";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -8,7 +8,6 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { AppRuntimeSpec } from "@opensteer/protocol";
 import type { HarnessProcessLaunchWrapper } from "@opensteer/harness";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
-import { stopProcessGroup } from "@opensteer/shared/processGroup";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { ProgramLaunchPlanner } from "../agent/program-executor.js";
 import type { TerminationProof } from "../runtime/execution-containment.js";
@@ -16,7 +15,7 @@ import type { TerminationProof } from "../runtime/execution-containment.js";
 interface Server {
   readonly spec: AppRuntimeSpec;
   readonly executionId: string;
-  readonly child: ChildProcess;
+  readonly child: SupervisedProcess;
   readonly port: number;
   readonly closed: Promise<void>;
   readonly cleaned: Promise<void>;
@@ -95,17 +94,21 @@ export class AppServerManager {
         });
         signal.throwIfAborted();
         if (epoch !== this.#epoch) throw new Error("App connection was lost");
+        const shell = planShellLaunch(spec.command, {
+          environment,
+          platform: hostCommandPlatform(),
+        });
         const launch = wrap({
-          executable: "/bin/sh",
-          args: ["-c", spec.command],
+          executable: shell.executable,
+          args: shell.args,
           cwd: folder,
           environment,
         });
-        const child = spawn(launch.executable, [...launch.args], {
-          cwd: launch.cwd,
-          env: { ...launch.environment },
-          detached: process.platform !== "win32",
-          stdio: ["ignore", "pipe", "pipe"],
+        const child = spawnSupervised({
+          ...launch,
+          output: "raw",
+          stdin: "closed",
+          ...(shell.windowsCommandLine ? { windowsCommandLine: shell.windowsCommandLine } : {}),
         });
         let finish!: () => void;
         const cleanup = Promise.withResolvers<void>();
@@ -129,8 +132,6 @@ export class AppServerManager {
         const append = (chunk: Buffer) => {
           server.log = Buffer.from(Buffer.concat([server.log, chunk]).subarray(-16 * 1_024));
         };
-        child.stdout?.on("data", append);
-        child.stderr?.on("data", append);
         const exited = (error: Error) => {
           if (server.dead) return;
           const unexpected = !server.abort.signal.aborted;
@@ -144,15 +145,21 @@ export class AppServerManager {
               append(Buffer.from(error instanceof Error ? error.message : "App cleanup failed"));
             });
         };
-        child.once("error", (error) => {
-          append(Buffer.from(error.message));
-          exited(error);
-        });
-        child.once("exit", () => exited(new Error("App server exited")));
-        child.once("close", () => {
-          exited(new Error("App server exited"));
-          finish();
-        });
+        // The supervisor exits once nothing of the server's tree is left.
+        const ended = child.exited.then(
+          () => exited(new Error("App server exited")),
+          (error: unknown) => {
+            const failure = error instanceof Error ? error : new Error("App server failed");
+            append(Buffer.from(failure.message));
+            exited(failure);
+          },
+        );
+        // A failed read ends the log, never the cleanup that waits on it.
+        const read = (stream: AsyncIterable<Buffer>) =>
+          drain(stream, append).catch((error: unknown) => {
+            append(Buffer.from(error instanceof Error ? error.message : "App output was lost"));
+          });
+        void Promise.all([ended, read(child.stdout), read(child.stderr)]).then(() => finish());
         const readySignal = AbortSignal.any([
           signal,
           server.abort.signal,
@@ -208,11 +215,9 @@ export class AppServerManager {
   }
   async #stop(server: Server, retainLog = false): Promise<void> {
     server.abort.abort(new Error("App server stopped"));
-    const proof = await this.#options.terminate(server.executionId, async () => {
-      if (server.child.pid && process.platform !== "win32")
-        await stopProcessGroup(server.child.pid, { graceMs: 500 });
-      else if (!server.dead) server.child.kill("SIGKILL");
-    });
+    const proof = await this.#options.terminate(server.executionId, () =>
+      server.child.terminate(500),
+    );
     if (proof === "unknown")
       throw new AppServerError(
         `Cannot prove app server ${server.spec.appId} stopped; retry stopping it before restarting`,
@@ -231,6 +236,10 @@ export class AppServerManager {
     server.finishCleanup();
   }
 }
+async function drain(stream: AsyncIterable<Buffer>, append: (chunk: Buffer) => void) {
+  for await (const chunk of stream) append(chunk);
+}
+
 // The command receives PORT, so this listener must release the port before it can bind.
 async function chooseLoopbackPort(): Promise<number> {
   const listener = createServer();

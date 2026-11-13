@@ -12,7 +12,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist *.tsbuildinfo"
+    "clean": "node ../../scripts/clean.mjs dist *.tsbuildinfo"
   },
   "dependencies": {
     "@opensteer/integration-core": "workspace:*",

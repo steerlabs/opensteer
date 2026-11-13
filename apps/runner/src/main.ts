@@ -45,6 +45,7 @@ import {
   type PreparedIntegrationsModule,
 } from "./computer-apps/prepare.js";
 import { prepareMessagingModule, type PreparedMessagingModule } from "./messaging/prepare.js";
+import { shutdownSignals } from "@opensteer/shared/processControl";
 
 const RUNTIME_VERSION = "0.0.0";
 
@@ -339,6 +340,7 @@ async function startAgentsRunner(input: {
     maxConcurrentTriggerPrograms: config.maxConcurrentTriggerPrograms,
     machineAccess: machineAccessRuntimeOptions(config, applicationConfig.nativeFsHelperBinary),
     mode: config.mode,
+    nativeFsHelperBinary: applicationConfig.nativeFsHelperBinary,
     nodeExecutable: config.nodeExecutable,
     privateStateDirectory: resolve(config.dataDirectory, "private", "harness-state"),
     projectContinuationIdentity: providerContinuationIdentityProjector(identity.privateKey),
@@ -452,18 +454,12 @@ async function main(): Promise<void> {
     receivedSignal = true;
     shutdown.abort(new Error(`Received ${name}`));
   };
-  const interrupt = () => stop("SIGINT");
-  const breakSignal = () => stop("SIGBREAK");
-  const terminate = () => stop("SIGTERM");
-  process.on("SIGINT", interrupt);
-  process.on("SIGBREAK", breakSignal);
-  process.on("SIGTERM", terminate);
+  const handlers = shutdownSignals.map((name) => [name, () => stop(name)] as const);
+  for (const [name, handler] of handlers) process.on(name, handler);
   try {
     await runRunnerDaemon(process.env, shutdown.signal);
   } finally {
-    process.off("SIGINT", interrupt);
-    process.off("SIGBREAK", breakSignal);
-    process.off("SIGTERM", terminate);
+    for (const [name, handler] of handlers) process.off(name, handler);
   }
 }
 

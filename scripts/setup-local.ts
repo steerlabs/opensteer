@@ -8,6 +8,7 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseEnv } from "node:util";
 import { assertDevelopmentEnvironment } from "./dev-supervisor.js";
+import { pnpmInvocation } from "./pnpm-invocation.js";
 
 const requiredPnpmVersion = "10.29.3";
 const minimumNodeVersion = [24, 13, 0] as const;
@@ -40,7 +41,8 @@ export async function initializeLocalDevelopment(
   const run = options.runCommand ?? runCommand;
   requireVersion(options.nodeVersion ?? process.versions.node, minimumNodeVersion, "Node.js");
 
-  const pnpmVersion = (await run("pnpm", ["--version"])).trim();
+  const [node, pnpm] = pnpmInvocation(environment);
+  const pnpmVersion = (await run(node, [pnpm, "--version"])).trim();
   if (pnpmVersion !== requiredPnpmVersion) {
     throw new Error(
       `pnpm ${requiredPnpmVersion} is required, but ${pnpmVersion || "no version"} is active. Run corepack enable from this repository.`,
@@ -54,7 +56,7 @@ export async function initializeLocalDevelopment(
   await run("docker", ["compose", "version"]);
   await run("docker", ["info", "--format", "{{.ServerVersion}}"]);
 
-  await run("pnpm", ["exec", "playwright-core", "install", "chromium"], {
+  await run(node, [pnpm, "exec", "playwright-core", "install", "chromium"], {
     cwd: repositoryRoot,
     inherit: true,
   });

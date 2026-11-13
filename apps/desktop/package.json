@@ -15,7 +15,7 @@
     "build:computer-use-helper": "tsx scripts/build-computer-use-helper.ts",
     "build:passwords-broker": "tsx scripts/build-passwords-broker.ts",
     "build:process-supervisor": "tsx scripts/build-process-supervisor.ts",
-    "clean": "rm -rf build/generated dist release generated-native generated-resources *.tsbuildinfo",
+    "clean": "node ../../scripts/clean.mjs build/generated dist release generated-native generated-resources *.tsbuildinfo",
     "dev": "pnpm build && electron dist/main.js",
     "package:linux": "tsx scripts/package-linux.ts",
     "package:mac": "tsx scripts/package-macos.ts",

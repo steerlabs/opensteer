@@ -1,6 +1,6 @@
 import { backgroundLightModels } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
-import { rm, stat, mkdir, copyFile } from "node:fs/promises";
+import { stat, mkdir, copyFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -18,7 +18,6 @@ import {
   type ThreadAccessMode,
   type UserId,
 } from "@opensteer/core";
-import { delay } from "@opensteer/shared/delay";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
@@ -67,8 +66,8 @@ import {
 import { CursorHarnessConfigSchema, type CursorHarnessConfig } from "./config.js";
 import {
   CursorHookBridge,
-  createCursorHookSocketDirectory,
-  cursorHookSocketPath,
+  createCursorHookEndpoint,
+  type CursorHookEndpoint,
   type CursorHookPayload,
   type CursorHookVerdict,
 } from "./hook-bridge.js";
@@ -77,6 +76,7 @@ import {
   cursorAgentToolsServerName,
   cursorMcpServerIdentifier,
   cursorOpensteerMcpServerIdentifiers,
+  cursorHookShellEnvironment,
   cursorPreToolUseDecision,
   materializeCursorPlugin,
   type CursorHookEvent,
@@ -157,9 +157,6 @@ export interface CursorRunFailure {
   readonly message: string;
   readonly retryable: boolean;
 }
-
-/** How long the kernel is given to reap a process that was sent SIGKILL. */
-const cursorKillGraceMs = 2_000;
 
 /** How long a denial note may be, in the bytes the Request schema counts. */
 const cursorDenialNoteMaxBytes = 20_000;
@@ -543,7 +540,7 @@ class CursorHarnessSession implements HarnessSession {
   readonly #listingLifetime = new AbortController();
   #pluginPath: string | undefined;
   #process: SupervisedProcess | undefined;
-  #socketDirectory: string | undefined;
+  #hookEndpoint: CursorHookEndpoint | undefined;
   #skillCatalog: string | undefined;
   #reasoningBlocks = 0;
   /** The open reasoning block's text, which Cursor's completion frame omits. */
@@ -649,22 +646,10 @@ class CursorHarnessSession implements HarnessSession {
     // Whatever the CLI does next, nobody is going to answer these: the tool
     // calls they gate are being abandoned with the turn.
     this.#cancelPendingApprovals("run-ended");
-    const supervised = this.#process;
-    const child = supervised?.child;
-    if (!supervised || !child?.pid || child.exitCode !== null || child.signalCode !== null) return;
-    // SIGINT reaches the foreground CLI only, by pid. Cursor also keeps a
-    // detached per-version worker daemon that outlives any one command and is
-    // shared with the person's own sessions (cursor-facts §A.10), so the
-    // process group is never signalled here.
-    if (!signalPid(child.pid, "SIGINT")) return;
-    if (await cursorExitedWithin(supervised.exited, this.#config.shutdownGraceMs)) return;
-    // A CLI that ignores SIGINT would otherwise leave `execute` waiting on an
-    // exit that never comes, with the Run unable to end.
-    signalPid(child.pid, "SIGKILL");
-    // SIGKILL cannot be caught, so this is the kernel reaping the process, not
-    // the CLI deciding anything. Waiting for it means `execute` observes a real
-    // exit by the time `interrupt` resolves.
-    await cursorExitedWithin(supervised.exited, cursorKillGraceMs);
+    // The supervisor stops the CLI's own tree, gracefully and then by force,
+    // so a CLI that ignores the request still exits and `execute` observes a
+    // real exit by the time `interrupt` resolves.
+    await this.#process?.terminate(this.#config.shutdownGraceMs).catch(() => undefined);
   }
 
   async resolveRequest(requestId: RequestId, response: RequestResponse): Promise<void> {
@@ -712,12 +697,11 @@ class CursorHarnessSession implements HarnessSession {
    */
   async #materialize(): Promise<void> {
     this.#skillCatalog = await renderHarnessSkillCatalog(this.#context.skills);
-    this.#socketDirectory = await createCursorHookSocketDirectory();
-    const socketPath = cursorHookSocketPath(this.#socketDirectory);
+    this.#hookEndpoint = await createCursorHookEndpoint();
     const plugin = await materializeCursorPlugin({
       accessMode: this.#context.accessMode,
       agentTools: this.#context.agentTools,
-      hookSocketPath: socketPath,
+      hookSocketPath: this.#hookEndpoint.path,
       hookTimeoutSeconds: this.#config.hookTimeoutSeconds,
       nodeExecutable: this.#dependencies.nodeExecutable,
       threadStateDirectory: this.#context.threadStateDirectory,
@@ -725,8 +709,8 @@ class CursorHarnessSession implements HarnessSession {
     this.#pluginPath = plugin.path;
     this.#bridge = await CursorHookBridge.listen({
       decide: (payload, abandoned) => this.#decideHook(payload, abandoned),
+      endpoint: this.#hookEndpoint,
       maximumPayloadBytes: this.#config.maxStreamLineBytes,
-      socketPath,
     });
   }
 
@@ -797,7 +781,7 @@ class CursorHarnessSession implements HarnessSession {
         prompt,
       ],
       cwd: this.#context.workspacePath,
-      environment: run.environment,
+      environment: cursorHookShellEnvironment(run.environment),
       executable: this.#dependencies.executable,
     });
     const supervised = spawnSupervised({
@@ -1308,15 +1292,13 @@ class CursorHarnessSession implements HarnessSession {
     try {
       this.#listingLifetime.abort(new Error("Cursor session stopped"));
       await this.#listing?.catch(() => undefined);
-      // `terminate` signals the process group, unlike `interrupt`. That is
-      // safe for the shared worker daemon precisely because Cursor spawns it
-      // detached (cursor-facts §A.10): it is the leader of its own group and
-      // was never in this Run's.
+      // `terminate` stops the supervised tree. On POSIX that spares the shared
+      // worker daemon because Cursor spawns it detached (cursor-facts §A.10),
+      // leading a group of its own; a Windows Job holds every descendant, so
+      // there the daemon ends with the Run that started it.
       await this.#process?.terminate(this.#config.shutdownGraceMs).catch(() => undefined);
       await this.#bridge?.close().catch(() => undefined);
-      if (this.#socketDirectory) {
-        await rm(this.#socketDirectory, { force: true, recursive: true }).catch(() => undefined);
-      }
+      await this.#hookEndpoint?.remove().catch(() => undefined);
     } finally {
       // A Run whose session is torn down mid-turn still reaches exactly one
       // terminal event; the stream closes only once it has been published.
@@ -1351,45 +1333,6 @@ class BoundedStderr {
 
   text(): string {
     return this.#value.trim();
-  }
-}
-
-/**
- * Whether the process exited inside `graceMs`.
- *
- * The losing side is always cancelled: a grace timer left running would hold
- * the Runner's event loop open for its whole duration after an interrupt that
- * the exit had already won, and `interrupt` is on the path a person waits on.
- */
-async function cursorExitedWithin(exited: Promise<unknown>, graceMs: number): Promise<boolean> {
-  const grace = new AbortController();
-  try {
-    return await Promise.race([
-      exited.then(
-        () => true,
-        () => true,
-      ),
-      delay(graceMs, grace.signal).then(
-        () => false,
-        () => false,
-      ),
-    ]);
-  } finally {
-    grace.abort(new Error("Cursor process exit no longer awaited"));
-  }
-}
-
-/**
- * Signals one process, by pid. Answers whether the signal was delivered: a
- * process that has already gone is not a failure, it is the outcome.
- */
-function signalPid(pid: number, signal: NodeJS.Signals): boolean {
-  try {
-    process.kill(pid, signal);
-    return true;
-  } catch (error) {
-    if (nodeErrorCode(error) === "ESRCH") return false;
-    throw error;
   }
 }
 

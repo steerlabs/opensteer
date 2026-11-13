@@ -1,7 +1,8 @@
+import { fileURLToPath } from "node:url";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { AttachmentCache } from "../attachments/attachment-cache.js";
-import { agentTools } from "@opensteer/agent-tools";
-import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
+import { agentTools, appHostingGuide } from "@opensteer/agent-tools";
+import { hostCommandPlatform } from "@opensteer/shared/command";
 import {
   ignoreForeignTestRequest,
   probeTestServer,
@@ -73,10 +74,16 @@ import { prepareHarnessProviderState } from "../harness/harness-provider-state.j
 import { createHarnessRegistry } from "../harness/harness-registry.js";
 import type { HarnessProcessSandbox, HarnessSandboxRunPlan } from "../sandbox/harness-sandbox.js";
 import { ExecutionContainment, executionScopeVariable } from "./execution-containment.js";
-import { RunnerRuntime, type RunnerMessageSink } from "./runtime.js";
+import { RunnerRuntime, harnessProcessEnvironment, type RunnerMessageSink } from "./runtime.js";
 import { warmEngineKey, WarmEnginePool } from "./warm-engine-pool.js";
 import { providerContinuationIdentityProjector } from "@opensteer/runner-client";
 
+const testNativeFsHelperBinary = fileURLToPath(
+  new URL(
+    `../../native-fs-helper/opensteer-native-fs${process.platform === "win32" ? ".exe" : ""}`,
+    import.meta.url,
+  ),
+);
 const testAgentSkills = {
   paths: {
     "opensteer:skills": "/runner/agent-skills/skills/skills",
@@ -747,6 +754,7 @@ describe("RunnerRuntime", () => {
       kind: driverKind,
     });
     const baseOptions = {
+      nativeFsHelperBinary: testNativeFsHelperBinary,
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
       bootId: "boot-managed-authentication-test",
@@ -860,6 +868,7 @@ describe("RunnerRuntime", () => {
       kind: driverKind,
     });
     const runtime = runtimeWithLeaseGrants({
+      nativeFsHelperBinary: testNativeFsHelperBinary,
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
       bootId: "boot-catalog-privacy-test",
@@ -2201,162 +2210,128 @@ describe("RunnerRuntime", () => {
     }
   });
 
-  it.each(["running", "orphaned", "successful"] as const)(
-    "releases updater maintenance with %s processes holding output open",
-    async (scenario) => {
-      const root = await mkdtemp(join(tmpdir(), "opensteer-engine-update-deadline-"));
-      const pidFile = join(root, "updater.pid");
-      const parentPidFile = join(root, "parent.pid");
-      const driverKind = HarnessIdSchema.parse("installed-update-deadline-test");
-      const driver = catalogDriver(driverKind);
-      const registry = new HarnessRegistry();
-      registry.registerDriver(driver);
-      const descriptor = {
-        latestVersion: "2.0.0",
-        scope: "all" as const,
-        update: "available" as const,
-        version: "1.0.0",
-      };
-      vi.spyOn(registry, "driverInstallation")
-        .mockResolvedValueOnce({
-          descriptor,
-          plan: {
-            args: [
-              "-e",
-              scenario === "running"
-                ? "require('node:fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1 << 30);"
-                : `
-                  const { spawn } = require('node:child_process');
-                  const { writeFileSync } = require('node:fs');
-                  writeFileSync(process.argv[2], String(process.pid));
-                  spawn(process.execPath, ['-e', ${JSON.stringify("process.on('SIGTERM', () => {}); require('node:fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1 << 30);")}, process.argv[1]], { stdio: 'inherit' }).unref();
-                  process.exit(0);
-                `,
-              pidFile,
-              parentPidFile,
-            ],
-            environment: {},
-            executable: process.execPath,
-            serializationKey: "test:update-deadline",
-          },
-        })
-        .mockResolvedValue({
-          descriptor,
-          plan: {
-            args: ["-e", ""],
-            environment: {},
-            executable: process.execPath,
-            serializationKey: "test:update-deadline",
-          },
-        });
-      const invalidateDriver = vi.spyOn(registry, "invalidateDriver");
-      const environmentId = createId("environment");
-      const runtime = configuredRuntime({ environmentId, registry });
-      const messages: RunnerOperationalReport[] = [];
-      const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
-      const statuses = () =>
-        messages.flatMap((message) =>
-          message.type === "runner.harness-installation" ? [message.installation] : [],
-        );
-      let updaterPid: number | undefined;
-      let updaterEnded = false;
+  // A descendant an exiting updater leaves behind ends with it under the supervisor,
+  // so only an updater that outlives its deadline can hold maintenance.
+  it("releases updater maintenance from an updater that outlives its deadline", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opensteer-engine-update-deadline-"));
+    const pidFile = join(root, "updater.pid");
+    const driverKind = HarnessIdSchema.parse("installed-update-deadline-test");
+    const driver = catalogDriver(driverKind);
+    const registry = new HarnessRegistry();
+    registry.registerDriver(driver);
+    const descriptor = {
+      latestVersion: "2.0.0",
+      scope: "all" as const,
+      update: "available" as const,
+      version: "1.0.0",
+    };
+    vi.spyOn(registry, "driverInstallation")
+      .mockResolvedValueOnce({
+        descriptor,
+        plan: {
+          args: [
+            "-e",
+            "require('node:fs').writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1 << 30);",
+            pidFile,
+          ],
+          environment: {},
+          executable: process.execPath,
+          serializationKey: "test:update-deadline",
+        },
+      })
+      .mockResolvedValue({
+        descriptor,
+        plan: {
+          args: ["-e", ""],
+          environment: {},
+          executable: process.execPath,
+          serializationKey: "test:update-deadline",
+        },
+      });
+    const invalidateDriver = vi.spyOn(registry, "invalidateDriver");
+    const environmentId = createId("environment");
+    const runtime = configuredRuntime({ environmentId, registry });
+    const messages: RunnerOperationalReport[] = [];
+    const sink: RunnerMessageSink = { send: async (message) => void messages.push(message) };
+    const statuses = () =>
+      messages.flatMap((message) =>
+        message.type === "runner.harness-installation" ? [message.installation] : [],
+      );
+    let updaterPid: number | undefined;
+    let updaterEnded = false;
 
-      try {
-        vi.stubEnv(processSupervisorExecutableVariable, undefined);
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-        await expect(
-          runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
-        ).resolves.toEqual({ status: "accepted" });
-        updaterPid = await vi.waitFor(
-          async () => {
-            const pid = Number(await readFile(pidFile, "utf8"));
-            if (!Number.isInteger(pid) || pid <= 0) throw new Error("The updater never started");
-            return pid;
-          },
-          { timeout: 2_000 },
-        );
+    try {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+      ).resolves.toEqual({ status: "accepted" });
+      updaterPid = await vi.waitFor(
+        async () => {
+          const pid = Number(await readFile(pidFile, "utf8"));
+          if (!Number.isInteger(pid) || pid <= 0) throw new Error("The updater never started");
+          return pid;
+        },
+        { timeout: 2_000 },
+      );
 
-        if (scenario !== "running") {
-          const parentPid = Number(await readFile(parentPidFile, "utf8"));
-          await vi.waitFor(
-            () =>
-              expect(() => process.kill(parentPid, 0), "The updater parent did not exit").toThrow(
-                expect.objectContaining({ code: "ESRCH" }),
-              ),
-            { timeout: 2_000 },
-          );
+      expect(() => process.kill(updaterPid!, 0)).not.toThrow();
+      expect(statuses().map(({ update }) => update)).toEqual(["updating"]);
+      await expect(
+        runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+      ).resolves.toMatchObject({ error: { code: "conflict" }, status: "rejected" });
+
+      vi.advanceTimersByTime(15 * 60_000);
+      await vi.waitFor(
+        () =>
+          expect(statuses(), "The updater did not publish its terminal status").toContainEqual(
+            expect.objectContaining({
+              detail: "The update didn't finish in time.",
+              update: "failed",
+              version: "1.0.0",
+            }),
+          ),
+        { timeout: 2_000 },
+      );
+      await vi.waitFor(
+        () =>
+          expect(
+            () => process.kill(updaterPid!, 0),
+            "The updater descendant survived cleanup",
+          ).toThrow(expect.objectContaining({ code: "ESRCH" })),
+        { timeout: 2_000 },
+      );
+      updaterEnded = true;
+      expect(invalidateDriver).toHaveBeenCalledWith(driverKind);
+      await vi.waitFor(
+        async () =>
+          expect(
+            await runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
+            "The updater did not release engine maintenance",
+          ).toEqual({ status: "accepted" }),
+        { timeout: 2_000 },
+      );
+      vi.useRealTimers();
+      await vi.waitFor(
+        () =>
+          expect(
+            statuses().map(({ update }) => update),
+            "A new updater did not finish after maintenance was released",
+          ).toEqual(["updating", "failed", "updating", "succeeded", "available"]),
+        { timeout: 2_000 },
+      );
+    } finally {
+      vi.useRealTimers();
+      if (updaterPid !== undefined && !updaterEnded) {
+        try {
+          process.kill(updaterPid, "SIGKILL");
+        } catch {
+          // Already ended by the Runner.
         }
-        expect(() => process.kill(updaterPid!, 0)).not.toThrow();
-        expect(statuses().map(({ update }) => update)).toEqual(["updating"]);
-        await expect(
-          runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
-        ).resolves.toMatchObject({ error: { code: "conflict" }, status: "rejected" });
-
-        if (scenario === "successful") await vi.advanceTimersByTimeAsync(1_000);
-        else vi.advanceTimersByTime(15 * 60_000);
-        await vi.waitFor(
-          () =>
-            expect(statuses(), "The updater did not publish its terminal status").toContainEqual(
-              expect.objectContaining(
-                scenario === "successful"
-                  ? { detail: "Update finished.", update: "succeeded" }
-                  : {
-                      detail: "The update didn't finish in time.",
-                      update: "failed",
-                      version: "1.0.0",
-                    },
-              ),
-            ),
-          { timeout: 2_000 },
-        );
-        await vi.waitFor(
-          () =>
-            expect(
-              () => process.kill(updaterPid!, 0),
-              "The updater descendant survived cleanup",
-            ).toThrow(expect.objectContaining({ code: "ESRCH" })),
-          { timeout: 2_000 },
-        );
-        updaterEnded = true;
-        expect(invalidateDriver).toHaveBeenCalledWith(driverKind);
-        await vi.waitFor(
-          async () =>
-            expect(
-              await runtime.handleCommand(updateCommand(environmentId, driverKind), sink),
-              "The updater did not release engine maintenance",
-            ).toEqual({ status: "accepted" }),
-          { timeout: 2_000 },
-        );
-        vi.useRealTimers();
-        await vi.waitFor(
-          () =>
-            expect(
-              statuses().map(({ update }) => update),
-              "A new updater did not finish after maintenance was released",
-            ).toEqual([
-              "updating",
-              ...(scenario === "successful" ? ["succeeded", "available"] : ["failed"]),
-              "updating",
-              "succeeded",
-              "available",
-            ]),
-          { timeout: 2_000 },
-        );
-      } finally {
-        vi.useRealTimers();
-        if (updaterPid !== undefined && !updaterEnded) {
-          try {
-            process.kill(updaterPid, "SIGKILL");
-          } catch {
-            // Already ended by the Runner.
-          }
-        }
-        await runtime.close();
-        vi.unstubAllEnvs();
-        await rm(root, { force: true, recursive: true });
       }
-    },
-  );
+      await runtime.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
 
   it("replays successful update status and catalog invalidation after reconnect", async () => {
     const driverKind = HarnessIdSchema.parse("installed-update-success-replay-test");
@@ -3656,6 +3631,7 @@ describe("RunnerRuntime", () => {
     };
     const environmentId = createId("environment");
     const runtime = runtimeWithLeaseGrants({
+      nativeFsHelperBinary: testNativeFsHelperBinary,
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
       plugins: noPlugins,
@@ -3892,6 +3868,7 @@ describe("RunnerRuntime", () => {
     registry.registerDriver(driver);
     const environmentId = createId("environment");
     const runtime = runtimeWithLeaseGrants({
+      nativeFsHelperBinary: testNativeFsHelperBinary,
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
       plugins: noPlugins,
@@ -3961,6 +3938,7 @@ describe("RunnerRuntime", () => {
     const environmentId = createId("environment");
     const logged: string[] = [];
     const runtime = runtimeWithLeaseGrants({
+      nativeFsHelperBinary: testNativeFsHelperBinary,
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
       bootId: "boot-skill-layer-test",
@@ -4074,7 +4052,13 @@ describe("RunnerRuntime", () => {
         });
         return;
       }
-      expect(driver.context?.platformGuide).toBe(command.context.agentTools.instructions);
+      // The Host's guide, completed with how this computer runs an app's start.
+      expect(driver.context?.platformGuide).toBe(
+        `${command.context.agentTools.instructions}\n\n${appHostingGuide({
+          platform: hostCommandPlatform(),
+          tools: command.context.agentTools.tools,
+        })}`,
+      );
       expect(driver.context?.agentTools.tools).toEqual(command.context.agentTools.tools);
       expect(reports).toEqual([
         ["release-notes", "research"],
@@ -5300,6 +5284,32 @@ describe("RunnerRuntime", () => {
   );
 });
 
+describe("harness process environment", () => {
+  it("keeps the Windows baseline and engine variables but no Runner credentials", () => {
+    const source = {
+      CLAUDE_CONFIG_DIR: "C:\\Users\\Ada\\.claude",
+      ComSpec: "C:\\Windows\\system32\\cmd.exe",
+      NODE_OPTIONS: "--require evil.js",
+      OPENSTEER_RUNNER_TOKEN: "private",
+      PATHEXT: ".COM;.EXE;.BAT;.CMD",
+      Path: "C:\\Windows\\system32",
+      SystemRoot: "C:\\Windows",
+      USERPROFILE: "C:\\Users\\Ada",
+    };
+    expect(harnessProcessEnvironment(source, ["CLAUDE_CONFIG_DIR"], "win32")).toEqual({
+      CLAUDE_CONFIG_DIR: "C:\\Users\\Ada\\.claude",
+      ComSpec: "C:\\Windows\\system32\\cmd.exe",
+      PATH: "C:\\Windows\\system32",
+      PATHEXT: ".COM;.EXE;.BAT;.CMD",
+      SystemRoot: "C:\\Windows",
+      USERPROFILE: "C:\\Users\\Ada",
+    });
+    expect(harnessProcessEnvironment(source, [], "darwin")).toEqual({
+      USERPROFILE: "C:\\Users\\Ada",
+    });
+  });
+});
+
 describe("Runner runtime test waits", () => {
   let outsideTest: Promise<unknown> | undefined;
   beforeAll(() => {
@@ -6362,6 +6372,7 @@ function configuredRuntime(input: {
   return runtimeWithLeaseGrants(
     {
       ...(input.attachmentCache ? { attachmentCache: input.attachmentCache } : {}),
+      nativeFsHelperBinary: testNativeFsHelperBinary,
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
       plugins: noPlugins,

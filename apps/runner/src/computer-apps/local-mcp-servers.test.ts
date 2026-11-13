@@ -2,7 +2,9 @@ import { mkdtemp, mkdir, realpath, readFile, rm, symlink, writeFile } from "node
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { LocalMcpServers, type LocalMcpFrame } from "./local-mcp-servers.js";
+import { LocalMcpServers, localMcpEnvironment, type LocalMcpFrame } from "./local-mcp-servers.js";
+import { echoMcpServerSource, exchangeOverOneMebibyte } from "./local-mcp-servers.test-support.js";
+import { prepareIntegrationsModule } from "./prepare.js";
 
 let directory: string | undefined;
 afterEach(async () => {
@@ -50,6 +52,39 @@ it("ends all plugin sessions before deleting state and acknowledges repeated rem
     ).toHaveLength(2);
   } finally {
     servers.detach();
+  }
+});
+
+it("runs local MCP where no native provider exists, through removal of its plugin's data", async () => {
+  directory = await realpath(await mkdtemp(path.join(tmpdir(), "local-mcp-")));
+  const prepared = prepareIntegrationsModule({ dataDirectory: directory, platform: "win32" });
+  expect(prepared?.providers).toEqual([]);
+  expect(prepared?.descriptor).toMatchObject({ pluginDataRemoval: 1, platform: "win32" });
+  expect(prepared?.descriptor).not.toHaveProperty("computerUseVersion");
+  expect(prepared?.descriptor).not.toHaveProperty("macWindowVideoVersion");
+  const servers = prepared!.localMcp;
+  const data = path.join(directory, "private", "harness-state", "plugin-data", "plugin-1");
+  await mkdir(data, { recursive: true });
+  await writeFile(path.join(data, "pairing"), "secret");
+  await writeFile(path.join(directory, "echo-mcp.cjs"), echoMcpServerSource);
+  try {
+    const { frames, serverPid } = await exchangeOverOneMebibyte(servers, {
+      args: [path.join(directory, "echo-mcp.cjs")],
+      command: process.execPath,
+      cwd: directory,
+      env: {},
+      pluginId: "plugin-1",
+    });
+    expect(() => process.kill(serverPid, 0)).toThrow();
+    await servers.removePluginData("plugin-1");
+    await expect(readFile(path.join(data, "pairing"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(frames.at(-1)).toEqual({
+      pluginId: "plugin-1",
+      type: "runner.integrations.plugin-data.removed",
+    });
+  } finally {
+    servers.detach();
+    prepared?.close?.();
   }
 });
 
@@ -120,4 +155,31 @@ it("confirms removal when the state directory has never existed", async () => {
   });
   await servers.removePluginData("plugin-1");
   expect(sent).toEqual([{ type: "runner.integrations.plugin-data.removed", pluginId: "plugin-1" }]);
+});
+
+it("gives a Windows local program the baseline under its approved variables, one spelling each", () => {
+  const environment = localMcpEnvironment(
+    { Path: "C:\\plugin\\bin", TOOL_MODE: "fast" },
+    {
+      ComSpec: "C:\\Windows\\system32\\cmd.exe",
+      NODE_OPTIONS: "--require evil.js",
+      OPENSTEER_RUNNER_TOKEN: "private",
+      PATH: "C:\\Windows\\system32",
+      PATHEXT: ".COM;.EXE;.BAT;.CMD",
+      SystemRoot: "C:\\Windows",
+    },
+    "win32",
+  );
+  expect(environment).toMatchObject({
+    ComSpec: "C:\\Windows\\system32\\cmd.exe",
+    Path: "C:\\plugin\\bin",
+    PATHEXT: ".COM;.EXE;.BAT;.CMD",
+    SystemRoot: "C:\\Windows",
+    TOOL_MODE: "fast",
+  });
+  expect(Object.keys(environment).filter((name) => name.toUpperCase() === "PATH")).toEqual([
+    "Path",
+  ]);
+  expect(environment).not.toHaveProperty("NODE_OPTIONS");
+  expect(environment).not.toHaveProperty("OPENSTEER_RUNNER_TOKEN");
 });

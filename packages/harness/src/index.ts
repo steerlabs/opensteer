@@ -2,6 +2,7 @@ export * from "./cli-logout.js";
 export * from "./attachment-sandbox.js";
 export * from "./compatible-endpoint.js";
 export * from "./deferred.js";
+export * from "./directory-links.js";
 export * from "./denial-note.js";
 export * from "./errors.js";
 export * from "./event-stream.js";

@@ -21,9 +21,11 @@
     "./clock": "./src/clock.ts",
     "./clipboard": "./src/clipboard.ts",
     "./coalescedWake": "./src/coalescedWake.ts",
+    "./command": "./src/command.ts",
     "./test-support/captureJsonl": "./src/captureJsonl.test-support.ts",
     "./test-support/observation": "./src/observation.test-support.ts",
     "./test-support/clock": "./src/clock.test-support.ts",
+    "./test-support/commandShims": "./src/commandShims.test-support.ts",
     "./test-support/integrationRunnerBuild": "./src/integrationRunnerBuild.test-support.ts",
     "./delay": "./src/delay.ts",
     "./envParsing": "./src/envParsing.ts",
@@ -50,6 +52,7 @@
     "./markdown": "./src/markdown.ts",
     "./markdownParser": "./src/markdownParser.ts",
     "./transcriptLinks": "./src/transcriptLinks.ts",
+    "./userEnvironment": "./src/userEnvironment.ts",
     "./validationIssues": "./src/validationIssues.ts",
     "./webSocketFrame": "./src/webSocketFrame.ts",
     "./withTimeout": "./src/withTimeout.ts",
@@ -66,7 +69,7 @@
     "./files/native-fs-helper": "./src/files/native-fs-helper.ts"
   },
   "scripts": {
-    "clean": "rm -rf dist *.tsbuildinfo",
+    "clean": "node ../../scripts/clean.mjs dist *.tsbuildinfo",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

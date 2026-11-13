@@ -6,7 +6,7 @@ import { decide } from "./ci-changes.mjs";
  * GitHub `Check` owns builds and full suites, so repeating them here only delays
  * a push.
  */
-export function localPlan(files, graph, present, baseGraph = graph) {
+export function localPlan(files, graph, present, baseGraph = graph, platform = process.platform) {
   const plan = decide(files, graph, baseGraph);
   const code = present.filter((p) => /\.[cm]?[jt]sx?$/.test(p));
   const tests = present.filter(
@@ -47,16 +47,23 @@ export function localPlan(files, graph, present, baseGraph = graph) {
   const ordinary = tests.filter(
     (p) =>
       !realBrowserTests.includes(p) &&
-      !/\.(integration|gui|engine|device|soak)\.test\./.test(p) &&
+      !/\.(integration|gui|engine|device|soak|windows)\.test\./.test(p) &&
       !/\.test\.[cm]js$/.test(p),
   );
   const browser = tests.filter((p) => realBrowserTests.includes(p));
   const integration = tests.filter((p) => /\.integration\.test\./.test(p));
   const gui = tests.filter((p) => /\.gui\.test\./.test(p));
+  // Only Windows can run these; elsewhere the native-windows CI lane does.
+  const windows = platform === "win32" ? tests.filter((p) => /\.windows\.test\./.test(p)) : [];
   if (ordinary.length) commands.push(["pretest"], ["exec", "vitest", "run", ...ordinary]);
   if (browser.length) commands.push(["test:browser", ...browser]);
   if (integration.length) commands.push(["test:integration", "--", ...integration]);
   if (gui.length) commands.push(["test:vm", "--", "pnpm", "test:gui", "--", ...gui]);
+  if (windows.length)
+    commands.push(
+      ["--filter", "@opensteer/desktop", "build:process-supervisor"],
+      ["exec", "vitest", "run", "--config", "vitest.windows.config.ts", ...windows],
+    );
   if (files.some((p) => p.startsWith("apps/agent-phone/")))
     commands.push([
       "exec",

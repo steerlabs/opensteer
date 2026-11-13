@@ -151,7 +151,12 @@ export const harnessCatalog = [
       // turn consumed, which a message steered into a Run is answered by.
       minimumVersion: "2.1.294",
     },
-    userEnvironmentVariables: ["CLAUDE_CONFIG_DIR", "OPENSTEER_CLAUDE_EXECUTABLE"],
+    userEnvironmentVariables: [
+      "CLAUDE_CONFIG_DIR",
+      "CLAUDE_CODE_GIT_BASH_PATH",
+      "CLAUDE_CODE_USE_POWERSHELL_TOOL",
+      "OPENSTEER_CLAUDE_EXECUTABLE",
+    ],
     machineAccess: { platforms: ["darwin", "linux"], accessModes: "all" },
   },
   {

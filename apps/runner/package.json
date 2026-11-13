@@ -16,7 +16,7 @@
     "build:integration": "tsup --config tsup.integration.config.ts",
     "build:native-fs": "tsx scripts/build-native-fs.ts",
     "build:native-fs:test": "tsx scripts/build-native-fs.ts --test",
-    "clean": "rm -rf dist dist-integration native-fs-helper/opensteer-native-fs native-fs-helper/opensteer-native-fs-test *.tsbuildinfo",
+    "clean": "node ../../scripts/clean.mjs dist dist-integration native-fs-helper/opensteer-native-fs* *.tsbuildinfo",
     "dev": "tsx watch src/main.ts",
     "start": "node dist/main.js",
     "test:native-fs": "go -C native-fs-helper test -count=1 -timeout=2m ./...",

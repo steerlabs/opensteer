@@ -15,7 +15,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PassThrough } from "node:stream";
 import {
@@ -1220,6 +1220,11 @@ describe("Codex app-server harness", () => {
     await mkdir(staleStore, { recursive: true });
     await writeFile(join(staleStore, "archived.jsonl"), "archived\n");
     await symlink(staleStore, join(providerHome, "archived_sessions"));
+    // Links inside the legacy tree must lead into the store once that tree is gone.
+    const legacySessions = join(providerHome, "sessions");
+    await symlink(join("2026", "09", "05"), join(legacySessions, "latest"));
+    await symlink(join(legacySessions, "2026", "09"), join(legacySessions, "month"));
+    await symlink(relative(legacySessions, staleStore), join(legacySessions, "elsewhere"));
 
     const environments = await codexEnvironments(directory, providerState);
 
@@ -1242,6 +1247,19 @@ describe("Codex app-server harness", () => {
     ).toBe("archived\n");
     // The prior target may be an external store another owner still uses.
     expect(await readFile(join(staleStore, "archived.jsonl"), "utf8")).toBe("archived\n");
+    const storeSessions = join(providerState.store.directory, "sessions");
+    expect(await readlink(join(storeSessions, "latest"))).toBe(join("2026", "09", "05"));
+    expect(await readlink(join(storeSessions, "month"))).toBe(join(storeSessions, "2026", "09"));
+    expect(await readlink(join(storeSessions, "elsewhere"))).toBe(
+      relative(storeSessions, staleStore),
+    );
+    expect(await readFile(join(storeSessions, "latest", "legacy.jsonl"), "utf8")).toBe("legacy\n");
+    expect(await readFile(join(storeSessions, "month", "05", "shared.jsonl"), "utf8")).toBe(
+      "same\n",
+    );
+    expect(await readFile(join(storeSessions, "elsewhere", "archived.jsonl"), "utf8")).toBe(
+      "archived\n",
+    );
     // Materialization is idempotent: a second process finds the same overlay.
     expect(environments[1]).toEqual(environments[0]);
   });

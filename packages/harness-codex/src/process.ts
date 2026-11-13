@@ -1,3 +1,4 @@
+import { supervisedExitCode } from "@opensteer/shared/processControl";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
@@ -126,7 +127,8 @@ export class CodexStdioClient {
       this.#child.once("error", reject);
     });
     this.#exit = new Promise<ProcessExit>((resolve) => {
-      this.#child.once("close", (code, signal) => {
+      this.#child.once("close", (status: number | null, signal: NodeJS.Signals | null) => {
+        const code = supervisedExitCode(status, process.platform);
         resolve({ code, signal });
         if (this.#closing || this.#failure) return;
         const stderr = this.#stderrDiagnostic();

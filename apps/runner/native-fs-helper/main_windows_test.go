@@ -126,7 +126,7 @@ func TestWindowsWorkspaceOperationsAndIdentity(t *testing.T) {
 }
 
 func TestWindowsDesktopPrivateAuthorityAppliesStrictACLAndPinsRoot(t *testing.T) {
-	rootPath := filepath.Join(t.TempDir(), "Opensteer")
+	rootPath := filepath.Join(ordinaryParent(t), "Opensteer")
 	createdValue, err := executeWithRootPolicy(request{
 		Operation: "desktop-ensure-root", Root: rootPath, RootPolicy: "desktop-private",
 	}, true)
@@ -171,17 +171,174 @@ func TestWindowsDesktopPrivateAuthorityAppliesStrictACLAndPinsRoot(t *testing.T)
 	closeNode(handle)
 	root.close()
 
-	original := rootPath + ".original"
-	if err := os.Rename(rootPath, original); err != nil {
+	// The stand-in is itself a private root, so only its identity differs from the pinned one.
+	standIn := rootPath + ".stand-in"
+	if _, err := executeWithRootPolicy(request{
+		Operation: "desktop-ensure-root", Root: standIn, RootPolicy: "desktop-private",
+	}, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(rootPath, 0700); err != nil {
+	if err := os.Rename(rootPath, rootPath+".original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(standIn, rootPath); err != nil {
 		t.Fatal(err)
 	}
 	read := requestFor("desktop-read-file", "private/secret.json")
 	read.MaxBytes = 32
 	if _, err := executeWithRootPolicy(read, true); !hasHelperCode(err, "root-replaced") {
 		t.Fatalf("Desktop private authority accepted a replaced root: %v", err)
+	}
+}
+
+func TestWindowsDesktopPrivateRootBootstrapsBelowAnOrdinaryParent(t *testing.T) {
+	parent := ordinaryParent(t)
+	parentBefore := securityDescriptorString(t, parent)
+	rootPath := filepath.Join(parent, "Opensteer", "harness-state", "trigger-programs")
+	ensure := func(path string) (desktopPrivateRootResult, error) {
+		value, err := executeWithRootPolicy(request{
+			Operation: "desktop-ensure-root", Root: path, RootPolicy: "desktop-private",
+		}, true)
+		if err != nil {
+			return desktopPrivateRootResult{}, err
+		}
+		return value.(desktopPrivateRootResult), nil
+	}
+
+	first, err := ensure(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Created {
+		t.Fatalf("missing Desktop root was not reported as created: %#v", first)
+	}
+	for path := rootPath; path != parent; path = filepath.Dir(path) {
+		assertPrivateDirectory(t, path)
+	}
+	second, err := ensure(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Created || second.Identity != first.Identity {
+		t.Fatalf("existing private root was not accepted as the same root: %#v then %#v", first, second)
+	}
+
+	ordinaryRoot := filepath.Join(parent, "ordinary")
+	if err := os.Mkdir(ordinaryRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
+	ordinaryBefore := securityDescriptorString(t, ordinaryRoot)
+	if _, err := ensure(ordinaryRoot); !hasHelperCode(err, "unsafe-permissions") {
+		t.Fatalf("existing non-private root was accepted: %v", err)
+	}
+	if after := securityDescriptorString(t, ordinaryRoot); after != ordinaryBefore {
+		t.Fatalf("refused root ACL changed from %s to %s", ordinaryBefore, after)
+	}
+	if after := securityDescriptorString(t, parent); after != parentBefore {
+		t.Fatalf("ordinary parent ACL changed from %s to %s", parentBefore, after)
+	}
+}
+
+func TestWindowsDesktopPrivateRootBootstrapRemovesWhatItMadeOnFailure(t *testing.T) {
+	parent := ordinaryParent(t)
+	handle, err := openAbsoluteDirectory(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, err := statForHandle(handle, false)
+	if err != nil {
+		windows.CloseHandle(handle)
+		t.Fatal(err)
+	}
+	root := &filesystemRoot{containment: platformContainment, handle: handle, volumeID: stat.identity.volumeID}
+	defer root.close()
+	// NTFS refuses "?" in a name, so the third component fails after two were made.
+	if _, err := root.bootstrapDesktopPrivateRoot([]string{"Opensteer", "private", "invalid?name"}); err == nil {
+		t.Fatal("bootstrap accepted a name NTFS cannot create")
+	}
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("failed bootstrap left %d entries behind", len(entries))
+	}
+}
+
+// ordinaryParent is a folder that, like %APPDATA% or a checkout, inherits its
+// ACL and also lets every local user read it.
+func ordinaryParent(t *testing.T) string {
+	t.Helper()
+	parent := t.TempDir()
+	descriptor, err := windows.GetNamedSecurityInfo(parent, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, _, err := descriptor.DACL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	users, err := windows.CreateWellKnownSid(windows.WinBuiltinUsersSid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pinner runtime.Pinner
+	pinner.Pin(users)
+	defer pinner.Unpin()
+	granted, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{{
+		AccessPermissions: windows.GENERIC_READ | windows.GENERIC_EXECUTE,
+		AccessMode:        windows.GRANT_ACCESS,
+		Inheritance:       windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+		Trustee: windows.TRUSTEE{
+			TrusteeForm:  windows.TRUSTEE_IS_SID,
+			TrusteeType:  windows.TRUSTEE_IS_WELL_KNOWN_GROUP,
+			TrusteeValue: windows.TrusteeValueFromSID(users),
+		},
+	}}, original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := windows.SetNamedSecurityInfo(parent, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, granted, nil); err != nil {
+		t.Fatal(err)
+	}
+	runtime.KeepAlive(descriptor)
+	return parent
+}
+
+func securityDescriptorString(t *testing.T, path string) string {
+	t.Helper()
+	descriptor, err := windows.GetNamedSecurityInfo(
+		path,
+		windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return descriptor.String()
+}
+
+func assertPrivateDirectory(t *testing.T, path string) {
+	t.Helper()
+	encoded, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := windows.CreateFile(
+		encoded,
+		windows.READ_CONTROL,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT,
+		0,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windows.CloseHandle(handle)
+	if err := assertDesktopPrivateNode(handle, true); err != nil {
+		t.Fatalf("%s is not private: %v", path, err)
 	}
 }
 

@@ -82,7 +82,8 @@ it("returns bounded log tails on exit and readiness timeout", async () => {
   try {
     await writeFile(
       join(root, "fail.cjs"),
-      "console.error('x'.repeat(20000)+'failure tail');process.exit(1)",
+      // Past any lifetime output cap, so the tail must still be the newest output.
+      "process.stderr.write('x'.repeat(2*1024*1024),()=>{console.error('failure tail');process.exit(1)})",
     );
     const failed = await manager
       .start({ ...spec, command: `${process.execPath} fail.cjs` })

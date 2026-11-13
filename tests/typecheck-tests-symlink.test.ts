@@ -55,8 +55,13 @@ it("type-checks the tests from a checkout reached through a symlink", () => {
       include: ["tests/**/*.ts"],
     }),
   );
+  write("scripts/typecheck-tests.mjs", readFileSync("scripts/typecheck-tests.mjs", "utf8"));
   mkdirSync(path.join(real, "node_modules"));
   symlinkSync("../pkg", path.join(real, "node_modules", "dep"));
+  symlinkSync(
+    path.resolve("node_modules/typescript"),
+    path.join(real, "node_modules", "typescript"),
+  );
   symlinkSync(real, alias);
 
   const script = (

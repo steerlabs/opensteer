@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
-import type { HarnessProcessLaunchWrapper } from "@opensteer/harness";
+import { runningSupervisedProcesses, type HarnessProcessLaunchWrapper } from "@opensteer/harness";
 
 const execFileAsync = promisify(execFile);
 
@@ -34,6 +34,8 @@ interface ListedProcess {
   readonly pid: number;
   readonly ppid: number;
   readonly scope: string | null;
+  /** How to signal it when that is not `process.kill`. */
+  readonly signal?: (name: NodeJS.Signals) => void;
 }
 
 /** Every process of the Runner's user, with the marker each carries. */
@@ -58,8 +60,9 @@ type ProcessLister = (variable: string) => Promise<readonly ListedProcess[]>;
  * user-level inventory; only a sandbox with a pid namespace of its own ends
  * it with its engine.
  *
- * macOS and Linux expose a same-user process's start environment; Windows does
- * not, so there an execution ends with its engine's own process-tree stop.
+ * macOS and Linux expose a same-user process's start environment. Windows
+ * does not, but there every launch runs under the process supervisor, whose
+ * Job holds all it starts: each running supervisor stands for its whole tree.
  */
 export class ExecutionContainment {
   readonly #bootId: string;
@@ -253,9 +256,10 @@ function membersOf(
 }
 
 function signal(processes: readonly ListedProcess[], name: NodeJS.Signals): void {
-  for (const { pid } of processes) {
+  for (const { pid, signal: own } of processes) {
     try {
-      process.kill(pid, name);
+      if (own) own(name);
+      else process.kill(pid, name);
     } catch {
       // Gone already, or never ours to signal; the next listing decides.
     }
@@ -265,7 +269,25 @@ function signal(processes: readonly ListedProcess[], name: NodeJS.Signals): void
 function processListerFor(platform: NodeJS.Platform): ProcessLister | undefined {
   if (platform === "linux") return listLinuxProcesses;
   if (platform === "darwin") return listDarwinProcesses;
+  if (platform === "win32") return listSupervisedProcesses;
   return undefined;
+}
+
+/**
+ * The supervisors this Runner started whose trees are not proven gone. A Job
+ * lets nothing out, and its supervisor exits only once it has waited out every
+ * other member, so a tree is gone exactly when its supervisor is; one that
+ * exits without that proof stays listed, and its execution stays unknown. One
+ * a dead Runner started ends with the Runner, because its control pipe closes.
+ */
+async function listSupervisedProcesses(variable: string): Promise<readonly ListedProcess[]> {
+  return runningSupervisedProcesses().map((running) => ({
+    identity: running.identity,
+    pid: running.pid,
+    ppid: process.pid,
+    scope: running.environment[variable] ?? null,
+    signal: (name) => running.control(name === "SIGKILL" ? "force" : "graceful"),
+  }));
 }
 
 /** Same-user processes' environments are readable in procfs; others' are not and are not ours. */

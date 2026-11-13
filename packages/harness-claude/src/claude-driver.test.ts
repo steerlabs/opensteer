@@ -1,7 +1,6 @@
 import { agentTools } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
-import { ChildProcess } from "node:child_process";
-import { once } from "node:events";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -41,12 +40,19 @@ import {
 } from "@opensteer/harness";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { workflowSessionRoot } from "./workflow-transcript.js";
+import {
+  fakeClaudeTreeScript,
+  processIsAlive,
+  readFakeClaudeTreeReport,
+  type FakeClaudeTreeReport,
+} from "./fake-claude-tree.test-support.js";
 import { MINIMUM_CLAUDE_CODE_VERSION, TESTED_CLAUDE_CODE_VERSION } from "./config.js";
 import {
   ClaudeHarnessDriver,
   type ClaudeAuthenticationProcess,
   type ClaudeAuthenticationProcessOptions,
   claudeAccessModeConfiguration,
+  claudeShellApprovalHook,
   managedClaudeSettings,
   type ClaudeAgentSdk,
   type ClaudeQueryHandle,
@@ -614,15 +620,9 @@ describe("Claude Agent SDK harness", () => {
           env: { PATH: process.env.PATH ?? "", UNSET_BY_THE_SDK: undefined },
           signal: new AbortController().signal,
         });
-        if (!(child instanceof ChildProcess) || !child.stderr) {
-          throw new Error("Claude harness must spawn a Node child process");
-        }
-        // `end` arrives only after the last `data` the driver's forwarder saw,
-        // and it can land before the process's stdout is drained, so the wait
-        // is registered first.
-        const stderrEnded = once(child.stderr, "end");
+        const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
         stdout = await text(child.stdout);
-        await stderrEnded;
+        await exited;
         throw new Error("Claude runtime ended");
       }),
     );
@@ -635,7 +635,9 @@ describe("Claude Agent SDK harness", () => {
         launches.push(launch);
         return {
           ...launch,
-          args: ["-e", "process.stderr.write('wrapped'); process.stdout.write('ok')"],
+          // stdout is written only once stderr has been, so stdout's end comes
+          // after the driver has forwarded stderr.
+          args: ["-e", "process.stderr.write('wrapped', () => process.stdout.write('ok'))"],
         };
       },
     });
@@ -658,6 +660,46 @@ describe("Claude Agent SDK harness", () => {
     // process's stderr reaches the turn's collector only if the driver forwards
     // it; the collector surfaces in the failure it decorates.
     expect(failure.data.message).toContain("Claude runtime stderr:\nwrapped");
+  });
+
+  it("stops the whole supervised Claude Code tree when the SDK kills it, then removes its private MCP config", async () => {
+    let report: FakeClaudeTreeReport | undefined;
+    let exitSeen = false;
+    const sdk = new FakeSdk((parameters) =>
+      generatedQuery(async function* () {
+        yield initMessage(providerSessionId(parameters.options));
+        const child = parameters.options.spawnClaudeCodeProcess!({
+          args: ["-e", fakeClaudeTreeScript, "--", "--mcp-config", '{"mcpServers":{}}'],
+          command: process.execPath,
+          env: { PATH: process.env.PATH ?? "" },
+          signal: new AbortController().signal,
+        });
+        const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+        report = await readFakeClaudeTreeReport(child.stdout);
+        child.kill("SIGTERM");
+        await exited;
+        exitSeen = true;
+        throw new Error("Claude runtime ended");
+      }),
+    );
+    const { adapter, session } = await openSession(sdk);
+    const observer = observe(session.events);
+
+    await send(session, "Hello");
+    await observer.waitFor("run.failed");
+    await session.stop();
+    await observer.done;
+    await adapter.close();
+
+    expect(exitSeen).toBe(true);
+    expect(report?.configExisted).toBe(true);
+    // The SDK's exit is the supervisor's, which comes only once its tree is empty.
+    const survived = processIsAlive(report!.grandchild);
+    if (survived) process.kill(report!.grandchild, "SIGKILL");
+    expect(survived).toBe(false);
+    await vi.waitFor(() => expect(existsSync(report!.config)).toBe(false), {
+      timeout: 5_000,
+    });
   });
 
   it("normalizes a turn, preserves every lifecycle event, and resumes the fixed provider session", async () => {
@@ -751,7 +793,6 @@ describe("Claude Agent SDK harness", () => {
     expect(sdk.calls[0]?.options.env?.CLAUDE_CONFIG_DIR).toContain(".claude-user");
     expect(sdk.calls[0]?.options.tools).toEqual([
       "AskUserQuestion",
-      "Bash",
       "Edit",
       "Glob",
       "Grep",
@@ -760,6 +801,7 @@ describe("Claude Agent SDK harness", () => {
       "Skill",
       "ToolSearch",
       "Write",
+      "Bash",
       "Agent",
       "Workflow",
       "TaskStop",
@@ -1271,6 +1313,38 @@ describe("Claude Agent SDK harness", () => {
       await adapter.close();
     },
   );
+
+  it("asks before Windows PowerShell commands exactly as before Bash ones", async () => {
+    const hook = claudeShellApprovalHook("win32");
+    // Claude Code reads a matcher as a regular expression over the tool name.
+    const matches = new RegExp(`^(?:${hook.matcher})$`, "u");
+    expect(["Bash", "PowerShell", "Read"].filter((tool) => matches.test(tool))).toEqual([
+      "Bash",
+      "PowerShell",
+    ]);
+    expect(claudeShellApprovalHook("darwin").matcher).toBe("Bash");
+    expect(
+      await hook.hooks[0]?.(
+        {
+          hook_event_name: "PreToolUse",
+          session_id: "test",
+          transcript_path: "C:\\Users\\person\\transcript.jsonl",
+          cwd: "C:\\Users\\person\\Opensteer",
+          tool_name: "PowerShell",
+          tool_input: { command: "Remove-Item -Recurse build" },
+          tool_use_id: "powershell-1",
+        },
+        "powershell-1",
+        { signal: new AbortController().signal },
+      ),
+    ).toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "ask",
+        permissionDecisionReason: "Opensteer requires approval for shell commands",
+      },
+    });
+  });
 
   it.each(
     (["approval-required", "auto-accept-edits", "auto", "full-access"] as const).flatMap(

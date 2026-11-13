@@ -5,6 +5,7 @@ import {
   defaultTestExclude,
   integrationTestInclude,
   realBrowserTests,
+  windowsTestInclude,
 } from "./ci-test-files.mjs";
 import { matchesGlob, basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -14,6 +15,7 @@ export const lanes = [
   "tests",
   "integration",
   "native-mac",
+  "native-windows",
   "android",
   "browser-journeys",
 ];
@@ -162,6 +164,32 @@ export function nativeMacMatrix(tasks) {
     }));
 }
 export const allNativeMacTasks = nativeMac.tasks.map(({ task }) => task);
+const nativeWindows = JSON.parse(
+  readFileSync(new URL("./ci-native-windows.json", import.meta.url), "utf8"),
+);
+/**
+ * What can change the native-windows result: the CI definition, its Go modules,
+ * the installed packages, what its build scripts and Windows-real Vitest files
+ * import (ci-native-inputs.json), and any Windows-real test file, new ones included.
+ */
+export function nativeWindowsInputs() {
+  return [
+    ...nativeWindows.ciInputs,
+    ...nativeWindows.go,
+    ...nativeMac.nodeInputs,
+    ...(nativeInputs["native-windows"] ?? []),
+  ];
+}
+/** Scheduled and manual runs, and detector errors, always run it. */
+export function nativeWindowsSelected(files, { full = false } = {}) {
+  if (full) return true;
+  const inputs = nativeWindowsInputs();
+  return files.some(
+    (file) =>
+      inputs.some((input) => under(file, input)) ||
+      windowsTestInclude.some((glob) => matchesGlob(file, glob)),
+  );
+}
 /** The task that runs the Darwin-only files and uploads their inventory. */
 export const darwinTask = nativeMac.tasks.find((task) => task.lane).task;
 // A root test edit needs its own lane, the repo-wide test guards in `tests` and the
@@ -169,10 +197,11 @@ export const darwinTask = nativeMac.tasks.find((task) => task.lane).task;
 // modules, fixtures, quarantine) stay global.
 const rootTest = (p) => /^tests\/.*\.test\.tsx?$/.test(p);
 /**
- * `full` runs every lane, as main does; `fullMac` also runs every native-mac task,
- * as scheduled and manual runs do. A main push picks its macOS tasks from `files`.
+ * `full` runs every lane, as main does; `fullNative` also runs every native-mac task
+ * and native-windows, as scheduled and manual runs do. A main push picks its native
+ * work from `files`.
  */
-export function decide(files, graph, baseGraph = graph, full = false, { fullMac = full } = {}) {
+export function decide(files, graph, baseGraph = graph, full = false, { fullNative = full } = {}) {
   const reasons = [];
   const affected = new Set();
   const combined = new Map();
@@ -263,7 +292,7 @@ export function decide(files, graph, baseGraph = graph, full = false, { fullMac 
     }
     return false;
   };
-  const macTasks = nativeMacTasks(files, { full: fullMac });
+  const macTasks = nativeMacTasks(files, { full: fullNative });
   return {
     version: 1,
     full: all,
@@ -278,6 +307,7 @@ export function decide(files, graph, baseGraph = graph, full = false, { fullMac 
       tests: all || reaches("tests") || affected.size > 0 || rootTests.any,
       integration: all || reaches("integration") || rootTests.integration,
       "native-mac": macTasks.length > 0,
+      "native-windows": nativeWindowsSelected(files, { full: fullNative }),
       android: all || androidSource || reaches("android"),
       // Root browser tests have no manifest and import across workspaces, like root unit guards.
       "browser-journeys":
@@ -313,11 +343,11 @@ export function detect({
       parseDiff(git(root, ["diff", "--name-only", "-z", "--no-renames", base, "HEAD"]));
     if (event === "pull_request") return decide(changed(), graph, readGraph(root, base));
     if (event === "push") {
-      // A push of one commit, as a merge is, picks macOS tasks from that commit;
+      // A push of one commit, as a merge is, picks native work from that commit;
       // anything else (several commits, a new branch) runs them all.
       const single = before === git(root, ["rev-parse", "HEAD^1"]).trim();
       if (!single) return decide([], graph, graph, true);
-      return decide(changed(), graph, readGraph(root, base), true, { fullMac: false });
+      return decide(changed(), graph, readGraph(root, base), true, { fullNative: false });
     }
     if (event === "schedule" && unchangedSince) return unchangedPlan(unchangedSince);
     return decide([], graph, graph, true);

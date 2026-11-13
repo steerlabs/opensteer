@@ -39,7 +39,7 @@
     "test:gui": "vitest run --config vitest.gui.config.ts",
     "test:watch": "vitest",
     "typecheck": "pnpm -r --if-present typecheck && pnpm typecheck:tests",
-    "typecheck:tests": "cd -P . && tsc -p tsconfig.tests.json --noEmit",
+    "typecheck:tests": "node scripts/typecheck-tests.mjs",
     "integration:rerun": "tsx scripts/integration-rerun.ts",
     "test:vm": "tsx scripts/test-vm.ts",
     "test:vm:golden": "tsx scripts/test-vm.ts --golden",
@@ -50,7 +50,7 @@
     "bench:phone-display": "tsx scripts/bench-phone-display.ts",
     "bench:mac-display": "tsx scripts/bench-mac-display.ts",
     "bench:browser-stream": "tsx scripts/bench-browser-stream.ts",
-    "dev:team": "OPENSTEER_DEPLOYMENT_KIND=team OPENSTEER_DEV_SERVICES=host,web tsx scripts/dev.ts",
+    "dev:team": "tsx scripts/dev.ts team",
     "verify:team-deployment": "node scripts/verify-team-deployment.mjs"
   },
   "devDependencies": {

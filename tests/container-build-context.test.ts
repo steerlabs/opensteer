@@ -147,6 +147,13 @@ describe("container build context", () => {
     expect(runnerStage).toContain('test "$(bwrap --version)" = "bubblewrap 0.11.2"');
     expect(runnerStage).toContain("test ! -u /usr/local/bin/bwrap");
     expect(runnerStage).toContain("test -x /usr/bin/socat");
+    expect(containerfile).toContain("AS process-supervisor-build");
+    expect(runnerStage).toContain(
+      "OPENSTEER_PROCESS_SUPERVISOR_EXECUTABLE=/app/process-supervisor/opensteer-process-supervisor",
+    );
+    expect(runnerStage).toContain(
+      "COPY --from=process-supervisor-build --chmod=0555 /output/opensteer-process-supervisor ./process-supervisor/opensteer-process-supervisor",
+    );
     expect(runnerStage).not.toContain("fuse3");
     expect(runnerStage).not.toContain("/etc/mtab");
   });

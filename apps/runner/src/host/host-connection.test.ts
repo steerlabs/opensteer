@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
@@ -48,6 +49,7 @@ import {
   runnerWebSocketUrl,
   waitForRunnerReconnect,
 } from "./host-connection.js";
+import { LocalMcpServers } from "../computer-apps/local-mcp-servers.js";
 import { RunnerRuntime } from "../runtime/runtime.js";
 import {
   providerContinuationIdentityProjector,
@@ -57,6 +59,12 @@ import {
 const serverDeploymentShape = {
   kind: "personal" as const,
 } as const;
+const testNativeFsHelperBinary = fileURLToPath(
+  new URL(
+    `../../native-fs-helper/opensteer-native-fs${process.platform === "win32" ? ".exe" : ""}`,
+    import.meta.url,
+  ),
+);
 const testAgentSkills = {
   paths: {
     "opensteer:skills": "/runner/agent-skills/skills/skills",
@@ -732,6 +740,7 @@ describe("runnerWebSocketUrl", () => {
       OPENSTEER_BROWSER_SIGN_IN: "1",
     });
     const runtime = new RunnerRuntime({
+      nativeFsHelperBinary: testNativeFsHelperBinary,
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
       plugins: noPlugins,
@@ -924,6 +933,7 @@ describe("runnerWebSocketUrl", () => {
     const registry = new HarnessRegistry();
     const bootId = RunnerBootIdSchema.parse(`rbt_${randomUUID()}`);
     const runtime = new RunnerRuntime({
+      nativeFsHelperBinary: testNativeFsHelperBinary,
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
       plugins: noPlugins,
@@ -1480,6 +1490,7 @@ describe("runnerWebSocketUrl", () => {
       },
       integrationsModule: {
         descriptor: { platform: "darwin" },
+        localMcp: new LocalMcpServers(),
         providers: [
           {
             definitionId: definition.id,
@@ -1924,6 +1935,7 @@ describe("runnerWebSocketUrl", () => {
     const registry = new HarnessRegistry();
     const bootId = RunnerBootIdSchema.parse(`rbt_${randomUUID()}`);
     const runtime = new RunnerRuntime({
+      nativeFsHelperBinary: testNativeFsHelperBinary,
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
       plugins: noPlugins,
@@ -2269,6 +2281,7 @@ describe("ReconnectingHostConnection engine rechecks", () => {
     const environmentId = createId("environment");
     const bootId = RunnerBootIdSchema.parse(`rbt_${randomUUID()}`);
     const runtime = new RunnerRuntime({
+      nativeFsHelperBinary: testNativeFsHelperBinary,
       nodeExecutable: process.execPath,
       agentSkills: testAgentSkills,
       plugins: noPlugins,

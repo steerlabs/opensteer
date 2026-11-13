@@ -18,6 +18,7 @@ import {
 } from "./report.js";
 import { TurnClock, type TurnTiming } from "./timing.js";
 import type { Engine } from "./engine.js";
+import { provideBuiltProcessSupervisor } from "../../scripts/process-supervisor-path.js";
 
 const checkout = resolve(import.meta.dirname, "../..");
 const integer = z.coerce.number().int().positive();
@@ -45,6 +46,7 @@ if (parsed.values.help) {
   await main();
 }
 async function main() {
+  provideBuiltProcessSupervisor(process.env, checkout);
   const engine: Engine = z.enum(["claude", "codex"]).parse(parsed.values.engine);
   const concurrency = integer.max(16).parse(parsed.values.concurrency);
   const samples =

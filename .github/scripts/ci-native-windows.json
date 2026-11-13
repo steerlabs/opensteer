@@ -1,0 +1,28 @@
+{
+  "ciInputs": [
+    ".github/workflows/ci.yml",
+    ".github/actions",
+    ".github/scripts/ci-changes.mjs",
+    ".github/scripts/ci-native-windows.json",
+    ".github/scripts/ci-native-windows.mjs",
+    ".github/scripts/ci-test-files.mjs",
+    ".github/scripts/run-as-standard-user.ps1",
+    "scripts/ci-inventory-reporter.ts"
+  ],
+  "go": [
+    "apps/desktop/process-supervisor",
+    "apps/desktop/personal-runtime-launcher",
+    "apps/runner/native-fs-helper"
+  ],
+  "scripts": [
+    "apps/desktop/scripts/build-process-supervisor.ts",
+    "apps/runner/scripts/build-native-fs.ts"
+  ],
+  "vitest": [
+    "vitest.windows.config.ts",
+    "tests/process-supervisor-setup.test-support.ts",
+    "scripts/process-supervisor-path.ts",
+    "apps/host/src/main.ts",
+    "apps/runner/src/main.ts"
+  ]
+}

@@ -1,11 +1,11 @@
 import { isNodeError } from "@opensteer/shared/nodeError";
 import { assertPluginDataId, removePluginData } from "@opensteer/shared/privateFiles";
+import { mergeEnvironment, selectEnvironment } from "@opensteer/shared/userEnvironment";
 import { mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fetchPluginPackage, retainPluginPackages } from "../skills/plugin-cache.js";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { setTimeout as delay } from "node:timers/promises";
+import { spawnSupervised, type SupervisedProcess } from "@opensteer/harness";
 import { getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ReadBuffer, serializeMessage } from "@modelcontextprotocol/sdk/shared/stdio.js";
@@ -34,7 +34,7 @@ export type LocalMcpFrame =
 
 /** How much of a program's stderr is kept, to say why it stopped. */
 const stderrTailBytes = 4_096;
-/** How long a program has to end on SIGTERM before its group is killed. */
+/** How long a program has to stop before everything it started is killed. */
 const terminationGraceMs = 2_000;
 /**
  * The most a session holds of what it was sent and its server has not taken
@@ -335,8 +335,26 @@ function launchTransport(launch: LocalMcpLaunch): Session["transport"] {
 }
 
 /**
- * A program's MCP session over its standard input and output, in a process
- * group of its own. A program is often a launcher — `npx`, `uvx`, a shell
+ * A local program's environment: the SDK's safe defaults and the Windows
+ * baseline, under the person's approved variables. On Windows an approved
+ * `Path` replaces `PATH` rather than standing beside it.
+ */
+export function localMcpEnvironment(
+  approved: Readonly<Record<string, string>>,
+  source: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Record<string, string> {
+  const defaults = mergeEnvironment(
+    getDefaultEnvironment(),
+    selectEnvironment(source, [], platform),
+    platform,
+  );
+  return mergeEnvironment(defaults, approved, platform);
+}
+
+/**
+ * A program's MCP session over its standard input and output, under the
+ * process supervisor. A program is often a launcher — `npx`, `uvx`, a shell
  * script — whose own child is the server, so ending the session ends every
  * process the program started, not only the program.
  */
@@ -346,9 +364,8 @@ class ProgramTransport implements Transport {
   onmessage?: (message: JSONRPCMessage) => void;
   readonly #buffer = new ReadBuffer({ maxBufferSize: maxBufferedBytes });
   readonly #launch: Extract<LocalMcpLaunch, { readonly type: "stdio" }>;
-  #child: ChildProcessWithoutNullStreams | undefined;
-  /** The program's process group, which outlives the program when it started others. */
-  #group: number | undefined;
+  #process: SupervisedProcess | undefined;
+  #running = false;
   #stopping: Promise<void> | undefined;
   #stderr = "";
 
@@ -363,54 +380,70 @@ class ProgramTransport implements Transport {
 
   start(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const child = spawn(this.#launch.command, [...this.#launch.args], {
+      // The session bounds what it holds itself, so no byte of a long one is dropped.
+      const supervised = spawnSupervised({
+        args: this.#launch.args,
         cwd: this.#launch.cwd,
-        detached: true,
-        env: { ...getDefaultEnvironment(), ...this.#launch.env },
-        stdio: ["pipe", "pipe", "pipe"],
+        environment: localMcpEnvironment(this.#launch.env),
+        executable: this.#launch.command,
+        output: "raw",
       });
-      this.#child = child;
-      // Spawning returns once the program started, in a group of its own, so
-      // the group can be ended from here on — even before `spawn` is emitted.
-      this.#group = child.pid;
+      this.#process = supervised;
+      this.#running = true;
+      const { child } = supervised;
       child.once("error", (error) => {
         reject(error);
         this.onerror?.(error);
       });
       child.once("spawn", () => resolve());
-      // The program is the server: once it exits, whatever it started and
-      // left holding its output is not, and the session ends with the group.
-      // What it wrote before exiting is still read from the pipe.
-      child.once("exit", () => void this.close());
-      child.once("close", () => {
-        this.#child = undefined;
+      // The supervisor exits once the program and everything it started have
+      // ended, so the session ends with it. What the program wrote before
+      // exiting is still read from the pipe.
+      // A failed read is reported as the session's error; the session still closes.
+      const reported = (reading: Promise<void>) =>
+        reading.catch((error: unknown) =>
+          this.onerror?.(error instanceof Error ? error : new Error(String(error))),
+        );
+      void Promise.all([
+        supervised.exited.catch(() => undefined),
+        reported(this.#read(supervised.stdout)),
+        reported(this.#readStderr(supervised.stderr)),
+      ]).then(() => {
+        this.#running = false;
+        void this.close();
         this.onclose?.();
-      });
-      child.stdout.on("data", (chunk: Buffer) => {
-        if (this.#stopping) return;
-        try {
-          this.#buffer.append(chunk);
-        } catch (error) {
-          this.onerror?.(error instanceof Error ? error : new Error(String(error)));
-          return;
-        }
-        while (!this.#stopping) {
-          let message: JSONRPCMessage | null;
-          try {
-            message = this.#buffer.readMessage();
-          } catch (error) {
-            this.onerror?.(error instanceof Error ? error : new Error(String(error)));
-            return;
-          }
-          if (message === null) break;
-          this.onmessage?.(message);
-        }
-      });
-      child.stderr.on("data", (chunk: Buffer) => {
-        this.#stderr = `${this.#stderr}${chunk.toString("utf8")}`.slice(-stderrTailBytes);
       });
       child.stdin.on("error", (error) => this.onerror?.(error));
     });
+  }
+
+  async #read(stdout: AsyncIterable<Buffer>): Promise<void> {
+    for await (const chunk of stdout) {
+      if (this.#stopping) continue;
+      try {
+        this.#buffer.append(chunk);
+      } catch (error) {
+        this.onerror?.(error instanceof Error ? error : new Error(String(error)));
+        continue;
+      }
+      while (!this.#stopping) {
+        let message: JSONRPCMessage | null;
+        try {
+          message = this.#buffer.readMessage();
+        } catch (error) {
+          this.onerror?.(error instanceof Error ? error : new Error(String(error)));
+          break;
+        }
+        if (message === null) break;
+        this.onmessage?.(message);
+      }
+    }
+  }
+
+  async #readStderr(stderr: AsyncIterable<Buffer>): Promise<void> {
+    for await (const chunk of stderr) {
+      this.#stderr = `${this.#stderr}${chunk.toString("utf8")}`.slice(-stderrTailBytes);
+    }
   }
 
   /**
@@ -418,7 +451,7 @@ class ProgramTransport implements Transport {
    * not: a program that stopped reading never leaves a send waiting forever.
    */
   send(message: JSONRPCMessage): Promise<void> {
-    const stdin = this.#child?.stdin;
+    const stdin = this.#running ? this.#process?.child.stdin : undefined;
     if (!stdin?.writable) return Promise.reject(new Error("The MCP server is not running."));
     return new Promise((resolve, reject) => {
       stdin.write(serializeMessage(message), (error) => (error ? reject(error) : resolve()));
@@ -426,9 +459,8 @@ class ProgramTransport implements Transport {
   }
 
   /**
-   * Ends the program and every process it started: the whole group is asked
-   * to stop, and whatever of it is left after the grace is killed — however
-   * soon the program itself exited.
+   * Ends the program and every process it started: the supervisor asks the
+   * whole tree to stop and kills whatever of it is left after the grace.
    */
   close(): Promise<void> {
     this.#stopping ??= this.#stop();
@@ -436,32 +468,10 @@ class ProgramTransport implements Transport {
   }
 
   async #stop(): Promise<void> {
-    const group = this.#group;
-    if (group === undefined) return;
-    this.#child?.stdin.destroy();
-    signalGroup(group, "SIGTERM");
-    const deadline = Date.now() + terminationGraceMs;
-    while (groupAlive(group) && Date.now() < deadline) await delay(50);
-    if (groupAlive(group)) signalGroup(group, "SIGKILL");
-  }
-}
-
-/** Signals a program and everything it started, which share its process group. */
-function signalGroup(group: number, signal: NodeJS.Signals): void {
-  try {
-    process.kill(-group, signal);
-  } catch {
-    // Already gone.
-  }
-}
-
-/** Whether any process of the group is still there. */
-function groupAlive(group: number): boolean {
-  try {
-    process.kill(-group, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+    const supervised = this.#process;
+    if (!supervised) return;
+    supervised.child.stdin.destroy();
+    await supervised.terminate(terminationGraceMs);
   }
 }
 

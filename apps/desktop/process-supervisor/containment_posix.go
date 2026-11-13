@@ -7,9 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
-
-	"golang.org/x/sys/unix"
 )
+
+const undrainedExitCode = 70
 
 type posixProcessContainment struct {
 	processGroupID int
@@ -19,8 +19,20 @@ func newProcessContainment() (processContainment, error) {
 	return &posixProcessContainment{}, nil
 }
 
+// A POSIX owner proves its tree gone from the process group, not from this status.
+func drainedExitCode(status int) int {
+	return status
+}
+
+func targetCommand(target launch) *exec.Cmd {
+	return exec.Command(target.executable, target.arguments...)
+}
+
 func (containment *posixProcessContainment) prepare(command *exec.Cmd) error {
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if command.SysProcAttr == nil {
+		command.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	command.SysProcAttr.Setpgid = true
 	return nil
 }
 
@@ -78,9 +90,4 @@ func processAlreadyGone(err error) bool {
 	// leader. Verification after reaping still fails closed if an actually
 	// unsignalable descendant remains.
 	return errors.Is(err, syscall.ESRCH) || errors.Is(err, syscall.EPERM)
-}
-
-func secureControlChannel(control *os.File) error {
-	unix.CloseOnExec(int(control.Fd()))
-	return nil
 }

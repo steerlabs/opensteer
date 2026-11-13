@@ -77,6 +77,20 @@ export function platformGuideForRun(input: {
   ].join("\n\n");
 }
 
+/**
+ * How the Run's own computer runs an app's `start`: apps run on the computer
+ * hosting the Run, and only the Runner there knows its operating system.
+ */
+export function appHostingGuide(input: {
+  readonly platform: "darwin" | "linux" | "win32";
+  readonly tools: readonly string[];
+}): string {
+  if (!input.tools.includes("app_publish")) return "";
+  if (input.platform === "win32")
+    return 'Apps you publish run on this Windows computer: `start` runs with cmd.exe /d /s /c. Write cmd syntax, never sh or PowerShell: join commands with `&&` and set a variable with `set "NAME=value" && next`.';
+  return `Apps you publish run on this ${input.platform === "darwin" ? "macOS" : "Linux"} computer: \`start\` runs with /bin/sh -c.`;
+}
+
 export const connectionInstructions = `Opensteer runs the person's one agent and tools on their computers. Your connection has personal scope, an access-mode ceiling, expiry and revoke; live resource grants can narrow it further.
 - Tasks: delegate_task, thread_read and bounded thread_wait. Choices and limits: orchestrator_capabilities; computers: environment_list. Tasks work in Agent home on the hosting computer.
 - You have no task of your own: always name threadId for task operations; self is refused. Connections get no Assignment or automatic result return; wait on threadId.

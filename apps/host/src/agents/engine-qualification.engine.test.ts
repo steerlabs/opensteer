@@ -19,7 +19,8 @@ import {
   type ThreadAccessMode,
   shortRequestHoldMs,
 } from "@opensteer/core";
-import { findExecutableOnPath, nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
+import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
+import { hostCommandPlatform, resolveCommand } from "@opensteer/shared/command";
 import { RunnerRegistry } from "@opensteer/orchestration";
 import { createHarnessRegistry, parseAgentExecutionConfig } from "@opensteer/runner";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -458,7 +459,11 @@ describe("engine qualification", () => {
       if (
         engine.executable === "installed" &&
         command &&
-        !findExecutableOnPath(command, process.env.PATH)
+        !resolveCommand(command, {
+          cwd: process.cwd(),
+          environment: process.env,
+          platform: hostCommandPlatform(),
+        })?.path
       ) {
         throw new Error(`Install ${command} on this computer to qualify ${engine.label}.`);
       }
@@ -760,7 +765,11 @@ describe("engine qualification", () => {
       if (
         engine.executable === "installed" &&
         command &&
-        !findExecutableOnPath(command, process.env.PATH)
+        !resolveCommand(command, {
+          cwd: process.cwd(),
+          environment: process.env,
+          platform: hostCommandPlatform(),
+        })?.path
       ) {
         throw new Error(`Install ${command} on this computer to qualify ${engine.label}.`);
       }

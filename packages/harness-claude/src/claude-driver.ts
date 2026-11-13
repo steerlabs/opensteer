@@ -8,17 +8,19 @@ import {
 } from "./workflow-progress.js";
 import { workflowSessionRoot } from "./workflow-transcript.js";
 import { type ClaudeExecutableInspection } from "./executable.js";
+import { claudeSdkProcess } from "./sdk-process.js";
 import { isRecord } from "@opensteer/shared/isRecord";
-import { spawn } from "node:child_process";
+import { mergeEnvironment } from "@opensteer/shared/userEnvironment";
 import { randomUUID } from "node:crypto";
 import { rmSync, writeFileSync } from "node:fs";
-import { mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import {
   query as anthropicQuery,
   startup as anthropicStartup,
   type AccountInfo,
   type CanUseTool,
+  type HookCallbackMatcher,
   type ModelInfo,
   type Options,
   type PermissionMode,
@@ -59,6 +61,7 @@ import {
   withBackgroundTextDirectory,
   backgroundTextResult,
   collectStreamText,
+  linkDirectory,
   type SupervisedProcess,
   type HarnessGenerateTextInput,
   type HarnessGenerateTextResult,
@@ -122,7 +125,6 @@ const requiredRuntimeCapabilities = ["interrupt_receipt_v1", "interrupt_cancel_q
 
 const claudeBuiltinTools = [
   "AskUserQuestion",
-  "Bash",
   "Edit",
   "Glob",
   "Grep",
@@ -132,6 +134,30 @@ const claudeBuiltinTools = [
   "ToolSearch",
   "Write",
 ] as const;
+/**
+ * Claude Code's shell tools. On Windows it runs PowerShell beside Git Bash, or
+ * instead of it when Git Bash is absent, and approval must gate both.
+ */
+function claudeShellTools(platform: NodeJS.Platform = process.platform): readonly string[] {
+  return platform === "win32" ? ["Bash", "PowerShell"] : ["Bash"];
+}
+/** Asks the person before any shell tool runs, whatever Claude Code's own rules would allow. */
+export function claudeShellApprovalHook(
+  platform: NodeJS.Platform = process.platform,
+): HookCallbackMatcher {
+  return {
+    matcher: claudeShellTools(platform).join("|"),
+    hooks: [
+      async () => ({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse" as const,
+          permissionDecision: "ask" as const,
+          permissionDecisionReason: "Opensteer requires approval for shell commands",
+        },
+      }),
+    ],
+  };
+}
 const claudeDelegationTools = ["Agent", "Task", "Workflow"] as const;
 /** The subagent tool Claude Code runs in the foreground; `Task` is its older name. */
 const claudeSubagentTool = "Agent";
@@ -458,7 +484,7 @@ async function synthesizeSkillPlugin(
   for (const namespace of new Set(selected.map((skill) => skill.plugin))) {
     if (namespace === null) {
       for (const skill of selected.filter((skill) => skill.plugin === null)) {
-        await symlink(skill.path, join(projectRoot, ".claude", "skills", skill.localName), "dir");
+        await linkDirectory(skill.path, join(projectRoot, ".claude", "skills", skill.localName));
       }
       continue;
     }
@@ -471,7 +497,7 @@ async function synthesizeSkillPlugin(
     );
     await mkdir(join(path, "skills"), { mode: 0o700 });
     for (const skill of selected.filter((skill) => skill.plugin === namespace)) {
-      await symlink(skill.path, join(path, "skills", skill.localName), "dir");
+      await linkDirectory(skill.path, join(path, "skills", skill.localName));
     }
     paths.push(await realpath(path));
   }
@@ -1003,7 +1029,12 @@ export class ClaudeHarnessDriver implements HarnessDriver {
   ] as const satisfies readonly ThreadAccessMode[];
   readonly capabilities = claudeHarnessCapabilities;
   readonly configSchema = ClaudeHarnessConfigSchema;
-  readonly environmentVariables = ["CLAUDE_CONFIG_DIR"] as const;
+  /** The last two are how a person points Claude Code at its Windows shell. */
+  readonly environmentVariables = [
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_GIT_BASH_PATH",
+    "CLAUDE_CODE_USE_POWERSHELL_TOOL",
+  ] as const;
   /**
    * A Claude profile's provider home is its own session store: the CLI keeps
    * conversations beside the credentials that created them, so nothing here can
@@ -1377,7 +1408,7 @@ class ClaudeHarnessAdapter implements HarnessAdapter {
               const stop = () => void child?.terminate(0).catch(() => undefined);
               abortController.signal.addEventListener("abort", stop, { once: true });
               if (abortController.signal.aborted) stop();
-              return child.child;
+              return claudeSdkProcess(child);
             },
           };
           query = this.#dependencies.sdk.query({
@@ -2025,24 +2056,7 @@ class ClaudeHarnessSession implements HarnessSession {
       // Organization-managed policy and hooks can override these settings.
       ...(this.#context.accessMode === "approval-required" ||
       this.#context.accessMode === "auto-accept-edits"
-        ? {
-            hooks: {
-              PreToolUse: [
-                {
-                  matcher: "Bash",
-                  hooks: [
-                    async () => ({
-                      hookSpecificOutput: {
-                        hookEventName: "PreToolUse" as const,
-                        permissionDecision: "ask" as const,
-                        permissionDecisionReason: "Opensteer requires approval for shell commands",
-                      },
-                    }),
-                  ],
-                },
-              ],
-            },
-          }
+        ? { hooks: { PreToolUse: [claudeShellApprovalHook()] } }
         : {}),
       cwd: this.#context.workspacePath,
       additionalDirectories: [
@@ -2089,38 +2103,46 @@ class ClaudeHarnessSession implements HarnessSession {
         preset: "claude_code",
         type: "preset",
       },
-      tools: [...claudeBuiltinTools, claudeSubagentTool, "Workflow", claudeTaskStopTool],
+      tools: [
+        ...claudeBuiltinTools,
+        ...claudeShellTools(),
+        claudeSubagentTool,
+        "Workflow",
+        claudeTaskStopTool,
+      ],
       stderr: (chunk) => active.stderr.append(chunk),
-      // The Runner's sandbox has to enclose the whole harness process tree, and
-      // a custom spawn is the SDK's only seam for that. The SDK reads nothing
-      // but stdin and stdout from what this returns — the `stderr` option above
-      // is wired by the spawn it replaces — so stderr is forwarded here.
+      // The Runner's sandbox and the process supervisor have to enclose the
+      // whole harness process tree, and a custom spawn is the SDK's only seam
+      // for that. The SDK reads nothing but stdin and stdout from what this
+      // returns — the `stderr` option above is wired by the spawn it replaces —
+      // so stderr is forwarded here.
       spawnClaudeCodeProcess: ({ args, command, cwd, env, signal }) => {
         const environment: Record<string, string> = {};
         for (const [name, value] of Object.entries(env)) {
           if (value !== undefined) environment[name] = value;
         }
         const mcpConfig = privateMcpConfig(args, this.#context.threadStateDirectory);
-        // The wrapper runs last so the Runner's sandbox sees the complete
-        // command: every provider flag the SDK added is already in place.
-        const launch = this.#context.wrapProcessLaunch({
-          args: mcpConfig.args,
-          cwd: cwd ?? this.#context.workspacePath,
-          environment,
-          executable: command,
-        });
-        const child = spawn(launch.executable, launch.args, {
-          cwd: launch.cwd,
-          env: { ...launch.environment },
-          signal,
-          stdio: ["pipe", "pipe", "pipe"],
-          windowsHide: true,
-        });
-        child.once("exit", mcpConfig.remove);
-        child.once("error", mcpConfig.remove);
-        child.stderr.setEncoding("utf8");
-        child.stderr.on("data", (chunk: string) => active.stderr.append(chunk));
-        return child;
+        let supervised: SupervisedProcess;
+        try {
+          // The wrapper runs last so the Runner's sandbox sees the complete
+          // command: every provider flag the SDK added is already in place.
+          const launch = this.#context.wrapProcessLaunch({
+            args: mcpConfig.args,
+            cwd: cwd ?? this.#context.workspacePath,
+            environment,
+            executable: command,
+          });
+          supervised = spawnSupervised({ ...launch, signal });
+        } catch (error) {
+          mcpConfig.remove();
+          throw error;
+        }
+        // The supervisor exits only once the whole tree has, so nothing can
+        // still be reading the file when it goes.
+        void supervised.exited.then(mcpConfig.remove, mcpConfig.remove);
+        supervised.child.stderr.setEncoding("utf8");
+        supervised.child.stderr.on("data", (chunk: string) => active.stderr.append(chunk));
+        return claudeSdkProcess(supervised);
       },
       ...(this.#hasProviderTranscript
         ? { resume: this.providerSessionReference }
@@ -3133,6 +3155,7 @@ class ClaudeHarnessSession implements HarnessSession {
     }
     const builtinTools = new Set<string>([
       ...claudeBuiltinTools,
+      ...claudeShellTools(),
       ...claudeDelegationTools,
       claudeTaskStopTool,
     ]);
@@ -3349,12 +3372,16 @@ function buildClaudeEnvironment(
   provider: ClaudeHarnessConfig["provider"],
 ): Record<string, string | undefined> {
   assertProviderConfiguration(supplied, provider);
-  const environment: Record<string, string | undefined> = {};
+  const inherited: Record<string, string> = {};
   for (const key of inheritedEnvironmentKeys) {
     const value = supplied[key] ?? process.env[key];
-    if (value !== undefined) environment[key] = value;
+    if (value !== undefined) inherited[key] = value;
   }
-  Object.assign(environment, supplied);
+  const environment: Record<string, string | undefined> = mergeEnvironment(
+    inherited,
+    supplied,
+    process.platform,
+  );
 
   for (const flag of providerRouteFlags) {
     delete environment[flag];
@@ -3648,7 +3675,7 @@ function describeToolRequest(toolName: string, input: Readonly<Record<string, un
 
 function classifyToolRisk(toolName: string): "low" | "medium" | "high" {
   if (/^(Read|Glob|Grep|WebSearch)$/u.test(toolName)) return "low";
-  if (/^(Bash|Write|Edit|NotebookEdit|WebFetch)$/u.test(toolName)) return "high";
+  if (/^(Bash|PowerShell|Write|Edit|NotebookEdit|WebFetch)$/u.test(toolName)) return "high";
   return "medium";
 }
 

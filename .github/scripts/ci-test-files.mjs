@@ -57,12 +57,21 @@ export const optInIntegrationBenchmarks = [
   "tests/team-mobile-network.integration.test.ts",
   "tests/team-performance.integration.test.ts",
 ];
+// Real Windows behaviour (the supervisor's Job, cmd, junctions, a non-administrator token).
+// Only the native-windows lane runs them, through vitest.windows.config.ts.
+export const windowsTestInclude = [
+  "apps/**/*.windows.test.ts",
+  "packages/**/*.windows.test.ts",
+  "tests/**/*.windows.test.ts",
+];
 export const defaultTestExclude = [
   "**/*.integration.test.*",
   "**/*.gui.test.*",
   "**/*.engine.test.ts",
   "**/*.device.test.ts",
   "**/*.soak.test.ts",
+  // Windows-real tests run on the Windows job through vitest.windows.config.ts.
+  "**/*.windows.test.ts",
   // VM journeys select their own config inside pnpm test:vm.
   "**/*.vm.test.*",
 ];

@@ -59,7 +59,8 @@ import {
   type AgentEventView as AgentEvent,
   type RunnerId,
 } from "@opensteer/core";
-import { findExecutableOnPath, nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
+import { nativeUserHarnessRuntimeBoundary } from "@opensteer/harness";
+import { hostCommandPlatform, resolveCommand } from "@opensteer/shared/command";
 import {
   createHarnessRegistry,
   parseAgentExecutionConfig,
@@ -795,7 +796,13 @@ async function installedCliVersion(
 ): Promise<{ readonly path: string; readonly version: string } | null> {
   const entry = shippedHarnessCatalogEntry(driverKind);
   const command = "installed" in entry ? entry.installed?.command : undefined;
-  const path = command ? findExecutableOnPath(command, process.env.PATH) : undefined;
+  const path = command
+    ? resolveCommand(command, {
+        cwd: process.cwd(),
+        environment: process.env,
+        platform: hostCommandPlatform(),
+      })?.path
+    : undefined;
   if (!path) return null;
   return { path, version: (await runCommand(path, ["--version"])).trim() };
 }

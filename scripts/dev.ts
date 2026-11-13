@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-import type { ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadOrCreateHostKeys } from "../apps/host/src/identity/host-keys.js";
+import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import {
   assertDevelopmentListenersAvailable,
   assertDevelopmentEnvironment,
@@ -13,9 +14,11 @@ import {
   DevelopmentStackLock,
   developmentListeners,
   developmentKind,
-  signalProcessTree,
-  spawnInProcessGroup,
+  spawnDevelopmentProcess,
+  type DevelopmentProcess,
 } from "./dev-supervisor.js";
+import { pnpmInvocation } from "./pnpm-invocation.js";
+import { builtProcessSupervisor } from "./process-supervisor-path.js";
 import {
   openBrowser,
   parseOpenBrowser,
@@ -64,6 +67,15 @@ export function parseShutdownGraceMs(value: string | undefined): number {
   return parsed;
 }
 
+const repositoryRoot = resolve(import.meta.dirname, "..");
+
+/** Every service and preflight build below runs under the supervisor this builds. */
+export const processSupervisorBuild = [
+  "--filter",
+  "@opensteer/desktop",
+  "build:process-supervisor",
+] as const;
+
 export function developmentPreflightCommands(
   services: readonly ServiceName[],
   kind: ReturnType<typeof developmentKind> = "personal",
@@ -95,7 +107,9 @@ export async function runDevelopmentStack(
     throw new Error("Team development runs only host and web");
   await configureDevelopmentBrowserRuntimeEnvironment(services, environment);
   const shutdownGraceMs = parseShutdownGraceMs(environment.OPENSTEER_DEV_SHUTDOWN_GRACE_MS);
-  const children = new Map<ServiceName, ChildProcess>();
+  const pnpm = pnpmInvocation(environment);
+  const supervisor = environment[processSupervisorExecutableVariable]!;
+  const children = new Map<ServiceName, DevelopmentProcess>();
   const shutdown = new AbortController();
   const stackLock = await DevelopmentStackLock.acquire(
     resolve(import.meta.dirname, "..", ".opensteer", "dev.lock"),
@@ -106,8 +120,10 @@ export async function runDevelopmentStack(
 
   try {
     await assertDevelopmentListenersAvailable(developmentListeners(services, environment));
+    await buildProcessSupervisor(pnpm, environment, signal);
     for (const command of developmentPreflightCommands(services, deploymentShape)) {
-      await runPnpm(command, environment, signal);
+      if (signal?.aborted) return;
+      await runSupervisedPreflight(supervisor, [...pnpm, ...command], environment, signal);
     }
     if (signal?.aborted) return;
     await new Promise<void>((resolvePromise, rejectPromise) => {
@@ -127,13 +143,9 @@ export async function runDevelopmentStack(
           // completes.
           for (const service of unspawned) settleService(service);
           unspawned.clear();
-          for (const child of children.values()) {
-            signalProcessTree(child, "SIGTERM");
-          }
+          for (const child of children.values()) child.stop("graceful");
           forceTimer = setTimeout(() => {
-            for (const child of children.values()) {
-              signalProcessTree(child, "SIGKILL");
-            }
+            for (const child of children.values()) child.stop("force");
           }, shutdownGraceMs);
           forceTimer.unref();
         }
@@ -157,30 +169,35 @@ export async function runDevelopmentStack(
         extraEnvironment: NodeJS.ProcessEnv = {},
       ): void => {
         if (stopping || !unspawned.delete(service)) return;
-        const serviceEnvironment = { ...environment, ...extraEnvironment };
-        let command = pnpmExecutable();
-        let arguments_: string[] = ["--filter", `@opensteer/${service}`, "dev"];
-        const child = spawnInProcessGroup(command, arguments_, {
-          cwd: resolve(import.meta.dirname, ".."),
-          env: serviceEnvironment,
-          stdio: "inherit",
-        });
-        children.set(service, child);
-        child.once("error", (error) => {
-          settleService(service, new Error(`Could not start ${service}`, { cause: error }));
-        });
-        child.once("exit", (code, childSignal) => {
-          if (stopping) {
-            settleService(service);
-            return;
-          }
-          settleService(
-            service,
-            new Error(
-              `${service} stopped unexpectedly (${childSignal ? `signal ${childSignal}` : `exit ${code ?? "unknown"}`})`,
-            ),
+        let child: DevelopmentProcess;
+        try {
+          child = spawnDevelopmentProcess(
+            supervisor,
+            [...pnpm, "--filter", `@opensteer/${service}`, "dev"],
+            { cwd: repositoryRoot, env: { ...environment, ...extraEnvironment } },
           );
-        });
+        } catch (error) {
+          settleService(service, new Error(`Could not start ${service}`, { cause: error }));
+          return;
+        }
+        children.set(service, child);
+        child.exited.then(
+          ({ code, signal: childSignal }) => {
+            if (stopping) {
+              settleService(service);
+              return;
+            }
+            settleService(
+              service,
+              new Error(
+                `${service} stopped unexpectedly (${childSignal ? `signal ${childSignal}` : `exit ${code ?? "unknown"}`})`,
+              ),
+            );
+          },
+          (error: unknown) => {
+            settleService(service, new Error(`Could not start ${service}`, { cause: error }));
+          },
+        );
       };
 
       void startDevelopmentServices(services, startService, environment, shutdown.signal).catch(
@@ -191,9 +208,9 @@ export async function runDevelopmentStack(
     });
   } finally {
     signal?.removeEventListener("abort", abort);
-    for (const child of children.values()) {
-      signalProcessTree(child, "SIGKILL");
-    }
+    for (const child of children.values()) child.stop("force");
+    // The lock is free only once every supervisor has seen its tree end.
+    await Promise.allSettled([...children.values()].map((child) => child.exited));
     await stackLock.release();
   }
 }
@@ -329,7 +346,12 @@ export function configureDevelopmentEnvironment(
   environment.OPENSTEER_DEPLOYMENT_KIND = kind;
   environment.OPENSTEER_DEPLOYMENT_NAME ||=
     kind === "personal" ? "Development" : "Development team";
-  const repositoryRoot = resolve(import.meta.dirname, "..");
+  const supervisor =
+    environment[processSupervisorExecutableVariable]?.trim() ||
+    builtProcessSupervisor(repositoryRoot);
+  if (!isAbsolute(supervisor))
+    throw new Error("The development process supervisor path must be absolute");
+  environment[processSupervisorExecutableVariable] = supervisor;
   if (kind === "team") {
     environment.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN ||= createHmac(
       "sha256",
@@ -518,50 +540,82 @@ async function loadLocalEnvironment(): Promise<void> {
   process.loadEnvFile(path);
 }
 
-function pnpmExecutable(): string {
-  return process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-}
-
-async function runPnpm(
-  arguments_: readonly string[],
+/**
+ * The supervisor cannot run under itself, so its build runs in this terminal's
+ * process group and console, where an interrupt reaches it directly.
+ */
+async function buildProcessSupervisor(
+  pnpm: readonly [string, string],
   environment: NodeJS.ProcessEnv,
   signal: AbortSignal | undefined,
 ): Promise<void> {
-  await new Promise<void>((resolvePromise, rejectPromise) => {
-    const child = spawnInProcessGroup(pnpmExecutable(), arguments_, {
-      cwd: resolve(import.meta.dirname, ".."),
-      env: environment,
-      stdio: "inherit",
-    });
-    let forceTimer: NodeJS.Timeout | undefined;
-    const abort = () => {
-      signalProcessTree(child, "SIGTERM");
-      forceTimer = setTimeout(() => signalProcessTree(child, "SIGKILL"), 5_000);
-      forceTimer.unref();
-    };
-    signal?.addEventListener("abort", abort, { once: true });
-    child.once("error", (error) => {
-      if (forceTimer) clearTimeout(forceTimer);
-      signal?.removeEventListener("abort", abort);
+  const [command, ...arguments_] = [...pnpm, ...processSupervisorBuild];
+  const child = spawn(command, arguments_, {
+    cwd: repositoryRoot,
+    env: environment,
+    shell: false,
+    stdio: "inherit",
+  });
+  const [code, childSignal] = (await new Promise((resolvePromise, rejectPromise) => {
+    child.once("error", (error) =>
       rejectPromise(
-        new Error(`Development preflight could not start: ${arguments_.join(" ")}`, {
+        new Error("Development preflight could not build the process supervisor", {
           cause: error,
         }),
+      ),
+    );
+    child.once("exit", (...result) => resolvePromise(result));
+  })) as [number | null, NodeJS.Signals | null];
+  if (code !== 0 && !signal?.aborted)
+    throw new Error(
+      `Development preflight failed (${childSignal ? `signal ${childSignal}` : `exit ${code ?? "unknown"}`}): ${processSupervisorBuild.join(" ")}`,
+    );
+}
+
+async function runSupervisedPreflight(
+  supervisor: string,
+  command: readonly [string, ...string[]],
+  environment: NodeJS.ProcessEnv,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  const label = command.slice(2).join(" ");
+  let child: DevelopmentProcess;
+  try {
+    child = spawnDevelopmentProcess(supervisor, command, { cwd: repositoryRoot, env: environment });
+  } catch (error) {
+    throw new Error(`Development preflight could not start: ${label}`, { cause: error });
+  }
+  let forceTimer: NodeJS.Timeout | undefined;
+  const abort = () => {
+    child.stop("graceful");
+    forceTimer = setTimeout(() => child.stop("force"), 5_000);
+    forceTimer.unref();
+  };
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
+    const { code, signal: childSignal } = await child.exited.catch((error: unknown) => {
+      throw new Error(`Development preflight could not start: ${label}`, { cause: error });
+    });
+    if (code !== 0 && !signal?.aborted)
+      throw new Error(
+        `Development preflight failed (${childSignal ? `signal ${childSignal}` : `exit ${code ?? "unknown"}`}): ${label}`,
       );
-    });
-    child.once("exit", (code, childSignal) => {
-      if (forceTimer) clearTimeout(forceTimer);
-      signal?.removeEventListener("abort", abort);
-      if (code === 0) resolvePromise();
-      else {
-        rejectPromise(
-          new Error(
-            `Development preflight failed (${childSignal ? `signal ${childSignal}` : `exit ${code ?? "unknown"}`}): ${arguments_.join(" ")}`,
-          ),
-        );
-      }
-    });
-  });
+  } finally {
+    if (forceTimer) clearTimeout(forceTimer);
+    signal?.removeEventListener("abort", abort);
+  }
+}
+
+/** `dev.ts team` is `pnpm dev:team`: a team Host and web, before `.env` is read. */
+export function selectDevelopmentShape(
+  arguments_: readonly string[],
+  environment: NodeJS.ProcessEnv,
+): void {
+  if (arguments_.length === 0) return;
+  if (arguments_.length !== 1 || arguments_[0] !== "team")
+    throw new Error("Usage: tsx scripts/dev.ts [team]");
+  environment.OPENSTEER_DEPLOYMENT_KIND = "team";
+  environment.OPENSTEER_DEV_SERVICES = "host,web";
 }
 
 async function main(): Promise<void> {
@@ -575,16 +629,18 @@ async function main(): Promise<void> {
     secondSignal = true;
     controller.abort();
   };
-  // Keep both handlers installed until cleanup completes. pnpm and tsx can
+  // Keep the handlers installed until cleanup completes. pnpm and tsx can
   // forward more than one terminal signal; a one-shot handler would restore
   // Node's default immediate-exit behavior before the lock is released.
-  process.on("SIGINT", stop);
-  process.on("SIGTERM", stop);
+  // Windows consoles deliver Ctrl+Break and window close as SIGBREAK.
+  const stopSignals: readonly NodeJS.Signals[] =
+    process.platform === "win32" ? ["SIGINT", "SIGTERM", "SIGBREAK"] : ["SIGINT", "SIGTERM"];
+  for (const name of stopSignals) process.on(name, stop);
   try {
+    selectDevelopmentShape(process.argv.slice(2), process.env);
     await runDevelopmentStack(process.env, controller.signal);
   } finally {
-    process.off("SIGINT", stop);
-    process.off("SIGTERM", stop);
+    for (const name of stopSignals) process.off(name, stop);
   }
 }
 

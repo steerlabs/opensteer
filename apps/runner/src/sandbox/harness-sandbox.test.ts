@@ -129,6 +129,36 @@ describe("harness sandbox mounts", () => {
     }
   });
 
+  it("lets a program write only its result file over its read-only private files", async () => {
+    const fixture = await createFixture();
+    const programRoot = join(fixture.privateRoot, "trigger-programs", "tocc_1");
+    const resultFile = join(programRoot, "result.json");
+    await mkdir(programRoot, { recursive: true });
+    await writeFile(resultFile, "");
+    const args = await programSandboxMounts(fixture.layout, {
+      environment: fixture.environment,
+      privateDirectory: programRoot,
+      resultFile,
+      workspacePath: fixture.workspaceA,
+    });
+
+    const directory = segmentIndex(args, readOnlyBind(programRoot));
+    expect(directory).toBeGreaterThanOrEqual(0);
+    expect(segmentIndex(args, bind(programRoot))).toBe(-1);
+    expect(segmentIndex(args, bind(resultFile))).toBeGreaterThan(directory);
+
+    const outside = join(fixture.privateRoot, "result.json");
+    await writeFile(outside, "");
+    await expect(
+      programSandboxMounts(fixture.layout, {
+        environment: fixture.environment,
+        privateDirectory: programRoot,
+        resultFile: outside,
+        workspacePath: fixture.workspaceA,
+      }),
+    ).rejects.toThrow(/directly in its private directory/u);
+  });
+
   it("refuses a program private directory outside the data directory", async () => {
     const fixture = await createFixture();
     await expect(
