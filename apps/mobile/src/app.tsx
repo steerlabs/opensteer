@@ -70,6 +70,9 @@ import {
 } from "./links.js";
 import { Navigation, navigationTheme } from "./navigation.js";
 import { navigationRef } from "./navigation-ref.js";
+import { openTopLevel } from "./top-level.js";
+import { sidebarRef } from "./sidebar/sidebar-context.js";
+import { isRecord } from "@opensteer/shared/isRecord";
 import {
   agentAuthorizationRoot,
   linkedSelectionFailureIsCurrent,
@@ -682,8 +685,28 @@ export function App(): ReactNode {
         );
         observeRootSelection();
       });
-      if (navigationRef.isReady()) navigationRef.resetRoot(destination);
-      else waiting.current = destination;
+      if (!navigationRef.isReady()) {
+        waiting.current = destination;
+        return;
+      }
+      sidebarRef.current?.close();
+      // On the computer already shown, the task opens top-level over the same
+      // mounted Home, as the sidebar would open it, rather than rebuilding Home.
+      const root = navigationRef.getRootState();
+      const thread = outcome.kind === "authorize-agent" ? undefined : destination.routes[1];
+      const home = root?.routes[0];
+      if (
+        root !== undefined &&
+        thread !== undefined &&
+        home?.name === "Home" &&
+        isRecord(home.params) &&
+        home.params["deploymentId"] === outcome.deploymentId
+      ) {
+        const action = openTopLevel(root, { name: thread.name, params: thread.params ?? {} });
+        if (action !== null) navigationRef.dispatch(action);
+        return;
+      }
+      navigationRef.resetRoot(destination);
     };
 
     let waitingNeedsBroker = false;

@@ -9,14 +9,12 @@ import {
   useIsFocused,
   type Theme,
 } from "@react-navigation/native";
-import {
-  createNativeStackNavigator,
-  type NativeStackNavigationOptions,
-} from "@react-navigation/native-stack";
+import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { Platform } from "react-native";
 import type { SurfacesRoute } from "./browser/surface-route.js";
 import { SetUpPhoneScreen } from "./phone-setup/setup-screen.js";
-import { headerActions, stackScreenOptions } from "./navigation-header.js";
+import { headerActions, stackScreenOptions, TopLevelMenu } from "./navigation-header.js";
+import { isTopLevel, topLevelScreenOptions } from "./top-level.js";
 import { AddDeploymentScreen } from "./screens/add-deployment.js";
 import { AddPersonalScreen } from "./screens/add-personal.js";
 import { AddServerScreen } from "./screens/add-server.js";
@@ -123,13 +121,11 @@ import { thisPhoneNoun } from "./computers/phone-noun.js";
  * tap arrive at the same screen by the same path. The header uses the platform
  * face and stays native chrome.
  *
- * Home — the reader's agent and their tasks — is the root of every
- * Deployment's stack and stays mounted under everything pushed over it. Needs
- * you, Tabs and Automations are the drawer's other places: each is pushed over
- * Home with the Menu in place of Back, and choosing Tasks returns to Home, so
- * the stack never grows by moving around the drawer. A team's channels, DMs and
- * threads are ordinary pushes with the native Back, like a task: they return to
- * the screen they were opened from, and Home is always underneath.
+ * Home — the New task composer — is the root of every Deployment's stack and
+ * stays mounted under everything. The screen directly on it is top-level, with
+ * the Menu where Back would be, and whatever is opened from it is pushed over
+ * it with the native Back (`top-level.ts`). Neither is a property of a route:
+ * the same task is top-level from the sidebar and a drill-in from another task.
  *
  * The drawer is the stack's own `layout` (`SidebarShell`): one navigator, one
  * history, with the drawer or docked column around it.
@@ -143,6 +139,7 @@ function ScreenLayout(props: { readonly children: ReactNode; readonly modal: boo
   return (
     <>
       {props.modal ? <Pane>{props.children}</Pane> : props.children}
+      {props.modal ? null : <TopLevelMenu />}
       <SheetAnchor active={focused} level={1} />
     </>
   );
@@ -162,7 +159,12 @@ const RootStack = createNativeStackNavigator({
       {children}
     </ScreenLayout>
   ),
-  screenOptions: stackScreenOptions,
+  // Recomputed as the stack changes, so a top-level screen's transition is in
+  // force as it is pushed, and its pop fades the same way back to Home.
+  screenOptions: ({ navigation, route }) =>
+    isTopLevel(navigation.getState(), route.key)
+      ? { ...stackScreenOptions, ...topLevelScreenOptions }
+      : stackScreenOptions,
   screens: {
     Deployments: {
       screen: DeploymentsScreen,
@@ -184,7 +186,7 @@ const RootStack = createNativeStackNavigator({
       }),
     },
     // Home: the new-task composer, holding its one unsent draft.
-    // The root every other screen of a Deployment is pushed over.
+    // The root every top-level screen of a Deployment stands on.
     Home: { screen: HomeScreen, options: { title: "Tasks" } },
     // Every task in Done, newest Done first, from the last line of the drawer's Tasks.
     DoneTasks: { screen: DoneTasksScreen, options: { headerLargeTitle: true, title: "Done" } },
@@ -201,29 +203,20 @@ const RootStack = createNativeStackNavigator({
     },
     // A team's page from its drawer row: channels, then DMs; its menu is the title.
     TeamHome: { screen: TeamHomeScreen, options: { title: "" } },
-    // Every tab this person may see, from the drawer like Needs you. A tab
-    // opened from here is shown alone.
-    Tabs: { screen: TabsScreen, options: { ...destinationOptions(), title: "Tabs" } },
+    // Every tab this person may see, from the sidebar. A tab opened from here
+    // is shown alone.
+    Tabs: { screen: TabsScreen, options: { headerLargeTitle: true, title: "Tabs" } },
     // Everything set to run on its own, from the sidebar like Tabs.
     Schedules: {
       screen: SchedulesScreen,
-      options: { ...destinationOptions(), title: "Automations" },
+      options: { headerLargeTitle: true, title: "Automations" },
     },
     // One schedule, from Schedules or a thread's Around sheet. Its name is
     // the large title, set once it loads.
     Schedule: { screen: ScheduleScreen, options: { headerLargeTitle: true, title: "" } },
-    Thread: {
-      screen: ThreadScreen,
-      // A task just started takes the place of its New task screen: it fades
-      // in where that screen was, the composer where it was, rather than
-      // sliding over it as if it were a step further in.
-      options: ({ route }) => ({
-        ...(isRecord(route.params) && route.params["started"] === true
-          ? { animation: "fade" as const }
-          : {}),
-        title: "Thread",
-      }),
-    },
+    // A task just started from Home is top-level, so it fades in where New
+    // task was, the composer where it was.
+    Thread: { screen: ThreadScreen, options: { title: "Thread" } },
     // A subagent's own read-only conversation, pushed over the one that started
     // it; its own header names it, and Back returns to the parent.
     Subagent: { screen: SubagentScreen, options: { title: "Subagent" } },
@@ -668,21 +661,6 @@ const RootStack = createNativeStackNavigator({
   },
 });
 
-/**
- * A drawer place other than Home. It has the Menu where Back would be, so the
- * edge swipe belongs to the drawer rather than to a pop, and it fades in rather
- * than sliding: it is a place beside Home, not a step deeper into it. Android's
- * Back still returns to Home.
- */
-function destinationOptions(): NativeStackNavigationOptions {
-  return {
-    animation: "fade",
-    gestureEnabled: false,
-    headerBackVisible: false,
-    headerLargeTitle: true,
-  };
-}
-
 type OpensteerRootParamList = {
   readonly TeamChannel: TeamChannelRoute;
   readonly TeamThread: TeamThreadRoute;
@@ -795,8 +773,6 @@ type OpensteerRootParamList = {
      */
     readonly messageId?: string | undefined;
     readonly requestId?: string;
-    /** Set when New task just made this task and this screen replaces it. */
-    readonly started?: boolean;
     readonly threadId: string;
   };
   readonly ThreadAround: {

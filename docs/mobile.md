@@ -39,6 +39,16 @@ suppression loads before selection is restored. Verify through the resolved rout
 Host's loopback origin. Unreachable discovery is a connection state, not proof of incompatibility; a
 definitive identity or epoch refusal revokes the attachment and fences pending credential reads.
 
+## Navigation
+
+One native stack serves every screen, so links, notifications and folding keep one history. A
+screen's position decides what its leading control and edge swipe do, never its route name
+([top-level.ts](../apps/mobile/src/top-level.ts)): the screen directly on Home is top-level, with
+Menu and a swipe that opens the sidebar; anything opened from it is a drill-in with Back. The same
+task is top-level from the sidebar and a drill-in from the task that started it. The sidebar swipe is
+edge-only and never takes an edge a streamed page uses, because a swipe anywhere on content fires by
+accident, and Android reserves both edges for system Back.
+
 ## Drafts and decisions
 
 Drafts and pending sends are scoped by Deployment, user and Thread. Persist the exact command and

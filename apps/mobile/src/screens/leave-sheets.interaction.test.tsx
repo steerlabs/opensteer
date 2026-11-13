@@ -73,3 +73,36 @@ describe("a new task started from Settings", () => {
     expect(state.dispatch.mock.calls).toEqual([[{ type: "POP_TO_TOP" }]]);
   });
 });
+
+describe("a task opened from Settings", () => {
+  it("closes Settings and everything opened inside it, back to the screen it was opened over", async () => {
+    // Settings opened over one automation, with a page of its own pushed inside it.
+    state.routes = [
+      { name: "Home" },
+      { name: "Schedules" },
+      { name: "Schedule" },
+      { name: "Settings" },
+      { name: "SettingsDevices" },
+    ];
+    let leave: ReturnType<typeof useLeaveSheets> | null = null;
+    function Probe(): ReactNode {
+      leave = useLeaveSheets("deployment-a", host);
+      return null;
+    }
+    root = createRoot(document.body.appendChild(document.createElement("div")));
+    await act(async () => root!.render(<Probe />));
+
+    act(() => leave!.openThread("thread-b"));
+
+    expect(state.dispatch.mock.calls).toEqual([
+      [{ count: 2, type: "POP" }],
+      [
+        {
+          name: "Thread",
+          params: { deploymentId: "deployment-a", threadId: "thread-b" },
+          type: "PUSH",
+        },
+      ],
+    ]);
+  });
+});

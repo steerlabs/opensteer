@@ -3,21 +3,9 @@ import { StackActions, useNavigation } from "@react-navigation/native";
 import { useCallback, useMemo } from "react";
 import { newTaskDraftKey } from "../client/thread-drafts.js";
 import { homeDraftId } from "../home/home-draft.js";
+import { presentedFrom } from "../navigation-presentations.js";
 import { threadReturn } from "../navigation-state.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
-
-/** The full screens of a Deployment's stack, as opposed to the sheets over them. */
-const screenRoutes: ReadonlySet<string> = new Set([
-  "DoneTasks",
-  "Home",
-  "Tabs",
-  "TeamChannel",
-  "TeamHome",
-  "TeamThread",
-  "TaskSearch",
-  "Thread",
-  "WorkspaceBrowser",
-]);
 
 /**
  * Leaving the sheets stacked over a Deployment's work, such as Settings, for
@@ -36,10 +24,10 @@ export function useLeaveSheets(
   const navigation = useNavigation();
   const drafts = useMobileClient().drafts;
   const popSheets = useCallback(() => {
-    const routes = navigation.getState()?.routes ?? [];
-    const beneath = routes.findLastIndex(({ name }) => screenRoutes.has(name));
-    const above = routes.length - 1 - Math.max(beneath, 0);
-    if (above > 0) navigation.dispatch(StackActions.pop(above));
+    const state = navigation.getState();
+    const from = state === undefined ? -1 : presentedFrom(state);
+    if (state !== undefined && from > 0)
+      navigation.dispatch(StackActions.pop(state.index - from + 1));
   }, [navigation]);
   const openThread = useCallback(
     (threadId: string) => {
