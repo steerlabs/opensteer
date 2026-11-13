@@ -65,6 +65,14 @@ it("attaches once and atomically persists only the state already applied at its 
   expect(client.deploymentPosition()).toBe("47");
   expect([...f.host.sockets]).toEqual([socket]);
   await vi.waitFor(() => expect(commits.at(-1)?.cursor.afterSequence).toBe("47"));
+  const threadId = createId("thread");
+  socket.deliver({
+    type: "host.thread-visits",
+    visits: [{ threadId, lastVisitedAt: "2026-01-02T00:00:00.000Z" }],
+  });
+  await vi.waitFor(() =>
+    expect(commits.at(-1)?.snapshot.threadVisits[threadId]).toBe("2026-01-02T00:00:00.000Z"),
+  );
   expect(client.deploymentPosition()).toBe("47");
 });
 it("restores an applied cut only for the same Deployment, viewer and epoch", async () => {

@@ -30,3 +30,5 @@ export * from "./use-browser-tabs.js";
 export * from "./use-browser-tab-icon.js";
 export * from "./use-syncing-placeholder.js";
 export * from "./use-tab-filter.js";
+
+export * from "./use-thread-visits.js";

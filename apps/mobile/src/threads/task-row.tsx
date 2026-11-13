@@ -3,6 +3,7 @@ import {
   heldThread,
   reviewHostAction,
   sameTaskRow,
+  taskDoneConfirmation,
   taskUnderWay,
   taskMark,
   taskMarkQuiet,
@@ -300,7 +301,7 @@ export function setTaskDone(hostClient: HostClient, threadId: string, done: bool
   if (done && thread && taskUnderWay(thread)) {
     Alert.alert(
       "Stop and mark Done?",
-      "This stops its work and the tasks it handed out, and pauses its schedules.",
+      taskDoneConfirmation,
       [
         { text: "Keep working", style: "cancel", onPress: review.cancel },
         { text: "Mark Done", style: "destructive", onPress: confirm },

@@ -135,7 +135,6 @@ export const hostApiScopes = {
   "thread.inputQueue.get": "session",
   "thread.live.get": "session",
   "thread.messages.list": "session",
-  "thread.readState.get": "session",
   "thread.requests.list": "session",
   "triggers.get": "session",
   "triggers.list": "session",

@@ -7,6 +7,7 @@ import {
   type HostClient,
   type HostSnapshot,
   type TaskFamilyGlance,
+  type ThreadAutomation,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
 import { automationPath, useMediaQuery, useMinuteClock } from "../../ui-utils.js";
@@ -147,6 +148,62 @@ function FamilyPanel({
       )}
     </button>
   );
+  const automationRow = (automation: ThreadAutomation) => {
+    const content = (
+      <>
+        <span className="picker__glyph">
+          <Icon
+            name={
+              automation.kind === "schedule"
+                ? "clock"
+                : automation.kind === "watch"
+                  ? "eye"
+                  : "bolt"
+            }
+          />
+        </span>
+        <span className="task-family__text">
+          <span className="task-family__title">{automation.name}</span>
+          <span className="picker__detail">
+            {automation.ended
+              ? "Ended"
+              : automation.paused
+                ? "Paused"
+                : automation.kind === "watch"
+                  ? "Watching"
+                  : automation.kind === "webhook"
+                    ? "On webhook"
+                    : automation.nextFireAt
+                      ? (formatCountdown(automation.nextFireAt, now) ??
+                        formatMoment(automation.nextFireAt, now))
+                      : null}
+          </span>
+        </span>
+      </>
+    );
+    // One running in its own task opens that task, where its runs and reports are.
+    const taskId = automation.taskId;
+    return taskId ? (
+      <button
+        type="button"
+        className="task-family__row picker__row"
+        key={automation.id}
+        onClick={() => open(taskId)}
+      >
+        {content}
+      </button>
+    ) : (
+      <AreaLink
+        key={automation.id}
+        className="task-family__row picker__row"
+        to={automationPath(automation.id)}
+        onClick={onClose}
+      >
+        {content}
+      </AreaLink>
+    );
+  };
+  const earlierCount = earlier.length + family.ended.length;
   const remaining = earlier.length - shown;
   const body = (
     <div className="task-family">
@@ -159,47 +216,13 @@ function FamilyPanel({
       {family.automations.length > 0 ? (
         <section aria-label="Automations">
           <h2 className="task-family__heading">Automations · {family.automations.length}</h2>
-          {family.automations.map((automation) => (
-            <AreaLink
-              key={automation.id}
-              className="task-family__row picker__row"
-              to={automationPath(automation.id)}
-              onClick={onClose}
-            >
-              <span className="picker__glyph">
-                <Icon
-                  name={
-                    automation.kind === "schedule"
-                      ? "clock"
-                      : automation.kind === "watch"
-                        ? "eye"
-                        : "bolt"
-                  }
-                />
-              </span>
-              <span className="task-family__text">
-                <span className="task-family__title">{automation.name}</span>
-                <span className="picker__detail">
-                  {automation.paused
-                    ? "Paused"
-                    : automation.kind === "watch"
-                      ? "Watching"
-                      : automation.kind === "webhook"
-                        ? "On webhook"
-                        : automation.nextFireAt
-                          ? (formatCountdown(automation.nextFireAt, now) ??
-                            formatMoment(automation.nextFireAt, now))
-                          : null}
-                </span>
-              </span>
-            </AreaLink>
-          ))}
+          {family.automations.map(automationRow)}
         </section>
       ) : null}
-      {earlier.length > 0 ? (
+      {earlierCount > 0 ? (
         <section aria-label="Earlier">
           {onlyEarlier ? (
-            <h2 className="task-family__heading">Earlier · {earlier.length}</h2>
+            <h2 className="task-family__heading">Earlier · {earlierCount}</h2>
           ) : (
             <button
               type="button"
@@ -207,7 +230,7 @@ function FamilyPanel({
               aria-expanded={earlierOpen}
               onClick={() => setEarlierOpen((value) => !value)}
             >
-              Earlier · {earlier.length}
+              Earlier · {earlierCount}
               <Icon name={earlierOpen ? "arrow-up" : "chevron-down"} />
             </button>
           )}
@@ -223,6 +246,7 @@ function FamilyPanel({
                   {remaining > 50 ? "Show 50 more" : "Show all"}
                 </button>
               ) : null}
+              {family.ended.map(automationRow)}
             </>
           ) : null}
         </section>

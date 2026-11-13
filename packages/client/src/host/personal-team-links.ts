@@ -1,7 +1,6 @@
 import type { HostApiClient } from "@opensteer/protocol";
 import { unwrapRpcResult } from "./host-session-client.js";
 import type { HostClient } from "./client.js";
-import { compareSequence } from "@opensteer/core";
 import { DeploymentIdSchema, TeamChannelIdSchema, TeamMessageIdSchema } from "@opensteer/core";
 export class PersonalTeamLinks {
   readonly rpc: HostApiClient;
@@ -34,7 +33,7 @@ export class PersonalTeamLinks {
 
 /** Reads only the local publication corresponding to the reply the person saw. */
 export async function readTeamReply(
-  client: Pick<HostClient, "getSnapshot" | "markThreadRead" | "rpc">,
+  client: Pick<HostClient, "getSnapshot" | "visitThread" | "rpc">,
   origin: {
     readonly teamId: string;
     readonly channelId: string;
@@ -52,24 +51,23 @@ export async function readTeamReply(
     }),
   );
   if (!visible()) return false;
-  if (!publication.taskId || !publication.throughSequence) return false;
-  const state = client.getSnapshot().threadReadStates[publication.taskId];
-  if (!state || compareSequence(state.asOfSequence, publication.throughSequence) < 0) return false;
-  if (state.readSequence && compareSequence(state.readSequence, publication.throughSequence) >= 0)
-    return true;
-  await client.markThreadRead(publication.taskId, publication.throughSequence);
+  if (!publication.taskId || !publication.completedAt) return false;
+  const visitedAt = client.getSnapshot().threadVisits[publication.taskId];
+  if (visitedAt && visitedAt >= publication.completedAt) return true;
+  await client.visitThread(publication.taskId, publication.completedAt);
   return true;
 }
 
-/** Keeps an unresolved visible reply waiting on personal read-state notices, without polling. */
+/** Keeps an unresolved visible reply waiting on personal task and visit notices, without polling. */
 export function watchTeamReplyRead(
-  client: Pick<HostClient, "getSnapshot" | "markThreadRead" | "rpc" | "subscribe">,
+  client: Pick<HostClient, "getSnapshot" | "visitThread" | "rpc" | "subscribe">,
   origin: Parameters<typeof readTeamReply>[1],
 ): () => void {
   let active = true;
   let reading = false;
   let again = false;
-  let states = client.getSnapshot().threadReadStates;
+  let states = client.getSnapshot().threadVisits;
+  let tasks = client.getSnapshot().tasks;
   let unsubscribe: () => void = () => undefined;
   const stop = () => {
     active = false;
@@ -96,9 +94,10 @@ export function watchTeamReplyRead(
       });
   };
   unsubscribe = client.subscribe(() => {
-    const next = client.getSnapshot().threadReadStates;
-    if (states === next) return;
-    states = next;
+    const snapshot = client.getSnapshot();
+    if (states === snapshot.threadVisits && tasks === snapshot.tasks) return;
+    states = snapshot.threadVisits;
+    tasks = snapshot.tasks;
     read();
   });
   read();

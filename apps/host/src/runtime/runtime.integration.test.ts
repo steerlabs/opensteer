@@ -1857,6 +1857,7 @@ integration("Host vertical slice", () => {
     expect(repaired).toEqual([
       {
         data: {
+          latestRunCompletedAt: null,
           pendingRequests: 0,
           inputQueuePaused: false,
           status: "idle",
@@ -1868,6 +1869,7 @@ integration("Host vertical slice", () => {
       },
       {
         data: {
+          latestRunCompletedAt: null,
           pendingRequests: 0,
           inputQueuePaused: false,
           status: "idle",

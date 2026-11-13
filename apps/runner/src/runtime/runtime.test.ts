@@ -3742,6 +3742,52 @@ describe("RunnerRuntime", () => {
     await runtime.close();
   });
 
+  it.each(
+    harnessCatalog.flatMap(({ kind }) => [
+      { kind, reference: null },
+      { kind, reference: "pinned-native-session" },
+    ]),
+  )(
+    "uses shared start/resume for $kind with native reference $reference",
+    async ({ kind, reference }) => {
+      const session = new ReferenceHarnessSession(reference ?? "new-native-session");
+      const driver = new FakeHarnessDriver(kind, () => session);
+      const registry = new HarnessRegistry();
+      registry.registerDriver(driver);
+      const environmentId = createId("environment");
+      const runtime = configuredRuntime({ environmentId, registry });
+      const command = executeCommand(environmentId, kind);
+      command.context.providerSessionStateLayout = "session";
+      command.context.providerSessionReference = reference;
+      const messages: RunnerOperationalReport[] = [];
+      try {
+        await reconcile(registry, command);
+        await runtime.handleCommand(command, {
+          send: async (message) => void messages.push(message),
+        });
+        await vi.waitFor(
+          () =>
+            expect(
+              hasEvent(messages, "run.completed"),
+              "The engine did not complete the session turn",
+            ).toBe(true),
+          { timeout: 2_000 },
+        );
+        expect(driver.resumedReferences).toEqual(reference ? [reference] : []);
+        expect(driver.contexts).toHaveLength(1);
+        expect(session.executions).toBe(1);
+        expect(messages).toContainEqual(
+          expect.objectContaining({
+            type: "runner.session-bound",
+            providerSessionReference: reference ?? "new-native-session",
+          }),
+        );
+      } finally {
+        await runtime.close();
+      }
+    },
+  );
+
   it.each([
     ["personal local-directory", testPersonalDeploymentShape],
     ["server local-directory", testDeploymentShape],

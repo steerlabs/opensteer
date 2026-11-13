@@ -1,3 +1,4 @@
+import { freshContextBoundary } from "./fresh-context.js";
 import { threadAllowsPersonalContext } from "./run-personal-context.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
@@ -44,7 +45,6 @@ import {
   ReplyTargetSchema,
   ThreadAccessModeSchema,
   ThreadInputPolicySchema,
-  agentDelegationMaxDepth,
   causalChainMaxDelegations,
   causalChainMaxAutonomousRuns,
   createId,
@@ -96,6 +96,8 @@ import {
   runFromRow,
   threadFromRow,
   threadPendingRequestsSelection,
+  threadVisitSelection,
+  threadLatestRunCompletedAtSelection,
   threadProviderSessionSelection,
   threadContinuationIdentitySelection,
   threadInputFromRow,
@@ -128,6 +130,11 @@ import type {
 } from "./store.js";
 import { appendHostDeploymentEvent } from "./deployment-events.js";
 import { appendDoneState, requireThreadWriteAuthority } from "./task-done.js";
+import {
+  assertDelegationDepth,
+  descendsByParentLink,
+  nearestListedThread,
+} from "./thread-lineage.js";
 import {
   revokeRunGrants,
   runHasActiveGrant,
@@ -257,7 +264,10 @@ export async function readThreadInputQueue(
         canCancel: own && thread.status !== "archived",
         canMove: own && thread.status !== "archived",
         canSteer: Boolean(
-          steerable && own && isDeepStrictEqual(row.replyTarget, active.replyTarget),
+          steerable &&
+          own &&
+          !row.freshContext &&
+          isDeepStrictEqual(row.replyTarget, active.replyTarget),
         ),
       };
     }),
@@ -406,7 +416,20 @@ async function claimFollowUps(
   readonly claimed: number;
   readonly events: readonly AgentEvent[];
 }> {
+  const barrier = await transaction
+    .selectFrom("threadInputs")
+    .select("queueRank")
+    .where("threadId", "=", thread.id)
+    .where("state", "=", "pending")
+    .where("policy", "=", "queue")
+    .where("freshContext", "=", true)
+    .orderBy("queueRank", "asc")
+    .limit(1)
+    .executeTakeFirst();
   const waiting = await conversationFollowUps(transaction, run, thread.id)
+    .$if(barrier !== undefined, (query) =>
+      query.where("threadInputs.queueRank", "<", barrier!.queueRank),
+    )
     .select("threadInputs.messageId")
     .orderBy("threadInputs.queueRank", "asc")
     .limit(input.limit)
@@ -899,6 +922,11 @@ export async function steerThreadInputInTransaction(
       throw idempotencyConflict(request.idempotencyKey);
     return replayThreadInput(transaction, row);
   }
+  if (row.freshContext)
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "A fresh-context input must start its own Run and cannot be steered.",
+    });
   // A stopped or cancelled Run keeps running until its Runner winds it down,
   // but it takes nothing new.
   const route = run.status === "running" ? await steerRoute(transaction, run.id) : null;
@@ -1297,6 +1325,48 @@ export async function claimRunInputBatch(
       message: "A Run must start with its queued work item",
     });
 
+  const events: AgentEvent[] = [];
+  if (seed.freshContext) {
+    const providerSessionId = await ensureSelectedProviderSession(transaction, thread, {
+      freshRunId: run.id,
+      personalContext: await threadAllowsPersonalContext(transaction, thread.id, thread.createdBy),
+    });
+    await transaction
+      .updateTable("runs")
+      .set({ providerSessionId })
+      .where("id", "=", run.id)
+      .execute();
+    run.providerSessionId = providerSessionId;
+    const updated = await transaction
+      .selectFrom("threads")
+      .selectAll()
+      .select([
+        threadPendingRequestsSelection,
+        threadVisitSelection,
+        threadLatestRunCompletedAtSelection,
+        threadProviderSessionSelection,
+        threadContinuationIdentitySelection,
+      ])
+      .where("id", "=", thread.id)
+      .executeTakeFirstOrThrow();
+    events.push(
+      await appendHostDeploymentEvent(transaction, {
+        data: { thread: threadFromRow(updated) },
+        environmentId: thread.environmentId,
+        runId: null,
+        threadId: thread.id,
+        type: "thread.execution-updated",
+      }),
+    );
+  }
+  const seedMessage = await transaction
+    .selectFrom("messages")
+    .select("sequence")
+    .where("id", "=", seed.messageId)
+    .executeTakeFirstOrThrow();
+  const boundary = seed.freshContext
+    ? seedMessage.sequence
+    : await freshContextBoundary(transaction, run);
   // The Thread lock defines one snapshot for both first dispatch and retries.
   // Reports share delivery receipts with work, but never enter the work view.
   const throughSequence = (BigInt(thread.nextMessageSequence) - 1n).toString();
@@ -1314,7 +1384,6 @@ export async function claimRunInputBatch(
   const total = await eligible
     .select(({ fn }) => fn.countAll<string>().as("count"))
     .executeTakeFirstOrThrow();
-  const events: AgentEvent[] = [];
   const reportIds: MessageId[] = [];
   let cancelledCount = 0;
   let bytes = 2; // JSON array delimiters.
@@ -1397,6 +1466,7 @@ export async function claimRunInputBatch(
     readonly throughSequence: string | null;
   } | null = null;
   if (
+    !seed.freshContext &&
     run.providerSessionId &&
     !(await isMemoryPassWake(transaction, run.threadId, seed.authoritySource))
   ) {
@@ -1409,16 +1479,12 @@ export async function claimRunInputBatch(
       .limit(1)
       .executeTakeFirst();
     if (!priorAccepted) {
-      const seedMessage = await transaction
-        .selectFrom("messages")
-        .select("sequence")
-        .where("id", "=", seed.messageId)
-        .executeTakeFirstOrThrow();
       const history = transaction
         .selectFrom("messages")
         .leftJoin("threadInputs", "threadInputs.messageId", "messages.id")
         .where("messages.threadId", "=", run.threadId)
         .where("messages.sequence", "<", seedMessage.sequence)
+        .$if(boundary !== null, (query) => query.where("messages.sequence", ">=", boundary!))
         .where((expression) =>
           expression.or([
             expression("threadInputs.messageId", "is", null),
@@ -1993,6 +2059,8 @@ async function lockThreadInputPreconditions(
 ): Promise<{
   readonly executionValid: boolean;
   readonly prelockedActiveRunId: RunId | null;
+  /** The source may bring this Done task back without the person: see `sourceReopensDoneTask`. */
+  readonly reopensDone: boolean;
   readonly thread: ThreadRow;
 }> {
   await requirePersonalOwner(transaction, input.requestedBy);
@@ -2084,11 +2152,15 @@ async function lockThreadInputPreconditions(
       .where("id", "=", input.source.activationId)
       .forNoKeyUpdate()
       .executeTakeFirst();
+  const reopensDone =
+    thread.doneAt !== null &&
+    (await sourceReopensDoneTask(transaction, input.source, input.policy, thread.id));
   if (
     thread.doneAt &&
     input.policy !== "report" &&
     input.source.kind !== "human" &&
     !input.teamRequest &&
+    !reopensDone &&
     !(
       input.source.kind === "trigger" &&
       (await isMemoryPassWake(transaction, thread.id, {
@@ -2099,6 +2171,7 @@ async function lockThreadInputPreconditions(
   )
     throw new OpensteerError({ code: "conflict", message: "This task is Done. Reopen it first." });
   return {
+    reopensDone,
     thread,
     prelockedActiveRunId: active?.id ?? null,
     executionValid:
@@ -2345,6 +2418,11 @@ export async function enqueueThreadInputInTransaction(
     });
   }
   const policy = ThreadInputPolicySchema.parse(request.policy);
+  if (request.freshContext && policy !== "queue")
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "freshContext requires queue delivery.",
+    });
   if (request.teamRequest && (policy !== "queue" || request.source.kind !== "human"))
     throw new OpensteerError({
       code: "bad_request",
@@ -2356,12 +2434,14 @@ export async function enqueueThreadInputInTransaction(
       JSON.stringify(
         request.teamRequest
           ? {
+              ...(request.freshContext ? { freshContext: true } : {}),
               requestId: request.teamRequest.id,
               triggerMessageId: request.teamRequest.triggerMessageId,
             }
           : {
               content,
               policy,
+              ...(request.freshContext ? { freshContext: true } : {}),
               source: normalizedThreadInputSource(request.source),
               threadId: request.threadId,
               ...(request.requireUnassigned
@@ -2406,21 +2486,22 @@ export async function enqueueThreadInputInTransaction(
   if (thread.doneAt && request.policy !== "report") {
     // Writing to a Done task reopens it for whoever could reopen it by hand.
     const reopens =
-      (request.source.kind === "human" || Boolean(request.teamRequest)) &&
-      (await requireThreadWriteAuthority(
-        transaction,
-        thread,
-        {
-          requestedBy: request.requestedBy,
-        },
-        "reopen",
-      ).then(
-        () => true,
-        (error: unknown) => {
-          if (error instanceof OpensteerError && error.code === "forbidden") return false;
-          throw error;
-        },
-      ));
+      preconditions.reopensDone ||
+      ((request.source.kind === "human" || Boolean(request.teamRequest)) &&
+        (await requireThreadWriteAuthority(
+          transaction,
+          thread,
+          {
+            requestedBy: request.requestedBy,
+          },
+          "reopen",
+        ).then(
+          () => true,
+          (error: unknown) => {
+            if (error instanceof OpensteerError && error.code === "forbidden") return false;
+            throw error;
+          },
+        )));
     if (!reopens)
       throw new OpensteerError({
         code: "conflict",
@@ -2565,6 +2646,7 @@ export async function enqueueThreadInputInTransaction(
   // way: the message is accepted like any other, then handed over by the one
   // operation every moment of readiness shares.
   const conversational =
+    !request.freshContext &&
     (await conversationalReply(transaction, thread, facts.replyTarget)) &&
     policy === "queue" &&
     (request.source.kind === "human" ||
@@ -2574,6 +2656,7 @@ export async function enqueueThreadInputInTransaction(
   // message from its own requester, on the same engine and model, as a new
   // turn; anything else waits behind it.
   const joinsBackground =
+    !request.freshContext &&
     request.source.kind !== "channel" &&
     !request.teamRequest &&
     !activeRun?.teamRequestId &&
@@ -2725,6 +2808,7 @@ export async function enqueueThreadInputInTransaction(
       replyTarget: facts.replyTarget ? jsonValue(facts.replyTarget) : null,
       requestedBy: request.requestedBy,
       requestFingerprint,
+      ...(request.freshContext ? { freshContext: true } : {}),
       runId: steerRun?.id ?? null,
       state: executionValid ? (steer ? "claimed" : "pending") : "cancelled",
       steerCommandId,
@@ -3273,16 +3357,17 @@ async function resolveThreadInputFacts(
       .select(["anchorThreadId", "createdBy"])
       .where("id", "=", source.triggerId)
       .executeTakeFirst();
-    if (
-      !trigger ||
-      trigger.createdBy !== input.requestedBy ||
-      trigger.anchorThreadId !== input.targetThread.id
-    ) {
+    if (!trigger || trigger.createdBy !== input.requestedBy) {
       throw new OpensteerError({
         code: "forbidden",
         message: "Automation source is invalid",
       });
     }
+    await assertAutomationNoticeDestination(
+      transaction,
+      trigger.anchorThreadId,
+      input.targetThread.id,
+    );
     return {
       actorPrincipalId: systemPrincipalId,
       author: MessageAuthorSchema.parse({
@@ -3348,7 +3433,7 @@ export async function ensureSelectedProviderSession(
     readonly id: ThreadId;
     readonly harnessInstanceId: HarnessInstanceId;
   },
-  options: { readonly personalContext?: boolean } = {},
+  options: { readonly personalContext?: boolean; readonly freshRunId?: RunId } = {},
 ): Promise<ProviderSessionId> {
   const selected = await transaction
     .selectFrom("providerSessions")
@@ -3365,14 +3450,18 @@ export async function ensureSelectedProviderSession(
       });
     }
     if (
-      options.personalContext === undefined ||
-      selected.personalContext === options.personalContext
+      !options.freshRunId &&
+      (options.personalContext === undefined ||
+        selected.personalContext === options.personalContext)
     )
       return selected.id;
     const active = await transaction
       .selectFrom("runs")
       .select("id")
       .where("providerSessionId", "=", selected.id)
+      .$if(options.freshRunId !== undefined, (query) =>
+        query.where("id", "!=", options.freshRunId!),
+      )
       .where("status", "in", nonTerminalRunStatuses)
       .executeTakeFirst();
     if (active)
@@ -3793,7 +3882,7 @@ export async function ensureQueuedRun(
       type: "run.queued",
     }),
   );
-  events.push(...(await projectThreadState(transaction, thread.id)));
+  events.push(...(await projectThreadState(transaction, thread.id, new Date(), true)));
   if (seed.teamRequestId)
     await transaction
       .updateTable("personalTeamRequests")
@@ -4837,48 +4926,65 @@ function canonicalDelegateThreadRequest(
     type: "thread.delegate",
   };
 }
-async function assertDelegationDepth(
+/**
+ * An automation's notice goes where its owner finds it: its anchor, or the
+ * nearest listed task above an anchor that runs in its own linked task.
+ */
+async function assertAutomationNoticeDestination(
   transaction: Transaction<DatabaseSchema>,
-  parentThreadId: ThreadId,
+  anchorThreadId: ThreadId,
+  targetThreadId: ThreadId,
 ): Promise<void> {
-  let currentId: ThreadId | null = parentThreadId;
-  const visited = new Set<ThreadId>();
-  let childDepth = 0;
-  while (currentId) {
-    if (visited.has(currentId)) {
-      throw new OpensteerError({
-        code: "internal",
-        message: "Thread lineage contains a cycle",
-      });
-    }
-    visited.add(currentId);
-    childDepth += 1;
-    if (childDepth > agentDelegationMaxDepth) {
-      throw new OpensteerError({
-        code: "conflict",
-        details: {
-          maxDelegationDepth: agentDelegationMaxDepth,
-        },
-        message: `Agent delegation cannot exceed ${agentDelegationMaxDepth} parent-child levels`,
-      });
-    }
-    const current:
-      | {
-          readonly parentThreadId: ThreadId | null;
-        }
-      | undefined = await transaction
-      .selectFrom("threads")
-      .select("parentThreadId")
-      .where("id", "=", currentId)
-      .executeTakeFirst();
-    if (!current) {
-      throw new OpensteerError({
-        code: "internal",
-        message: "Thread lineage is incomplete",
-      });
-    }
-    currentId = current.parentThreadId;
-  }
+  if ((await nearestListedThread(transaction, anchorThreadId))?.threadId === targetThreadId) return;
+  // An anchor above may have become listed since the notice was addressed; the
+  // sender reads the destination again.
+  if (await descendsByParentLink(transaction, anchorThreadId, targetThreadId))
+    throw new OpensteerError({
+      code: "conflict",
+      message: "The automation's task moved; address its notice again",
+      retryable: true,
+    });
+  throw new OpensteerError({ code: "forbidden", message: "Automation source is invalid" });
+}
+
+/**
+ * Work that may reopen a Done task without the person: an automation's notice
+ * addressed to it, or queued work from a task linked under it, such as a
+ * monitor that runs in its own task and reports what it found.
+ */
+async function sourceReopensDoneTask(
+  transaction: Transaction<DatabaseSchema>,
+  source: ThreadInputSource,
+  policy: "report" | "queue" | "steer",
+  threadId: ThreadId,
+): Promise<boolean> {
+  if (policy !== "queue") return false;
+  if (source.kind === "automation") return true;
+  const sourceThread =
+    source.kind === "agent"
+      ? await transaction
+          .selectFrom("runs")
+          .select("threadId")
+          .where("id", "=", source.runId)
+          .executeTakeFirst()
+      : source.kind === "trigger"
+        ? await transaction
+            .selectFrom("triggerOccurrences")
+            .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
+            .select("triggers.anchorThreadId as threadId")
+            .where("triggerOccurrences.id", "=", source.occurrenceId)
+            .executeTakeFirst()
+        : source.kind === "watch"
+          ? await transaction
+              .selectFrom("triggerWatchActivations")
+              .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
+              .select("triggers.anchorThreadId as threadId")
+              .where("triggerWatchActivations.id", "=", source.activationId)
+              .executeTakeFirst()
+          : undefined;
+  return (
+    sourceThread !== undefined && descendsByParentLink(transaction, sourceThread.threadId, threadId)
+  );
 }
 async function findCommandByIdempotency(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
@@ -4989,6 +5095,8 @@ async function replayDelegatedThread(
       .selectAll()
       .select([
         threadPendingRequestsSelection,
+        threadVisitSelection,
+        threadLatestRunCompletedAtSelection,
         threadProviderSessionSelection,
         threadContinuationIdentitySelection,
       ])
@@ -5385,6 +5493,7 @@ export async function delegateThreadInTransaction(
     ? await transaction
         .selectFrom("threads")
         .selectAll()
+        .select([threadVisitSelection, threadLatestRunCompletedAtSelection])
         .where("id", "=", threadId)
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow()
@@ -5473,6 +5582,8 @@ export async function delegateThreadInTransaction(
     .executeTakeFirstOrThrow();
   const thread = threadFromRow({
     ...threadRow,
+    lastVisitedAt: reusedRow?.lastVisitedAt ?? null,
+    latestRunCompletedAt: reusedRow?.latestRunCompletedAt ?? null,
     continuationIdentity: selectedSession.continuationIdentity,
     providerSessionId: selectedSession.id,
     pendingRequests: threadRow.pendingRequestCount,

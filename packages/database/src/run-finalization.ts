@@ -378,7 +378,7 @@ export async function finalizeRunTransaction(
     onInvalidSelection: "defer",
   });
   events.push(...followOn.events);
-  events.push(...(await projectThreadState(transaction, run.threadId, input.completedAt)));
+  events.push(...(await projectThreadState(transaction, run.threadId, input.completedAt, true)));
   // Nodes and attempts rank last; the Run's lock already orders these writes.
   await cleanup.finish(() => endOpenAttempts(transaction, run.id, input.status));
   return events;

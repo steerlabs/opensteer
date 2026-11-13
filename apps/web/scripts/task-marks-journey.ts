@@ -198,8 +198,8 @@ try {
       const task = snapshot.threads.find(
         (thread) => thread.listed && thread.purpose === "task" && thread.status === "idle",
       )!;
-      const unread = snapshot.threadReadStates[task.id]?.unreadSequence;
-      if (unread) await client.markThreadRead(task.id, unread);
+      const unread = task.latestRunCompletedAt;
+      if (unread) await client.visitThread(task.id, unread);
       await client.setTaskDone(task.id, true);
     });
     await page.getByRole("button", { name: /^Done, \d+ tasks?$/u }).click();

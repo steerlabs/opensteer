@@ -2486,7 +2486,7 @@ it("places an addressed message between Run stretches and reveals its exact anch
   expect(conversationTurnRevealing(groups, addressed.id)).toBeNull();
 });
 
-it("marks an addressed message read beyond the active Run's intermediate message", () => {
+it("observes an addressed message beyond the active Run's intermediate message", () => {
   const notification = message({ id: "notification", sequence: "3", addressedToUserId: "person" });
   const entries = [
     message({ messageKind: "input", sequence: "1" }),

@@ -1353,13 +1353,6 @@ export async function createHostServer(
       if (!page) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
       return rpcSuccess(page);
     },
-    "thread.readState.get": async (input, context) =>
-      rpcSuccess(
-        await dependencies.store.notificationState.getReadState({
-          threadId: input.threadId,
-          userId: requireRpcSession(context).user.id,
-        }),
-      ),
     "browser.searchSuggestions.get": async (input) =>
       rpcSuccess(await searchSuggestions(input.query, dependencies.fetch ?? globalThis.fetch)),
     "browser.contextCandidate.get": async (input, context) =>
@@ -1552,7 +1545,6 @@ export async function createHostServer(
     | "node.events.list"
     | "tool.output.get"
     | "thread.messages.list"
-    | "thread.readState.get"
     | "thread.inputQueue.get"
     | "thread.live.get"
     | "thread.requests.list"
@@ -1591,17 +1583,14 @@ export async function createHostServer(
       case "teams.link.leave":
         await (await dependencies.teamLinks()).leave(command.teamId);
         return { type: command.type };
-      case "thread.read.mark": {
-        const state = await dependencies.store.notificationState.markRead({
+      case "thread.visit": {
+        const visit = await dependencies.store.notificationState.visit({
           threadId: command.threadId,
-          throughSequence: command.throughSequence,
+          visitedAt: command.visitedAt,
           userId,
         });
-        const thread = await dependencies.store.getThreadForOwner(command.threadId, userId);
-        if (thread) dependencies.realtime.publishReadState(userId, state);
-        // A task read here is no longer bold on the reader's other clients.
-        dependencies.realtime.publishViewerTasksChanged(userId);
-        return { type: command.type, state };
+        dependencies.realtime.publishThreadVisit(userId, visit);
+        return { type: command.type, ...visit };
       }
       case "thread.done.set": {
         const result = await dependencies.commands.setThreadDone({

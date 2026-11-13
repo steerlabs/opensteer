@@ -73,9 +73,14 @@ export class ThreadService {
   async create(
     actor: ThreadActor,
     command: Command<"thread.create">,
-    selection: {
+    {
+      placed,
+      ...selection
+    }: {
       readonly specialistId?: string;
       readonly expectedHarnessRevision?: number;
+      /** Placement a delegation already resolved; its model is carried as stored, not re-offered. */
+      readonly placed?: true;
     } = {},
   ) {
     if (
@@ -166,13 +171,17 @@ export class ThreadService {
       harness.driverKind,
       input.accessMode,
     );
-    const available = assertModelSelectionAvailable(
-      (await this.options.store.getHarnessCatalog(environment.id, harness.id)) ?? undefined,
-      command.modelSelection,
-    );
     const created = await this.options.commands.createThread({
       ...input,
-      modelSelection: storedModelSelection(command.modelSelection, available.model),
+      modelSelection: placed
+        ? command.modelSelection
+        : storedModelSelection(
+            command.modelSelection,
+            assertModelSelectionAvailable(
+              (await this.options.store.getHarnessCatalog(environment.id, harness.id)) ?? undefined,
+              command.modelSelection,
+            ).model,
+          ),
     });
     return {
       asOfSequence: created.asOfSequence,
@@ -211,6 +220,7 @@ export class ThreadService {
           content: command.content,
           idempotencyKey: command.idempotencyKey,
           policy: command.delivery ?? "queue",
+          ...(command.freshContext !== undefined ? { freshContext: command.freshContext } : {}),
           requestedBy: actor.userId,
           source:
             actor.kind === "person"

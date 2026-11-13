@@ -40,7 +40,7 @@ export * from "./task-family.js";
 export * from "./task-list.js";
 export { compareTaskOrder } from "./task-entries.js";
 export * from "./icon-art.js";
-export * from "./thread-read-state.js";
+export * from "./thread-unread.js";
 export * from "./places.js";
 export * from "./person-show.js";
 export * from "./place-agents.js";
@@ -100,3 +100,5 @@ export { BrowserTabStore, type BrowserTabKey, type BrowserTabList } from "./brow
 export * from "./personal-team-links.js";
 export * from "./personal-stream-cache.js";
 export * from "./needs-you.js";
+
+export * from "./thread-visits.js";

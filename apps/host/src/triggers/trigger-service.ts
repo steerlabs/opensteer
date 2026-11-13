@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type {
+  AgentEvent,
   ThreadAccessMode,
   ThreadId,
   TriggerId,
@@ -21,6 +22,8 @@ import {
 import type { SignedTokenService } from "../identity/host-keys.js";
 interface TriggerServiceOptions {
   readonly onChanged?: () => void;
+  /** The task an automation created to run in, published as it commits. */
+  readonly onDeploymentEvent?: (event: AgentEvent) => void;
   readonly onOccurrenceQueued: (occurrence: TriggerOccurrence) => void;
   readonly onWatchChanged?: (triggerId: TriggerId) => void;
   readonly publicUrl: URL;
@@ -31,6 +34,7 @@ interface TriggerServiceOptions {
 }
 export class TriggerService {
   readonly #onChanged: TriggerServiceOptions["onChanged"];
+  readonly #onDeploymentEvent: TriggerServiceOptions["onDeploymentEvent"];
   readonly #onOccurrenceQueued: (occurrence: TriggerOccurrence) => void;
   readonly #onWatchChanged: TriggerServiceOptions["onWatchChanged"];
   readonly #publicUrl: URL;
@@ -40,6 +44,7 @@ export class TriggerService {
   readonly #tokens: Pick<SignedTokenService, "deriveSecret">;
   constructor(options: TriggerServiceOptions) {
     this.#onChanged = options.onChanged;
+    this.#onDeploymentEvent = options.onDeploymentEvent;
     this.#onOccurrenceQueued = options.onOccurrenceQueued;
     this.#onWatchChanged = options.onWatchChanged;
     this.#publicUrl = options.publicUrl;
@@ -54,6 +59,7 @@ export class TriggerService {
       readonly idempotencyKey: string;
       readonly name: string;
       readonly ownerId: UserId;
+      readonly ownTask?: true | undefined;
       readonly program: Parameters<TriggerStore["create"]>[0]["program"];
       readonly source: TriggerSource;
     },
@@ -75,6 +81,7 @@ export class TriggerService {
       createdBy: input.ownerId,
       idempotencyKey: input.idempotencyKey,
       name: input.name,
+      ...(input.ownTask ? { ownTask: true } : {}),
       program: input.program,
       source: input.source,
       ...(webhookRouteKey
@@ -84,12 +91,14 @@ export class TriggerService {
           }
         : {}),
     });
+    const { event, ...result } = created;
+    if (event) this.#onDeploymentEvent?.(event);
     this.#onChanged?.();
-    if (created.trigger.kind === "watch") this.#onWatchChanged?.(created.trigger.id);
-    if (created.trigger.kind !== "webhook") return created;
-    const stableRouteKey = required(created.trigger.webhookRouteKey ?? undefined);
+    if (result.trigger.kind === "watch") this.#onWatchChanged?.(result.trigger.id);
+    if (result.trigger.kind !== "webhook") return result;
+    const stableRouteKey = required(result.trigger.webhookRouteKey ?? undefined);
     return {
-      ...created,
+      ...result,
       webhook: {
         secret: this.#webhookSecret(stableRouteKey),
         url: new URL(`/hooks/v1/${stableRouteKey}`, this.#publicUrl).toString(),

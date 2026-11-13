@@ -59,7 +59,7 @@ export function conversationHistoryHost(source: MockHostClient) {
         data: {
           ...page,
           events,
-          readState: { ...page.readState, asOfSequence: "1000" },
+          asOfSequence: "1000",
           window: {
             byteCount: 4096,
             itemCount: 10,

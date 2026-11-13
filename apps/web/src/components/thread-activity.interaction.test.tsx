@@ -3,8 +3,6 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ThreadReadStateSchema } from "@opensteer/core";
-import type { TranscriptEntry } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import {
   threadActivityScenarios,
@@ -64,15 +62,7 @@ async function renderScenario(scenario: ThreadActivityScenario): Promise<HTMLEle
     threads: base.threads.map((candidate) =>
       candidate.id === thread.id ? { ...candidate, status: scenario.status } : candidate,
     ),
-    threadReadStates: {
-      ...base.threadReadStates,
-      [thread.id]: ThreadReadStateSchema.parse({
-        threadId: thread.id,
-        readSequence: null,
-        unreadSequence: null,
-        asOfSequence: "100",
-      }),
-    },
+    threadVisits: {},
     transcripts: { ...base.transcripts, [thread.id]: [...scenario.entries] },
   });
   const node = document.createElement("div");
@@ -111,53 +101,6 @@ describe("a Thread's activity on the web", () => {
       expect(stop === null ? "absent" : stop.disabled ? "disabled" : "enabled").toBe(
         scenario.expected.stop,
       );
-    },
-  );
-
-  it.each(["queued input", "claimed input", "cancelled input", "assignment return"])(
-    "marks only published conversation messages when a %s is drawn",
-    async (kind) => {
-      vi.spyOn(document, "hasFocus").mockReturnValue(true);
-      const mark = vi.spyOn(MockHostClient.prototype, "markThreadRead").mockResolvedValue();
-      const published: TranscriptEntry = {
-        kind: "message",
-        messageKind: "input",
-        author: { kind: "human", displayName: "Reader", principalId: "reader" },
-        body: "Published",
-        createdAt: "2026-10-19T00:00:00Z",
-        id: "published",
-        runId: null,
-        sequence: "1",
-      };
-      const unpublishable: TranscriptEntry =
-        kind === "assignment return"
-          ? {
-              kind: "assignment-return",
-              assignmentId: "assignment",
-              createdAt: published.createdAt,
-              id: "returned",
-              runId: null,
-              sequence: "2",
-            }
-          : {
-              ...published,
-              id: "waiting",
-              body: "Still visible to its sender",
-              sequence: "2",
-              policy: "queue",
-              runId: kind === "claimed input" ? "run" : null,
-              published: false,
-            };
-      const scenario = threadActivityScenarios(thread)[0]!;
-      await renderScenario({
-        ...scenario,
-        accountPreparing: false,
-        entries: [published, unpublishable],
-        runQueue: [],
-        status: "idle",
-      });
-      expect(mark).toHaveBeenCalledWith(thread.id, "1");
-      expect(mark.mock.calls.every(([, sequence]) => sequence === "1")).toBe(true);
     },
   );
 

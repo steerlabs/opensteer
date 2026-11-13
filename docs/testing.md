@@ -47,8 +47,9 @@ Poison does not cross files ([file-poison.test.ts](../tests/file-poison.test.ts)
 checkout's outputs, so a pnpm lifecycle hook would build too early; bypassing its bundle manifests
 tests stale code. Caller-owned PostgreSQL needs both `OPENSTEER_TEST_DATABASE_URL` and
 `OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL`, with permission to create databases.
-The fresh baseline contains both Deployment kinds in one lineage. Old databases are refused,
-not migrated; test Start fresh with disposable supervisor fixtures or a VM, never a real install.
+The fresh baseline contains both Deployment kinds in one lineage. Databases from before that baseline
+are refused; forward migrations preserve its lineage. Test Start fresh with disposable supervisor
+fixtures or a VM, never a real install.
 Migration-compatibility evidence from the previous lineage cannot qualify this baseline.
 
 ### Lock-order modes

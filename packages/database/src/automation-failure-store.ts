@@ -9,14 +9,15 @@ import type {
 import { TriggerProgramEventSchema, TriggerSourceSchema } from "@opensteer/triggers";
 import { sql, type Kysely, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
+import { nearestListedThread } from "./thread-lineage.js";
 
 export type AutomationFailureReason =
   "final-occurrence-failed" | "final-occurrence-interrupted" | "paused";
 
 /**
  * Records, in the transaction that ended it, that an automation stopped
- * working. The anchor Thread is told later, by the Host, because queueing a
- * message there takes locks this transaction may not take after its own.
+ * working. Its owner is told later, by the Host, because queueing a message
+ * takes locks this transaction may not take after its own.
  */
 export async function recordAutomationFailure(
   transaction: Transaction<DatabaseSchema>,
@@ -62,9 +63,12 @@ export function isFinalScheduledOccurrence(input: {
   );
 }
 
-/** One notice owed to its anchor Thread, with what queueing it there needs. */
+/** One notice owed to where its owner finds the automation, with what queueing it there needs. */
 export interface PendingAutomationFailure {
   readonly anchorThreadId: ThreadId;
+  readonly anchorThreadTitle: string;
+  /** The anchor, or the nearest listed task above an automation that runs in its own task. */
+  readonly destinationThreadId: ThreadId;
   readonly attempts: number;
   readonly createdBy: UserId;
   readonly detail: string;
@@ -86,12 +90,14 @@ export class AutomationFailureStore {
     const rows = await this.#database
       .selectFrom("automationFailureNotices")
       .innerJoin("triggers", "triggers.id", "automationFailureNotices.triggerId")
+      .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
       .select([
         "automationFailureNotices.attempts",
         "automationFailureNotices.detail",
         "automationFailureNotices.id",
         "automationFailureNotices.reason",
         "triggers.anchorThreadId",
+        "threads.title as anchorThreadTitle",
         "triggers.createdBy",
         "triggers.id as triggerId",
         "triggers.name",
@@ -101,8 +107,17 @@ export class AutomationFailureStore {
       .orderBy("automationFailureNotices.createdAt", "asc")
       .limit(limit)
       .execute();
-    return rows.map((row) => ({
+    // The Inbox checks this destination again when it admits the notice.
+    const destinations = await Promise.all(
+      rows.map(async (row) => {
+        const found = await nearestListedThread(this.#database, row.anchorThreadId);
+        return found?.threadId ?? row.anchorThreadId;
+      }),
+    );
+    return rows.map((row, index) => ({
       anchorThreadId: row.anchorThreadId,
+      anchorThreadTitle: row.anchorThreadTitle,
+      destinationThreadId: destinations[index]!,
       attempts: row.attempts,
       createdBy: row.createdBy,
       detail: row.detail,

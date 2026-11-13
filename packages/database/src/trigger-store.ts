@@ -1,13 +1,14 @@
 import { personalSettings, requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { TransactionScopeChanged } from "./connection.js";
-import { jsonValue } from "./store-primitives.js";
+import { jsonValue, lockCommandIdempotency } from "./store-primitives.js";
 import { createHash } from "node:crypto";
 import {
   threadAccessModeAtMost,
   type ThreadAccessMode,
   CommandIdSchema,
   IsoDateTimeSchema,
+  ModelSelectionSchema,
   OpensteerError,
   createId,
   type CommandId,
@@ -66,7 +67,8 @@ import type {
 import { admitThreadExecution } from "./execution-authority.js";
 import { isFinalScheduledOccurrence, recordAutomationFailure } from "./automation-failure-store.js";
 import { runFromRow } from "./thread-row-mappers.js";
-import { getThreadForOwner } from "./thread-store.js";
+import { createThreadInTransaction, getThreadForOwner } from "./thread-store.js";
+import { assertDelegationDepth } from "./thread-lineage.js";
 import type { Thread } from "@opensteer/core";
 type TriggerRow = Selectable<DatabaseSchema["triggers"]>;
 type TriggerRevisionRow = Selectable<DatabaseSchema["triggerRevisions"]>;
@@ -82,6 +84,11 @@ interface CreateTriggerInput {
   readonly createdBy: UserId;
   readonly idempotencyKey: string;
   readonly name: string;
+  /**
+   * Runs it in a new task linked under the anchor by parent link alone: no
+   * Assignment, off the task list, shown in the anchor's family.
+   */
+  readonly ownTask?: true;
   readonly program: TriggerProgram;
   readonly source: TriggerSource;
   readonly webhookRouteKey?: string;
@@ -215,11 +222,13 @@ export async function createTriggerInTransaction(
   const source = TriggerSourceSchema.parse(input.source);
   const program = TriggerProgramSchema.parse(input.program);
   validateSource(source);
+  // The caller's intent, so a replay of an own-task create matches its receipt.
   const requestFingerprint = fingerprint({
     anchorThreadId: input.anchorThreadId,
     name: input.name,
     program,
     source,
+    ...(input.ownTask ? { ownTask: true } : {}),
   });
   await sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["trigger-create", input.createdBy, input.idempotencyKey])}, 0))`.execute(
     transaction,
@@ -255,24 +264,26 @@ export async function createTriggerInTransaction(
       wasDuplicate: true,
     };
   }
+  const ownTask = input.ownTask ? await createOwnTask(transaction, input, source) : null;
+  const anchorThreadId = ownTask?.thread.id ?? input.anchorThreadId;
   if (source.kind === "watch") {
     const anchor = await transaction
       .selectFrom("threads")
-      .where("id", "=", input.anchorThreadId)
+      .where("id", "=", anchorThreadId)
       .executeTakeFirst();
     if (!anchor) throw notFound();
-    await lockWatchCapacity(transaction, input.anchorThreadId);
+    await lockWatchCapacity(transaction, anchorThreadId);
   }
   const authority = await lockTriggerAuthorityThreads(
     transaction,
     input.actorThreadId,
-    input.anchorThreadId,
+    anchorThreadId,
     input.actorAccessMode,
   );
   assertTriggerAccess(authority, "define");
   const anchor = await requireAnchorThread(
     transaction,
-    input.anchorThreadId,
+    anchorThreadId,
     input.createdBy,
     managed !== undefined,
   );
@@ -339,10 +350,78 @@ export async function createTriggerInTransaction(
       .executeTakeFirstOrThrow(),
   ]);
   return {
+    ...(ownTask?.event ? { event: ownTask.event } : {}),
     revision: revisionFromRow(revision),
     trigger: triggerFromRow(trigger),
     wasDuplicate: false,
   };
+}
+
+/**
+ * The task an automation runs in when it gets its own: a child of the anchor
+ * by parent link, with the anchor's computer, engine, model, access and
+ * specialist. Nothing is handed out, so nothing returns to the anchor.
+ * Locks follow ./lock-order.ts: the creation identity and environment before
+ * the new Thread's placement rows, and the anchor and caller after them.
+ */
+async function createOwnTask(
+  transaction: Transaction<DatabaseSchema>,
+  input: CreateTriggerInput,
+  source: TriggerSource,
+) {
+  const parent = await transaction
+    .selectFrom("threads")
+    .select(["accessMode", "environmentId", "harnessInstanceId", "modelSelection", "specialistId"])
+    .where("id", "=", input.anchorThreadId)
+    .executeTakeFirst();
+  if (!parent) throw notFound("Anchor Thread not found");
+  // Refuse before creating anything; the locked checks below decide.
+  await assertOwnTaskParent(transaction, input, false);
+  await assertDelegationDepth(transaction, input.anchorThreadId);
+  const idempotencyKey = `trigger-own-task:${fingerprint([input.createdBy, input.idempotencyKey])}`;
+  await lockCommandIdempotency(transaction, input.createdBy, idempotencyKey);
+  if (source.kind === "watch") await lockWatchCapacity(transaction, input.anchorThreadId);
+  const created = await createThreadInTransaction(transaction, {
+    accessMode: parent.accessMode,
+    createdBy: input.createdBy,
+    environmentId: parent.environmentId,
+    harnessInstanceId: parent.harnessInstanceId,
+    idempotencyKey,
+    modelSelection: ModelSelectionSchema.parse(parent.modelSelection),
+    parentThreadId: input.anchorThreadId,
+    ...(parent.specialistId ? { specialistId: parent.specialistId } : {}),
+    title: input.name,
+  });
+  await assertOwnTaskParent(transaction, input, true);
+  return created;
+}
+async function assertOwnTaskParent(
+  transaction: Transaction<DatabaseSchema>,
+  input: CreateTriggerInput,
+  locked: boolean,
+): Promise<void> {
+  const authority = locked
+    ? await lockTriggerAuthorityThreads(
+        transaction,
+        input.actorThreadId,
+        input.anchorThreadId,
+        input.actorAccessMode,
+      )
+    : await readTriggerAuthorityThreads(
+        transaction,
+        input.actorThreadId,
+        input.anchorThreadId,
+        input.actorAccessMode,
+      );
+  assertTriggerAccess(authority, "define");
+  if (locked && authority === null)
+    await transaction
+      .selectFrom("threads")
+      .select("id")
+      .where("id", "=", input.anchorThreadId)
+      .forShare()
+      .execute();
+  await requireAnchorThread(transaction, input.anchorThreadId, input.createdBy);
 }
 export class TriggerStore {
   readonly #database: Kysely<DatabaseSchema>;
@@ -617,12 +696,35 @@ export class TriggerStore {
       .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
       .selectAll("triggers")
       .select("threads.title as anchorThreadTitle")
-      .where("triggers.createdBy", "=", input.ownerId)
-      .where("triggers.status", "!=", "archived");
+      .where("triggers.createdBy", "=", input.ownerId);
     if (input.systemRole) query = query.where("triggers.systemRole", "=", input.systemRole);
-    if (input.anchorThreadId)
-      query = query.where("triggers.anchorThreadId", "=", input.anchorThreadId);
+    const familyOf = input.anchorThreadId;
+    // A conversation's family: its own automations, and those of tasks linked
+    // under it without an Assignment, which only this list leads to. Those stay
+    // once ended, so their task is never stranded.
+    query = familyOf
+      ? query.where((eb) =>
+          eb.or([
+            eb.and([
+              eb("triggers.anchorThreadId", "=", familyOf),
+              eb("triggers.status", "!=", "archived"),
+            ]),
+            eb.and([
+              eb("threads.parentThreadId", "=", familyOf),
+              eb.not(
+                eb.exists(
+                  eb
+                    .selectFrom("delegations")
+                    .select("delegations.id")
+                    .whereRef("delegations.childThreadId", "=", "threads.id"),
+                ),
+              ),
+            ]),
+          ]),
+        )
+      : query.where("triggers.status", "!=", "archived");
     const rows = await query
+      .orderBy(sql<boolean>`triggers.status = 'archived'`, "asc")
       .orderBy(sql<boolean>`triggers.system_role is not null`, "desc")
       .orderBy("triggers.updatedAt", "desc")
       .orderBy("triggers.id", "desc")
@@ -1961,20 +2063,28 @@ type LockedTriggerAuthority = {
   readonly actor: AuthorityThread;
   readonly anchor: AuthorityThread;
 } | null;
-async function lockTriggerAuthorityThreads(
+function lockTriggerAuthorityThreads(
   transaction: Transaction<DatabaseSchema>,
   actorThreadId: ThreadId | null,
   anchorThreadId: ThreadId,
   ceiling?: ThreadAccessMode,
 ): Promise<LockedTriggerAuthority> {
+  return readTriggerAuthorityThreads(transaction, actorThreadId, anchorThreadId, ceiling, true);
+}
+async function readTriggerAuthorityThreads(
+  transaction: Transaction<DatabaseSchema>,
+  actorThreadId: ThreadId | null,
+  anchorThreadId: ThreadId,
+  ceiling?: ThreadAccessMode,
+  lock = false,
+): Promise<LockedTriggerAuthority> {
   if (actorThreadId === null && ceiling === undefined) return null;
-  const rows = await transaction
+  const query = transaction
     .selectFrom("threads")
     .select(["id", "accessMode"])
     .where("id", "in", actorThreadId ? [actorThreadId, anchorThreadId] : [anchorThreadId])
-    .orderBy("id")
-    .forShare()
-    .execute();
+    .orderBy("id");
+  const rows = await (lock ? query.forShare() : query).execute();
   const actor = rows.find((row) => row.id === actorThreadId);
   const anchor = rows.find((row) => row.id === anchorThreadId);
   if (!anchor || (actorThreadId !== null && !actor)) throw notFound();

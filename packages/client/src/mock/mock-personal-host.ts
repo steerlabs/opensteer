@@ -1,4 +1,4 @@
-import { SequenceSchema, type AgentEventView } from "@opensteer/core";
+import { SequenceSchema, ThreadIdSchema, type AgentEventView } from "@opensteer/core";
 import { ClientToHostMessageSchema, hostApi, type HostToClientMessage } from "@opensteer/protocol";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import type { WebSocketClient } from "../host/host-session-client.js";
@@ -51,7 +51,26 @@ export class MockPersonalHost {
   constructor(client = new MockHostClient({ latencyMs: 0 })) {
     this.client = client;
     this.#through = this.#highWater();
+    let visits = client.getSnapshot().threadVisits;
     this.#release = client.subscribe(() => {
+      const next = client.getSnapshot().threadVisits;
+      if (visits !== next) {
+        const changed = Object.entries(next).flatMap(([threadId, lastVisitedAt]) =>
+          lastVisitedAt > (visits[threadId] ?? "")
+            ? [{ threadId: ThreadIdSchema.parse(threadId), lastVisitedAt }]
+            : [],
+        );
+        visits = next;
+        if (changed.length) {
+          for (let start = 0; start < changed.length; start += 100)
+            for (const socket of this.#subscribed)
+              socket.deliver({
+                type: "host.thread-visits",
+                visits: changed.slice(start, start + 100),
+              });
+          return;
+        }
+      }
       this.#through = this.#highWater(SequenceSchema.parse(String(BigInt(this.#through) + 1n)));
       this.#rows = [];
       for (const socket of this.#subscribed) this.#snapshot(socket);
@@ -60,9 +79,10 @@ export class MockPersonalHost {
   #highWater(minimum = SequenceSchema.parse("0")) {
     const snapshot = this.client.getSnapshot();
     let through = BigInt(minimum);
-    for (const state of Object.values(snapshot.threadReadStates))
-      for (const seq of [state.asOfSequence, state.readSequence, state.unreadSequence])
-        if (seq && BigInt(seq) > through) through = BigInt(seq);
+    for (const entries of Object.values(snapshot.transcripts))
+      for (const entry of entries)
+        if (entry.kind === "message" && entry.sequence && BigInt(entry.sequence) > through)
+          through = BigInt(entry.sequence);
     return SequenceSchema.parse(String(through));
   }
   readonly fetch: typeof globalThis.fetch = async (input, init) => {
@@ -72,7 +92,12 @@ export class MockPersonalHost {
     const name = key as keyof typeof hostApi;
     const raw = url.searchParams.get("input") ?? init?.body;
     const payload = typeof raw === "string" ? JSON.parse(raw) : {};
-    return Response.json(await this.client.rpc[name](payload as never));
+    const result = await this.client.rpc[name](payload as never);
+    return Response.json(
+      result.ok && result.data && typeof result.data === "object" && "asOfSequence" in result.data
+        ? { ...result, data: { ...result.data, asOfSequence: this.#through } }
+        : result,
+    );
   };
   readonly connect = (): MockPersonalSocket => {
     const socket = new MockPersonalSocket((data) => {
@@ -97,6 +122,14 @@ export class MockPersonalHost {
       )
         socket.deliver({ type: "host.events", events: rows, throughSequence: this.#through });
       else this.#snapshot(socket);
+      const visits = Object.entries(this.client.getSnapshot().threadVisits).map(
+        ([threadId, lastVisitedAt]) => ({
+          threadId: ThreadIdSchema.parse(threadId),
+          lastVisitedAt,
+        }),
+      );
+      for (let start = 0; start < visits.length; start += 100)
+        socket.deliver({ type: "host.thread-visits", visits: visits.slice(start, start + 100) });
       socket.deliver({ type: "host.synchronized", sequence: this.#through });
     });
     this.sockets.add(socket);

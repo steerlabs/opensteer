@@ -2,13 +2,17 @@
 
 A watch works only when its activation is healthy and you observe its intended effect. Watches run continuously; they cannot be manually run.
 
+Create an ongoing monitor with `ownTask: true`; record its criteria and asking task or email destination under `automations/<trigger-id>/` before enabling it. Check in code first. Queue model checks with `freshContext: true`, carrying criteria, destination and state path in each wake; start child checks from the monitor's task. Send real finds to the asking task with `thread_send` queue or email through a connected integration; a `report` never notifies. Each background wake briefly says what happened.
+
 Keep the process alive, use a stable observation ID, and let Opensteer stop it:
 
 ```ts
-import { readFile, rename, watch, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, watch, writeFile } from "node:fs/promises";
 
 export default async function ({ event, opensteer }) {
-  const cursorPath = ".opensteer-folder-watch-cursor";
+  const stateDir = `automations/${event.trigger.id}`;
+  await mkdir(stateDir, { recursive: true });
+  const cursorPath = `${stateDir}/cursor`;
   let cursor = Number(await readFile(cursorPath, "utf8").catch(() => "0"));
   const folder = watch("./incoming");
   for await (const change of folder) {
@@ -16,7 +20,8 @@ export default async function ({ event, opensteer }) {
     const nextCursor = cursor + 1;
     await opensteer.callTool("thread_send", {
       delivery: "queue",
-      message: `Changed: ${change.filename}`,
+      freshContext: true,
+      message: `Check ${change.filename} for the configured incoming-file criteria. State: ${stateDir}/. Send real finds to the asking task recorded in ${stateDir}/destination.json. Briefly record what happened.`,
       observationId: `folder:${nextCursor}`,
       threadId: event.trigger.anchorThreadId,
     });

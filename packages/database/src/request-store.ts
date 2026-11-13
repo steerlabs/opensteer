@@ -5,6 +5,7 @@ import { lockBrowserHomeRunner } from "./browser-home-store.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import { ReplyTargetSchema } from "@opensteer/core";
 import { enqueueChannelConversationStatus } from "./channel-deliveries.js";
+import { nearestListedThread } from "./thread-lineage.js";
 import { requestSettlementActor, readRequestSettlementProvenance } from "./request-settlement.js";
 import {
   AssignmentIdSchema,
@@ -1475,10 +1476,11 @@ export class RequestStore {
             : []
           ).map((node) => [node.id, node]),
         );
+        const presented = await waitingRequestPresentations(transaction, requests, held);
         return {
           requests: requests.map((request) => ({
             assignments: held.get(request.id) ?? [],
-            presentation: null,
+            presentation: presented.get(request.id) ?? null,
             request: PendingRequestSchema.parse(request),
             subagent: request.originatingNodeId
               ? (askingNodes.get(request.originatingNodeId) ?? null)
@@ -4353,6 +4355,67 @@ async function heldAssignments(
     held.set(requestId, chain);
   }
   return held;
+}
+
+/**
+ * Where a Request asked outside any listed task shows: the nearest listed task
+ * above the work it holds up, through the task linked under that one. A
+ * monitor running in its own task, or work it handed out, asks there.
+ */
+type WaitingRequestPresentation = NonNullable<WaitingRequest["presentation"]>;
+async function waitingRequestPresentations(
+  transaction: Transaction<DatabaseSchema>,
+  requests: readonly Pick<Request, "id" | "originatingThreadId">[],
+  held: ReadonlyMap<RequestId, readonly HeldAssignment[]>,
+): Promise<ReadonlyMap<RequestId, WaitingRequestPresentation>> {
+  const outermost = new Map(
+    requests.map((request) => [
+      request.id,
+      held.get(request.id)?.at(-1)?.parentThreadId ?? request.originatingThreadId,
+    ]),
+  );
+  const presented = new Map<RequestId, WaitingRequestPresentation>();
+  if (outermost.size === 0) return presented;
+  const unlisted = new Set(
+    (
+      await transaction
+        .selectFrom("threads")
+        .select("id")
+        .where("id", "in", [...new Set(outermost.values())])
+        .where("listed", "=", false)
+        .where("parentThreadId", "is not", null)
+        .execute()
+    ).map(({ id }) => id),
+  );
+  const places = new Map<
+    ThreadId,
+    { readonly threadId: ThreadId; readonly via: ThreadId } | null
+  >();
+  for (const threadId of unlisted) {
+    const found = await nearestListedThread(transaction, threadId);
+    places.set(threadId, found?.via ? { threadId: found.threadId, via: found.via } : null);
+  }
+  const vias = [...places.values()].flatMap((place) => (place ? [place.via] : []));
+  const titles = new Map(
+    (vias.length
+      ? await transaction
+          .selectFrom("threads")
+          .select(["id", "title"])
+          .where("id", "in", vias)
+          .execute()
+      : []
+    ).map((row) => [row.id, row.title]),
+  );
+  for (const [requestId, threadId] of outermost) {
+    const place = places.get(threadId);
+    const title = place ? titles.get(place.via) : undefined;
+    if (place && title !== undefined)
+      presented.set(requestId, {
+        threadId: place.threadId,
+        workerThread: { id: place.via, title },
+      });
+  }
+  return presented;
 }
 
 function requestPage(

@@ -2,6 +2,7 @@ import {
   heldThread,
   taskCanBeDone,
   taskMark,
+  taskDoneConfirmation,
   taskUnderWay,
   threadMark,
 } from "@opensteer/client/host";
@@ -379,7 +380,7 @@ function TaskActions({
         </p>
         <p className="task-stop__detail">
           {review.action.kind === "task-done"
-            ? "This stops its work and the tasks it handed out, and pauses its schedules."
+            ? taskDoneConfirmation
             : review.action.kind === "stop-assignment" && assignment
               ? `It stops for good, and ${assignmentRequester(assignment, snapshot)} is told. Nothing it already did is undone.`
               : "Its run stops now and it waits for you. Nothing it already did is undone."}

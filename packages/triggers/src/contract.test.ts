@@ -31,9 +31,7 @@ describe("Trigger program contract", () => {
       resolve(repositoryRoot, "apps/runner/agent-skills/skills/triggers/references/watches.md"),
       "utf8",
     );
-    expect(content).toContain(
-      'import { readFile, rename, watch, writeFile } from "node:fs/promises";',
-    );
+    expect(content).toMatch(/import \{[^}]*\bwatch\b[^}]*\} from "node:fs\/promises";/);
     expect(content).not.toContain('import { watch } from "node:fs";');
     expect(content).toContain(
       "A watch works only when its activation is healthy and you observe its intended effect.",

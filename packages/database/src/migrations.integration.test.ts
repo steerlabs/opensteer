@@ -2,10 +2,17 @@ import { createId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
-import { MigrationLineageError, migrateToLatest, personalTeamBaselineName } from "./migrations.js";
+import {
+  MigrationLineageError,
+  migrateToLatest,
+  migrationProvider,
+  personalTeamBaselineName,
+} from "./migrations.js";
 import type { DatabaseSchema } from "./schema.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
+import { OpensteerStore } from "./store.js";
+import { createPersonalRunFixturePort } from "./personal-run-fixture.test-support.js";
 import { AccountDirectoryStore } from "./account-directory-store.js";
 
 let clone: TestDatabase;
@@ -61,6 +68,31 @@ async function message(channel: string, owner: string, clientId = crypto.randomU
 }
 
 describe("fresh personal/team lineage", () => {
+  it("upgrades existing queued inputs with fresh context disabled in the table and work view", async () => {
+    const migrations = await migrationProvider().getMigrations();
+    delete migrations["0005_thread_input_fresh_context"];
+    await migrateToLatest(database, { getMigrations: async () => migrations });
+    const { userId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
+    const store = new OpensteerStore(database);
+    const { thread } = await createPersonalRunFixturePort(store).createTask({
+      ownerId: userId,
+      suffix: "before-fresh-context",
+    });
+    const input = await store.enqueueThreadInput({
+      content: [{ type: "text", text: "Already queued" }],
+      idempotencyKey: "before-upgrade",
+      policy: "queue",
+      requestedBy: userId,
+      source: { kind: "human" },
+      threadId: thread.id,
+    });
+    await migrateToLatest(database);
+    for (const table of ["threadInputs", "threadWorkInputs"] as const) {
+      expect(
+        await database.selectFrom(table).select(["messageId", "freshContext"]).execute(),
+      ).toEqual([{ messageId: input.message.id, freshContext: false }]);
+    }
+  });
   it("projects Account ownership changes and fences an acknowledgement from before revocation", async () => {
     await migrateToLatest(database);
     const { userId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
@@ -194,7 +226,7 @@ describe("fresh personal/team lineage", () => {
           database,
         )
       ).rows,
-    ).toEqual([{ name: personalTeamBaselineName }, { name: "0003_browser_source_binding" }]);
+    ).toEqual(Object.keys(await migrationProvider().getMigrations()).map((name) => ({ name })));
   });
   it.each([
     ["app_versions", "size_bytes", "integer", "NO"],
@@ -391,4 +423,124 @@ describe("fresh personal/team lineage", () => {
       (await catalog()).find((row) => row.name === "team_requests_resume")?.definition,
     ).toContain("channel_id, change_seq");
   });
+});
+
+it("migrates baseline read positions, including the declared message-only and newer-active exceptions", async () => {
+  const { migrationProvider } = await import("./migrations.js");
+  const migrations = await migrationProvider().getMigrations();
+  await migrateToLatest(database, {
+    getMigrations: async () => ({
+      [personalTeamBaselineName]: migrations[personalTeamBaselineName]!,
+    }),
+  });
+  const person = await seedPersonalFixture(database, "/tmp/opensteer-visit-migration");
+  const principal = await database
+    .selectFrom("principals")
+    .select("id")
+    .where("userId", "=", person.userId)
+    .executeTakeFirstOrThrow();
+  await sql`insert into harness_instances(id,environment_id,driver_kind,name,config,runtime_revision,state_kind,enabled,is_default,source_id) values('harness',${person.environmentId},'codex','Codex','{}',1,'isolated',true,true,'codex')`.execute(
+    database,
+  );
+  await sql`insert into causal_chains(id,max_delegations,max_autonomous_runs,used_delegations,used_autonomous_runs) values('chain',100,100,0,0)`.execute(
+    database,
+  );
+  const completedAt = new Date("2026-01-02T00:00:00.000Z");
+  const updatedAt = new Date("2026-01-03T00:00:00.000Z");
+  const cases = [
+    { name: "missing-marker", status: "completed", unread: true },
+    { name: "read", status: "completed", marker: 1, unread: false },
+    { name: "unread-failed", status: "failed", marker: 0, unread: true },
+    { name: "interrupted", status: "interrupted", unread: true },
+    { name: "newer-active", status: "completed", active: true, unread: false },
+    { name: "blank-only", blank: true, unread: false },
+    { name: "message-after-completion", status: "completed", afterCompletion: true, unread: false },
+    { name: "blank-completion", status: "completed", blank: true, unread: true },
+    { name: "voice", status: "completed", voice: true, unread: true },
+    { name: "future-read", status: "completed", marker: 1, future: true, unread: false },
+    {
+      name: "microsecond-unread",
+      status: "completed",
+      marker: 0,
+      messageAt: "2026-01-02T00:00:00.000500Z",
+      completedAt: "2026-01-02T00:00:00.000900Z",
+      unread: true,
+    },
+  ];
+  for (const item of cases) {
+    const id = `thr_${item.name}`;
+    await sql`insert into threads(id,lineage_root_thread_id,purpose,listed,title,icon_source,color,environment_id,harness_instance_id,model_selection,created_by,created_by_principal_id)
+      values(${id},${id},${item.voice ? "voice" : "task"},${!item.voice},${item.name},'provisional','blue',${person.environmentId},'harness','{}',${person.userId},${principal.id})`.execute(
+      database,
+    );
+    await sql`insert into messages(id,thread_id,sequence,kind,actor_principal_id,author,content,created_at)
+      values(${`msg_${item.name}`},${id},1,'assistant',${principal.id},'{"kind":"agent"}',${JSON.stringify([{ type: "text", text: item.blank ? "" : "Reply" }])},${item.messageAt ?? (item.future ? new Date("2099-01-01") : item.afterCompletion ? updatedAt : completedAt)})`.execute(
+      database,
+    );
+    if (item.status) {
+      await sql`insert into runs(id,thread_id,environment_id,harness_instance_id,model_selection,requested_by,actor_principal_id,authority_source,run_ordinal,seed_input_id,activation_input_id,causal_chain_id,access_mode,status,completed_at)
+        values(${`run_${item.name}`},${id},${person.environmentId},'harness','{}',${person.userId},${principal.id},'{}',0,${`msg_${item.name}`},${`msg_${item.name}`},'chain','full-access',${item.status},${item.completedAt ?? (item.future ? new Date("2099-01-01") : completedAt)})`.execute(
+        database,
+      );
+    }
+    if (item.active)
+      await sql`insert into runs(id,thread_id,environment_id,harness_instance_id,model_selection,requested_by,actor_principal_id,authority_source,run_ordinal,seed_input_id,activation_input_id,causal_chain_id,access_mode,status)
+      select 'run_active',thread_id,environment_id,harness_instance_id,model_selection,requested_by,actor_principal_id,authority_source,1,seed_input_id,activation_input_id,causal_chain_id,access_mode,'running' from runs where id = ${`run_${item.name}`}`.execute(
+        database,
+      );
+    if (item.marker !== undefined)
+      await sql`insert into thread_read_markers(thread_id,user_id,sequence,updated_at) values(${id},${person.userId},${item.marker},${updatedAt})`.execute(
+        database,
+      );
+  }
+  await migrateToLatest(database);
+  const { threadUnreadPredicate, latestRunCompletion } = await import("./thread-visits.js");
+  const rows = (
+    await sql<{
+      id: string;
+      unread: boolean;
+      lastVisitedAt: Date;
+      updatedAt: Date;
+    }>`select thread.id, visit.last_visited_at, visit.updated_at,
+    ${threadUnreadPredicate(latestRunCompletion(sql`thread.id`), sql`visit.last_visited_at`)} as unread
+    from threads thread join thread_visits visit on visit.thread_id = thread.id order by thread.id`.execute(
+      database,
+    )
+  ).rows;
+  for (const item of cases) {
+    const row = rows.find((row) => row.id === `thr_${item.name}`)!;
+    expect(row.unread, item.name).toBe(item.unread);
+    if (item.marker !== undefined) expect(row.updatedAt).toEqual(updatedAt);
+    if (item.status && !item.active && !item.future)
+      expect(row.lastVisitedAt).toEqual(new Date(completedAt.getTime() - (item.unread ? 1 : 0)));
+  }
+  expect(
+    (
+      await sql<{
+        present: boolean;
+      }>`select to_regclass('thread_read_markers') is not null as present`.execute(database)
+    ).rows[0]?.present,
+  ).toBe(false);
+  expect(
+    (
+      await sql<{
+        future: boolean;
+      }>`select exists(select 1 from runs where completed_at > now()) as future`.execute(database)
+    ).rows[0]?.future,
+  ).toBe(false);
+  // Message history is never rewritten; readers compare its millisecond truncation.
+  expect(
+    (
+      await sql<{
+        id: string;
+        createdAt: string;
+      }>`select id, to_char(created_at at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') as created_at
+        from messages where id in ('msg_future-read', 'msg_microsecond-unread') order by id`.execute(
+        database,
+      )
+    ).rows,
+  ).toEqual([
+    { id: "msg_future-read", createdAt: "2099-01-01 00:00:00.000000" },
+    { id: "msg_microsecond-unread", createdAt: "2026-01-02 00:00:00.000500" },
+  ]);
 });

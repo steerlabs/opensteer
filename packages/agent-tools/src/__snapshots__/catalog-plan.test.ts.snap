@@ -48,7 +48,7 @@ Complete the focused work. Try authorized repairs; if blocked, name the evidence
 - On an Assignment, your final reply returns to the assigner. Earlier news: \`thread_send\` the assigner; \`report\` leaves context, \`queue\` asks it to act or tell the person.
 - On an Assignment, \`person_message\` and \`person_show\` are refused even when listed. When a requested page, app or phone is ready, queue it to the assigner at once.
 - Outside an Assignment, show a requested page, app or phone with \`person_show({target: {current: true}})\` as soon as ready and when moving to another. Outside Voice, skip pages you only read. Read a delegated task before showing its recent place by runId.
-- \`person_message\` sends worthwhile news before your final reply. On a background wake, deliver useful news; end stale, duplicate or no-news wakes without assistant text. Preserve the person's pauses and site constraints; resume failed automation only after verified repair.
+- \`person_message\` sends worthwhile news before your final reply. On a background wake, deliver useful news with it, then end with a short reply saying what happened; say so briefly even when nothing changed. Never end a Run with no text. Preserve the person's pauses and site constraints; resume failed automation only after verified repair.
 - Replies render Markdown outside Voice. Web links open; local file links do not. Write local paths in code and fence commands. Tag text the person will send as their own with a draft fence.
 
 Personal memory:
@@ -97,7 +97,7 @@ Complete the focused work. Try authorized repairs; if blocked, name the evidence
 - On an Assignment, your final reply returns to the assigner. Earlier news: \`thread_send\` the assigner; \`report\` leaves context, \`queue\` asks it to act or tell the person.
 - On an Assignment, \`person_message\` and \`person_show\` are refused even when listed. When a requested page, app or phone is ready, queue it to the assigner at once.
 - Outside an Assignment, show a requested page, app or phone with \`person_show({target: {current: true}})\` as soon as ready and when moving to another. Outside Voice, skip pages you only read. Read a delegated task before showing its recent place by runId.
-- \`person_message\` sends worthwhile news before your final reply. On a background wake, deliver useful news; end stale, duplicate or no-news wakes without assistant text. Preserve the person's pauses and site constraints; resume failed automation only after verified repair.
+- \`person_message\` sends worthwhile news before your final reply. On a background wake, deliver useful news with it, then end with a short reply saying what happened; say so briefly even when nothing changed. Never end a Run with no text. Preserve the person's pauses and site constraints; resume failed automation only after verified repair.
 - Replies render Markdown outside Voice. Web links open; local file links do not. Write local paths in code and fence commands. Tag text the person will send as their own with a draft fence.
 
 Personal memory:
@@ -1320,6 +1320,11 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "minLength": 1,
           "type": "string",
         },
+        "standalone": {
+          "const": true,
+          "description": "Start a separate listed task with no parent or Assignment; nothing returns. Not with threadId or places.",
+          "type": "boolean",
+        },
         "task": {
           "maxLength": 65536,
           "minLength": 1,
@@ -1528,6 +1533,10 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
             "steer",
           ],
           "type": "string",
+        },
+        "freshContext": {
+          "description": "Queue only: start a fresh model session for this wake. Include criteria, destination and state path in the message.",
+          "type": "boolean",
         },
         "message": {
           "maxLength": 262144,
@@ -2318,6 +2327,10 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "maxLength": 128,
           "minLength": 1,
           "type": "string",
+        },
+        "ownTask": {
+          "const": true,
+          "type": "boolean",
         },
         "payload": {},
         "program": {
