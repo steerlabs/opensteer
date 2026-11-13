@@ -147,11 +147,11 @@ export async function agentJourney(
   for (const refused of [report.endedSession, report.unknownSession]) {
     expect(refused.code).not.toBe(0);
     expect(refused.stderr).toContain(
-      "This Browser Session has ended or is unavailable. Open a session with browser_session_open.",
+      "This tab has ended or is unavailable. Use Browser Harness listTabs() and switchTab(tabId).",
     );
   }
   expect(report.accessAlreadyAvailable.error).toContain(
-    "This browser profile is already available. Open it with browser_session_open.",
+    "This browser profile is already available. Open a tab with Browser Harness newTab(url, { profile: profileId }).",
   );
   expect(report.signedIn).toMatchObject({
     stdout: expect.stringContaining("marketplace_session=signed-in"),

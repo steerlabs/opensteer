@@ -1,3 +1,4 @@
+import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { messageItem } from "../mcp/thread-items.js";
 import type { AgentTriggerManager } from "../mcp/handlers/triggers.js";
 import { mcpToolCallId } from "../integrations/mcp-call-id.js";
@@ -20,11 +21,7 @@ import {
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
-import {
-  createBrowserSessionId,
-  HarnessInstanceCatalogSchema,
-  type HarnessInstanceCatalog,
-} from "@opensteer/protocol";
+import { HarnessInstanceCatalogSchema, type HarnessInstanceCatalog } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { BrowserService } from "../browser/browser-service.js";
 import { type RunToolTokenService } from "./run-tool-tokens.js";
@@ -284,7 +281,7 @@ describe("Product tool handlers", () => {
     });
   });
   it.each(["sign-in"] as const)(
-    "keeps %s Browser Session requests admitted through the single sign-in permission",
+    "keeps %s tab requests admitted through the single sign-in permission",
     async (type) => {
       const current = thread(currentThreadId, nativeHarnessId, "Worker");
       const result = {
@@ -307,13 +304,13 @@ describe("Product tool handlers", () => {
         messages: [],
         threads: [current],
       });
-      const sessionId = createBrowserSessionId();
+      const tabId = BrowserSurfaceIdSchema.parse("sign-in-tab");
       const requestId = crypto.randomUUID();
       await expect(
         service.handle("run-token", {
           requestId,
           type,
-          sessionId,
+          tabId,
           site: result.site,
           reason: "Read the account",
         }),
@@ -328,7 +325,7 @@ describe("Product tool handlers", () => {
       });
       expect(agentSignIn).toHaveBeenCalledWith(
         expect.objectContaining({
-          sessionId,
+          tabId,
           site: result.site,
         }),
       );
@@ -667,95 +664,6 @@ describe("Product tool handlers", () => {
     expect(enqueueThreadInput).not.toHaveBeenCalled();
   });
 
-  it("carries a chosen browser machine through and refuses one this user cannot reach", async () => {
-    const current = thread(currentThreadId, nativeHarnessId, "Owner task", null, {});
-    const freshSummary = {
-      access: "read-write" as const,
-      activeAttachmentCount: 1,
-      attached: true,
-      createdAt: now,
-      id: createBrowserSessionId(),
-      origin: "agent" as const,
-      placement: {
-        kind: "runner" as const,
-        runnerId: createId("runner"),
-      },
-      profileId: null,
-      profileName: null,
-      runtimeId: "hosted-browser-1",
-      state: "ready" as const,
-      updatedAt: now,
-    };
-    const openAgentSession = vi.fn(async () => ({
-      session: freshSummary,
-      wasExisting: false,
-    }));
-    const { service } = makeService({
-      browser: {
-        openAgentSession,
-      },
-      commands: {
-        delegateThread: vi.fn(),
-        enqueueThreadInput: vi.fn(),
-      },
-      environments: [environmentId, targetEnvironmentId],
-      messages: [],
-      threads: [current],
-    });
-    await expect(
-      service.handle("run-token", {
-        environmentId: targetEnvironmentId,
-        fresh: true,
-        requestId: crypto.randomUUID(),
-        type: "browser.session.open",
-      }),
-    ).resolves.toMatchObject({
-      type: "browser.session.open.result",
-    });
-    expect(openAgentSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        chosenEnvironmentId: targetEnvironmentId,
-        // The Run's own machine still travels, so an unnamed session keeps
-        // landing next to the agent.
-        environmentId,
-        fresh: true,
-      }),
-    );
-    await expect(
-      service.handle("run-token", {
-        environmentId: createId("environment"),
-        fresh: true,
-        requestId: crypto.randomUUID(),
-        type: "browser.session.open",
-      }),
-    ).rejects.toMatchObject({
-      code: "bad_request",
-      message: expect.stringContaining("not exist"),
-    });
-    const { service: unreachable } = makeService({
-      browser: {
-        openAgentSession: vi.fn(),
-      },
-      commands: {
-        delegateThread: vi.fn(),
-        enqueueThreadInput: vi.fn(),
-      },
-      environments: [environmentId, targetEnvironmentId],
-      foreignEnvironmentId: targetEnvironmentId,
-      messages: [],
-      threads: [current],
-    });
-    await expect(
-      unreachable.handle("run-token", {
-        environmentId: targetEnvironmentId,
-        fresh: true,
-        requestId: crypto.randomUUID(),
-        type: "browser.session.open",
-      }),
-    ).rejects.toMatchObject({
-      code: "forbidden",
-    });
-  });
   it("admits full access requests from %s before calling the service", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Client", null, {});
     const request = vi.fn(async () => ({

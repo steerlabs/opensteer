@@ -513,7 +513,7 @@ run("Browser profiles through a whole deployment", () => {
         return continuation !== undefined;
       }, 30_000);
       evidence.observations.push({ continuation, profile: result.profile });
-      const expected = `Request ${result.requestId} was fulfilled. The person chose browser profile "Brex Ops" (${result.profile.id}); use it for this task even if you suggested another. Open it with browser_session_open and profileId ${result.profile.id}, then continue the task.`;
+      const expected = `Request ${result.requestId} was fulfilled. The person chose browser profile "Brex Ops" (${result.profile.id}); use it for this task even if you suggested another. Open a tab with Browser Harness newTab(url, { profile: "${result.profile.id}" }), then continue the task.`;
       equal(
         evidence,
         "continuation identifies Host-created renamed profile",

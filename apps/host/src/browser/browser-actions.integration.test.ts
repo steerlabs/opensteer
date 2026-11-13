@@ -379,7 +379,7 @@ integration("session-scoped browser agent backends", () => {
           {},
         )
       ).tabs.find((tab) => tab.tabId === tabId),
-    ).toMatchObject({ state: "asleep", sessionId: f.sessionId });
+    ).toMatchObject({ state: "asleep" });
     const socket = await f.actions();
     const pending = f.act(
       socket,

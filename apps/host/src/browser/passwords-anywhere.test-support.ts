@@ -5,7 +5,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { agentTools } from "@opensteer/agent-tools";
 import { hostApiVersion } from "@opensteer/deployment-authority";
-import { BrowserSessionIdSchema, hostApiVersionHeader } from "@opensteer/protocol";
+import { hostApiVersionHeader } from "@opensteer/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
@@ -81,6 +81,7 @@ export function passwordsAnywhereJourneys() {
                       wireVersion: 2 as const,
                       cdpBoundary: 1 as const,
                       sharedControl: 1 as const,
+                      tabRestoreVersion: 1 as const,
                       signIn: { version: 3 as const },
                     },
                   }
@@ -130,22 +131,24 @@ export function passwordsAnywhereJourneys() {
                 primary: caller.primary,
                 agentReady: true,
                 signIn: true,
+                personalTabs: true,
               });
               cleanups.push(() => browser.close());
               await waitForValue(async () => (host.runtime.browser.available ? true : undefined));
-              const opened = await client.callTool({
-                name: "browser_session_open",
-                arguments: { fresh: true },
-              });
-              const sessionId = z
-                .object({ session: z.object({ id: BrowserSessionIdSchema }) })
-                .parse(opened.structuredContent).session.id;
+              const { tabId } = await host.runtime.browser.openAgentTab(
+                {
+                  ownerId: host.ownerId,
+                  agentBindingId: `run:${run.runId}`,
+                  threadId: run.threadId,
+                },
+                { identity: { kind: "guest" }, operationKey: "browser-login" },
+              );
               const before = authority.commands.length;
               const result = await client.callTool({
                 name: "sign_in",
-                arguments: { sessionId, site: passwordFixture.site, reason: "Read the account" },
+                arguments: { tabId, site: passwordFixture.site, reason: "Read the account" },
               });
-              expect(result.structuredContent).toEqual({
+              expect(result.structuredContent, JSON.stringify(result.structuredContent)).toEqual({
                 status: "unavailable",
                 site: passwordFixture.site,
                 reason: "runtime-outdated",

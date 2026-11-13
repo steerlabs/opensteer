@@ -391,7 +391,7 @@ describe("continuationMessage", () => {
       });
       expect(await continuationMessage(request, inventory())).toBe(
         kind === "browser.access"
-          ? String.raw`Request ${request.id} was fulfilled. The person chose browser profile "Owner \"renamed\" work" (${profile.id}); use it for this task even if you suggested another. Open it with browser_session_open and profileId ${profile.id}, then continue the task.`
+          ? String.raw`Request ${request.id} was fulfilled. The person chose browser profile "Owner \"renamed\" work" (${profile.id}); use it for this task even if you suggested another. Open a tab with Browser Harness newTab(url, { profile: "${profile.id}" }), then continue the task.`
           : `Request ${request.id} is historical. Open a named browser profile before signing in, or ask for one with browser_profile_request; Guest sign-ins cannot be saved.`,
       );
     },

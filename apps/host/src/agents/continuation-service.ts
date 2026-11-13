@@ -338,12 +338,12 @@ export async function continuationMessage(
       if (!outcome.success)
         return `Request ${request.id} was fulfilled. Browser profile access is now available; browser_profile_list shows the profiles your Opensteer can use. Continue the task.`;
       const { id: profileId, name } = outcome.data.profile;
-      return `Request ${request.id} was fulfilled. The person chose browser profile ${JSON.stringify(name)} (${profileId}); use it for this task even if you suggested another. Open it with browser_session_open and profileId ${profileId}, then continue the task.`;
+      return `Request ${request.id} was fulfilled. The person chose browser profile ${JSON.stringify(name)} (${profileId}); use it for this task even if you suggested another. Open a tab with Browser Harness newTab(url, { profile: "${profileId}" }), then continue the task.`;
     }
     case "browser.sign-in": {
       if (request.payload.kind !== "browser.sign-in")
         throw new Error("Browser sign-in Request payload is invalid");
-      const { sessionId, site } = request.payload;
+      const { site } = request.payload;
       if (request.status === "declined")
         return `Request ${request.id} to reuse the user's Chrome sign-in was declined by the user. Continue without signing in to ${site} and do not ask for it again unless the user asks.`;
       const response = BrowserSignInRequestResponseSchema.parse(
@@ -351,7 +351,7 @@ export async function continuationMessage(
       );
       switch (response.outcome) {
         case "applied":
-          return `Request ${request.id} was fulfilled. Signed in to ${site} with ${response.sourceName} in Browser Session ${sessionId}. Reload the page and confirm the account before continuing.`;
+          return `Request ${request.id} was fulfilled. Signed in to ${site} with ${response.sourceName} in the browser tab. Reload the page and confirm the account before continuing.`;
         case "not-signed-in": {
           const passwords =
             response.passwords === "not-set-up"
@@ -361,10 +361,10 @@ export async function continuationMessage(
                 : response.passwords === "off"
                   ? ", or to turn agent sign-ins back on in the Passwords window"
                   : "";
-          return `Request ${request.id} ended without signing in: Chrome is connected but not signed in to ${site}, so there is no Chrome sign-in to reuse. The user did not decline. Ask them to sign in to ${site} themselves in Browser Session ${sessionId}${passwords}, then call sign_in again.`;
+          return `Request ${request.id} ended without signing in: Chrome is connected but not signed in to ${site}, so there is no Chrome sign-in to reuse. The user did not decline. Ask them to sign in to ${site} themselves in the browser tab${passwords}, then call sign_in again.`;
         }
         case "session-closed":
-          return `Request ${request.id} was fulfilled. The user allowed ${site}. Your Browser Session had closed; call sign_in again in your current session.`;
+          return `Request ${request.id} was fulfilled. The user allowed ${site}. Your tab had closed; call sign_in again with your current tabId.`;
       }
     }
     case "browser.password-sign-in": {
@@ -727,14 +727,14 @@ function passwordSignInContinuation(
   },
   response: PasswordSignInRequestResponse,
 ): string {
-  const { computerName, sessionId, site } = payload;
+  const { computerName, site } = payload;
   switch (response.outcome) {
     case "authorized":
       return "Call sign_in again. If fillLogin answers expired, call sign_in again.";
     case "signed-in":
       return response.method === "saved-password"
-        ? `Signed in to ${site} with the user's saved password in Browser Session ${sessionId}. Reload the page and confirm the account before continuing.`
-        : `The user signed in to ${site} themselves, and the sign-in was handed to Browser Session ${sessionId}. Reload the page and confirm the account before continuing.`;
+        ? `Signed in to ${site} with the user's saved password in the browser tab. Reload the page and confirm the account before continuing.`
+        : `The user signed in to ${site} themselves, and the sign-in was handed to the browser tab. Reload the page and confirm the account before continuing.`;
     case "expired":
       return `Nobody answered on ${computerName} within an hour, so ${site} was not signed in. Continue without signing in. If the task still needs it, call sign_in again.`;
     case "unavailable":
@@ -749,15 +749,15 @@ function passwordSignInContinuation(
           return `Opensteer Passwords did not respond on ${computerName}, so ${site} was not signed in. Continue without signing in. If the task still needs it later, call sign_in again.`;
       }
     case "outcome-unknown":
-      return `Opensteer couldn't confirm the sign-in to ${site}, so it closed Browser Session ${sessionId}. If the task still needs ${site}, open a fresh session with browser_session_open and call sign_in there.`;
+      return `Opensteer couldn't confirm the sign-in to ${site}, so it closed the browser tab. If the task still needs ${site}, open a Guest tab with Browser Harness newTab(url, { guest: true }) and call sign_in there.`;
     case "interrupted":
-      return `The sign-in to ${site} stopped on ${computerName} before anything was handed to Browser Session ${sessionId}. If the task still needs it, call sign_in again.`;
+      return `The sign-in to ${site} stopped on ${computerName} before anything was handed to the browser tab. If the task still needs it, call sign_in again.`;
     case "session-closed":
-      return `Browser Session ${sessionId} closed before the sign-in to ${site} finished. If the task still needs it, open a fresh session with browser_session_open and call sign_in there.`;
+      return `the browser tab closed before the sign-in to ${site} finished. If the task still needs it, open a Guest tab with Browser Harness newTab(url, { guest: true }) and call sign_in there.`;
     case "failed":
       switch (response.reason) {
         case "needs-sign-in-page":
-          return `Open the sign-in form for ${site} in Browser Session ${sessionId}, then call sign_in again. No approval was requested and no credential was released.`;
+          return `Open the sign-in form for ${site} in the browser tab, then call sign_in again. No approval was requested and no credential was released.`;
         case "wrong-password":
           return `${site} rejected the saved password. Tell the user the saved password for ${site} needs updating in Opensteer Passwords before calling sign_in again.`;
         case "unsupported-page":
@@ -769,7 +769,7 @@ function passwordSignInContinuation(
         case "busy":
           return `Another sign-in was already running in this browser. Wait for it to finish; if the task still needs ${site}, call sign_in again.`;
         case "needs-fresh-session":
-          return `Saved-password sign-ins work only in a fresh Browser Session. Open one with browser_session_open and fresh: true, then call sign_in there.`;
+          return `Saved-password sign-ins need a Guest tab. Open one with Browser Harness newTab(url, { guest: true }), then call sign_in with its tabId.`;
       }
   }
 }

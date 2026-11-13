@@ -30,7 +30,6 @@ import { readThreadWaitSnapshot } from "@opensteer/database";
 import { withDatabaseTransaction } from "@opensteer/database";
 import { assertThreadCaller } from "@opensteer/database";
 import type { RealtimeHub } from "@opensteer/orchestration";
-import { BrowserSessionIdSchema } from "@opensteer/protocol";
 import { SpecialistStore } from "@opensteer/database";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import {
@@ -287,7 +286,7 @@ export class ProductToolHandlers {
         throw badRequest(
           "This Run has not worked in a place yet.",
           "current" in input.target
-            ? "Pass target.tabId, from browser_tab_read or Browser Harness surfaceId."
+            ? "Pass target.tabId from Browser Harness listTabs()."
             : "Read recentPlaces with thread_read.",
         );
       target = { place: current.data.place, runId: targetRunId };
@@ -1349,7 +1348,7 @@ export class ProductToolHandlers {
       ownerId: claims.requestedBy,
       reason: input.reason,
       runId: claims.runId,
-      sessionId: input.sessionId,
+      tabId: input.tabId,
       site: input.site,
       threadId: claims.threadId,
     });
@@ -1366,9 +1365,7 @@ export class ProductToolHandlers {
       ownerId: claims.requestedBy,
       reason: input.reason,
       runId: claims.runId,
-      ...(input.sessionId === undefined
-        ? {}
-        : { sessionId: BrowserSessionIdSchema.parse(input.sessionId) }),
+      ...(input.tabId === undefined ? {} : { tabId: input.tabId }),
       site: input.site,
       threadId: claims.threadId,
     });
@@ -1417,99 +1414,6 @@ export class ProductToolHandlers {
       suggestion: input.suggestion,
       threadId: claims.threadId,
     });
-  }
-
-  async browser_tab_read({ caller, input }: ToolCall<"browser_tab_read">) {
-    const claims = callerContext(caller);
-
-    const agentBindingId = caller.key;
-
-    if (!this.#browserTabs) throw badRequest("Saved tab organization is unavailable on this Host.");
-    const actor = {
-      kind: "agent" as const,
-      ownerId: claims.requestedBy,
-      threadId: claims.threadId,
-      agentBindingId,
-    };
-    const read = input;
-    return this.#browserTabs.read(actor, read);
-  }
-
-  async browser_tab_write({ caller, input, operationKey }: ToolCall<"browser_tab_write">) {
-    const claims = callerContext(caller);
-    const requestId = operationId(caller, operationKey, "browser_tab_write");
-    const agentBindingId = caller.key;
-
-    if (!this.#browserTabs) throw badRequest("Saved tab organization is unavailable on this Host.");
-    const actor = {
-      kind: "agent" as const,
-      ownerId: claims.requestedBy,
-      threadId: claims.threadId,
-      agentBindingId,
-    };
-    const { operationKey: _operationKey, ...write } = input;
-    return this.#browserTabs.write(
-      actor,
-      write,
-      idempotencyKey(caller, requestId, "browser.tab.write"),
-    );
-  }
-
-  async browser_session_list({ caller }: ToolCall<"browser_session_list">) {
-    const claims = callerContext(caller);
-
-    const agentBindingId = caller.key;
-
-    return {
-      sessions: await this.#browser.listAgentSessions({
-        agentBindingId,
-        ownerId: claims.requestedBy,
-      }),
-    };
-  }
-
-  async browser_session_open({ caller, input }: ToolCall<"browser_session_open">) {
-    const claims = callerContext(caller);
-
-    const agentBindingId = caller.key;
-
-    const chosenEnvironmentId = input.environmentId;
-    if (chosenEnvironmentId) {
-      const environment = await this.#store.getEnvironment(chosenEnvironmentId);
-      if (!environment)
-        throw badRequest(unknownEnvironment, "See the current computers with environment_list.");
-      if (
-        !(await this.#store.environmentIsAvailableToUser(chosenEnvironmentId, claims.requestedBy))
-      ) {
-        throw forbidden("Selected execution environment is unavailable to this user");
-      }
-    }
-
-    const opened = await this.#browser.openAgentSession({
-      agentBindingId,
-      ...(chosenEnvironmentId ? { chosenEnvironmentId } : {}),
-      environmentId: claims.environmentId,
-      ...(input.fresh ? { fresh: input.fresh } : {}),
-      ownerId: claims.requestedBy,
-      ...(input.profileId ? { profileId: input.profileId } : {}),
-      ...(input.sessionId ? { sessionId: BrowserSessionIdSchema.parse(input.sessionId) } : {}),
-    });
-    return { session: opened.session, wasExisting: opened.wasExisting };
-  }
-
-  async browser_session_close({ caller, input }: ToolCall<"browser_session_close">) {
-    const claims = callerContext(caller);
-
-    const agentBindingId = caller.key;
-
-    return {
-      closed: true,
-      sessionId: await this.#browser.closeAgentSession({
-        agentBindingId,
-        ownerId: claims.requestedBy,
-        sessionId: BrowserSessionIdSchema.parse(input.sessionId),
-      }),
-    };
   }
 
   async thread_send({ caller, input, operationKey }: ToolCall<"thread_send">) {
