@@ -127,6 +127,8 @@ export function DeploymentGate(props: {
     );
   }
 
+  const signInAgain =
+    row.status === "needs-sign-in" && iphone?.owner.enrolledDeploymentId() === deploymentId;
   const act = (): void => {
     setWorking(true);
     setFailure(null);
@@ -156,7 +158,7 @@ export function DeploymentGate(props: {
             tone={statusTone(row.status)}
           />
           <AppText role="secondary" tone="soft">
-            {deploymentStatusLabel(row.status)}
+            {signInAgain ? "Sign in again" : deploymentStatusLabel(row.status)}
           </AppText>
         </View>
         <AppText role="secondary" tone="muted">
@@ -170,11 +172,13 @@ export function DeploymentGate(props: {
           <PrimaryButton
             busy={working}
             label={
-              selection.deploymentId !== deploymentId
-                ? `Open ${row.name}`
-                : row.signIn === null
-                  ? "Try again"
-                  : deploymentRecoveryLabel(row)
+              signInAgain
+                ? "Sign in again"
+                : selection.deploymentId !== deploymentId
+                  ? `Open ${row.name}`
+                  : row.signIn === null
+                    ? "Try again"
+                    : deploymentRecoveryLabel(row)
             }
             onPress={act}
           />

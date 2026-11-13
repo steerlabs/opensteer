@@ -35,7 +35,7 @@ export function networkLeaveDelivery(fetch: LeaveFetch): DeliverLeave {
       const parsed = RunnerLeaveResponseSchema.safeParse(await response.json().catch(() => null));
       return parsed.success ? "removed" : "unreachable";
     }
-    if (response.status === 404) return "missing";
+    if (response.status === 404) return "refused";
     if (response.status === 408 || response.status === 429 || response.status >= 500)
       return "unreachable";
     return "refused";

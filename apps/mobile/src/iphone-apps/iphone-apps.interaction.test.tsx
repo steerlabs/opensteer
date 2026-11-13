@@ -880,6 +880,14 @@ function iphone(
   const shown: { expiresAt: string; id: string }[] = [];
   const controller = new IphoneAppsController({
     bridge: fake.bridge,
+    deliverLeave: async (leave) => {
+      await host.dispatch({
+        type: "machine.revoke",
+        machineId: leave.runnerId,
+        idempotencyKey: `test-leave:${leave.runnerId}`,
+      });
+      return "removed";
+    },
     shownApprovals: {
       read: async () => [...shown],
       write: async (entries) => {

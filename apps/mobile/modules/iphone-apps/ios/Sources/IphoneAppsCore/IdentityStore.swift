@@ -45,6 +45,9 @@ public struct PersistedIphoneIdentity: Codable {
   public var deploymentName: String?
   public var hostInstanceId: String?
   public var hostUrl: String?
+  public var devicesV1: Bool? = nil
+  public var issuanceStarted: Bool? = nil
+  public var leaveRequested: Bool? = nil
   public let runnerId: String
   public var name: String?
   public var state: State
@@ -64,6 +67,15 @@ public struct DeviceLeaveObligation: Codable, Equatable {
   public let hostUrl: String
   public let issuedAt: String
   public let signature: String
+  public var devicesV1: Bool? = nil
+  public var enrollmentId: String? = nil
+  public var enrolled: Bool? = nil
+  public var hostInstanceId: String? = nil
+}
+
+public struct RemovedDevice: Codable {
+  public let deploymentId: String
+  public let deploymentName: String
 }
 
 /// An absent install marker retires Keychain items; a corrupt marker refuses
@@ -72,42 +84,92 @@ public final class IdentityStore {
   private let vault: any IdentityVault
   private let record: any IdentityRecordStore
   private let leaveRecord: (any IdentityRecordStore)?
+  private let removedRecord: (any IdentityRecordStore)?
   private let lock = NSRecursiveLock()
 
-  public init(vault: any IdentityVault, record: any IdentityRecordStore, leaveRecord: (any IdentityRecordStore)? = nil) {
+  public init(vault: any IdentityVault, record: any IdentityRecordStore, leaveRecord: (any IdentityRecordStore)? = nil, removedRecord: (any IdentityRecordStore)? = nil) {
     self.vault = vault
     self.record = record
     self.leaveRecord = leaveRecord
+    self.removedRecord = removedRecord
   }
 
-  /// Signs this device's leave and makes it durable before returning, so the
-  /// caller may erase the key afterwards. A prepared identity has nothing on
-  /// the Host to leave and returns nil.
+  public func leave(issuedAt: String, fence: () -> Void, erase: () -> Void) throws -> Bool {
+    lock.lock(); defer { lock.unlock() }
+    fence()
+    if var identity = try load() {
+      identity.leaveRequested = true
+      try save(identity)
+    }
+    let persisted = try persistLeave(issuedAt: issuedAt) != nil
+    erase()
+    return persisted
+  }
+
   public func persistLeave(issuedAt: String) throws -> DeviceLeaveObligation? {
     lock.lock(); defer { lock.unlock() }
+    guard let identity = try load(), identity.state != .prepared || identity.issuanceStarted == true,
+      let hostUrl = identity.hostUrl else { return nil }
     guard let leaveRecord else { throw IdentityStoreError.missingIdentity }
-    guard let identity = try load(), identity.state != .prepared, let hostUrl = identity.hostUrl else { return nil }
+    var obligations = try pendingLeaves()
+    if let existing = obligations.first(where: { $0.runnerId == identity.runnerId }) { return existing }
     let obligation = DeviceLeaveObligation(version: 1, deploymentId: identity.deploymentId,
       runnerId: identity.runnerId, hostUrl: hostUrl, issuedAt: issuedAt,
       signature: try IphoneProofs.deviceLeave(try runnerKey(), deploymentId: identity.deploymentId,
-        runnerId: identity.runnerId, issuedAt: issuedAt))
-    try leaveRecord.write(JSONEncoder().encode(obligation))
+        runnerId: identity.runnerId, issuedAt: issuedAt), devicesV1: identity.devicesV1,
+      enrollmentId: identity.enrollmentId, enrolled: identity.state == .enrolled, hostInstanceId: identity.hostInstanceId)
+    obligations.append(obligation)
+    try leaveRecord.write(JSONEncoder().encode(obligations))
     return obligation
   }
 
-  public func pendingLeave() throws -> DeviceLeaveObligation? {
+  public func pendingLeaves() throws -> [DeviceLeaveObligation] {
     lock.lock(); defer { lock.unlock() }
-    guard let bytes = try leaveRecord?.read(), !bytes.isEmpty else { return nil }
-    guard let obligation = try? JSONDecoder().decode(DeviceLeaveObligation.self, from: bytes),
-      obligation.version == 1 else { throw IdentityStoreError.invalidIdentity }
-    return obligation
+    guard let bytes = try leaveRecord?.read(), !bytes.isEmpty else { return [] }
+    let obligations: [DeviceLeaveObligation]
+    if let list = try? JSONDecoder().decode([DeviceLeaveObligation].self, from: bytes) { obligations = list }
+    else { obligations = [try JSONDecoder().decode(DeviceLeaveObligation.self, from: bytes)] }
+    guard obligations.allSatisfy({ $0.version == 1 }) else { throw IdentityStoreError.invalidIdentity }
+    return obligations
   }
 
-  /// Only the obligation for this runner is dropped; a later identity's survives.
+  public func pendingLeave() throws -> DeviceLeaveObligation? { try pendingLeaves().first }
+
   public func completeLeave(runnerId: String) throws {
     lock.lock(); defer { lock.unlock() }
-    guard let current = try pendingLeave(), current.runnerId == runnerId else { return }
-    try leaveRecord?.remove()
+    let remaining = try pendingLeaves().filter { $0.runnerId != runnerId }
+    try leaveRecord?.write(JSONEncoder().encode(remaining))
+  }
+
+  public func markRemoved() throws {
+    lock.lock(); defer { lock.unlock() }
+    guard let identity = try load(), let removedRecord else { throw IdentityStoreError.missingIdentity }
+    try removedRecord.write(JSONEncoder().encode(RemovedDevice(deploymentId: identity.deploymentId,
+      deploymentName: identity.deploymentName ?? "Opensteer")))
+  }
+
+  public func removedFrom() throws -> RemovedDevice? {
+    lock.lock(); defer { lock.unlock() }
+    guard let bytes = try removedRecord?.read() else { return nil }
+    return try JSONDecoder().decode(RemovedDevice.self, from: bytes)
+  }
+
+  public func clearRemoved() throws {
+    lock.lock(); defer { lock.unlock() }
+    try removedRecord?.remove()
+  }
+
+  public func beginIssuance(deploymentId: String, deploymentName: String, hostInstanceId: String,
+    hostUrl: String, devicesV1: Bool) throws {
+    lock.lock(); defer { lock.unlock() }
+    guard var identity = try load(), identity.deploymentId == deploymentId,
+      identity.browserErasurePending != true, identity.state != .enrolled else { throw IdentityStoreError.notPrepared }
+    identity.deploymentName = deploymentName
+    identity.hostInstanceId = hostInstanceId
+    identity.hostUrl = hostUrl
+    identity.devicesV1 = devicesV1
+    identity.issuanceStarted = true
+    try save(identity)
   }
 
   /// The bind proof for a session on the Deployment this identity was added to.
@@ -143,8 +205,12 @@ public final class IdentityStore {
   public func prepare(deploymentId: String) throws -> PreparedIdentity {
     lock.lock(); defer { lock.unlock() }
     if let old = try load() {
-      guard old.browserErasurePending != true else { throw IdentityStoreError.erasurePending }
-      guard old.deploymentId == deploymentId else { throw IdentityStoreError.enrolledElsewhere }
+      guard old.browserErasurePending != true, old.leaveRequested != true else { throw IdentityStoreError.erasurePending }
+      if old.deploymentId != deploymentId {
+        guard old.state == .prepared, old.issuanceStarted != true else { throw IdentityStoreError.enrolledElsewhere }
+        try wipe()
+        return try prepare(deploymentId: deploymentId)
+      }
       return PreparedIdentity(deploymentId: old.deploymentId, runnerId: old.runnerId, mintKey: old.mintKey)
     }
     let runner = Curve25519.Signing.PrivateKey()
@@ -197,6 +263,7 @@ public final class IdentityStore {
     guard identity.browserErasurePending != true else { throw IdentityStoreError.erasurePending }
     try vault.remove(.enrollmentToken)
     identity.state = .prepared
+    identity.issuanceStarted = false
     identity.enrollmentId = nil
     identity.expiresAt = nil
     identity.mintKey = "iphone-enroll:\(UUID().uuidString.lowercased())"

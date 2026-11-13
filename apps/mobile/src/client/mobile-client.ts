@@ -447,6 +447,7 @@ export class MobileClient {
     this.oauth = new NativeOAuthManager({
       // Previews end with the login itself (sign-out, removal, a replaced session),
       // not when a sign-in flow starts: a cancelled flow keeps the live login.
+      beforeAccountIdentityChange: () => this.#leaveAccountIphoneApps(),
       beforeAccountChange: () => this.#invalidateAccountSavedViews(),
       beforeHostChange: (connection) =>
         this.#invalidateSavedView(connection.authority.document.deploymentId),
@@ -659,6 +660,8 @@ export class MobileClient {
       this.#signedOutFile.read(),
     ]);
     for (const deploymentId of signedOut) this.#signedOut.add(deploymentId);
+    const removed = this.#iphoneApps?.removedDeploymentId?.();
+    if (removed) this.#signedOut.add(removed);
     this.#selectionPreference = remembered;
     this.#selectionFileLoaded = true;
     await this.oauth.initialize();
@@ -1324,7 +1327,32 @@ export class MobileClient {
   clearAccountSavedViews(): Promise<void> {
     this.#authorizationEpoch += 1;
     this.cancelOpenComputer();
+    this.#queueAccountIphoneLeave();
     return this.#invalidateAccountSavedViews();
+  }
+
+  readonly #accountPhoneLeaves: IphoneAppsStopped[] = [];
+
+  #queueAccountIphoneLeave(): void {
+    const stopped = this.#stopAccountIphoneApps();
+    if (stopped) this.#accountPhoneLeaves.push(stopped);
+  }
+
+  async #leaveAccountIphoneApps(): Promise<void> {
+    this.#queueAccountIphoneLeave();
+    const leaving = this.#accountPhoneLeaves.splice(0);
+    for (const stopped of leaving)
+      await this.#tellHostIphoneStopped(DeploymentIdSchema.parse(stopped.deploymentId), stopped);
+  }
+
+  #stopAccountIphoneApps(): IphoneAppsStopped | null {
+    const enrolled = this.#iphoneApps?.enrolledDeploymentId() ?? null;
+    const account = this.#state.catalog.deployments.find(
+      (connection) =>
+        connection.source.kind === "account" &&
+        connection.authority.document.deploymentId === enrolled,
+    );
+    return account ? this.#stopIphoneApps(account.authority.document.deploymentId) : null;
   }
 
   signOutAccount(): Promise<void> {
@@ -1335,19 +1363,12 @@ export class MobileClient {
     const invalidation = this.#invalidateAccountSavedViews();
     // Decided before anything awaits: only a Deployment the Account lists
     // leaves with it, and this iPhone stops sharing with it at once.
-    const enrolled = this.#iphoneApps?.enrolledDeploymentId() ?? null;
-    const leaving =
-      this.#state.catalog.deployments.find(
-        (connection) =>
-          connection.source.kind === "account" &&
-          connection.authority.document.deploymentId === enrolled,
-      )?.authority.document.deploymentId ?? null;
-    const iphone = leaving === null ? null : this.#stopIphoneApps(leaving);
+    this.#queueAccountIphoneLeave();
     return this.#operations.run(async () => {
       await integrationCleanup;
       await previewCleanup;
       await invalidation;
-      if (leaving !== null && iphone !== null) await this.#tellHostIphoneStopped(leaving, iphone);
+      await this.#leaveAccountIphoneApps();
       const selected = this.#attachedDeploymentId;
       await this.oauth.signOutAccount();
       const catalog = await this.catalog.load();
@@ -1549,6 +1570,14 @@ export class MobileClient {
           : { kind: "verification-failed", verification };
       }
       let authorization = await this.#authorizationFor(resolution.selected.connection);
+      if (
+        authorization === null &&
+        this.#iphoneApps?.enrolledDeploymentId() === id &&
+        options.establishPersonal !== true
+      ) {
+        this.#signedOut.add(id);
+        await this.#signedOutFile.write(this.#signedOutIds());
+      }
       if (!this.#isCurrentSelection(id, attempt)) return { kind: "superseded" };
       resolution = await this.#resolve(id);
       if (!this.#isCurrentSelection(id, attempt)) return { kind: "superseded" };
@@ -1563,6 +1592,7 @@ export class MobileClient {
         selected.resolved.access === "connect" &&
         this.sessionExchange.supports(selected.resolved) &&
         !this.#signedOut.has(id) &&
+        this.#iphoneApps?.automaticSignInAllowed?.() !== false &&
         (authorization === null || options.establishPersonal === true);
       if (shouldEstablishPersonalSession) {
         try {
@@ -2020,7 +2050,8 @@ export class MobileClient {
       void this.#invalidateSavedView(id);
       // A session bound to this phone ends with removal and with expiry alike;
       // neither may sign back in on its own. Removal then arrives as 4010.
-      if (this.#iphoneApps?.sessionBound(id) === true && !this.#signedOut.has(id)) {
+      if (this.#iphoneApps?.enrolledDeploymentId() === id && !this.#signedOut.has(id)) {
+        this.#authorizationEpoch += 1;
         this.#signedOut.add(id);
         void this.#operations
           .run(() => this.#signedOutFile.write(this.#signedOutIds()))
@@ -2365,9 +2396,18 @@ export class MobileClient {
       return null;
     }
     try {
-      const result = await withTimeout(client.rpc["attention.get"]({}), deadlineMs, {
-        timeoutError: () => new Error("The computer did not answer in time."),
-      });
+      const resolved = resolveConnection(connection, null, { authorization });
+      const verified = await this.#host.verifyEpoch(resolved, connection);
+      if (typeof verified === "string") return null;
+      const result = await withTimeout(
+        client.rpc["attention.get"](
+          verified.capabilities.includes("devices-v1") ? { deviceAccessRequests: "include" } : {},
+        ),
+        deadlineMs,
+        {
+          timeoutError: () => new Error("The computer did not answer in time."),
+        },
+      );
       return result.ok ? result.data : null;
     } catch {
       return null;
@@ -2406,6 +2446,11 @@ export class MobileClient {
   /** The header this Deployment's requests carry, or null when it has none. */
   async #authorizationFor(connection: DeploymentConnection): Promise<string | null> {
     const deploymentId = connection.authority.document.deploymentId;
+    if (
+      this.#iphoneApps?.removedDeploymentId?.() === deploymentId ||
+      this.#signedOut.has(deploymentId)
+    )
+      return null;
     const authorization = await this.#host.credentials.authorization(connection);
     if (authorization === null) this.#credentialed.delete(deploymentId);
     else this.#credentialed.add(deploymentId);

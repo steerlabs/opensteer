@@ -680,7 +680,7 @@ describe("RequestSheetContent external requests", () => {
     expect(dispatch).toHaveBeenCalledWith({
       expectedRevision: 7,
       idempotencyKey: expect.any(String),
-      policy: { ...policy, apps: true },
+      policy: { reach: policy.reach, commands: false, forwarding: false, shares: [], apps: true },
       runnerId: laptop.id,
       type: "machine.access.update",
     });
@@ -696,6 +696,41 @@ describe("RequestSheetContent external requests", () => {
       response: { kind: "external", value: { decision: "declined" } },
       type: "request.respond",
     });
+  });
+
+  it("restores Files without enabling commands or forwarding", async () => {
+    const request = deviceAccessRequest();
+    if (request.payload.kind !== "device.access") throw new Error("Expected device Request");
+    const files = { ...request, payload: { ...request.payload, access: "files" as const } };
+    const laptop = {
+      id: request.payload.machineId,
+      access: {
+        revision: 7,
+        policy: {
+          reach: "nobody",
+          commands: false,
+          forwarding: false,
+          shares: [{ path: "/read-only", mode: "read" }],
+        },
+      },
+    } as unknown as MachineSummary;
+    const dispatch = vi.fn(async () => ({
+      type: "machine.access.update",
+      outcome: "updated",
+      revision: 8,
+    }));
+    await render(surface(files), dispatch, { machines: [laptop] });
+    await click("Turn it on");
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        policy: {
+          reach: "owner",
+          commands: false,
+          forwarding: false,
+          shares: [{ path: "/read-only", mode: "read" }],
+        },
+      }),
+    );
   });
 
   it("keeps requester-only decline unavailable to another viewer", async () => {
@@ -862,7 +897,7 @@ async function settle(): Promise<void> {
 
 async function render(
   model: SurfaceModel,
-  dispatch: ReturnType<typeof vi.fn>,
+  dispatch: (command: { readonly type: string; readonly [key: string]: unknown }) => unknown,
   options: {
     readonly root?: Root;
     readonly canRespond?: boolean;
@@ -882,6 +917,7 @@ async function render(
   // The sheet is a route: closing it unmounts it, and opening it is a new mount.
   latest = () => render(model, dispatch, { ...options, root });
   const snapshot = {
+    machines: options.machines ?? [],
     harnesses: [],
     identityConfig: { deployment: { name: "Alex’s Opensteer" } },
     threads: [],
@@ -901,6 +937,12 @@ async function render(
             refresh: async () => undefined,
             subscribe: () => () => undefined,
             getSnapshot: () => snapshot,
+            updateMachineAccess: async (input: {
+              runnerId: string;
+              expectedRevision: number;
+              policy: object;
+            }) =>
+              dispatch({ ...input, type: "machine.access.update", idempotencyKey: "test-access" }),
             rpc: {
               "browser.sources.inspect": options.inspect ?? vi.fn(),
               "browser.password-sign-in.get":

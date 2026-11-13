@@ -31,11 +31,14 @@ interface NativePhoneConnection extends Omit<PhoneConnectionPort, "onEvent" | "s
   retarget: IphoneAppsBridge["retarget"];
   disconnect: IphoneAppsBridge["disconnect"];
   leave?: IphoneAppsBridge["leave"];
+  clearRemoved?: IphoneAppsBridge["clearRemoved"];
   completeLeave?: IphoneAppsBridge["completeLeave"];
   signSessionBinding?: IphoneAppsBridge["signSessionBinding"];
   enrollFromHost(input: {
+    readonly devicesV1: boolean;
     readonly apiVersion: number;
     readonly origin: string;
+    readonly hostInstanceId: string;
     readonly authorization: string;
     readonly deploymentId: string;
     readonly name: string;
@@ -132,6 +135,7 @@ export async function enrollAndroidPhone(input: {
   return connection().enrollFromHost({
     ...host,
     apiVersion: hostApiVersion,
+    devicesV1: input.hostClient.getSnapshot().devicesAvailable === true,
     deploymentId: input.deploymentId,
     name: input.name,
     ...(input.access === undefined ? {} : { access: input.access }),
@@ -159,6 +163,7 @@ export const androidPhoneBridge: IphoneAppsBridge | null =
           );
           return () => subscription.remove();
         },
+        clearRemoved: () => connection().clearRemoved?.() ?? Promise.resolve(),
         prepare: (input) => connection().prepare(input),
         enroll: unsupported,
         discardPendingEnrollment: () => connection().discardPendingEnrollment(),

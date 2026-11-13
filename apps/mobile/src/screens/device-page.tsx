@@ -1,3 +1,4 @@
+import { withDeviceSwitch } from "@opensteer/client/computers";
 import { computerConnectionsOn } from "@opensteer/client/integrations";
 import { computerStatus } from "@opensteer/client/computers";
 import { mutationIdempotencyKey, type HostClient, type HostSnapshot } from "@opensteer/client/host";
@@ -21,7 +22,6 @@ import {
   deviceRemoval,
   deviceSwitches,
   isHome,
-  withSwitch,
   type DeviceSwitchKey,
 } from "./device-page-model.js";
 import { deviceKindLabel } from "./devices-model.js";
@@ -105,6 +105,60 @@ function DevicePage(props: {
         busy.current = false;
       });
   };
+  if (machine.status === "pending") {
+    const ownPending =
+      enrollment?.state === "pending" &&
+      enrollment.deploymentId === props.deploymentId &&
+      enrollment.enrollmentId === machine.enrollmentId;
+    return (
+      <NativeSettingsPage
+        sections={[
+          {
+            key: "pending",
+            title: machine.name,
+            rows: [
+              {
+                key: "expiry",
+                kind: "text",
+                label: machine.expiresAt
+                  ? `Setup expires ${machine.expiresAt}`
+                  : "Setup has not finished",
+              },
+              ...(ownPending
+                ? [
+                    {
+                      key: "resume",
+                      kind: "button" as const,
+                      label: "Finish setup",
+                      onPress: () =>
+                        navigation.navigate("SetUpPhone", { deploymentId: props.deploymentId }),
+                    },
+                  ]
+                : []),
+              {
+                key: "cancel",
+                kind: "button",
+                label: "Cancel setup",
+                destructive: true,
+                onPress: () =>
+                  run(async () => {
+                    if (ownPending) await iphoneController.remove({ hostClient: props.hostClient });
+                    else
+                      await props.hostClient.dispatch({
+                        type: "runner.enrollment.retire",
+                        enrollmentId: machine.enrollmentId ?? machine.id,
+                        idempotencyKey: mutationIdempotencyKey("device-cancel-setup"),
+                      });
+                    navigation.goBack();
+                  }, "Setup could not be cancelled. Try again."),
+              },
+              ...(failure ? [{ key: "failure", kind: "text" as const, label: failure }] : []),
+            ],
+          },
+        ]}
+      />
+    );
+  }
   const toggle = (key: DeviceSwitchKey, on: boolean): void => {
     const access = machine.access;
     if (access === null) return;
@@ -113,7 +167,7 @@ function DevicePage(props: {
         props.hostClient.dispatch({
           expectedRevision: access.revision,
           idempotencyKey: mutationIdempotencyKey("device-switch"),
-          policy: withSwitch(access.policy, key, on),
+          policy: withDeviceSwitch(access.policy, key, on),
           runnerId: machine.id,
           type: "machine.access.update",
         }),

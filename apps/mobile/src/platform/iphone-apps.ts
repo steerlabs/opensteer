@@ -56,6 +56,10 @@ export interface IphonePendingLeave {
   readonly hostUrl: string;
   readonly issuedAt: string;
   readonly signature: string;
+  readonly devicesV1?: boolean | null;
+  readonly hostInstanceId?: string | null;
+  readonly enrollmentId?: string | null;
+  readonly enrolled?: boolean | null;
 }
 export interface IphoneSessionBinding {
   readonly runnerId: string;
@@ -63,6 +67,9 @@ export interface IphoneSessionBinding {
   readonly signature: string;
 }
 export interface IphoneAppsSnapshot {
+  readonly removedFrom?: { readonly deploymentId: string; readonly deploymentName: string } | null;
+  readonly pendingLeaves?: readonly IphonePendingLeave[];
+  readonly lifecycleReady?: boolean;
   readonly pendingErasure?: boolean;
   readonly pendingLeave?: IphonePendingLeave | null;
   readonly revision: number;
@@ -99,7 +106,13 @@ export interface IphoneAppsBridge {
   prepare(input: { readonly deploymentId: string }): Promise<{
     readonly runnerId: string;
     readonly mintKey: string;
+    readonly publicKeyPem?: string;
   }>;
+  beginIssuance?(input: {
+    readonly pairing: IphonePairingTarget;
+    readonly devicesV1: boolean;
+  }): Promise<void>;
+  clearRemoved?(): Promise<void>;
   enroll(input: {
     readonly pairing: IphonePairingTarget;
     readonly enrollmentId: string;
@@ -219,6 +232,11 @@ export const iphoneApps: IphoneAppsBridge =
           return () => subscription.remove();
         },
         prepare: (input) => native.prepare(input),
+        beginIssuance: async (input) => {
+          if (!native.beginIssuance) throw unsupportedError();
+          await native.beginIssuance(input);
+        },
+        clearRemoved: () => native.clearRemoved?.() ?? Promise.resolve(),
         enroll: (input) => native.enroll(input),
         discardPendingEnrollment: () => native.discardPendingEnrollment(),
         retarget: (pairing) => native.retarget(pairing),

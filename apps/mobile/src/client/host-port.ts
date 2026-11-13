@@ -137,6 +137,7 @@ export function createNetworkHostPort(options: {
         openWebSocket: options.openWebSocket,
       });
       const client = new HttpHostClient({
+        deviceAccessRequests: "include",
         baseUrl: origin,
         ...(options.browserPreferencesStorage
           ? { browserPreferencesStorage: options.browserPreferencesStorage }
@@ -149,6 +150,7 @@ export function createNetworkHostPort(options: {
       registerPhoneEnrollmentHost(client, {
         authorization,
         deploymentId: connection.authority.document.deploymentId,
+        hostInstanceId: connection.authority.document.hostInstanceId,
         origin,
       });
       return client;

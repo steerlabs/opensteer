@@ -26,15 +26,16 @@ export function usePhoneSetup(hostClient: HostClient | null, deploymentId: strin
   const iphone = useIphoneAppsState(useIphoneApps());
   const host = useHostValue(hostClient, selectSetupHost, "false:false");
   const [connected, iphoneAppsAvailable] = host.split(":").map((part) => part === "true");
+  const membership = phoneMembership({
+    deploymentId,
+    host: { iphoneAppsAvailable: iphoneAppsAvailable === true },
+    iphone,
+  });
   const due =
     hostClient !== null &&
     connected === true &&
     !notNow.has(deploymentId) &&
-    phoneMembership({
-      deploymentId,
-      host: { iphoneAppsAvailable: iphoneAppsAvailable === true },
-      iphone,
-    }).state === "needs-setup";
+    (membership.state === "needs-setup" || membership.state === "finish-setup");
   useEffect(() => {
     if (due && focused) navigation.navigate("SetUpPhone", { deploymentId });
   }, [deploymentId, due, focused, navigation]);

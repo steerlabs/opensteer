@@ -40,7 +40,7 @@ describe("self-leave delivery", () => {
     await expect(answering(503).deliver(leave)).resolves.toBe("unreachable");
     await expect(answering(429).deliver(leave)).resolves.toBe("unreachable");
     await expect(answering(200, { outcome: "kept" }).deliver(leave)).resolves.toBe("unreachable");
-    await expect(answering(404).deliver(leave)).resolves.toBe("missing");
+    await expect(answering(404).deliver(leave)).resolves.toBe("refused");
     await expect(answering(401).deliver(leave)).resolves.toBe("refused");
     const offline = networkLeaveDelivery(async () => {
       throw new TypeError("Network request failed");

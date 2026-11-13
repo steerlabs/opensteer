@@ -28,7 +28,8 @@ class PhoneConnectionModule : Module() {
         Function("now") { runtime().now().toDouble() }
         Function("fence") { reason: String -> admitted { runtime().fence(reason) } }
         Function("disconnect") { runtime().disconnect().native() }
-        Function("leave") { runtime().leave().native() }
+        Function("leave") { admitted { runtime().leave().native() } }
+        AsyncFunction("clearRemoved") { admitted { runtime().clearRemoved() } }
         AsyncFunction("completeLeave") { input: Map<String, Any?> -> admitted { runtime().completeLeave(input.objectValue().text("runnerId")) } }
         AsyncFunction("signSessionBinding") { input: Map<String, Any?> ->
           admitted {
@@ -45,7 +46,7 @@ class PhoneConnectionModule : Module() {
                 (value["access"] as? JsonObject)?.also { access ->
                     access.only("browser", "apps", "files")
                     for (key in listOf("browser", "apps", "files")) Wire.requireThat((access[key] as? JsonPrimitive)?.booleanOrNull != null)
-                })) { it.native() }
+                }, value["devicesV1"] == JsonPrimitive(true), value.text("hostInstanceId"))) { it.native() }
           }
         }
         AsyncFunction("discardPendingEnrollment") { admitted { runtime().discardPendingEnrollment().native() } }

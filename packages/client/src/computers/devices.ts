@@ -33,7 +33,10 @@ export function deviceMembership(input: DeviceMembershipInput): DeviceMembership
   if (input.settingUp) return { state: "setting-up" };
   if (input.membership?.state === "active" && input.membership.enrolled === false)
     return input.membership.runnerId
-      ? { state: "finish-setup", reason: "This Mac has not finished joining" }
+      ? {
+          state: "finish-setup",
+          reason: input.finishSetupReason ?? "This Mac has not finished joining",
+        }
       : { state: "needs-setup" };
   if (input.finishSetupReason) return { state: "finish-setup", reason: input.finishSetupReason };
   if (input.membership?.state === "waiting")

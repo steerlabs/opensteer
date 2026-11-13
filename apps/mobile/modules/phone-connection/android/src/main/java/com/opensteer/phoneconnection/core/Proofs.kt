@@ -6,6 +6,13 @@ import org.bouncycastle.crypto.signers.Ed25519Signer
 import java.net.URI
 
 object Proofs {
+    fun phoneEnrollment(mintKey: String, name: String, runnerId: String, publicKeyPem: String, devicesV1: Boolean, access: JsonObject?): JsonObject {
+        val command = Wire.fields("type" to JsonPrimitive("runner.enrollment.createPhone"), "name" to JsonPrimitive(name), "idempotencyKey" to JsonPrimitive(mintKey))
+        if (!devicesV1) return command
+        val prepared = JsonObject(command + ("preparedIdentity" to Wire.fields("runnerId" to JsonPrimitive(runnerId), "publicKeyPem" to JsonPrimitive(publicKeyPem))))
+        return if (access == null) prepared else JsonObject(prepared + ("access" to access))
+    }
+
     fun origin(raw: String): String {
         val uri = try { URI(raw) } catch (_: Exception) { throw Refused("invalid-target") }
         Wire.requireThat(uri.scheme == "https" && uri.host != null && uri.rawUserInfo == null &&

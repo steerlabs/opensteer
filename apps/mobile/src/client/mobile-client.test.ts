@@ -3491,6 +3491,31 @@ describe("MobileClient other computers' attention", () => {
       }),
     );
 
+  it.each([false, true])(
+    "opts raw attention into device Requests only after capability verification (%s)",
+    async (devices) => {
+      const input = vi.fn(async () => ({ ok: true, data: { needsYou: 1, unread: false } }));
+      const port = testPort({
+        held: true,
+        verification: { status: "compatible", capabilities: devices ? ["devices-v1"] : [] },
+        configureClient: (host) => {
+          Object.defineProperty(host, "rpc", {
+            value: new Proxy(host.rpc, {
+              get: (rpc, key) => (key === "attention.get" ? input : Reflect.get(rpc, key)),
+            }),
+          });
+        },
+      });
+      const { client } = open(port.factory);
+      await client.catalog.upsertAndSelect(connectComputer(1));
+      await client.catalog.upsert(otherComputer());
+      await client.initialize();
+      await client.readAttention(otherId);
+      expect(input).toHaveBeenCalledWith(devices ? { deviceAccessRequests: "include" } : {});
+      client.dispose();
+    },
+  );
+
   it("reads another computer once, leaves the selection alone, and never reads the shown one", async () => {
     const port = testPort({ held: true });
     const { client } = open(port.factory);
@@ -3556,7 +3581,11 @@ describe("MobileClient and this iPhone's apps", () => {
   const laptopRunnerId = "rnr_33333333-3333-4333-8333-333333333333";
 
   function iphoneOn(deploymentId: string) {
-    const fake = createFakeIphoneApps({ deviceName: "Alex's iPhone", runnerId: laptopRunnerId });
+    const fake = createFakeIphoneApps({
+      deviceName: "Alex's iPhone",
+      runnerId: laptopRunnerId,
+      devicesV1: false,
+    });
     fake.device.enrolledTo({ deploymentId, name: "Alex's iPhone" });
     const controller = new IphoneAppsController({
       bridge: fake.bridge,
@@ -3565,6 +3594,76 @@ describe("MobileClient and this iPhone's apps", () => {
     });
     return { controller, fake };
   }
+
+  it("stops Account sharing synchronously before push cleanup can await or fail", async () => {
+    const phone = iphoneOn(serverId);
+    const { client } = open(testPort({ held: false }).factory, undefined, {
+      iphoneApps: phone.controller.owner,
+    });
+    await client.catalog.upsertAndSelect(
+      asInput(
+        testDeploymentConnection({
+          kind: "personal",
+          deploymentId: serverId,
+          source: { issuer: accountOrigin, kind: "account", subject: accountSubject },
+        }),
+      ),
+    );
+    await client.initialize();
+    const cleanup = client.clearAccountSavedViews();
+    expect(phone.fake.device.calls).toEqual(["leave", "disconnect"]);
+    await cleanup;
+    expect(phone.fake.bridge.getSnapshot().pendingLeave).not.toBeNull();
+    phone.controller.dispose();
+    client.dispose();
+  });
+
+  it("stops a newly set-up phone synchronously when Account sign-out is retried", async () => {
+    const phone = iphoneOn(serverId);
+    const { client } = open(testPort({ held: false }).factory, undefined, {
+      iphoneApps: phone.controller.owner,
+    });
+    for (const id of [serverId, otherId])
+      await client.catalog.upsert(
+        asInput(
+          testDeploymentConnection({
+            kind: "personal",
+            deploymentId: id,
+            source: { issuer: accountOrigin, kind: "account", subject: accountSubject },
+          }),
+        ),
+      );
+    await client.initialize();
+    await client.clearAccountSavedViews();
+    phone.fake.device.enrolledTo({ deploymentId: otherId, name: "Phone" });
+    const signingOut = client.signOutAccount();
+    expect(phone.controller.owner.enrolledDeploymentId()).toBeNull();
+    expect(phone.fake.device.calls).toEqual(["leave", "disconnect", "leave", "disconnect"]);
+    await signingOut;
+    phone.controller.dispose();
+    client.dispose();
+  });
+
+  it("keeps a cold-start expired phone identity and waits for explicit sign-in", async () => {
+    const phone = iphoneOn(serverId);
+    const port = testPort({ held: false, realCredentials: true });
+    const { client } = open(port.factory, undefined, { iphoneApps: phone.controller.owner });
+    await client.catalog.upsertAndSelect(connectComputer(1));
+    await client.sessions.save({ ...personalSession(), expiresAt: "2020-01-01T00:00:00.000Z" });
+    const establish = vi
+      .spyOn(client.sessionExchange, "establish")
+      .mockResolvedValue(sessionExchangeResponse());
+    await client.initialize();
+    await client.retrySelection();
+    expect(establish).not.toHaveBeenCalled();
+    expect(phone.controller.owner.enrolledDeploymentId()).toBe(serverId);
+    expect(phone.fake.device.calls).toEqual([]);
+    expect(client.getSnapshot().selection.row?.status).toBe("needs-sign-in");
+    await client.openDeployment(serverId);
+    expect(establish).toHaveBeenCalledTimes(1);
+    phone.controller.dispose();
+    client.dispose();
+  });
 
   it("J1: stops sharing before a sign-out awaits, then tells the Host while signed in", async () => {
     const port = testPort({ held: false, realCredentials: true });

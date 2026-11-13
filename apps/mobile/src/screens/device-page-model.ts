@@ -1,5 +1,5 @@
 import { deviceRemovalProfiles, hostsDeployment } from "@opensteer/client/computers";
-import { deviceAccess, type MachineAccessPolicy, type MachineSummary } from "@opensteer/protocol";
+import { deviceAccess, type MachineSummary } from "@opensteer/protocol";
 
 export type DeviceSwitchKey = "browser" | "apps" | "files";
 
@@ -73,28 +73,6 @@ export function deviceSwitches(
         ? "Update Opensteer on your Mac to change Browser and Apps."
         : null;
   return { rows, footer };
-}
-
-/**
- * One switch changed, the rest kept. Files on restores what was there before
- * it was turned off, with commands and forwarding on; off is `reach: nobody`
- * with everything else kept, so turning it on again restores it.
- */
-export function withSwitch(
-  policy: MachineAccessPolicy,
-  key: DeviceSwitchKey,
-  on: boolean,
-): MachineAccessPolicy {
-  if (key === "browser") return { ...policy, browser: on };
-  if (key === "apps") return { ...policy, apps: on };
-  return on
-    ? {
-        ...policy,
-        reach: policy.reach === "nobody" ? "owner" : policy.reach,
-        commands: true,
-        forwarding: true,
-      }
-    : { ...policy, reach: "nobody" };
 }
 
 /** The destructive action alone in the last section, and its confirmation, as on web. */
