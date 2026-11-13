@@ -32,10 +32,7 @@ import { NativeDictationHelperClient } from "./dictation/helper-client.js";
 import { bundledDictationBrokerPath } from "./dictation/paths.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { AuthSessionSummarySchema } from "@opensteer/core";
-import { readBoundedJson } from "@opensteer/shared/boundedJson";
-import { apiVersionHeaders } from "@opensteer/deployment-authority";
-import { z } from "zod";
+import { createDesktopHostApi } from "./connections/desktop-host-api.js";
 import {
   app,
   BaseWindow,
@@ -721,96 +718,11 @@ async function runDesktop(
     },
     clearDeploymentSession: (deploymentId) => hostNetwork.clearDeploymentSession(deploymentId),
     leaveFetch: serviceNetwork.fetch.bind(serviceNetwork),
-    revokeLegacyRunner: async (deploymentId, origin, runnerId) => {
-      const response = await hostNetwork.partitionFetch(
-        deploymentId,
-        new URL("/v1/rpc/commands.dispatch", origin),
-        {
-          method: "POST",
-          headers: { ...apiVersionHeaders("personal"), origin, "content-type": "application/json" },
-          body: JSON.stringify({
-            type: "machine.revoke",
-            machineId: runnerId,
-            idempotencyKey: `desktop-leave:${runnerId}`,
-          }),
-          signal: AbortSignal.timeout(15_000),
-        },
-      );
-      if (!response.ok) {
-        await response.body?.cancel();
-        throw new Error("Removal from this older Host is unconfirmed. Sign in again to finish.");
-      }
-      const body = await readBoundedJson(response, {
-        maximumBytes: 4096,
-        sizeError: () => new Error("Invalid removal confirmation."),
-      });
-      z.object({
-        ok: z.literal(true),
-        data: z.object({ type: z.literal("machine.revoke") }),
-      }).parse(body);
-    },
-    retireEnrollment: async (deploymentId, origin, enrollmentId) => {
-      const response = await hostNetwork.partitionFetch(
-        deploymentId,
-        new URL("/v1/rpc/commands.dispatch", origin),
-        {
-          method: "POST",
-          headers: { ...apiVersionHeaders("personal"), origin, "content-type": "application/json" },
-          body: JSON.stringify({
-            type: "runner.enrollment.retire",
-            enrollmentId,
-            idempotencyKey: `desktop-retire:${enrollmentId}`,
-          }),
-          signal: AbortSignal.timeout(15_000),
-        },
-      );
-      if (!response.ok) {
-        await response.body?.cancel();
-        throw new Error("This Mac's pending setup is unconfirmed.");
-      }
-      const body = await readBoundedJson(response, {
-        maximumBytes: 4096,
-        sizeError: () => new Error("Invalid retirement confirmation."),
-      });
-      return z
-        .object({
-          ok: z.literal(true),
-          data: z.object({
-            type: z.literal("runner.enrollment.retire"),
-            state: z.enum(["consumed", "expired", "retired"]),
-          }),
-        })
-        .parse(body).data.state;
-    },
-    readSession: async (deploymentId, origin) => {
-      const response = await hostNetwork.partitionFetch(
-        deploymentId,
-        new URL("/v1/rpc/sessions.list", origin),
-        {
-          method: "POST",
-          headers: { ...apiVersionHeaders("personal"), origin, "content-type": "application/json" },
-          body: "{}",
-          signal: AbortSignal.timeout(15_000),
-        },
-      );
-      if (!response.ok) {
-        await response.body?.cancel();
-        throw new Error("The session being bound has ended.");
-      }
-      const body = await readBoundedJson(response, {
-        maximumBytes: 64 * 1024,
-        sizeError: () => new Error("Invalid Host session response."),
-      });
-      const current = z
-        .object({
-          ok: z.literal(true),
-          data: z.object({ sessions: z.array(AuthSessionSummarySchema) }),
-        })
-        .parse(body)
-        .data.sessions.find((session) => session.current);
-      if (!current) throw new Error("The session being bound has ended.");
-      return current;
-    },
+    hostApi: (deploymentId, origin) =>
+      createDesktopHostApi({
+        origin,
+        fetch: (input, init) => hostNetwork.partitionFetch(deploymentId, input, init),
+      }),
     profileErasure,
     log: reportEvent,
     browser: (input) =>

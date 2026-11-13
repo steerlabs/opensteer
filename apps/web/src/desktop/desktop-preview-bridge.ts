@@ -1,5 +1,5 @@
 import { assertDeviceSessionAllowed } from "@opensteer/client/computers";
-import type { PasswordSignInCard } from "@opensteer/protocol";
+import type { HostApiClient, PasswordSignInCard } from "@opensteer/protocol";
 import type { PasswordSignInAccount } from "@opensteer/client/host";
 import { createId, DeploymentIdSchema, RunnerIdSchema } from "@opensteer/core";
 import { hostApi } from "@opensteer/protocol";
@@ -62,6 +62,8 @@ interface DesktopPreviewBridgeOptions {
   readonly transitionDelayMs?: number;
   readonly leaveDevice?: (deploymentId: string) => Promise<void>;
   readonly confirmDevice?: (deploymentId: string) => Promise<void>;
+  /** The mock Host this Mac's session lives on, which binding reads and writes as main does. */
+  readonly host?: HostApiClient;
   /** A mock Host the setup's enrollment token belongs to: its Runner connects there. */
   readonly connectRunner?: (token: string) => string;
   /**
@@ -715,11 +717,24 @@ export function desktopPreviewBridge(
       emitAccess();
     },
 
-    signDeviceSessionBinding: async (input) => {
-      const status = localExecutionFor({ deploymentId: input.deploymentId });
-      if (status.membership?.state !== "active")
-        throw new Error("This Mac is not a device of that Opensteer.");
-      return { issuedAt: new Date().toISOString(), signature: "p".repeat(86) };
+    bindDeviceSession: async (input) => {
+      const membership = localExecutionFor({ deploymentId: input.deploymentId }).membership;
+      const runnerId = membership?.state === "active" ? membership.runnerId : null;
+      if (!runnerId) throw new Error("This Mac is not a device of that Opensteer.");
+      if (!options.host) throw new Error("This preview has no Host to bind a session on.");
+      const listed = await options.host["sessions.list"]({});
+      if (!listed.ok) throw new Error(listed.error.message);
+      const current = listed.data.sessions.find((session) => session.current);
+      if (!current) throw new Error("This Mac is not signed in to this Opensteer.");
+      if (current.deviceId === runnerId) return "already-bound";
+      const bound = await options.host["commands.dispatch"]({
+        type: "machine.session.bind",
+        machineId: runnerId,
+        idempotencyKey: `preview-bind:${current.id}`,
+        proof: { issuedAt: new Date().toISOString(), signature: "p".repeat(86) },
+      });
+      if (!bound.ok) throw new Error(bound.error.message);
+      return "bound";
     },
     retryDeviceConnection: async (input) => {
       const current = localExecutionFor(input);

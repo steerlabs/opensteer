@@ -68,27 +68,31 @@ const computerAppSetupUnused = {
 };
 
 describe("desktop bridge", () => {
-  it("authorizes device intents, rejects renderer origins, and returns only a binding proof", async () => {
+  it("authorizes device intents, rejects renderer origins, and never lets the renderer name the session to bind", async () => {
     const runner = runnerController();
     const handlers = registerWith(passwordsPort(), {}, undefined, { runner });
     const event = ipcEvent("app://opensteer/");
     const deploymentId = createId("deployment");
-    const sessionId = createId("authSession");
-    const envelope = { bridgeToken: "b".repeat(43), input: { deploymentId, sessionId } };
+    const envelope = { bridgeToken: "b".repeat(43), input: { deploymentId } };
     try {
       await expect(
-        handlers.invoke(desktopBridgeChannels.signDeviceSessionBinding, event, envelope),
-      ).resolves.toEqual({
-        issuedAt: expect.any(String),
-        signature: "s".repeat(86),
-      });
-      expect(runner.signDeviceSessionBinding).toHaveBeenCalledWith({ deploymentId, sessionId });
+        handlers.invoke(desktopBridgeChannels.bindDeviceSession, event, envelope),
+      ).resolves.toBe("bound");
+      expect(runner.bindDeviceSession).toHaveBeenCalledWith(deploymentId);
       await expect(
-        handlers.invoke(desktopBridgeChannels.signDeviceSessionBinding, event, {
+        handlers.invoke(desktopBridgeChannels.bindDeviceSession, event, {
           ...envelope,
-          input: { ...envelope.input, origin: "https://attacker.test" },
+          input: { deploymentId, sessionId: createId("authSession") },
         }),
       ).rejects.toThrow();
+      await expect(
+        handlers.invoke(
+          desktopBridgeChannels.bindDeviceSession,
+          ipcEvent("https://attacker.test/"),
+          envelope,
+        ),
+      ).rejects.toThrow();
+      expect(runner.bindDeviceSession).toHaveBeenCalledTimes(1);
       await expect(
         handlers.invoke(desktopBridgeChannels.leaveDeployment, ipcEvent("https://attacker.test/"), {
           bridgeToken: "b".repeat(43),
@@ -768,10 +772,7 @@ function runnerController() {
     })),
     accountSignOutPreview: vi.fn(async () => []),
     setUpDevice: vi.fn(async (input) => status(input.deploymentId)),
-    signDeviceSessionBinding: vi.fn(async () => ({
-      issuedAt: new Date().toISOString(),
-      signature: "s".repeat(86),
-    })),
+    bindDeviceSession: vi.fn(async () => "bound" as const),
     leaveDeployment: vi.fn(async () => undefined),
     retryDeviceConnection: vi.fn(async () => undefined),
     recheckEngines: vi.fn(),

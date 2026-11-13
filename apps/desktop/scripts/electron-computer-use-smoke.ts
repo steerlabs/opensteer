@@ -233,7 +233,7 @@ async function run(): Promise<void> {
       },
       accountSignOutPreview: async () => [],
       setUpDevice: unused,
-      signDeviceSessionBinding: unused,
+      bindDeviceSession: unused,
       leaveDeployment: unused,
       retryDeviceConnection: unused,
       recheckEngines: unused,

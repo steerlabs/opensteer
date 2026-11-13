@@ -32,18 +32,20 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  AuthSessionIdSchema,
   createId,
+  RunnerIdSchema,
   DeploymentIdSchema,
   harnessCatalog,
   harnessExecutableEnvironmentVariable,
   shipsHarnessRuntimeBytes,
   shippedHarnessKindRecord,
   shippedHarnessKinds,
+  type AuthSessionId,
   type DeploymentId,
   type EnvironmentId,
   type RunnerId,
 } from "@opensteer/core";
+import type { HostApiClient, HostApiCommandInput } from "@opensteer/protocol";
 import type { DesktopConfiguration } from "../config.js";
 import {
   LocalRunnerDeploymentUnavailableError,
@@ -637,7 +639,7 @@ describe("LocalRunnerService", () => {
     expect(hasStopMessage(childFor(running.children, manual.hostUrl))).toBe(false);
   });
 
-  it("signs binding with only this Deployment's key and keeps removed attempts fenced until explicit setup", async () => {
+  it("binds its own session with only this Deployment's key and keeps removed attempts fenced until explicit setup", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
     const first = targets.add("https://binding.opensteer.test");
@@ -660,20 +662,31 @@ describe("LocalRunnerService", () => {
       runnerId: string;
       publicKeyPem: string;
     };
-    const sessionId = createId("authSession");
-    const proof = await running.service.signDeviceSessionBinding({
+    await expect(running.service.bindDeviceSession(first.deploymentId)).resolves.toBe("bound");
+    expect(running.host.binds).toHaveLength(1);
+    const [bind] = running.host.binds;
+    expect(bind).toMatchObject({
       deploymentId: first.deploymentId,
-      sessionId,
+      origin: first.hostUrl,
+      machineId: identity.runnerId,
     });
-    expect(Object.keys(proof).sort()).toEqual(["issuedAt", "signature"]);
     expect(
       verifyDeviceSessionBindingSignature(identity.publicKeyPem, {
-        ...proof,
+        ...bind!.proof,
         deploymentId: first.deploymentId,
         runnerId: identity.runnerId,
-        sessionId,
+        sessionId: bind!.sessionId,
       }),
     ).toBe(true);
+    expect(
+      (await readMemberships(path.join(directory, "runner", "desktop-runner.json"))).runners[
+        first.deploymentId
+      ]?.boundSession?.id,
+    ).toBe(bind!.sessionId);
+    await expect(running.service.bindDeviceSession(first.deploymentId)).resolves.toBe(
+      "already-bound",
+    );
+    expect(running.host.binds).toHaveLength(1);
     const removing = running.service.markRemoved(first.deploymentId);
     expect(fence).toHaveBeenCalledWith(first.deploymentId);
     await eventually(() => hasStopMessage(firstChild));
@@ -683,9 +696,10 @@ describe("LocalRunnerService", () => {
     await expect(running.service.assertSessionAllowed(first.deploymentId)).rejects.toThrow(
       "Set up again",
     );
-    await expect(
-      running.service.signDeviceSessionBinding({ deploymentId: first.deploymentId, sessionId }),
-    ).rejects.toThrow("not an active device");
+    await expect(running.service.bindDeviceSession(first.deploymentId)).rejects.toThrow(
+      "not an active device",
+    );
+    expect(running.host.binds).toHaveLength(1);
     await expect(
       running.service.assertSessionAllowed(second.deploymentId),
     ).resolves.toBeUndefined();
@@ -709,6 +723,7 @@ describe("LocalRunnerService", () => {
     const order: string[] = [];
     const retiring = vi.fn(async () => {
       order.push("retire");
+      return "retired" as const;
     });
     const clearing = vi.fn(async () => {
       order.push("clear");
@@ -846,22 +861,8 @@ describe("LocalRunnerService", () => {
       ).browserProfilesDirectory;
       await mkdir(profiles, { recursive: true });
       await writeFile(path.join(profiles, "saved-profile"), "keep");
-      const sessionId = createId("authSession");
-      const proof = await running.service.signDeviceSessionBinding({
-        deploymentId: target.deploymentId,
-        sessionId,
-      });
       const runnerId = readTestIdentity(child.dataDirectory)!.runnerId;
-      await running.service.observeHostCommand(
-        target.deploymentId,
-        {
-          type: "machine.session.bind",
-          machineId: runnerId,
-          proof,
-          idempotencyKey: "bind-session",
-        },
-        { type: "machine.session.bind" },
-      );
+      await running.service.bindDeviceSession(target.deploymentId);
       if (expired) vi.useFakeTimers({ toFake: ["Date"] });
       try {
         if (expired) vi.setSystemTime(new Date("2099-01-02T00:00:00.000Z"));
@@ -911,7 +912,7 @@ describe("LocalRunnerService", () => {
     },
   );
 
-  it("reconciles a Host-bound session after restart even if the binding receipt was never saved", async () => {
+  it("records at startup a session the Host already bound, without a window and without binding again", async () => {
     const directory = await temporaryDirectory();
     const config = await configuration(directory);
     const targets = mutableTargetAuthority();
@@ -922,7 +923,7 @@ describe("LocalRunnerService", () => {
     const sessionId = createId("authSession");
     const runnerId = readTestIdentity(identityDirectory)!.runnerId;
     const running = fixture(config, targets, undefined, undefined, {
-      readSession: async () => ({
+      currentSession: async () => ({
         id: sessionId,
         deviceId: runnerId,
         expiresAt: "2099-01-01T00:00:00.000Z",
@@ -934,6 +935,7 @@ describe("LocalRunnerService", () => {
     const child = childAt(running.children, 0);
     connect(child);
     await restoring;
+    expect(running.host.binds).toEqual([]);
     expect(
       (await readMemberships(path.join(directory, "runner", "desktop-runner.json"))).runners[
         target.deploymentId
@@ -1269,7 +1271,7 @@ describe("LocalRunnerService", () => {
     expect(existsSync(identityPath(identityDirectory))).toBe(false);
   });
 
-  it("rejects a binding proof whose session verification finishes after removal", async () => {
+  it("abandons a binding whose session read finishes after removal, before signing", async () => {
     const directory = await temporaryDirectory();
     const config = await configuration(directory);
     const targets = mutableTargetAuthority();
@@ -1277,11 +1279,12 @@ describe("LocalRunnerService", () => {
     const gate = Promise.withResolvers<void>();
     const begun = Promise.withResolvers<void>();
     const running = fixture(config, targets, undefined, undefined, {
-      readSession: async (_id, _origin, sessionId) => {
+      currentSession: async () => {
         begun.resolve();
         await gate.promise;
         return {
-          id: AuthSessionIdSchema.parse(sessionId),
+          id: createId("authSession"),
+          deviceId: null,
           expiresAt: "2099-01-01T00:00:00.000Z",
           absoluteExpiresAt: "2099-01-01T00:00:00.000Z",
         };
@@ -1292,10 +1295,7 @@ describe("LocalRunnerService", () => {
     const child = childAt(running.children, 0);
     connect(child);
     await start;
-    const binding = running.service.signDeviceSessionBinding({
-      deploymentId: target.deploymentId,
-      sessionId: createId("authSession"),
-    });
+    const binding = running.service.bindDeviceSession(target.deploymentId);
     const deadline = setTimeout(
       () => begun.reject(new Error("Session verification did not start")),
       1000,
@@ -1311,6 +1311,93 @@ describe("LocalRunnerService", () => {
     await removing;
     gate.resolve();
     await expect(binding).rejects.toThrow("left before session binding");
+    expect(running.host.binds).toEqual([]);
+  });
+
+  it("never binds a sign-in another device holds, and shares one attempt between overlapping callers", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://bind-once.opensteer.test");
+    let elsewhere: string | null = createId("runner");
+    const session = {
+      id: createId("authSession"),
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      absoluteExpiresAt: "2099-01-01T00:00:00.000Z",
+    };
+    const running = fixture(config, targets, undefined, undefined, {
+      currentSession: async () => ({ ...session, deviceId: elsewhere }),
+    });
+    const start = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    connect(childAt(running.children, 0));
+    await start;
+    await expect(running.service.bindDeviceSession(target.deploymentId)).rejects.toThrow(
+      "another device",
+    );
+    expect(running.host.binds).toEqual([]);
+    elsewhere = null;
+    const readsBefore = running.host.reads.sessions;
+    const outcomes = await Promise.all([
+      running.service.bindDeviceSession(target.deploymentId),
+      running.service.bindDeviceSession(target.deploymentId),
+    ]);
+    expect(outcomes).toEqual(["bound", "bound"]);
+    expect(running.host.reads.sessions - readsBefore).toBe(1);
+    expect(running.host.binds).toHaveLength(1);
+    const stopped = running.service.shutdown();
+    running.children.forEach((child) => child.kill());
+    await stopped;
+    running.service.dispose();
+  });
+
+  it("never reports a bind whose reply outlived this membership, nor lets a new setup join it", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://slow-bind.opensteer.test");
+    const reply = Promise.withResolvers<void>();
+    const committed = Promise.withResolvers<void>();
+    const running = fixture(config, targets, undefined, undefined, {
+      bindReply: async () => {
+        committed.resolve();
+        await reply.promise;
+      },
+    });
+    const start = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    connect(child);
+    await start;
+    const stale = running.service.bindDeviceSession(target.deploymentId);
+    const settled = stale.then(
+      () => "bound",
+      (error: unknown) => error,
+    );
+    await withTimeout(committed.promise, 1000, {
+      timeoutError: () => new Error("The bind never reached the Host"),
+    });
+    const removing = running.service.markRemoved(target.deploymentId);
+    await eventually(() => hasStopMessage(child));
+    child.emit("exit", 0);
+    await removing;
+    await running.service.setUpDevice({
+      deploymentId: target.deploymentId,
+      runnerName: "Again",
+      runAgents: false,
+    });
+    const fresh = running.service.bindDeviceSession(target.deploymentId);
+    expect(fresh).not.toBe(stale);
+    await expect(fresh).rejects.toThrow("not an active device");
+    reply.resolve();
+    expect(await settled).toBeInstanceOf(Error);
+    expect(
+      (await readMemberships(path.join(directory, "runner", "desktop-runner.json"))).runners[
+        target.deploymentId
+      ]?.boundSession,
+    ).toBeNull();
+    await running.service.shutdown();
+    running.service.dispose();
   });
 
   it("runs two enabled Deployments at once and restores both after relaunch", async () => {
@@ -2562,6 +2649,120 @@ function fakeComputerUse(
   };
 }
 
+interface FakeSession {
+  readonly id: AuthSessionId;
+  deviceId: string | null;
+  readonly expiresAt: string;
+  readonly absoluteExpiresAt: string;
+}
+
+interface FakeHostHandlers {
+  readonly revokeLegacyRunner?: (
+    deploymentId: DeploymentId,
+    origin: string,
+    runnerId: string,
+  ) => Promise<void>;
+  readonly retireEnrollment?: (
+    deploymentId: DeploymentId,
+    origin: string,
+    enrollmentId: string,
+  ) => Promise<"consumed" | "expired" | "retired">;
+  /** The session this Mac's partition is signed in with; one live session per Deployment by default. */
+  readonly currentSession?: (deploymentId: DeploymentId) => Promise<FakeSession | null>;
+  /** Holds a bind's reply after the Host committed it. */
+  readonly bindReply?: () => Promise<void>;
+}
+
+/**
+ * The few Host answers the service asks for, keyed by Deployment like the
+ * real partitioned client. Binding records the device on the session, as the
+ * Host does, so a second bind sees it already bound.
+ */
+function fakeHost(handlers: FakeHostHandlers) {
+  const sessions = new Map<DeploymentId, FakeSession>();
+  const binds: {
+    deploymentId: DeploymentId;
+    origin: string;
+    sessionId: AuthSessionId;
+    machineId: string;
+    proof: { issuedAt: string; signature: string };
+  }[] = [];
+  const reads = { sessions: 0 };
+  const session = async (deploymentId: DeploymentId) => {
+    if (handlers.currentSession) return handlers.currentSession(deploymentId);
+    let current = sessions.get(deploymentId);
+    if (!current) {
+      current = {
+        id: createId("authSession"),
+        deviceId: null,
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        absoluteExpiresAt: "2099-01-01T00:00:00.000Z",
+      };
+      sessions.set(deploymentId, current);
+    }
+    return current;
+  };
+  const api = vi.fn<NonNullable<LocalRunnerServiceDependencies["hostApi"]>>(
+    (deploymentId, origin) =>
+      ({
+        "sessions.list": async () => {
+          reads.sessions += 1;
+          const current = await session(deploymentId);
+          return {
+            ok: true,
+            data: {
+              sessions: current
+                ? [
+                    {
+                      ...current,
+                      createdAt: "2026-01-01T00:00:00.000Z",
+                      current: true,
+                      deviceLabel: "Opensteer on Mac",
+                      form: "computer",
+                      lastSeenAt: "2026-01-01T00:00:00.000Z",
+                    },
+                  ]
+                : [],
+            },
+          };
+        },
+        "commands.dispatch": async (command: HostApiCommandInput) => {
+          if (command.type === "machine.session.bind") {
+            const current = await session(deploymentId);
+            if (!current) throw new Error("No session to bind");
+            const machineId = RunnerIdSchema.parse(command.machineId);
+            binds.push({
+              deploymentId,
+              origin,
+              sessionId: current.id,
+              machineId,
+              proof: command.proof,
+            });
+            current.deviceId = machineId;
+            await handlers.bindReply?.();
+            return { ok: true, data: { type: command.type } };
+          }
+          if (command.type === "runner.enrollment.retire") {
+            if (!handlers.retireEnrollment) throw new Error("Unexpected enrollment retirement");
+            const state = await handlers.retireEnrollment(
+              deploymentId,
+              origin,
+              command.enrollmentId,
+            );
+            return { ok: true, data: { type: command.type, state } };
+          }
+          if (command.type === "machine.revoke") {
+            if (!handlers.revokeLegacyRunner) throw new Error("Unexpected legacy removal");
+            await handlers.revokeLegacyRunner(deploymentId, origin, command.machineId);
+            return { ok: true, data: { type: command.type } };
+          }
+          throw new Error(`Unexpected Host command ${command.type}`);
+        },
+      }) as unknown as HostApiClient,
+  );
+  return { api, binds, reads };
+}
+
 function fixture(
   config: DesktopConfiguration,
   targets: DesktopLocalRunnerTargetAuthority,
@@ -2569,9 +2770,10 @@ function fixture(
   browser?: LocalRunnerServiceDependencies["browser"],
   options: {
     readonly assertAccountSource?: LocalRunnerServiceDependencies["assertAccountSource"];
-    readonly revokeLegacyRunner?: LocalRunnerServiceDependencies["revokeLegacyRunner"];
-    readonly retireEnrollment?: LocalRunnerServiceDependencies["retireEnrollment"];
-    readonly readSession?: LocalRunnerServiceDependencies["readSession"];
+    readonly revokeLegacyRunner?: FakeHostHandlers["revokeLegacyRunner"];
+    readonly retireEnrollment?: FakeHostHandlers["retireEnrollment"];
+    readonly currentSession?: FakeHostHandlers["currentSession"];
+    readonly bindReply?: FakeHostHandlers["bindReply"];
     readonly leaveFetch?: typeof fetch;
     readonly fenceDeployment?: LocalRunnerServiceDependencies["fenceDeployment"];
     readonly clearDeploymentSession?: LocalRunnerServiceDependencies["clearDeploymentSession"];
@@ -2600,20 +2802,19 @@ function fixture(
     children.push(child);
     return child;
   });
+  const host = fakeHost({
+    ...(options.retireEnrollment ? { retireEnrollment: options.retireEnrollment } : {}),
+    ...(options.revokeLegacyRunner ? { revokeLegacyRunner: options.revokeLegacyRunner } : {}),
+    ...(options.currentSession ? { currentSession: options.currentSession } : {}),
+    ...(options.bindReply ? { bindReply: options.bindReply } : {}),
+  });
   return {
     children,
     fork,
+    host,
     service: new LocalRunnerService(config, {
       ...(options.assertAccountSource ? { assertAccountSource: options.assertAccountSource } : {}),
-      ...(options.retireEnrollment ? { retireEnrollment: options.retireEnrollment } : {}),
-      ...(options.revokeLegacyRunner ? { revokeLegacyRunner: options.revokeLegacyRunner } : {}),
-      readSession:
-        options.readSession ??
-        (async (_id, _origin, sessionId) => ({
-          id: AuthSessionIdSchema.parse(sessionId),
-          expiresAt: "2099-01-01T00:00:00.000Z",
-          absoluteExpiresAt: "2099-01-01T00:00:00.000Z",
-        })),
+      hostApi: host.api,
       ...(options.leaveFetch ? { leaveFetch: options.leaveFetch } : {}),
       ...(options.fenceDeployment ? { fenceDeployment: options.fenceDeployment } : {}),
       ...(options.clearDeploymentSession

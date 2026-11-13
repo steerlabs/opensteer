@@ -51,9 +51,10 @@ reuses that identity; the environment binding is immutable after its first adver
 device shape is presentation, never authority or routing. Android phones offer no shell. Windows
 shell endpoints remain unsupported, but this does not prevent a browser-only connection.
 
-Apps bind their authenticated session to a device by proving possession of its runner key. Desktop
-replays accepted bindings through main and reconciles the current session at startup, so a lost
-binding receipt cannot disable session-loss fencing. Explicit
+Apps bind their authenticated session to a device by proving possession of its runner key. On
+desktop, main holds both the session cookie and the key, so it reads its own current session, signs
+it and submits the binding; a session the Host already bound is recorded without binding again, so a
+lost receipt heals on the next attempt and cannot disable session-loss fencing. Explicit
 removal, signed self-leave and sign-out of a bound non-Home session share one removal operation:
 tombstone the device and delete all bound sessions in the same transaction, then end live work.
 Home and unbound web or legacy sessions sign out only that session. Expiry, refresh and route
@@ -86,7 +87,8 @@ main's durable membership inventory, including parked devices absent from the ca
 unreadable inventory blocks confirmation instead of promising that nothing is deleted.
 
 The Host chooses the enrollment grant; main resolves the origin and holds signing keys, and the
-renderer receives only session-binding signatures. Only the supervising desktop can establish that
+renderer can only ask main to bind, never name a session or receive a signature. Only the
+supervising desktop can establish that
 a computer is local. Team administrators cannot enroll, remove or inspect another person's computer
 through team authority.
 

@@ -2,12 +2,11 @@ import { RunnerIdSchema } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
 import type { MachineSummary } from "@opensteer/protocol";
-import { bindSessionToDevice, setUpThisDevice, type DeviceSetupPorts } from "./device-setup.js";
+import { setUpThisDevice, type DeviceSetupPorts } from "./device-setup.js";
 import { appliedSetupAccess, deviceSwitchDetail, deviceSwitches } from "./device-access.js";
 import { deviceRemovalCopy } from "./device-page.js";
 
 const access = { browser: true, apps: false, files: true };
-const proof = { issuedAt: "2026-11-12T12:00:00Z", signature: "a".repeat(86) };
 
 function ports(overrides: Partial<DeviceSetupPorts> = {}) {
   const calls: string[] = [];
@@ -90,39 +89,6 @@ describe("setting up this Mac", () => {
       cause: { kind: "bind", detail: "Session is already bound to another device" },
       runnerId: "rnr_1",
     });
-  });
-});
-
-describe("binding a new sign-in", () => {
-  it("binds an unbound session once and replays the idempotent binding through main", async () => {
-    const client = new MockHostClient({ latencyMs: 0 });
-    try {
-      const machine = client.getSnapshot().machines.find((entry) => entry.kind === "computer")!;
-      const signed: string[] = [];
-      const bindPorts = {
-        currentSession: async () => {
-          const result = await client.rpc["sessions.list"]({});
-          if (!result.ok) throw new Error(result.error.message);
-          const current = result.data.sessions.find((session) => session.current)!;
-          return { id: current.id, deviceId: current.deviceId ?? null };
-        },
-        sign: async (sessionId: string) => {
-          signed.push(sessionId);
-          return proof;
-        },
-        bind: (machineId: string, signedProof: typeof proof) =>
-          client.bindDeviceSession({ machineId, proof: signedProof }),
-      };
-      const other = client
-        .getSnapshot()
-        .machines.find((entry) => entry.kind === "computer" && entry.id !== machine.id)!;
-      // The mock's own session starts bound to its laptop, so a different Mac's binding refuses.
-      await expect(bindSessionToDevice(bindPorts, other.id)).rejects.toThrow("already bound");
-      await expect(bindSessionToDevice(bindPorts, machine.id)).resolves.toBe("already-bound");
-      expect(signed).toHaveLength(2);
-    } finally {
-      client.dispose();
-    }
   });
 });
 

@@ -149,6 +149,9 @@ export const DesktopLocalExecutionInputSchema = z.strictObject({
 });
 export type DesktopLocalExecutionInput = z.infer<typeof DesktopLocalExecutionInputSchema>;
 
+export const DesktopDeviceSessionBindingSchema = z.enum(["bound", "already-bound"]);
+export type DesktopDeviceSessionBinding = z.infer<typeof DesktopDeviceSessionBindingSchema>;
+
 export const DesktopStartLocalRunnerInputSchema = z.strictObject({
   deploymentId: DeploymentIdSchema,
   enrollmentToken: z.string().min(32).max(4_096).optional(),
@@ -2040,10 +2043,8 @@ export interface OpensteerDesktopBridge {
   sendHostWebSocket(input: DesktopHostWebSocketCommand): Promise<void>;
   signIn(): Promise<void>;
   signOut(): Promise<void>;
-  signDeviceSessionBinding(input: {
-    deploymentId: string;
-    sessionId: string;
-  }): Promise<import("./devices.js").DeviceSessionBindingProof>;
+  /** Binds this Mac's own current session to its device; main reads, signs and submits it. */
+  bindDeviceSession(input: DesktopLocalExecutionInput): Promise<DesktopDeviceSessionBinding>;
   prepareDeviceSetup(
     input: DesktopStartLocalRunnerInput,
   ): Promise<import("./devices.js").DevicePreparedIdentity>;

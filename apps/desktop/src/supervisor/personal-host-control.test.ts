@@ -11,14 +11,15 @@ import type { PersonalDeploymentManifest } from "../secrets/personal-deployment-
 import {
   NativePersonalHostControl,
   NativePersonalRemoteHostControl,
-  personalHostBootstrapUrl,
   PersonalHostRefusalError,
 } from "./personal-host-control.js";
 import { testPersonalHostRuntime } from "./personal-host-runtime-test-support.js";
 
 const hostOrigin = "http://127.0.0.1:4310";
-/** The route under test is the declaration's, never a string typed twice. */
-const bootstrapUrl = personalHostBootstrapUrl(hostOrigin).toString();
+/** The typed client's GET spelling: the member is the route, the empty payload the query. */
+const bootstrapUrl = `${hostOrigin}/v1/rpc/bootstrap.get?input=${encodeURIComponent(
+  JSON.stringify(hostApi["bootstrap.get"].payload.parse({})),
+)}`;
 
 describe("NativePersonalHostControl bootstrap", () => {
   it("claims on first boot and returns enrollment before reading agent home readiness", async () => {
@@ -202,6 +203,36 @@ describe("NativePersonalHostControl bootstrap", () => {
     ).resolves.toBeUndefined();
     expect(requests).toBe(2);
   });
+
+  it.each([
+    ["unreadable", () => json({ data: {}, ok: true }), "incompatible"],
+    ["oversized", () => new Response("x".repeat(17 * 1_024 * 1_024)), "internal"],
+  ] as const)(
+    "waits out a bare server fault but stops at a bootstrap it cannot read: %s",
+    async (_kind, settled, code) => {
+      const deployment = manifest();
+      let requests = 0;
+      const control = new NativePersonalHostControl({
+        fetch: async () => {
+          requests += 1;
+          return requests === 1 ? new Response("Bad gateway", { status: 502 }) : settled();
+        },
+        pollIntervalMs: 1,
+        requestTimeoutMs: 5_000,
+      });
+
+      await expect(
+        control.waitForRunner(
+          hostOrigin,
+          deployment.deploymentId,
+          deployment.environmentId,
+          deployment.runnerId,
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({ code, name: "PersonalHostBootstrapRefusedError" });
+      expect(requests).toBe(2);
+    },
+  );
 
   it("refuses a malformed claim capability and a Host that remains unclaimed", async () => {
     let localBootstrapReads = 0;

@@ -22,6 +22,7 @@ import {
   testHostAuthorityKeys,
 } from "../packages/client/src/test-support/index.js";
 import { readMemberships } from "../apps/desktop/src/supervisor/device-membership.js";
+import { createDesktopHostApi } from "../apps/desktop/src/connections/desktop-host-api.js";
 import { HostSession } from "../packages/client/src/auth/host-session.js";
 import { establishedCookieSession } from "../packages/client/src/test-support/session-exchange.js";
 import { resolveConnection } from "../packages/client/src/connections/connection-resolver.js";
@@ -119,38 +120,20 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
         clearDeploymentSession: async () => {
           legacySessionCleared = true;
         },
-        revokeLegacyRunner: async (_id, _origin, machineId) => {
-          expect(legacySessionCleared).toBe(false);
-          await testRpcData(
-            home.origin,
-            "commands.dispatch",
-            { type: "machine.revoke", machineId, idempotencyKey: `legacy-remove:${machineId}` },
-            { headers: sessionHeaders },
-          );
-        },
-        retireEnrollment: async (_id, _origin, enrollmentId) => {
-          expect(legacySessionCleared).toBe(false);
-          const result = await testRpcData(
-            home.origin,
-            "commands.dispatch",
-            {
-              type: "runner.enrollment.retire",
-              enrollmentId,
-              idempotencyKey: `legacy-retire:${enrollmentId}`,
+        // The production desktop Host client, so this file proves the wire calls main makes.
+        hostApi: (_id, origin) =>
+          createDesktopHostApi({
+            origin,
+            fetch: async (input, init) => {
+              const body = typeof init.body === "string" ? init.body : "";
+              if (/"type":"(machine\.revoke|runner\.enrollment\.retire)"/u.test(body))
+                expect(legacySessionCleared).toBe(false);
+              return fetch(input, {
+                ...init,
+                headers: { ...(init.headers as Record<string, string>), ...sessionHeaders },
+              });
             },
-            { headers: sessionHeaders },
-          );
-          if (result.type !== "runner.enrollment.retire")
-            throw new Error("Invalid retirement receipt");
-          return result.state;
-        },
-        readSession: async () => {
-          const current = (
-            await testRpcData(home.origin, "sessions.list", {}, { headers: sessionHeaders })
-          ).sessions.find((session) => session.current);
-          if (!current) throw new Error("No current desktop session");
-          return current;
-        },
+          }),
         homeDirectory: root,
         targets,
         runtimeRelease: async () => ({
@@ -295,18 +278,18 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
     let current = (
       await testRpcData(home.origin, "sessions.list", {}, { headers: home.ownerHeaders })
     ).sessions.find((s) => s.current)!;
-    await command({
-      type: "machine.session.bind",
-      machineId: runnerId,
-      idempotencyKey: "bind",
-      proof: await service.signDeviceSessionBinding({ deploymentId, sessionId: current.id }),
-    });
+    expect(await service.bindDeviceSession(deploymentId)).toBe("bound");
     expect(
       (
         await testRpcData(home.origin, "sessions.list", {}, { headers: home.ownerHeaders })
       ).sessions.find((s) => s.current)?.deviceId,
     ).toBe(runnerId);
-    console.info("STEP 2: signed HTTP binding appears in sessions.list");
+    expect(
+      (await readMemberships(path.join(config.localExecution.dataDirectory, "desktop-runner.json")))
+        .runners[deploymentId]?.boundSession?.id,
+    ).toBe(current.id);
+    expect(await service.bindDeviceSession(deploymentId)).toBe("already-bound");
+    console.info("STEP 2: main binds its own session over the typed Host API, once");
     const originalSession = await home.runtime.store.database
       .selectFrom("authSessions")
       .selectAll()
@@ -333,12 +316,7 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
       .set({ absoluteExpiresAt: expiry })
       .where("id", "=", current.id)
       .execute();
-    await command({
-      type: "machine.session.bind",
-      machineId: runnerId,
-      idempotencyKey: "bind-expiring",
-      proof: await service.signDeviceSessionBinding({ deploymentId, sessionId: current.id }),
-    });
+    expect(await service.bindDeviceSession(deploymentId)).toBe("bound");
     const attachment = {
       connection: fullCatalog.deployments[0]!,
       resolved: resolveConnection(fullCatalog.deployments[0]!, null, { authorization: null }),
@@ -479,12 +457,7 @@ it("enrolls, binds, preserves access, removes and heals a real desktop Runner ag
     current = (
       await testRpcData(home.origin, "sessions.list", {}, { headers: recoveredHeaders })
     ).sessions.find((session) => session.current)!;
-    await command({
-      type: "machine.session.bind",
-      machineId: runnerId,
-      idempotencyKey: "bind-after-rotation",
-      proof: await service.signDeviceSessionBinding({ deploymentId, sessionId: current.id }),
-    });
+    expect(await service.bindDeviceSession(deploymentId)).toBe("bound");
     console.info(
       "STEP 2b: Home route rotation ends the bound session; Runner confirms membership, preserves the key and browser profiles, and sign-in rebinds",
     );

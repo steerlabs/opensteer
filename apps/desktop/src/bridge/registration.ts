@@ -111,7 +111,7 @@ import {
   handlePrepareDeviceSetup,
   handleAccountSignOutPreview,
   handleLeaveDeployment,
-  handleSignDeviceSessionBinding,
+  handleBindDeviceSession,
 } from "./methods/local-execution.js";
 import { handleGetPasswordsStatus, handleOpenPasswords } from "./methods/passwords.js";
 import { handleOpenExternalUrl, handlePickFolder } from "./methods/window.js";
@@ -461,7 +461,7 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   register(desktopBridgeChannels.retryDeviceConnection, handleRetryDeviceConnection(context));
   register(desktopBridgeChannels.setUpDevice, handleSetUpDevice(context));
   register(desktopBridgeChannels.leaveDeployment, handleLeaveDeployment(context));
-  register(desktopBridgeChannels.signDeviceSessionBinding, handleSignDeviceSessionBinding(context));
+  register(desktopBridgeChannels.bindDeviceSession, handleBindDeviceSession(context));
   register(desktopBridgeChannels.unlinkPersonal, handleUnlinkPersonal(context));
 
   return () => {

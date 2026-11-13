@@ -13,7 +13,6 @@ import {
   DeploymentIdSchema,
   EnvironmentIdSchema,
   RunnerIdSchema,
-  AuthSessionIdSchema,
   harnessCatalog,
   harnessExecutableEnvironmentVariable,
   shipsHarnessRuntimeBytes,
@@ -22,6 +21,7 @@ import {
 } from "@opensteer/core";
 import {
   DesktopStartLocalRunnerInputSchema,
+  type DesktopDeviceSessionBinding,
   type DesktopLocalExecutionStatus,
   type DesktopStartLocalRunnerInput,
 } from "@opensteer/protocol/desktop";
@@ -48,13 +48,13 @@ import {
   DevicePreparedIdentitySchema,
   type HostApiCommandInput,
   type HostApiCommandOutput,
-  type DeviceSessionBindingProof,
+  type HostApiClient,
   type DevicePreparedIdentity,
 } from "@opensteer/protocol";
 import { assertDeviceSessionAllowed } from "@opensteer/client/computers";
 import { type AccountDeploymentConnectionSource } from "@opensteer/client/connections";
 import { readPrivateFileText } from "@opensteer/shared/atomicPrivateFile";
-import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, randomUUID } from "node:crypto";
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { syncDirectory } from "@opensteer/shared/privateFiles";
@@ -67,6 +67,7 @@ import {
   type DeviceMemberships,
 } from "./device-membership.js";
 import type { DesktopConfiguration } from "../config.js";
+import { DesktopHostApiError, hostApiData } from "../connections/desktop-host-api.js";
 import { computerName } from "./computer-name.js";
 import type { PersonalLocalBrowserHandle } from "./personal-local-runtime.js";
 import {
@@ -157,25 +158,8 @@ export interface LocalRunnerServiceDependencies {
   readonly assertAccountSource?: (source: AccountDeploymentConnectionSource) => void;
   readonly leaveFetch?: typeof fetch;
   readonly now?: () => number;
-  readonly revokeLegacyRunner?: (
-    deploymentId: DeploymentId,
-    origin: string,
-    runnerId: string,
-  ) => Promise<void>;
-  readonly retireEnrollment?: (
-    deploymentId: DeploymentId,
-    origin: string,
-    enrollmentId: string,
-  ) => Promise<"consumed" | "expired" | "retired" | void>;
-  readonly readSession?: (
-    deploymentId: DeploymentId,
-    origin: string,
-    sessionId: string,
-  ) => Promise<
-    NonNullable<DeviceMembership["boundSession"]> & {
-      readonly deviceId?: string | null | undefined;
-    }
-  >;
+  /** The Deployment's typed Host API, authenticated by that Deployment's own session partition. */
+  readonly hostApi?: (deploymentId: DeploymentId, origin: string) => HostApiClient;
   /** Fences authentication and client traffic synchronously, before disk or teardown awaits. */
   readonly fenceDeployment?: (deploymentId: DeploymentId) => void;
   readonly clearDeploymentSession?: (deploymentId: DeploymentId) => Promise<void>;
@@ -291,17 +275,12 @@ export class LocalRunnerService {
     string,
     { deploymentId: DeploymentId; id: string; expiresAt: string }
   >();
-  readonly #pendingBindings = new Map<
+  /** One in-flight bind per Deployment, valid only for the setup generation it started in. */
+  readonly #bindings = new Map<
     DeploymentId,
-    {
-      generation: number;
-      signature: string;
-      session: NonNullable<DeviceMembership["boundSession"]>;
-    }
+    { generation: number; attempt: Promise<DesktopDeviceSessionBinding> }
   >();
-  readonly #revokeLegacyRunner: LocalRunnerServiceDependencies["revokeLegacyRunner"];
-  readonly #retireEnrollment: LocalRunnerServiceDependencies["retireEnrollment"];
-  readonly #readSession: LocalRunnerServiceDependencies["readSession"];
+  readonly #hostApiFor: LocalRunnerServiceDependencies["hostApi"];
   readonly #fenceDeployment: NonNullable<LocalRunnerServiceDependencies["fenceDeployment"]>;
   readonly #clearDeploymentSession: NonNullable<
     LocalRunnerServiceDependencies["clearDeploymentSession"]
@@ -347,9 +326,7 @@ export class LocalRunnerService {
     this.#assertAccountSource = dependencies.assertAccountSource ?? (() => undefined);
     this.#leaveFetch = dependencies.leaveFetch ?? fetch;
     this.#now = dependencies.now ?? (() => Date.now());
-    this.#retireEnrollment = dependencies.retireEnrollment;
-    this.#revokeLegacyRunner = dependencies.revokeLegacyRunner;
-    this.#readSession = dependencies.readSession;
+    this.#hostApiFor = dependencies.hostApi;
     this.#fenceDeployment = dependencies.fenceDeployment ?? (() => undefined);
     this.#clearDeploymentSession = dependencies.clearDeploymentSession ?? (async () => undefined);
     this.#allowDeployment = dependencies.allowDeployment ?? (async () => undefined);
@@ -751,54 +728,26 @@ export class LocalRunnerService {
     }
   }
 
-  async reconcileBoundSession(deploymentIdInput: string): Promise<void> {
-    const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
-    if (!this.#readSession) return;
-    const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
-    if (
-      row?.state !== "active" ||
-      !row.runnerId ||
-      row.confirmingSession ||
-      this.#fenced.has(deploymentId)
-    )
-      return;
-    const target = await this.#targets.resolve(deploymentId);
-    const session = await this.#readSession(deploymentId, target.hostUrl, "");
-    if (session.deviceId !== row.runnerId) return;
-    await this.#mutatePreference((preference) => {
-      const current = preference.runners[deploymentId];
-      if (
-        current?.state !== "active" ||
-        current.generation !== row.generation ||
-        current.confirmingSession ||
-        this.#fenced.has(deploymentId)
-      )
-        return preference;
-      return {
-        ...preference,
-        runners: {
-          ...preference.runners,
-          [deploymentId]: {
-            ...current,
-            boundSession: {
-              id: session.id,
-              expiresAt: session.expiresAt,
-              absoluteExpiresAt: session.absoluteExpiresAt,
-            },
-          },
-        },
-      };
-    });
-  }
-
   async startIfEnabled(): Promise<void> {
     await this.#preferenceMutations.run(async () => {
       await writeMemberships(this.#preferencePath, await readMemberships(this.#preferencePath));
     });
     await this.reconcile();
+    // A binding the Host committed whose receipt was lost is recorded here, so
+    // session-loss fencing never depends on a window loading this Deployment.
     const rows = await readMemberships(this.#preferencePath);
     await Promise.all(
-      Object.keys(rows.runners).map((id) => this.reconcileBoundSession(id).catch(() => undefined)),
+      Object.entries(rows.runners)
+        .filter(([, row]) => row.state === "active" && row.runnerId)
+        .map(([id]) =>
+          this.#bindDeviceSession(DeploymentIdSchema.parse(id), { submit: false }).catch(
+            (error: unknown) =>
+              this.#log("desktop.device.bound-session-unconfirmed", {
+                deploymentId: id,
+                message: safeDetail(error),
+              }),
+          ),
+        ),
     );
     await this.#profileErasure.finishPending();
   }
@@ -858,49 +807,164 @@ export class LocalRunnerService {
     return parsed.enrollmentToken ? this.start(parsed) : this.status(parsed.deploymentId);
   }
 
-  async signDeviceSessionBinding(input: {
-    deploymentId: string;
-    sessionId: string;
-  }): Promise<DeviceSessionBindingProof> {
-    const deploymentId = DeploymentIdSchema.parse(input.deploymentId);
-    const sessionId = AuthSessionIdSchema.parse(input.sessionId);
+  /**
+   * Binds this Mac's own signed-in session to its device identity. Main holds
+   * both the session cookie and the device key, so it reads which session is
+   * current, signs that one and submits it itself: no other process can ask it
+   * to sign a session it does not hold. Concurrent calls share one attempt.
+   */
+  bindDeviceSession(deploymentIdInput: string): Promise<DesktopDeviceSessionBinding> {
+    const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
+    const generation = this.#slot(deploymentId).intentGeneration;
+    const inFlight = this.#bindings.get(deploymentId);
+    if (inFlight?.generation === generation) return inFlight.attempt;
+    const attempt = this.#bindDeviceSession(deploymentId, { submit: true })
+      .then((outcome) => {
+        if (outcome === "unbound") throw new Error("This Mac's sign-in was not bound.");
+        return outcome;
+      })
+      .catch((error: unknown) => {
+        this.#log("desktop.device.bind-failed", {
+          deploymentId,
+          message: safeDetail(error),
+          ...(error instanceof DesktopHostApiError
+            ? { code: error.code, ...(error.reason ? { reason: error.reason } : {}) }
+            : {}),
+        });
+        throw error;
+      })
+      .finally(() => {
+        if (this.#bindings.get(deploymentId)?.attempt === attempt)
+          this.#bindings.delete(deploymentId);
+      });
+    this.#bindings.set(deploymentId, { generation, attempt });
+    return attempt;
+  }
+
+  /**
+   * Reads this Mac's current session; with `submit`, signs and binds it when
+   * the Host has not. Either way a binding the Host holds is recorded, and a
+   * result that outlived this membership is an error, never a success.
+   */
+  async #bindDeviceSession(
+    deploymentId: DeploymentId,
+    options: { readonly submit: boolean },
+  ): Promise<DesktopDeviceSessionBinding | "unbound"> {
     const membership = (await readMemberships(this.#preferencePath)).runners[deploymentId];
     const slot = this.#slot(deploymentId);
     const generation = slot.intentGeneration;
     if (this.#fenced.has(deploymentId) || membership?.state !== "active" || !membership.runnerId)
       throw new Error("This Mac is not an active device in this Deployment.");
+    const runnerId = membership.runnerId;
     await this.assertSessionAllowed(deploymentId);
-    const identity = await this.#signingIdentity(deploymentId, membership.runnerId);
     const target = await this.#targets.resolve(deploymentId);
     if (membership.hostAuthority && !isSameHost(membership.hostAuthority, target.authority))
       throw new Error("This Deployment's Host identity changed. Set up this Mac again.");
-    if (!this.#readSession) throw new Error("This Mac cannot verify the session being bound.");
-    const session = await this.#readSession(deploymentId, target.hostUrl, sessionId);
-    if (
-      session.id !== sessionId ||
-      Date.parse(session.expiresAt) <= Date.now() ||
-      Date.parse(session.absoluteExpiresAt) <= Date.now()
-    )
-      throw new Error("The session being bound has ended.");
-    const issuedAt = new Date().toISOString();
-    if (this.#fenced.has(deploymentId) || slot.intentGeneration !== generation)
-      throw new Error("This Mac left before session binding completed.");
-    const signature = createDeviceSessionBindingSignature(identity.privateKey, {
-      deploymentId,
-      runnerId: identity.runnerId,
-      sessionId,
-      issuedAt,
+    const host = this.#hostApi(deploymentId, target.hostUrl);
+    const session = hostApiData(await host["sessions.list"]({})).sessions.find(
+      (candidate) => candidate.current,
+    );
+    if (!session) throw new Error("This Mac is not signed in to this Opensteer.");
+    if (session.deviceId && session.deviceId !== runnerId)
+      throw new Error("This sign-in already belongs to another device.");
+    const assertCurrent = () => {
+      if (this.#fenced.has(deploymentId) || slot.intentGeneration !== generation)
+        throw new Error("This Mac left before session binding completed.");
+    };
+    assertCurrent();
+    if (session.deviceId !== runnerId && !options.submit) return "unbound";
+    const outcome = session.deviceId === runnerId ? "already-bound" : "bound";
+    if (outcome === "bound") {
+      const identity = await this.#signingIdentity(deploymentId, runnerId);
+      const issuedAt = new Date().toISOString();
+      assertCurrent();
+      const result = hostApiData(
+        await host["commands.dispatch"]({
+          type: "machine.session.bind",
+          machineId: runnerId,
+          // Binding is idempotent on the Host; the key only names this attempt.
+          idempotencyKey: randomUUID(),
+          proof: {
+            issuedAt,
+            signature: createDeviceSessionBindingSignature(identity.privateKey, {
+              deploymentId,
+              runnerId,
+              sessionId: session.id,
+              issuedAt,
+            }),
+          },
+        }),
+      );
+      if (result.type !== "machine.session.bind")
+        throw new Error("The Host answered session binding with another command.");
+    }
+    let recorded = false;
+    await this.#mutatePreference((preference) => {
+      const current = preference.runners[deploymentId];
+      if (
+        current?.state !== "active" ||
+        current.runnerId !== runnerId ||
+        current.generation !== membership.generation ||
+        this.#fenced.has(deploymentId) ||
+        slot.intentGeneration !== generation
+      )
+        return preference;
+      recorded = true;
+      return {
+        ...preference,
+        runners: {
+          ...preference.runners,
+          [deploymentId]: {
+            ...current,
+            boundSession: {
+              id: session.id,
+              expiresAt: session.expiresAt,
+              absoluteExpiresAt: session.absoluteExpiresAt,
+            },
+          },
+        },
+      };
     });
-    this.#pendingBindings.set(deploymentId, {
-      generation: membership.generation,
-      signature,
-      session: {
-        id: session.id,
-        expiresAt: session.expiresAt,
-        absoluteExpiresAt: session.absoluteExpiresAt,
-      },
-    });
-    return { issuedAt, signature };
+    if (!recorded) throw new Error("This Mac left before session binding completed.");
+    return outcome;
+  }
+
+  async #retireEnrollment(
+    deploymentId: DeploymentId,
+    origin: string,
+    enrollmentId: string,
+  ): Promise<"consumed" | "expired" | "retired"> {
+    const result = hostApiData(
+      await this.#hostApi(deploymentId, origin)["commands.dispatch"]({
+        type: "runner.enrollment.retire",
+        enrollmentId,
+        idempotencyKey: `desktop-retire:${enrollmentId}`,
+      }),
+    );
+    if (result.type !== "runner.enrollment.retire")
+      throw new Error("The Host answered enrollment retirement with another command.");
+    return result.state;
+  }
+
+  async #revokeLegacyRunner(
+    deploymentId: DeploymentId,
+    origin: string,
+    runnerId: string,
+  ): Promise<void> {
+    const result = hostApiData(
+      await this.#hostApi(deploymentId, origin)["commands.dispatch"]({
+        type: "machine.revoke",
+        machineId: runnerId,
+        idempotencyKey: `desktop-leave:${runnerId}`,
+      }),
+    );
+    if (result.type !== "machine.revoke")
+      throw new Error("The Host answered removal with another command.");
+  }
+
+  #hostApi(deploymentId: DeploymentId, origin: string): HostApiClient {
+    if (!this.#hostApiFor) throw new Error("This Mac cannot reach its Opensteer from here.");
+    return this.#hostApiFor(deploymentId, origin);
   }
 
   async observeHostCommand(
@@ -948,29 +1012,6 @@ export class LocalRunnerService {
         expiresAt: result.expiresAt,
       });
     }
-    if (command.type !== "machine.session.bind" || result.type !== command.type) return;
-    const pending = this.#pendingBindings.get(deploymentId);
-    if (!pending || pending.signature !== command.proof.signature || this.#fenced.has(deploymentId))
-      return;
-    await this.#mutatePreference((preference) => {
-      const row = preference.runners[deploymentId];
-      if (
-        row?.state !== "active" ||
-        row.runnerId !== command.machineId ||
-        row.generation !== pending.generation ||
-        this.#fenced.has(deploymentId)
-      )
-        return preference;
-      return {
-        ...preference,
-        runners: {
-          ...preference.runners,
-          [deploymentId]: { ...row, boundSession: pending.session },
-        },
-      };
-    });
-    if (this.#pendingBindings.get(deploymentId) === pending)
-      this.#pendingBindings.delete(deploymentId);
   }
 
   #enrollmentForToken(
@@ -2071,7 +2112,7 @@ export class LocalRunnerService {
   #fence(deploymentId: DeploymentId): void {
     if (this.#fenced.has(deploymentId)) return;
     this.#fenced.add(deploymentId);
-    this.#pendingBindings.delete(deploymentId);
+    this.#bindings.delete(deploymentId);
     this.#disableIntent(this.#slot(deploymentId));
     this.#cancelRestart(deploymentId);
     this.#fenceDeployment(deploymentId);
@@ -2192,7 +2233,7 @@ export class LocalRunnerService {
     const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
     if (!row?.pendingEnrollment || row.prepared || row.devicesAvailable !== true) return;
     let retired = Date.parse(row.pendingEnrollment.expiresAt) <= Date.now();
-    if (!retired && row.lastVerifiedRoute && this.#retireEnrollment) {
+    if (!retired && row.lastVerifiedRoute) {
       try {
         await this.#retireEnrollment(
           deploymentId,
@@ -2224,17 +2265,14 @@ export class LocalRunnerService {
           throw new Error("The legacy removal belongs to another Host.");
         let consumed = leave.enrollmentId === null;
         if (leave.enrollmentId) {
-          if (!this.#retireEnrollment) throw new Error("Enrollment retirement unavailable");
           const state = await this.#retireEnrollment(
             deploymentId,
             target.hostUrl,
             leave.enrollmentId,
           );
-          if (!state) throw new Error("Enrollment retirement was not confirmed.");
           consumed = state === "consumed";
         }
         if (leave.runnerId && consumed) {
-          if (!this.#revokeLegacyRunner) throw new Error("Legacy removal unavailable");
           await this.#revokeLegacyRunner(deploymentId, target.hostUrl, leave.runnerId);
         }
         await this.#mutatePreference((preference) => {

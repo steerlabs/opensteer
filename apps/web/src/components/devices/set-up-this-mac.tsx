@@ -331,7 +331,12 @@ export function FinishSetupBar({
   return (
     <div className="device-finish-bar" role="status">
       <Icon name="alert-circle" />
-      <span className="device-finish-bar__text">{line.text}</span>
+      <span
+        className="device-finish-bar__text"
+        title={cause.kind === "use-from-anywhere" || !cause.detail ? undefined : cause.detail}
+      >
+        {line.text}
+      </span>
       <span className="device-finish-bar__actions">
         {cause.kind === "use-from-anywhere" ? (
           <button className="link-btn" onClick={device.openSetup} type="button">
