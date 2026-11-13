@@ -174,12 +174,9 @@ export class NotificationStore {
         if (!entry.requestId) return "Notification names no Request";
         const request = await this.#database
           .selectFrom("requests")
-          .select(["status", "kind"])
+          .select("status")
           .where("id", "=", entry.requestId)
           .executeTakeFirst();
-        // Account installations do not negotiate Request kinds; suppress before generic push or previews.
-        if (request?.kind === "device.access")
-          return "Device access Requests require a supported live reader";
         return request?.status === "pending"
           ? null
           : "Request was answered before the notification was published";

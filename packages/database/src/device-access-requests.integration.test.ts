@@ -154,7 +154,7 @@ describeStore("device access Requests", (it) => {
         occurredAt: new Date(event.createdAt),
         expiresAt: new Date(Date.parse(event.createdAt) + 60_000),
       }),
-    ).toBe("Device access Requests require a supported live reader");
+    ).toBeNull();
 
     const legacy = await needsYouPage(f.database, { userId: run.userId, limit: 1 });
     expect(old.NeedsYouPageSchema.safeParse(legacy).success).toBe(true);

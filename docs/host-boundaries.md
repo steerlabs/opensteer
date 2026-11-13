@@ -125,10 +125,10 @@ supports the kind. Legacy lists, snapshots, history, counts and live notificatio
 counts retain their excluded-kind count at the original sequence so replay remains consistent after
 settlement. The durable Request still holds its Run, and filtering advances the event cursor.
 
-Account push installations do not negotiate Request kinds. Device-access Requests therefore produce
-no Account push publication, including generic alerts, previews and push badges, for any installation.
-Supported connected surfaces still receive live notifications. This keeps installed legacy phones
-from opening an unreadable question without requiring an Account or phone update.
+Account push installations do not negotiate Request kinds, so device-access Requests still push to
+every installation: a notification names only its task and Request, and a legacy phone that cannot
+render the kind opens the task instead. Withholding the alert would hide time-sensitive questions
+from current phones too.
 
 Runner proof format 2 is its own security boundary, separate from the epoch. The Host authenticates
 the complete raw descriptor JSON before one domain parse, so defaults, trimming and filtering cannot
