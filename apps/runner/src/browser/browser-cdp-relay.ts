@@ -259,7 +259,7 @@ export class BrowserCdpRelay {
       const upstream = await fetch(url, {
         method: request.method ?? "GET",
         headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-        ...(request.method === "POST" ? { body } : {}),
+        ...(request.method === "POST" ? { body: body.toString("utf8") } : {}),
         redirect: "error",
         signal,
       });

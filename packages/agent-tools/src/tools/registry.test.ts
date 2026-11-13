@@ -20,8 +20,8 @@ import { trigger_read, trigger_write } from "./triggers.js";
 
 describe("Opensteer tool registry", () => {
   it("has one specification per product and integration tool", () => {
-    expect(agentTools).toHaveLength(54);
-    expect(new Set(agentTools.map(({ name }) => name)).size).toBe(54);
+    expect(agentTools).toHaveLength(49);
+    expect(new Set(agentTools.map(({ name }) => name)).size).toBe(49);
     const runs = agentTools.filter((t) => t.callers.some((c) => c === "run")).map((t) => t.name);
     expect(runs).toContain("integration_call");
     expect(runs).toEqual(
@@ -34,7 +34,13 @@ describe("Opensteer tool registry", () => {
         "orchestrator_capabilities",
       ]),
     );
-    for (const old of ["thread_delegate", "thread_message", "request_list"])
+    for (const old of [
+      "thread_delegate",
+      "thread_message",
+      "request_list",
+      "browser_session_open",
+      "browser_tab_read",
+    ])
       expect(runs).not.toContain(old);
     const programs = agentTools
       .filter((t) => t.callers.some((c) => c === "program"))
