@@ -247,49 +247,72 @@ export class HostedTeamStore {
   }
 
   /**
-   * Cancels a team that isn't ready yet (its creator may) or deletes a ready one, which only an
-   * owner the team's own Host confirms may do. Answers the team at `deleting`.
+   * Cancels a team whose Host can't have an owner yet (its creator may) or deletes one whose Host
+   * may, which only an owner that Host confirms may do. Answers the team at `deleting`.
    */
   async remove(accountId: ControlPlaneAccountId, id: HostedTeamId): Promise<HostedTeamView> {
     const current = await this.#visible(accountId).where("id", "=", id).executeTakeFirst();
     if (!current) throw new ControlPlaneError("not_found", "Hosted team was not found");
-    if (current.state === "deleted") return toView(current);
-    const cancelling = current.stage !== "ready";
-    if (cancelling) {
-      if (current.creatorAccountId !== accountId) throw ownerRequired();
-    } else {
-      const authority = await this.#authority(current);
-      const answer = authority ? await this.#ownerCheck({ accountId, authority }) : undefined;
-      // Ownership can change on the team; only its Host knows, so no answer deletes nothing.
-      if (answer === undefined)
-        throw new ControlPlaneError(
-          "unavailable",
-          "Your team’s server didn’t answer. Try again in a minute.",
-        );
-      if (!answer) throw ownerRequired();
+    const origin = hostedTeamOrigin(current.slug as HostedTeamSlug);
+    let confirmedOwner = false;
+    for (;;) {
+      const outcome = await this.#database.transaction().execute(async (transaction) => {
+        // The adoption that lets a Host commit its owner holds this lock too, so a cancel either
+        // lands before it (and the adoption fails) or sees its Deployment.
+        await lockDeploymentOrigin(transaction, origin);
+        const row = await transaction
+          .selectFrom("hostedTeams")
+          .selectAll()
+          .where("id", "=", id)
+          .forNoKeyUpdate()
+          .executeTakeFirstOrThrow();
+        if (row.state === "deleted") return row;
+        if (!confirmedOwner) {
+          const adopted = await transaction
+            .selectFrom("deployments")
+            .select("id")
+            .where("canonicalOrigin", "=", origin)
+            .executeTakeFirst();
+          if (row.bootstrapReceipt !== null || adopted) return "owner-check" as const;
+          if (row.creatorAccountId !== accountId) throw ownerRequired();
+        }
+        await deleteHostedTeams(transaction, { id });
+        return transaction
+          .selectFrom("hostedTeams")
+          .selectAll()
+          .where("id", "=", id)
+          .executeTakeFirstOrThrow();
+      });
+      if (outcome !== "owner-check") return toView(outcome);
+      await this.#requireOwner(accountId, current);
+      confirmedOwner = true;
     }
-    const row = await this.#database.transaction().execute(async (transaction) => {
-      await lockDeploymentOrigin(transaction, hostedTeamOrigin(current.slug));
-      const locked = await transaction
-        .selectFrom("hostedTeams")
-        .select("stage")
-        .where("id", "=", id)
-        .where("state", "!=", "deleted")
-        .executeTakeFirst();
-      if (locked && cancelling && locked.stage === "ready") {
-        throw new ControlPlaneError(
-          "conflict",
-          "This team just finished setting up. Try again to delete it.",
-        );
-      }
-      await deleteHostedTeams(transaction, { id });
-      return transaction
-        .selectFrom("hostedTeams")
-        .selectAll()
-        .where("id", "=", id)
-        .executeTakeFirstOrThrow();
-    });
-    return toView(row);
+  }
+
+  /** Ownership can change on the team; only its Host knows, so no answer deletes nothing. */
+  async #requireOwner(accountId: ControlPlaneAccountId, team: HostedTeamRow): Promise<void> {
+    const authority = await this.#authority(team);
+    const answer = authority ? await this.#ownerCheck({ accountId, authority }) : undefined;
+    if (answer === undefined)
+      throw new ControlPlaneError(
+        "unavailable",
+        "Your team’s server didn’t answer. Try again in a minute.",
+      );
+    if (answer) return;
+    const settled = await this.#database
+      .selectFrom("hostedTeams")
+      .select(["bootstrapReceipt", "creatorAccountId", "stage"])
+      .where("id", "=", team.id)
+      .executeTakeFirstOrThrow();
+    if (settled.bootstrapReceipt !== null || settled.creatorAccountId !== accountId)
+      throw ownerRequired();
+    // Its creator, before Account knows who owns it: setup has to finish (or be retried) first.
+    throw new ControlPlaneError(
+      "conflict",
+      settled.stage === "failed"
+        ? "Try setting this team up again, then delete it."
+        : "This team is finishing setup. Try again in a minute.",
+    );
   }
 
   /* ---- Provisioner ---- */
@@ -314,34 +337,42 @@ export class HostedTeamStore {
   }
 
   /**
-   * Records what the provisioner saw. A team waiting on its Host moves to `configuring` once the
-   * Host runs the current setup generation; the answer says whether there is setup to do.
+   * Records what the provisioner saw. Only a report judged against the current setup generation
+   * moves a waiting team: to `configuring` once the Host runs it, back to `starting`, or to
+   * `failed`. A report for an older generation changes nothing. The answer says whether there is
+   * setup to do.
    */
   async reportStatus(
     id: HostedTeamId,
     report: HostedTeamStatusReport,
   ): Promise<{ readonly configuring: boolean }> {
+    // A running Host names its generation; otherwise only the provisioner can say which it judged.
+    const judged =
+      report.setupGeneration ??
+      (report.phase === "ready" ? report.observedSetupGeneration : undefined);
     return this.#database.transaction().execute(async (transaction) => {
       const row = await transaction
         .selectFrom("hostedTeams")
         .selectAll()
         .where("id", "=", id)
-        .where("setupGeneration", ">=", report.observedSetupGeneration)
+        .where("setupGeneration", ">=", Math.max(report.observedSetupGeneration, judged ?? 0))
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!row) {
         throw new ControlPlaneError("not_found", "Hosted team was not found at that generation");
       }
+      if (judged !== undefined && judged < row.setupGeneration) return { configuring: false };
       const now = new Date();
       const waiting =
         row.state === "active" &&
         row.bootstrapReceipt === null &&
+        judged === row.setupGeneration &&
         (row.stage === "reserving" || row.stage === "starting" || row.stage === "configuring");
-      const current = report.observedSetupGeneration === row.setupGeneration;
       let stage: HostedTeamStoredStage = row.stage;
       if (waiting) {
-        if (report.phase === "ready" && current) stage = "configuring";
-        else if (report.phase === "failed") stage = "failed";
+        if (report.phase === "ready") {
+          if (report.observedSetupGeneration === row.setupGeneration) stage = "configuring";
+        } else if (report.phase === "failed") stage = "failed";
         else if (report.phase === "provisioning") stage = "starting";
       }
       await transaction
@@ -464,7 +495,7 @@ export class HostedTeamStore {
     const receipt = HostedTeamBootstrapReceiptSchema.parse(result.receipt);
     await this.#database.transaction().execute(async (transaction) => {
       const now = new Date();
-      // Serializes with cancelling, which decides by whether a receipt exists.
+      // Serializes with deleting, which removes the Deployment this receipt names.
       await lockDeploymentOrigin(transaction, claim.origin);
       // The Host installed one adoption result; none of the others for it may stay sealed.
       const outstanding = await transaction

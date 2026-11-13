@@ -99,6 +99,11 @@ export const HostedTeamStatusReportSchema = z.strictObject({
   /** The Host image the team runs, or null when no Host runs. */
   hostImage: PinnedImageSchema.nullable(),
   observedSetupGeneration: z.number().int().min(0),
+  /**
+   * The desired setup generation this report was judged against. Account moves a team's setup
+   * only on reports for its current generation; provisioners before it omit this.
+   */
+  setupGeneration: z.number().int().min(1).optional(),
   message: z.string().min(1).max(1_000).optional(),
 });
 export type HostedTeamStatusReport = z.infer<typeof HostedTeamStatusReportSchema>;

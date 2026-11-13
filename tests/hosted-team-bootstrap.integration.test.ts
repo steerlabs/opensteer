@@ -404,13 +404,9 @@ for (const [step, when] of [
   });
 }
 
-it("answers a replayed completion with the first receipt after the creator left and someone else owns the team", async () => {
-  const system = await startHostedTeam();
-  await system.report();
-  system.faults.push({ step: "complete", when: "after" });
-  await system.bootstrapper.runOnce();
+/** The creator makes someone else an owner of the team and leaves it; answers the new owner. */
+async function handOwnershipAway(system: Awaited<ReturnType<typeof startHostedTeam>>) {
   const [creator] = await system.owners();
-  // Before Account hears back, the creator hands the team to someone else and leaves it.
   const other = await system.hostDatabase.transaction().execute(async (transaction) => {
     const id = `usr_${crypto.randomUUID()}` as UserId;
     await sql`insert into users(id,display_name,email,email_verified) values(${id},'Sam','sam@example.test',true)`.execute(
@@ -426,6 +422,17 @@ it("answers a replayed completion with the first receipt after the creator left 
     creator!.userId as UserId,
     "remove",
   );
+  return other;
+}
+
+it("answers a replayed completion with the first receipt after the creator left and someone else owns the team", async () => {
+  const system = await startHostedTeam();
+  await system.report();
+  system.faults.push({ step: "complete", when: "after" });
+  await system.bootstrapper.runOnce();
+  const [creator] = await system.owners();
+  // Before Account hears back, the creator hands the team to someone else and leaves it.
+  const other = await handOwnershipAway(system);
   await system.pass();
   await system.ready();
   const members = await system.hostDatabase
@@ -482,6 +489,45 @@ it("drops an attempt whose team was cancelled mid-setup, leaving no Deployment b
   expect(await system.accounts.selectFrom("deployments").select("id").execute()).toEqual([]);
   expect(await system.pass()).toBe(0);
   expect(await system.owners()).toEqual([]);
+});
+
+it("refuses a creator's cancel once the Host may hold an owner, even after ownership moved on", async () => {
+  const system = await startHostedTeam();
+  await system.report();
+  // The Host committed the creator as owner; Account never heard back.
+  system.faults.push({ step: "complete", when: "after" });
+  await system.bootstrapper.runOnce();
+  expect(await system.stage()).toBe("configuring");
+  const sam = await handOwnershipAway(system);
+  await expect(system.teams.remove(system.creator, system.created.id)).rejects.toMatchObject({
+    code: "conflict",
+  });
+  expect(await system.stage()).toBe("configuring");
+  expect(await system.accounts.selectFrom("deployments").select("id").execute()).toHaveLength(1);
+  expect(
+    await system.hostDatabase
+      .selectFrom("teamMembers")
+      .select(["userId", "role", "state"])
+      .where("userId", "=", sam)
+      .execute(),
+  ).toEqual([{ userId: sam, role: "owner", state: "active" }]);
+});
+
+it("never lets a cancel and the owner's completion both win", async () => {
+  const system = await startHostedTeam();
+  await system.report();
+  let cancelled: Promise<unknown> | undefined;
+  system.faults.push({
+    step: "complete",
+    // The creator cancels after Account adopted the Host, while the completion is on its way.
+    during: async () => {
+      cancelled = system.teams.remove(system.creator, system.created.id).catch((error) => error);
+      await cancelled;
+    },
+  });
+  await system.bootstrapper.runOnce();
+  expect(await cancelled).toMatchObject({ code: "conflict" });
+  await expectBootstrapped(system);
 });
 
 it("deletes a ready team only for an owner its own Host names", async () => {

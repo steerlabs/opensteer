@@ -207,7 +207,8 @@ export class Reconciler {
     await this.#report(team, { phase: "deleted", hostImage: null, observedSetupGeneration: 0 });
   }
 
-  async #report(team: DesiredHostedTeam, report: HostedTeamStatusReport): Promise<void> {
+  async #report(team: DesiredHostedTeam, observed: HostedTeamStatusReport): Promise<void> {
+    const report = { ...observed, setupGeneration: team.setupGeneration };
     const key = JSON.stringify(report);
     if (this.#reported.get(team.id) === key) return;
     this.#reported.delete(team.id);

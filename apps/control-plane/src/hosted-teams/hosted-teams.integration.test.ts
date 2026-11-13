@@ -288,7 +288,11 @@ integration("Hosted teams", () => {
   it("advances stages only on reports for the current setup generation, and retries with a new token", async () => {
     const team = await createTeam("waiting");
     const stage = async () => (await hostedTeams.forAccount(owner, team.id))?.stage;
-    await report(team.id, { phase: "provisioning", observedSetupGeneration: 0 });
+    await report(team.id, {
+      phase: "provisioning",
+      observedSetupGeneration: 0,
+      setupGeneration: 1,
+    });
     expect(await stage()).toBe("starting");
     expect((await report(team.id, { phase: "ready", observedSetupGeneration: 2 })).statusCode).toBe(
       404,
@@ -296,9 +300,13 @@ integration("Hosted teams", () => {
     expect(await stage()).toBe("starting");
     await report(team.id, { phase: "ready", observedSetupGeneration: 1 });
     expect(await stage()).toBe("configuring");
+    // A provisioner that doesn't say which generation it judged moves no stage.
+    await report(team.id, { phase: "failed", observedSetupGeneration: 0 });
+    expect(await stage()).toBe("configuring");
     await report(team.id, {
       phase: "failed",
       observedSetupGeneration: 0,
+      setupGeneration: 1,
       message: "The team did not become ready; rollouts are held until it does.",
     });
     expect(await hostedTeams.forAccount(owner, team.id)).toMatchObject({
@@ -319,8 +327,24 @@ integration("Hosted teams", () => {
     // The Host still on the old generation says nothing about the new one.
     await report(team.id, { phase: "ready", observedSetupGeneration: 1 });
     expect(await stage()).toBe("starting");
-    await report(team.id, { phase: "ready", observedSetupGeneration: 2 });
+    await report(team.id, { phase: "ready", observedSetupGeneration: 2, setupGeneration: 2 });
     expect(await stage()).toBe("configuring");
+    const attempt = await hostedTeams.claimBootstrap();
+    // Reports judged against generation 1 arrive late: they neither fail nor restart generation 2.
+    for (const phase of ["failed", "provisioning"]) {
+      const late = await report(team.id, { phase, observedSetupGeneration: 0, setupGeneration: 1 });
+      expect(late.statusCode).toBe(200);
+      expect(await stage()).toBe("configuring");
+    }
+    await expect(
+      database
+        .transaction()
+        .execute((transaction) => hostedTeams.adoptionGuard(attempt!)(transaction)),
+    ).resolves.toBeUndefined();
+    expect(
+      (await report(team.id, { phase: "failed", observedSetupGeneration: 0, setupGeneration: 3 }))
+        .statusCode,
+    ).toBe(404);
     // Retrying a team that hasn't failed changes nothing.
     await hostedTeams.retry(owner, team.id);
     expect((await desiredTeams())[0]!.setupGeneration).toBe(2);
@@ -483,6 +507,9 @@ integration("Hosted teams", () => {
   it("deletes a team until the provisioner confirms, removing the Deployment adopted there", async () => {
     const team = await createTeam("gone");
     await claim("https://gone.teams.opensteer.com", await createAccount("claimant@example.test"));
+    // A Host was adopted there, so only an owner it confirms may delete the team.
+    await expect(hostedTeams.remove(owner, team.id)).rejects.toMatchObject({ code: "unavailable" });
+    ownerAnswer = true;
 
     expect((await hostedTeams.remove(owner, team.id)).stage).toBe("deleting");
     expect(await desiredTeams()).toEqual([
@@ -633,6 +660,7 @@ integration("Hosted teams", () => {
     input: {
       phase: string;
       observedSetupGeneration: number;
+      setupGeneration?: number;
       hostImage?: string | null;
       message?: string;
     },

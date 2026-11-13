@@ -43,10 +43,15 @@ generation, so a slower attempt, a retry or a cancel never lets a stale write la
 minutes a team is `failed`; a retry before the Host has an owner seals a new token and restarts
 the Host with a fresh setup window. Self-hosted teams keep `/setup`.
 
-Until a team is `ready` its creator may cancel. After, only the team's owners may delete it, and
-only the team's Host knows who they are: Account asks it with a one-minute Account-signed question.
-A Host that can't answer, because it predates hosted bootstrap or is down, deletes nothing:
-ownership may have moved on, so there is no creator fallback.
+Its creator may cancel a team only while its Host can't have an owner: before Account adopts that
+Host. Adoption takes the same origin lock as cancelling, so one of them loses. Once a Deployment or
+receipt exists, whatever stage Account shows, only the team's owners may delete it, and only the
+team's Host knows who they are: Account asks it with a one-minute Account-signed question. A Host
+that can't answer, because it predates hosted bootstrap or is down, deletes nothing: ownership may
+have moved on, so there is no creator fallback.
+
+Setup stages move only on provisioner reports judged against the team's current setup generation,
+so a late report about an earlier generation never fails or restarts a retry.
 
 The transition to `ready` queues a generic `team-ready` push to the creator's phones, opening the
 team's #general; Hosts can't publish that kind. Clients find a hosted team by the `hostedTeamId`
