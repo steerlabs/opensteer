@@ -74,6 +74,19 @@ async function attach(input: {
       runnerId: input.runnerId,
     },
     connectRunner: (token) => host.connectLocalRunner(token),
+    leaveDevice: async () => {
+      const result = await host.rpc["sessions.list"]({});
+      if (!result.ok) throw new Error(result.error.message);
+      const runnerId =
+        input.runnerId ?? result.data.sessions.find((session) => session.current)?.deviceId;
+      if (!runnerId) throw new Error("No device to remove");
+      const removed = await host.rpc["commands.dispatch"]({
+        type: "machine.revoke",
+        machineId: runnerId,
+        idempotencyKey: `preview-leave:${runnerId}`,
+      });
+      if (!removed.ok) throw new Error(removed.error.message);
+    },
     transitionDelayMs: 0,
   })!;
   const access = await bridge.getDeploymentAccessSnapshot();
@@ -226,6 +239,13 @@ it("leaves through desktop main and shows the removed screen, which never signs 
   await act(async () => button("Sign out and remove this Mac").click());
   expect(setup.bridge.leaveDeployment).toHaveBeenCalledWith({ deploymentId });
   await waitForText("This Mac was removed from", "the removed screen");
+  expect(
+    (
+      await setup.bridge.getLocalExecutionStatus({
+        deploymentId: DeploymentIdSchema.parse(deploymentId),
+      })
+    ).runner.detail,
+  ).not.toContain("unconfirmed");
   localStorage.setItem(`opensteer.device-set-up-again.v1:${deploymentId}`, "1");
   await expect(
     setup.bridge.select({ deploymentId: DeploymentIdSchema.parse(deploymentId) }),

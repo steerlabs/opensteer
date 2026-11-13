@@ -35,6 +35,15 @@ export function migrationProvider(): MigrationProvider {
             `.execute(database);
           },
         },
+        "0005_device_setup_retirement": {
+          async up(database) {
+            await sql`create table device_setup_retirements (
+              runner_id text not null,
+              public_key_pem text not null,
+              primary key (runner_id, public_key_pem)
+            )`.execute(database);
+          },
+        },
       };
     },
   };

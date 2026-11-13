@@ -156,11 +156,17 @@ export interface LocalRunnerServiceDependencies {
   readonly log?: ShutdownLog;
   readonly assertAccountSource?: (source: AccountDeploymentConnectionSource) => void;
   readonly leaveFetch?: typeof fetch;
+  readonly now?: () => number;
+  readonly revokeLegacyRunner?: (
+    deploymentId: DeploymentId,
+    origin: string,
+    runnerId: string,
+  ) => Promise<void>;
   readonly retireEnrollment?: (
     deploymentId: DeploymentId,
     origin: string,
     enrollmentId: string,
-  ) => Promise<void>;
+  ) => Promise<"consumed" | "expired" | "retired" | void>;
   readonly readSession?: (
     deploymentId: DeploymentId,
     origin: string,
@@ -234,6 +240,7 @@ export interface LocalRunnerServiceDependencies {
 interface RunnerSlot {
   /** The module set of the running worker, which a changed `runAgents` restarts. */
   activeRunAgents: boolean | undefined;
+  confirmationOnly: boolean;
   activeTarget: DesktopLocalRunnerTarget | undefined;
   /** The browser this slot's Runner relays, stopped with it. */
   browser: PersonalLocalBrowserHandle | undefined;
@@ -279,6 +286,7 @@ export class LocalRunnerService {
   readonly #assertAccountSource: NonNullable<LocalRunnerServiceDependencies["assertAccountSource"]>;
   #accountGeneration = 0;
   readonly #leaveFetch: typeof fetch;
+  readonly #now: () => number;
   readonly #pendingEnrollments = new Map<
     string,
     { deploymentId: DeploymentId; id: string; expiresAt: string }
@@ -291,6 +299,7 @@ export class LocalRunnerService {
       session: NonNullable<DeviceMembership["boundSession"]>;
     }
   >();
+  readonly #revokeLegacyRunner: LocalRunnerServiceDependencies["revokeLegacyRunner"];
   readonly #retireEnrollment: LocalRunnerServiceDependencies["retireEnrollment"];
   readonly #readSession: LocalRunnerServiceDependencies["readSession"];
   readonly #fenceDeployment: NonNullable<LocalRunnerServiceDependencies["fenceDeployment"]>;
@@ -337,7 +346,9 @@ export class LocalRunnerService {
     this.#config = config;
     this.#assertAccountSource = dependencies.assertAccountSource ?? (() => undefined);
     this.#leaveFetch = dependencies.leaveFetch ?? fetch;
+    this.#now = dependencies.now ?? (() => Date.now());
     this.#retireEnrollment = dependencies.retireEnrollment;
+    this.#revokeLegacyRunner = dependencies.revokeLegacyRunner;
     this.#readSession = dependencies.readSession;
     this.#fenceDeployment = dependencies.fenceDeployment ?? (() => undefined);
     this.#clearDeploymentSession = dependencies.clearDeploymentSession ?? (async () => undefined);
@@ -466,7 +477,7 @@ export class LocalRunnerService {
         state: stored?.state === "active" && slot.waiting ? "waiting" : (stored?.state ?? "none"),
         runnerId: stored?.runnerId ?? slot.runnerId,
         generation: stored?.generation ?? 0,
-        leaveUnconfirmed: stored?.state === "leaving",
+        leaveUnconfirmed: stored?.state === "leaving" || (stored?.legacyLeaves.length ?? 0) > 0,
         enrolled: slot.enrolled,
         sessionState: stored?.confirmingSession
           ? "confirming"
@@ -551,6 +562,7 @@ export class LocalRunnerService {
             prepared: true,
             provenance: current?.provenance ?? target.source,
             hostAuthority: target.authority,
+            devicesAvailable: target.devicesAvailable === true,
             lastVerifiedRoute: { origin: target.hostUrl, accessRoute: target.accessRoute },
           },
         },
@@ -590,6 +602,15 @@ export class LocalRunnerService {
         prepared.publicKeyPem
       )
         throw new Error("Enrollment does not match this Mac's prepared key.");
+      await this.#mutatePreference((preference) => {
+        const current = preference.runners[deploymentId];
+        if (current?.state !== "active" || this.#fenced.has(deploymentId))
+          throw new Error("Device setup was cancelled before enrollment issuance.");
+        return {
+          ...preference,
+          runners: { ...preference.runners, [deploymentId]: { ...current, issuanceStarted: true } },
+        };
+      });
       return operation();
     });
   }
@@ -619,6 +640,7 @@ export class LocalRunnerService {
               provenance: target.source,
               deploymentName: target.name ?? stored.deploymentName,
               hostAuthority: target.authority,
+              devicesAvailable: target.devicesAvailable === true,
               lastVerifiedRoute: { origin: target.hostUrl, accessRoute: target.accessRoute },
             },
           },
@@ -638,6 +660,7 @@ export class LocalRunnerService {
   }
 
   async #startNow(parsed: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus> {
+    await this.#finishLegacyLeaves(parsed.deploymentId);
     const membership = (await readMemberships(this.#preferencePath)).runners[parsed.deploymentId];
     if (this.#fenced.has(parsed.deploymentId) || (membership && membership.state !== "active"))
       throw new Error("This Mac was removed. Choose Set up again before joining this Deployment.");
@@ -697,6 +720,7 @@ export class LocalRunnerService {
               runAgents: parsed.runAgents,
               provenance: current?.provenance ?? target.source,
               hostAuthority: target.authority,
+              devicesAvailable: target.devicesAvailable === true,
               lastVerifiedRoute: { origin: target.hostUrl, accessRoute: target.accessRoute },
             },
           },
@@ -808,6 +832,7 @@ export class LocalRunnerService {
             [parsed.deploymentId]: {
               ...membershipIntent(parsed.runnerName, parsed.runAgents),
               generation: existing.generation + 1,
+              legacyLeaves: current.legacyLeaves,
             },
           },
         };
@@ -829,6 +854,7 @@ export class LocalRunnerService {
     });
     assertSetupCurrent();
     this.#fenced.delete(parsed.deploymentId);
+    if (existing?.needsSignIn && slot.confirmationOnly) void this.reconcile();
     return parsed.enrollmentToken ? this.start(parsed) : this.status(parsed.deploymentId);
   }
 
@@ -896,6 +922,7 @@ export class LocalRunnerService {
               ...preference.runners,
               [deploymentId]: {
                 ...row,
+                issuanceStarted: true,
                 pendingEnrollment: {
                   id: result.enrollmentId,
                   expiresAt: result.expiresAt,
@@ -962,19 +989,85 @@ export class LocalRunnerService {
     const slot = this.#slot(deploymentId);
     if (this.#fenced.has(deploymentId)) this.#disableIntent(slot);
     this.#fence(deploymentId);
+    await this.#setupIssuances.run(() => this.#prepareLeave(deploymentId));
+    await this.#refreshLeaveRoute(deploymentId);
+    await this.#finishObligation(deploymentId);
+    const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
+    if (row?.state === "removed")
+      slot.detail = row.legacyLeaves.length
+        ? "Signed out here. This older Host still needs removal confirmed after you sign in again."
+        : "This Mac has left this Deployment.";
+  }
+
+  async #prepareLeave(deploymentId: DeploymentId): Promise<void> {
     await this.#mutatePreference(async (preference) => {
-      const current = preference.runners[deploymentId];
-      if (current && current.state !== "active") return preference;
+      const stored = preference.runners[deploymentId];
+      if (stored && stored.state !== "active") return preference;
+      let target: DesktopLocalRunnerTarget | null = null;
+      try {
+        target = await this.#targets.resolve(deploymentId);
+      } catch {
+        /* The saved authority still owns offline leave. */
+      }
+      if (stored?.hostAuthority && target && !isSameHost(stored.hostAuthority, target.authority))
+        throw new Error("This Deployment's Host identity changed.");
+      const current = target
+        ? {
+            ...(stored ?? membershipIntent(await this.#computerName(), false)),
+            hostAuthority: target.authority,
+            devicesAvailable: target.devicesAvailable === true,
+            lastVerifiedRoute: { origin: target.hostUrl, accessRoute: target.accessRoute },
+            provenance: stored?.provenance ?? target.source,
+          }
+        : stored;
       const descriptor = await this.#inspectIdentity(this.#deploymentDataDirectory(deploymentId));
       const runnerId = current?.runnerId ?? descriptor?.runnerId ?? null;
       let leaveProof = null;
-      if (runnerId) {
+      const localOnly =
+        !descriptor?.enrolled &&
+        !current?.pendingEnrollment &&
+        (current?.prepared ? !current.issuanceStarted : !stored);
+      const modern = current?.devicesAvailable === true;
+      if (runnerId && !localOnly && modern) {
         const identity = await this.#signingIdentity(deploymentId, runnerId);
         const context = { deploymentId, runnerId, issuedAt: new Date().toISOString() };
         leaveProof = {
           ...context,
           signature: createDeviceLeaveSignature(identity.privateKey, context),
+          ...(current?.prepared
+            ? {
+                preparedIdentity: {
+                  runnerId,
+                  publicKeyPem: createPublicKey(identity.privateKey)
+                    .export({ format: "pem", type: "spki" })
+                    .toString(),
+                },
+              }
+            : {}),
         };
+      }
+      if (
+        !modern &&
+        !localOnly &&
+        (descriptor?.enrolled || current?.pendingEnrollment) &&
+        (!current?.hostAuthority || !current.lastVerifiedRoute)
+      )
+        throw new Error(
+          "Reconnect this Opensteer to pin its Host before leaving this older membership.",
+        );
+      const legacyLeaves = [...(current?.legacyLeaves ?? [])];
+      if (
+        !modern &&
+        !localOnly &&
+        current?.lastVerifiedRoute &&
+        current.hostAuthority &&
+        (descriptor?.enrolled || current.pendingEnrollment)
+      ) {
+        legacyLeaves.push({
+          runnerId,
+          enrollmentId: current.pendingEnrollment?.id ?? null,
+          authority: current.hostAuthority,
+        });
       }
       return {
         ...preference,
@@ -986,16 +1079,12 @@ export class LocalRunnerService {
             generation: (current?.generation ?? 0) + 1,
             runnerId,
             leaveProof,
+            legacyLeaves,
             erasePending: true,
           },
         },
       };
     });
-    await this.#refreshLeaveRoute(deploymentId);
-    await this.#retirePendingEnrollment(deploymentId);
-    await this.#finishObligation(deploymentId);
-    if ((await readMemberships(this.#preferencePath)).runners[deploymentId]?.state === "removed")
-      slot.detail = "This Mac has left this Deployment.";
   }
 
   async leaveAccountMemberships(next?: AccountDeploymentConnectionSource): Promise<void> {
@@ -1037,7 +1126,16 @@ export class LocalRunnerService {
         ...preference,
         runners: {
           ...preference.runners,
-          [deploymentId]: { ...current, needsSignIn: true, confirmingSession: true },
+          [deploymentId]: {
+            ...current,
+            needsSignIn:
+              !current.boundSession ||
+              Math.min(
+                Date.parse(current.boundSession.expiresAt),
+                Date.parse(current.boundSession.absoluteExpiresAt),
+              ) <= this.#now(),
+            confirmingSession: true,
+          },
         },
       };
     });
@@ -1046,6 +1144,16 @@ export class LocalRunnerService {
     await this.#stop(this.#slot(deploymentId));
     void this.reconcile();
     this.#emit();
+  }
+
+  async retryDeviceConnection(input: { deploymentId: string }): Promise<void> {
+    const id = DeploymentIdSchema.parse(input.deploymentId);
+    const row = (await readMemberships(this.#preferencePath)).runners[id];
+    if (row?.state !== "active" || !row.confirmingSession)
+      throw new Error("This Mac is not awaiting membership confirmation.");
+    this.#cancelRestart(id);
+    await this.#stop(this.#slot(id));
+    void this.reconcile();
   }
 
   async markRemoved(deploymentIdInput: string): Promise<void> {
@@ -1161,6 +1269,8 @@ export class LocalRunnerService {
       Object.entries(preference.runners).map(async ([deploymentIdValue, runner]) => {
         if (this.#shuttingDown) return;
         const deploymentId = DeploymentIdSchema.parse(deploymentIdValue);
+        if (runner.state === "active" && runner.legacyLeaves.length)
+          await this.#finishLegacyLeaves(deploymentId);
         if (runner.state !== "active") {
           let current = false;
           await this.#mutatePreference((preference) => {
@@ -1216,6 +1326,7 @@ export class LocalRunnerService {
                 provenance: row.provenance ?? target.source,
                 deploymentName: target.name ?? row.deploymentName,
                 hostAuthority: target.authority,
+                devicesAvailable: target.devicesAvailable === true,
                 lastVerifiedRoute: { origin: target.hostUrl, accessRoute: target.accessRoute },
               },
             },
@@ -1230,6 +1341,10 @@ export class LocalRunnerService {
         if (
           slot.activeTarget?.key === target.key &&
           slot.activeRunAgents === runAgents &&
+          (!slot.confirmationOnly ||
+            runner.confirmingSession ||
+            runner.needsSignIn ||
+            (!this.#browser && !this.#computerUse)) &&
           (slot.child || slot.startPromise) &&
           slot.state !== "failed"
         ) {
@@ -1381,14 +1496,15 @@ export class LocalRunnerService {
     // same machine identity: one computer, two modules.
     await this.#profileErasure.prepare(target.deploymentId);
     this.#assertCurrentIntent(slot, intentGeneration);
-    const browser = this.#browser
-      ? await this.#browser({
-          logPath: path.join(runnerDataDirectory, "browser.log"),
-          profileRoot: desktopDeploymentPaths(this.#config.dataDirectory, target.deploymentId)
-            .browserProfilesDirectory,
-          runtimeId: `desktop-browser:${target.deploymentId}`,
-        })
-      : undefined;
+    const browser =
+      this.#browser && !membership?.confirmingSession
+        ? await this.#browser({
+            logPath: path.join(runnerDataDirectory, "browser.log"),
+            profileRoot: desktopDeploymentPaths(this.#config.dataDirectory, target.deploymentId)
+              .browserProfilesDirectory,
+            runtimeId: `desktop-browser:${target.deploymentId}`,
+          })
+        : undefined;
     slot.browser = browser;
     if (!this.#intentIsCurrent(slot, intentGeneration)) {
       await stopSlotBrowser(slot, this.#log);
@@ -1397,7 +1513,9 @@ export class LocalRunnerService {
     // Computer use is started for this slot whether or not it runs agents:
     // the `integrations` module a reach-only Runner already has is what
     // carries the computer-use frame.
-    const computerUse = (await this.#computerUse?.startForSlot(target.deploymentId)) ?? undefined;
+    const computerUse = membership?.confirmingSession
+      ? undefined
+      : ((await this.#computerUse?.startForSlot(target.deploymentId)) ?? undefined);
     slot.computerUseSlotId = computerUse ? target.deploymentId : undefined;
     if (!this.#intentIsCurrent(slot, intentGeneration)) {
       await stopSlotBrowser(slot, this.#log);
@@ -1440,6 +1558,7 @@ export class LocalRunnerService {
     slot.child = child;
     slot.childExit = exited;
     slot.activeRunAgents = runAgents;
+    slot.confirmationOnly = membership?.confirmingSession === true;
     slot.activeTarget = target;
 
     /**
@@ -1560,7 +1679,6 @@ export class LocalRunnerService {
                     return;
                   }
                   await this.#sessionCleanups.get(target.deploymentId);
-                  await this.#allowDeployment(target.deploymentId);
                   await this.#mutatePreference((preference) => {
                     const row = preference.runners[target.deploymentId];
                     if (row?.state !== "active" || !this.#intentIsCurrent(slot, intentGeneration))
@@ -1572,11 +1690,15 @@ export class LocalRunnerService {
                         [target.deploymentId]: {
                           ...row,
                           confirmingSession: false,
-                          needsSignIn: false,
                         },
                       },
                     };
                   });
+                  if (
+                    !(await readMemberships(this.#preferencePath)).runners[target.deploymentId]
+                      ?.needsSignIn
+                  )
+                    await this.#allowDeployment(target.deploymentId);
                   if (!this.#intentIsCurrent(slot, intentGeneration)) {
                     cancel();
                     return;
@@ -1601,6 +1723,12 @@ export class LocalRunnerService {
                   const status = await this.status(target.deploymentId);
                   if (messageGeneration !== statusGeneration || slot.child !== child) return;
                   if (settleStartup()) resolvePromise(status);
+                  if (
+                    membership?.confirmingSession &&
+                    status.membership?.sessionState === "ready" &&
+                    (this.#browser || this.#computerUse)
+                  )
+                    void this.reconcile();
                   break;
                 }
                 case "runner.worker.reconnecting":
@@ -1822,6 +1950,7 @@ export class LocalRunnerService {
     if (existing) return existing;
     const created: RunnerSlot = {
       activeRunAgents: undefined,
+      confirmationOnly: false,
       activeTarget: undefined,
       browser: undefined,
       browserShutdown: undefined,
@@ -1995,6 +2124,7 @@ export class LocalRunnerService {
               provenance: stored?.provenance ?? target?.source ?? null,
               deploymentName: stored?.deploymentName ?? target?.name ?? null,
               hostAuthority: stored?.hostAuthority ?? target?.authority ?? null,
+              devicesAvailable: stored?.devicesAvailable ?? target?.devicesAvailable ?? null,
               lastVerifiedRoute:
                 stored?.lastVerifiedRoute ??
                 (target ? { origin: target.hostUrl, accessRoute: target.accessRoute } : null),
@@ -2050,6 +2180,7 @@ export class LocalRunnerService {
           [deploymentId]: {
             ...current,
             hostAuthority: target.authority,
+            devicesAvailable: target.devicesAvailable === true,
             provenance: current.provenance ?? target.source,
             lastVerifiedRoute: { origin: target.hostUrl, accessRoute: target.accessRoute },
           },
@@ -2060,7 +2191,7 @@ export class LocalRunnerService {
 
   async #retirePendingEnrollment(deploymentId: DeploymentId): Promise<void> {
     const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
-    if (!row?.pendingEnrollment || row.prepared) return;
+    if (!row?.pendingEnrollment || row.prepared || row.devicesAvailable !== true) return;
     let retired = Date.parse(row.pendingEnrollment.expiresAt) <= Date.now();
     if (!retired && row.lastVerifiedRoute && this.#retireEnrollment) {
       try {
@@ -2085,7 +2216,58 @@ export class LocalRunnerService {
     });
   }
 
+  async #finishLegacyLeaves(deploymentId: DeploymentId): Promise<void> {
+    const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
+    for (const leave of row?.legacyLeaves ?? []) {
+      try {
+        const target = await this.#targets.resolve(deploymentId);
+        if (!isSameHost(leave.authority, target.authority))
+          throw new Error("The legacy removal belongs to another Host.");
+        let consumed = leave.enrollmentId === null;
+        if (leave.enrollmentId) {
+          if (!this.#retireEnrollment) throw new Error("Enrollment retirement unavailable");
+          const state = await this.#retireEnrollment(
+            deploymentId,
+            target.hostUrl,
+            leave.enrollmentId,
+          );
+          if (!state) throw new Error("Enrollment retirement was not confirmed.");
+          consumed = state === "consumed";
+        }
+        if (leave.runnerId && consumed) {
+          if (!this.#revokeLegacyRunner) throw new Error("Legacy removal unavailable");
+          await this.#revokeLegacyRunner(deploymentId, target.hostUrl, leave.runnerId);
+        }
+        await this.#mutatePreference((preference) => {
+          const current = preference.runners[deploymentId];
+          if (!current) return preference;
+          return {
+            ...preference,
+            runners: {
+              ...preference.runners,
+              [deploymentId]: {
+                ...current,
+                pendingEnrollment:
+                  current.pendingEnrollment?.id === leave.enrollmentId
+                    ? null
+                    : current.pendingEnrollment,
+                legacyLeaves: current.legacyLeaves.filter(
+                  (item) => JSON.stringify(item) !== JSON.stringify(leave),
+                ),
+              },
+            },
+          };
+        });
+      } catch {
+        this.#slot(deploymentId).detail =
+          "Signed out here. This older Host still needs removal confirmed after you sign in again.";
+        this.#scheduleLeave(deploymentId);
+      }
+    }
+  }
+
   async #finishObligationNow(deploymentId: DeploymentId): Promise<void> {
+    await this.#finishLegacyLeaves(deploymentId);
     await this.#refreshLeaveRoute(deploymentId);
     await this.#retirePendingEnrollment(deploymentId);
     const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];

@@ -68,6 +68,326 @@ afterEach(async () => {
 });
 
 describe("LocalRunnerService", () => {
+  it("cleans up a prepared Account setup locally when issuance never began, including after restart", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://never-issued.opensteer.test");
+    targets.source(target.deploymentId, {
+      kind: "account",
+      issuer: "https://accounts.opensteer.test",
+      subject: ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`),
+    });
+    const refusal = vi.fn<typeof fetch>(async () =>
+      Response.json({ error: "Device leave refused" }, { status: 403 }),
+    );
+    const first = fixture(config, targets, undefined, undefined, { leaveFetch: refusal });
+    const input = {
+      deploymentId: target.deploymentId,
+      runnerName: "Prepared Mac",
+      runAgents: false,
+    };
+    const original = await first.service.prepareDeviceSetup(input);
+    await first.service.shutdown();
+    first.service.dispose();
+    const restarted = fixture(config, targets, undefined, undefined, { leaveFetch: refusal });
+    try {
+      await restarted.service.leaveAccountMemberships();
+      expect(refusal).not.toHaveBeenCalled();
+      expect((await restarted.service.status(target.deploymentId)).membership).toMatchObject({
+        state: "removed",
+        leaveUnconfirmed: false,
+      });
+      await restarted.service.setUpDevice(input);
+      const next = await restarted.service.prepareDeviceSetup(input);
+      expect(next.runnerId).not.toBe(original.runnerId);
+    } finally {
+      await restarted.service.shutdown();
+      restarted.service.dispose();
+    }
+  });
+
+  it("keeps confirmation retryable and leaveable after runner retries are exhausted and after restart", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://offline-home.opensteer.test");
+    const delivered = vi.fn<typeof fetch>(async () => Response.json({ outcome: "removed" }));
+    const running = fixture(config, targets, () => 0, undefined, { leaveFetch: delivered });
+    const starting = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const first = childAt(running.children, 0);
+    connect(first);
+    const original = (await starting).runner.runnerId;
+    const ending = running.service.sessionLost(target.deploymentId);
+    await eventually(() => hasStopMessage(first));
+    first.emit("exit", 0);
+    await ending;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      await eventually(() => running.children.length === attempt + 2);
+      childAt(running.children, attempt + 1).emit("message", {
+        type: "runner.worker.failed",
+        message: "Home is offline: runner route is unavailable.",
+      });
+    }
+    await eventually(async () =>
+      (await running.service.status(target.deploymentId)).runner.detail.includes(
+        "restarted 5 times",
+      ),
+    );
+    expect((await running.service.status(target.deploymentId)).membership).toMatchObject({
+      state: "active",
+      runnerId: original,
+      sessionState: "confirming",
+    });
+    await expect(running.service.assertSessionAllowed(target.deploymentId)).rejects.toThrow(
+      "confirm",
+    );
+    await running.service.retryDeviceConnection({ deploymentId: target.deploymentId });
+    await eventually(() => running.children.length === 8);
+    childAt(running.children, 7).emit("message", {
+      type: "runner.worker.failed",
+      message: "Runner route is still unavailable.",
+    });
+    await running.service.shutdown();
+    running.service.dispose();
+    const restarted = fixture(config, targets, () => 60_000, undefined, { leaveFetch: delivered });
+    const resuming = restarted.service.startIfEnabled();
+    await eventually(() => restarted.children.length === 1);
+    childAt(restarted.children, 0).emit("message", {
+      type: "runner.worker.failed",
+      message: "Home is still offline.",
+    });
+    await resuming;
+    expect((await restarted.service.status(target.deploymentId)).runner.detail).toContain(
+      "Home is still offline",
+    );
+    await expect(restarted.service.assertSessionAllowed(target.deploymentId)).rejects.toThrow(
+      "confirm",
+    );
+    await restarted.service.leaveDeployment({ deploymentId: target.deploymentId });
+    expect(delivered).toHaveBeenCalledOnce();
+    expect((await restarted.service.status(target.deploymentId)).membership).toMatchObject({
+      state: "removed",
+      leaveUnconfirmed: false,
+    });
+    await restarted.service.shutdown();
+    restarted.service.dispose();
+  });
+
+  it("confirms membership independently of a browser helper that cannot start", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://helper-failure.opensteer.test");
+    const identityDirectory = path.join(directory, "runner", "deployments", target.deploymentId);
+    await mkdir(identityDirectory, { recursive: true });
+    writeTestIdentity(identityDirectory, true);
+    const browser = vi.fn<NonNullable<LocalRunnerServiceDependencies["browser"]>>(async () => {
+      throw new Error("Browser helper startup failed");
+    });
+    const running = fixture(config, targets, () => 60_000, browser);
+    await running.service.startIfEnabled();
+    expect((await running.service.status(target.deploymentId)).runner.detail).toBe(
+      "Browser helper startup failed",
+    );
+    await running.service.sessionLost(target.deploymentId);
+    await eventually(() => running.children.length === 1);
+    connect(childAt(running.children, 0));
+    await eventually(
+      async () =>
+        (await running.service.status(target.deploymentId)).membership?.sessionState ===
+        "sign-in-again",
+    );
+    expect(browser).toHaveBeenCalledOnce();
+    await expect(running.service.assertSessionAllowed(target.deploymentId)).rejects.toThrow(
+      "Sign in again",
+    );
+    const stopping = running.service.shutdown();
+    running.children.forEach((child) => child.kill());
+    await stopping;
+    running.service.dispose();
+  });
+
+  it("uses authenticated legacy removal before discarding the session and can rejoin after Account sign-out", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://legacy.opensteer.test");
+    targets.restore({
+      ...target,
+      devicesAvailable: false,
+      source: {
+        kind: "account",
+        issuer: "https://accounts.opensteer.test",
+        subject: ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`),
+      },
+    });
+    let sessionExists = true;
+    const revoke = vi.fn(async () => {
+      if (!sessionExists) throw new Error("Host requires authentication");
+    });
+    const leaveFetch = vi.fn<typeof fetch>(async () => new Response(null, { status: 404 }));
+    const running = fixture(config, targets, undefined, undefined, {
+      leaveFetch,
+      revokeLegacyRunner: revoke,
+      clearDeploymentSession: async () => {
+        sessionExists = false;
+      },
+    });
+    const joining = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    connect(child);
+    const original = (await joining).runner.runnerId;
+    const leaving = running.service.leaveAccountMemberships();
+    await eventually(() => hasStopMessage(child));
+    child.emit("exit", 0);
+    await leaving;
+    expect(revoke).toHaveBeenCalledWith(target.deploymentId, target.hostUrl, original);
+    expect(leaveFetch).not.toHaveBeenCalled();
+    expect((await running.service.status(target.deploymentId)).membership).toMatchObject({
+      state: "removed",
+      leaveUnconfirmed: false,
+    });
+    sessionExists = true;
+    await running.service.setUpDevice({
+      deploymentId: target.deploymentId,
+      runnerName: "Mac",
+      runAgents: false,
+    });
+    const joiningAgain = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 2);
+    connect(childAt(running.children, 1));
+    expect((await joiningAgain).runner.runnerId).not.toBe(original);
+    const stopped = running.service.shutdown();
+    running.children.forEach((child) => child.kill());
+    await stopped;
+    running.service.dispose();
+  });
+
+  it("retains unresolved legacy removal across restart, then finishes it after sign-in without blocking rejoin", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const initial = targets.add("https://legacy-offline.opensteer.test");
+    const target = { ...initial, devicesAvailable: false };
+    targets.restore(target);
+    let signedIn = false;
+    const removed: string[] = [];
+    const revokeLegacyRunner = vi.fn(async (_id: string, _origin: string, runnerId: string) => {
+      if (!signedIn) throw new Error("No authenticated session");
+      removed.push(runnerId);
+    });
+    const first = fixture(config, targets, undefined, undefined, { revokeLegacyRunner });
+    const starting = first.service.start(startInput(target.deploymentId));
+    await eventually(() => first.children.length === 1);
+    const child = childAt(first.children, 0);
+    connect(child);
+    const oldId = (await starting).runner.runnerId!;
+    const leaving = first.service.leaveDeployment({ deploymentId: target.deploymentId });
+    await eventually(() => hasStopMessage(child));
+    child.emit("exit", 0);
+    await leaving;
+    expect((await first.service.status(target.deploymentId)).membership).toMatchObject({
+      state: "removed",
+      leaveUnconfirmed: true,
+    });
+    await first.service.shutdown();
+    first.service.dispose();
+    const restarted = fixture(config, targets, undefined, undefined, { revokeLegacyRunner });
+    await restarted.service.startIfEnabled();
+    expect((await restarted.service.status(target.deploymentId)).membership?.leaveUnconfirmed).toBe(
+      true,
+    );
+    expect((await restarted.service.status(target.deploymentId)).runner.detail).toContain(
+      "older Host",
+    );
+    await restarted.service.setUpDevice({
+      deploymentId: target.deploymentId,
+      runnerName: "Mac",
+      runAgents: false,
+    });
+    expect((await restarted.service.status(target.deploymentId)).membership?.leaveUnconfirmed).toBe(
+      true,
+    );
+    signedIn = true;
+    const rejoining = restarted.service.start(startInput(target.deploymentId));
+    await eventually(() => restarted.children.length === 1);
+    connect(childAt(restarted.children, 0));
+    expect((await rejoining).membership).toMatchObject({
+      state: "active",
+      leaveUnconfirmed: false,
+    });
+    expect(removed).toEqual([oldId]);
+    const stopping = restarted.service.shutdown();
+    restarted.children.forEach((child) => child.kill());
+    await stopping;
+    restarted.service.dispose();
+  });
+
+  it.each(["retired", "consumed"] as const)(
+    "reconciles legacy pending setup before discarding the session when retirement reports %s",
+    async (state) => {
+      const directory = await temporaryDirectory();
+      const config = await configuration(directory);
+      const targets = mutableTargetAuthority();
+      const target = targets.add("https://legacy-pending.opensteer.test");
+      targets.restore({ ...target, devicesAvailable: false });
+      let sessionExists = true;
+      const retireEnrollment = vi.fn(async () => {
+        expect(sessionExists).toBe(true);
+        return state;
+      });
+      const revokeLegacyRunner = vi.fn(async () => {
+        expect(sessionExists).toBe(true);
+      });
+      const running = fixture(config, targets, undefined, undefined, {
+        retireEnrollment,
+        revokeLegacyRunner,
+        clearDeploymentSession: async () => {
+          sessionExists = false;
+        },
+      });
+      const receipt = {
+        type: "runner.enrollment.createLocal" as const,
+        enrollmentId: "legacy-pending",
+        token: "l".repeat(64),
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      };
+      await running.service.observeHostCommand(
+        target.deploymentId,
+        { type: receipt.type, name: "Mac", allowedModules: ["shell"], idempotencyKey: "pending" },
+        receipt,
+      );
+      const starting = running.service
+        .start({ ...startInput(target.deploymentId), enrollmentToken: receipt.token })
+        .catch((error: unknown) => error);
+      await eventually(() => running.children.length === 1);
+      const child = childAt(running.children, 0);
+      const id = readTestIdentity(child.dataDirectory)!.runnerId;
+      const leaving = running.service.leaveDeployment({ deploymentId: target.deploymentId });
+      await eventually(() => hasStopMessage(child));
+      child.emit("exit", 0);
+      expect(await starting).toBeInstanceOf(Error);
+      await leaving;
+      expect(retireEnrollment).toHaveBeenCalledWith(
+        target.deploymentId,
+        target.hostUrl,
+        receipt.enrollmentId,
+      );
+      expect(revokeLegacyRunner).toHaveBeenCalledTimes(state === "consumed" ? 1 : 0);
+      if (state === "consumed")
+        expect(revokeLegacyRunner).toHaveBeenCalledWith(target.deploymentId, target.hostUrl, id);
+      expect((await running.service.status(target.deploymentId)).membership).toMatchObject({
+        state: "removed",
+        leaveUnconfirmed: false,
+      });
+      await running.service.shutdown();
+      running.service.dispose();
+    },
+  );
+
   it("migrates a v4 membership beside an empty catalog, waits, and resumes the same key", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
@@ -564,9 +884,16 @@ describe("LocalRunnerService", () => {
           async () =>
             (await running.service.status(target.deploymentId)).runner.state === "running",
         );
-        await expect(
-          running.service.assertSessionAllowed(target.deploymentId),
-        ).resolves.toBeUndefined();
+        if (expired) {
+          expect((await running.service.status(target.deploymentId)).membership?.sessionState).toBe(
+            "sign-in-again",
+          );
+          await expect(running.service.assertSessionAllowed(target.deploymentId)).rejects.toThrow();
+        } else {
+          await expect(
+            running.service.assertSessionAllowed(target.deploymentId),
+          ).resolves.toBeUndefined();
+        }
         expect(await readFile(path.join(profiles, "saved-profile"), "utf8")).toBe("keep");
         const resumed = await running.service.setUpDevice({
           deploymentId: target.deploymentId,
@@ -2207,6 +2534,7 @@ function fixture(
   browser?: LocalRunnerServiceDependencies["browser"],
   options: {
     readonly assertAccountSource?: LocalRunnerServiceDependencies["assertAccountSource"];
+    readonly revokeLegacyRunner?: LocalRunnerServiceDependencies["revokeLegacyRunner"];
     readonly retireEnrollment?: LocalRunnerServiceDependencies["retireEnrollment"];
     readonly readSession?: LocalRunnerServiceDependencies["readSession"];
     readonly leaveFetch?: typeof fetch;
@@ -2243,6 +2571,7 @@ function fixture(
     service: new LocalRunnerService(config, {
       ...(options.assertAccountSource ? { assertAccountSource: options.assertAccountSource } : {}),
       ...(options.retireEnrollment ? { retireEnrollment: options.retireEnrollment } : {}),
+      ...(options.revokeLegacyRunner ? { revokeLegacyRunner: options.revokeLegacyRunner } : {}),
       readSession:
         options.readSession ??
         (async (_id, _origin, sessionId) => ({
@@ -2312,6 +2641,7 @@ function mutableTargetAuthority(): DesktopLocalRunnerTargetAuthority & {
             )
           : null;
       const target: DesktopLocalRunnerTarget = {
+        devicesAvailable: true,
         authority,
         accessRoute,
         source: { kind: "manual" },

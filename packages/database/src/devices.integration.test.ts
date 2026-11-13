@@ -362,6 +362,31 @@ it("signed leave is idempotent and an old proof cannot remove a later identity",
   ).rejects.toMatchObject({ code: "forbidden" });
 });
 
+it("retires a prepared key even when issuance never committed and refuses a late issuance", async () => {
+  const target = identity();
+  await expect(leave(target)).rejects.toMatchObject({ code: "forbidden" });
+  const proof = {
+    deploymentId: fixture.deploymentId,
+    runnerId: target.runnerId,
+    issuedAt: new Date().toISOString(),
+  };
+  const cancel = {
+    ...proof,
+    signature: createDeviceLeaveSignature(target.privateKey, proof),
+    preparedIdentity: { runnerId: target.runnerId, publicKeyPem: target.publicKeyPem },
+  };
+  await store.leaveDevice(cancel);
+  await store.leaveDevice(cancel);
+  await expect(enrollment(undefined, target)).rejects.toMatchObject({ code: "forbidden" });
+  const differentKey = identity();
+  await expect(
+    store.leaveDevice({
+      ...cancel,
+      preparedIdentity: { runnerId: target.runnerId, publicKeyPem: differentKey.publicKeyPem },
+    }),
+  ).rejects.toMatchObject({ code: "forbidden" });
+});
+
 it("cancels only the prepared self-setup enrollment before first redemption", async () => {
   const target = await enrollment();
   const generic = await enrollment(undefined, identity(), false);

@@ -1,3 +1,4 @@
+import { DeploymentIdSchema } from "@opensteer/core";
 import { useState } from "react";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { actionErrorMessage } from "../../ui-utils.js";
@@ -15,6 +16,8 @@ export function DeviceRemovedScreen({
   name,
   onSetUpAgain,
   unconfirmed,
+  detail,
+  onChoose,
 }: {
   readonly bridge: Pick<OpensteerDesktopBridge, "cancel" | "setUpDevice" | "select">;
   readonly deploymentId: string;
@@ -23,6 +26,8 @@ export function DeviceRemovedScreen({
   readonly onSetUpAgain: () => void | Promise<void>;
   /** The signed leave hasn't reached the Host yet. */
   readonly unconfirmed: boolean;
+  readonly detail?: string;
+  readonly onChoose?: () => void;
 }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -39,7 +44,7 @@ export function DeviceRemovedScreen({
       bare
       description={
         unconfirmed
-          ? `Signed out here. ${name} confirms the removal the next time this Mac reaches it.`
+          ? (detail ?? `Signed out here. Removal from ${name} is unconfirmed.`)
           : "Your agent can no longer use it. Your files stay on this Mac."
       }
       live
@@ -64,7 +69,7 @@ export function DeviceRemovedScreen({
         <button
           className="btn btn--ghost"
           disabled={pending}
-          onClick={() => run(() => bridge.cancel())}
+          onClick={() => (onChoose ? onChoose() : run(() => bridge.cancel()))}
           type="button"
         >
           Not now
@@ -79,13 +84,22 @@ export function DeviceSignInScreen({
   deploymentId,
   name,
   confirming = false,
+  detail,
+  onChoose,
 }: {
-  readonly bridge: Pick<OpensteerDesktopBridge, "setUpDevice" | "select">;
+  readonly bridge: Pick<
+    OpensteerDesktopBridge,
+    "setUpDevice" | "select" | "retryDeviceConnection" | "leaveDeployment"
+  >;
   readonly deploymentId: string;
   readonly name: string;
   readonly confirming?: boolean;
+  readonly detail?: string;
+  readonly onChoose: () => void;
 }) {
+  const id = DeploymentIdSchema.parse(deploymentId);
   const [pending, setPending] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return (
     <OnboardingCard
@@ -99,6 +113,41 @@ export function DeviceSignInScreen({
       titleId="device-sign-in-title"
     >
       <ErrorNotice message={error} />
+      {confirming ? <p role="status">{detail}</p> : null}
+      {confirming ? (
+        <div className="onboarding__actions device-removed__actions">
+          <button
+            className="btn btn--primary"
+            disabled={pending || retrying}
+            type="button"
+            onClick={() => {
+              setRetrying(true);
+              setError(null);
+              void bridge
+                .retryDeviceConnection({ deploymentId: id })
+                .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+                .finally(() => setRetrying(false));
+            }}
+          >
+            Retry
+          </button>
+          <button
+            className="btn btn--ghost"
+            disabled={pending}
+            type="button"
+            onClick={() => {
+              setPending(true);
+              setError(null);
+              void bridge
+                .leaveDeployment({ deploymentId: id })
+                .catch((reason: unknown) => setError(actionErrorMessage(reason)))
+                .finally(() => setPending(false));
+            }}
+          >
+            Leave this Opensteer
+          </button>
+        </div>
+      ) : null}
       {!confirming ? (
         <button
           className="btn btn--primary"
@@ -115,6 +164,9 @@ export function DeviceSignInScreen({
           {pending ? "Signing in…" : "Sign in again"}
         </button>
       ) : null}
+      <button className="btn btn--ghost" type="button" onClick={onChoose}>
+        Choose an Opensteer
+      </button>
     </OnboardingCard>
   );
 }

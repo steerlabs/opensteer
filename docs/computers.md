@@ -27,9 +27,11 @@ Initial setup choices apply only at first redemption. A new Files policy starts 
 forwarding enabled underneath either switch position; Off changes only reach to nobody. Later
 toggles preserve saved folders and restrictions. Replaying enrollment cannot reset later access
 edits. Desktop main persists the prepared key and Account provenance before the renderer requests
-its enrollment, then saves the pending receipt before handing its token to the worker. Issuance
-serializes with Account sign-out; signed leave retires the prepared identity’s pending enrollments
-against redemption. Tokens minted for other computers are independent. A prepared identity is not
+its enrollment, marks issuance durably before sending, then saves the pending receipt before handing
+its token to the worker. Issuance serializes with cancellation and Account sign-out. A preparation
+that never began issuance needs local cleanup only. Once issuance may have reached the Host, signed
+leave carries the prepared public key; the Host retains its retirement and fences late issuance as
+well as pending redemption. Tokens minted for other computers are independent. A prepared identity is not
 an enrolled device: after a crash, Finish setup obtains a fresh enrollment for the same key, even
 if the prior enrollment expired.
 
@@ -61,15 +63,21 @@ keys; Account-side generic push registration is separate.
 
 Desktop main owns remote device membership independently of its disposable route catalog. A missing
 route suspends the slot; offline state never removes it. Session loss fences automatic sign-in until
-a new Runner connection answers: success preserves membership; only 4010 or an explicit Host
-removal answer starts erasure. Session deadlines are not removal evidence. Enrollment intent precedes worker startup,
+a new Runner connection answers, independently of browser and computer-use startup. Confirmation
+keeps Retry, signed leave and the chooser available even after startup retries run out. Success
+preserves membership; after natural expiry, only explicit Sign in again reopens person authorization
+with the same identity. Route rotation retains automatic recovery. Only 4010 or an explicit Host
+removal answer starts erasure; session deadlines are never removal evidence. Enrollment intent precedes worker startup,
 and a surviving enrolled key can heal a missing legacy preference unless removal or profile-erasure
 intent forbids it. Unknown membership formats stop recovery and report an error.
 
 Leave and removal persist terminal intent before stopping workers. A leave proof survives key and
 profile erasure so main can deliver it without restarting browser or computer use. Erasure still
 waits for every worker to exit; unreachable Hosts leave removal unconfirmed. Rejoining requires an
-explicit setup action and a new identity. Account sign-out or replacement leaves only memberships
+explicit setup action and a new identity. Against a Host without affirmative `devices-v1` support,
+main attempts authenticated runner removal and enrollment retirement before discarding the session.
+Unconfirmed legacy removal remains a durable obligation, retried after sign-in; it does not wait
+forever on an unsupported signed-leave endpoint or prevent rejoining. Account sign-out or replacement leaves only memberships
 whose saved provenance names the outgoing Account, while Home keeps running. The Host chooses the
 enrollment grant; main resolves the origin and holds signing keys, and the renderer receives only
 session-binding signatures. Only the supervising desktop can establish that a computer is local.

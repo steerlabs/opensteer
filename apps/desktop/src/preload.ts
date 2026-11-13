@@ -854,6 +854,8 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       desktopBridgeChannels.signDeviceSessionBinding,
       input,
     ),
+  retryDeviceConnection: (input: DesktopLocalExecutionInput) =>
+    invoke<void>(desktopBridgeChannels.retryDeviceConnection, input),
   leaveDeployment: (input: DesktopLocalExecutionInput) =>
     invoke<void>(desktopBridgeChannels.leaveDeployment, input),
   prepareDeviceSetup: (input: DesktopStartLocalRunnerInput) =>

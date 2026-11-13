@@ -14,6 +14,7 @@ import {
   type RunnerDescriptor,
 } from "@opensteer/protocol";
 import {
+  canonicalRunnerPublicKeyPem,
   verifyDeviceLeaveSignature,
   verifyDeviceSessionBindingSignature,
 } from "@opensteer/runner-auth";
@@ -126,6 +127,19 @@ export async function leaveDevice(
       .executeTakeFirstOrThrow();
     if (deployment.id !== input.deploymentId)
       throw new OpensteerError({ code: "forbidden", message: "Device leave refused" });
+    if (input.preparedIdentity) {
+      const prepared = input.preparedIdentity;
+      if (
+        prepared.runnerId !== runnerId ||
+        !verifyDeviceLeaveSignature(prepared.publicKeyPem, input)
+      )
+        throw new OpensteerError({ code: "forbidden", message: "Device leave refused" });
+      await transaction
+        .insertInto("deviceSetupRetirements")
+        .values({ runnerId, publicKeyPem: canonicalRunnerPublicKeyPem(prepared.publicKeyPem) })
+        .onConflict((c) => c.columns(["runnerId", "publicKeyPem"]).doNothing())
+        .execute();
+    }
     const runner = await transaction
       .selectFrom("runners")
       .select(["publicKeyPem", "ownerUserId", "revokedAt"])
@@ -154,7 +168,7 @@ export async function leaveDevice(
         row.preparedIdentity &&
         verifyDeviceLeaveSignature(row.preparedIdentity.publicKeyPem, input),
     );
-    if (!own.length)
+    if (!own.length && (pending.length > 0 || !input.preparedIdentity))
       throw new OpensteerError({ code: "forbidden", message: "Device leave refused" });
     for (const enrollment of own) {
       await sql`select pg_advisory_xact_lock(hashtextextended(${enrollment.tokenHash}, 0))`.execute(

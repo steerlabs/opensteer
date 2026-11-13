@@ -5,6 +5,7 @@ it("exposes only the fresh, uniquely named Host baseline", async () => {
     personalTeamBaselineName,
     "0003_devices",
     "0004_device_access_requests",
+    "0005_device_setup_retirement",
   ]);
   expect(personalTeamBaselineName).toBe("0002_personal_team_baseline");
 });

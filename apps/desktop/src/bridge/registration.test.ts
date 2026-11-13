@@ -773,6 +773,7 @@ function runnerController() {
       signature: "s".repeat(86),
     })),
     leaveDeployment: vi.fn(async () => undefined),
+    retryDeviceConnection: vi.fn(async () => undefined),
     recheckEngines: vi.fn(),
     remove: vi.fn(async (deploymentId) => status(deploymentId)),
     notify: () => {

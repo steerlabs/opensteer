@@ -212,6 +212,7 @@ export interface DesktopBridgeOptions {
     | "accountSignOutPreview"
     | "signDeviceSessionBinding"
     | "leaveDeployment"
+    | "retryDeviceConnection"
   >;
 }
 

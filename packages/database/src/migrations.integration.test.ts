@@ -225,6 +225,7 @@ describe("fresh personal/team lineage", () => {
       { name: personalTeamBaselineName },
       { name: "0003_devices" },
       { name: "0004_device_access_requests" },
+      { name: "0005_device_setup_retirement" },
     ]);
   });
   it.each([

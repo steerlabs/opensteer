@@ -1403,6 +1403,7 @@ function bridgeOptions(
       setUpDevice: unavailable,
       signDeviceSessionBinding: unavailable,
       leaveDeployment: unavailable,
+      retryDeviceConnection: unavailable,
       recheckEngines: unavailable,
       remove: unavailable,
       start: unavailable,

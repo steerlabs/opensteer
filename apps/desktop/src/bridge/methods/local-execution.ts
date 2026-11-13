@@ -104,3 +104,12 @@ export const handleAccountSignOutPreview =
       .array(z.strictObject({ deploymentId: DeploymentIdSchema, name: z.string().min(1).max(120) }))
       .parse(await context.options.runner.accountSignOutPreview());
   };
+
+export const handleRetryDeviceConnection =
+  (context: DesktopBridgeContext): DesktopBridgeHandler =>
+  async (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    await context.options.runner.retryDeviceConnection(
+      DesktopLocalExecutionInputSchema.parse(envelope.input),
+    );
+  };
