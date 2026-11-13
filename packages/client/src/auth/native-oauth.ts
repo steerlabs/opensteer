@@ -9,6 +9,7 @@ import {
   opensteerAccountDeleteOAuthScopes,
   opensteerAccountOAuthScopes,
   opensteerHostOAuthScopes,
+  teamInviteSignInUrl,
   type DeploymentId,
   type TeamInviteSecret,
 } from "@opensteer/core";
@@ -474,7 +475,15 @@ export class NativeOAuthManager implements HostCredentialProvider {
     return this.state();
   }
 
-  async beginHostSignIn(connectionInput: DeploymentConnection): Promise<HostOAuthState> {
+  /**
+   * The team's own sign-in in the system browser. With `invite`, the browser opens the team's
+   * invite page first, which proves the invite there and continues to this sign-in, so a person
+   * who isn't a member yet is admitted when the team's callback lands.
+   */
+  async beginHostSignIn(
+    connectionInput: DeploymentConnection,
+    invite?: TeamInviteSecret,
+  ): Promise<HostOAuthState> {
     const connection = structuredClone(connectionInput);
     if (connection.kind !== "team") {
       throw new Error("Only a team server uses deployment-native OAuth.");
@@ -506,6 +515,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
       flow,
       hostEndpoints(connection.authority.document.canonicalOrigin),
       opensteerHostOAuthScopes,
+      invite,
     );
     return this.hostCredentialState(connection);
   }
@@ -516,9 +526,12 @@ export class NativeOAuthManager implements HostCredentialProvider {
    * sign-in. A team that turns the person away throws `TeamEntryRefusedError`; the browser would
    * refuse them too.
    */
-  async signInTeam(connection: DeploymentConnection): Promise<HostOAuthState> {
+  async signInTeam(
+    connection: DeploymentConnection,
+    invite?: TeamInviteSecret,
+  ): Promise<HostOAuthState> {
     if (!supportsTeamSessionExchange(connection) || !this.#accountSession) {
-      return this.beginHostSignIn(connection);
+      return this.beginHostSignIn(connection, invite);
     }
     let assertion: IssueTeamIdentityGrantResponse["assertion"];
     try {
@@ -528,9 +541,9 @@ export class NativeOAuthManager implements HostCredentialProvider {
       ));
     } catch {
       // An Account that cannot vouch this time leaves the team's own sign-in.
-      return this.beginHostSignIn(connection);
+      return this.beginHostSignIn(connection, invite);
     }
-    await this.exchangeTeamAssertion(connection, { assertion });
+    await this.exchangeTeamAssertion(connection, { assertion, ...(invite ? { invite } : {}) });
     return this.hostCredentialState(connection);
   }
 
@@ -1269,6 +1282,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     flow: NativeOAuthFlow,
     endpoints: OAuthEndpoints,
     scopes: readonly string[],
+    invite?: TeamInviteSecret,
   ): Promise<void> {
     this.#pending.set(flow.state, flow);
     if (flow.kind === "host") this.#armHostFlowExpiry(flow);
@@ -1276,7 +1290,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     else this.#emitHost(flow.connection);
     try {
       const authorization = authorizationUrl(endpoints, flow, scopes, this.#oauth.clientId);
-      await this.#openExternal(authorization);
+      await this.#openExternal(invite ? teamInviteSignInUrl(authorization, invite) : authorization);
     } catch (error) {
       this.#clearFlowExpiry(flow.state);
       this.#pending.delete(flow.state);

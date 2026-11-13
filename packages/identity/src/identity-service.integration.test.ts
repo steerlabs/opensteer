@@ -401,6 +401,7 @@ integration("IdentityService", () => {
         let team: TeamIdentityAdmission | undefined;
         let ownerId: ReturnType<typeof createId<"user">> | undefined;
         let invite: Awaited<ReturnType<TeamInvitesStore["create"]>> | undefined;
+        let laterInvite: Awaited<ReturnType<TeamInvitesStore["create"]>> | undefined;
         if (kind === "team") {
           const access = new TeamAccessStore(database);
           await access.initialize();
@@ -445,6 +446,10 @@ integration("IdentityService", () => {
             })
             .execute();
           invite = await invites.create({ kind: "human", userId: ownerId }, createId("teamInvite"));
+          laterInvite = await invites.create(
+            { kind: "human", userId: ownerId },
+            createId("teamInvite"),
+          );
         }
         const identity = identityService({
           ...(team ? { team } : {}),
@@ -519,16 +524,51 @@ integration("IdentityService", () => {
         expect(nativeLoginUrl.pathname).toBe("/");
         const nativeOAuthQuery = nativeLoginUrl.search.slice(1);
         expect(nativeOAuthQuery).toContain("sig=");
-        let admissionCookie = "";
-        if (invite) {
-          const url = new URL(invite.url);
-          const exchanged = await identity.exchangeTeamInvitation(
-            url.pathname.split("/").pop()!,
-            url.hash.slice(1),
-            new Headers({ origin: publicOrigin }),
+        const proveInvite = async (url: URL) =>
+          cookieHeader(
+            (
+              await identity.exchangeTeamInvitation(
+                url.pathname.split("/").pop()!,
+                url.hash.slice(1),
+                new Headers({ origin: publicOrigin }),
+              )
+            ).headers,
           );
-          admissionCookie = cookieHeader(exchanged.headers);
+        /** The native sign-in's trip through Account, with the cookies this browser holds. */
+        const signInThroughAccount = async (admission: string) => {
+          const begun = await identity.beginOidcSignIn({
+            headers: new Headers({ origin: publicOrigin }),
+            oauthQuery: nativeOAuthQuery,
+            providerId: logicalProviderId,
+            returnPath: "/",
+          });
+          const authorization = new URL(begun.data.redirectUrl);
+          expectedCodeChallenge = authorization.searchParams.get("code_challenge");
+          return identity.handleOidcCallback(
+            new Request(
+              `${publicOrigin}/v1/auth/oidc/callback?code=fixture-code&state=${encodeURIComponent(authorization.searchParams.get("state") ?? "")}`,
+              {
+                headers: {
+                  accept: "text/html",
+                  cookie: [admission, cookieHeader(begun.headers)].filter(Boolean).join("; "),
+                  "sec-fetch-mode": "navigate",
+                },
+              },
+            ),
+          );
+        };
+        const sessionCount = async () =>
+          (await database.selectFrom("authSessions").select("id").execute()).length;
+        if (team) {
+          // Account knows the person, the team doesn't: no invite proven here, no way in.
+          const sessions = await sessionCount();
+          expect((await signInThroughAccount("")).status).toBe(403);
+          expect(await database.selectFrom("teamMembers").select("userId").execute()).toEqual([
+            { userId: ownerId },
+          ]);
+          expect(await sessionCount()).toBe(sessions);
         }
+        const admissionCookie = invite ? await proveInvite(new URL(invite.url)) : "";
         const started = await identity.beginOidcSignIn({
           headers: new Headers({ origin: publicOrigin, "user-agent": "OIDC integration test" }),
           oauthQuery: nativeOAuthQuery,
@@ -619,6 +659,25 @@ integration("IdentityService", () => {
               .where("id", "=", authenticated!.id)
               .executeTakeFirst(),
           ).toEqual({ memberGeneration: "1" });
+
+          // Removed, they can't come back with an invite made before the removal.
+          await database
+            .updateTable("teamMembers")
+            .set({ state: "removed", changedAt: new Date(), changedBy: ownerId })
+            .where("userId", "=", authenticated!.user.id)
+            .execute();
+          const sessions = await sessionCount();
+          await expect(
+            signInThroughAccount(await proveInvite(new URL(laterInvite!.url))),
+          ).rejects.toMatchObject({ reason: "invite-invalid" });
+          expect(
+            await database
+              .selectFrom("teamMembers")
+              .select("state")
+              .where("userId", "=", authenticated!.user.id)
+              .executeTakeFirst(),
+          ).toEqual({ state: "removed" });
+          expect(await sessionCount()).toBe(sessions);
         }
       } finally {
         await new Promise<void>((resolve, reject) => {

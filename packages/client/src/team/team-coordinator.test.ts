@@ -264,6 +264,61 @@ describe("TeamCoordinator", () => {
     expect(world.joined()).toHaveLength(1);
   });
 
+  it("never reconnects an offline computer's retry that comes due while disconnecting", async () => {
+    const { coordinator, opened, world } = track(start());
+    world.personalOnline = false;
+    await create(coordinator);
+    await until(() => opened.length === 1, "the team opened");
+    expect(coordinator.getSnapshot().intents[0]?.state).toBe("pending-offline");
+    const codes = vi.spyOn(world.sessions, "createLinkCode");
+    const revoked = Promise.withResolvers<void>();
+    const revoke = world.sessions.revokeAgentLinks.bind(world.sessions);
+    vi.spyOn(world.sessions, "revokeAgentLinks").mockImplementation(async (id) => {
+      await revoked.promise;
+      return revoke(id);
+    });
+    const disconnecting = coordinator.disconnectAgent(opened[0]!);
+    world.personalOnline = true;
+    // The retry's backoff passes while the team is still revoking.
+    await vi.advanceTimersByTimeAsync(600_000);
+    revoked.resolve();
+    await disconnecting;
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(codes).not.toHaveBeenCalled();
+    expect(await activeLinks(world, opened[0]!)).toEqual([]);
+    expect(coordinator.getSnapshot().intents).toMatchObject([{ state: "no-agent" }]);
+  });
+
+  it("stops a connection attempt in flight before it redeems its code or records it", async () => {
+    const { coordinator, world } = track(start());
+    const entered = await coordinator.joinWithInvite({
+      inviteUrl: world.sampleInviteUrl,
+      personalDeploymentId: null,
+    });
+    const minted = Promise.withResolvers<void>();
+    const mint = world.sessions.createLinkCode.bind(world.sessions);
+    vi.spyOn(world.sessions, "createLinkCode").mockImplementation(async (id) => {
+      const offer = await mint(id);
+      await minted.promise;
+      return offer;
+    });
+    const join = vi.spyOn(world.personal, "join");
+    const connecting = coordinator.connectAgent({
+      teamDeploymentId: entered.teamDeploymentId,
+      origin: entered.origin,
+      personalDeploymentId: personal,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const disconnecting = coordinator.disconnectAgent(entered.teamDeploymentId);
+    await vi.advanceTimersByTimeAsync(0);
+    minted.resolve();
+    await connecting;
+    await disconnecting;
+    expect(join).not.toHaveBeenCalled();
+    expect(await activeLinks(world, entered.teamDeploymentId)).toEqual([]);
+    expect(coordinator.getSnapshot().intents).toMatchObject([{ state: "no-agent" }]);
+  });
+
   it("disconnects the agent link the team holds, wherever it was made, even with the computer off", async () => {
     const { coordinator, world } = track(start());
     const entered = await coordinator.joinWithInvite({

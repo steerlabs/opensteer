@@ -44,6 +44,7 @@ import {
   HostedTeamStore,
   HostedTeamSupersededError,
 } from "./hosted-team-store.js";
+import { hostedTeamSetupDeadlineMilliseconds } from "./hosted-team-bootstrap.js";
 import { HostedTeamSetupTokenCipher } from "./setup-token-cipher.js";
 import { googleServiceAccountVerifier } from "./provisioner-routes.js";
 
@@ -348,6 +349,40 @@ integration("Hosted teams", () => {
     // Retrying a team that hasn't failed changes nothing.
     await hostedTeams.retry(owner, team.id);
     expect((await desiredTeams())[0]!.setupGeneration).toBe(2);
+  });
+
+  it("fails a team that never got past starting, without trusting a report that names no generation", async () => {
+    const stalled = await createTeam("stalled");
+    const fresh = await createTeam("fresh");
+    await report(stalled.id, {
+      phase: "provisioning",
+      observedSetupGeneration: 0,
+      setupGeneration: 1,
+    });
+    // A provisioner from before setup generations: its failure could be about any generation.
+    await report(stalled.id, { phase: "failed", observedSetupGeneration: 0 });
+    const stage = async (id: HostedTeamView["id"]) =>
+      (await hostedTeams.forAccount(owner, id))?.stage;
+    expect(await stage(stalled.id)).toBe("starting");
+    const deadline = (now: number) => new Date(now - hostedTeamSetupDeadlineMilliseconds);
+    await sql`update hosted_teams set updated_at = now() - interval '1 second' * ${
+      (hostedTeamSetupDeadlineMilliseconds + 2_000) / 1_000
+    } where id = ${stalled.id}`.execute(database);
+    expect(await hostedTeams.failStalledSetups(deadline(Date.now()))).toBe(1);
+    expect(await hostedTeams.forAccount(owner, stalled.id)).toMatchObject({
+      stage: "failed",
+      error: { message: "The team server didn’t start. Try again." },
+    });
+    expect(await stage(fresh.id)).toBe("reserving");
+    // A retry starts the clock again.
+    await hostedTeams.retry(owner, stalled.id);
+    expect(await hostedTeams.failStalledSetups(deadline(Date.now()))).toBe(0);
+    expect(await stage(stalled.id)).toBe("starting");
+    expect(
+      await hostedTeams.failStalledSetups(
+        deadline(Date.now() + hostedTeamSetupDeadlineMilliseconds + 1_000),
+      ),
+    ).toBe(2);
   });
 
   it("fences each bootstrap attempt to its claim", async () => {

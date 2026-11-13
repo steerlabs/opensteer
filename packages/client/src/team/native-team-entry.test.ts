@@ -148,9 +148,12 @@ describe("NativeTeamEntry", () => {
     const { callback, catalog, entry, ids, listeners, oauth, signOut } = setup();
     const older = team();
     const settled = vi.fn();
-    const signingIn = entry.signIn(older).then(settled, settled);
+    const invite = { selector: "s".repeat(32), verifier: "v".repeat(43) };
+    const signingIn = entry.signIn(older, invite).then(settled, settled);
     await vi.waitFor(() => expect(oauth.beginHostSignIn).toHaveBeenCalledOnce());
     const [kept] = (await catalog.load()).deployments;
+    // The invite goes to the browser sign-in, which proves it before the team's callback.
+    expect(oauth.beginHostSignIn).toHaveBeenCalledWith(kept, invite);
     // Added as if by hand: the team's own sign-in, not an Account entry waiting on the directory.
     expect(kept).toMatchObject({ kind: "team", source: { kind: "manual" } });
     await Promise.resolve();
@@ -163,7 +166,7 @@ describe("NativeTeamEntry", () => {
     // Stopped or expired in the browser: an error, and nothing kept of a team never entered.
     signOut();
     const stopped = team();
-    const failing = entry.signIn(stopped);
+    const failing = entry.signIn(stopped, null);
     await vi.waitFor(() => expect(oauth.beginHostSignIn).toHaveBeenCalledTimes(2));
     const held = (await catalog.load()).deployments.find(
       ({ authority }) => authority.document.deploymentId === stopped.discovery.deploymentId,

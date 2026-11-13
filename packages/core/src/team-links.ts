@@ -72,6 +72,19 @@ export function parseTeamPageLink(value: string): TeamPageLink | null {
     return null;
   }
 }
+/** The team Host's native OAuth authorization endpoint. */
+export const teamNativeAuthorizePath = "/v1/auth/native/oauth2/authorize";
+/**
+ * The team's invite page, told to prove `invite` in this browser and then continue to the native
+ * sign-in `authorization` names, so the team's sign-in callback finds the invite's admission.
+ */
+export function teamInviteSignInUrl(authorization: string, invite: TeamInviteSecret): string {
+  const url = new URL(authorization);
+  if (url.pathname !== teamNativeAuthorizePath || url.hash || url.username || url.password)
+    throw new Error("Only the team's native sign-in can follow an invite.");
+  const { selector, verifier } = TeamInviteSecretSchema.parse(invite);
+  return `${url.origin}/invite/${selector}?${new URLSearchParams({ authorize: url.search.slice(1) })}#${verifier}`;
+}
 /** Each application claims its own scheme, so a link opens exactly the app it names. */
 export function teamAppScheme(application: OpensteerNativeApplication): string {
   return opensteerNativeClient(application).applicationId;

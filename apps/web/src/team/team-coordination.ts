@@ -112,22 +112,11 @@ export function desktopTeamSessions(
       team,
     }),
     signIn: async (team, invite) => {
-      const origin = team.authority.canonicalOrigin;
-      await call({ call: "sign-in", origin }, z.null());
-      const client = rpc(team.authority.deploymentId);
-      let admitted = false;
-      if (invite) {
-        const accepted = await client["commands.dispatch"]({
-          type: "team.invite.accept",
-          selector: invite.selector,
-          verifier: invite.verifier,
-        });
-        // Already a member: the invite has nothing left to do.
-        if (accepted.ok) admitted = true;
-        else if (accepted.error.code !== "conflict") throw new Error(accepted.error.message);
-      }
-      const { member } = unwrapRpcResult(await client["team.bootstrap.get"]({}));
-      return { admitted, member, team };
+      await call({ call: "sign-in", origin: team.authority.canonicalOrigin, invite }, z.null());
+      const { member } = unwrapRpcResult(
+        await rpc(team.authority.deploymentId)["team.bootstrap.get"]({}),
+      );
+      return { admitted: invite !== null, member, team };
     },
     restore: async ({ origin, teamDeploymentId }) => {
       await call({ call: "restore", origin, deploymentId: teamDeploymentId }, z.null());

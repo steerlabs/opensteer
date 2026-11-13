@@ -34,6 +34,7 @@ import {
   type PublishHostAuthorityRequest,
   type PublishHostAuthorityResponse,
 } from "@opensteer/control-plane-protocol";
+import type { HostedTeamId } from "@opensteer/control-plane-protocol/hosted-teams";
 import {
   DeploymentIdSchema,
   HostInstanceIdSchema,
@@ -65,7 +66,11 @@ import { lockDeploymentIdentity, lockDeploymentOrigin } from "./advisory-locks.j
 import type { HostAccountAdoptionCompletionGrantIssuer } from "../adoption/adoption-grant-issuer.js";
 import type { AdoptionOperationCipher } from "../adoption/adoption-operation-crypto.js";
 import { ControlPlaneError } from "../server/errors.js";
-import { deleteHostedTeams, promoteReadyHostedTeams } from "../hosted-teams/hosted-team-store.js";
+import {
+  deleteHostedTeams,
+  handOverHostedTeams,
+  promoteReadyHostedTeams,
+} from "../hosted-teams/hosted-team-store.js";
 import {
   createHostCredential,
   createOAuthClientSecret,
@@ -1534,8 +1539,17 @@ export class ControlPlaneStore {
    * already be revoked: a tunnel left behind would outlive every row that names it.
    * Hosts learn nothing here, so they keep running and find out on their next call.
    */
-  async deleteAccount(accountId: ControlPlaneAccountId): Promise<void> {
+  /**
+   * `successors` (`HostedTeamStore.successors`) names, per hosted team the Account created, the
+   * Host-confirmed owner it passes to; every other team the Account created goes with it.
+   */
+  async deleteAccount(
+    accountId: ControlPlaneAccountId,
+    successors: ReadonlyMap<HostedTeamId, ControlPlaneAccountId> = new Map(),
+  ): Promise<void> {
     await this.#database.transaction().execute(async (transaction) => {
+      // First: its origin locks come before the Account rows, as a team's bootstrap takes them.
+      await handOverHostedTeams(transaction, accountId, successors);
       await transaction.deleteFrom("authAccounts").where("userId", "=", accountId).execute();
       const account = await transaction
         .selectFrom("users")

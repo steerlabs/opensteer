@@ -110,8 +110,8 @@ export interface TeamSessionPort {
     readonly teamDeploymentId: DeploymentId;
   }): Promise<void>;
   /**
-   * Older team servers without `team-session-exchange-v1`: the native browser sign-in, then
-   * `team.invite.accept` when an invite is given.
+   * The team's own browser sign-in, for a team without `team-session-exchange-v1` or an Account
+   * that can't vouch yet. The browser proves `invite` first, so the team admits the person there.
    */
   signIn(team: VerifiedTeam, invite: TeamInviteSecret | null): Promise<TeamSessionEstablished>;
   previewInvite(team: VerifiedTeam, invite: TeamInviteSecret): Promise<TeamInvitePreviewResponse>;
@@ -277,6 +277,13 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
   const following = new Map<HostedTeamId, AbortController>();
   const retries = new Map<string, ReturnType<typeof setTimeout>>();
   const connecting = new Map<string, Promise<TeamConnectionIntent>>();
+  /**
+   * Per team, advanced when the person disconnects, leaves or deletes it: an attempt or retry
+   * begun under an older generation redeems nothing and records nothing.
+   */
+  const generations = new Map<string, number>();
+  /** Teams whose agent is being disconnected; nothing connects them until that finishes. */
+  const disconnecting = new Set<string>();
 
   const publish = (next: Partial<TeamCoordinatorSnapshot>) => {
     snapshot = { ...snapshot, ...next };
@@ -309,10 +316,15 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
   const remove = async (key: TeamConnectionIntentKey) => {
     const all = await load();
     stored = all.filter((held) => keyOf(held) !== keyOf(key));
-    clearTimeout(retries.get(keyOf(key)));
-    retries.delete(keyOf(key));
+    invalidate(keyOf(key));
     await ports.intents.remove(key);
     publish({ intents: mine() });
+  };
+  const generationOf = (key: string) => generations.get(key) ?? 0;
+  const invalidate = (key: string) => {
+    generations.set(key, generationOf(key) + 1);
+    clearTimeout(retries.get(key));
+    retries.delete(key);
   };
   const intentFor = (match: (intent: TeamConnectionIntent) => boolean) =>
     mine().find(match) ?? null;
@@ -363,7 +375,7 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
     }
   };
 
-  const scheduleRetry = (intent: TeamConnectionIntent, attempt: number) => {
+  const scheduleRetry = (intent: TeamConnectionIntent, attempt: number, generation: number) => {
     const key = keyOf(intent);
     clearTimeout(retries.get(key));
     if (disposed) return;
@@ -374,7 +386,7 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
           retries.delete(key);
           const current = intentFor((held) => keyOf(held) === key);
           if (current?.state !== "pending-offline" || current.teamDeploymentId === null) return;
-          void attemptConnect(current, attempt + 1).catch(() => undefined);
+          void attemptConnect(current, attempt + 1, generation).catch(() => undefined);
         },
         backoff(offlineBackoff, attempt),
       ),
@@ -382,18 +394,25 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
   };
 
   /** One redemption at a time per team: a fresh code from the team, redeemed on the personal Host. */
-  const attemptConnect = (intent: TeamConnectionIntent, attempt = 0) => {
+  const attemptConnect = (
+    intent: TeamConnectionIntent,
+    attempt = 0,
+    generation = generationOf(keyOf(intent)),
+  ) => {
     const key = keyOf(intent);
     const held = connecting.get(key);
     if (held) return held;
+    const current = () => !disposed && !disconnecting.has(key) && generationOf(key) === generation;
     const run = (async () => {
       const teamDeploymentId = intent.teamDeploymentId!;
       const personal = intent.personalDeploymentId;
-      if (personal === null) return intent;
+      if (personal === null || !current()) return intent;
       await save({ ...intent, state: "connecting", failure: null, updatedAt: now() });
       let next: TeamConnectionIntent;
       try {
         const offer = await ports.sessions.createLinkCode(teamDeploymentId);
+        // Disconnected meanwhile: the unredeemed code is revoked with the team's other links.
+        if (!current()) return intent;
         const joined = await ports.personal.join(personal, offer);
         next = {
           ...intent,
@@ -410,9 +429,9 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
         };
       }
       // Disconnected, left or deleted meanwhile: nothing to record.
-      if (!intentFor((current) => keyOf(current) === key)) return next;
+      if (!current() || !intentFor((held) => keyOf(held) === key)) return next;
       await save(next);
-      if (next.state === "pending-offline") scheduleRetry(next, attempt);
+      if (next.state === "pending-offline") scheduleRetry(next, attempt, generation);
       return next;
     })().finally(() => connecting.delete(key));
     connecting.set(key, run);
@@ -438,6 +457,7 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
     intent: TeamConnectionIntent,
     teamDeploymentId: DeploymentId,
   ) => {
+    const generation = generationOf(keyOf(intent));
     try {
       await ports.sessions.restore({ origin: intent.teamOrigin, teamDeploymentId });
     } catch (error) {
@@ -447,7 +467,7 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
       if (error instanceof TeamEntryRefusedError) return;
     }
     if (intent.state === "pending-offline" || intent.state === "connecting")
-      await attemptConnect(intent).catch(() => undefined);
+      await attemptConnect(intent, 0, generation).catch(() => undefined);
   };
 
   const settleReady = async (view: HostedTeamView, signal: AbortSignal) => {
@@ -636,17 +656,27 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
     async disconnectAgent(teamDeploymentId) {
       await load();
       const held = intentFor((intent) => intent.teamDeploymentId === teamDeploymentId);
-      if (held) await connecting.get(keyOf(held))?.catch(() => undefined);
-      // Revoked by the team itself, so it holds with the computer off and for links made elsewhere.
-      await ports.sessions.revokeAgentLinks(teamDeploymentId);
-      const intent = intentFor((current) => current.teamDeploymentId === teamDeploymentId);
-      if (!intent) return;
-      // A computer that answers forgets the link now; one that's off, when the team refuses it.
-      if (intent.personalDeploymentId)
-        await ports.personal
-          .leave(intent.personalDeploymentId, teamDeploymentId)
-          .catch(() => undefined);
-      await keepWithoutAgent(intent.teamOrigin, teamDeploymentId);
+      const key = held ? keyOf(held) : null;
+      if (key) {
+        // Before revoking: a retry or attempt that finished after it would connect again.
+        disconnecting.add(key);
+        invalidate(key);
+      }
+      try {
+        if (key) await connecting.get(key)?.catch(() => undefined);
+        // Revoked by the team itself, so it holds with the computer off and for links made elsewhere.
+        await ports.sessions.revokeAgentLinks(teamDeploymentId);
+        const intent = intentFor((current) => current.teamDeploymentId === teamDeploymentId);
+        if (!intent) return;
+        // A computer that answers forgets the link now; one that's off, when the team refuses it.
+        if (intent.personalDeploymentId)
+          await ports.personal
+            .leave(intent.personalDeploymentId, teamDeploymentId)
+            .catch(() => undefined);
+        await keepWithoutAgent(intent.teamOrigin, teamDeploymentId);
+      } finally {
+        if (key) disconnecting.delete(key);
+      }
     },
 
     async leaveTeam(teamDeploymentId) {

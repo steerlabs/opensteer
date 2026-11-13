@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { act } from "react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { OpensteerError } from "@opensteer/core";
 import { MockTeamWorld } from "@opensteer/client/team";
 import {
   click,
@@ -106,6 +107,28 @@ describe("hosted teams", () => {
     await click(button(/Reset link/u));
     await until(() => field("Invite link").value !== first, "a new link");
     expect(field("Invite link").value).toMatch(/^https:\/\/acme\.teams\.opensteer\.com\/invite\//u);
+  });
+
+  it("makes one-person invites on a team server older than reusable invites", async () => {
+    const world = new MockTeamWorld({ pace: 0 });
+    await createTeam(world, "Acme");
+    await until(() => document.querySelector(".teams-welcome") !== null, "the welcome card");
+    const host = world.joined()[0]!;
+    const read = host.read.bind(host);
+    vi.spyOn(host, "read").mockImplementation(async (name, input) => {
+      if (name === "team.invite.current.get")
+        throw new OpensteerError({ code: "not_found", message: "Unknown read" });
+      return read(name, input);
+    });
+    await click(button("Invite people", document.querySelector(".teams-welcome")!));
+    await until(
+      () => /Each link lets one person join/u.test(dialog().textContent ?? ""),
+      "the older-server sheet",
+    );
+    await click(button("Make an invite link"));
+    await until(() => field("Invite link").value.startsWith("https://"), "a one-person link");
+    expect([...host.invites.values()]).toMatchObject([{ maxUses: 1 }]);
+    expect(dialog().textContent).not.toMatch(/Reset link/u);
   });
 
   it("disconnects only the agent, and deletes the team once its name is typed", async () => {

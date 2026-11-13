@@ -67,6 +67,7 @@ import {
   DeploymentIdSchema,
   RequestIdSchema,
   type DeploymentId,
+  type TeamInviteSecret,
   type UserId,
 } from "@opensteer/core";
 import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
@@ -761,7 +762,11 @@ export class MobileClient {
    * on its own private route needs a pairing code only the operator can carry,
    * which is a different door and not this one.
    */
-  async signIn(deploymentId: DeploymentId | string): Promise<void> {
+  /** `invite`, for a team: the person isn't a member yet and the team admits them through it. */
+  async signIn(
+    deploymentId: DeploymentId | string,
+    invite: TeamInviteSecret | null = null,
+  ): Promise<void> {
     const id = DeploymentIdSchema.parse(deploymentId);
     const connection = this.#requireConnection(id, await this.catalog.load());
     const verification = this.#verification.get(id);
@@ -771,7 +776,7 @@ export class MobileClient {
     if (connection.kind === "team") {
       // The credential subscription publishes the team credential state, whether the Account
       // vouched for this phone or the browser adapter waited for the callback.
-      await this.oauth.signInTeam(connection);
+      await this.oauth.signInTeam(connection, invite ?? undefined);
       return;
     }
     const resolved = resolveConnection(connection, null, { authorization: null });

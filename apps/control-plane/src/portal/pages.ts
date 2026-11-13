@@ -212,7 +212,7 @@ export function deleteAccountBody(input: {
       )}`
     : "";
   const hostedTeams = input.hostedTeams.length
-    ? `<p class="lead">These teams Opensteer hosts for you are deleted, with everything in them, for everyone who uses them.</p>${list(input.hostedTeams)}`
+    ? `<p class="lead">These teams Opensteer hosts for you are deleted, with everything in them, for everyone who uses them. A team with another owner passes to them instead.</p>${list(input.hostedTeams)}`
     : "";
   const failed = input.failed
     ? `<p class="lead" role="alert">Your Account wasn’t deleted. Remote access may already be off on these computers. Try again, or turn it back on from each computer.</p>`

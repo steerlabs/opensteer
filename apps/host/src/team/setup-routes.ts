@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { teamAppScheme } from "@opensteer/core";
+import { teamAppScheme, teamNativeAuthorizePath } from "@opensteer/core";
 import {
   CompleteTeamSetupAdoptionRequestSchema,
   CompleteTeamSetupAdoptionResponseSchema,
@@ -168,6 +168,8 @@ const downloadUrl = "https://opensteer.com/download";
 /**
  * The page an invite link opens. The verifier lives only in the fragment: the script reads it,
  * drops it from history and sends it only in request bodies. Nothing here names who invited.
+ * With `?authorize=` (the app's sign-in, `teamInviteSignInUrl`), it proves the invite in this
+ * browser and continues to that native sign-in on this origin, so its callback admits the person.
  */
 function teamInvitePage(nonce: string) {
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark light"><title>Join your team · Opensteer</title><style>
@@ -184,13 +186,13 @@ a{color:var(--accent)}
 .button.secondary{background:transparent;color:var(--text);border:1px solid var(--edge);font-weight:500}
 .button:disabled{opacity:.6;cursor:default}.text{background:none;border:0;padding:8px;font:inherit;font-size:13px;color:var(--quiet);text-decoration:underline;cursor:pointer;min-height:44px}
 </style>
-<main id="checking"><p>Checking your invite…</p></main>
+<main id="checking"><p id="checking-text">Checking your invite…</p></main>
 <main id="refused" hidden><h1 id="refused-title">This invite doesn't work</h1><p>Ask whoever invited you for a new link.</p></main>
 <main id="start" hidden><div class="mark" id="mark" aria-hidden="true"></div><h1 id="invited"></h1><p>Team chat where everyone can ask their own agent. Your agent runs on your computer and only acts when you ask.</p><a class="button" id="open-app">Open in Opensteer</a><button class="button secondary" id="web" type="button">Join in the browser</button><p class="small">Don't have Opensteer? <a href="${downloadUrl}">Download it</a> to bring your agent.</p></main>
 <main id="opening" hidden><h1>Opening Opensteer…</h1><p>Finish joining in the app. Nothing happened? <a href="${downloadUrl}">Download Opensteer</a> or join in the browser.</p><button class="text" type="button" data-back>Back</button></main>
 <main id="joining" hidden><h1 id="join-title"></h1><p>Sign in with your Opensteer Account to join. You can chat here right away; open the Opensteer app later to bring your agent.</p><button class="button" id="sign-in" type="button">Continue with Opensteer Account</button><p class="small" id="join-error" role="alert" hidden></p><button class="text" type="button" data-back>Back</button></main>
 <script nonce="${nonce}">
-const verifier=location.hash.slice(1),selector=location.pathname.split('/').pop();history.replaceState(null,'',location.pathname);
+const verifier=location.hash.slice(1),selector=location.pathname.split('/').pop(),authorize=new URLSearchParams(location.search).get('authorize');history.replaceState(null,'',location.pathname);
 const versionHeaders=${versionHeaders()},el=(id)=>document.getElementById(id);
 const show=(id)=>{for(const main of document.querySelectorAll('main'))main.hidden=main.id!==id;};
 const post=async(path,input)=>{const r=await fetch(path,{method:'POST',headers:{...versionHeaders,'content-type':'application/json'},body:JSON.stringify(input),redirect:'error'});const body=await r.json().catch(()=>null);if(!r.ok)throw Object.assign(new Error(body?.message??'Something went wrong. Try again.'),{reason:body?.reason});return body;};
@@ -201,6 +203,6 @@ el('open-app').onclick=()=>show('opening');
 el('web').onclick=()=>show('joining');
 for(const back of document.querySelectorAll('[data-back]'))back.onclick=()=>show('start');
 el('sign-in').onclick=async()=>{const button=el('sign-in'),error=el('join-error');button.disabled=true;error.hidden=true;try{await post('/v1/team/invites/exchange',{selector,verifier});const result=await post('/v1/team/setup/sign-in',{});location.assign(result.redirectUrl);}catch(e){if(e.reason&&e.reason.startsWith('invite-'))return refuse(e.reason);error.textContent=e.message;error.hidden=false;button.disabled=false;}};
-(async()=>{if(!/^[A-Za-z0-9_-]{24,128}$/.test(verifier))return refuse('missing');try{const invite=await post(${JSON.stringify(teamInvitePreviewPath)},{selector,verifier});el('mark').textContent=[...invite.teamName.trim()][0]?.toUpperCase()??'';el('invited').textContent='You\u2019re invited to '+invite.teamName;el('join-title').textContent='Join '+invite.teamName;document.title='Join '+invite.teamName+' \u00b7 Opensteer';show('start');}catch(e){refuse(e.reason);}})();
+(async()=>{if(!/^[A-Za-z0-9_-]{24,128}$/.test(verifier))return refuse('missing');if(authorize!==null){try{await post('/v1/team/invites/exchange',{selector,verifier});location.replace(${JSON.stringify(teamNativeAuthorizePath)}+'?'+authorize);}catch(e){if(e.reason&&e.reason.startsWith('invite-'))return refuse(e.reason);el('checking-text').textContent=e.message;}return;}try{const invite=await post(${JSON.stringify(teamInvitePreviewPath)},{selector,verifier});el('mark').textContent=[...invite.teamName.trim()][0]?.toUpperCase()??'';el('invited').textContent='You\u2019re invited to '+invite.teamName;el('join-title').textContent='Join '+invite.teamName;document.title='Join '+invite.teamName+' \u00b7 Opensteer';show('start');}catch(e){refuse(e.reason);}})();
 </script></html>`;
 }

@@ -44,6 +44,8 @@ type HostedTeamRow = Selectable<HostedTeamTable>;
 
 /** How long one bootstrap attempt may hold a team before another Account replica may take over. */
 const bootstrapLeaseMilliseconds = 2 * 60_000;
+/** Directory entries asked about, per team, for another owner when its creator's Account goes. */
+const maximumSuccessorChecks = 50;
 const unfinishedMessage = "Setup didn’t finish. Try again.";
 
 /** A team Account is setting up, claimed by one bootstrap attempt. */
@@ -315,6 +317,50 @@ export class HostedTeamStore {
     );
   }
 
+  /**
+   * For each set-up team `accountId` created, another Account that team's own Host confirms is an
+   * active owner, asked before the Account is deleted. Candidates are the people Account's
+   * directory lists for the team; a Host that can't answer names nobody, so its team goes with
+   * the Account.
+   */
+  async successors(
+    accountId: ControlPlaneAccountId,
+  ): Promise<ReadonlyMap<HostedTeamId, ControlPlaneAccountId>> {
+    const teams = await this.#database
+      .selectFrom("hostedTeams")
+      .selectAll()
+      .where("creatorAccountId", "=", accountId)
+      .where("state", "!=", "deleted")
+      .where("bootstrapReceipt", "is not", null)
+      .orderBy("createdAt", "asc")
+      .execute();
+    const found = new Map<HostedTeamId, ControlPlaneAccountId>();
+    for (const team of teams) {
+      const authority = await this.#authority(team);
+      if (!authority) continue;
+      const candidates = await this.#database
+        .selectFrom("deploymentDirectoryEntries")
+        .select("accountId")
+        .where("deploymentId", "=", authority.deploymentId)
+        .where("present", "=", true)
+        .where("accountId", "!=", accountId)
+        .orderBy("accountId", "asc")
+        .limit(maximumSuccessorChecks)
+        .execute();
+      for (const { accountId: candidate } of candidates) {
+        const owner = await this.#ownerCheck({ accountId: candidate, authority }).catch(
+          () => undefined,
+        );
+        if (owner === undefined) break;
+        if (owner) {
+          found.set(team.id, candidate);
+          break;
+        }
+      }
+    }
+    return found;
+  }
+
   /* ---- Provisioner ---- */
 
   /** Every team the provisioner still has work for: live ones, and deletions it hasn't confirmed. */
@@ -398,6 +444,29 @@ export class HostedTeamStore {
         .execute();
       return { configuring: stage === "configuring" };
     });
+  }
+
+  /**
+   * Fails every team still reserving or starting whose setup began before `startedBefore`, so its
+   * creator can retry or cancel. A pre-bootstrap stage records when it began in `updatedAt`
+   * (create and retry). Covers provisioners whose failure reports name no setup generation.
+   */
+  async failStalledSetups(startedBefore: Date): Promise<number> {
+    const failed = await this.#database
+      .updateTable("hostedTeams")
+      .set({
+        stage: "failed",
+        stageMessage: "The team server didn’t start. Try again.",
+        bootstrapLeaseUntil: null,
+        bootstrapNextAt: null,
+        updatedAt: new Date(),
+      })
+      .where("state", "=", "active")
+      .where("stage", "in", ["reserving", "starting"])
+      .where("bootstrapReceipt", "is", null)
+      .where("updatedAt", "<", startedBefore)
+      .executeTakeFirst();
+    return Number(failed.numUpdatedRows);
   }
 
   /* ---- Bootstrap ---- */
@@ -753,6 +822,76 @@ async function notifyTeamReady(
       })),
     )
     .execute();
+}
+
+/**
+ * Hands each team in `successors` from `accountId` to the Account its Host confirmed as another
+ * owner: the hosted team and the Account Deployment adopted at its address. Runs first in the
+ * transaction deleting `accountId`, so those teams outlive it; one no longer `accountId`'s, or
+ * whose successor is gone, is left to be deleted with it.
+ */
+export async function handOverHostedTeams(
+  transaction: DatabaseTransaction,
+  accountId: ControlPlaneAccountId,
+  successors: ReadonlyMap<HostedTeamId, ControlPlaneAccountId>,
+): Promise<void> {
+  if (successors.size === 0) return;
+  const named = await transaction
+    .selectFrom("hostedTeams")
+    .select(["id", "slug"])
+    .where("id", "in", [...successors.keys()])
+    .orderBy("slug", "asc")
+    .execute();
+  for (const { id, slug } of named) {
+    const origin = hostedTeamOrigin(slug as HostedTeamSlug);
+    const successor = successors.get(id)!;
+    // Serializes with deleting the team and with its bootstrap, as both take the origin first.
+    await lockDeploymentOrigin(transaction, origin);
+    const team = await transaction
+      .selectFrom("hostedTeams")
+      .select("id")
+      .where("id", "=", id)
+      .where("creatorAccountId", "=", accountId)
+      .where("state", "!=", "deleted")
+      .forNoKeyUpdate()
+      .executeTakeFirst();
+    const heir = await transaction
+      .selectFrom("users")
+      .select("id")
+      .where("id", "=", successor)
+      .where("id", "!=", accountId)
+      .forKeyShare()
+      .executeTakeFirst();
+    if (!team || !heir) continue;
+    const moved = await transaction
+      .updateTable("deployments")
+      .set({ ownerAccountId: successor })
+      .where("canonicalOrigin", "=", origin)
+      .where("ownerAccountId", "=", accountId)
+      .returning(["id", "oidcClientId"])
+      .execute();
+    for (const deployment of moved) {
+      // The team's Account sign-in client belongs to its owner and would go with the Account.
+      if (deployment.oidcClientId)
+        await transaction
+          .updateTable("oauthClients")
+          .set({ userId: successor, updatedAt: new Date() })
+          .where("clientId", "=", deployment.oidcClientId)
+          .where("userId", "=", accountId)
+          .execute();
+      // An owner keeps no hide marker; the directory shows them their team.
+      await transaction
+        .deleteFrom("deploymentDirectoryVisibility")
+        .where("deploymentId", "=", deployment.id)
+        .where("accountId", "=", successor)
+        .execute();
+    }
+    await transaction
+      .updateTable("hostedTeams")
+      .set({ creatorAccountId: successor, updatedAt: new Date() })
+      .where("id", "=", id)
+      .execute();
+  }
 }
 
 /**

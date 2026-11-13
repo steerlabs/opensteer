@@ -131,15 +131,16 @@ export class NativeTeamEntry {
   }
 
   /**
-   * A team whose server predates native team sessions: kept as if added by hand, then its own
-   * sign-in in the system browser. Settles once the callback lands, or the flow is stopped or
-   * expires; an invite is accepted afterwards over the team's API.
+   * A team whose server predates native team sessions, or whose Account can't vouch yet: kept as
+   * if added by hand, then its own sign-in in the system browser, through `invite` when given so
+   * the team admits the person there. Settles once the callback lands, or the flow is stopped or
+   * expires.
    */
-  async signIn(verified: VerifiedHostEndpoint): Promise<void> {
+  async signIn(verified: VerifiedHostEndpoint, invite: TeamInviteSecret | null): Promise<void> {
     const deploymentId = verified.discovery.deploymentId;
     const held = await this.#held(deploymentId);
     try {
-      await this.#browserSignIn(held ?? (await this.#keepManual(verified)));
+      await this.#browserSignIn(held ?? (await this.#keepManual(verified)), invite);
     } catch (error) {
       if (held === null) await this.#catalog.remove(deploymentId).catch(() => undefined);
       throw error;
@@ -198,7 +199,10 @@ export class NativeTeamEntry {
     return kept;
   }
 
-  async #browserSignIn(connection: DeploymentConnection): Promise<void> {
+  async #browserSignIn(
+    connection: DeploymentConnection,
+    invite: TeamInviteSecret | null,
+  ): Promise<void> {
     if (this.#oauth.hostCredentialState(connection).status === "signed-in") return;
     const deploymentId = connection.authority.document.deploymentId;
     let stop = () => {};
@@ -211,7 +215,7 @@ export class NativeTeamEntry {
       });
     });
     try {
-      const begun = await this.#oauth.beginHostSignIn(connection);
+      const begun = await this.#oauth.beginHostSignIn(connection, invite ?? undefined);
       const final = begun.status === "authorizing" ? await ended : begun;
       if (final.status !== "signed-in")
         throw new ClientOperationError(

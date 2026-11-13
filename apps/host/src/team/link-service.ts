@@ -8,7 +8,7 @@ import {
 } from "@opensteer/database/team-access";
 import { appendTeamAudit } from "@opensteer/database/team-audit";
 import type { DatabaseSchema } from "@opensteer/database";
-import type { Selectable } from "kysely";
+import { sql, type Selectable } from "kysely";
 
 function linkView(row: Selectable<DatabaseSchema["teamLinks"]>, teamName: string) {
   return TeamLinkViewSchema.strip().parse({
@@ -93,7 +93,12 @@ export class TeamLinkService {
       const member = await this.access.member(t, actor.userId);
       let query = t.selectFrom("teamLinks").selectAll().where("state", "in", ["active", "pending"]);
       if (member.role === "member") query = query.where("ownerUserId", "=", actor.userId);
-      const links = await query.orderBy("id").limit(50).execute();
+      // The caller's own links come first, so disconnecting finds every one of them.
+      const links = await query
+        .orderBy(sql<boolean>`owner_user_id = ${actor.userId}`, "desc")
+        .orderBy("id")
+        .limit(50)
+        .execute();
       return { links: links.map((row) => linkView(row, this.identity.teamName)) };
     });
   }

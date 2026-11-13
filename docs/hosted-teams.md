@@ -17,7 +17,10 @@ audience, and offers no hosted teams without that setting. Turn it on in
 provisioner, or teams wait at `starting`.
 
 Addresses are never reused: a deleted team stays as a tombstone, and the database tombstones a team
-whenever its creator's Account is deleted, whichever release deletes it.
+whenever its creator's Account is deleted, whichever release deletes it. Before deleting an Account,
+Account asks each set-up team's Host, by the owner check below, whether someone the directory lists
+is another owner; the first it confirms takes over the team and its Account Deployment. A Host that
+can't answer, or names nobody, means the team is deleted with the Account.
 
 ## Setup
 
@@ -39,9 +42,11 @@ receipt clears the sealed token and every sealed adoption result for that Host.
 
 A team is `ready` only when Account holds the receipt and the creator's directory entry has
 arrived from the Host, not when its pod is up. Each attempt is fenced by its claim and setup
-generation, so a slower attempt, a retry or a cancel never lets a stale write land. After 15
-minutes a team is `failed`; a retry before the Host has an owner seals a new token and restarts
-the Host with a fresh setup window. Self-hosted teams keep `/setup`.
+generation, so a slower attempt, a retry or a cancel never lets a stale write land. A team still
+starting 15 minutes after it was created or retried, or still configuring 15 minutes after its Host
+came up, is `failed`; this also catches a provisioner whose failure reports name no setup
+generation, which move no stage. A retry before the Host has an owner seals a new token and
+restarts the Host with a fresh setup window. Self-hosted teams keep `/setup`.
 
 Its creator may cancel a team only while its Host can't have an owner: before Account adopts that
 Host. Adoption takes the same origin lock as cancelling, so one of them loses. Once a Deployment or

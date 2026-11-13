@@ -683,10 +683,15 @@ function JoinDialog({ onClose, url }: { readonly onClose: () => void; readonly u
 
 const expiryChoices: readonly TeamInviteExpiryDays[] = [1, 7, 30];
 
-/** The team's one reusable invite: its link, a code for phones, how long it works, and Reset. */
+/**
+ * The team's one reusable invite: its link, a code for phones, how long it works, and Reset. A
+ * team server older than reusable invites makes one-person links instead.
+ */
 export function InvitePanel({ client }: { readonly client: TeamSessionClient }) {
   const toast = useToast();
   const [invite, setInvite] = useState<TeamCurrentInvite | null>(null);
+  /** Set on a team server without `team.invite.current.get`; the link once one is made. */
+  const [singleUse, setSingleUse] = useState<{ readonly url: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -714,13 +719,36 @@ export function InvitePanel({ client }: { readonly client: TeamSessionClient }) 
     },
     [client],
   );
+  const makeSingleUse = async () => {
+    setBusy(true);
+    try {
+      const made = unwrapRpcResult(
+        await client.rpc["commands.dispatch"]({
+          type: "team.invite.create",
+          id: TeamInviteIdSchema.parse(createId("teamInvite")),
+          maxUses: 1,
+          expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        }),
+      );
+      if (made.type === "team.invite.create") {
+        setSingleUse({ url: made.url });
+        setCopied(false);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
   useEffect(() => {
     let live = true;
     void client.rpc["team.invite.current.get"]({})
-      .then(unwrapRpcResult)
-      .then(async ({ invite: current }) => {
+      .then(async (result) => {
         if (!live) return;
-        if (current) setInvite(current);
+        // The same answer mobile acts on: a team server older than reusable invites.
+        if (!result.ok) {
+          setSingleUse({ url: null });
+          return;
+        }
+        if (result.data.invite) setInvite(result.data.invite);
         else await reset(7);
       })
       .catch((failure: unknown) => live && setError(actionErrorMessage(failure)));
@@ -728,29 +756,56 @@ export function InvitePanel({ client }: { readonly client: TeamSessionClient }) 
       live = false;
     };
   }, [client, reset]);
+  const lede = (
+    <p className="teams-form__lede">
+      {singleUse
+        ? "Each link lets one person join with their Opensteer Account."
+        : "Anyone with this link can join with their Opensteer Account."}
+    </p>
+  );
   if (error)
     return (
       <p className="notice notice--error" role="alert">
         {error}
       </p>
     );
-  if (!invite)
+  const url = invite?.url ?? singleUse?.url ?? null;
+  if (singleUse && url === null)
+    return (
+      <div className="teams-invite__controls">
+        {lede}
+        <button
+          className="btn btn--primary"
+          disabled={busy}
+          onClick={() =>
+            void makeSingleUse().catch((failure: unknown) =>
+              toast.error(actionErrorMessage(failure)),
+            )
+          }
+          type="button"
+        >
+          Make an invite link
+        </button>
+      </div>
+    );
+  if (url === null)
     return (
       <p aria-live="polite" className="teams-form__lede">
         Making the invite…
       </p>
     );
   const copy = () =>
-    void navigator.clipboard.writeText(invite.url).then(
+    void navigator.clipboard.writeText(url).then(
       () => setCopied(true),
       () => toast.error("Copy didn’t work. Select the link and copy it."),
     );
   return (
     <div className="teams-invite">
       <div className="teams-invite__qr">
-        <QrCode label="QR code for the invite link" value={invite.url} />
+        <QrCode label="QR code for the invite link" value={url} />
       </div>
       <div className="teams-invite__controls">
+        {lede}
         <div className="field">
           <label className="field__label" htmlFor={linkId}>
             Invite link
@@ -761,7 +816,7 @@ export function InvitePanel({ client }: { readonly client: TeamSessionClient }) 
               id={linkId}
               onFocus={(event) => event.currentTarget.select()}
               readOnly
-              value={invite.url}
+              value={url}
             />
             <button className="btn" onClick={copy} type="button">
               <Icon name={copied ? "check" : "copy"} />
@@ -769,42 +824,46 @@ export function InvitePanel({ client }: { readonly client: TeamSessionClient }) 
             </button>
           </div>
         </div>
-        <div className="teams-invite__expiry">
-          <label className="field__label" htmlFor={expiryId}>
-            Link works for
-          </label>
-          <select
-            className="select-input"
-            disabled={busy}
-            id={expiryId}
-            onChange={(event) =>
-              void reset(Number(event.currentTarget.value) as TeamInviteExpiryDays)
-                .then(() => toast.success("New link made"))
-                .catch((failure: unknown) => toast.error(actionErrorMessage(failure)))
-            }
-            value={invite.expiresInDays}
-          >
-            {expiryChoices.map((days) => (
-              <option key={days} value={days}>
-                {days === 1 ? "1 day" : `${days} days`}
-              </option>
-            ))}
-          </select>
-          <span className="field__hint">Changing it makes a new link</span>
-        </div>
-        <button
-          className="btn btn--ghost btn--small teams-invite__reset"
-          disabled={busy}
-          onClick={() =>
-            void reset(invite.expiresInDays)
-              .then(() => toast.success("New invite link made"))
-              .catch((failure: unknown) => toast.error(actionErrorMessage(failure)))
-          }
-          type="button"
-        >
-          <Icon name="reload" />
-          Reset link (the old one stops working)
-        </button>
+        {invite ? (
+          <>
+            <div className="teams-invite__expiry">
+              <label className="field__label" htmlFor={expiryId}>
+                Link works for
+              </label>
+              <select
+                className="select-input"
+                disabled={busy}
+                id={expiryId}
+                onChange={(event) =>
+                  void reset(Number(event.currentTarget.value) as TeamInviteExpiryDays)
+                    .then(() => toast.success("New link made"))
+                    .catch((failure: unknown) => toast.error(actionErrorMessage(failure)))
+                }
+                value={invite.expiresInDays}
+              >
+                {expiryChoices.map((days) => (
+                  <option key={days} value={days}>
+                    {days === 1 ? "1 day" : `${days} days`}
+                  </option>
+                ))}
+              </select>
+              <span className="field__hint">Changing it makes a new link</span>
+            </div>
+            <button
+              className="btn btn--ghost btn--small teams-invite__reset"
+              disabled={busy}
+              onClick={() =>
+                void reset(invite.expiresInDays)
+                  .then(() => toast.success("New invite link made"))
+                  .catch((failure: unknown) => toast.error(actionErrorMessage(failure)))
+              }
+              type="button"
+            >
+              <Icon name="reload" />
+              Reset link (the old one stops working)
+            </button>
+          </>
+        ) : null}
       </div>
     </div>
   );
@@ -833,9 +892,6 @@ function InviteDialog({
       onClose={onClose}
       title={`Invite people to ${name ?? team?.name ?? "the team"}`}
     >
-      <p className="teams-form__lede">
-        Anyone with this link can join with their Opensteer Account.
-      </p>
       {team?.client ? (
         <InvitePanel client={team.client} />
       ) : (

@@ -576,9 +576,9 @@ export class MobileTeams {
   }
 
   /**
-   * Entering a team whose server predates native team sessions: the team enters this
-   * phone's catalog, the person signs in to it with their Opensteer Account in the
-   * browser, and an invite, when given, admits them. Connecting their agent is the
+   * Entering a team whose server predates native team sessions, or whose Account can't vouch
+   * yet: the team enters this phone's catalog and the person signs in to it in the browser,
+   * through the invite when given so the team admits them there. Connecting their agent is the
    * coordinator's next step, not this one's.
    */
   async signIn(
@@ -601,26 +601,8 @@ export class MobileTeams {
     );
     if (connection === undefined)
       throw new TeamAccessError("This team is no longer on this phone.");
-    if (!this.#signedIn(teamId)) await this.#client.signIn(teamId);
+    if (!this.#signedIn(teamId)) await this.#client.signIn(teamId, invite);
     if (!this.#signedIn(teamId)) throw new Error("Sign in to finish joining.");
-    const transport = this.#transport(connection, {
-      teamDeploymentId: teamId,
-      userId: placeholderUser,
-    });
-    if (invite !== null) {
-      const accepted = await transport.rpc["commands.dispatch"]({
-        type: "team.invite.accept",
-        selector: invite.selector,
-        verifier: invite.verifier,
-      });
-      if (!accepted.ok && accepted.error.code !== "conflict") {
-        throw new HostClientRequestError({
-          code: accepted.error.code,
-          message: accepted.error.message,
-          status: 400,
-        });
-      }
-    }
     return (await this.#settle(connection)).member;
   }
 

@@ -7,6 +7,7 @@ import { decryptOAuthToken } from "better-auth/oauth2";
 import type { ControlPlaneAuth } from "../auth/auth.js";
 import { appleClientSecret, appleOrigin, type AppleSignInConfig } from "../auth/apple-sign-in.js";
 import type { ControlPlaneStore } from "../database/store.js";
+import type { HostedTeamStore } from "../hosted-teams/hosted-team-store.js";
 import { ControlPlaneError } from "../server/errors.js";
 import type { ConnectLifecycleService } from "./connect-lifecycle.js";
 
@@ -22,6 +23,7 @@ export class AccountDeletionService {
   readonly #auth: ControlPlaneAuth;
   readonly #connectLifecycle: ConnectLifecycleService;
   readonly #fetch: typeof fetch;
+  readonly #hostedTeams: Pick<HostedTeamStore, "successors"> | undefined;
   readonly #store: ControlPlaneStore;
 
   constructor(dependencies: {
@@ -29,12 +31,15 @@ export class AccountDeletionService {
     readonly auth: ControlPlaneAuth;
     readonly connectLifecycle: ConnectLifecycleService;
     readonly fetch?: typeof fetch;
+    /** Hands a hosted team another owner runs to them instead of deleting it. */
+    readonly hostedTeams?: Pick<HostedTeamStore, "successors">;
     readonly store: ControlPlaneStore;
   }) {
     this.#apple = dependencies.appleSignIn;
     this.#auth = dependencies.auth;
     this.#connectLifecycle = dependencies.connectLifecycle;
     this.#fetch = dependencies.fetch ?? fetch;
+    this.#hostedTeams = dependencies.hostedTeams;
     this.#store = dependencies.store;
   }
 
@@ -58,8 +63,10 @@ export class AccountDeletionService {
     const appleRefreshToken = this.#apple
       ? await this.#store.oauthRefreshToken(accountId, "apple")
       : null;
+    // Asked of each team's own Host before the transaction: ownership lives there.
+    const successors = (await this.#hostedTeams?.successors(accountId)) ?? new Map();
     try {
-      await this.#store.deleteAccount(accountId);
+      await this.#store.deleteAccount(accountId, successors);
     } catch (error) {
       if (isNotFound(error)) return;
       throw error;

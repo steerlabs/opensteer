@@ -205,6 +205,32 @@ describe("NativeOAuthManager", () => {
     expect(fixture.refreshes).toEqual([]);
   });
 
+  it("proves an invite in the browser before the team's own sign-in, so its callback admits", async () => {
+    const fixture = await managerFixture();
+    await fixture.manager.initialize();
+    const invite = { selector: "s".repeat(32), verifier: "v".repeat(43) };
+    await fixture.manager.beginHostSignIn(fixture.connection, invite);
+    const opened = new URL(fixture.opened[0]!);
+    // The team's invite page, verifier only in the fragment, carrying the native sign-in.
+    expect(opened.origin + opened.pathname).toBe(
+      `https://host.opensteer.test/invite/${invite.selector}`,
+    );
+    expect(opened.hash).toBe(`#${invite.verifier}`);
+    expect([...opened.searchParams.keys()]).toEqual(["authorize"]);
+    const authorize = new URL(
+      `/v1/auth/native/oauth2/authorize?${opened.searchParams.get("authorize")}`,
+      opened.origin,
+    );
+    expect(authorize.toString()).not.toContain(invite.verifier);
+    await fixture.manager.handleCallback(
+      callbackUrl("host", authorize.searchParams.get("state")!, "host-code"),
+    );
+    expect(fixture.manager.hostCredentialState(fixture.connection)).toMatchObject({
+      status: "signed-in",
+    });
+    fixture.manager.dispose();
+  });
+
   it("requests an explicit fresh Account session without replaying an Account mutation", async () => {
     const fixture = await managerFixture();
     await fixture.manager.initialize();

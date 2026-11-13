@@ -8,6 +8,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { AdoptionOperationCipher } from "../apps/control-plane/src/adoption/adoption-operation-crypto.js";
 import { BetterAuthAccountAdoptionCompletionGrantIssuer } from "../apps/control-plane/src/adoption/adoption-grant-issuer.js";
 import { HttpHostAccountAdoptionProofVerifier } from "../apps/control-plane/src/adoption/adoption-verifier.js";
+import { AccountDeletionService } from "../apps/control-plane/src/account/account-deletion.js";
 import { ConnectLifecycleService } from "../apps/control-plane/src/account/connect-lifecycle.js";
 import {
   ControlPlaneAuthenticator,
@@ -155,15 +156,16 @@ async function startHostedTeam() {
       sign: async (claims) => (await auth.api.signJWT({ body: { payload: claims } })).token,
     }),
   });
+  const connectLifecycle = new ConnectLifecycleService(accounts, {
+    delete: async () => undefined,
+    ensure: async () => Promise.reject(new Error("Connect is not used")),
+    readConnectorToken: async () => Promise.reject(new Error("Connect is not used")),
+    rotateConnectorToken: async () => Promise.reject(new Error("Connect is not used")),
+  });
   const server = await createControlPlaneServer({
     auth,
     authenticator: new ControlPlaneAuthenticator(auth, accounts, issuer),
-    connectLifecycle: new ConnectLifecycleService(accounts, {
-      delete: async () => undefined,
-      ensure: async () => Promise.reject(new Error("Connect is not used")),
-      readConnectorToken: async () => Promise.reject(new Error("Connect is not used")),
-      rotateConnectorToken: async () => Promise.reject(new Error("Connect is not used")),
-    }),
+    connectLifecycle,
     hostedTeams: { store: teams, verifyProvisioner: async () => undefined },
     portalOrigin,
     publicOrigin: issuer,
@@ -256,6 +258,7 @@ async function startHostedTeam() {
     accounts,
     auth,
     bootstrapper,
+    connectLifecycle,
     created,
     creator,
     errors,
@@ -593,5 +596,104 @@ it("fails setup for a Host that already has an owner, without touching that owne
     .select(["userId", "role", "state"])
     .execute();
   expect(members).toEqual([{ userId: someone, role: "owner", state: "active" }]);
+  expect(await system.accounts.selectFrom("deployments").select("id").execute()).toEqual([]);
+});
+
+it("keeps a team another owner runs when its creator deletes their Account, handing it to them", async () => {
+  const system = await startHostedTeam();
+  await system.report();
+  await system.bootstrapper.runOnce();
+  await system.ready();
+  const deploymentId = system.team.deployment.id;
+  const providerId = oidcIdentityProviderIdForIssuer("opensteer-account", issuer.origin);
+  /** Someone the directory lists, who is `role` on the team's own Host. */
+  const person = async (email: string, role: "owner" | "member") => {
+    const account = await createAccount(system.accounts, email, email.split("@")[0]!);
+    await system.accounts
+      .insertInto("deploymentDirectoryEntries")
+      .values({
+        deploymentId,
+        accountId: account,
+        generation: 1,
+        present: true,
+        observedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .execute();
+    const userId = `usr_${crypto.randomUUID()}`;
+    await sql`insert into users(id,display_name,email,email_verified) values(${userId},${email},${email},true)`.execute(
+      system.hostDatabase,
+    );
+    await sql`insert into auth_accounts(id,account_id,provider_id,user_id) values(${`aac_${crypto.randomUUID()}`},${account},${providerId},${userId})`.execute(
+      system.hostDatabase,
+    );
+    await sql`insert into team_members(user_id,handle,role,state,joined_at,changed_at) values(${userId},${email.split("@")[0]!},${role},'active',now(),now())`.execute(
+      system.hostDatabase,
+    );
+    return account;
+  };
+  await person("ada@example.test", "member");
+  const sam = await person("sam@example.test", "owner");
+  // A member who hid the team before becoming its owner keeps no contradicting marker.
+  await system.accounts
+    .insertInto("deploymentDirectoryVisibility")
+    .values({ deploymentId, accountId: sam, hiddenAt: new Date() })
+    .execute();
+
+  await new AccountDeletionService({
+    auth: system.auth,
+    connectLifecycle: system.connectLifecycle,
+    hostedTeams: system.teams,
+    store: system.store,
+  }).delete(system.creator);
+
+  expect(
+    await system.accounts
+      .selectFrom("hostedTeams")
+      .select(["state", "creatorAccountId", "deploymentId"])
+      .where("id", "=", system.created.id)
+      .executeTakeFirstOrThrow(),
+  ).toEqual({ state: "active", creatorAccountId: sam, deploymentId });
+  expect(
+    await system.accounts.selectFrom("deployments").select(["id", "ownerAccountId"]).execute(),
+  ).toEqual([{ id: deploymentId, ownerAccountId: sam }]);
+  // The team keeps its Account sign-in.
+  expect(
+    await system.accounts
+      .selectFrom("oauthClients")
+      .innerJoin("deployments", "deployments.oidcClientId", "oauthClients.clientId")
+      .select("oauthClients.userId")
+      .execute(),
+  ).toEqual([{ userId: sam }]);
+  expect(
+    await system.accounts.selectFrom("deploymentDirectoryVisibility").select("accountId").execute(),
+  ).toEqual([]);
+  expect((await system.teams.forAccount(sam, system.created.id))?.stage).toBe("ready");
+  expect(
+    await system.accounts
+      .selectFrom("users")
+      .select("id")
+      .where("id", "=", system.creator)
+      .execute(),
+  ).toEqual([]);
+});
+
+it("deletes a team with its creator's Account when the creator is its only owner", async () => {
+  const system = await startHostedTeam();
+  await system.report();
+  await system.bootstrapper.runOnce();
+  await system.ready();
+  await new AccountDeletionService({
+    auth: system.auth,
+    connectLifecycle: system.connectLifecycle,
+    hostedTeams: system.teams,
+    store: system.store,
+  }).delete(system.creator);
+  expect(
+    await system.accounts
+      .selectFrom("hostedTeams")
+      .select(["state", "creatorAccountId"])
+      .executeTakeFirstOrThrow(),
+  ).toEqual({ state: "deleted", creatorAccountId: null });
   expect(await system.accounts.selectFrom("deployments").select("id").execute()).toEqual([]);
 });

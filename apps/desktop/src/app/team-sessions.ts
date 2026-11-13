@@ -43,7 +43,7 @@ export class DesktopTeamSessions {
       case "sign-in": {
         const verified = this.#verified.get(call.origin) ?? (await this.#verify(call.origin));
         this.#verified.delete(call.origin);
-        await this.#entry.signIn(verified);
+        await this.#entry.signIn(verified, call.invite);
         return null;
       }
       case "restore":

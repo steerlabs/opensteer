@@ -73,6 +73,9 @@ export class HostedTeamBootstrapper {
 
   /** Works every team whose setup is due; answers how many attempts ran. */
   async runOnce(): Promise<number> {
+    await this.#teams.failStalledSetups(
+      new Date(this.#now() - hostedTeamSetupDeadlineMilliseconds),
+    );
     let attempts = 0;
     for (;;) {
       const claim = await this.#teams.claimBootstrap(new Date(this.#now()));
