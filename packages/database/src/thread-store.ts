@@ -177,6 +177,12 @@ export interface ThreadUpdateResult {
  */
 export type ThreadInputSource =
   | {
+      readonly kind: "team-member";
+      readonly teamId: import("@opensteer/core").DeploymentId;
+      readonly requestId: import("@opensteer/core").TeamAgentRequestId;
+      readonly resumeRunId?: RunId;
+    }
+  | {
       readonly kind: "human";
     }
   | {

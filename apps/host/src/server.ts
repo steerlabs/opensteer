@@ -1634,7 +1634,10 @@ export async function createHostServer(
         };
       case "teams.ask.decide":
         await requirePersonalOwner(dependencies.store.database, userId);
-        throw new OpensteerError({ code: "not_found", message: "Pending team ask not found." });
+        await (
+          await dependencies.teamLinks()
+        ).options.requests.decide(userId, command.teamId, command.requestId, command.decision);
+        return { type: command.type };
       case "teams.link.leave":
         await (await dependencies.teamLinks()).leave(command.teamId);
         return { type: command.type };

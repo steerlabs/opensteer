@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   MessageIdSchema,
   type AgentEvent,
@@ -10,6 +11,8 @@ import {
   type TeamTaskOrigin,
   type TeamMessageId,
   type UserId,
+  type TeamAgentRequestState,
+  type TeamAskDecision,
 } from "@opensteer/core";
 import {
   PersonalTeamRequestSchema,
@@ -35,6 +38,135 @@ export class PersonalTeamRequestsStore {
     this.database = database;
     this.#onPublished = onPublished;
     this.#onDeliveryEvent = onDeliveryEvent;
+  }
+
+  async mirror(teamId: DeploymentId, requestId: TeamAgentRequestId) {
+    const row = await this.database
+      .selectFrom("personalTeamRequests")
+      .selectAll()
+      .where("teamDeploymentId", "=", teamId)
+      .where("requestId", "=", requestId)
+      .executeTakeFirst();
+    return row ? personalTeamRequestMirrorFromRow(row) : null;
+  }
+
+  async mirrors(teamId: DeploymentId) {
+    const rows = await this.database
+      .selectFrom("personalTeamRequests")
+      .selectAll()
+      .where("teamDeploymentId", "=", teamId)
+      .where((eb) =>
+        eb.or([
+          eb("terminalState", "is", null),
+          eb("publicationState", "=", "pending"),
+          eb.and([eb("kind", "=", "return"), eb("remoteState", "!=", "done")]),
+        ]),
+      )
+      .orderBy("createdAt")
+      .orderBy("requestId")
+      .execute();
+    return rows.map(personalTeamRequestMirrorFromRow);
+  }
+
+  async observe(
+    input: PersonalTeamRequestMirror & { readonly createdAt: string },
+  ): Promise<boolean> {
+    const saved = await this.database
+      .insertInto("personalTeamRequests")
+      .values({
+        teamDeploymentId: input.teamId,
+        requestId: input.requestId,
+        kind: input.kind,
+        remoteState: input.remoteState,
+        presentation: input.presentation,
+        returnPayload: input.returnPayload,
+        consentExpiresAt: input.consentExpiresAt,
+        localDecision: null,
+        decisionAt: null,
+        returnAdmission: null,
+        triggerMessageId: input.triggerMessageId,
+        localTaskId: null,
+        localInputId: null,
+        runId: null,
+        source: input.source,
+        publicationState: "pending",
+        terminalState: null,
+        acceptedMessageId: null,
+        createdAt: input.createdAt,
+        finishedAt: null,
+      })
+      .onConflict((conflict) => conflict.doNothing())
+      .returning("requestId")
+      .executeTakeFirst();
+    const current = await this.mirror(input.teamId, input.requestId);
+    if (
+      !current ||
+      current.kind !== input.kind ||
+      current.triggerMessageId !== input.triggerMessageId ||
+      !isDeepStrictEqual(current.presentation, input.presentation) ||
+      !isDeepStrictEqual(current.returnPayload, input.returnPayload)
+    )
+      throw new OpensteerError({ code: "conflict", message: "Team request presentation changed" });
+    return Boolean(saved);
+  }
+
+  async decide(
+    ownerId: UserId,
+    teamId: DeploymentId,
+    requestId: TeamAgentRequestId,
+    decision: TeamAskDecision,
+  ) {
+    return withPersonalTransaction(this.database, async (tx) => {
+      await requirePersonalOwner(tx, ownerId);
+      const row = await tx
+        .selectFrom("personalTeamRequests")
+        .selectAll()
+        .where("teamDeploymentId", "=", teamId)
+        .where("requestId", "=", requestId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!row || row.kind !== "ask")
+        throw new OpensteerError({ code: "not_found", message: "Pending team ask not found." });
+      if (row.localDecision) {
+        if (row.localDecision !== decision)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "This team ask was already decided on another device.",
+          });
+        return personalTeamRequestMirrorFromRow(row);
+      }
+      if (
+        row.remoteState !== "awaiting_approval" ||
+        row.terminalState ||
+        !row.consentExpiresAt ||
+        row.consentExpiresAt <= new Date()
+      )
+        throw new OpensteerError({
+          code: "conflict",
+          message: "This team ask is no longer awaiting approval.",
+        });
+      const saved = await tx
+        .updateTable("personalTeamRequests")
+        .set({ localDecision: decision, decisionAt: new Date() })
+        .where("teamDeploymentId", "=", teamId)
+        .where("requestId", "=", requestId)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      return personalTeamRequestMirrorFromRow(saved);
+    });
+  }
+
+  async remote(
+    teamId: DeploymentId,
+    requestId: TeamAgentRequestId,
+    remoteState: TeamAgentRequestState,
+  ) {
+    await this.database
+      .updateTable("personalTeamRequests")
+      .set({ remoteState })
+      .where("teamDeploymentId", "=", teamId)
+      .where("requestId", "=", requestId)
+      .execute();
   }
 
   async get(
@@ -139,7 +271,12 @@ export class PersonalTeamRequestsStore {
   ): Promise<void> {
     await this.database
       .updateTable("personalTeamRequests")
-      .set({ runId, terminalState: state, finishedAt: new Date().toISOString() })
+      .set({
+        runId,
+        terminalState: state,
+        finishedAt: new Date().toISOString(),
+        publicationState: sql`case when local_task_id is null then 'blocked' else publication_state end`,
+      })
       .where("teamDeploymentId", "=", teamId)
       .where("requestId", "=", requestId)
       .where("terminalState", "is", null)

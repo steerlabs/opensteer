@@ -19,7 +19,11 @@ import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import type { DatabaseSchema } from "./schema.js";
 import { lockCommandIdempotency, threadPathLinks } from "./store-primitives.js";
-import { enqueueThreadInputInTransaction, ensureQueuedRun } from "./thread-inbox.js";
+import {
+  enqueueThreadInputInTransaction,
+  ensureQueuedRun,
+  teamReturnUndeliverableReason,
+} from "./thread-inbox.js";
 import { threadInputFromRow } from "./thread-row-mappers.js";
 import { createThreadInTransaction } from "./thread-store.js";
 import { projectThreadState } from "./thread-status.js";
@@ -49,11 +53,7 @@ export async function findTeamTaskAdmission(
       code: "conflict",
       message: "This team request already names another triggering message.",
     });
-  if (!existing.localTaskId || !existing.localInputId)
-    throw new OpensteerError({
-      code: "conflict",
-      message: "This team request has not been admitted.",
-    });
+  if (!existing.localTaskId || !existing.localInputId) return null;
   const task = await database
     .selectFrom("threads")
     .select(["teamId", "channelId", "threadRootId"])
@@ -95,6 +95,22 @@ export function admitTeamTaskRequest(
         code: "forbidden",
         message: "Connect your Opensteer to this team before asking your agent.",
       });
+    const mirror = await transaction
+      .selectFrom("personalTeamRequests")
+      .selectAll()
+      .where("teamDeploymentId", "=", input.origin.teamId)
+      .where("requestId", "=", input.requestId)
+      .executeTakeFirst();
+    if (
+      mirror?.kind === "ask" &&
+      (mirror.localDecision !== "approve" ||
+        mirror.terminalState ||
+        !["queued", "working", "needs_you"].includes(mirror.remoteState))
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Team ask has not been approved and acknowledged.",
+      });
     const bound = await transaction
       .selectFrom("threads")
       .select("id")
@@ -120,7 +136,10 @@ export function admitTeamTaskRequest(
     const queued = await enqueueThreadInputInTransaction(transaction, {
       threadId: taskId,
       requestedBy: input.ownerId,
-      source: { kind: "human" },
+      source:
+        mirror?.kind === "ask"
+          ? { kind: "team-member", teamId: input.origin.teamId, requestId: input.requestId }
+          : { kind: "human" },
       policy: "queue",
       content: [
         ...(input.bodyMarkdown.trim() ? [{ type: "text" as const, text: input.bodyMarkdown }] : []),
@@ -156,6 +175,19 @@ export function admitTeamTaskRequest(
         source: input.source,
         finishedAt: null,
       })
+      .onConflict((conflict) =>
+        conflict
+          .columns(["teamDeploymentId", "requestId"])
+          .doUpdateSet({
+            localTaskId: taskId,
+            localInputId: queued.message.id,
+            runId: queued.run?.id ?? null,
+          })
+          .where("personalTeamRequests.localDecision", "=", "approve")
+          .where("personalTeamRequests.remoteState", "in", ["queued", "working", "needs_you"])
+          .where("personalTeamRequests.terminalState", "is", null),
+      )
+      .returning("requestId")
       .executeTakeFirstOrThrow();
     events.push(...queued.events);
     return {
@@ -176,7 +208,8 @@ export function cancelTeamTaskRequest(
       .where("teamDeploymentId", "=", input.teamId)
       .where("requestId", "=", input.requestId)
       .executeTakeFirst();
-    if (!request) return { events: [], revokedGrants: [] };
+    if (!request?.localTaskId || !request.localInputId || request.kind === "return")
+      return { events: [], revokedGrants: [] };
     const task = await transaction
       .selectFrom("threads")
       .selectAll()
@@ -283,4 +316,115 @@ export function cancelTeamTaskRequest(
     }
     return { events, revokedGrants };
   });
+}
+
+export async function admitTeamReturn(
+  database: Kysely<DatabaseSchema>,
+  input: {
+    readonly ownerId: UserId;
+    readonly teamId: DeploymentId;
+    readonly requestId: TeamAgentRequestId;
+  },
+) {
+  try {
+    return await withPersonalTransaction(database, async (tx) => {
+      await requirePersonalOwner(tx, input.ownerId);
+      const mirror = await tx
+        .selectFrom("personalTeamRequests")
+        .selectAll()
+        .where("teamDeploymentId", "=", input.teamId)
+        .where("requestId", "=", input.requestId)
+        .executeTakeFirstOrThrow();
+      const payload = mirror.returnPayload;
+      if (mirror.kind !== "return" || !payload?.author || payload.author.actor !== "agent")
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Team return has no answering agent.",
+        });
+      await lockCommandIdempotency(
+        tx,
+        input.ownerId,
+        `team-return:${input.teamId}:${payload.originAskId}`,
+      );
+      const prior = await tx
+        .selectFrom("personalTeamRequests")
+        .selectAll()
+        .where("teamDeploymentId", "=", input.teamId)
+        .where("requestId", "=", input.requestId)
+        .executeTakeFirstOrThrow();
+      if (prior.returnAdmission) return { events: [] };
+      const run = await tx
+        .selectFrom("runs")
+        .select(["threadId", "requestedBy"])
+        .where("id", "=", payload.resumeRunId)
+        .executeTakeFirst();
+      if (!run || run.requestedBy !== input.ownerId)
+        throw new OpensteerError({
+          code: "conflict",
+          reason: teamReturnUndeliverableReason,
+          message: "Team return is undeliverable.",
+        });
+      const queued = await enqueueThreadInputInTransaction(tx, {
+        threadId: run.threadId,
+        requestedBy: input.ownerId,
+        policy: "queue",
+        source: {
+          kind: "team-member",
+          teamId: input.teamId,
+          requestId: input.requestId,
+          resumeRunId: payload.resumeRunId,
+        },
+        idempotencyKey: `team-return:${input.teamId}:${payload.originAskId}`,
+        content: [
+          {
+            type: "text",
+            text: `Team ask outcome: ${payload.outcome}. Source thread: ${JSON.stringify(mirror.source)}. Ask: ${payload.originAskId}. This is a private return; no answer auto-posts.`,
+          },
+          ...(payload.bodyMarkdown ? [{ type: "text" as const, text: payload.bodyMarkdown }] : []),
+          ...payload.attachments.map((file) => ({
+            type: "text" as const,
+            text: `Attached team file: ${JSON.stringify(file.filename)} (fileId: ${file.id}; use team_read to download).`,
+          })),
+        ],
+      });
+      if (queued.input.state === "cancelled")
+        throw new OpensteerError({
+          code: "conflict",
+          reason: teamReturnUndeliverableReason,
+          message: "Team return is undeliverable.",
+        });
+      await tx
+        .updateTable("personalTeamRequests")
+        .set({
+          localTaskId: run.threadId,
+          localInputId: queued.message.id,
+          runId: queued.run?.id ?? null,
+          returnAdmission: "admitted",
+          publicationState: "accepted",
+          terminalState: "done",
+          finishedAt: new Date(),
+        })
+        .where("teamDeploymentId", "=", input.teamId)
+        .where("requestId", "=", input.requestId)
+        .execute();
+      return { events: queued.events };
+    });
+  } catch (error) {
+    if (!(error instanceof OpensteerError) || error.reason !== teamReturnUndeliverableReason)
+      throw error;
+    await database
+      .updateTable("personalTeamRequests")
+      .set({
+        returnAdmission: "undeliverable",
+        publicationState: "blocked",
+        terminalState: "done",
+        finishedAt: new Date(),
+        blockedReason: "The asking task is Done, unavailable or its delegation is closed.",
+      })
+      .where("teamDeploymentId", "=", input.teamId)
+      .where("requestId", "=", input.requestId)
+      .where("returnAdmission", "is", null)
+      .execute();
+    return { events: [] };
+  }
 }

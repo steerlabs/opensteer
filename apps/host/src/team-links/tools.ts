@@ -62,7 +62,16 @@ export class TeamRunTools {
       requestId: request.requestId,
     });
     if (result.kind !== "context") throw linkError("bad_request");
-    return result.context;
+    return {
+      ...result.context,
+      asker:
+        request.kind === "ask" && request.localDecision === "approve"
+          ? {
+              displayName: request.presentation!.asker.displayName,
+              actor: request.presentation!.asker.actor,
+            }
+          : null,
+    };
   }
 
   async channels(

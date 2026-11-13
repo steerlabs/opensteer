@@ -27,6 +27,7 @@ import {
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { createDatabase } from "@opensteer/database";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
+import { admitTeamReturn } from "@opensteer/database/task-admission-store";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
 import {
   TeamAgentRequestSchema,
@@ -329,6 +330,9 @@ export async function createTwoHostLinkFixture() {
     return result;
   };
   const admission: TaskAdmissionPort = {
+    async admitTeamReturn(input) {
+      await admitTeamReturn(database, { ...input, ownerId: personal.userId });
+    },
     async admitTeamRequest(input) {
       return database.transaction().execute(async (tx) => {
         const key = `team:${input.origin.teamId}:${input.requestId}`;

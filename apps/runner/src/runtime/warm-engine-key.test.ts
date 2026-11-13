@@ -63,6 +63,18 @@ it("invalidates warm reuse for tool inventory, instructions, roots and discovere
   };
   expect(warmEngineKey(team)).toBe(warmEngineKey(privateTurn));
   expect(warmEngineKey(team)).toBe(before);
+  expect(
+    warmEngineKey({
+      ...team,
+      context: {
+        ...team.context,
+        teamTurnContext: {
+          ...teamTurnContext,
+          asker: { displayName: "Maya", actor: "agent" as const },
+        },
+      },
+    }),
+  ).toBe(before);
   context.agentTools.token = "rotated";
   expect(warmEngineKey(input)).toBe(before);
   for (const change of [
