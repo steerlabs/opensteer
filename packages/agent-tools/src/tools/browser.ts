@@ -86,7 +86,7 @@ export const use_saved_login = defineAgentTool({
   name: "use_saved_login",
   title: "Use a saved login",
   description:
-    'Use a login saved in Opensteer Passwords, with the person\'s approval. ready gives a loginRef you fill without seeing the values: in a browser, focus each field and call fillLogin(loginRef, "username" | "password" | "code"); in a genuine Mac or phone app, type {loginRef, field}. Then submit and check the account. The reference lasts about an hour, so call again to sign back in after a site logs you out. Websites fill only in the hosting computer\'s browser. When Passwords lacks the login, is not set up or is off, Opensteer shows the person how to fix it under your reply and tells you once a login is saved; that status is true only when returned, so if the person says it is fixed or asks again, call again first. Run-only.',
+    'Use a login saved in Opensteer Passwords, with the person\'s approval. ready gives a loginRef you fill without seeing the values: in a browser, focus each field and call fillLogin(loginRef, "username" | "password" | "code"); in a genuine Mac or phone app, type {loginRef, field}. Then submit and check the account. The reference lasts about an hour, so call again to sign back in after a site logs you out. When Passwords lacks the login, is not set up or is off, Opensteer shows the person how to fix it under your reply and tells you once a login is saved; that status is true only when returned, so if the person says it is fixed or asks again, call again first. Run-only.',
   input: z
     .strictObject({
       reason: ReasonInputSchema,
