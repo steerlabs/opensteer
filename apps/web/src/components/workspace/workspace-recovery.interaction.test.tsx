@@ -723,6 +723,7 @@ describe("a desktop that is its own computer in another Mac's Opensteer", () => 
         return status;
       }),
       onLocalExecutionStatusChanged: () => () => undefined,
+      bindDeviceSession: vi.fn(async () => "already-bound" as const),
       onPersonalTabCommand: (listener: typeof deliver) => {
         deliver = listener;
         return () => {
