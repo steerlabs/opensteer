@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "ios": {
+    "qualification": {
+      "platform": "ios",
+      "runtimeId": "phone-ios",
+      "storageInstanceId": "44444444-4444-4444-8444-444444444444",
+      "browser": true,
+      "sharedControl": true,
+      "agentActions": true,
+      "cdpBoundary": false,
+      "fileStaging": true
+    },
+    "browser": {
+      "runtimeId": "phone-ios",
+      "wireVersion": 2,
+      "localProfileStorage": {
+        "storageInstanceId": "44444444-4444-4444-8444-444444444444",
+        "engine": "wkwebview"
+      },
+      "navigationVersion": 1,
+      "navigationAttributionVersion": 1,
+      "tabRestoreVersion": 1,
+      "popupFollowVersion": 1,
+      "sharedControl": 1,
+      "targetControl": 1,
+      "rasterDemand": 1,
+      "basicInput": 1,
+      "surfaceState": 1,
+      "agentActions": 1,
+      "fileStaging": true
+    }
+  },
+  "android": {
+    "qualification": {
+      "platform": "android",
+      "runtimeId": "phone-android",
+      "storageInstanceId": "55555555-5555-4555-8555-555555555555",
+      "browser": true,
+      "sharedControl": true,
+      "agentActions": false,
+      "cdpBoundary": true,
+      "fileStaging": true
+    },
+    "browser": {
+      "runtimeId": "phone-android",
+      "wireVersion": 2,
+      "localProfileStorage": {
+        "storageInstanceId": "55555555-5555-4555-8555-555555555555",
+        "engine": "android-webview"
+      },
+      "navigationVersion": 1,
+      "navigationAttributionVersion": 1,
+      "tabRestoreVersion": 1,
+      "popupFollowVersion": 1,
+      "sharedControl": 1,
+      "targetControl": 1,
+      "rasterDemand": 1,
+      "basicInput": 1,
+      "surfaceState": 1,
+      "cdpBoundary": 1,
+      "fileStaging": true
+    }
+  }
+}

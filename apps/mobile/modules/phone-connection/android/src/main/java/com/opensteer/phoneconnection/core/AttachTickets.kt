@@ -90,7 +90,7 @@ class AttachTickets(val runtimeId: String, private val ledger: ReplayLedger, pri
             val signer = Ed25519Signer().apply { init(false, key); update(bytes, 0, bytes.size) }
             Wire.requireThat(signer.verifySignature(signature), "invalid-ticket")
             val claims = Wire.parse(Wire.decode(Wire.decode64(parts[1])), 16384)
-            claims.only("creationOrigin", "access", "audience", "passkeys", "navigationVersion", "wireVersion", "operationExpiresAt", "remainingBudgetMs", "initialNavigation", "navigationAttributionVersion", "editingVersion", "basicInput", "surfaceState", "clipboard", "workspaceTabRestoreVersion", "popupFollowVersion", "initialSurfaceId", "dormantSurfaceIds", "expiresAt", "identity", "issuedAt", "nonce", "runtimeId", "sessionId", "subject", "viewport")
+            claims.only("creationOrigin", "access", "audience", "passkeys", "navigationVersion", "wireVersion", "operationExpiresAt", "remainingBudgetMs", "initialNavigation", "navigationAttributionVersion", "editingVersion", "basicInput", "surfaceState", "clipboard", "tabRestoreVersion", "popupFollowVersion", "initialSurfaceId", "expiresAt", "identity", "issuedAt", "nonce", "runtimeId", "sessionId", "subject", "viewport")
             Wire.requireThat(claims.text("audience") == "opensteer-browser-runtime" && claims.number("wireVersion") == 2L)
             Wire.requireThat(claims.text("creationOrigin") in setOf("agent", "person"))
             Wire.requireThat(claims.text("access") in setOf("read", "read-write"))
@@ -106,21 +106,13 @@ class AttachTickets(val runtimeId: String, private val ledger: ReplayLedger, pri
         }
         private fun validateClaims(claims: JsonObject) {
             Wire.requireThat(Regex("bsn_[0-9a-fA-F-]{36}").matches(claims.text("sessionId")))
-            for (key in listOf("passkeys", "navigationVersion", "navigationAttributionVersion", "basicInput", "surfaceState", "workspaceTabRestoreVersion", "popupFollowVersion")) {
+            for (key in listOf("passkeys", "navigationVersion", "navigationAttributionVersion", "basicInput", "surfaceState", "tabRestoreVersion", "popupFollowVersion")) {
                 if (claims.containsKey(key)) Wire.requireThat(claims.number(key) == 1L)
             }
             if (claims.containsKey("editingVersion")) claims.number("editingVersion", 1, 2)
             if (claims["editingVersion"] == JsonPrimitive(2)) Wire.requireThat(claims["clipboard"] in setOf(JsonPrimitive(true), JsonPrimitive(false)))
             else Wire.requireThat(!claims.containsKey("clipboard"))
             if (claims.containsKey("initialSurfaceId")) claims.text("initialSurfaceId", max = 512)
-            if (claims.containsKey("dormantSurfaceIds")) {
-                val surfaces = claims["dormantSurfaceIds"] as? JsonArray ?: throw Refused("invalid-ticket")
-                Wire.requireThat(surfaces.size <= 63)
-                for (surface in surfaces) {
-                    val value = surface as? JsonPrimitive ?: throw Refused("invalid-ticket")
-                    Wire.requireThat(value.isString && value.content.length in 1..512)
-                }
-            }
             if (claims.containsKey("viewport")) {
                 val viewport = claims.obj("viewport")
                 viewport.only("width", "height")

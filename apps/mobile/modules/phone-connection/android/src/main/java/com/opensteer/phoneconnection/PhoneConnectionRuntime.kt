@@ -324,18 +324,10 @@ class PhoneConnectionRuntime private constructor(context: Context) {
     @Synchronized private fun current(attempt: Long) = foreground && generation == attempt && identity?.text("state") in setOf("pending", "enrolled")
     private fun descriptor(): JsonObject {
         val current = identity ?: throw Refused("not-prepared")
-        val qualified = endpoint!!.qualification(current.text("deploymentId"), current.text("runnerId"))
-        Wire.requireThat(qualified["browser"] == JsonPrimitive(true) && qualified["sharedControl"] == JsonPrimitive(true) &&
-            qualified["platform"] == JsonPrimitive("android"), "unsupported")
-        val browser = linkedMapOf<String, JsonElement>("runtimeId" to qualified.getValue("runtimeId"), "wireVersion" to JsonPrimitive(2),
-            "localProfileStorage" to Wire.fields("storageInstanceId" to qualified.getValue("storageInstanceId"), "engine" to JsonPrimitive("android-webview")))
-        for (key in listOf("navigationVersion", "navigationAttributionVersion", "workspaceTabRestoreVersion", "popupFollowVersion", "targetControl", "rasterDemand", "basicInput", "surfaceState")) browser[key] = JsonPrimitive(1)
-        if (qualified["sharedControl"] == JsonPrimitive(true)) browser["sharedControl"] = JsonPrimitive(1)
-        if (qualified["cdpBoundary"] == JsonPrimitive(true)) browser["cdpBoundary"] = JsonPrimitive(1)
-        if (qualified["fileStaging"] == JsonPrimitive(true)) browser["fileStaging"] = JsonPrimitive(true)
+        val browser = BrowserDescriptor.from(endpoint!!.qualification(current.text("deploymentId"), current.text("runnerId")))
         return Wire.fields("bootId" to JsonPrimitive(bootId), "runnerId" to current.getValue("runnerId"), "runnerKind" to JsonPrimitive("local"),
             "runtimeVersion" to JsonPrimitive(version), "name" to current.getValue("name"), "capabilities" to JsonArray(emptyList()),
-            "device" to Wire.fields("app" to JsonPrimitive("opensteer"), "form" to JsonPrimitive("phone"), "platform" to JsonPrimitive("android")), "modules" to Wire.fields("browser" to JsonObject(browser)))
+            "device" to Wire.fields("app" to JsonPrimitive("opensteer"), "form" to JsonPrimitive("phone"), "platform" to JsonPrimitive("android")), "modules" to Wire.fields("browser" to browser))
     }
     private fun primaryFrame(socket: WebSocket, frame: JsonObject, attempt: Long) {
         refusal(frame)

@@ -57,7 +57,7 @@ public enum PhoneBrowserTickets {
 
   private static func validateClaims(_ claims: [String: Any]) throws {
     let required = ["creationOrigin", "access", "audience", "wireVersion", "operationExpiresAt", "remainingBudgetMs", "expiresAt", "identity", "issuedAt", "nonce", "runtimeId", "sessionId", "subject"]
-    let optional = ["passkeys", "navigationVersion", "initialNavigation", "navigationAttributionVersion", "editingVersion", "basicInput", "surfaceState", "clipboard", "workspaceTabRestoreVersion", "popupFollowVersion", "initialSurfaceId", "dormantSurfaceIds", "viewport"]
+    let optional = ["passkeys", "navigationVersion", "initialNavigation", "navigationAttributionVersion", "editingVersion", "basicInput", "surfaceState", "clipboard", "tabRestoreVersion", "popupFollowVersion", "initialSurfaceId", "viewport"]
     guard Set(required).isSubset(of: Set(claims.keys)), Set(claims.keys).isSubset(of: Set(required + optional)),
       ["read", "read-write"].contains(claims["access"] as? String ?? ""),
       claims["audience"] as? String == "opensteer-browser-runtime" else { throw PhoneBrowserFailure.forbidden }
@@ -70,7 +70,7 @@ public enum PhoneBrowserTickets {
       guard value.utf16.count <= 255, name != "nonce" || value.utf16.count >= 16 else { throw PhoneBrowserFailure.forbidden }
     }
     guard PhoneBrowserValidation.identifier(try WireField.string(claims, "sessionId"), prefix: "bsn") else { throw PhoneBrowserFailure.forbidden }
-    for name in ["passkeys", "navigationVersion", "navigationAttributionVersion", "basicInput", "surfaceState", "workspaceTabRestoreVersion", "popupFollowVersion"] where claims[name] != nil {
+    for name in ["passkeys", "navigationVersion", "navigationAttributionVersion", "basicInput", "surfaceState", "tabRestoreVersion", "popupFollowVersion"] where claims[name] != nil {
       _ = try WireField.int(claims, name, range: 1...1)
     }
     if claims["editingVersion"] != nil { _ = try WireField.int(claims, "editingVersion", range: 1...2) }
@@ -97,10 +97,6 @@ public enum PhoneBrowserTickets {
       if navigation["navigationId"] != nil, !PhoneBrowserValidation.uuid(navigation["navigationId"]) { throw PhoneBrowserFailure.forbidden }
     } else if claims["initialNavigation"] != nil { throw PhoneBrowserFailure.forbidden }
     if claims["initialSurfaceId"] != nil, !PhoneBrowserValidation.surface(claims["initialSurfaceId"]) { throw PhoneBrowserFailure.forbidden }
-    if claims["dormantSurfaceIds"] != nil {
-      guard let surfaces = claims["dormantSurfaceIds"] as? [String], surfaces.count <= 63,
-        surfaces.allSatisfy({ PhoneBrowserValidation.surface($0) }) else { throw PhoneBrowserFailure.forbidden }
-    }
     if claims["viewport"] != nil {
       let viewport = try WireField.object(claims, "viewport")
       let width = try WireField.int(viewport, "width", range: 1...7680)

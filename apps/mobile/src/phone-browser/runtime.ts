@@ -41,7 +41,8 @@ export function startPhoneBrowserRuntime(platform: PhoneBrowserPlatform): void {
       return;
     }
     if (next === identity && foreground) return;
-    identity = next;
+    // Nothing runs in the background, so coming back starts it again, even after a failed start.
+    identity = foreground ? next : "";
     const revision = ++generation;
     const old = manager ?? initializing;
     initializing = null;

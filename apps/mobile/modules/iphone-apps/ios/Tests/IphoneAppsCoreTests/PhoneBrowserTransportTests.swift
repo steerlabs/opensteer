@@ -112,11 +112,21 @@ final class PhoneBrowserTransportTests: XCTestCase {
           now: (test["now"] as? NSNumber ?? fixture["now"] as! NSNumber).int64Value)
       }
       if test["accepted"] as! Bool {
-        XCTAssertEqual(try operation().claims as NSDictionary, fixture["claims"] as! NSDictionary, test["name"] as! String)
+        XCTAssertEqual(try operation().claims as NSDictionary, (test["claims"] ?? fixture["claims"]) as! NSDictionary, test["name"] as! String)
       } else {
         XCTAssertThrowsError(try operation(), test["name"] as! String)
       }
     }
+  }
+
+  func testAdmitsTheDescriptorJavaScriptAdvertises() throws {
+    let ios = try vector("phone-descriptors")["ios"] as! [String: Any]
+    let browser = ios["browser"] as! [String: Any]
+    let qualification = ios["qualification"] as! [String: Any]
+    XCTAssertEqual(try PhoneBrowserValidation.descriptor(browser, qualification: qualification),
+      (browser["localProfileStorage"] as! [String: Any])["storageInstanceId"] as? String)
+    XCTAssertThrowsError(try PhoneBrowserValidation.descriptor(browser.merging(["unknown": 1]) { _, next in next }, qualification: qualification))
+    XCTAssertThrowsError(try PhoneBrowserValidation.descriptor(browser, qualification: qualification.merging(["agentActions": false]) { _, next in next }))
   }
 
   func testSignedInvalidClaimsAndNoncanonicalSignatureAreRefused() throws {
