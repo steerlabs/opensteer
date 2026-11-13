@@ -397,7 +397,7 @@ export class MobileTeams {
   async addToPhone(teamId: string, interactive = true): Promise<void> {
     const team = this.team(teamId);
     if (team === null) throw new TeamAccessError("This team is no longer on this computer.");
-    if (this.#signedIn(teamId)) return;
+    if (!interactive && this.#signedIn(teamId)) return;
     this.#setState(teamId, "loading", null);
     try {
       const outcome = await this.#entry.authorize({

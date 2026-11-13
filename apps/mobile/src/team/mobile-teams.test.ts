@@ -327,6 +327,8 @@ describe("the teams a phone lists", () => {
 describe("adding a computer's team to the phone", () => {
   it.each([
     "member",
+    "refused-member",
+    "refused-no-account",
     "no-account",
     "old-team",
     "not-member",
@@ -380,7 +382,7 @@ describe("adding a computer's team to the phone", () => {
             },
           };
         },
-        accountAuthorizationLease: async () => (mode === "no-account" ? null : lease),
+        accountAuthorizationLease: async () => (mode.endsWith("no-account") ? null : lease),
         authorizationHeader: async () => null,
         resumeTeamSignIn: async () => {},
         isTeamSignInSuppressed: () => false,
@@ -392,7 +394,7 @@ describe("adding a computer's team to the phone", () => {
       subscribe: () => () => {},
       getSnapshot: () => ({
         selection: { deploymentId: mockDeploymentId, hostClient: null },
-        teams: [],
+        teams: mode.startsWith("refused-") ? [{ connection, signedIn: true }] : [],
       }),
     } as unknown as MobileClient;
     const teams = new MobileTeams({
@@ -432,8 +434,12 @@ describe("adding a computer's team to the phone", () => {
         await expect(adding).rejects.toThrow();
         expect(teams.team(teamId)?.state).toBe(mode === "not-member" ? "join" : "offline");
       } else await adding;
-      expect(browser).toHaveBeenCalledTimes(mode === "no-account" || mode === "old-team" ? 1 : 0);
-      expect(exchange).toHaveBeenCalledTimes(mode === "no-account" || mode === "old-team" ? 0 : 1);
+      expect(browser).toHaveBeenCalledTimes(
+        mode.endsWith("no-account") || mode === "old-team" ? 1 : 0,
+      );
+      expect(exchange).toHaveBeenCalledTimes(
+        mode.endsWith("no-account") || mode === "old-team" ? 0 : 1,
+      );
     } finally {
       teams.dispose();
     }

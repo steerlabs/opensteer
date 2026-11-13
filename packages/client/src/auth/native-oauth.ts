@@ -1036,24 +1036,34 @@ export class NativeOAuthManager implements HostCredentialProvider {
    * Refreshes Host-native OAuth only after the Host returned an actual 401. A team that takes the
    * Account's identity is entered again without a browser once refreshing cannot help.
    */
-  async recoverHostAuthorization(connection: DeploymentConnection): Promise<boolean> {
+  async recoverHostAuthorization(
+    connection: DeploymentConnection,
+    rejectedAuthorization?: string | null,
+  ): Promise<boolean> {
     const outcome = await this.#teamEntry().authorize({
       deploymentId: connection.authority.document.deploymentId,
       origin: connection.authority.document.canonicalOrigin,
       mode: "passive",
-      recover: true,
+      recover: { authorization: rejectedAuthorization },
     });
     if (outcome.status === "suppressed" || outcome.status === "sign-in-required") return false;
     assertTeamEntryOutcome(outcome);
     return outcome.status === "authorized";
   }
 
-  async refreshTeamAuthorization(connection: DeploymentConnection): Promise<string | null> {
+  async refreshTeamAuthorization(
+    connection: DeploymentConnection,
+    rejectedAuthorization?: string | null,
+  ): Promise<string | null> {
     this.#assertStorageReady();
     const credential = this.#hostCredential(connection.authority.document.deploymentId);
-    return credential && credentialMatchesConnection(credential, connection)
-      ? this.#refreshHostCredential(connection, credential)
-      : null;
+    if (!credential || !credentialMatchesConnection(credential, connection)) return null;
+    if (
+      rejectedAuthorization !== undefined &&
+      rejectedAuthorization !== `Bearer ${credential.accessToken}`
+    )
+      return this.authorizationHeader(connection);
+    return this.#refreshHostCredential(connection, credential);
   }
 
   async #refreshHostCredential(
@@ -1085,6 +1095,17 @@ export class NativeOAuthManager implements HostCredentialProvider {
         // As for the Account: an unanswered refresh keeps the credential.
         if (error instanceof OAuthGrantRefusedError) {
           entry.assertCurrent();
+          await this.#mutateCredentials(async () => {
+            entry.assertCurrent();
+            if (this.#hostCredential(deploymentId)?.refreshToken !== credential.refreshToken)
+              return;
+            this.#pendingHostWrites.delete(deploymentId);
+            this.#hostCredentials = this.#hostCredentials.filter(
+              (host) => host.deploymentId !== deploymentId,
+            );
+            this.#adoptHostCredentials((await this.#store.clearHost(deploymentId)).hosts);
+          });
+          this.#emitHost(connection);
           return null;
         }
         throw new ClientOperationError(hostUnreachableDetail, "transient", { cause: error });

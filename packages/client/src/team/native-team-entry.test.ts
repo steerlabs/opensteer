@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { TeamEntryRefusedError, type HostOAuthState } from "../auth/native-oauth.js";
 import {
   DeploymentCatalogStore,
+  deploymentConnectionFromVerifiedEndpoints,
   type DeploymentConnection,
   type VerifiedHostEndpoint,
 } from "../connections/deployment-catalog.js";
@@ -115,6 +116,31 @@ function setup() {
 }
 
 describe("NativeTeamEntry", () => {
+  it.each([false, true])(
+    "coalesces passive then interactive entry (authorized: %s)",
+    async (authorized) => {
+      const { entry, oauth, verify } = setup();
+      const verified = team();
+      const gate = Promise.withResolvers<VerifiedHostEndpoint>();
+      verify.mockReturnValueOnce(gate.promise);
+      oauth.authorizationHeader.mockResolvedValue(authorized ? "Bearer held" : null);
+      oauth.accountAuthorizationLease = async () => null as never;
+      oauth.beginHostSignIn.mockResolvedValue({ status: "signed-in" } as HostOAuthState);
+      const input = {
+        deploymentId: verified.discovery.deploymentId,
+        origin: verified.discovery.canonicalOrigin,
+      };
+      const passive = entry.authorize({ ...input, mode: "passive" });
+      const interactive = entry.authorize({ ...input, mode: "interactive" });
+      expect(verify).toHaveBeenCalledOnce();
+      gate.resolve(verified);
+      await passive;
+      await expect(interactive).resolves.toMatchObject({ status: "authorized" });
+      expect(oauth.beginHostSignIn).toHaveBeenCalledTimes(authorized ? 0 : 1);
+      expect(verify).toHaveBeenCalledTimes(authorized ? 1 : 2);
+    },
+  );
+
   it("does not remove a newer entry when an obsolete exchange refuses", async () => {
     const { entry, oauth, catalog } = setup();
     const verified = team();
@@ -123,7 +149,15 @@ describe("NativeTeamEntry", () => {
     const first = entry.ensureAuthorized(verified);
     const rejected = expect(first).rejects.toThrow();
     await vi.waitFor(() => expect(oauth.exchangeTeamSession).toHaveBeenCalledOnce());
-    await entry.ensureAuthorized(verified);
+    await catalog.upsert(
+      deploymentConnectionFromVerifiedEndpoints({
+        accountAccess: null,
+        endpoints: [verified],
+        kind: "team",
+        name: "Updated",
+        source: { kind: "manual" },
+      }),
+    );
     pending.reject(new Error("obsolete refusal"));
     await rejected;
     expect((await catalog.load()).deployments).toHaveLength(1);

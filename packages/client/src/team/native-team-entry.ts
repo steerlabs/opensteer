@@ -118,6 +118,12 @@ export type TeamEntryOutcome =
       readonly error?: unknown;
     };
 
+// Entry owners on the same OAuth manager share browser and refresh work.
+const entryAttempts = new WeakMap<
+  TeamEntryOAuth,
+  Map<DeploymentId, { mode: "passive" | "interactive"; promise: Promise<TeamEntryOutcome> }>
+>();
+
 export class NativeTeamEntry {
   readonly #oauth: TeamEntryOAuth;
   readonly #catalog: TeamEntryCatalog;
@@ -136,16 +142,47 @@ export class NativeTeamEntry {
     this.#verify = options.verify;
   }
 
-  async authorize(input: {
+  authorize(input: {
     readonly deploymentId: DeploymentId;
     readonly origin: string;
     readonly mode: "passive" | "interactive";
     readonly invite?: TeamInviteSecret | null;
-    readonly recover?: boolean;
+    readonly recover?: { readonly authorization: string | null | undefined };
   }): Promise<TeamEntryOutcome> {
-    const entry = this.#oauth.teamEntryLease(input.deploymentId, true);
+    let attempts = entryAttempts.get(this.#oauth);
+    if (!attempts) entryAttempts.set(this.#oauth, (attempts = new Map()));
+    const held = attempts.get(input.deploymentId);
+    if (held) {
+      if (input.mode === "passive" || held.mode === "interactive") return held.promise;
+      return held.promise.then((outcome) =>
+        outcome.status === "authorized" && !input.invite ? outcome : this.authorize(input),
+      );
+    }
+    const promise = this.#authorize(input).finally(() => {
+      if (attempts.get(input.deploymentId)?.promise === promise)
+        attempts.delete(input.deploymentId);
+    });
+    attempts.set(input.deploymentId, { mode: input.mode, promise });
+    return promise;
+  }
+
+  async #authorize(input: Parameters<NativeTeamEntry["authorize"]>[0]): Promise<TeamEntryOutcome> {
+    const entry = this.#oauth.teamEntryLease(input.deploymentId, input.mode === "interactive");
     let createdRevision: number | undefined;
     try {
+      if (input.recover) {
+        const held = await this.#held(input.deploymentId);
+        entry.assertCurrent();
+        if (held) {
+          if (this.#oauth.isTeamSignInSuppressed(held)) return { status: "suppressed" };
+          const refreshed = await this.#oauth.refreshTeamAuthorization(
+            held,
+            input.recover.authorization,
+          );
+          entry.assertCurrent();
+          if (refreshed && !input.invite) return { status: "authorized", admitted: false };
+        }
+      }
       const verified = await this.#verify(input.origin);
       entry.assertCurrent();
       if (verified.discovery.deploymentId !== input.deploymentId)
@@ -175,9 +212,7 @@ export class NativeTeamEntry {
       if (input.mode === "interactive") await this.#oauth.resumeTeamSignIn(connection, entry);
       else if (this.#oauth.isTeamSignInSuppressed(connection)) return { status: "suppressed" };
       entry.assertCurrent();
-      const existing = input.recover
-        ? await this.#oauth.refreshTeamAuthorization(connection)
-        : await this.#oauth.authorizationHeader(connection);
+      const existing = await this.#oauth.authorizationHeader(connection);
       entry.assertCurrent();
       if (existing && !input.invite) return { status: "authorized", admitted: false };
       if (

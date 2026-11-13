@@ -25,6 +25,83 @@ import { NativeOAuthManager, TeamIdentityGrantUnsupportedError } from "./native-
 import type { ProtectedAuthStore } from "./protected-auth-store.js";
 
 describe("NativeOAuthManager", () => {
+  it("keeps the browser callback valid when passive recovery joins sign-in", async () => {
+    const f = await managerFixture();
+    await f.manager.initialize();
+    const signingIn = f.manager.signInTeam(f.connection);
+    await vi.waitFor(() => expect(f.opened).toHaveLength(1), { timeout: 1000 });
+    const concurrentSignIn = f.manager.signInTeam(f.connection);
+    const recovering = f.manager.recoverHostAuthorization(f.connection);
+    await f.manager.handleCallback(
+      callbackUrl("host", new URL(f.opened[0]!).searchParams.get("state")!, "code"),
+    );
+    await expect(signingIn).resolves.toMatchObject({ status: "signed-in" });
+    await expect(recovering).resolves.toBe(true);
+    await expect(concurrentSignIn).resolves.toMatchObject({ status: "signed-in" });
+    expect(f.opened).toHaveLength(1);
+    expect(f.revocations).toEqual([]);
+    f.manager.dispose();
+  });
+
+  it("keeps rotation when passive startup joins refresh and recovery skips discovery", async () => {
+    const gate = deferred<void>();
+    const requests: string[] = [];
+    const f = await managerFixture({
+      refreshGate: gate.promise,
+      tokenLifetimeSeconds: 61,
+      route: (url) => {
+        requests.push(url);
+        return undefined;
+      },
+    });
+    await f.manager.initialize();
+    await f.manager.beginHostSignIn(f.connection);
+    await f.manager.handleCallback(
+      callbackUrl("host", new URL(f.opened[0]!).searchParams.get("state")!, "code"),
+    );
+    f.clock.now = new Date("2026-08-11T19:00:02.000Z");
+    const refreshing = f.manager.authorizationHeader(f.connection);
+    await vi.waitFor(() => expect(f.refreshes).toHaveLength(1), { timeout: 1000 });
+    const startup = f.manager.signInTeam(f.connection, undefined, false);
+    gate.resolve();
+    await expect(refreshing).resolves.toMatch(/^Bearer host-access-2/u);
+    await expect(startup).resolves.toMatchObject({ status: "signed-in" });
+    expect(f.revocations).toEqual([]);
+    requests.length = 0;
+    vi.mocked(teamEntryModule.verifyTeamEndpoint).mockClear();
+    await expect(f.manager.recoverHostAuthorization(f.connection)).resolves.toBe(true);
+    expect(requests).toHaveLength(1);
+    expect(teamEntryModule.verifyTeamEndpoint).not.toHaveBeenCalled();
+    expect(requests[0]).toMatch(/token$/u);
+    f.manager.dispose();
+  });
+
+  it("forces exactly one refresh after rejection without discovery, and reuses a concurrent rotation", async () => {
+    const requests: string[] = [];
+    const f = await managerFixture({
+      route: (url) => {
+        requests.push(url);
+        return undefined;
+      },
+    });
+    await f.manager.initialize();
+    await f.manager.beginHostSignIn(f.connection);
+    await f.manager.handleCallback(
+      callbackUrl("host", new URL(f.opened[0]!).searchParams.get("state")!, "code"),
+    );
+    const rejected = await f.manager.authorizationHeader(f.connection);
+    requests.length = 0;
+    vi.mocked(teamEntryModule.verifyTeamEndpoint).mockClear();
+    await expect(f.manager.recoverHostAuthorization(f.connection, rejected)).resolves.toBe(true);
+    expect(requests).toHaveLength(1);
+    expect(teamEntryModule.verifyTeamEndpoint).not.toHaveBeenCalled();
+    expect(f.refreshes).toHaveLength(1);
+    await expect(f.manager.recoverHostAuthorization(f.connection, rejected)).resolves.toBe(true);
+    expect(requests).toHaveLength(1);
+    expect(teamEntryModule.verifyTeamEndpoint).not.toHaveBeenCalled();
+    f.manager.dispose();
+  });
+
   it("invalidates team readers synchronously before failed identity cleanup", async () => {
     const f = await managerFixture();
     await f.manager.initialize();
@@ -601,7 +678,7 @@ describe("NativeOAuthManager", () => {
     );
   });
 
-  it("reports refused refresh without exchanging or publishing logout", async () => {
+  it("drops a definitively refused credential without suppressing sign-in", async () => {
     const fixture = await managerFixture({ refreshStatuses: [400], tokenLifetimeSeconds: 61 });
     await fixture.manager.initialize();
     await fixture.manager.beginHostSignIn(fixture.connection);
@@ -612,7 +689,8 @@ describe("NativeOAuthManager", () => {
     fixture.clock.now = new Date("2026-08-11T19:00:02.000Z");
 
     await expect(fixture.manager.authorizationHeader(fixture.connection)).resolves.toBeNull();
-    expect((await fixture.store.load()).hosts).toHaveLength(1);
+    expect((await fixture.store.load()).hosts).toHaveLength(0);
+    expect(fixture.manager.hostCredentialState(fixture.connection).status).toBe("signed-out");
   });
 
   it("binds a consumed Host callback to the exact requested authority", async () => {
@@ -1228,13 +1306,11 @@ describe("NativeOAuthManager team session exchange", () => {
     await f.manager.handleCallback(
       callbackUrl("host", new URL(f.opened.at(-1)!).searchParams.get("state")!, "code"),
     );
-    const listener = vi.fn();
-    f.manager.subscribeHostCredentials(listener);
     await expect(f.manager.recoverHostAuthorization(f.connection)).rejects.toMatchObject({
       classification: "transient",
     });
-    expect(listener).not.toHaveBeenCalled();
-    expect((await f.store.load()).hosts).toHaveLength(1);
+    expect(f.manager.hostCredentialState(f.connection).status).toBe("signed-out");
+    expect((await f.store.load()).hosts).toHaveLength(0);
   });
 
   it("refreshes and replays a rejected Account token before local expiry", async () => {

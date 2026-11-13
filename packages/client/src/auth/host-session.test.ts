@@ -27,6 +27,18 @@ import {
 } from "./native-oauth.js";
 
 describe("HostSession", () => {
+  it("recovers the rejected authorization without resolving and refreshing the attachment again", async () => {
+    const f = hostSessionFixture(connectionOfKind("team"));
+    f.oauth.recoverHostAuthorization.mockResolvedValue(true);
+    await expect(f.sessions.recoverUnauthorized(f.attachment)).resolves.toBe("recovered");
+    expect(f.resolveAttachment).not.toHaveBeenCalled();
+    expect(f.oauth.recoverHostAuthorization).toHaveBeenCalledWith(
+      f.attachment.connection,
+      f.attachment.resolved.authorization,
+    );
+    f.sessions.dispose();
+  });
+
   it("preserves a team's membership refusal through pinned recovery", async () => {
     const f = hostSessionFixture(connectionOfKind("team"));
     const refusal = new TeamEntryRefusedError("not-a-member", "Ask for an invite");
@@ -486,11 +498,12 @@ function hostSessionFixture(
   };
   const accountCredentialRejected = vi.fn(async () => undefined);
   const clearDeploymentSession = vi.fn(async (_deploymentId: string) => undefined);
+  const resolveAttachment = vi.fn(async () => selection.current);
   const sessions = new HostSession({
     ...options,
     accountCredentialRejected,
     attachment: {
-      current: async () => selection.current,
+      current: resolveAttachment,
       currentKey: () => selection.current.resolved.key,
     },
     clearDeploymentSession,
@@ -500,6 +513,7 @@ function hostSessionFixture(
   });
   return {
     accountCredentialRejected,
+    resolveAttachment,
     attachment: selection.current,
     clearDeploymentSession,
     exchange,
