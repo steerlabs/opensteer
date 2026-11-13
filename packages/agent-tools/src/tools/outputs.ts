@@ -299,7 +299,8 @@ export const BrowserProfileListOutputSchema = z.object({
 });
 /** A held or pending Request's result also carries what the Host says about it. */
 const heldGuidance = { guidance: z.string().optional() };
-const [copied, chromePending, chromeDeclined, chromeUnavailable] = ChromeCookiesResultSchema.options;
+const [copied, chromePending, chromeDeclined, chromeUnavailable] =
+  ChromeCookiesResultSchema.options;
 export const CopyChromeCookiesOutputSchema = z.discriminatedUnion("status", [
   copied.extend(heldGuidance),
   chromePending.extend(heldGuidance),
