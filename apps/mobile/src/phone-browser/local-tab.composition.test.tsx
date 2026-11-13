@@ -12,6 +12,7 @@ import type {
   HostedBrowserBootstrap,
 } from "@opensteer/protocol/browser";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import type { PagePresence } from "../ui/page-presence.js";
 import { LocalPhoneTab } from "./local-tab.js";
 import type { PhoneBrowserManager, PhonePresentationAdmission } from "./manager.js";
 import { setup, uuid } from "./manager.test-support.js";
@@ -71,8 +72,13 @@ class Socket implements WebSocketClient {
   }
 }
 
+const front: PagePresence = { interactive: true, shown: true, held: true };
+const underSheet: PagePresence = { interactive: false, shown: true, held: true };
+const offScreen: PagePresence = { interactive: false, shown: false, held: true };
+const background: PagePresence = { interactive: false, shown: false, held: false };
+
 test.each([false, true])(
-  "Host admission precedes local presentation across return (foreground restore: %s)",
+  "Host admission precedes local presentation, which outlives covers and is renewed after the app leaves (foreground restore: %s)",
   async (restore) => {
     Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
     const f = await setup();
@@ -207,10 +213,10 @@ test.each([false, true])(
     const root = createRoot(container);
     const present = vi.spyOn(f.manager, "presentTab");
     const hide = vi.spyOn(f.manager, "hideTab");
-    const render = (active: boolean, liveSession = !restore) =>
+    const render = (presence: PagePresence, liveSession = !restore) =>
       root.render(
         <LocalPhoneTab
-          active={active}
+          presence={presence}
           available
           deploymentId={f.deploymentId}
           hostClient={client}
@@ -239,7 +245,7 @@ test.each([false, true])(
       realtime.open();
       publish();
       realtime.receive({ type: "host.synchronized", sequence: "1" });
-      await act(async () => render(true));
+      await act(async () => render(front));
       expect(container.textContent).toBe("Opening…");
       expect(present).not.toHaveBeenCalled();
       expect(f.presentation().state).toBe("retained");
@@ -287,7 +293,18 @@ test.each([false, true])(
         expect(dispatch).toHaveBeenCalledTimes(1);
         expect(f.presentation("agent-tab").state).toBe("live-covered");
       }
-      await act(async () => render(false, true));
+      // A sheet over the page, then a screen over it: the page, its viewer and its slot stay.
+      for (const covered of [underSheet, offScreen, front]) {
+        await act(async () => render(covered, true));
+        expect(container.textContent).toBe("Presented");
+        expect(f.presentation().state).toBe("live-visible");
+      }
+      expect(viewers()).toHaveLength(1);
+      expect(viewers()[0]!.socket.readyState).toBe(1);
+      expect(present).toHaveBeenCalledTimes(1);
+      expect(hide).not.toHaveBeenCalled();
+      if (restore) expect(dispatch).toHaveBeenCalledTimes(1);
+      await act(async () => render(background, true));
       await vi.waitFor(
         () =>
           expect(f.presentation().state, "The hidden local tab never returned to sleep").toBe(
@@ -296,7 +313,7 @@ test.each([false, true])(
         { timeout: 1_000 },
       );
       act(publish);
-      await act(async () => render(true, true));
+      await act(async () => render(front, true));
       expect(container.textContent).toBe("Opening…");
       expect(present).toHaveBeenCalledTimes(1);
       expect(viewers()).toHaveLength(2);

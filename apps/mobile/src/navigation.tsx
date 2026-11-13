@@ -630,7 +630,7 @@ const RootStack = createNativeStackNavigator({
     // has no back chevron of its own, so each one carries the way out it needs.
     Add: {
       screenOptions: {
-        presentation: screenPresentations.AddDeployment,
+        presentation: screenPresentations.Add,
       },
       screens: {
         AddDeployment: {

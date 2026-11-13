@@ -116,6 +116,15 @@ continuous playback does not prove still-picture delivery. Remote editing follow
 Expo Go lacks native modules and the OAuth scheme. A JavaScript update cannot add native
 capabilities. Keep one native scene lifecycle so links, navigation and drafts have one owner.
 
+## Navigation bars
+
+From iOS 27 on iPhone (26 on iPad) a tap on the navigation bar scrolls the screen's content to its
+top. UIKit cannot see a tap a React Native Pressable takes, so a React control in a bar does both
+unless it stands in [`BarControl`](../apps/mobile/src/ui/bar-control.ios.tsx); native bar items need
+nothing. Its guard is react-native-screens' Gamma code, which our
+[patch](../patches/react-native-screens@4.30.0.patch) builds alone: carry that over on every
+react-native-screens bump, or creating a guard fails and the screen does not render.
+
 ## Shared page geometry
 
 A page's size is shared with agents and other viewers. Folding a preview, moving controls or

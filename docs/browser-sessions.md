@@ -145,6 +145,10 @@ leaves it pending, never silently streaming. Overlays are acknowledged before co
 fullscreen and get no other permission.
 A phone's own page follows the same rule; its tabs sleep until shown, so only its own control socket
 is admitted to a sleeping tab, and the screen wakes the tab after that snapshot.
+A mobile page keeps its admitted viewer for as long as its screen is on the stack in the foreground:
+a sheet over it takes only input, and a screen over it also takes pictures, so showing it again asks
+nothing of the Host. A held control viewer counts as viewing, so its tab stays awake until the
+person leaves that screen or the app.
 
 The surface ledger alone owns geometry. Keep agent emulation on a long-lived platform channel:
 Chromium drops it on navigation after the issuing channel detaches. Electron frame callbacks cannot

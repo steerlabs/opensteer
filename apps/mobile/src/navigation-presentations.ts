@@ -30,6 +30,8 @@ export const screenPresentations = {
   Computer: "modal",
   DeploymentSwitcher: "modal",
   AgentAuthorization: "modal",
+  // The Add group's presentation, which each of its screens takes.
+  Add: "modal",
   AddDeployment: "modal",
   AddServer: "modal",
   AddPersonal: "modal",
@@ -38,9 +40,56 @@ export const screenPresentations = {
 const presentations: Readonly<Record<string, NativeStackNavigationOptions["presentation"]>> =
   screenPresentations;
 
-function presented(name: string): boolean {
-  const presentation = presentations[name];
-  return presentation !== undefined && presentation !== "card";
+type StackState = {
+  readonly index: number;
+  readonly routes: readonly { readonly key: string; readonly name: string }[];
+};
+
+const modalKinds = new Set<NativeStackNavigationOptions["presentation"]>([
+  "modal",
+  "transparentModal",
+  "containedModal",
+  "containedTransparentModal",
+  "fullScreenModal",
+  "formSheet",
+  "pageSheet",
+]);
+
+/**
+ * Whether the screen of the route `key` is still drawn: everything over it is a
+ * sheet it shows beneath. A screen with no presentation of its own over a modal
+ * is presented as a modal too, as the native stack does. iOS presents a modal as
+ * a card over the screen it came from; Android's covers it.
+ */
+export function routeShown(state: StackState, key: string, os: string): boolean {
+  let inModal = false;
+  const effective = state.routes.map((route) => {
+    const own = presentations[route.name];
+    if (modalKinds.has(own) || (inModal && own === undefined)) {
+      inModal = true;
+      return own ?? "modal";
+    }
+    return own;
+  });
+  for (let index = state.index; index >= 0; index--) {
+    const route = state.routes[index];
+    if (route === undefined) continue;
+    if (route.key === key) return true;
+    const presentation = effective[index];
+    const seeThrough =
+      presentation === "formSheet" ||
+      presentation === "transparentModal" ||
+      presentation === "containedTransparentModal" ||
+      ((presentation === "modal" || presentation === "pageSheet") && os === "ios");
+    if (!seeThrough) return false;
+  }
+  return false;
+}
+
+/** How many screens are over the route `key` on its stack, or null when it is not on it. */
+export function routesAbove(state: StackState, key: string): number | null {
+  const index = state.routes.findIndex((route) => route.key === key);
+  return index < 0 ? null : Math.max(0, state.index - index);
 }
 
 /**
@@ -52,7 +101,9 @@ export function presentedFrom(state: {
   readonly index: number;
   readonly routes: readonly { readonly name: string }[];
 }): number {
-  return state.routes.findIndex((route, index) => index <= state.index && presented(route.name));
+  return state.routes.findIndex(
+    (route, index) => index <= state.index && modalKinds.has(presentations[route.name]),
+  );
 }
 
 /** Sheets and modals leave the screen beneath them in charge of the surrounding layout. */

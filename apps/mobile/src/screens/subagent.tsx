@@ -63,6 +63,7 @@ import {
 import { SubagentStop } from "../thread/subagent-stop.js";
 import { SubagentSteps } from "../thread/transcript.js";
 import { QuestionCard } from "../thread/waiting-questions.js";
+import { BarControl } from "../ui/bar-control.js";
 import { useAppForeground } from "../ui/foreground.js";
 import { useLiquidGlass } from "../ui/glass.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
@@ -316,7 +317,11 @@ function AttachedSubagent(props: {
               </AppText>
             ),
       headerRight: () =>
-        shownHop === null ? null : <SiblingHop noun={noun} onHop={hop} siblings={shownHop} />,
+        shownHop === null ? null : (
+          <BarControl>
+            <SiblingHop noun={noun} onHop={hop} siblings={shownHop} />
+          </BarControl>
+        ),
       // What the back control of a screen opened from this one says.
       title: title ?? noun,
     });

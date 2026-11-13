@@ -44,6 +44,8 @@ const native = vi.hoisted(() => ({
   }[],
   generation: -1,
   cleared: null as null | ((event: { nativeEvent: { generation: number } }) => void),
+  /** The view's word that it can draw again, after leaving its window or the foreground. */
+  shown: null as null | ((event: { nativeEvent: { generation: number } }) => void),
   renders: 0,
 }));
 vi.mock("../ui/pane.js", () => ({ usePaneGeometry: () => native.geometry }));
@@ -54,10 +56,12 @@ vi.mock("../computers/phone-display-native.js", async () => {
       props: {
         accessibilityLabel?: string;
         onCleared?: (event: { nativeEvent: { generation: number } }) => void;
+        onShown?: (event: { nativeEvent: { generation: number } }) => void;
       },
       ref,
     ) => {
       native.cleared = props.onCleared ?? null;
+      native.shown = props.onShown ?? null;
       native.renders++;
       React.useImperativeHandle(ref, () => ({
         clear: async (generation: number) => {
@@ -146,6 +150,7 @@ afterEach(() => {
   native.presented = [];
   native.generation = -1;
   native.cleared = null;
+  native.shown = null;
   native.renders = 0;
   document.body.replaceChildren();
   vi.useRealTimers();
@@ -423,6 +428,51 @@ describe.each(["image", "picture"] as const)(
           { ...tapPoint, action, button: "left", clickCount: 1, type: "input.pointer" },
         ]),
       );
+    });
+
+    it("says so when the client refuses another browser target, rather than failing the screen", () => {
+      const { container, hostClient, render } = setup();
+      vi.mocked(hostClient.retainBrowserViewer).mockImplementationOnce(() => {
+        throw new Error("Too many browser capture targets are retained.");
+      });
+      render("synchronized");
+      expect(container.textContent).toContain("Too many browser capture targets are retained.");
+      const retry = container.querySelector("button");
+      expect(retry).not.toBeNull();
+      act(() => retry?.click());
+      expect(container.textContent).not.toContain("Too many browser capture targets");
+    });
+
+    it("keeps its viewer and last picture off screen, taking no input, and shows it again on the same viewer", async () => {
+      const { container, decode, emit, hostClient, render, send, viewerRelease } = setup();
+      const shown = () => container.querySelector('img[alt="A page, example.com"]') !== null;
+      render("synchronized", true, { held: true });
+      emit();
+      await decode();
+      expect(shown()).toBe(true);
+      expect(hostClient.retainBrowserViewer).toHaveBeenCalledWith(sessionId, surfaceId, {
+        picture: false,
+      });
+      const holds = vi.mocked(hostClient.retainBrowserViewer).mock.calls.length;
+
+      render("synchronized", false, { held: true });
+      expect(viewerRelease).toHaveBeenCalledTimes(1);
+      expect(shown()).toBe(true);
+      const { event, gesture } = touch(200, 300);
+      act(() => {
+        native.gestures?.onPanResponderGrant?.(event, gesture);
+        native.gestures?.onPanResponderRelease?.(event, gesture);
+      });
+      expect(send).not.toHaveBeenCalled();
+
+      render("synchronized", true, { held: true });
+      expect(shown()).toBe(true);
+      expect(hostClient.retainBrowserViewer).toHaveBeenCalledTimes(holds + 1);
+      expect(viewerRelease).toHaveBeenCalledTimes(1);
+
+      render("synchronized", false);
+      expect(shown()).toBe(false);
+      expect(viewerRelease).toHaveBeenCalledTimes(3);
     });
 
     it("drops a touch begun before the picture changed size, rather than aiming it at the old geometry", async () => {
@@ -817,6 +867,46 @@ describe("native browser picture presenter", () => {
         {} as PanResponderGestureState,
       ),
     ).toBe(false);
+  });
+
+  it("draws its picture again when the view can show again, returning its receipt only once", async () => {
+    const { container, decode, emit, hostClient, render } = setup();
+    render("synchronized", true, { held: true });
+    emit();
+    await decode();
+    // A screen over the page takes the view out of its window, which drops its pixels.
+    render("synchronized", false, { held: true });
+    act(() => native.cleared?.({ nativeEvent: { generation: native.generation } }));
+    expect(container.querySelector("img")).toBeNull();
+    render("synchronized", true, { held: true });
+    expect(native.presented).toHaveLength(0);
+    act(() => native.shown?.({ nativeEvent: { generation: native.generation } }));
+    expect(native.presented.map(({ bytes }) => [...bytes])).toEqual([[0xff, 0xd8, 0xff]]);
+    await decode();
+    expect(container.querySelector("img")).not.toBeNull();
+    // Showing again with the picture still drawn draws nothing more.
+    act(() => native.shown?.({ nativeEvent: { generation: native.generation } }));
+    expect(native.presented).toHaveLength(0);
+    expect(hostClient.acceptBrowserWatchFrame).toHaveBeenCalledExactlyOnceWith(
+      sessionId,
+      tokenA,
+      surfaceId,
+    );
+    expect(hostClient.browserFrames.claim).toHaveBeenCalledOnce();
+  });
+
+  it("draws its picture again when the view drops it and can show again in one batch", async () => {
+    const { container, decode, emit, render } = setup();
+    render("synchronized", true, { held: true });
+    emit();
+    await decode();
+    act(() => {
+      native.cleared?.({ nativeEvent: { generation: native.generation } });
+      native.shown?.({ nativeEvent: { generation: native.generation } });
+    });
+    expect(native.presented.map(({ bytes }) => [...bytes])).toEqual([[0xff, 0xd8, 0xff]]);
+    await decode();
+    expect(container.querySelector("img")).not.toBeNull();
   });
 
   it("does not restore a cleared picture when its presented promise arrives late", async () => {

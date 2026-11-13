@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { expect, test, vi } from "vitest";
 import type { HostClient } from "@opensteer/client/host";
 import type { PhoneBrowserManager, PhonePresentationAdmission } from "./manager.js";
+import type { PagePresence } from "../ui/page-presence.js";
 import { LocalPhoneTab } from "./local-tab.js";
 
 vi.mock("../browser/browser-stream.js", () => ({
@@ -63,9 +64,13 @@ test("a returning local screen holds its intent across Host activation and never
   } as unknown as HostClient;
   const container = document.createElement("div");
   const root = createRoot(container);
-  const render = (available: boolean, liveSession = false) => (
+  const render = (
+    available: boolean,
+    liveSession = false,
+    presence: PagePresence = { interactive: true, shown: true, held: true },
+  ) => (
     <LocalPhoneTab
-      active
+      presence={presence}
       available={available}
       deploymentId="deployment"
       hostClient={hostClient}
@@ -89,6 +94,18 @@ test("a returning local screen holds its intent across Host activation and never
     await act(async () => root.render(render(true, true)));
     expect(releasedAdmissions).toBe(0);
     expect(viewers).toBe(1);
+    // Off screen the page gives up the visible slot's claim, wakes nothing, and keeps its viewer and page.
+    await act(async () =>
+      root.render(render(true, false, { interactive: false, shown: false, held: true })),
+    );
+    expect(intents).toBe(0);
+    expect(activations).toBe(1);
+    expect(viewers).toBe(1);
+    expect(container.textContent).toBe("Presented readmitted");
+    await act(async () => root.render(render(true, true)));
+    expect(intents).toBe(1);
+    expect(releasedAdmissions).toBe(0);
+    expect(container.textContent).toBe("Presented readmitted");
   } finally {
     act(() => root.unmount());
   }

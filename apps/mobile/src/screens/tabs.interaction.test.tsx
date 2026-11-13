@@ -410,6 +410,7 @@ vi.mock("@react-navigation/native", async () => {
     navigation: never;
     routeKey?: string;
   }>({ focused: false, navigation: null as never }));
+  const homeState = { index: 0, routes: [{ key: "home", name: "Home", params: {} }] };
   const action = (type: string) => (name?: string, params?: object) => ({
     payload: { name, params },
     type,
@@ -433,11 +434,17 @@ vi.mock("@react-navigation/native", async () => {
     useNavigationState: (select: (state: object) => unknown) => {
       const { navigation } = React.useContext(ScreenContext);
       const held = navigation as { getState?: () => object } | null;
-      return select(
-        held?.getState?.() ?? { index: 0, routes: [{ key: "home", name: "Home", params: {} }] },
+      return select(held?.getState?.() ?? homeState);
+    },
+    useRoute: () => {
+      const { navigation, routeKey } = React.useContext(ScreenContext);
+      const held = navigation as {
+        getState?: () => { routes: readonly { key: string }[] };
+      } | null;
+      return (
+        held?.getState?.().routes.find((route) => route.key === routeKey) ?? homeState.routes[0]
       );
     },
-    useRoute: () => ({ key: React.useContext(ScreenContext).routeKey }),
   };
 });
 vi.mock("expo", async () => {
