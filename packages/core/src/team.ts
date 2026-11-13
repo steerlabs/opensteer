@@ -129,6 +129,7 @@ export type TeamAgentReturnOutcome = z.infer<typeof TeamAgentReturnOutcomeSchema
 export const TeamAgentReturnPayloadSchema = z.strictObject({
   author: TeamAskerSchema.optional(),
   originAskId: TeamAgentRequestIdSchema,
+  triggerClientMessageId: z.uuid().optional(),
   resumeRunId: RunIdSchema,
   outcome: TeamAgentReturnOutcomeSchema,
   bodyMarkdown: TeamRequestTextSchema.nullable(),

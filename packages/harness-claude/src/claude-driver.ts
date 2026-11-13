@@ -75,6 +75,7 @@ import {
   EventBufferOverflowError,
   harnessTurnPreamble,
   harnessInputHeader,
+  escapeOpensteerPromptMarkers,
   meetsMinimumVersion,
   nativeImageBase64Budget,
   prepareNativeImage,
@@ -3448,7 +3449,9 @@ function contentToPrompt(
       code: "bad_request",
       message: "Claude report context cannot contain native image input",
     });
-  return claudeReadsHeader(input) ? harnessInputHeader(input, projected.body) : projected.body;
+  return claudeReadsHeader(input)
+    ? harnessInputHeader(input, projected.body)
+    : escapeOpensteerPromptMarkers(projected.body);
 }
 
 /**

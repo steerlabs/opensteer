@@ -9,7 +9,6 @@ import {
   quietlyMoved,
   quietSeenScope,
   sameTaskListSource,
-  taskAttention,
   taskList,
   taskTime,
   type DoneTaskList,
@@ -98,6 +97,7 @@ export interface SidebarActions {
   readonly close: () => void;
   /** Home: a new task's composer. */
   readonly onHome: () => void;
+  readonly onOpenNeedsYou: (deploymentId: string) => void;
   /** The Done page: every task in Done, newest Done first. */
   readonly onOpenDone: (deploymentId: string) => void;
   /** The sheet naming the tasks just moved to Done for the reader. */
@@ -354,19 +354,8 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   const reviewAsk = teamAsks.find((entry) => needsYouEntryKey(entry) === reviewAskKey);
   const openNeedsYou = useCallback(() => {
     if (hostClient === null || deploymentId === null) return;
-    const entry = hostClient.getSnapshot().needsYou?.entries[0];
-    if (entry?.kind === "team-ask") {
-      setReviewAskKey(needsYouEntryKey(entry));
-      return;
-    }
-    if (model === null) return;
-    const first = model.list.working.find((task) => task.tone === "needs-you");
-    if (first === undefined) return;
-    const ask = taskAttention(hostClient.getSnapshot()).find(
-      ({ threadId }) => threadId === first.threadId,
-    );
-    actions.onOpenTask(deploymentId, first.threadId, ask?.requestId);
-  }, [actions, deploymentId, hostClient, model]);
+    actions.onOpenNeedsYou(deploymentId);
+  }, [actions, deploymentId, hostClient]);
   // The Thread in front has its draft in front of the reader already.
   const unsentReply = (threadId: string): boolean =>
     threadId !== selectedRowId && replies.has(threadId);

@@ -115,43 +115,60 @@ export class TeamLinkEndpoint {
         () => write(frame),
       );
     };
+    let delivery = Promise.resolve();
+    const delivered = new Set<TeamAgentRequestId>();
+    const inFlightReturns = new Set<TeamAgentRequestId>();
     const subscriber = {
       ownerUserId: link.ownerUserId,
       online: false,
-      deliver: async () => {
-        if (!hello || !active) return;
-        const revision = access.revision;
-        const pending = await requests.pending(linkId);
-        const batches: (typeof pending)[number][][] = [];
-        let batch: (typeof pending)[number][] = [];
-        for (const request of pending) {
-          const next = [...batch, request];
-          if (
-            batch.length &&
-            (batch.length === 32 ||
-              Buffer.byteLength(JSON.stringify({ type: "requests", requests: next })) >
-                teamLinkMaxFrameBytes)
-          ) {
-            batches.push(batch);
-            batch = [];
-          }
-          batch.push(request);
-        }
-        if (batch.length) batches.push(batch);
-        for (const batch of batches) {
-          await access.handoff(
-            revision,
-            async () => {
-              const current = await requests.pending(linkId);
-              return batch.every((item) =>
-                current.some((entry) => entry.request.id === item.request.id),
+      deliver: () => {
+        const next = delivery
+          .catch(() => undefined)
+          .then(async () => {
+            if (!hello || !active) return;
+            const revision = access.revision;
+            const pending = await requests.pending(linkId, [...delivered]);
+            const batches: (typeof pending)[number][][] = [];
+            let batch: (typeof pending)[number][] = [];
+            for (const request of pending) {
+              const next = [...batch, request];
+              if (
+                batch.length &&
+                (batch.length === 32 ||
+                  Buffer.byteLength(JSON.stringify({ type: "requests", requests: next })) >
+                    teamLinkMaxFrameBytes)
+              ) {
+                batches.push(batch);
+                batch = [];
+              }
+              batch.push(request);
+            }
+            if (batch.length) batches.push(batch);
+            for (const batch of batches) {
+              await access.handoff(
+                revision,
+                async () => {
+                  const current = await requests.pending(linkId, [...delivered]);
+                  return batch.every((item) =>
+                    current.some((entry) => entry.request.id === item.request.id),
+                  );
+                },
+                () => {
+                  write({ type: "requests", requests: batch });
+                  for (const item of batch) {
+                    delivered.add(item.request.id);
+                    if (item.request.kind === "return") inFlightReturns.add(item.request.id);
+                  }
+                },
               );
-            },
-            () => write({ type: "requests", requests: batch }),
-          );
-        }
+            }
+          });
+        delivery = next;
+        return next;
       },
       cancel: (requestId: TeamAgentRequestId) => {
+        delivered.delete(requestId);
+        inFlightReturns.delete(requestId);
         void send({ type: "cancel", requestId }).catch(() => close());
       },
     };
@@ -215,9 +232,15 @@ export class TeamLinkEndpoint {
             await send({ type: "pong" });
           } else {
             try {
-              await this.call(linkId, frame, (result) =>
-                write({ type: "result", id: frame.id, result }),
-              );
+              const result = await this.call(linkId, frame, (result) => {
+                write({ type: "result", id: frame.id, result });
+                return result;
+              });
+              if (result.kind === "accepted" && result.request.kind === "return") {
+                delivered.delete(result.request.id);
+                inFlightReturns.delete(result.request.id);
+                if (!inFlightReturns.size) await subscriber.deliver();
+              }
             } catch (error) {
               await send({
                 type: "error",

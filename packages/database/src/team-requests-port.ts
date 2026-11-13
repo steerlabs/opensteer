@@ -30,7 +30,10 @@ export interface TeamRequestStorePort {
       readonly request: TeamAgentRequest | null;
     }[]
   >;
-  pending(linkId: TeamLinkId): Promise<readonly TeamRunRequest[]>;
+  pending(
+    linkId: TeamLinkId,
+    excludeRequestIds?: readonly TeamAgentRequestId[],
+  ): Promise<readonly TeamRunRequest[]>;
   /** First accept fixes expiry at seven days; repeated accepts never extend it. */
   accept(
     linkId: TeamLinkId,

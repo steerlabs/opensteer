@@ -69,6 +69,7 @@ export async function createTeamAskReturn(
       actor: "agent" as const,
     },
     originAskId: ask.id,
+    triggerClientMessageId: trigger.clientMessageId,
     resumeRunId: trigger.callerRunId,
     outcome,
     bodyMarkdown: answer?.bodyMarkdown ?? null,

@@ -20,7 +20,7 @@ import {
   type PersonalTeamRequestMirror,
   type PersonalTeamRequest,
 } from "@opensteer/protocol";
-import { sql, type Kysely, type Selectable } from "kysely";
+import { sql, type Insertable, type Kysely, type Selectable } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
@@ -38,6 +38,43 @@ export class PersonalTeamRequestsStore {
     this.database = database;
     this.#onPublished = onPublished;
     this.#onDeliveryEvent = onDeliveryEvent;
+  }
+
+  post(teamId: DeploymentId, clientMessageId: string) {
+    return this.database
+      .selectFrom("personalTeamPosts")
+      .selectAll()
+      .where("teamDeploymentId", "=", teamId)
+      .where("clientMessageId", "=", clientMessageId)
+      .executeTakeFirst();
+  }
+
+  async recordPost(input: Insertable<DatabaseSchema["personalTeamPosts"]>) {
+    await this.database
+      .insertInto("personalTeamPosts")
+      .values(input)
+      .onConflict((conflict) =>
+        conflict.columns(["teamDeploymentId", "clientMessageId"]).doNothing(),
+      )
+      .execute();
+    const saved = (await this.post(input.teamDeploymentId, input.clientMessageId))!;
+    if (
+      saved.localLinkId !== input.localLinkId ||
+      saved.remoteLinkId !== input.remoteLinkId ||
+      saved.runId !== input.runId ||
+      saved.channelId !== input.channelId ||
+      saved.threadRootId !== input.threadRootId ||
+      (saved.messageId !== null && input.messageId !== null && saved.messageId !== input.messageId)
+    )
+      throw new OpensteerError({ code: "conflict", message: "Team post identity changed." });
+    if (input.messageId !== null)
+      await this.database
+        .updateTable("personalTeamPosts")
+        .set({ messageId: input.messageId, targetUserIds: input.targetUserIds })
+        .where("teamDeploymentId", "=", input.teamDeploymentId)
+        .where("clientMessageId", "=", input.clientMessageId)
+        .where("messageId", "is", null)
+        .execute();
   }
 
   async mirror(teamId: DeploymentId, requestId: TeamAgentRequestId) {
@@ -269,18 +306,20 @@ export class PersonalTeamRequestsStore {
     runId: RunId | null,
     state: NonNullable<PersonalTeamRequest["terminalState"]>,
   ): Promise<void> {
-    await this.database
-      .updateTable("personalTeamRequests")
-      .set({
-        runId,
-        terminalState: state,
-        finishedAt: new Date().toISOString(),
-        publicationState: sql`case when local_task_id is null then 'blocked' else publication_state end`,
-      })
-      .where("teamDeploymentId", "=", teamId)
-      .where("requestId", "=", requestId)
-      .where("terminalState", "is", null)
-      .execute();
+    await withPersonalTransaction(this.database, async (tx) => {
+      await tx
+        .updateTable("personalTeamRequests")
+        .set({
+          runId,
+          terminalState: state,
+          finishedAt: new Date().toISOString(),
+          publicationState: sql`case when local_task_id is null then 'blocked' else publication_state end`,
+        })
+        .where("teamDeploymentId", "=", teamId)
+        .where("requestId", "=", requestId)
+        .where("terminalState", "is", null)
+        .execute();
+    });
   }
 
   async freeze(

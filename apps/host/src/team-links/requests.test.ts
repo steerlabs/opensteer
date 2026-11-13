@@ -45,6 +45,8 @@ function fixture() {
   let offline = false;
   const calls: TeamLinkCallInput[] = [];
   const requests = {
+    post: vi.fn(async () => undefined),
+    recordPost: vi.fn(),
     async forRun() {
       return structuredClone(row);
     },
@@ -127,7 +129,9 @@ function fixture() {
     cancelTeamRequest: vi.fn(),
   };
   const publisher = new PersonalTeamRequests({
-    links: {} as PersonalTeamLinksStore,
+    links: {
+      get: async () => ({ id: "local", remoteLinkId: createId("teamLink"), state: "active" }),
+    } as unknown as PersonalTeamLinksStore,
     requests: requests as unknown as PersonalTeamRequestsStore,
     admission,
     runs: { outcome: async () => outcome },
@@ -138,7 +142,9 @@ function fixture() {
     requests,
     publisher,
     tools: new TeamRunTools(
-      {} as PersonalTeamLinksStore,
+      {
+        get: async () => ({ id: "local", remoteLinkId: createId("teamLink"), state: "active" }),
+      } as unknown as PersonalTeamLinksStore,
       requests as unknown as PersonalTeamRequestsStore,
       () => ({ call }),
     ),

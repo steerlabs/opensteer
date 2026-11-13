@@ -95,7 +95,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       () => request,
     );
   }
-  async pending(linkId: TeamLinkId) {
+  async pending(linkId: TeamLinkId, excludeRequestIds: readonly TeamAgentRequestId[] = []) {
     await this.expire();
     const revision = this.access.revision;
     const result = await this.access.database.transaction().execute(async (t) => {
@@ -107,7 +107,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         .executeTakeFirst();
       requireTeam(link);
       await this.access.link(t, { kind: "agent", userId: link.ownerUserId }, linkId);
-      const rows = await t
+      let pending = t
         .selectFrom("teamAgentRequests")
         .select("id")
         .where("linkId", "=", linkId)
@@ -115,8 +115,9 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         .orderBy(sql`case when state in ('awaiting_approval','queued') then 0 else 1 end`)
         .orderBy("createdAt")
         .orderBy("id")
-        .limit(200)
-        .execute();
+        .limit(200);
+      if (excludeRequestIds.length) pending = pending.where("id", "not in", excludeRequestIds);
+      const rows = await pending.execute();
       const requests = [];
       for (const { id } of rows) {
         const row = await this.#owned(t, linkId, id);

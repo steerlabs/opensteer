@@ -1,6 +1,8 @@
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   createId,
+  OpensteerError,
   MessageIdSchema,
   TeamMessageIdSchema,
   TeamTurnContextSchema,
@@ -351,6 +353,26 @@ describeStore("personal team consent and returns", (it) => {
     expect((await f.store.mirror(f.origin.teamId, second.request.id))?.taskId).toBeNull();
   });
 
+  async function recordPost(
+    f: Awaited<ReturnType<typeof consentFixture>>,
+    returned: {
+      returnPayload: NonNullable<ReturnType<typeof TeamRunRequestSchema.parse>["returnPayload"]>;
+    },
+  ) {
+    const link = (await f.publisher.options.links.get(f.origin.teamId))!;
+    await f.store.recordPost({
+      teamDeploymentId: f.origin.teamId,
+      clientMessageId: returned.returnPayload.triggerClientMessageId!,
+      localLinkId: link.id,
+      remoteLinkId: link.remoteLinkId!,
+      runId: returned.returnPayload.resumeRunId,
+      messageId: f.frame.request.triggerMessageId,
+      channelId: f.origin.channelId,
+      threadRootId: f.origin.threadRootId,
+      targetUserIds: [returned.returnPayload.author!.teamUserId],
+    });
+  }
+
   for (const mode of ["team", "private-background"] as const)
     it(`admits a return once privately behind active work, before accepting (${mode})`, async ({
       storeFixture,
@@ -394,6 +416,7 @@ describeStore("personal team consent and returns", (it) => {
         },
         presentation: null,
         returnPayload: {
+          triggerClientMessageId: crypto.randomUUID().toString(),
           originAskId: createId("teamAgentRequest"),
           resumeRunId: asking.receipt.runId!,
           outcome: "answered" as const,
@@ -402,6 +425,7 @@ describeStore("personal team consent and returns", (it) => {
           author: { ...f.frame.presentation!.asker, actor: "agent" as const },
         },
       };
+      await recordPost(f, returned);
       f.offline(true);
       await expect(f.publisher.deliver(f.origin.teamId, returned)).rejects.toMatchObject({
         code: "runner_offline",
@@ -469,6 +493,218 @@ describeStore("personal team consent and returns", (it) => {
       ).toHaveLength(1);
     });
 
+  for (const ending of ["unmatched", "cancelled", "leaving", "revoked"] as const)
+    it(`rejects a return after ${ending} before admission`, async ({ storeFixture }) => {
+      const f = await consentFixture(storeFixture);
+      const asking = await f.ask();
+      const returned = {
+        ...f.frame,
+        request: {
+          ...f.frame.request,
+          id: createId("teamAgentRequest"),
+          kind: "return" as const,
+          state: "queued" as const,
+          consentExpiresAt: null,
+        },
+        presentation: null,
+        returnPayload: {
+          triggerClientMessageId: crypto.randomUUID().toString(),
+          originAskId: createId("teamAgentRequest"),
+          resumeRunId: asking.receipt.runId!,
+          outcome: "answered" as const,
+          bodyMarkdown: "Injected private input",
+          attachments: [],
+          author: { ...f.frame.presentation!.asker, actor: "agent" as const },
+        },
+      };
+      if (ending !== "unmatched") await recordPost(f, returned);
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const admission = f.publisher.options.admission;
+      const original = admission.admitTeamReturn.bind(admission);
+      vi.spyOn(admission, "admitTeamReturn").mockImplementation(async (input) => {
+        entered.resolve();
+        await withTimeout(release.promise, 5000, {
+          timeoutError: () => new Error("Return admission was not released"),
+        });
+        return original(input);
+      });
+      const delivery = f.publisher.deliver(f.origin.teamId, returned);
+      try {
+        await withTimeout(entered.promise, 5000, {
+          timeoutError: () => new Error("Return never reached admission"),
+        });
+        if (ending === "cancelled") await f.publisher.cancel(f.origin.teamId, returned.request.id);
+        else if (ending !== "unmatched") {
+          await f.publisher.options.links.state(f.origin.teamId, ending);
+        }
+      } finally {
+        release.resolve();
+      }
+      await delivery;
+      expect(await f.store.mirror(f.origin.teamId, returned.request.id)).toMatchObject({
+        taskId: null,
+        returnAdmission: null,
+        terminalState: ending === "cancelled" ? "cancelled" : null,
+      });
+      expect(f.calls.filter((call) => call.type === "accept")).toHaveLength(0);
+    });
+
+  it("waits for the exact local post receipt and rejects forged return bindings", async ({
+    storeFixture,
+  }) => {
+    const f = await consentFixture(storeFixture);
+    const asking = await f.ask();
+    const returned = {
+      ...f.frame,
+      request: {
+        ...f.frame.request,
+        id: createId("teamAgentRequest"),
+        kind: "return" as const,
+        state: "queued" as const,
+        consentExpiresAt: null,
+      },
+      presentation: null,
+      returnPayload: {
+        triggerClientMessageId: crypto.randomUUID().toString(),
+        originAskId: createId("teamAgentRequest"),
+        resumeRunId: asking.receipt.runId!,
+        outcome: "answered" as const,
+        bodyMarkdown: "Valid answer",
+        attachments: [],
+        author: { ...f.frame.presentation!.asker, actor: "agent" as const },
+      },
+    };
+    await f.publisher.deliver(f.origin.teamId, returned);
+    expect(
+      (await f.store.mirror(f.origin.teamId, returned.request.id))?.returnAdmission,
+    ).toBeNull();
+    await recordPost(f, returned);
+    for (const field of [
+      "runId",
+      "remoteLinkId",
+      "localLinkId",
+      "messageId",
+      "channelId",
+      "threadRootId",
+      "targetUserIds",
+    ] as const) {
+      const post = await f.database
+        .selectFrom("personalTeamPosts")
+        .selectAll()
+        .executeTakeFirstOrThrow();
+      const wrong =
+        field === "targetUserIds"
+          ? [createId("user")]
+          : field === "messageId" || field === "threadRootId"
+            ? "999"
+            : crypto.randomUUID();
+      await f.database
+        .updateTable("personalTeamPosts")
+        .set({ [field]: wrong })
+        .execute();
+      await f.publisher.resumeReturns(f.origin.teamId);
+      expect(
+        (await f.store.mirror(f.origin.teamId, returned.request.id))?.returnAdmission,
+        field,
+      ).toBeNull();
+      await f.database.updateTable("personalTeamPosts").set(post).execute();
+    }
+    await f.publisher.resumeReturns(f.origin.teamId);
+    expect(await f.store.mirror(f.origin.teamId, returned.request.id)).toMatchObject({
+      returnAdmission: "admitted",
+      taskId: asking.receipt.taskId,
+    });
+    expect(f.returnPersistedBeforeAck()).toBe(true);
+    const duplicate = {
+      ...returned,
+      request: { ...returned.request, id: createId("teamAgentRequest") },
+      returnPayload: { ...returned.returnPayload, originAskId: createId("teamAgentRequest") },
+    };
+    await f.publisher.deliver(f.origin.teamId, duplicate);
+    expect(
+      (await f.store.mirror(f.origin.teamId, duplicate.request.id))?.returnAdmission,
+    ).toBeNull();
+  });
+
+  it("recovers the local post receipt after a lost acknowledgement before admitting an early return", async ({
+    storeFixture,
+  }) => {
+    const f = await consentFixture(storeFixture);
+    const asking = await f.ask();
+    const target = f.frame.presentation!.asker;
+    const returned = {
+      ...f.frame,
+      request: {
+        ...f.frame.request,
+        id: createId("teamAgentRequest"),
+        kind: "return" as const,
+        state: "queued" as const,
+        consentExpiresAt: null,
+      },
+      presentation: null,
+      returnPayload: {
+        triggerClientMessageId: crypto.randomUUID().toString(),
+        originAskId: createId("teamAgentRequest"),
+        resumeRunId: asking.receipt.runId!,
+        outcome: "answered" as const,
+        bodyMarkdown: "Early answer",
+        attachments: [],
+        author: { ...target, actor: "agent" as const },
+      },
+    };
+    let lost = false;
+    const rpc = () => ({
+      call: async (input: TeamLinkCallInput): Promise<TeamLinkResult> => {
+        if (input.type === "read")
+          return { kind: "read", result: { source: f.source } } as TeamLinkResult;
+        if (input.type === "receipt") return { kind: "receipt", messageId: f.source.messageId };
+        if (input.type === "post") {
+          if (!lost) {
+            lost = true;
+            returned.returnPayload.triggerClientMessageId = input.clientMessageId;
+            await publisher.deliver(f.origin.teamId, returned);
+            throw new OpensteerError({
+              code: "runner_offline",
+              message: "Lost post acknowledgement",
+            });
+          }
+          return {
+            kind: "receipt",
+            messageId: f.source.messageId,
+            askOutcomes: [{ ownerUserId: target.teamUserId, outcome: "queued" }],
+          };
+        }
+        return f.publisher.options.rpc(f.origin.teamId).call(input);
+      },
+    });
+    const publisher = new PersonalTeamRequests({ ...f.publisher.options, rpc });
+    const tools = new TeamRunTools(f.publisher.options.links, f.store, rpc, (teamId) =>
+      publisher.resumeReturns(teamId),
+    );
+    await expect(
+      tools.post({ runId: asking.receipt.runId!, operationId: "lost-post" }, f.origin.teamId, {
+        channelId: f.origin.channelId,
+        threadRootId: f.origin.threadRootId,
+        bodyMarkdown: "@maya-agent help",
+        attachmentIds: [],
+      }),
+    ).rejects.toMatchObject({ code: "runner_offline" });
+    expect(
+      await f.store.post(f.origin.teamId, returned.returnPayload.triggerClientMessageId),
+    ).toMatchObject({ runId: asking.receipt.runId, messageId: null });
+    expect(
+      (await f.store.mirror(f.origin.teamId, returned.request.id))?.returnAdmission,
+    ).toBeNull();
+    await publisher.reconnect(f.origin.teamId);
+    expect(
+      await f.store.post(f.origin.teamId, returned.returnPayload.triggerClientMessageId),
+    ).toMatchObject({ messageId: f.source.messageId, targetUserIds: [target.teamUserId] });
+    expect((await f.store.mirror(f.origin.teamId, returned.request.id))?.returnAdmission).toBe(
+      "admitted",
+    );
+  });
+
   it("records returns to Done or absent tasks as undeliverable without rerouting", async ({
     storeFixture,
   }) => {
@@ -491,6 +727,7 @@ describeStore("personal team consent and returns", (it) => {
         },
         presentation: null,
         returnPayload: {
+          triggerClientMessageId: crypto.randomUUID().toString(),
           originAskId: createId("teamAgentRequest"),
           resumeRunId,
           outcome: "expired" as const,
@@ -499,6 +736,7 @@ describeStore("personal team consent and returns", (it) => {
           author: { ...f.frame.presentation!.asker, actor: "agent" as const },
         },
       };
+      await recordPost(f, returned);
       await f.publisher.deliver(f.origin.teamId, returned);
       expect(await f.store.mirror(f.origin.teamId, returned.request.id)).toMatchObject({
         returnAdmission: "undeliverable",
@@ -575,6 +813,7 @@ describeStore("personal team consent and returns", (it) => {
       },
       presentation: null,
       returnPayload: {
+        triggerClientMessageId: crypto.randomUUID().toString(),
         originAskId: createId("teamAgentRequest"),
         resumeRunId: asking.receipt.runId!,
         outcome: "declined" as const,
@@ -583,6 +822,7 @@ describeStore("personal team consent and returns", (it) => {
         author: { ...f.frame.presentation!.asker, actor: "agent" as const },
       },
     };
+    await recordPost(f, returned);
     await f.publisher.deliver(f.origin.teamId, returned);
     expect(await f.store.mirror(f.origin.teamId, returned.request.id)).toMatchObject({
       returnAdmission: "undeliverable",

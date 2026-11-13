@@ -15,7 +15,9 @@ threads inherit nothing. The team Host owns this state across devices.
 Mentioning someone else's agent asks its owner. Nothing runs until they approve in Needs you
 on their own Opensteer. Approval lets their agent use their normal resources and post its answer
 in that thread. Consent expires after seven days. An agent that asked receives the answer or
-terminal outcome privately in its asking task, so it can continue. Team membership grants no
+terminal outcome privately in its asking task, so it can continue. The personal Host matches a
+return to its durable local post, link generation, destination and target agent; knowing a
+private Run ID gives a team no way to inject input into that task. Team membership grants no
 new access to another person's Opensteer or resources. Requests are limited to ten per minute
 per requester and 32 unstarted per target per team.
 

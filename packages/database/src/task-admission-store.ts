@@ -352,7 +352,44 @@ export async function admitTeamReturn(
         .where("teamDeploymentId", "=", input.teamId)
         .where("requestId", "=", input.requestId)
         .executeTakeFirstOrThrow();
-      if (prior.returnAdmission) return { events: [] };
+      if (prior.returnAdmission || prior.terminalState) return { events: [] };
+      const link = await tx
+        .selectFrom("personalTeamLinks")
+        .selectAll()
+        .where("teamDeploymentId", "=", input.teamId)
+        .executeTakeFirst();
+      if (!link || !["active", "unreachable"].includes(link.state)) return { events: [] };
+      if (!payload.triggerClientMessageId) return { events: [] };
+      const post = await tx
+        .selectFrom("personalTeamPosts")
+        .selectAll()
+        .where("teamDeploymentId", "=", input.teamId)
+        .where("clientMessageId", "=", payload.triggerClientMessageId)
+        .where("localLinkId", "=", link.id)
+        .where("remoteLinkId", "=", link.remoteLinkId)
+        .where("runId", "=", payload.resumeRunId)
+        .where("messageId", "=", mirror.triggerMessageId)
+        .where("channelId", "=", mirror.source.channelId)
+        .executeTakeFirst();
+      if (
+        !post ||
+        !post.targetUserIds.includes(payload.author.teamUserId) ||
+        (post.threadRootId ?? post.messageId) !== mirror.source.threadRootId
+      )
+        return { events: [] };
+      const consumed = await tx
+        .selectFrom("personalTeamRequests")
+        .select("requestId")
+        .where("teamDeploymentId", "=", input.teamId)
+        .where("returnAdmission", "is not", null)
+        .where(
+          sql<string>`return_payload->>'triggerClientMessageId'`,
+          "=",
+          payload.triggerClientMessageId,
+        )
+        .where(sql<string>`return_payload->'author'->>'teamUserId'`, "=", payload.author.teamUserId)
+        .executeTakeFirst();
+      if (consumed) return { events: [] };
       const run = await tx
         .selectFrom("runs")
         .select(["threadId", "requestedBy"])
@@ -412,19 +449,28 @@ export async function admitTeamReturn(
   } catch (error) {
     if (!(error instanceof OpensteerError) || error.reason !== teamReturnUndeliverableReason)
       throw error;
-    await database
-      .updateTable("personalTeamRequests")
-      .set({
-        returnAdmission: "undeliverable",
-        publicationState: "blocked",
-        terminalState: "done",
-        finishedAt: new Date(),
-        blockedReason: "The asking task is Done, unavailable or its delegation is closed.",
-      })
-      .where("teamDeploymentId", "=", input.teamId)
-      .where("requestId", "=", input.requestId)
-      .where("returnAdmission", "is", null)
-      .execute();
+    await withPersonalTransaction(database, async (tx) => {
+      const link = await tx
+        .selectFrom("personalTeamLinks")
+        .select("state")
+        .where("teamDeploymentId", "=", input.teamId)
+        .executeTakeFirst();
+      if (!link || !["active", "unreachable"].includes(link.state)) return;
+      await tx
+        .updateTable("personalTeamRequests")
+        .set({
+          returnAdmission: "undeliverable",
+          publicationState: "blocked",
+          terminalState: "done",
+          finishedAt: new Date(),
+          blockedReason: "The asking task is Done, unavailable or its delegation is closed.",
+        })
+        .where("teamDeploymentId", "=", input.teamId)
+        .where("requestId", "=", input.requestId)
+        .where("returnAdmission", "is", null)
+        .where("terminalState", "is", null)
+        .execute();
+    });
     return { events: [] };
   }
 }

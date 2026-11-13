@@ -261,6 +261,8 @@ export class PersonalTeamRequests {
       teamId: local.teamId,
       requestId: local.requestId,
     });
+    const current = await this.options.requests.mirror(local.teamId, local.requestId);
+    if (!current?.returnAdmission) return;
     const ack = await this.options
       .rpc(local.teamId)
       .call({ type: "accept", requestId: local.requestId });
@@ -271,6 +273,11 @@ export class PersonalTeamRequests {
     )
       throw linkError("bad_request");
     await this.options.requests.remote(local.teamId, local.requestId, "done");
+  }
+
+  async resumeReturns(teamId: DeploymentId): Promise<void> {
+    for (const local of await this.options.requests.mirrors(teamId))
+      if (local.kind === "return") await this.#return(local);
   }
 
   async reconnect(teamId: DeploymentId): Promise<void> {
@@ -331,6 +338,38 @@ export class PersonalTeamRequests {
       .call({ type: "receipt", requestId: request.requestId });
     if (receipt.kind !== "receipt") throw linkError("bad_request");
     if (receipt.messageId === null) return false;
+    if (request.deliveryVia === "tool" && request.clientMessageId && request.answerPayload) {
+      const post = await this.options.requests.post(request.teamId, request.clientMessageId);
+      if (post && post.messageId === null) {
+        const link = await this.options.links.get(request.teamId);
+        if (
+          !link ||
+          !["active", "unreachable"].includes(link.state) ||
+          link.id !== post.localLinkId ||
+          link.remoteLinkId !== post.remoteLinkId
+        )
+          throw linkError();
+        const result = await this.options.rpc(request.teamId).call({
+          type: "post",
+          clientMessageId: post.clientMessageId,
+          runId: post.runId,
+          channelId: post.channelId,
+          ...(post.threadRootId ? { threadRootId: post.threadRootId } : {}),
+          requestId: request.requestId,
+          ...request.answerPayload,
+        });
+        if (result.kind !== "receipt" || result.messageId !== receipt.messageId)
+          throw linkError("bad_request");
+        await this.options.requests.recordPost({
+          ...post,
+          messageId: result.messageId,
+          targetUserIds: (result.askOutcomes ?? [])
+            .filter((ask) => ask.outcome === "queued")
+            .map((ask) => ask.ownerUserId),
+        });
+        await this.resumeReturns(request.teamId);
+      }
+    }
     await this.options.requests.publication(
       request.teamId,
       request.requestId,

@@ -131,6 +131,27 @@ export function migrationProvider(): MigrationProvider {
         },
         [teamAgentMigrationName]: { up: migrateTeamAgents },
         [teamAgentAsksMigrationName]: { up: migrateTeamAgentAsks },
+        "0013_personal_team_posts": {
+          async up(database) {
+            await sql`create table personal_team_posts (
+              team_deployment_id text not null references personal_team_links(team_deployment_id) on delete cascade,
+              client_message_id uuid not null,
+              local_link_id text not null,
+              remote_link_id text not null,
+              run_id text not null,
+              message_id bigint,
+              channel_id text not null,
+              thread_root_id bigint,
+              target_user_ids text[] not null,
+              primary key(team_deployment_id, client_message_id)
+            );
+            create unique index personal_team_returns_post_target on personal_team_requests (
+              team_deployment_id, (return_payload->>'triggerClientMessageId'), (return_payload->'author'->>'teamUserId')
+            ) where return_admission is not null and return_payload->>'triggerClientMessageId' is not null`.execute(
+              database,
+            );
+          },
+        },
       };
     },
   };

@@ -478,6 +478,112 @@ describe("standing team link authority", () => {
     expect(endpoint.isOnline(fixture.userId)).toBe(true);
     socket.emit("close");
   });
+  it("drains more than one page of returns after acknowledgements without resending consent", async () => {
+    const sender = await fixture.member("Alex");
+    await chat.setAccess(human(), channelId, access.revision, [
+      { subject: { kind: "person", userId: fixture.userId }, level: "post", manage: true },
+      { subject: { kind: "person", userId: sender }, level: "post", manage: false },
+    ]);
+    await chat.send(
+      { kind: "human", userId: sender },
+      {
+        channelId,
+        threadRootId: null,
+        clientMessageId: randomUUID(),
+        bodyMarkdown: "@maya-agent help",
+        mentions: [],
+        attachmentIds: [],
+      },
+    );
+    const consent = (await requests.pending(linkId))[0]!;
+    const returns = Array.from({ length: 205 }, () => ({
+      id: createId("teamAgentRequest"),
+      kind: "return" as const,
+      ownerUserId: fixture.userId,
+      channelId,
+      threadRootId: consent.request.threadRootId,
+      triggerMessageId: consent.request.triggerMessageId,
+      linkId,
+      state: "queued" as const,
+      steps: sql<[]>`'[]'::jsonb`,
+      changeSeq: "1",
+      returnPayload: {
+        originAskId: createId("teamAgentRequest"),
+        resumeRunId: runId,
+        outcome: "declined" as const,
+        bodyMarkdown: null,
+        attachments: [],
+        author: { teamUserId: sender, displayName: "Alex", actor: "agent" as const },
+      },
+    }));
+    // The origin rows need only supply the publication lookup; returns cannot recursively return.
+    for (const row of returns) row.returnPayload.originAskId = row.id;
+    await fixture.database.insertInto("teamAgentRequests").values(returns).execute();
+    class Socket extends EventEmitter {
+      bufferedAmount = 0;
+      delivered = new Map<string, number>();
+      completed = new Set<string>();
+      pending: string[] = [];
+      accepting = false;
+      acceptNext() {
+        if (this.accepting) return;
+        const id = this.pending.shift();
+        if (!id) return;
+        this.accepting = true;
+        this.emit(
+          "message",
+          Buffer.from(JSON.stringify({ type: "accept", id, requestId: id })),
+          false,
+        );
+      }
+      drained = Promise.withResolvers<void>();
+      send(encoded: string) {
+        const frame = JSON.parse(encoded);
+        if (frame.type === "requests")
+          for (const item of frame.requests) {
+            const id = item.request.id as string;
+            this.delivered.set(id, (this.delivered.get(id) ?? 0) + 1);
+            if (item.request.kind === "return") {
+              this.pending.push(id);
+              queueMicrotask(() => this.acceptNext());
+            }
+          }
+        if (frame.type === "result") {
+          this.completed.add(frame.id);
+          this.accepting = false;
+          queueMicrotask(() => this.acceptNext());
+          if (this.completed.size === returns.length) this.drained.resolve();
+        }
+      }
+      close() {
+        this.emit("close");
+      }
+      terminate() {
+        this.emit("close");
+      }
+    }
+    const socket = new Socket();
+    await endpoint.attach(socket as unknown as WebSocket, linkId);
+    try {
+      socket.emit(
+        "message",
+        Buffer.from(JSON.stringify({ type: "hello", teamApiVersion, terminalRequests: [] })),
+        false,
+      );
+      await withTimeout(socket.drained.promise, 5000, {
+        timeoutError: () =>
+          new Error(`Only ${socket.completed.size} of 205 returns were acknowledged`),
+      });
+      expect(socket.delivered.get(consent.request.id)).toBe(1);
+      expect([...socket.delivered.values()].every((count) => count === 1)).toBe(true);
+      expect((await requests.pending(linkId)).map((item) => item.request.id)).toEqual([
+        consent.request.id,
+      ]);
+    } finally {
+      socket.close();
+    }
+  });
+
   it("uploads and downloads under standing authority, binds only the same uploader and channel, and closes revoked streams", async () => {
     const metadata = {
       channelId,

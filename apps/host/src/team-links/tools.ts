@@ -14,15 +14,18 @@ import { teamOperationId } from "./operation-id.js";
 export class TeamRunTools {
   readonly linksStore: PersonalTeamLinksStore;
   readonly requests: PersonalTeamRequestsStore;
+  readonly onPost: ((teamId: DeploymentId) => Promise<void>) | undefined;
   readonly rpc: (teamId: DeploymentId) => TeamLinkRpc;
   constructor(
     linksStore: PersonalTeamLinksStore,
     requests: PersonalTeamRequestsStore,
     rpc: (teamId: DeploymentId) => TeamLinkRpc,
+    onPost?: (teamId: DeploymentId) => Promise<void>,
   ) {
     this.linksStore = linksStore;
     this.requests = requests;
     this.rpc = rpc;
+    this.onPost = onPost;
   }
 
   async teams() {
@@ -130,6 +133,16 @@ export class TeamRunTools {
     const result = await this.rpc(teamId).call({ type: "receipt", requestId: request.requestId });
     if (result.kind !== "receipt") throw linkError("bad_request");
     if (result.messageId !== null) {
+      if (
+        request.deliveryVia === "tool" &&
+        request.answerPayload &&
+        (await this.requests.post(teamId, request.clientMessageId))?.messageId === null
+      )
+        return this.post(run, teamId, {
+          channelId: request.source.channelId,
+          ...(request.source.threadRootId ? { threadRootId: request.source.threadRootId } : {}),
+          ...request.answerPayload,
+        });
       await this.requests.publication(teamId, request.requestId, "accepted", result.messageId);
       return { messageId: result.messageId, source: request.source };
     }
@@ -146,6 +159,8 @@ export class TeamRunTools {
       readonly attachmentIds: readonly TeamBlobId[];
     },
   ): ReturnType<TeamToolPort["post"]> {
+    const link = await this.linksStore.get(teamId);
+    if (!link?.remoteLinkId || !["active", "unreachable"].includes(link.state)) throw linkError();
     const request = await this.requests.forRun(run.runId);
     const claimsReply =
       request?.teamId === teamId &&
@@ -164,6 +179,17 @@ export class TeamRunTools {
         answerMessageId: null,
         payload: { bodyMarkdown: input.bodyMarkdown, attachmentIds: [...input.attachmentIds] },
       });
+    await this.requests.recordPost({
+      teamDeploymentId: teamId,
+      localLinkId: link.id,
+      remoteLinkId: link.remoteLinkId,
+      clientMessageId,
+      runId: run.runId,
+      messageId: null,
+      channelId: input.channelId,
+      threadRootId: input.threadRootId ?? null,
+      targetUserIds: [],
+    });
     const result = await this.rpc(teamId)
       .call({
         type: "post",
@@ -190,6 +216,20 @@ export class TeamRunTools {
         throw error;
       });
     if (result.kind !== "receipt" || result.messageId === null) throw linkError("bad_request");
+    await this.requests.recordPost({
+      teamDeploymentId: teamId,
+      localLinkId: link.id,
+      remoteLinkId: link.remoteLinkId,
+      clientMessageId,
+      runId: run.runId,
+      messageId: result.messageId,
+      channelId: input.channelId,
+      threadRootId: input.threadRootId ?? null,
+      targetUserIds: (result.askOutcomes ?? [])
+        .filter((ask) => ask.outcome === "queued")
+        .map((ask) => ask.ownerUserId),
+    });
+    await this.onPost?.(teamId);
     if (claimsReply) {
       const receipt = await this.rpc(teamId).call({
         type: "receipt",

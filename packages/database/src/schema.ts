@@ -1989,6 +1989,17 @@ export interface DatabaseSchema {
   teamLinks: TeamLinkTable;
   teamAgentRequests: TeamAgentRequestTable;
   personalTeamLinks: PersonalTeamLinkTable;
+  personalTeamPosts: {
+    teamDeploymentId: DeploymentId;
+    clientMessageId: string;
+    localLinkId: string;
+    remoteLinkId: TeamLinkId;
+    runId: RunId;
+    messageId: TeamMessageId | null;
+    channelId: TeamChannelId;
+    threadRootId: TeamMessageId | null;
+    targetUserIds: readonly UserId[];
+  };
   personalTeamRequests: PersonalTeamRequestTable;
   teamAgentRecipients: TeamAgentRecipientTable;
 

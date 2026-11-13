@@ -1,3 +1,4 @@
+import { NeedsYouList } from "./needs-you-list.js";
 import { TeamAskReview } from "./team-ask-review.js";
 import { placeByKey } from "@opensteer/client/host";
 import { DesktopUpdateButton } from "./desktop-update-button.js";
@@ -419,23 +420,13 @@ export function Sidebar({
     },
     [onCloseMobile],
   );
+  const [needsYouOpen, setNeedsYouOpen] = useState(false);
   const [reviewAskKey, setReviewAskKey] = useState<string | null>(null);
   const needsYouPage = useHostSelector(hostClient, (current) => current.needsYou);
   const teamAsks = needsYouPage?.entries.filter((entry) => entry.kind === "team-ask") ?? [];
   const reviewAsk = teamAsks.find((entry) => needsYouEntryKey(entry) === reviewAskKey);
   const needsYouCount = needsYouPage?.count ?? 0;
-  const openNeedsYou = useCallback(() => {
-    const first = hostClient.getSnapshot().needsYou?.entries[0];
-    if (!first) return;
-    if (first.kind === "team-ask") {
-      setReviewAskKey(needsYouEntryKey(first));
-      return;
-    }
-    onCloseMobile();
-    nav.openConversation(nav.threadPath(first.navigationThreadId), {
-      focusRequest: first.request.id,
-    });
-  }, [hostClient, nav, onCloseMobile]);
+  const openNeedsYou = useCallback(() => setNeedsYouOpen(true), []);
   const handledNeedsYouNotification = useRef<string | null>(null);
   useEffect(() => {
     if (
@@ -682,6 +673,22 @@ export function Sidebar({
       onKeyDown={handleKeyDown}
       ref={sidebarRef}
     >
+      {needsYouOpen && !reviewAsk ? (
+        <NeedsYouList
+          client={hostClient}
+          onClose={() => setNeedsYouOpen(false)}
+          onOpen={(entry) => {
+            if (entry.kind === "team-ask") setReviewAskKey(needsYouEntryKey(entry));
+            else {
+              setNeedsYouOpen(false);
+              onCloseMobile();
+              nav.openConversation(nav.threadPath(entry.navigationThreadId), {
+                focusRequest: entry.request.id,
+              });
+            }
+          }}
+        />
+      ) : null}
       {reviewAsk ? (
         <TeamAskReview
           key={needsYouEntryKey(reviewAsk)}
@@ -802,10 +809,10 @@ export function Sidebar({
                   </h2>
                   {needsYouCount > 0 ? (
                     <button
-                      aria-label={`${needsYouCount} need you. Open the first`}
+                      aria-label={`${needsYouCount} need you. Open Needs you`}
                       className="side-needs"
                       onClick={openNeedsYou}
-                      title="Open the first task that needs you"
+                      title="Open Needs you"
                       type="button"
                     >
                       <span aria-hidden className="side-needs__bang">

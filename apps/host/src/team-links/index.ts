@@ -61,7 +61,12 @@ export function createPersonalTeamLinkServices(options: {
     network,
     attachments: options.attachments,
   });
-  const tools = new TeamRunTools(linksStore, requestsStore, (teamId) => links.rpc(teamId));
+  const tools = new TeamRunTools(
+    linksStore,
+    requestsStore,
+    (teamId) => links.rpc(teamId),
+    (teamId) => requests.resumeReturns(teamId),
+  );
   const teamTools = new PersonalTeamToolAdapter(tools, files);
   const knowledge = new PersonalTeamKnowledge(
     () => links.list(),
