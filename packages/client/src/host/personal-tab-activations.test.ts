@@ -6,12 +6,13 @@ import { createBrowserSessionId } from "@opensteer/protocol";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import type { HostClient, HostSnapshot } from "./client.js";
 import { PersonalTabActivations } from "./personal-tab-activations.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 
 type Result = NonNullable<Awaited<ReturnType<NonNullable<HostClient["activatePersonalTab"]>>>>;
 const cleanups: (() => void)[] = [];
 afterEach(() => cleanups.splice(0).forEach((cleanup) => cleanup()));
 
-function fixture() {
+function fixture(resolved = () => true) {
   const seed = new MockHostClient({ latencyMs: 0 });
   let snapshot: HostSnapshot = {
     ...seed.getSnapshot(),
@@ -57,6 +58,7 @@ function fixture() {
       return () => listeners.delete(listener);
     },
     dispatch,
+    resolved,
     apply: () => {},
     changed: () => {},
   });
@@ -93,6 +95,67 @@ function fixture() {
     },
   };
 }
+
+it("finishes asleep activations on dispatch while plain activations still await a live row", async () => {
+  const resolved = vi.fn(() => false);
+  const f = fixture(resolved);
+  f.dispatch.mockResolvedValue(f.result);
+  const finish = (promise: Promise<Result | null>) =>
+    withTimeout(promise, 1_000, {
+      timeoutError: () => new Error("The asleep activation did not finish after dispatch"),
+    });
+  await expect(finish(f.activations.activate(f.tabId, { asleep: true }))).resolves.toBe(f.result);
+  const plain = f.activations.activate(f.tabId);
+  expect(f.dispatch).toHaveBeenCalledTimes(2);
+  const settled = vi.fn();
+  void plain.then(settled);
+  await vi.waitFor(
+    () => expect(resolved, "The plain activation never waited for its live row").toHaveBeenCalled(),
+    { timeout: 1_000 },
+  );
+  expect(settled).not.toHaveBeenCalled();
+  f.activations.dispose();
+  await expect(finish(plain)).resolves.toBeNull();
+});
+
+it.each([
+  { asleep: false, dispatched: false },
+  { asleep: false, dispatched: true },
+  { asleep: true, dispatched: false },
+])(
+  "an asleep activation replaces a pending activation (asleep: $asleep, dispatched: $dispatched)",
+  async ({ asleep, dispatched }) => {
+    const resolved = vi.fn(() => false);
+    const f = fixture(resolved);
+    const request = Promise.withResolvers<Result>();
+    f.dispatch.mockReturnValueOnce(request.promise).mockResolvedValue(f.result);
+    const first = f.activations.activate(f.tabId, asleep ? { asleep: true } : undefined);
+    const settled = vi.fn();
+    void first.then(settled);
+    if (dispatched) {
+      request.resolve(f.result);
+      await vi.waitFor(
+        () =>
+          expect(resolved, "The plain activation never waited for its live row").toHaveBeenCalled(),
+        { timeout: 1_000 },
+      );
+    }
+    expect(settled).not.toHaveBeenCalled();
+    const replacement = f.activations.activate(f.tabId, { asleep: true });
+    expect(f.dispatch).toHaveBeenCalledTimes(2);
+    await expect(
+      withTimeout(replacement, 1_000, {
+        timeoutError: () => new Error("The asleep activation joined a pending activation"),
+      }),
+    ).resolves.toBe(f.result);
+    request.resolve(f.result);
+    await expect(
+      withTimeout(first, 1_000, {
+        timeoutError: () => new Error("The superseded activation did not finish"),
+      }),
+    ).resolves.toBeNull();
+  },
+);
 
 it("remembers a failed opening across snapshot churn until a new opening starts", async () => {
   const f = fixture();

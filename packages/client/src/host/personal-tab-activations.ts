@@ -9,6 +9,7 @@ type ActivationResult = NonNullable<
 >;
 interface Activation {
   opening: string | undefined;
+  readonly asleep: boolean;
   readonly promise: Promise<ActivationResult | null>;
   readonly cancel: (notify: boolean) => void;
 }
@@ -62,8 +63,11 @@ export class PersonalTabActivations {
     }
     const held = this.#pending.get(tabId);
     if (held) {
-      if (options) held.opening = options.opening;
-      return held.promise;
+      if (options?.asleep) held.cancel(false);
+      else {
+        if (options) held.opening = options.opening;
+        return held.promise;
+      }
     }
     const scope = JSON.stringify(viewerScopeOf(this.#ports.snapshot()));
     let lineage: BrowserGroupRow | undefined;
@@ -129,6 +133,7 @@ export class PersonalTabActivations {
     };
     const operation: Activation = {
       opening: options?.opening,
+      asleep: options?.asleep === true,
       promise,
       cancel: (notify) => {
         if (this.#failed.get(tabId) === operation) {
@@ -191,7 +196,7 @@ export class PersonalTabActivations {
         observe();
         if (settled) return;
         this.#ports.apply?.(result);
-        while (!settled && this.#ports.resolved?.(result) === false) {
+        while (!settled && !operation.asleep && this.#ports.resolved?.(result) === false) {
           await new Promise<void>((resume) => {
             wake = resume;
           });

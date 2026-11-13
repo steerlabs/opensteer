@@ -510,7 +510,8 @@ export class HttpHostClient {
   readonly #placeActivity = new PlaceActivityStore();
   readonly #runPlaces = new RunPlaceStore();
   readonly #targetedControl = new BrowserWatchStore(
-    (sessionId, surfaceId) => this.#targetedBrowserSocket(sessionId, surfaceId, "control"),
+    (sessionId, surfaceId, asleep) =>
+      this.#targetedBrowserSocket(sessionId, surfaceId, "control", asleep),
     "control",
     (sessionId, message, surfaceId) => {
       this.#browserCursor.receive(sessionId, message);
@@ -559,17 +560,12 @@ export class HttpHostClient {
     sessionId: string,
     surfaceId: string,
     mode: "control" | "watch",
+    asleep = false,
   ): WebSocketClient {
-    const groupId = this.#browserTabs.groupForSession(sessionId);
-    const group = groupId ? this.#browserTabs.group(groupId) : undefined;
-    const tab = groupId ? this.#browserTabs.tab(groupId, surfaceId) : undefined;
     if (
       this.#disposed ||
       this.#snapshot.session !== "authenticated" ||
-      group?.state !== "ready" ||
-      tab?.availability !== "ready" ||
-      tab.state !== "live" ||
-      tab.documentId === null
+      !this.#browserTargetAllowed(sessionId, surfaceId, asleep)
     )
       throw new Error("The browser target is unavailable.");
     const url = new URL(
@@ -588,6 +584,17 @@ export class HttpHostClient {
     }
     url.searchParams.set("editing", "2");
     return this.#webSocketFactory(url.toString());
+  }
+  #browserTargetAllowed(sessionId: string, surfaceId: string, asleep: boolean): boolean {
+    const groupId = this.#browserTabs.groupForSession(sessionId);
+    const group = groupId ? this.#browserTabs.group(groupId) : undefined;
+    const tab = groupId ? this.#browserTabs.tab(groupId, surfaceId) : undefined;
+    return (
+      group?.state === "ready" &&
+      tab?.availability === "ready" &&
+      tab.documentId !== null &&
+      (tab.state === "live" || asleep)
+    );
   }
   readonly #browserPopups = new Map<string, Set<(popupId: string) => void>>();
   readonly subscribeBrowserPopups = (
@@ -2666,6 +2673,7 @@ export class HttpHostClient {
     surfaceId: string,
     options?: {
       readonly picture?: boolean;
+      readonly asleep?: boolean;
       readonly captureRegion?: boolean;
       readonly frameWindow?: boolean;
       readonly rasterDemand?: boolean;
@@ -5412,17 +5420,8 @@ export class HttpHostClient {
       ) {
         const authorized = (sessionId: string, surfaceId: string) =>
           this.#browserTargetAuthorized(sessionId, surfaceId);
-        const allowed = (sessionId: string, surfaceId: string) => {
-          const groupId = this.#browserTabs.groupForSession(sessionId);
-          const group = groupId ? this.#browserTabs.group(groupId) : undefined;
-          const tab = groupId ? this.#browserTabs.tab(groupId, surfaceId) : undefined;
-          return (
-            group?.state === "ready" &&
-            tab?.availability === "ready" &&
-            tab.state === "live" &&
-            tab.documentId !== null
-          );
-        };
+        const allowed = (sessionId: string, surfaceId: string, asleep: boolean) =>
+          this.#browserTargetAllowed(sessionId, surfaceId, asleep);
         reconcileBrowserTargets = () => {
           const document = (sessionId: string, tabId: string) =>
             placeByKey(this.#snapshot, `browser:${sessionId}:${tabId}`)?.browser?.documentId;

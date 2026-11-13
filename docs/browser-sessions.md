@@ -143,6 +143,8 @@ that window's admitted control socket, under `browser-target-control-v1`; an unk
 leaves it pending, never silently streaming. Overlays are acknowledged before covering a native page
 ([renderer contract](../apps/desktop/src/computer-use/RENDERER-CONTRACT.md)). Session pages may go
 fullscreen and get no other permission.
+A phone's own page follows the same rule; its tabs sleep until shown, so only its own control socket
+is admitted to a sleeping tab, and the screen wakes the tab after that snapshot.
 
 The surface ledger alone owns geometry. Keep agent emulation on a long-lived platform channel:
 Chromium drops it on navigation after the issuing channel detaches. Electron frame callbacks cannot

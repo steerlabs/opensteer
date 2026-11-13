@@ -13879,6 +13879,93 @@ describe("HttpHostClient overnight transcript residency", () => {
   );
 });
 
+it("admits only an asleep control holder to a suspended tab and revokes it on release", async () => {
+  const workspace = makeDeployment();
+  const sessionId = createBrowserSessionId();
+  const tabId = BrowserSurfaceIdSchema.parse("sleeping-phone-tab");
+  const body = bootstrap([workspace], {
+    available: true,
+    profiles: [],
+    placements: [],
+    sessions: [
+      seedBrowserSession(
+        {
+          id: sessionId,
+          access: "read-write",
+          origin: "person",
+          state: "ready",
+          createdAt: now,
+          updatedAt: now,
+          deploymentId: workspace.id,
+          profileId: null,
+          runtimeId: "phone-runtime",
+          placement: { kind: "runner", runnerId },
+        },
+        { rows: [{ id: tabId, documentId: "retained-document" }] },
+      ),
+    ],
+  });
+  for (const tabs of body.browser.tabs!)
+    tabs.rows = tabs.rows.map((tab) => ({ ...tab, state: "suspended" }));
+  const sockets: { url: string; socket: FakeSocket }[] = [];
+  const client = createHttpHostClient({
+    capabilities: ["browser-target-control-v1"],
+    refreshIntervalMs: 0,
+    fetch: async () => json(body),
+    webSocketFactory: (url) => {
+      const socket = new FakeSocket();
+      sockets.push({ url, socket });
+      return socket;
+    },
+  });
+  const viewers = () => sockets.filter(({ url }) => url.includes("/browser-sessions/"));
+  try {
+    await client.load();
+    const releaseControl = client.retainBrowserViewer(sessionId, tabId, { picture: false });
+    expect(viewers()).toHaveLength(0);
+    const releaseInvalid = client.retainBrowserViewer(sessionId, tabId, { asleep: true });
+    expect(viewers()).toHaveLength(0);
+    releaseInvalid();
+    const releaseAsleep = client.retainBrowserViewer(sessionId, tabId, {
+      picture: false,
+      asleep: true,
+    });
+    expect(viewers()).toHaveLength(1);
+    const socket = viewers()[0]!.socket;
+    socket.open();
+    expect(client.browserViewerState(sessionId, tabId).admitted).not.toBe(true);
+    socket.receiveRaw({
+      type: "browser.snapshot",
+      sessionId,
+      access: "read-write",
+      state: "ready",
+      targetedStreamingVersion: 1,
+      dialog: null,
+      surfaces: [],
+    });
+    expect(client.browserViewerState(sessionId, tabId).admitted).toBe(true);
+    expect(socket.sent.map((raw) => JSON.parse(raw))).toContainEqual({
+      type: "stream.subscribe",
+      surfaceId: tabId,
+      frames: false,
+    });
+    const releasePicture = client.retainBrowserViewer(sessionId, tabId);
+    const secondAsleep = client.retainBrowserViewer(sessionId, tabId, {
+      picture: false,
+      asleep: true,
+    });
+    releaseAsleep();
+    expect(socket.readyState).toBe(1);
+    secondAsleep();
+    expect(socket.readyState).toBe(3);
+    expect(client.browserViewerState(sessionId, tabId).admitted).not.toBe(true);
+    releasePicture();
+    releaseControl();
+  } finally {
+    client.dispose();
+  }
+});
+
 it.each([false, true])(
   "gates the passkey viewer opt-in on the Host capability (%s)",
   async (capable) => {
