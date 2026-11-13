@@ -10,7 +10,9 @@ after waits. Agents cannot grant themselves access, pair devices or reveal crede
 An uncertain external effect is never replayed automatically.
 
 Team tools exist only on team-bound tasks; authority belongs to the current Run's request,
-not the task's history. A private follow-up, Trigger or Voice Run has no team authority.
+not the task's history. A private follow-up, Trigger or Voice Run has no team authority. Team
+knowledge tools are the exception: any Run that may use the owner's personal context reaches the
+owner's topics as the owner ([knowledge](knowledge.md#agents)).
 See [Teams](teams.md) for the request and access fences.
 
 ## Inbox authority and delivery

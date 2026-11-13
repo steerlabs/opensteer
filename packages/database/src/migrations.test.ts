@@ -2,6 +2,7 @@ import { expect, it } from "vitest";
 import {
   migrationProvider,
   personalTeamBaselineName,
+  teamKnowledgeNotesMigrationName,
   threadVisitsMigrationName,
 } from "./migrations.js";
 it("exposes the fresh, uniquely named Host baseline and the migrations after it", async () => {
@@ -11,6 +12,8 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0003_browser_source_binding",
     threadVisitsMigrationName,
     "0005_thread_input_fresh_context",
+    teamKnowledgeNotesMigrationName,
+    "0007_team_reusable_invites",
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());

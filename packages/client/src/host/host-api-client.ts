@@ -264,10 +264,15 @@ async function request<Name extends keyof typeof hostApi>(
         options.onVersionMismatch?.();
       return parsed.data as RpcOutput<(typeof hostApi)[Name]>;
     }
+    // A Host from before this method answers its framework's plain 404.
+    const missing = response.status === 404;
     return {
       error: HostApiErrorSchema.parse({
-        code: "internal",
-        message: "The Host returned an incompatible response.",
+        code: missing ? "not_found" : "internal",
+        message: missing
+          ? "This Host doesn’t offer that yet."
+          : "The Host returned an incompatible response.",
+        ...(missing ? { reason: "unknown-method" } : {}),
         retryable: false,
       }),
       ok: false,

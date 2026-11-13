@@ -1,5 +1,4 @@
 import {
-  mobileDeepLinkScheme,
   parseMobileThreadDeepLink,
   parseTeamPageAppLink,
   type DeploymentId,
@@ -52,8 +51,7 @@ export function notificationDestination(payload: NotificationData): Notification
   const parsed = NotificationPayloadSchema.safeParse(payload.data);
   if (!parsed.success) return null;
   const { deepLink } = parsed.data;
-  const team =
-    parseTeamPageAppLink(deepLink, mobileDeepLinkScheme) ?? parseTeamNoticeLink(deepLink);
+  const team = parseTeamPageAppLink(deepLink, "mobile") ?? parseTeamNoticeLink(deepLink);
   if (team !== null) return { kind: "team", deepLink, origin: team.origin };
   const link = parseMobileThreadDeepLink(deepLink);
   if (link === null) return null;

@@ -9,7 +9,8 @@ import {
 import { requireTeam } from "@opensteer/database/team-access";
 import { teamFileView } from "@opensteer/database/team-files";
 import type { z } from "zod";
-import type { TeamKnowledge, TeamKnowledgeSqlCall } from "../knowledge/team-knowledge.js";
+import type { TeamKnowledge } from "../knowledge/team-knowledge.js";
+import type { TeamLinkCall } from "../team-link-endpoint/contracts.js";
 import type { startTeamServices } from "./services.js";
 
 type Services = Awaited<ReturnType<typeof startTeamServices>>;
@@ -21,7 +22,7 @@ type UploadPart = {
 
 export function createTeamMachineAdapters(
   services: Services,
-  knowledge: Pick<TeamKnowledge, "sql">,
+  knowledge: Pick<TeamKnowledge, "topics" | "readNotes" | "write">,
 ) {
   const { access, chat, requests, files } = services;
   async function authorize(
@@ -37,11 +38,40 @@ export function createTeamMachineAdapters(
   }
   return {
     data: {
-      sql: (
+      async knowledge(
         linkId: TeamLinkId,
-        requestId: TeamAgentRequestId,
-        input: TeamKnowledgeSqlCall["input"],
-      ) => knowledge.sql({ linkId, requestId, input }),
+        ownerUserId: TeamActor["userId"],
+        frame: Extract<TeamLinkCall, { type: `knowledge.${string}` }>,
+      ) {
+        const agent = {
+          linkId,
+          ownerUserId,
+          ...(frame.requestId ? { requestId: frame.requestId } : {}),
+        };
+        switch (frame.type) {
+          case "knowledge.topics": {
+            const answer = await knowledge.topics(agent);
+            return {
+              result: { kind: "knowledge.topics" as const, result: answer.result },
+              reauthorize: answer.reauthorize,
+            };
+          }
+          case "knowledge.read": {
+            const answer = await knowledge.readNotes(agent, frame.input);
+            return {
+              result: { kind: "knowledge.read" as const, result: answer.result },
+              reauthorize: answer.reauthorize,
+            };
+          }
+          case "knowledge.write": {
+            const answer = await knowledge.write(agent, frame.input);
+            return {
+              result: { kind: "knowledge.write" as const, result: answer.result },
+              reauthorize: answer.reauthorize,
+            };
+          }
+        }
+      },
       async read(actor: TeamActor, linkId: TeamLinkId, input: ReadCall) {
         await authorize(actor, linkId, input.requestId, "read");
         return chat.read(actor, "read", input.channelId, async (t) => {

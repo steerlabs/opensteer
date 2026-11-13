@@ -55,6 +55,7 @@ export * from "./team-link.js";
 export * from "./team-knowledge.js";
 
 export * from "./team-api.js";
+export * from "./team-session.js";
 
 export * from "./needs-you.js";
 export {

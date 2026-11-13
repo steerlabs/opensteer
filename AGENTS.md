@@ -53,7 +53,8 @@ of you, say so plainly and get sign-off before breaking it.
   **Voice** is a separate spoken entry. **Needs you** shows pending person decisions.
 - **your agent**: the person's one agent; only that person can wake it in a team.
   A **channel** is team-only chat; a **thread** is its one-level reply conversation.
-  **people only** excludes agents from that channel or knowledge topic.
+  **people only** excludes agents from that channel.
+  **knowledge** is notes in topics on a team server; a topic's access list decides who reads it.
 - **link**: the authenticated connection from personal Opensteer to a team server.
   A **run ticket** is the team's scoped, expiring request, not a portable bearer token.
 - **Messaging bridge**: external messaging that starts or continues a task.

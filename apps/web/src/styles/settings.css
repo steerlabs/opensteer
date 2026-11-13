@@ -671,13 +671,29 @@
 
 /* ---- A team's own pages ---- */
 
+/* One row that scrolls sideways rather than wrapping; the page keeps the current tab in view. */
 .team-settings-nav {
   display: flex;
-  flex-wrap: wrap;
   gap: var(--space-2);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.team-settings-nav::-webkit-scrollbar {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  .team-settings-nav {
+    margin-inline: calc(-1 * var(--space-16));
+    padding-inline: var(--space-16);
+    scroll-padding-inline: var(--space-16);
+  }
 }
 
 .team-settings-nav__link {
+  flex: none;
+  white-space: nowrap;
   padding: var(--space-4) var(--space-10);
   border-radius: var(--radius-xs);
   color: var(--muted);

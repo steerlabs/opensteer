@@ -1,15 +1,9 @@
 import { useRef, useState } from "react";
-import { QrCode } from "../first-run/qr-code.js";
 import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { SegmentedControl } from "../segmented-control.js";
-import {
-  SectionHeader,
-  SettingsGroup,
-  SettingsRow,
-  SettingsSwitch,
-} from "../settings/primitives.js";
+import { SectionHeader, SettingsGroup, SettingsRow } from "../settings/primitives.js";
 import { PersonAvatar, TeamTile } from "./team-marks.js";
 import {
   firstName,
@@ -18,7 +12,7 @@ import {
   type PersonView,
   type TeamTileView,
 } from "./team-models.js";
-import { age, shortDate } from "./team-time.js";
+import { age } from "./team-time.js";
 
 export type TeamRole = "owner" | "admin" | "member";
 
@@ -430,87 +424,6 @@ export function GroupsAdmin({
           <p className="channel-tab__empty">Choose a group to see who’s in it.</p>
         )}
       </div>
-    </div>
-  );
-}
-
-/* ---- Invites ---- */
-
-export interface InviteLinkView {
-  readonly enabled: boolean;
-  readonly url: string;
-  readonly expiresAt: string;
-}
-
-/**
- * The team's invite link: on or off, copy, a code for phones, and a new link
- * that revokes the old one. Everyone it admits joins as a member.
- */
-export function InvitesAdmin({
-  copied = false,
-  invite,
-  onCopy,
-  onNewLink,
-  onToggle,
-}: {
-  readonly copied?: boolean;
-  readonly invite: InviteLinkView;
-  readonly onCopy: () => void;
-  readonly onNewLink: () => void;
-  readonly onToggle: (enabled: boolean) => void;
-}) {
-  const [qr, setQr] = useState(false);
-  return (
-    <div className="team-admin">
-      <SectionHeader
-        lead="People join with their own Opensteer Account and bring their own agent."
-        title="Invites"
-      />
-      <SettingsGroup
-        heading={null}
-        headingId="invite-link"
-        note="A new link stops the old one working before anyone else signs in with it."
-      >
-        <SettingsRow
-          action={
-            <SettingsSwitch checked={invite.enabled} label="Invite link" onChange={onToggle} />
-          }
-          detail="One person can join with it, as a member."
-          title="Invite link"
-        />
-        {invite.enabled ? (
-          <div className="card__row invite-admin">
-            <div className="invite-link__row">
-              <span className="invite-link__url">
-                <Icon name="link" />
-                <span>{invite.url}</span>
-              </span>
-              <button className="btn btn--small" onClick={onCopy} type="button">
-                <Icon name={copied ? "check" : "copy"} />
-                {copied ? "Copied" : "Copy"}
-              </button>
-              <button
-                aria-expanded={qr}
-                aria-label="Show a code for phones"
-                className="icon-btn icon-btn--small"
-                onClick={() => setQr((value) => !value)}
-                title="Code for phones"
-                type="button"
-              >
-                <Icon name="phone" />
-              </button>
-            </div>
-            {qr ? <QrCode label="Invite link" value={invite.url} /> : null}
-            <div className="invite-admin__foot">
-              <button className="btn btn--small" onClick={onNewLink} type="button">
-                <Icon name="reload" />
-                New link
-              </button>
-              <span className="invite-admin__facts">Expires {shortDate(invite.expiresAt)}</span>
-            </div>
-          </div>
-        ) : null}
-      </SettingsGroup>
     </div>
   );
 }

@@ -361,8 +361,8 @@ export async function createTwoHostLinkFixture() {
       await this.status(currentLink, id, { state: "cancelled", steps: [] });
     },
   };
-  let sqlAllowed = true;
-  let beforeSqlReturn: (() => Promise<void>) | undefined;
+  let knowledgeAllowed = true;
+  let beforeKnowledgeReturn: (() => Promise<void>) | undefined;
   const endpoint = new TeamLinkEndpoint({
     links,
     requests: requestStore,
@@ -376,15 +376,14 @@ export async function createTwoHostLinkFixture() {
       async search() {
         return { results: [], hasMore: false };
       },
-      async sql() {
-        await beforeSqlReturn?.();
+      async knowledge() {
+        await beforeKnowledgeReturn?.();
         return {
           result: {
-            columns: [{ name: "count", postgresType: "int8" }],
-            rows: [[10]],
-            truncated: false,
+            kind: "knowledge.read" as const,
+            result: { notes: [], topics: [], nextBefore: null, truncated: false },
           },
-          reauthorize: async () => sqlAllowed,
+          reauthorize: async () => knowledgeAllowed,
         };
       },
     },
@@ -808,7 +807,7 @@ export async function createTwoHostLinkFixture() {
         { timeout: 3000 },
       );
     },
-    async sqlFence(request: TeamAgentRequest) {
+    async knowledgeFence(request: TeamAgentRequest) {
       let prepared!: () => void;
       let release!: () => void;
       const started = new Promise<void>((resolve) => {
@@ -817,22 +816,23 @@ export async function createTwoHostLinkFixture() {
       const barrier = new Promise<void>((resolve) => {
         release = resolve;
       });
-      beforeSqlReturn = async () => {
+      beforeKnowledgeReturn = async () => {
         prepared();
         await barrier;
       };
       const result = call({
-        type: "knowledge.sql",
+        type: "knowledge.read",
         requestId: request.id,
-        input: { mode: "read", parameters: [] },
+        input: { query: "pricing" },
       });
       const refused = expect(result).rejects.toMatchObject({ code: "forbidden" });
       try {
         await withTimeout(started, 2000, {
-          timeoutError: () => new Error("SQL did not reach the buffered-result barrier"),
+          timeoutError: () =>
+            new Error("The knowledge read did not reach the buffered-result barrier"),
         });
         await access.mutate(async () => {
-          sqlAllowed = false;
+          knowledgeAllowed = false;
           return {
             value: undefined,
             effects: { users: [], channels: [], topics: [], links: [], requests: [] },

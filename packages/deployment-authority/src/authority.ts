@@ -46,8 +46,8 @@ export const hostApiVersion = 55;
  * compatibility policy in docs/teams.md before changing either; the wire
  * snapshot test refuses a breaking schema change without a bump.
  */
-export const teamApiVersion = 2;
-export const minimumTeamApiVersion = 2;
+export const teamApiVersion = 3;
+export const minimumTeamApiVersion = 3;
 export const teamOAuthVersionParameter = "opensteer_team_api_version";
 export const teamOidcStatePrefix = "ost-team-api-";
 export const hostApiVersionHeader = "x-opensteer-api-version";
@@ -166,6 +166,20 @@ export const HostCapabilitySchema = z.enum([
   "browser-profile-manage-v1",
   /** Clients can hold a voice call with its own agent through `voice.*`. */
   "voice-run-v1",
+  /** Team Hosts: `POST /v1/team/session/exchange` turns an Account team identity assertion into a session. */
+  "team-session-exchange-v1",
+  /**
+   * Team Hosts: one current reusable invite (`team.invite.reset`, `team.invite.current.get`)
+   * and `POST /v1/team/invites/preview`.
+   */
+  "team-reusable-invites-v1",
+  /** Team Hosts: setup adoption completion accepts Account's `hostedBootstrap`. */
+  "team-hosted-bootstrap-v1",
+  /**
+   * Team Hosts: the invite page's `?authorize=` proves the invite, then continues to the app's
+   * native sign-in (`teamInviteSignInUrl`). Older pages drop it and never return to the app.
+   */
+  "team-invite-native-continuation-v1",
 ]);
 export type HostCapability = z.infer<typeof HostCapabilitySchema>;
 

@@ -1,11 +1,6 @@
 import { useEffect, useMemo, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes, useParams } from "react-router";
-import {
-  opensteerDesktopApplicationId,
-  parseTeamPageLink,
-  teamPageAppLink,
-  type TeamPageLink,
-} from "@opensteer/core";
+import { parseTeamPageLink, teamPageAppLink, type TeamPageLink } from "@opensteer/core";
 import { createHttpHostApiClient } from "@opensteer/client/host";
 import {
   teamApiVersion,
@@ -21,6 +16,7 @@ import { WorkspaceProvider } from "../components/workspace/workspace-context.js"
 import { TeamsProvider, createTeamWebAttachment, type TeamAttachment } from "./team-attachments.js";
 import { channelPath, teamPath } from "./team-paths.js";
 import { TeamRoutes } from "./team-routes.js";
+import { TeamDialogsProvider } from "./hosted-teams.js";
 import { TeamSettingsRoute } from "./team-settings-route.js";
 import { TeamSideFor, LeaveTeamDialog } from "./team-sidebar-sections.js";
 
@@ -110,7 +106,7 @@ function SharedLinkLanding({
       title={link.target.kind === "message" ? "A message from your team" : "A channel in your team"}
     >
       <div className="onboarding__actions">
-        <a className="btn btn--primary" href={teamPageAppLink(link, opensteerDesktopApplicationId)}>
+        <a className="btn btn--primary" href={teamPageAppLink(link, "desktop")}>
           Open in Opensteer
         </a>
         <button className="btn" onClick={onContinue} type="button">
@@ -198,7 +194,9 @@ function TeamWebSession({
     <ToastProvider>
       <TeamsProvider surface={surface}>
         <BrowserRouter>
-          <TeamWebShell landing={landing} team={attachment} userId={bootstrap.member.userId} />
+          <TeamDialogsProvider>
+            <TeamWebShell landing={landing} team={attachment} userId={bootstrap.member.userId} />
+          </TeamDialogsProvider>
         </BrowserRouter>
       </TeamsProvider>
     </ToastProvider>

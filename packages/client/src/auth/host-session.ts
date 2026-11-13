@@ -16,7 +16,11 @@ import {
   HostSessionExchangeError,
   type HostSessionExchange,
 } from "./host-session-exchange.js";
-import type { HostOAuthState, NativeOAuthManager } from "./native-oauth.js";
+import {
+  TeamEntryRefusedError,
+  type HostOAuthState,
+  type NativeOAuthManager,
+} from "./native-oauth.js";
 
 const defaultRecoveryCooldownMs = 30_000;
 
@@ -127,7 +131,7 @@ export interface HostAttachment {
 type HostOAuth = Pick<
   NativeOAuthManager,
   | "abandonHostSignIn"
-  | "beginHostSignIn"
+  | "signInTeam"
   | "hostCredentialState"
   | "recoverHostAuthorization"
   | "signOutHost"
@@ -370,7 +374,13 @@ export class HostSession implements HostSessionRecovery {
           "This deployment's sign-in was stopped before it opened.",
         );
       }
-      return oauthObservation(await this.#oauth.beginHostSignIn(connection));
+      try {
+        return oauthObservation(await this.#oauth.signInTeam(connection));
+      } catch (error) {
+        if (error instanceof TeamEntryRefusedError)
+          return observation(resolved, "blocked", error.message);
+        throw error;
+      }
     }
 
     throw new HostSessionError(

@@ -1,7 +1,10 @@
 import {
+  AccountHostSessionGrantSchema,
   DeploymentOriginSchema,
   HostAccountAdoptionCompletionGrantClaimsSchema,
   HostAccountAdoptionCompletionGrantSchema,
+  HostedTeamOwnerCheckClaimsSchema,
+  type HostedTeamOwnerCheckClaims,
 } from "@opensteer/control-plane-protocol";
 import { OpensteerError } from "@opensteer/core";
 import type {
@@ -57,6 +60,33 @@ export class RemoteAccountAdoptionGrantVerifier implements AccountAdoptionGrantV
         cause: error,
         code: "forbidden",
         message: "Account attachment grant is invalid or expired",
+      });
+    }
+  }
+}
+
+/** Verifies Account's one-minute question about who owns this hosted team. */
+export class RemoteHostedTeamOwnerCheckVerifier {
+  readonly #verifier: RemoteAccountJwksVerifier;
+
+  constructor(options: RemoteAccountAdoptionGrantVerifierOptions) {
+    this.#verifier = new RemoteAccountJwksVerifier({
+      audience: DeploymentOriginSchema.parse(options.audience),
+      ...(options.fetch ? { fetch: options.fetch } : {}),
+      issuer: new URL(publicHttpsOrigin(options.issuer).origin),
+    });
+  }
+
+  async verify(assertion: unknown): Promise<HostedTeamOwnerCheckClaims> {
+    try {
+      const token = AccountHostSessionGrantSchema.parse(assertion);
+      const verified = await this.#verifier.verify(token, "1m");
+      return HostedTeamOwnerCheckClaimsSchema.parse(verified.payload);
+    } catch (error) {
+      throw new OpensteerError({
+        cause: error,
+        code: "forbidden",
+        message: "Account owner check is invalid or expired",
       });
     }
   }

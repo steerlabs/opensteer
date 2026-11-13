@@ -1,7 +1,7 @@
 import { HostedTeamSlugSchema } from "@opensteer/control-plane-protocol/hosted-teams";
 import { loadControlPlaneMigrationConfig } from "./config.js";
 import { createControlPlaneDatabase } from "./database/database.js";
-import { HostedTeamStore } from "./hosted-teams/hosted-team-store.js";
+import { HostedTeamOperator } from "./hosted-teams/hosted-team-store.js";
 
 const usage =
   "Usage: hosted-team-operator-main.js suspend <slug> <reason> | unsuspend <slug> | delete <slug>";
@@ -13,7 +13,7 @@ async function main([command, slug, ...reason]: readonly string[]): Promise<void
     connectionString: loadControlPlaneMigrationConfig().databaseUrl,
     maxConnections: 1,
   });
-  const store = new HostedTeamStore(database);
+  const store = new HostedTeamOperator(database);
   try {
     if (command === "suspend" && reason.length > 0)
       await store.suspend(team, reason.join(" ").slice(0, 1_000));

@@ -1,33 +1,22 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router";
-import {
-  createId,
-  KnowledgeTopicIdSchema,
-  TeamChannelIdSchema,
-  TeamGroupIdSchema,
-  UserIdSchema,
-} from "@opensteer/core";
+import { Navigate, useNavigate, useParams, useSearchParams } from "react-router";
+import { createId, TeamChannelIdSchema, UserIdSchema } from "@opensteer/core";
 import { usePagedList } from "@opensteer/client/react";
 import { useWindowedRows } from "../components/workspace/windowed-rows.js";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import { AreaHeader } from "../components/workspace/conversation-header.js";
 import { useOptionalShell } from "../components/app-shell.js";
-import { KnowledgeTab } from "../components/team/knowledge-tab.js";
 import { PeopleOnlyBadge, PersonAvatar } from "../components/team/team-marks.js";
 import { TeamSearch, noSearchFilters } from "../components/team/team-search.js";
 import type { SearchFilters } from "../components/team/team-models.js";
-import {
-  SettingsGroup,
-  SettingsRow,
-  SettingsSegmented,
-  SettingsSwitch,
-} from "../components/settings/primitives.js";
+import { SettingsSegmented, SettingsSwitch } from "../components/settings/primitives.js";
 import { useToast } from "../components/toast.js";
 import { actionErrorMessage } from "../ui-utils.js";
 import { ChannelRoute, TeamUnavailable } from "./channel-route.js";
-import { useKnowledge } from "./team-knowledge.js";
+import { useTeamAttachment, useTeamSession } from "./team-attachments.js";
+import { TeamKnowledge } from "./team-knowledge.js";
 import { channelPath, teamPath } from "./team-paths.js";
-import { useTeamRead, useTeamView, type TeamView } from "./team-view.js";
+import { useTeamView, type TeamView } from "./team-view.js";
 import { channelKind, messageView, person } from "./team-view-models.js";
 
 const noPreviews: ReadonlyMap<string, string> = new Map();
@@ -37,7 +26,27 @@ export function TeamRoutes() {
   const { teamId = "", "*": splat = "" } = useParams();
   const [section, ...rest] = splat.split("/").filter(Boolean);
   if (section === "c") return <ChannelRoute rest={rest} teamId={teamId} />;
+  if (!section) return <TeamLanding teamId={teamId} />;
   return <TeamPage rest={rest} section={section ?? ""} teamId={teamId} />;
+}
+
+/** A team's own address lands in #general once its sidebar has loaded. */
+function TeamLanding({ teamId }: { readonly teamId: string }) {
+  const team = useTeamAttachment(teamId);
+  const snapshot = useTeamSession(team?.client ?? null);
+  const channels = snapshot?.sidebar?.channels ?? null;
+  if (!team) return <TeamUnavailable teamId={teamId} />;
+  if (!channels) return null;
+  const general =
+    channels.find((row) => row.channel.id === snapshot?.bootstrap?.generalChannelId) ??
+    channels.find((row) => row.channel.name === "general") ??
+    channels.find((row) => row.channel.kind === "public");
+  return (
+    <Navigate
+      replace
+      to={general ? channelPath(teamId, general.channel.id) : teamPath(teamId, "browse")}
+    />
+  );
 }
 
 function TeamPage({
@@ -56,7 +65,7 @@ function TeamPage({
     `${name} · ${view.snapshot.bootstrap?.teamName ?? view.team.name}`;
   const body =
     section === "knowledge" ? (
-      <TeamKnowledge topicId={rest[0] ?? null} view={view} />
+      <TeamKnowledge rest={rest} view={view} />
     ) : section === "search" ? (
       <TeamSearchPage view={view} />
     ) : section === "browse" ? (
@@ -77,207 +86,6 @@ function TeamPage({
       <AreaHeader hostClient={hostClient} title={title(names[section] ?? "Team")} />
       <div className="team-page__body">{body}</div>
     </div>
-  );
-}
-
-/** Every topic the reader can read: channel topics and shared ones, with managers' settings. */
-function TeamKnowledge({
-  topicId,
-  view,
-}: {
-  readonly topicId: string | null;
-  readonly view: TeamView;
-}) {
-  const navigate = useNavigate();
-  const knowledge = useKnowledge(view, null, topicId);
-  return (
-    <div className="team-knowledge">
-      <KnowledgeTab
-        actions={{
-          ...knowledge.actions,
-          onSelectTopic: (next) => void navigate(teamPath(view.team.teamId, `knowledge/${next}`)),
-        }}
-        history={knowledge.history}
-        selectedTopicId={knowledge.selectedTopicId}
-        things={knowledge.things}
-        topics={knowledge.topics}
-      />
-      {knowledge.current?.can.manage ? (
-        <TopicSettings onChanged={knowledge.reloadTopics} topic={knowledge.current} view={view} />
-      ) : null}
-      {view.snapshot.bootstrap?.can.manageGroups ? (
-        <NewTopic onCreated={knowledge.reloadTopics} view={view} />
-      ) : null}
-    </div>
-  );
-}
-
-type Topic = NonNullable<ReturnType<typeof useKnowledge>["current"]>;
-const topicLevels = [
-  { value: "read", label: "Read" },
-  { value: "write", label: "Write" },
-  { value: "manage", label: "Manage" },
-] as const;
-
-/** A topic's access list and its people-only switch, for those who manage it. */
-function TopicSettings({
-  onChanged,
-  topic,
-  view,
-}: {
-  readonly onChanged: () => void;
-  readonly topic: Topic;
-  readonly view: TeamView;
-}) {
-  const toast = useToast();
-  const report = (error: unknown) => toast.error(actionErrorMessage(error));
-  const access = useTeamRead(
-    () =>
-      view.client.rpc["team.knowledge.topic.access.get"]({ topicId: topic.id }).then(
-        unwrapRpcResult,
-      ),
-    `topic-access:${topic.id}`,
-  );
-  const groups = useTeamRead(
-    () => view.client.rpc["team.groups.list"]({}).then(unwrapRpcResult),
-    `groups:${view.team.teamId}`,
-  );
-  const [adding, setAdding] = useState("");
-  const entries = access.value?.entries ?? [];
-  const setEntries = (next: typeof entries) =>
-    access.value &&
-    void view.client.rpc["commands.dispatch"]({
-      type: "team.knowledge.topic.access.set",
-      topicId: topic.id,
-      expectedRevision: access.value.revision,
-      access: [...next],
-    })
-      .then(unwrapRpcResult)
-      .then(access.reload)
-      .catch(report);
-  const subjectName = (entry: (typeof entries)[number]) =>
-    entry.subject.kind === "person"
-      ? person(view.words, entry.subject.userId).name
-      : (groups.value?.groups.find(
-          (group) => group.id === (entry.subject.kind === "group" ? entry.subject.groupId : ""),
-        )?.name ?? "Group");
-  return (
-    <SettingsGroup heading={`${topic.name}: access`} headingId={`topic-${topic.id}`}>
-      <SettingsRow
-        action={
-          <SettingsSwitch
-            checked={topic.peopleOnly}
-            label="People only"
-            onChange={(peopleOnly) =>
-              void view.client.rpc["commands.dispatch"]({
-                type: "team.knowledge.topic.peopleOnly.set",
-                topicId: topic.id,
-                peopleOnly,
-              })
-                .then(unwrapRpcResult)
-                .then(onChanged)
-                .catch(report)
-            }
-          />
-        }
-        detail="Your agent can do whatever you can, unless the thing is marked people only."
-        title="People only"
-      />
-      {entries.map((entry, index) => (
-        <SettingsRow
-          action={
-            <SettingsSegmented
-              label={`Access for ${subjectName(entry)}`}
-              onChange={(level) =>
-                setEntries(entries.map((row, at) => (at === index ? { ...row, level } : row)))
-              }
-              options={topicLevels}
-              value={entry.level}
-            />
-          }
-          key={JSON.stringify(entry.subject)}
-          title={subjectName(entry)}
-        />
-      ))}
-      <SettingsRow
-        action={
-          <select
-            aria-label="Add a person or group"
-            onChange={(event) => {
-              const [kind, id] = event.currentTarget.value.split(":");
-              setAdding("");
-              if (!kind || !id) return;
-              setEntries([
-                ...entries,
-                {
-                  subject:
-                    kind === "person"
-                      ? { kind: "person", userId: UserIdSchema.parse(id) }
-                      : { kind: "group", groupId: TeamGroupIdSchema.parse(id) },
-                  level: "read",
-                },
-              ]);
-            }}
-            value={adding}
-          >
-            <option value="">Add…</option>
-            {[...view.members.values()].map((member) => (
-              <option key={member.userId} value={`person:${member.userId}`}>
-                {member.displayName}
-              </option>
-            ))}
-            {(groups.value?.groups ?? []).map((group) => (
-              <option key={group.id} value={`group:${group.id}`}>
-                {group.name}
-              </option>
-            ))}
-          </select>
-        }
-        title="Add people or groups"
-      />
-    </SettingsGroup>
-  );
-}
-
-function NewTopic({
-  onCreated,
-  view,
-}: {
-  readonly onCreated: () => void;
-  readonly view: TeamView;
-}) {
-  const [name, setName] = useState("");
-  const toast = useToast();
-  const create = (event: FormEvent) => {
-    event.preventDefault();
-    if (!name.trim() || !view.me) return;
-    void view.client.rpc["commands.dispatch"]({
-      type: "team.knowledge.topic.create",
-      id: KnowledgeTopicIdSchema.parse(createId("knowledgeTopic")),
-      name: name.trim(),
-      peopleOnly: false,
-      access: [{ subject: { kind: "person", userId: view.me.userId }, level: "manage" }],
-    })
-      .then(unwrapRpcResult)
-      .then(() => {
-        setName("");
-        onCreated();
-      })
-      .catch((error: unknown) => toast.error(actionErrorMessage(error)));
-  };
-  return (
-    <form className="team-inline-form" onSubmit={create}>
-      <input
-        aria-label="New shared topic"
-        className="text-input"
-        onChange={(event) => setName(event.currentTarget.value)}
-        placeholder="New shared topic"
-        value={name}
-      />
-      <button className="btn" disabled={!name.trim()} type="submit">
-        Create topic
-      </button>
-    </form>
   );
 }
 

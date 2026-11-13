@@ -29,7 +29,6 @@ import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { z } from "zod";
 import type { DatabaseSchema, TeamAgentRequestTable, TeamMessageTable } from "./schema.js";
-import type { ChannelTopicPort } from "./team-topics-port.js";
 import {
   TeamAccessStore,
   bumpTeamChannel,
@@ -135,19 +134,13 @@ export class TeamChatStore {
   readonly #requestListeners = new Set<(event: TeamRequestChange) => Promise<void> | void>();
   readonly #listeners = new Set<(channelId: TeamChannelId) => void>();
   readonly access: TeamAccessStore;
-  readonly topics: ChannelTopicPort;
   readonly identity: {
     readonly teamId: DeploymentId;
     readonly teamName: string;
     readonly agentOnline?: (ownerUserId: UserId) => boolean;
   };
-  constructor(
-    access: TeamAccessStore,
-    topics: ChannelTopicPort,
-    identity: TeamChatStore["identity"],
-  ) {
+  constructor(access: TeamAccessStore, identity: TeamChatStore["identity"]) {
     this.access = access;
-    this.topics = topics;
     this.identity = identity;
   }
   onChange(listener: (channelId: TeamChannelId) => void) {
@@ -335,42 +328,7 @@ export class TeamChatStore {
           effects: emptyTeamAccessEffects,
         };
       }
-      await transaction
-        .insertInto("teamChannels")
-        .values({
-          id: input.id,
-          kind: input.kind,
-          name: input.name,
-          normalizedName: input.name.normalize("NFKC").toLowerCase(),
-          peopleOnly: input.peopleOnly,
-          createdBy: actor.userId,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          archivedAt: null,
-          instructionsMarkdown: "",
-          latestMessageId: null,
-          dmKey: null,
-        })
-        .execute();
-      const access = input.access.filter(
-        (e) => e.subject.kind !== "person" || e.subject.userId !== actor.userId,
-      );
-      await this.#setEntries(transaction, actor, input.id, [
-        ...access,
-        { subject: { kind: "person", userId: actor.userId }, level: "post", manage: true },
-      ]);
-      await this.topics.createChannelTopic(transaction, {
-        channelId: input.id,
-        name: input.name,
-        createdBy: actor.userId,
-        peopleOnly: false,
-      });
-      await appendTeamAudit(transaction, {
-        actor,
-        action: "channel.create",
-        resourceKind: "channel",
-        resourceId: input.id,
-      });
+      await this.#insertChannel(transaction, actor, input);
       return {
         value: await this.channelView(transaction, actor, input.id),
         effects: { ...emptyTeamAccessEffects, channels: [input.id] },
@@ -378,6 +336,67 @@ export class TeamChatStore {
     });
     this.changed(input.id);
     return channel;
+  }
+  /**
+   * The public #general a hosted team starts with, inside the caller's access mutation, which
+   * already holds the team access lock. Nobody else is a member yet, so no transport changes.
+   */
+  async createGeneral(transaction: Transaction<DatabaseSchema>, ownerUserId: UserId) {
+    const id = createId("teamChannel");
+    await this.#insertChannel(
+      transaction,
+      { kind: "human", userId: ownerUserId },
+      {
+        id,
+        kind: "public",
+        name: "general",
+        peopleOnly: false,
+        access: [],
+      },
+    );
+    return id;
+  }
+  async #insertChannel(
+    transaction: Transaction<DatabaseSchema>,
+    actor: TeamActor,
+    input: {
+      id: TeamChannelId;
+      kind: "public" | "private";
+      name: string;
+      peopleOnly: boolean;
+      access: readonly ChannelAccess[];
+    },
+  ) {
+    await transaction
+      .insertInto("teamChannels")
+      .values({
+        id: input.id,
+        kind: input.kind,
+        name: input.name,
+        normalizedName: input.name.normalize("NFKC").toLowerCase(),
+        peopleOnly: input.peopleOnly,
+        createdBy: actor.userId,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        archivedAt: null,
+        instructionsMarkdown: "",
+        latestMessageId: null,
+        dmKey: null,
+      })
+      .execute();
+    const access = input.access.filter(
+      (e) => e.subject.kind !== "person" || e.subject.userId !== actor.userId,
+    );
+    await this.#setEntries(transaction, actor, input.id, [
+      ...access,
+      { subject: { kind: "person", userId: actor.userId }, level: "post", manage: true },
+    ]);
+    await appendTeamAudit(transaction, {
+      actor,
+      action: "channel.create",
+      resourceKind: "channel",
+      resourceId: input.id,
+    });
   }
   async openDm(actor: TeamActor, participants: readonly UserId[]) {
     requireTeam(actor.kind === "human");
@@ -421,12 +440,6 @@ export class TeamChatStore {
             manage: true,
           })),
         );
-        await this.topics.createChannelTopic(transaction, {
-          channelId: id,
-          name: "Direct message",
-          createdBy: actor.userId,
-          peopleOnly: false,
-        });
       }
       return {
         value: await this.channelView(transaction, actor, row.id),

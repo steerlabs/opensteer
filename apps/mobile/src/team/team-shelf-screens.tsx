@@ -1,14 +1,13 @@
 import { unwrapRpcResult } from "@opensteer/client/host";
 import type { TeamSessionClient } from "@opensteer/client/team";
 import {
-  KnowledgeTopicIdSchema,
   SequenceSchema,
   TeamChannelIdSchema,
   TeamMessageIdSchema,
   TeamNoticeIdSchema,
   UserIdSchema,
 } from "@opensteer/core";
-import type { HostApiCommandInput, TeamFact, TeamMessage, TeamTopic } from "@opensteer/protocol";
+import type { HostApiCommandInput, TeamMessage } from "@opensteer/protocol";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
@@ -17,14 +16,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootParamList } from "../navigation.js";
 import { color, space } from "../theme.js";
 import type { NativeMenuOption } from "../thread/composer-menu.js";
-import {
-  AppText,
-  Field,
-  Notice,
-  PrimaryButton,
-  RowGroup,
-  SecondaryButton,
-} from "../ui/primitives.js";
+import { AppText, Notice, RowGroup } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 import {
   ChannelDetailsBody,
@@ -32,16 +24,10 @@ import {
   MembersBody,
   type NotifyLevel,
 } from "./channel-details.js";
-import {
-  FilesBody,
-  KnowledgeTopicBody,
-  KnowledgeTopicsBody,
-  PinnedBody,
-  type FileKindFilter,
-} from "./channel-shelves.js";
+import { FilesBody, PinnedBody, type FileKindFilter } from "./channel-shelves.js";
 import { LinkRow } from "./settings-rows.js";
 import { useTeamMembers, useTeamPreviews, useTeamSession } from "./team-context.js";
-import type { FileRowView, MemberRowView, ThingView, TopicSummaryView } from "./team-models.js";
+import type { FileRowView, MemberRowView } from "./team-models.js";
 import { SearchBody, type SearchFilters } from "./team-search.js";
 import {
   attachmentView,
@@ -170,7 +156,6 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
           onMembers: () => navigation.navigate("TeamMembers", { teamId, channelId }),
           onFiles: () => navigation.navigate("TeamFiles", { teamId, channelId }),
           onPinned: () => navigation.navigate("TeamPinned", { teamId, channelId }),
-          onKnowledge: () => navigation.navigate("TeamKnowledge", { teamId, channelId }),
           onInstructions: () => navigation.navigate("TeamInstructions", { teamId, channelId }),
           onNotify: () =>
             Alert.alert("Notify me", undefined, [
@@ -530,236 +515,6 @@ function pinnedView(message: TeamMessage, viewerId: string, directory: MemberDir
     requests: [],
     inThread: true,
   });
-}
-
-/**
- * Knowledge: a channel's topics (its own and any attached), the team's when
- * no channel is named, or one topic's things and facts.
- */
-export function TeamKnowledgeScreen(
-  props: StaticScreenProps<{
-    readonly teamId: string;
-    readonly channelId?: string | undefined;
-    readonly topicId?: string | undefined;
-  }>,
-): ReactNode {
-  const { teamId, channelId, topicId } = props.route.params;
-  const navigation = useNavigation<Navigation>();
-  const { session } = useTeamSession(teamId);
-  const padding = useBottomPadding();
-  const topics = useTeamRead(
-    session,
-    async (team) =>
-      unwrapRpcResult(
-        await team.rpc["team.knowledge.topics.list"](
-          channelId === undefined ? {} : { channelId: TeamChannelIdSchema.parse(channelId) },
-        ),
-      ).topics,
-    channelId ?? "team",
-  );
-  if (session === null || topics.value === null)
-    return (
-      <Screen>
-        <Loading failure={topics.failure} />
-      </Screen>
-    );
-  const summaries = topics.value.map((topic) => topicSummary(topic, channelId ?? null));
-  if (topicId === undefined)
-    return (
-      <Screen edgeToEdge>
-        {summaries.length === 0 ? (
-          <View style={styles.center}>
-            <AppText role="secondary" tone="muted">
-              Nothing is known here yet. Facts people and agents write appear here.
-            </AppText>
-          </View>
-        ) : (
-          <KnowledgeTopicsBody
-            onOpen={(id) => navigation.push("TeamKnowledge", { teamId, channelId, topicId: id })}
-            paddingBottom={padding}
-            topics={summaries}
-          />
-        )}
-      </Screen>
-    );
-  const topic = topics.value.find((row) => row.id === topicId);
-  if (topic === undefined)
-    return (
-      <Screen>
-        <Loading failure="This topic is no longer here." />
-      </Screen>
-    );
-  return (
-    <Screen edgeToEdge>
-      <TopicFacts
-        channelId={channelId ?? null}
-        padding={padding}
-        session={session}
-        summary={topicSummary(topic, channelId ?? null)}
-        teamId={teamId}
-        topic={topic}
-      />
-    </Screen>
-  );
-}
-
-function topicSummary(topic: TeamTopic, channelId: string | null): TopicSummaryView {
-  return {
-    id: topic.id,
-    name: topic.name,
-    kind:
-      topic.originChannelId !== null && topic.originChannelId === channelId ? "channel" : "shared",
-    access: topic.originChannelId === null ? "Its own list" : "Same as its channel",
-    factCount: 0,
-    peopleOnly: topic.peopleOnly,
-  };
-}
-
-function TopicFacts(props: {
-  readonly teamId: string;
-  readonly channelId: string | null;
-  readonly session: TeamSessionClient;
-  readonly topic: TeamTopic;
-  readonly summary: TopicSummaryView;
-  readonly padding: number;
-}): ReactNode {
-  const navigation = useNavigation<Navigation>();
-  const { directory } = useTeamMembers(props.teamId);
-  const viewerId = props.session.getSnapshot().bootstrap?.member.userId ?? "";
-  const [query, setQuery] = useState("");
-  const [adding, setAdding] = useState(false);
-  const [history, setHistory] = useState<string | null>(null);
-  const topicKey = KnowledgeTopicIdSchema.parse(props.topic.id);
-  const facts = useTeamRead(
-    props.session,
-    async (team) =>
-      unwrapRpcResult(
-        await team.rpc[
-          history === null ? "team.knowledge.facts.page" : "team.knowledge.history.page"
-        ]({
-          topicId: topicKey,
-        }),
-      ).facts,
-    `${props.topic.id}:${history ?? ""}`,
-  );
-  const writer = (fact: TeamFact): string => {
-    const person = personView(fact.writerUserId, directory);
-    if (fact.writerKind === "agent")
-      return fact.writerUserId === viewerId ? "Your agent" : `${person.name}'s agent`;
-    return fact.writerUserId === viewerId ? "You" : person.name;
-  };
-  const lower = query.trim().toLowerCase();
-  const things = groupThings(facts.value ?? [], writer)
-    .filter((thing) => history === null || thing.id === history)
-    .filter((thing) => lower === "" || thing.name.toLowerCase().includes(lower));
-  if (adding)
-    return (
-      <AddFact
-        onCancel={() => setAdding(false)}
-        onSave={async (fact) => {
-          await command(props.session, {
-            type: "team.knowledge.fact.append",
-            operationId: globalThis.crypto.randomUUID(),
-            facts: [{ topicId: topicKey, ...fact, replacesId: null }],
-          });
-          setAdding(false);
-          facts.reload();
-        }}
-      />
-    );
-  return (
-    <KnowledgeTopicBody
-      canWrite={props.topic.can.write}
-      onAddFact={() => setAdding(true)}
-      onHistory={(thingId) => setHistory((held) => (held === thingId ? null : thingId))}
-      onQuery={setQuery}
-      onSource={(messageId) => {
-        const fact = facts.value?.find((row) => row.source?.messageId === messageId);
-        if (fact?.source)
-          navigation.navigate("TeamChannel", {
-            teamId: props.teamId,
-            channelId: fact.source.channelId,
-            messageId,
-          });
-      }}
-      paddingBottom={props.padding}
-      query={query}
-      things={things}
-      topic={{ ...props.summary, factCount: facts.value?.length ?? 0 }}
-    />
-  );
-}
-
-function groupThings(facts: readonly TeamFact[], writer: (fact: TeamFact) => string): ThingView[] {
-  const things = new Map<string, ThingView>();
-  for (const fact of facts) {
-    const held = things.get(fact.thing) ?? {
-      id: fact.thing,
-      name: fact.thing,
-      key: fact.thing,
-      facts: [],
-    };
-    things.set(fact.thing, {
-      ...held,
-      facts: [
-        ...held.facts,
-        {
-          id: fact.id,
-          property: fact.property,
-          value: typeof fact.value === "string" ? fact.value : JSON.stringify(fact.value),
-          writer: writer(fact),
-          when: clockTime(fact.writtenAt),
-          sourceMessageId: fact.source?.messageId ?? null,
-        },
-      ],
-    });
-  }
-  return [...things.values()];
-}
-
-function AddFact(props: {
-  readonly onSave: (fact: { thing: string; property: string; value: string }) => Promise<void>;
-  readonly onCancel: () => void;
-}): ReactNode {
-  const [thing, setThing] = useState("");
-  const [property, setProperty] = useState("");
-  const [value, setValue] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
-  return (
-    <ScrollView contentContainerStyle={styles.form} keyboardShouldPersistTaps="handled">
-      <Field
-        input={{ onChangeText: setThing, value: thing, placeholder: "Acme Corp" }}
-        label="Thing"
-      />
-      <Field
-        input={{ onChangeText: setProperty, value: property, placeholder: "renewal date" }}
-        label="Property"
-      />
-      <Field input={{ onChangeText: setValue, value, placeholder: "March 3" }} label="Value" />
-      {failure === null ? null : (
-        <AppText role="secondary" tone="danger">
-          {failure}
-        </AppText>
-      )}
-      <PrimaryButton
-        busy={saving}
-        disabled={thing.trim() === "" || property.trim() === "" || value.trim() === ""}
-        label="Add fact"
-        onPress={() => {
-          setSaving(true);
-          setFailure(null);
-          void props
-            .onSave({ thing: thing.trim(), property: property.trim(), value: value.trim() })
-            .catch((error: unknown) =>
-              setFailure(error instanceof Error ? error.message : "It wasn't saved."),
-            )
-            .finally(() => setSaving(false));
-        }}
-      />
-      <SecondaryButton label="Cancel" onPress={props.onCancel} />
-    </ScrollView>
-  );
 }
 
 /** One team's messages, narrowed by the four filters the team answers. */

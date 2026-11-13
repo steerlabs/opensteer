@@ -75,7 +75,8 @@ refusal with a validated reason retires only the rejected step and keeps the cre
 malformed, reasonless and temporary failures stay journaled and visible.
 
 Account deletion must work without a reachable Host. It revokes Connect and removes the owned
-Deployments; there is no ownership transfer. A 401 alone may come from a proxy, so only the
+Deployments; there is no ownership transfer. An Account holding a set-up
+[hosted team](hosted-teams.md#account-deletion-and-transfer) is refused before anything is revoked. A 401 alone may come from a proxy, so only the
 Account's validated terminal response proves a link ended. Probe with activation, never unlink:
 a diagnostic must not delete a working link. Keep local credentials until removal is confirmed.
 Apple token revocation follows the deletion commit. The Sign in with Apple client secret expires,

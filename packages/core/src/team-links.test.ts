@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DeploymentIdSchema, TeamNoticeIdSchema } from "./ids.js";
-import { parseTeamNoticeAppLink, teamNoticeAppLink } from "./team-links.js";
+import { parseTeamNoticeAppLink, TeamOriginSchema, teamNoticeAppLink } from "./team-links.js";
 
 const scheme = "com.opensteer.mobile";
 const notice = {
@@ -44,5 +44,12 @@ describe("team notice app links", () => {
       parseTeamNoticeAppLink(teamNoticeAppLink(notice, scheme).replace(":/", "://host/"), scheme),
     ).toBeNull();
     expect(parseTeamNoticeAppLink("invalid", scheme)).toBeNull();
+  });
+});
+
+describe("team origins", () => {
+  it("fails a value that is not a URL instead of throwing", () => {
+    expect(TeamOriginSchema.safeParse("not a url").success).toBe(false);
+    expect(TeamOriginSchema.safeParse("https://team.example.com").success).toBe(true);
   });
 });

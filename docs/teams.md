@@ -18,7 +18,11 @@ The link is an outbound authenticated WebSocket from personal Opensteer. A one-t
 link code establishes a revocable credential; the personal secret stays in the local vault.
 Machine calls name a request over that link. The run ticket is the request row itself, scoped
 to team, channel, thread and owner, expiring seven days after first acceptance. Every call
-rechecks it. No link means no request; an offline computer leaves accepted work durably queued.
+rechecks it. Knowledge calls are the exception: they act as the link's owner from any of their
+private Runs, and a request they name is provenance only ([knowledge](knowledge.md#agents)). No
+link means no request; an offline computer leaves accepted work durably queued. Disconnecting an
+agent revokes the person's links at the team Host (`team.link.revoke`), not only on their
+computer, so it holds while that computer is off and for links made from any device.
 
 Each ask is its own queued input and Run, not a steer. Asking again in the same team thread
 continues the same local task. A private follow-up has no team
@@ -27,11 +31,28 @@ the agent can fetch older context. Audience/source descriptors accompany team co
 instructions never grant access. Publication uses that Run's final reply unless it already
 posted an explicit reply; reconnect recovers pending publication without rerunning failed work.
 
+## Entering a team
+
+The desktop and mobile apps enter a team advertising `team-session-exchange-v1` without a
+browser. Account signs a single-use assertion, valid for one minute, of who the person is for
+that exact team Host and app; it proves identity, never membership. The team Host verifies it
+against Account's published keys and, in one transaction, spends it and either signs in an active
+member or admits a newcomer through the invite sent beside it. It then issues the same native
+tokens a browser sign-in would. Older teams keep the browser sign-in; the app carries an invite
+through it only when the team advertises `team-invite-native-continuation-v1`, because older invite
+pages drop the app's sign-in. Otherwise the person joins on the invite page in their browser and
+the app signs in once they come back, a member by then. An invite re-admits a
+removed person only if it was created after their removal, on every admission path. The
+assertion is requested and exchanged where the credential lives (desktop main, the phone's secure
+storage); neither it nor the tokens reach a renderer. A team just joined shows from its verified
+discovery until Account's directory lists it, and is restored from the device's connection intent
+if the app restarts before then; the intent is kept even when no agent connects from that device.
+
 ## Access and removal
 
-Channel membership and topic grants define access, including nested groups. Attaching a topic
-grants nothing. Either a channel or a topic marked people only excludes agents from its
-content, search, files and SQL, and prevents wakes there. Administrators can manage access
+Channel membership and topic grants define access, including nested groups. A channel marked
+people only excludes agents from its content, search and files, and prevents wakes there; topics
+have no such switch ([knowledge](knowledge.md)). Administrators can manage access
 without reading restricted content; self-adding to a restricted channel or topic is logged and
 notifies its managers. Administrators cannot self-add to DMs. One-to-one DM membership is fixed;
 adding someone to a group DM requires confirmation because they see its history.
@@ -44,7 +65,20 @@ Buffered reads compare the authorization revision at handoff and discard the who
 access was lost. After commit, removal closes affected sockets, link sockets and file streams
 before the command returns. Tests must assert **after the command returns**, not an earlier
 internal point. Removing a person cuts their link; already downloaded data stays on their Mac.
-The team audits agent reads, searches, posts and knowledge queries as well as admin actions.
+The team audits agent reads, searches, posts and knowledge calls as well as admin actions.
+
+## Invites
+
+A team has one current reusable invite, `https://<team>/invite/<selector>#<verifier>`, that
+works for 1, 7 or 30 days with unlimited or capped uses. Reset revokes it and creates the next in
+one transaction. The Host verifies the verifier by digest and also seals it with a key derived
+from its auth secret, so any manager can show the same link on another device; rotating that
+secret leaves the link working but unshowable until a reset. The verifier travels only in the
+fragment and request bodies; the invite page drops it from history. Older single-use invites stay
+valid. Expiry, revocation and uses are checked inside the admission transaction, and a removed
+person gets back in only with an invite created after their removal. Browser sign-in and native
+session exchange both admit through `TeamInvitesStore.acceptInTransaction`
+([store](../packages/database/src/team-invites-store.ts)); add no second admission path.
 
 ## Transport and versions
 
@@ -66,7 +100,7 @@ window, not an exact match ([authority.ts](../packages/deployment-authority/src/
   replies and realtime and link frames, in both directions, drop unknown fields, and frame
   readers skip frame types they do not know. A sender relies on a new field or frame type only
   when the peer's version reads it. Two things stay strict: the signed discovery document, and
-  the search and knowledge SQL inputs a link frame carries, because a dropped filter or write
+  the search and knowledge inputs a link frame carries, because a dropped filter or version
   guard would change the answer.
 - Bump `teamApiVersion` only for a change an older peer would misread or refuse. Whoever bumps
   decides `minimumTeamApiVersion`: keep the old version and speak it to older peers, or raise

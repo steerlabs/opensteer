@@ -6,11 +6,13 @@ export function toolsFor(caller: {
   readonly kind: AgentCallerKind;
   readonly accessMode: ThreadAccessMode;
   readonly teamBound?: boolean;
+  readonly knowledge?: boolean;
 }) {
   return agentTools.filter(
     (tool) =>
       tool.callers.some((kind) => kind === caller.kind) &&
       (tool.access !== "settings" || caller.accessMode === "full-access") &&
-      (!("team" in tool) || (caller.kind === "run" && caller.teamBound === true)),
+      (!("team" in tool) || (caller.kind === "run" && caller.teamBound === true)) &&
+      (!("knowledge" in tool) || (caller.kind === "run" && caller.knowledge === true)),
   );
 }

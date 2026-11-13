@@ -1,6 +1,6 @@
 import { type RunId, type TeamBlobId } from "@opensteer/core";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
-import { TeamSqlInputSchema, TeamSearchInputSchema } from "@opensteer/protocol";
+import { TeamSearchInputSchema } from "@opensteer/protocol";
 import type { z } from "zod";
 import {
   linkError,
@@ -99,17 +99,6 @@ export class TeamRunTools {
     const request = await this.#request(runId);
     await this.#requests.prepareExplicitReply(request.teamId, request.requestId);
     return this.#publisher.reply(request, bodyMarkdown, attachmentIds);
-  }
-
-  async sql(runId: RunId, value: z.infer<typeof TeamSqlInputSchema>) {
-    const request = await this.#request(runId);
-    const result = await this.#rpc(request.teamId).call({
-      type: "knowledge.sql",
-      requestId: request.requestId,
-      input: TeamSqlInputSchema.parse(value),
-    });
-    if (result.kind !== "knowledge.sql") throw linkError("bad_request");
-    return result.result;
   }
 
   async file(runId: RunId, blobId: TeamBlobId) {

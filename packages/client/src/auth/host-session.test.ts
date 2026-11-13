@@ -20,7 +20,11 @@ import {
   HostSession,
   type SelectedAttachment,
 } from "./host-session.js";
-import type { HostOAuthState } from "./native-oauth.js";
+import {
+  TeamEntryRefusedError,
+  type HostOAuthState,
+  type NativeOAuthManager,
+} from "./native-oauth.js";
 
 describe("HostSession", () => {
   it("trusts only the exact ready local-owner generation and coalesces 401 recovery", async () => {
@@ -210,6 +214,17 @@ describe("HostSession", () => {
     );
   });
 
+  it("reports a team that turns the person away as blocked, not as a sign-in to retry", async () => {
+    const connection = connectionOfKind("team");
+    const fixture = hostSessionFixture(connection);
+    fixture.oauth.signInTeam.mockRejectedValueOnce(
+      new TeamEntryRefusedError("not-a-member", "Ask for an invite."),
+    );
+    await expect(
+      fixture.sessions.establish(connection.authority.document.deploymentId),
+    ).resolves.toMatchObject({ detail: "Ask for an invite.", outcome: "blocked" });
+  });
+
   it("abandons an in-flight Host sign-in and lets a fresh attempt replace it", async () => {
     const connection = connectionOfKind("team");
     const fixture = hostSessionFixture(connection);
@@ -358,6 +373,9 @@ function hostSessionFixture(
   };
   const oauth = {
     abandonHostSignIn: vi.fn((_deploymentId: string) => undefined),
+    signInTeam: vi.fn<NativeOAuthManager["signInTeam"]>(
+      async (connection): Promise<HostOAuthState> => oauth.beginHostSignIn(connection),
+    ),
     beginHostSignIn: vi.fn<(connection: DeploymentConnection) => Promise<HostOAuthState>>(
       async (connection) => {
         oauthStatus.current = "authorizing";

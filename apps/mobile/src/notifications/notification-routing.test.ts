@@ -158,7 +158,7 @@ describe("a team's notifications", () => {
     expect(
       notificationDestination(
         push({
-          deepLink: teamPageAppLink({ origin, target: { kind: "channel", channelId } }, "x"),
+          deepLink: teamPageAppLink({ origin, target: { kind: "channel", channelId } }, "desktop"),
         }),
       ),
     ).toBeNull();

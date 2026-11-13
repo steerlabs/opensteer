@@ -1,13 +1,30 @@
-import { thread_read, thread_send, trigger_write, team_search, sql } from "./tools/index.js";
+import { createId } from "@opensteer/core";
+import {
+  knowledge_write,
+  thread_read,
+  thread_send,
+  trigger_write,
+  team_search,
+} from "./tools/index.js";
 import { expect, it } from "vitest";
 import { z } from "zod";
 import { agentTools, platformGuideForRun, toolsFor, connectionInstructions } from "./index.js";
 it("keeps the permanent team inventory out of ordinary tasks and every non-Run caller", () => {
-  const names = (kind: "run" | "program" | "connection", teamBound: boolean) =>
-    toolsFor({ kind, teamBound, accessMode: "full-access" }).map((t) => t.name);
-  for (const name of ["team_read", "team_search", "team_reply", "sql"]) {
+  const names = (
+    kind: "run" | "program" | "connection",
+    teamBound: boolean,
+    knowledge = teamBound,
+  ) => toolsFor({ kind, teamBound, knowledge, accessMode: "full-access" }).map((t) => t.name);
+  for (const name of ["team_read", "team_search", "team_reply"]) {
     expect(names("run", true)).toContain(name);
-    expect(names("run", false)).not.toContain(name);
+    expect(names("run", false, true)).not.toContain(name);
+    expect(names("program", true)).not.toContain(name);
+    expect(names("connection", true)).not.toContain(name);
+  }
+  // Knowledge follows the owner into private Runs, never into programs or connections.
+  for (const name of ["knowledge_topics", "knowledge_read", "knowledge_write"]) {
+    expect(names("run", false, true)).toContain(name);
+    expect(names("run", true, false)).not.toContain(name);
     expect(names("program", true)).not.toContain(name);
     expect(names("connection", true)).not.toContain(name);
   }
@@ -24,7 +41,7 @@ it("keeps the permanent team inventory out of ordinary tasks and every non-Run c
 it("snapshots the personal/team guide and model-facing inventory", () => {
   const guides = {
     ordinary: platformGuideForRun({ purpose: "task" }),
-    team: platformGuideForRun({ purpose: "task", teamBound: true }),
+    team: platformGuideForRun({ purpose: "task", teamBound: true, knowledge: true }),
     connection: connectionInstructions,
   };
   expect(guides).toMatchSnapshot();
@@ -38,9 +55,21 @@ it("snapshots the personal/team guide and model-facing inventory", () => {
   ).toMatchSnapshot();
 });
 
-it("requires provenance on empty team search and knowledge results", () => {
+it("requires provenance on empty team search results", () => {
   expect(team_search.output.safeParse({ results: [], hasMore: false }).success).toBe(false);
-  expect(
-    sql.output.safeParse({ columns: [], rows: [], sources: [], truncated: false }).success,
-  ).toBe(false);
+});
+
+it("accepts exactly the add, change and delete shapes of a knowledge write", () => {
+  const topicId = createId("knowledgeTopic");
+  const noteId = createId("knowledgeNote");
+  const valid = (input: object) => knowledge_write.input.safeParse(input).success;
+  expect(valid({ topicId, title: "Refunds", body: "Within 30 days." })).toBe(true);
+  expect(valid({ noteId, version: 2, body: "Within 14 days." })).toBe(true);
+  expect(valid({ noteId, version: 2, delete: true })).toBe(true);
+  // A change without the version read would overwrite blind; a delete never carries text.
+  expect(valid({ noteId, body: "Within 14 days." })).toBe(false);
+  expect(valid({ noteId, version: 2, delete: true, body: "x" })).toBe(false);
+  // A change stays in its topic; a new note always names one.
+  expect(valid({ noteId, version: 2, topicId, body: "x" })).toBe(false);
+  expect(valid({ title: "Refunds", body: "Within 30 days." })).toBe(false);
 });

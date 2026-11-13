@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   DeploymentIdSchema,
   IsoDateTimeSchema,
+  KnowledgeNoteIdSchema,
   KnowledgeTopicIdSchema,
   SequenceSchema,
   TeamAgentRequestIdSchema,
@@ -19,7 +20,10 @@ import {
   TeamAuditSchema,
   TeamChannelAccessEntrySchema,
   TeamChannelAccessSchema,
+  TeamCurrentInviteSchema,
   TeamGroupSchema,
+  TeamInviteExpiryDaysSchema,
+  TeamInviteMaxUsesSchema,
   TeamInviteSchema,
   TeamMemberRoleSchema,
   TeamMemberSchema,
@@ -43,8 +47,14 @@ import {
   TeamSidebarSchema,
 } from "./team-chat.js";
 import {
-  TeamFactInputSchema,
-  TeamFactSchema,
+  TeamKnowledgeCursorSchema,
+  TeamNoteBodySchema,
+  TeamNotePreviewSchema,
+  TeamNoteSchema,
+  TeamNoteTitleSchema,
+  TeamNoteVersionSchema,
+  TeamTopicDescriptionSchema,
+  TeamTopicNameSchema,
   TeamTopicSchema,
   teamKnowledgeLimits,
 } from "./team-knowledge.js";
@@ -141,6 +151,18 @@ export const TeamCommandSchema = z.discriminatedUnion("type", [
     expiresAt: IsoDateTimeSchema,
   }),
   z.strictObject({ type: z.literal("team.invite.revoke"), inviteId: TeamInviteIdSchema }),
+  /**
+   * Replaces the team's current reusable invite only when it is still `replaces` (null: when
+   * there is none); otherwise answers the one another manager made meanwhile. `id` names the new
+   * invite, so a retried reset returns it instead of replacing it again.
+   */
+  z.strictObject({
+    type: z.literal("team.invite.reset"),
+    id: TeamInviteIdSchema,
+    replaces: TeamInviteIdSchema.nullable(),
+    expiresInDays: TeamInviteExpiryDaysSchema,
+    maxUses: TeamInviteMaxUsesSchema,
+  }),
   z.strictObject({
     type: z.literal("team.invite.accept"),
     selector: z.string().min(24).max(96),
@@ -152,14 +174,15 @@ export const TeamCommandSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("team.knowledge.topic.create"),
     id: KnowledgeTopicIdSchema,
-    name: name,
-    peopleOnly: z.boolean(),
+    name: TeamTopicNameSchema,
+    description: TeamTopicDescriptionSchema,
     access: z.array(TeamTopicAccessEntrySchema).max(1000),
   }),
   z.strictObject({
-    type: z.literal("team.knowledge.topic.rename"),
+    type: z.literal("team.knowledge.topic.update"),
     topicId: KnowledgeTopicIdSchema,
-    name: name,
+    name: TeamTopicNameSchema,
+    description: TeamTopicDescriptionSchema,
   }),
   z.strictObject({
     type: z.literal("team.knowledge.topic.access.set"),
@@ -168,14 +191,18 @@ export const TeamCommandSchema = z.discriminatedUnion("type", [
     access: z.array(TeamTopicAccessEntrySchema).max(1000),
   }),
   z.strictObject({
-    type: z.literal("team.knowledge.topic.peopleOnly.set"),
+    type: z.literal("team.knowledge.note.write"),
+    noteId: KnowledgeNoteIdSchema,
     topicId: KnowledgeTopicIdSchema,
-    peopleOnly: z.boolean(),
+    /** null creates the note; otherwise the version you edited, refused if it moved on. */
+    expectedVersion: TeamNoteVersionSchema.nullable(),
+    title: TeamNoteTitleSchema,
+    body: TeamNoteBodySchema,
   }),
   z.strictObject({
-    type: z.literal("team.knowledge.fact.append"),
-    operationId: z.uuid(),
-    facts: z.array(TeamFactInputSchema).min(1).max(teamKnowledgeLimits.factsPerWrite),
+    type: z.literal("team.knowledge.note.delete"),
+    noteId: KnowledgeNoteIdSchema,
+    expectedVersion: TeamNoteVersionSchema,
   }),
   z.strictObject({
     type: z.literal("team.agent.request.cancel"),
@@ -230,16 +257,6 @@ export const TeamCommandSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     type: z.literal("team.knowledge.topic.restore"),
-    topicId: KnowledgeTopicIdSchema,
-  }),
-  z.strictObject({
-    type: z.literal("team.channel.topic.attach"),
-    channelId: TeamChannelIdSchema,
-    topicId: KnowledgeTopicIdSchema,
-  }),
-  z.strictObject({
-    type: z.literal("team.channel.topic.detach"),
-    channelId: TeamChannelIdSchema,
     topicId: KnowledgeTopicIdSchema,
   }),
 ]);
@@ -324,6 +341,10 @@ export const teamReadSchemas = {
     input: z.strictObject({ after: TeamInviteIdSchema.optional() }),
     output: z.strictObject({ invites: z.array(TeamInviteSchema).max(50), hasMore: z.boolean() }),
   },
+  "team.invite.current.get": {
+    input: z.strictObject({}),
+    output: z.strictObject({ invite: TeamCurrentInviteSchema.nullable() }),
+  },
   "team.audit.page": {
     input: z.strictObject({ before: SequenceSchema.optional() }),
     output: z.strictObject({ audit: z.array(TeamAuditSchema).max(50), hasMore: z.boolean() }),
@@ -333,11 +354,11 @@ export const teamReadSchemas = {
     output: z.strictObject({ notices: z.array(TeamNoticeSchema).max(50), hasMore: z.boolean() }),
   },
   "team.knowledge.topics.list": {
-    input: z.strictObject({
-      channelId: TeamChannelIdSchema.optional(),
-      after: KnowledgeTopicIdSchema.optional(),
+    input: z.strictObject({ after: KnowledgeTopicIdSchema.optional() }),
+    output: z.strictObject({
+      topics: z.array(TeamTopicSchema).max(teamKnowledgeLimits.pageSize),
+      hasMore: z.boolean(),
     }),
-    output: z.strictObject({ topics: z.array(TeamTopicSchema).max(50), hasMore: z.boolean() }),
   },
   "team.knowledge.topic.get": {
     input: z.strictObject({ topicId: KnowledgeTopicIdSchema }),
@@ -405,12 +426,31 @@ export const teamReadSchemas = {
       hasMore: z.boolean(),
     }),
   },
-  "team.knowledge.facts.page": {
-    input: z.strictObject({ topicId: KnowledgeTopicIdSchema, before: SequenceSchema.optional() }),
-    output: z.strictObject({ facts: z.array(TeamFactSchema).max(50), hasMore: z.boolean() }),
+  /** Newest-changed first in one topic or every readable topic; with `query`, best matches first. */
+  "team.knowledge.notes.page": {
+    input: z.strictObject({
+      topicId: KnowledgeTopicIdSchema.optional(),
+      query: z.string().trim().min(1).max(teamKnowledgeLimits.queryChars).optional(),
+      cursor: TeamKnowledgeCursorSchema.optional(),
+    }),
+    output: z.strictObject({
+      notes: z.array(TeamNotePreviewSchema).max(teamKnowledgeLimits.pageSize),
+      nextCursor: TeamKnowledgeCursorSchema.nullable(),
+    }),
   },
-  "team.knowledge.history.page": {
-    input: z.strictObject({ topicId: KnowledgeTopicIdSchema, before: SequenceSchema.optional() }),
-    output: z.strictObject({ facts: z.array(TeamFactSchema).max(50), hasMore: z.boolean() }),
+  "team.knowledge.note.get": {
+    input: z.strictObject({ noteId: KnowledgeNoteIdSchema }),
+    output: TeamNoteSchema,
+  },
+  /** Every version of a note, newest first. */
+  "team.knowledge.note.history": {
+    input: z.strictObject({
+      noteId: KnowledgeNoteIdSchema,
+      before: TeamNoteVersionSchema.optional(),
+    }),
+    output: z.strictObject({
+      versions: z.array(TeamNoteSchema).max(teamKnowledgeLimits.pageSize),
+      hasMore: z.boolean(),
+    }),
   },
 } as const;

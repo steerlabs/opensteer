@@ -439,7 +439,7 @@
   width: 12px;
   height: 12px;
 }
-/* The channel's knowledge: who can see each topic, and whether agents can. */
+/* The team's knowledge: who can read each topic, and so whose agents can. */
 .tw-know {
   display: flex;
   flex-direction: column;
@@ -472,8 +472,23 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  width: 100%;
   padding: 9px 0;
+  border: 0;
   border-top: 1px solid var(--line);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.topic__who {
+  flex: none;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+.topic[aria-pressed="true"] .topic__name b {
+  color: var(--ember);
 }
 .topic__name b {
   font-weight: 550;

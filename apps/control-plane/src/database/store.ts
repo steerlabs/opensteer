@@ -29,6 +29,7 @@ import {
   type DirectoryProjectionRequest,
   type DirectoryProjectionResponse,
   type HostOidcClient,
+  type HostAccountAdoptionAuthority,
   type HostAccountAdoptionProofId,
   type PublishHostAuthorityRequest,
   type PublishHostAuthorityResponse,
@@ -64,7 +65,14 @@ import { lockDeploymentIdentity, lockDeploymentOrigin } from "./advisory-locks.j
 import type { HostAccountAdoptionCompletionGrantIssuer } from "../adoption/adoption-grant-issuer.js";
 import type { AdoptionOperationCipher } from "../adoption/adoption-operation-crypto.js";
 import { ControlPlaneError } from "../server/errors.js";
-import { deleteHostedTeams } from "../hosted-teams/hosted-team-store.js";
+import {
+  abandonAccountDeletion,
+  beginAccountDeletion,
+  renewAccountDeletion,
+  deleteHostedTeams,
+  heldHostedTeams,
+  promoteReadyHostedTeams,
+} from "../hosted-teams/hosted-team-store.js";
 import {
   createHostCredential,
   createOAuthClientSecret,
@@ -381,6 +389,10 @@ export class ControlPlaneStore {
   async adoptExistingDeployment(
     ownerAccountId: ControlPlaneAccountId,
     input: AdoptExistingDeploymentRequest,
+    options: {
+      /** Runs inside the adoption transaction after its locks; throwing rolls the adoption back. */
+      readonly guard?: (transaction: Transaction<ControlPlaneDatabaseSchema>) => Promise<void>;
+    } = {},
   ): Promise<AdoptExistingDeploymentResponse> {
     if (
       !this.#adoptionProofVerifier ||
@@ -478,6 +490,7 @@ export class ControlPlaneStore {
             transaction,
             true,
           );
+        await options.guard?.(transaction);
         const bundle = adoptedHostProvisioningBundle(this.#issuer, input, response);
         const sealed = this.#adoptionOperationCipher!.seal(input.proof.proofId, bundle);
         const now = new Date();
@@ -510,6 +523,58 @@ export class ControlPlaneStore {
       proofId: input.proof.proofId,
       provisioningBundle,
       resultExpiresAt: resultExpiresAt.toISOString(),
+    });
+  }
+
+  /**
+   * The newest adoption result an Account holds for this exact Host authority that the Host may
+   * not have installed yet, with a fresh completion grant, so a completion whose answer was lost
+   * can be sent again. Null when there is none to resend.
+   */
+  async resumeAdoption(
+    ownerAccountId: ControlPlaneAccountId,
+    authority: HostAccountAdoptionAuthority,
+  ): Promise<AdoptExistingDeploymentResponse | null> {
+    if (!this.#adoptionCompletionGrantIssuer || !this.#adoptionOperationCipher) return null;
+    await this.purgeExpiredAdoptionResults();
+    const current = await this.#database.transaction().execute(async (transaction) => {
+      const operation = await transaction
+        .selectFrom("deploymentAdoptionOperations")
+        .selectAll()
+        .where("ownerAccountId", "=", ownerAccountId)
+        .where("state", "=", "completed")
+        .where(sql<boolean>`receipt->'authority'->>'deploymentId' = ${authority.deploymentId}`)
+        .orderBy("createdAt", "desc")
+        .limit(1)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!operation) return null;
+      try {
+        const read = await this.#readCurrentAdoptionOperation(
+          transaction,
+          operation,
+          operation.requestFingerprint,
+          new Date(),
+        );
+        return { ...read, proofId: operation.proofId };
+      } catch (error) {
+        if (error instanceof ControlPlaneError && error.code === "conflict") return null;
+        throw error;
+      }
+    });
+    if (!current) return null;
+    const receipt = current.receipt.authority;
+    if (
+      receipt.canonicalOrigin !== authority.canonicalOrigin ||
+      receipt.hostInstanceId !== authority.hostInstanceId ||
+      receipt.hostKeyFingerprint !== authority.hostKeyFingerprint
+    )
+      return null;
+    return AdoptExistingDeploymentResponseSchema.parse({
+      completionGrant: await this.#adoptionCompletionGrantIssuer.issue(current.receipt),
+      proofId: current.proofId,
+      provisioningBundle: current.provisioningBundle,
+      resultExpiresAt: current.resultExpiresAt.toISOString(),
     });
   }
 
@@ -1206,6 +1271,7 @@ export class ControlPlaneStore {
           );
         }
       }
+      await promoteReadyHostedTeams(transaction, authority.deploymentId, accountId);
       return DirectoryProjectionResponseSchema.parse({
         accountId,
         generation: input.generation,
@@ -1470,22 +1536,48 @@ export class ControlPlaneStore {
     return account?.refreshToken ?? null;
   }
 
+  /** Refuses, or fences the Account for one deletion attempt; see `beginAccountDeletion`. */
+  beginAccountDeletion(accountId: ControlPlaneAccountId): Promise<string> {
+    return beginAccountDeletion(this.#database, accountId);
+  }
+
+  renewAccountDeletion(accountId: ControlPlaneAccountId, attemptId: string): Promise<void> {
+    return renewAccountDeletion(this.#database, accountId, attemptId);
+  }
+
+  abandonAccountDeletion(accountId: ControlPlaneAccountId, attemptId: string): Promise<void> {
+    return abandonAccountDeletion(this.#database, accountId, attemptId);
+  }
+
+  /** Hosted teams that keep this Account from being deleted until each is deleted or transferred. */
+  heldHostedTeams(accountId: ControlPlaneAccountId) {
+    return heldHostedTeams(this.#database, accountId);
+  }
+
   /**
-   * Removes the Account, the Deployments it owns and the teams Opensteer hosts for it. Their Connect resources must
-   * already be revoked: a tunnel left behind would outlive every row that names it.
-   * Hosts learn nothing here, so they keep running and find out on their next call.
+   * Removes the Account, the Deployments it owns and its hosted teams still being set up. Their
+   * Connect resources must already be revoked: a tunnel left behind would outlive every row that
+   * names it. Hosts learn nothing here, so they keep running and find out on their next call.
+   * A hosted team the Account still holds refuses it; `beginAccountDeletion` refuses that first.
    */
-  async deleteAccount(accountId: ControlPlaneAccountId): Promise<void> {
+  async deleteAccount(accountId: ControlPlaneAccountId, attemptId: string): Promise<void> {
     await this.#database.transaction().execute(async (transaction) => {
       await transaction.deleteFrom("authAccounts").where("userId", "=", accountId).execute();
       const account = await transaction
         .selectFrom("users")
-        .select("id")
+        .select(["id", "deletionAttemptId", "deletionFencedUntil"])
         .where("id", "=", accountId)
         // FOR UPDATE: Delete this Account user and its dependent rows.
         .forUpdate()
         .executeTakeFirst();
       if (!account) throw new ControlPlaneError("not_found", "Account was not found");
+      // Only the attempt whose fence is still up may finish; a stalled one lost it to another.
+      if (
+        account.deletionAttemptId !== attemptId ||
+        !account.deletionFencedUntil ||
+        account.deletionFencedUntil <= new Date()
+      )
+        throw new ControlPlaneError("unavailable", "Deleting your Account stopped. Try again.");
       await transaction
         .selectFrom("authSessions")
         .select("id")
@@ -1511,6 +1603,9 @@ export class ControlPlaneStore {
         // FOR UPDATE: Deleting the Account deletes the Deployments it owns.
         .forUpdate()
         .execute();
+      // Locked above, the Account can't be handed a team or have one adopted from here on.
+      if ((await heldHostedTeams(transaction, accountId)).length > 0)
+        throw new ControlPlaneError("conflict", "This Account still holds a team.");
       if (owned.length > 0) {
         // Locked, because a provision committing after a plain read would lose its row
         // to the cascade and leave its tunnel unrecorded.
@@ -1839,7 +1934,7 @@ function internalId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID()}`;
 }
 
-function accountOwnerProfile(account: {
+export function accountOwnerProfile(account: {
   readonly id: ControlPlaneAccountId;
   readonly displayName: string;
   readonly email: string;

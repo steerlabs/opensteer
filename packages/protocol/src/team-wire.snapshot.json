@@ -1,6 +1,6 @@
 {
-  "teamApiVersion": 2,
-  "minimumTeamApiVersion": 2,
+  "teamApiVersion": 3,
+  "minimumTeamApiVersion": 3,
   "input": {
     "rpc team.bootstrap.get": {
       "type": "object",
@@ -351,6 +351,11 @@
       },
       "additionalProperties": false
     },
+    "rpc team.invite.current.get": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
     "rpc team.audit.page": {
       "type": "object",
       "properties": {
@@ -374,10 +379,6 @@
     "rpc team.knowledge.topics.list": {
       "type": "object",
       "properties": {
-        "channelId": {
-          "type": "string",
-          "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-        },
         "after": {
           "type": "string",
           "pattern": "^ktp_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -483,37 +484,54 @@
       ],
       "additionalProperties": false
     },
-    "rpc team.knowledge.facts.page": {
+    "rpc team.knowledge.notes.page": {
       "type": "object",
       "properties": {
         "topicId": {
           "type": "string",
           "pattern": "^ktp_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
         },
-        "before": {
+        "query": {
           "type": "string",
-          "pattern": "^(0|[1-9][0-9]*)$"
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "cursor": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      },
+      "additionalProperties": false
+    },
+    "rpc team.knowledge.note.get": {
+      "type": "object",
+      "properties": {
+        "noteId": {
+          "type": "string",
+          "pattern": "^knt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
         }
       },
       "required": [
-        "topicId"
+        "noteId"
       ],
       "additionalProperties": false
     },
-    "rpc team.knowledge.history.page": {
+    "rpc team.knowledge.note.history": {
       "type": "object",
       "properties": {
-        "topicId": {
+        "noteId": {
           "type": "string",
-          "pattern": "^ktp_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          "pattern": "^knt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
         },
         "before": {
-          "type": "string",
-          "pattern": "^(0|[1-9][0-9]*)$"
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
         }
       },
       "required": [
-        "topicId"
+        "noteId"
       ],
       "additionalProperties": false
     },
@@ -1296,6 +1314,66 @@
       ],
       "additionalProperties": false
     },
+    "command team.invite.reset": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.invite.reset"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^tiv_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "replaces": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tiv_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expiresInDays": {
+          "anyOf": [
+            {
+              "type": "number",
+              "const": 1
+            },
+            {
+              "type": "number",
+              "const": 7
+            },
+            {
+              "type": "number",
+              "const": 30
+            }
+          ]
+        },
+        "maxUses": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "replaces",
+        "expiresInDays",
+        "maxUses"
+      ],
+      "additionalProperties": false
+    },
     "command team.invite.accept": {
       "type": "object",
       "properties": {
@@ -1386,8 +1464,9 @@
           "minLength": 1,
           "maxLength": 160
         },
-        "peopleOnly": {
-          "type": "boolean"
+        "description": {
+          "type": "string",
+          "maxLength": 500
         },
         "access": {
           "maxItems": 1000,
@@ -1432,6 +1511,19 @@
                       "groupId"
                     ],
                     "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "everyone"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false
                   }
                 ]
               },
@@ -1456,17 +1548,17 @@
         "type",
         "id",
         "name",
-        "peopleOnly",
+        "description",
         "access"
       ],
       "additionalProperties": false
     },
-    "command team.knowledge.topic.rename": {
+    "command team.knowledge.topic.update": {
       "type": "object",
       "properties": {
         "type": {
           "type": "string",
-          "const": "team.knowledge.topic.rename"
+          "const": "team.knowledge.topic.update"
         },
         "topicId": {
           "type": "string",
@@ -1476,12 +1568,17 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 160
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500
         }
       },
       "required": [
         "type",
         "topicId",
-        "name"
+        "name",
+        "description"
       ],
       "additionalProperties": false
     },
@@ -1543,6 +1640,19 @@
                       "groupId"
                     ],
                     "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "everyone"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "additionalProperties": false
                   }
                 ]
               },
@@ -1571,124 +1681,75 @@
       ],
       "additionalProperties": false
     },
-    "command team.knowledge.topic.peopleOnly.set": {
+    "command team.knowledge.note.write": {
       "type": "object",
       "properties": {
         "type": {
           "type": "string",
-          "const": "team.knowledge.topic.peopleOnly.set"
+          "const": "team.knowledge.note.write"
+        },
+        "noteId": {
+          "type": "string",
+          "pattern": "^knt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
         },
         "topicId": {
           "type": "string",
           "pattern": "^ktp_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
         },
-        "peopleOnly": {
-          "type": "boolean"
+        "expectedVersion": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "body": {
+          "type": "string"
         }
       },
       "required": [
         "type",
+        "noteId",
         "topicId",
-        "peopleOnly"
+        "expectedVersion",
+        "title",
+        "body"
       ],
       "additionalProperties": false
     },
-    "command team.knowledge.fact.append": {
+    "command team.knowledge.note.delete": {
       "type": "object",
       "properties": {
         "type": {
           "type": "string",
-          "const": "team.knowledge.fact.append"
+          "const": "team.knowledge.note.delete"
         },
-        "operationId": {
+        "noteId": {
           "type": "string",
-          "format": "uuid",
-          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          "pattern": "^knt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
         },
-        "facts": {
-          "minItems": 1,
-          "maxItems": 25,
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "topicId": {
-                "type": "string",
-                "pattern": "^ktp_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-              },
-              "thing": {
-                "type": "string",
-                "minLength": 1
-              },
-              "property": {
-                "type": "string",
-                "minLength": 1
-              },
-              "value": {
-                "$ref": "#/$defs/__schema0"
-              },
-              "replacesId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "pattern": "^(0|[1-9][0-9]*)$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              }
-            },
-            "required": [
-              "topicId",
-              "thing",
-              "property",
-              "value",
-              "replacesId"
-            ],
-            "additionalProperties": false
-          }
+        "expectedVersion": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
         }
       },
       "required": [
         "type",
-        "operationId",
-        "facts"
+        "noteId",
+        "expectedVersion"
       ],
-      "additionalProperties": false,
-      "$defs": {
-        "__schema0": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "number"
-            },
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            },
-            {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/__schema0"
-              }
-            },
-            {
-              "type": "object",
-              "propertyNames": {
-                "type": "string"
-              },
-              "additionalProperties": {
-                "$ref": "#/$defs/__schema0"
-              }
-            }
-          ]
-        }
-      }
+      "additionalProperties": false
     },
     "command team.agent.request.cancel": {
       "type": "object",
@@ -2016,52 +2077,6 @@
       ],
       "additionalProperties": false
     },
-    "command team.channel.topic.attach": {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "team.channel.topic.attach"
-        },
-        "channelId": {
-          "type": "string",
-          "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-        },
-        "topicId": {
-          "type": "string",
-          "pattern": "^ktp_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-        }
-      },
-      "required": [
-        "type",
-        "channelId",
-        "topicId"
-      ],
-      "additionalProperties": false
-    },
-    "command team.channel.topic.detach": {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "team.channel.topic.detach"
-        },
-        "channelId": {
-          "type": "string",
-          "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-        },
-        "topicId": {
-          "type": "string",
-          "pattern": "^ktp_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-        }
-      },
-      "required": [
-        "type",
-        "channelId",
-        "topicId"
-      ],
-      "additionalProperties": false
-    },
     "command notification.preview.register": {
       "type": "object",
       "properties": {
@@ -2252,6 +2267,57 @@
         "sizeBytes",
         "sha256",
         "previewSizeBytes"
+      ],
+      "additionalProperties": false
+    },
+    "session exchange": {
+      "type": "object",
+      "properties": {
+        "assertion": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 16384,
+          "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"
+        },
+        "invite": {
+          "type": "object",
+          "properties": {
+            "selector": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{24,96}$"
+            },
+            "verifier": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{24,128}$"
+            }
+          },
+          "required": [
+            "selector",
+            "verifier"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "assertion"
+      ],
+      "additionalProperties": false
+    },
+    "invite preview": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{24,96}$"
+        },
+        "verifier": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{24,128}$"
+        }
+      },
+      "required": [
+        "selector",
+        "verifier"
       ],
       "additionalProperties": false
     }
@@ -2540,6 +2606,29 @@
             "totalMentionCount",
             "nextCursor",
             "accessRevision"
+          ]
+        },
+        "generalChannelId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hostedTeamId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },
@@ -5753,6 +5842,91 @@
         "hasMore"
       ]
     },
+    "rpc team.invite.current.get": {
+      "type": "object",
+      "properties": {
+        "invite": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^tiv_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                "url": {
+                  "type": "string",
+                  "format": "uri"
+                },
+                "expiresInDays": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "const": 1
+                    },
+                    {
+                      "type": "number",
+                      "const": 7
+                    },
+                    {
+                      "type": "number",
+                      "const": 30
+                    }
+                  ]
+                },
+                "expiresAt": {
+                  "type": "string",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                  "format": "date-time"
+                },
+                "maxUses": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 1000
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "usedCount": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "createdBy": {
+                  "type": "string",
+                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                  "format": "date-time"
+                }
+              },
+              "required": [
+                "id",
+                "url",
+                "expiresInDays",
+                "expiresAt",
+                "maxUses",
+                "usedCount",
+                "createdBy",
+                "createdAt"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "invite"
+      ]
+    },
     "rpc team.audit.page": {
       "type": "object",
       "properties": {
@@ -5975,19 +6149,9 @@
                 "minLength": 1,
                 "maxLength": 160
               },
-              "originChannelId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "peopleOnly": {
-                "type": "boolean"
+              "description": {
+                "type": "string",
+                "maxLength": 500
               },
               "archivedAt": {
                 "anyOf": [
@@ -6005,6 +6169,28 @@
                 "type": "string",
                 "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
                 "format": "date-time"
+              },
+              "noteCount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "audience": {
+                "type": "object",
+                "properties": {
+                  "everyone": {
+                    "type": "boolean"
+                  },
+                  "people": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "everyone",
+                  "people"
+                ]
               },
               "can": {
                 "type": "object",
@@ -6029,10 +6215,11 @@
             "required": [
               "id",
               "name",
-              "originChannelId",
-              "peopleOnly",
+              "description",
               "archivedAt",
               "updatedAt",
+              "noteCount",
+              "audience",
               "can"
             ]
           }
@@ -6058,19 +6245,9 @@
           "minLength": 1,
           "maxLength": 160
         },
-        "originChannelId": {
-          "anyOf": [
-            {
-              "type": "string",
-              "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "peopleOnly": {
-          "type": "boolean"
+        "description": {
+          "type": "string",
+          "maxLength": 500
         },
         "archivedAt": {
           "anyOf": [
@@ -6088,6 +6265,28 @@
           "type": "string",
           "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
           "format": "date-time"
+        },
+        "noteCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "audience": {
+          "type": "object",
+          "properties": {
+            "everyone": {
+              "type": "boolean"
+            },
+            "people": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "everyone",
+            "people"
+          ]
         },
         "can": {
           "type": "object",
@@ -6112,10 +6311,11 @@
       "required": [
         "id",
         "name",
-        "originChannelId",
-        "peopleOnly",
+        "description",
         "archivedAt",
         "updatedAt",
+        "noteCount",
+        "audience",
         "can"
       ]
     },
@@ -6166,6 +6366,18 @@
                     "required": [
                       "kind",
                       "groupId"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "everyone"
+                      }
+                    },
+                    "required": [
+                      "kind"
                     ]
                   }
                 ]
@@ -7421,60 +7633,63 @@
         "hasMore"
       ]
     },
-    "rpc team.knowledge.facts.page": {
+    "rpc team.knowledge.notes.page": {
       "type": "object",
       "properties": {
-        "facts": {
+        "notes": {
           "maxItems": 50,
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^knt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              },
               "topicId": {
                 "type": "string",
                 "pattern": "^ktp_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
               },
-              "thing": {
+              "version": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "title": {
                 "type": "string",
-                "minLength": 1
-              },
-              "property": {
-                "type": "string",
-                "minLength": 1
-              },
-              "value": {
-                "$ref": "#/$defs/__schema0"
-              },
-              "replacesId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "pattern": "^(0|[1-9][0-9]*)$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "id": {
-                "type": "string",
-                "pattern": "^(0|[1-9][0-9]*)$"
-              },
-              "writerUserId": {
-                "type": "string",
-                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-              },
-              "writerKind": {
-                "type": "string",
-                "enum": [
-                  "human",
-                  "agent"
-                ]
+                "minLength": 1,
+                "maxLength": 200
               },
               "writtenAt": {
                 "type": "string",
                 "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
                 "format": "date-time"
+              },
+              "writer": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "human",
+                      "agent"
+                    ]
+                  },
+                  "userId": {
+                    "type": "string",
+                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  }
+                },
+                "required": [
+                  "kind",
+                  "userId",
+                  "name"
+                ]
               },
               "source": {
                 "anyOf": [
@@ -7500,118 +7715,200 @@
                     "type": "null"
                   }
                 ]
+              },
+              "preview": {
+                "type": "string",
+                "maxLength": 200
               }
             },
             "required": [
-              "topicId",
-              "thing",
-              "property",
-              "value",
-              "replacesId",
               "id",
-              "writerUserId",
-              "writerKind",
+              "topicId",
+              "version",
+              "title",
               "writtenAt",
-              "source"
+              "writer",
+              "source",
+              "preview"
             ]
           }
         },
-        "hasMore": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "facts",
-        "hasMore"
-      ],
-      "$defs": {
-        "__schema0": {
+        "nextCursor": {
           "anyOf": [
             {
-              "type": "string"
-            },
-            {
-              "type": "number"
-            },
-            {
-              "type": "boolean"
+              "type": "string",
+              "maxLength": 256
             },
             {
               "type": "null"
-            },
-            {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/__schema0"
-              }
-            },
-            {
-              "type": "object",
-              "propertyNames": {
-                "type": "string"
-              },
-              "additionalProperties": {
-                "$ref": "#/$defs/__schema0"
-              }
             }
           ]
         }
-      }
+      },
+      "required": [
+        "notes",
+        "nextCursor"
+      ]
     },
-    "rpc team.knowledge.history.page": {
+    "rpc team.knowledge.note.get": {
       "type": "object",
       "properties": {
-        "facts": {
+        "id": {
+          "type": "string",
+          "pattern": "^knt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "topicId": {
+          "type": "string",
+          "pattern": "^ktp_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "version": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "body": {
+          "type": "string"
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "writtenAt": {
+          "type": "string",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+          "format": "date-time"
+        },
+        "writer": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "human",
+                "agent"
+              ]
+            },
+            "userId": {
+              "type": "string",
+              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            }
+          },
+          "required": [
+            "kind",
+            "userId",
+            "name"
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "channelId": {
+                  "type": "string",
+                  "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                "messageId": {
+                  "type": "string",
+                  "maxLength": 19,
+                  "pattern": "^[1-9][0-9]*$"
+                }
+              },
+              "required": [
+                "channelId",
+                "messageId"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "topicId",
+        "version",
+        "title",
+        "body",
+        "deleted",
+        "writtenAt",
+        "writer",
+        "source"
+      ]
+    },
+    "rpc team.knowledge.note.history": {
+      "type": "object",
+      "properties": {
+        "versions": {
           "maxItems": 50,
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^knt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              },
               "topicId": {
                 "type": "string",
                 "pattern": "^ktp_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
               },
-              "thing": {
+              "version": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "title": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "maxLength": 200
               },
-              "property": {
-                "type": "string",
-                "minLength": 1
+              "body": {
+                "type": "string"
               },
-              "value": {
-                "$ref": "#/$defs/__schema0"
-              },
-              "replacesId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "pattern": "^(0|[1-9][0-9]*)$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "id": {
-                "type": "string",
-                "pattern": "^(0|[1-9][0-9]*)$"
-              },
-              "writerUserId": {
-                "type": "string",
-                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-              },
-              "writerKind": {
-                "type": "string",
-                "enum": [
-                  "human",
-                  "agent"
-                ]
+              "deleted": {
+                "type": "boolean"
               },
               "writtenAt": {
                 "type": "string",
                 "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
                 "format": "date-time"
+              },
+              "writer": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "human",
+                      "agent"
+                    ]
+                  },
+                  "userId": {
+                    "type": "string",
+                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 120
+                  }
+                },
+                "required": [
+                  "kind",
+                  "userId",
+                  "name"
+                ]
               },
               "source": {
                 "anyOf": [
@@ -7640,15 +7937,14 @@
               }
             },
             "required": [
-              "topicId",
-              "thing",
-              "property",
-              "value",
-              "replacesId",
               "id",
-              "writerUserId",
-              "writerKind",
+              "topicId",
+              "version",
+              "title",
+              "body",
+              "deleted",
               "writtenAt",
+              "writer",
               "source"
             ]
           }
@@ -7658,42 +7954,9 @@
         }
       },
       "required": [
-        "facts",
+        "versions",
         "hasMore"
-      ],
-      "$defs": {
-        "__schema0": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "number"
-            },
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            },
-            {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/__schema0"
-              }
-            },
-            {
-              "type": "object",
-              "propertyNames": {
-                "type": "string"
-              },
-              "additionalProperties": {
-                "$ref": "#/$defs/__schema0"
-              }
-            }
-          ]
-        }
-      }
+      ]
     },
     "rpc auth.config": {
       "type": "object",
@@ -8854,6 +9117,89 @@
         "type"
       ]
     },
+    "command team.invite.reset": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.invite.reset"
+        },
+        "invite": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^tiv_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "url": {
+              "type": "string",
+              "format": "uri"
+            },
+            "expiresInDays": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "const": 1
+                },
+                {
+                  "type": "number",
+                  "const": 7
+                },
+                {
+                  "type": "number",
+                  "const": 30
+                }
+              ]
+            },
+            "expiresAt": {
+              "type": "string",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+              "format": "date-time"
+            },
+            "maxUses": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "usedCount": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "createdBy": {
+              "type": "string",
+              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "createdAt": {
+              "type": "string",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "id",
+            "url",
+            "expiresInDays",
+            "expiresAt",
+            "maxUses",
+            "usedCount",
+            "createdBy",
+            "createdAt"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "invite"
+      ]
+    },
     "command team.invite.accept": {
       "type": "object",
       "properties": {
@@ -8997,12 +9343,12 @@
         "type"
       ]
     },
-    "command team.knowledge.topic.rename": {
+    "command team.knowledge.topic.update": {
       "type": "object",
       "properties": {
         "type": {
           "type": "string",
-          "const": "team.knowledge.topic.rename"
+          "const": "team.knowledge.topic.update"
         }
       },
       "required": [
@@ -9021,28 +9367,50 @@
         "type"
       ]
     },
-    "command team.knowledge.topic.peopleOnly.set": {
+    "command team.knowledge.note.write": {
       "type": "object",
       "properties": {
         "type": {
           "type": "string",
-          "const": "team.knowledge.topic.peopleOnly.set"
+          "const": "team.knowledge.note.write"
+        },
+        "noteId": {
+          "type": "string",
+          "pattern": "^knt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "version": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
         }
       },
       "required": [
-        "type"
+        "type",
+        "noteId",
+        "version"
       ]
     },
-    "command team.knowledge.fact.append": {
+    "command team.knowledge.note.delete": {
       "type": "object",
       "properties": {
         "type": {
           "type": "string",
-          "const": "team.knowledge.fact.append"
+          "const": "team.knowledge.note.delete"
+        },
+        "noteId": {
+          "type": "string",
+          "pattern": "^knt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "version": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
         }
       },
       "required": [
-        "type"
+        "type",
+        "noteId",
+        "version"
       ]
     },
     "command team.agent.request.cancel": {
@@ -9237,30 +9605,6 @@
         "type"
       ]
     },
-    "command team.channel.topic.attach": {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "team.channel.topic.attach"
-        }
-      },
-      "required": [
-        "type"
-      ]
-    },
-    "command team.channel.topic.detach": {
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "const": "team.channel.topic.detach"
-        }
-      },
-      "required": [
-        "type"
-      ]
-    },
     "command notification.preview.register": {
       "type": "object",
       "properties": {
@@ -9357,6 +9701,138 @@
         "lastSeenAt"
       ],
       "additionalProperties": false
+    },
+    "session exchange": {
+      "type": "object",
+      "properties": {
+        "admitted": {
+          "type": "boolean"
+        },
+        "member": {
+          "type": "object",
+          "properties": {
+            "userId": {
+              "type": "string",
+              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "displayName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            },
+            "handle": {
+              "type": "string",
+              "maxLength": 48,
+              "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+            },
+            "image": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uri"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "role": {
+              "type": "string",
+              "enum": [
+                "owner",
+                "admin",
+                "member"
+              ]
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "active",
+                "removed"
+              ]
+            },
+            "generation": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "joinedAt": {
+              "type": "string",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "userId",
+            "displayName",
+            "handle",
+            "image",
+            "role",
+            "state",
+            "generation",
+            "joinedAt"
+          ]
+        },
+        "tokens": {
+          "type": "object",
+          "properties": {
+            "access_token": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 65536
+            },
+            "token_type": {
+              "type": "string",
+              "const": "Bearer"
+            },
+            "expires_in": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 31536000
+            },
+            "refresh_token": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 65536
+            },
+            "scope": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "required": [
+            "access_token",
+            "token_type",
+            "expires_in",
+            "refresh_token",
+            "scope"
+          ]
+        }
+      },
+      "required": [
+        "admitted",
+        "member",
+        "tokens"
+      ]
+    },
+    "invite preview": {
+      "type": "object",
+      "properties": {
+        "teamName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "expiresAt": {
+          "type": "string",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "teamName",
+        "expiresAt"
+      ]
     },
     "descriptor": {
       "type": "object",
@@ -11931,46 +12407,58 @@
             },
             "type": {
               "type": "string",
-              "const": "knowledge.sql"
+              "const": "knowledge.topics"
+            }
+          },
+          "required": [
+            "id",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "requestId": {
+              "type": "string",
+              "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "type": {
+              "type": "string",
+              "const": "knowledge.read"
             },
             "input": {
               "type": "object",
               "properties": {
-                "mode": {
-                  "default": "read",
-                  "type": "string",
-                  "enum": [
-                    "read",
-                    "write"
-                  ]
-                },
-                "sql": {
+                "query": {
+                  "description": "Words to search for in note titles and text.",
                   "type": "string",
                   "minLength": 1,
-                  "maxLength": 16384
+                  "maxLength": 500
                 },
-                "parameters": {
-                  "default": [],
-                  "maxItems": 64,
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/$defs/__schema0"
-                  }
-                },
-                "onlyIfUnchanged": {
-                  "description": "Refuse the INSERT if a fact changed since the seen_fact_id it names.",
-                  "type": "boolean"
-                },
-                "cursor": {
-                  "description": "nextCursor from a call without sql.",
+                "topicId": {
+                  "description": "Limit to one topic.",
                   "type": "string",
                   "pattern": "^ktp_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                 },
-                "operationId": {
-                  "description": "Required for a write: a new UUID, reused only to retry that same write.",
+                "noteId": {
+                  "description": "Open one note.",
                   "type": "string",
-                  "format": "uuid",
-                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  "pattern": "^knt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                "history": {
+                  "description": "With noteId: every version, newest first.",
+                  "type": "boolean"
+                },
+                "before": {
+                  "description": "nextBefore from the previous page.",
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
                 }
               },
               "additionalProperties": false
@@ -11978,7 +12466,71 @@
           },
           "required": [
             "id",
-            "requestId",
+            "type",
+            "input"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "requestId": {
+              "type": "string",
+              "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "type": {
+              "type": "string",
+              "const": "knowledge.write"
+            },
+            "input": {
+              "type": "object",
+              "properties": {
+                "noteId": {
+                  "type": "string",
+                  "pattern": "^knt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                "topicId": {
+                  "type": "string",
+                  "pattern": "^ktp_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                "expectedVersion": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "body": {
+                  "type": "string"
+                },
+                "delete": {
+                  "type": "boolean",
+                  "const": true
+                }
+              },
+              "required": [
+                "noteId",
+                "expectedVersion"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "id",
             "type",
             "input"
           ]
@@ -12013,40 +12565,7 @@
             "type"
           ]
         }
-      ],
-      "$defs": {
-        "__schema0": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "number"
-            },
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            },
-            {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/__schema0"
-              }
-            },
-            {
-              "type": "object",
-              "propertyNames": {
-                "type": "string"
-              },
-              "additionalProperties": {
-                "$ref": "#/$defs/__schema0"
-              }
-            }
-          ]
-        }
-      }
+      ]
     },
     "link server frame": {
       "oneOf": [
@@ -14522,55 +15041,186 @@
                   "properties": {
                     "kind": {
                       "type": "string",
-                      "const": "knowledge.sql"
+                      "const": "knowledge.topics"
                     },
                     "result": {
                       "type": "object",
                       "properties": {
-                        "relations": {
-                          "maxItems": 8,
+                        "topics": {
+                          "maxItems": 200,
                           "type": "array",
                           "items": {
                             "type": "object",
                             "properties": {
+                              "id": {
+                                "type": "string",
+                                "pattern": "^ktp_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                              },
                               "name": {
                                 "type": "string",
-                                "maxLength": 64
+                                "minLength": 1,
+                                "maxLength": 160
                               },
-                              "columns": {
-                                "maxItems": 64,
-                                "type": "array",
-                                "items": {
-                                  "type": "object",
-                                  "properties": {
-                                    "name": {
-                                      "type": "string",
-                                      "maxLength": 255
-                                    },
-                                    "postgresType": {
-                                      "type": "string",
-                                      "maxLength": 255
-                                    }
+                              "description": {
+                                "type": "string",
+                                "maxLength": 500
+                              },
+                              "canWrite": {
+                                "type": "boolean"
+                              },
+                              "archived": {
+                                "type": "boolean"
+                              },
+                              "audience": {
+                                "type": "object",
+                                "properties": {
+                                  "everyone": {
+                                    "type": "boolean"
                                   },
-                                  "required": [
-                                    "name",
-                                    "postgresType"
-                                  ]
-                                }
+                                  "people": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "everyone",
+                                  "people"
+                                ]
                               },
-                              "insertable": {
-                                "maxItems": 16,
-                                "type": "array",
-                                "items": {
-                                  "type": "string",
-                                  "maxLength": 64
-                                }
+                              "roomCanRead": {
+                                "description": "True when everyone in the asking channel can already read this topic.",
+                                "type": "boolean"
                               }
                             },
                             "required": [
+                              "id",
                               "name",
-                              "columns",
-                              "insertable"
+                              "description",
+                              "canWrite",
+                              "archived",
+                              "audience"
+                            ]
+                          }
+                        }
+                      },
+                      "required": [
+                        "topics"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "result"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "knowledge.read"
+                    },
+                    "result": {
+                      "type": "object",
+                      "properties": {
+                        "notes": {
+                          "maxItems": 50,
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string",
+                                "pattern": "^knt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                              },
+                              "topicId": {
+                                "type": "string",
+                                "pattern": "^ktp_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                              },
+                              "version": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "title": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 200
+                              },
+                              "body": {
+                                "type": "string"
+                              },
+                              "deleted": {
+                                "type": "boolean"
+                              },
+                              "writtenAt": {
+                                "type": "string",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                                "format": "date-time"
+                              },
+                              "writer": {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "human",
+                                      "agent"
+                                    ]
+                                  },
+                                  "userId": {
+                                    "type": "string",
+                                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                  },
+                                  "name": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 120
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "userId",
+                                  "name"
+                                ]
+                              },
+                              "source": {
+                                "anyOf": [
+                                  {
+                                    "type": "object",
+                                    "properties": {
+                                      "channelId": {
+                                        "type": "string",
+                                        "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                      },
+                                      "messageId": {
+                                        "type": "string",
+                                        "maxLength": 19,
+                                        "pattern": "^[1-9][0-9]*$"
+                                      }
+                                    },
+                                    "required": [
+                                      "channelId",
+                                      "messageId"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "topicId",
+                              "version",
+                              "title",
+                              "body",
+                              "deleted",
+                              "writtenAt",
+                              "writer",
+                              "source"
                             ]
                           }
                         },
@@ -14586,187 +15236,227 @@
                               },
                               "name": {
                                 "type": "string",
+                                "minLength": 1,
                                 "maxLength": 160
+                              },
+                              "description": {
+                                "type": "string",
+                                "maxLength": 500
+                              },
+                              "canWrite": {
+                                "type": "boolean"
+                              },
+                              "archived": {
+                                "type": "boolean"
+                              },
+                              "audience": {
+                                "type": "object",
+                                "properties": {
+                                  "everyone": {
+                                    "type": "boolean"
+                                  },
+                                  "people": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 9007199254740991
+                                  }
+                                },
+                                "required": [
+                                  "everyone",
+                                  "people"
+                                ]
+                              },
+                              "roomCanRead": {
+                                "description": "True when everyone in the asking channel can already read this topic.",
+                                "type": "boolean"
                               }
                             },
                             "required": [
                               "id",
-                              "name"
-                            ]
-                          }
-                        },
-                        "nextCursor": {
-                          "type": "string",
-                          "pattern": "^ktp_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-                        },
-                        "columns": {
-                          "maxItems": 1664,
-                          "type": "array",
-                          "items": {
-                            "type": "object",
-                            "properties": {
-                              "name": {
-                                "type": "string",
-                                "maxLength": 255
-                              },
-                              "postgresType": {
-                                "type": "string",
-                                "maxLength": 255
-                              }
-                            },
-                            "required": [
                               "name",
-                              "postgresType"
+                              "description",
+                              "canWrite",
+                              "archived",
+                              "audience"
                             ]
                           }
                         },
-                        "rows": {
-                          "maxItems": 200,
-                          "type": "array",
-                          "items": {
-                            "maxItems": 1664,
-                            "type": "array",
-                            "items": {
-                              "$ref": "#/$defs/__schema0"
+                        "nextBefore": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 256
+                            },
+                            {
+                              "type": "null"
                             }
-                          }
+                          ]
                         },
                         "truncated": {
                           "type": "boolean"
-                        },
-                        "receipt": {
+                        }
+                      },
+                      "required": [
+                        "notes",
+                        "topics",
+                        "nextBefore",
+                        "truncated"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "result"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "knowledge.write"
+                    },
+                    "result": {
+                      "oneOf": [
+                        {
                           "type": "object",
                           "properties": {
-                            "committed": {
+                            "written": {
                               "type": "boolean",
                               "const": true
                             },
-                            "replayed": {
-                              "type": "boolean"
+                            "noteId": {
+                              "type": "string",
+                              "pattern": "^knt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                             },
-                            "facts": {
-                              "maxItems": 25,
-                              "type": "array",
-                              "items": {
-                                "type": "object",
-                                "properties": {
-                                  "id": {
-                                    "type": "string",
-                                    "pattern": "^(0|[1-9][0-9]*)$"
-                                  },
-                                  "topic": {
-                                    "type": "string",
-                                    "pattern": "^ktp_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-                                  },
-                                  "thing": {
-                                    "type": "string"
-                                  },
-                                  "property": {
-                                    "type": "string"
-                                  },
-                                  "replacesId": {
-                                    "anyOf": [
-                                      {
-                                        "type": "string",
-                                        "pattern": "^(0|[1-9][0-9]*)$"
-                                      },
-                                      {
-                                        "type": "null"
-                                      }
-                                    ]
-                                  },
-                                  "seenFactId": {
-                                    "anyOf": [
-                                      {
-                                        "type": "string",
-                                        "pattern": "^(0|[1-9][0-9]*)$"
-                                      },
-                                      {
-                                        "type": "null"
-                                      }
-                                    ]
-                                  },
-                                  "baseline": {
-                                    "type": "string",
-                                    "enum": [
-                                      "observed",
-                                      "unknown"
-                                    ]
-                                  },
-                                  "unseenCount": {
-                                    "anyOf": [
-                                      {
-                                        "type": "integer",
-                                        "minimum": 0,
-                                        "maximum": 9007199254740991
-                                      },
-                                      {
-                                        "type": "null"
-                                      }
-                                    ]
-                                  },
-                                  "unseen": {
-                                    "anyOf": [
-                                      {
-                                        "maxItems": 20,
-                                        "type": "array",
-                                        "items": {
-                                          "type": "object",
-                                          "properties": {
-                                            "id": {
-                                              "type": "string",
-                                              "pattern": "^(0|[1-9][0-9]*)$"
-                                            },
-                                            "writerKind": {
-                                              "type": "string",
-                                              "enum": [
-                                                "human",
-                                                "agent"
-                                              ]
-                                            },
-                                            "writerId": {
-                                              "type": "string",
-                                              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-                                            },
-                                            "writtenAt": {
-                                              "type": "string"
-                                            }
-                                          },
-                                          "required": [
-                                            "id",
-                                            "writerKind",
-                                            "writerId",
-                                            "writtenAt"
-                                          ]
-                                        }
-                                      },
-                                      {
-                                        "type": "null"
-                                      }
-                                    ]
-                                  }
-                                },
-                                "required": [
-                                  "id",
-                                  "topic",
-                                  "thing",
-                                  "property",
-                                  "replacesId",
-                                  "seenFactId",
-                                  "baseline",
-                                  "unseenCount",
-                                  "unseen"
-                                ]
-                              }
+                            "topicId": {
+                              "type": "string",
+                              "pattern": "^ktp_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                            },
+                            "version": {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
                             }
                           },
                           "required": [
-                            "committed",
-                            "replayed",
-                            "facts"
+                            "written",
+                            "noteId",
+                            "topicId",
+                            "version"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "written": {
+                              "type": "boolean",
+                              "const": false
+                            },
+                            "current": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^knt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                },
+                                "topicId": {
+                                  "type": "string",
+                                  "pattern": "^ktp_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                },
+                                "version": {
+                                  "type": "integer",
+                                  "exclusiveMinimum": 0,
+                                  "maximum": 9007199254740991
+                                },
+                                "title": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 200
+                                },
+                                "body": {
+                                  "type": "string"
+                                },
+                                "deleted": {
+                                  "type": "boolean"
+                                },
+                                "writtenAt": {
+                                  "type": "string",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                                  "format": "date-time"
+                                },
+                                "writer": {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "human",
+                                        "agent"
+                                      ]
+                                    },
+                                    "userId": {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                    },
+                                    "name": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 120
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "userId",
+                                    "name"
+                                  ]
+                                },
+                                "source": {
+                                  "anyOf": [
+                                    {
+                                      "type": "object",
+                                      "properties": {
+                                        "channelId": {
+                                          "type": "string",
+                                          "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                        },
+                                        "messageId": {
+                                          "type": "string",
+                                          "maxLength": 19,
+                                          "pattern": "^[1-9][0-9]*$"
+                                        }
+                                      },
+                                      "required": [
+                                        "channelId",
+                                        "messageId"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "topicId",
+                                "version",
+                                "title",
+                                "body",
+                                "deleted",
+                                "writtenAt",
+                                "writer",
+                                "source"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "written",
+                            "current"
                           ]
                         }
-                      }
+                      ]
                     }
                   },
                   "required": [
@@ -15031,40 +15721,7 @@
             "type"
           ]
         }
-      ],
-      "$defs": {
-        "__schema0": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "number"
-            },
-            {
-              "type": "boolean"
-            },
-            {
-              "type": "null"
-            },
-            {
-              "type": "array",
-              "items": {
-                "$ref": "#/$defs/__schema0"
-              }
-            },
-            {
-              "type": "object",
-              "propertyNames": {
-                "type": "string"
-              },
-              "additionalProperties": {
-                "$ref": "#/$defs/__schema0"
-              }
-            }
-          ]
-        }
-      }
+      ]
     }
   }
 }

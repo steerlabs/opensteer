@@ -25,7 +25,13 @@ import {
   TeamSearchInputSchema,
   TeamSearchPageSchema,
 } from "./team-chat.js";
-import { TeamSqlInputSchema, TeamSqlResultSchema } from "./team-knowledge.js";
+import {
+  TeamKnowledgeReadInputSchema,
+  TeamKnowledgeReadResultSchema,
+  TeamKnowledgeTopicsResultSchema,
+  TeamKnowledgeWriteResultSchema,
+  TeamKnowledgeWriteSchema,
+} from "./team-knowledge.js";
 import { ProtocolErrorSchema } from "./common.js";
 
 export const TeamLinkCredentialSchema = z.string().regex(/^ost_link_[A-Za-z0-9_-]{43}$/);
@@ -109,6 +115,7 @@ export const TeamBinaryDownloadHeadersSchema = TeamBinaryRouteHeadersSchema.exte
   "x-opensteer-team-file-part": z.enum(["original", "preview"]),
 });
 const request = { requestId: TeamAgentRequestIdSchema };
+const optionalRequest = { requestId: TeamAgentRequestIdSchema.optional() };
 const call = { id: z.string().min(1).max(128) };
 export const TeamLinkClientFrameSchema = z.discriminatedUnion("type", [
   z.strictObject({
@@ -150,11 +157,19 @@ export const TeamLinkClientFrameSchema = z.discriminatedUnion("type", [
     before: TeamMessageIdSchema.optional(),
   }),
   z.strictObject({ ...call, ...request, type: z.literal("search"), input: TeamSearchInputSchema }),
+  // Knowledge acts as the link's owner; a request, when named, only records where the ask came from.
+  z.strictObject({ ...call, ...optionalRequest, type: z.literal("knowledge.topics") }),
   z.strictObject({
     ...call,
-    ...request,
-    type: z.literal("knowledge.sql"),
-    input: TeamSqlInputSchema,
+    ...optionalRequest,
+    type: z.literal("knowledge.read"),
+    input: TeamKnowledgeReadInputSchema,
+  }),
+  z.strictObject({
+    ...call,
+    ...optionalRequest,
+    type: z.literal("knowledge.write"),
+    input: TeamKnowledgeWriteSchema,
   }),
   z.strictObject({ ...call, type: z.literal("revoke") }),
   z.strictObject({ type: z.literal("ping") }),
@@ -166,7 +181,9 @@ export const TeamLinkResultSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("receipt"), messageId: TeamMessageIdSchema.nullable() }),
   z.strictObject({ kind: z.literal("read"), result: TeamReadResultSchema }),
   z.strictObject({ kind: z.literal("search"), result: TeamSearchPageSchema }),
-  z.strictObject({ kind: z.literal("knowledge.sql"), result: TeamSqlResultSchema }),
+  z.strictObject({ kind: z.literal("knowledge.topics"), result: TeamKnowledgeTopicsResultSchema }),
+  z.strictObject({ kind: z.literal("knowledge.read"), result: TeamKnowledgeReadResultSchema }),
+  z.strictObject({ kind: z.literal("knowledge.write"), result: TeamKnowledgeWriteResultSchema }),
   z.strictObject({ kind: z.literal("file"), file: TeamFileSchema, source: TeamSourceSchema }),
   z.strictObject({ kind: z.literal("ok") }),
 ]);

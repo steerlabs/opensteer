@@ -5,8 +5,8 @@ import { requireRun } from "../operations.js";
 import type { ProductToolHandlers } from "./product.js";
 import type { IntegrationToolHandlers } from "./integrations.js";
 import type { TriggerToolHandlers } from "./triggers.js";
-import type { TeamToolPort } from "../team-tool-port.js";
-import { teamToolHandlers } from "./team.js";
+import type { TeamKnowledgePort, TeamToolPort } from "../team-tool-port.js";
+import { knowledgeToolHandlers, teamToolHandlers } from "./team.js";
 import type { RunId, TeamAgentRequestId, ThreadId } from "@opensteer/core";
 
 export type { AgentToolHandlers, ToolCall, ToolInput } from "./types.js";
@@ -22,6 +22,9 @@ export function agentToolHandlers(options: {
     directory: string,
   ) => Promise<Record<string, unknown>>;
   readonly team?: TeamToolPort;
+  readonly knowledge?: TeamKnowledgePort;
+  /** Whether a Run may still use its owner's personal context, rechecked per call. */
+  readonly personalContextForRun: (runId: RunId) => Promise<boolean>;
   readonly teamRequestForRun: (
     runId: RunId,
     threadId: ThreadId,
@@ -93,6 +96,11 @@ export function agentToolHandlers(options: {
     integration_request: async (c) => await i.integration_request(c),
     integration_propose: async (c) => await i.integration_propose(c),
     ...teamToolHandlers({ port: options.team, requestForRun: options.teamRequestForRun }),
+    ...knowledgeToolHandlers({
+      port: options.knowledge,
+      requestForRun: options.teamRequestForRun,
+      personalContext: options.personalContextForRun,
+    }),
   };
   return handlers;
 }

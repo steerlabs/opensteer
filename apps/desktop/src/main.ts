@@ -1,4 +1,6 @@
 import { DesktopTeamLinks } from "./app/team-links.js";
+import { HttpAccountTeamsClient, NativeTeamEntry } from "@opensteer/client/team";
+import { DesktopTeamSessions } from "./app/team-sessions.js";
 import { PersonalDataReset } from "./supervisor/personal-data-reset.js";
 import { desktopPersonalDataReset } from "./app/personal-data-reset.js";
 import { resetFileWrites } from "./secrets/reset-file-writes.js";
@@ -194,9 +196,7 @@ const desktopOAuthLinks = {
 const mcpAuthorizationLinks = new McpAuthorizationLinks(
   new URL(embeddedRelease.oauth.hostCallback).protocol.slice(0, -1),
 );
-const teamLinks = new DesktopTeamLinks(
-  new URL(embeddedRelease.oauth.hostCallback).protocol.slice(0, -1),
-);
+const teamLinks = new DesktopTeamLinks();
 const webLinks = new DesktopWebLinks((message) => {
   void app
     .whenReady()
@@ -1072,6 +1072,19 @@ async function runDesktop(
     },
     webLinks,
     teamLinks,
+    accountTeams: loaded.config.accountUrl
+      ? new HttpAccountTeamsClient({
+          accountOrigin: loaded.config.accountUrl,
+          authorization: nativeAuth,
+          fetch: serviceNetwork.fetch.bind(serviceNetwork),
+        })
+      : null,
+    teamSessions: loaded.config.accountUrl
+      ? new DesktopTeamSessions({
+          entry: new NativeTeamEntry({ oauth: nativeAuth, catalog: deploymentCatalog }),
+          fetch: serviceNetwork.fetch.bind(serviceNetwork),
+        })
+      : null,
     personalDataReset: desktopPersonalDataReset({
       personal,
       quiesce: async () => {

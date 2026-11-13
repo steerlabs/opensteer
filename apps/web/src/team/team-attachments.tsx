@@ -12,19 +12,34 @@ import {
 import type { TeamTaskOrigin } from "@opensteer/core";
 import type { PersonalTeamLink, TeamBootstrapSchema } from "@opensteer/protocol";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
-import { PersonalTeamLinks, type HostClient } from "@opensteer/client/host";
+import { PersonalTeamLinks, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import {
+  createMemoryTeamPersistence,
+  listedTeams,
   TeamSessionClient,
   TeamTransportRegistry,
+  type MockTeamHost,
+  type MockTeamWorld,
   type TeamCacheScope,
+  type TeamConnectionIntent,
+  type TeamMembership,
+  type TeamSessionOptions,
   type TeamSessionSnapshot,
   type TeamSidebar,
 } from "@opensteer/client/team";
+import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
+import { DeploymentIdSchema } from "@opensteer/core";
 import type { z } from "zod";
 import type { TaskSourceView } from "../components/home/home-models.js";
 import { channelKind } from "./team-view-models.js";
 import { teamTile } from "./team-people.js";
 import { browserTeamSession, desktopTeamSession } from "./team-transports.js";
+import {
+  desktopTeamCoordination,
+  previewTeamCoordination,
+  type WebTeamCoordination,
+} from "./team-coordination.js";
+import { channelPath, teamPath } from "./team-paths.js";
 
 /** One team as this surface knows it. */
 export interface TeamAttachment {
@@ -54,7 +69,15 @@ export type TeamSurface =
       readonly kind: "preview";
       readonly hostClient: HostClient;
       readonly teams: readonly TeamAttachment[];
+      /** Hosted teams it creates and joins, in memory. */
+      readonly world?: MockTeamWorld | undefined;
     };
+
+/** Who is signed in to Opensteer Account on this surface, where it knows. */
+export interface TeamAccount {
+  readonly subject: string;
+  readonly email: string | null;
+}
 
 interface TeamsValue {
   readonly surface: TeamSurface["kind"] | null;
@@ -65,9 +88,16 @@ interface TeamsValue {
   /** Ends membership on the team Host, then removes this viewer’s saved state. */
   readonly leave: (teamId: string) => Promise<void>;
   readonly forget: (teamId: string) => Promise<void>;
-  /** A notification was opened: the channel it names. */
-  readonly opened: { readonly teamId: string; readonly channelId: string } | null;
-  readonly consumeOpened: () => void;
+  /**
+   * Signs in here to a listed team this computer holds no session for, such as one joined on
+   * another device; null where teams open at their own address instead.
+   */
+  readonly enter: ((teamId: string) => Promise<void>) | null;
+  /** Creating and joining hosted teams in this app; null where they open in the browser. */
+  readonly coordination: WebTeamCoordination | null;
+  readonly account: TeamAccount | null;
+  /** Where the app goes when a team is entered; bound by the router. */
+  readonly navigator: { current: ((path: string) => void) | null };
 }
 
 const TeamsContext = createContext<TeamsValue>({
@@ -77,8 +107,10 @@ const TeamsContext = createContext<TeamsValue>({
   reload: async () => undefined,
   leave: async () => undefined,
   forget: async () => undefined,
-  opened: null,
-  consumeOpened: () => undefined,
+  enter: null,
+  coordination: null,
+  account: null,
+  navigator: { current: null },
 });
 
 export function useTeams(): TeamsValue {
@@ -121,9 +153,14 @@ function notifyTeam(
 }
 
 export function TeamsProvider({
+  account = null,
+  accountTeams = noTeams,
   children,
   surface,
 }: {
+  readonly account?: TeamAccount | null;
+  /** The teams Account's catalog lists the person in, wherever they joined. */
+  readonly accountTeams?: readonly TeamMembership[];
   readonly children: ReactNode;
   readonly surface: TeamSurface;
 }) {
@@ -138,27 +175,69 @@ export function TeamsProvider({
   );
   const [linked, setLinked] = useState<readonly PersonalTeamLink[]>([]);
   const [clients, setClients] = useState<ReadonlyMap<string, TeamSessionClient>>(new Map());
-  const [opened, setOpened] = useState<TeamsValue["opened"]>(null);
+  const navigator = useRef<((path: string) => void) | null>(null);
   const [forgotten, setForgotten] = useState<ReadonlySet<string>>(new Set());
-  const origins = useMemo(
-    () => new Map<string, PersonalTeamLink>(linked.map((link) => [link.teamId, link])),
-    [linked],
+  /** Bumped by each sign-in here, so the sidebar sockets are joined again. */
+  const [entered, setEntered] = useState(0);
+  const world = surface.kind === "preview" ? (surface.world ?? null) : null;
+  const accountSubject = account?.subject ?? null;
+  // Made in the effect so React's double effects never resume a disposed coordinator.
+  const [coordination, setCoordination] = useState<WebTeamCoordination | null>(null);
+  useEffect(() => {
+    const open = (teamId: string) => navigator.current?.(teamPath(teamId, ""));
+    const made =
+      world && hostClient
+        ? previewTeamCoordination({ world, hostClient, open })
+        : bridge && hostClient
+          ? desktopTeamCoordination({
+              bridge,
+              hostClient,
+              accountSubject: () => {
+                const parsed = ControlPlaneAccountIdSchema.safeParse(accountSubject);
+                return parsed.success ? parsed.data : null;
+              },
+              open,
+              originOf: (teamId) => memberRef.current.get(teamId)?.origin ?? null,
+            })
+          : null;
+    setCoordination(made);
+    void made?.coordinator.resume().catch(() => undefined);
+    return () => made?.coordinator.dispose();
+  }, [world, bridge, hostClient, accountSubject]);
+  const intents = useSyncExternalStore(
+    coordination?.coordinator.subscribe ?? noSubscribe,
+    () => coordination?.coordinator.getSnapshot().intents ?? noIntents,
+    () => coordination?.coordinator.getSnapshot().intents ?? noIntents,
   );
-  const originRef = useRef(origins);
-  originRef.current = origins;
+  // By content: the catalog snapshot is rebuilt on every status change, and each new member list
+  // rejoins every team's sidebar.
+  const accountKey = JSON.stringify(accountTeams);
+  const members = useMemo(
+    () =>
+      new Map(
+        listedTeams({
+          account: JSON.parse(accountKey) as readonly TeamMembership[],
+          links: linked,
+          intents,
+        }).map((team) => [team.teamDeploymentId, { origin: team.origin, name: team.name }]),
+      ),
+    [accountKey, linked, intents],
+  );
+  const memberRef = useRef(members);
+  memberRef.current = members;
   const registry = useMemo(
     () =>
       bridge
         ? new TeamTransportRegistry("desktop", (scope: TeamCacheScope) => {
-            const link = originRef.current.get(scope.teamDeploymentId);
-            if (!link) throw new Error("This team is not linked.");
+            const team = memberRef.current.get(scope.teamDeploymentId);
+            if (!team) throw new Error("This team is not on this computer.");
             return desktopTeamSession({
               bridge,
-              origin: link.origin,
+              origin: team.origin,
               scope,
               notify: (entry) =>
-                notifyTeam(link.teamName, entry, (channelId) =>
-                  setOpened({ teamId: link.teamId, channelId }),
+                notifyTeam(team.name, entry, (channelId) =>
+                  navigator.current?.(channelPath(scope.teamDeploymentId, channelId)),
                 ),
             });
           })
@@ -173,6 +252,7 @@ export function TeamsProvider({
     for (const team of heldTeam ? [heldTeam] : (heldTeams ?? []))
       void team.client?.load().catch(() => undefined);
   }, [heldTeam, heldTeams]);
+  const worldTeams = useWorldTeams(world);
 
   const reload = useCallback(async () => {
     if (!links) return;
@@ -181,67 +261,97 @@ export function TeamsProvider({
   useEffect(() => {
     void reload().catch(() => undefined);
   }, [reload]);
-
-  // Desktop keeps a sidebar socket to every linked team the person is still in.
+  // A new agent link shows in the switch as soon as the coordinator records it.
   useEffect(() => {
-    if (!registry) return;
+    if (intents.some((intent) => intent.state === "connected"))
+      void reload().catch(() => undefined);
+  }, [intents, reload]);
+
+  // Desktop keeps a sidebar socket to every team the person is in on this computer.
+  useEffect(() => {
+    if (!registry || !bridge) return;
     let live = true;
     const next = new Map<string, TeamSessionClient>();
-    void Promise.all(
+    const owners = new Map<string, string>(
       linked
         .filter((link) => activeLink.has(link.state) && link.ownerUserId !== null)
-        .map(async (link) => {
-          try {
-            next.set(
-              link.teamId,
-              await registry.join({ teamDeploymentId: link.teamId, userId: link.ownerUserId! }),
-            );
-          } catch {
-            // Not signed in to that team on this computer yet: it shows as a link.
-          }
-        }),
+        .map((link) => [link.teamId, link.ownerUserId!]),
+    );
+    void Promise.all(
+      [...members].map(async ([teamId, team]) => {
+        try {
+          const userId =
+            owners.get(teamId) ??
+            (await readTeamUser(
+              desktopTeamSession({
+                bridge,
+                origin: team.origin,
+                scope: { teamDeploymentId: teamId, userId: "pending" },
+              }),
+            ));
+          next.set(teamId, await registry.join({ teamDeploymentId: teamId, userId }));
+        } catch {
+          // Not signed in to that team on this computer yet: it shows as a link.
+        }
+      }),
     ).then(() => {
       if (live) setClients(next);
     });
     return () => {
       live = false;
     };
-  }, [linked, registry]);
+  }, [members, linked, registry, bridge, entered]);
+
+  const sessionOf = useCallback(
+    (teamId: string) =>
+      clients.get(teamId) ??
+      (surface.kind === "team-web"
+        ? surface.attachment.client
+        : surface.kind === "preview"
+          ? [...surface.teams, ...worldTeams].find((team) => team.teamId === teamId)?.client
+          : null),
+    [clients, surface, worldTeams],
+  );
 
   const leave = useCallback(
     async (teamId: string) => {
-      const link = linked.find((row) => row.teamId === teamId);
-      const session =
-        clients.get(teamId) ??
-        (surface.kind === "team-web"
-          ? surface.attachment.client
-          : surface.kind === "preview"
-            ? surface.teams.find((team) => team.teamId === teamId)?.client
-            : null);
-      if (!session) throw new Error("Sign in to the team before leaving it.");
-      await session.leave();
-      if (registry && link?.ownerUserId)
-        await registry.remove({ teamDeploymentId: teamId, userId: link.ownerUserId });
+      const owner = linked.find((row) => row.teamId === teamId)?.ownerUserId;
+      const coordinated =
+        coordination !== null &&
+        (world === null || worldTeams.some((team) => team.teamId === teamId));
+      if (coordinated) await coordination.coordinator.leaveTeam(DeploymentIdSchema.parse(teamId));
+      else {
+        const session = sessionOf(teamId);
+        if (!session) throw new Error("Sign in to the team before leaving it.");
+        await session.leave();
+      }
+      if (registry && owner) await registry.remove({ teamDeploymentId: teamId, userId: owner });
       await reload();
     },
-    [linked, clients, surface, registry, reload],
+    [linked, coordination, world, worldTeams, sessionOf, registry, reload],
   );
 
   const forget = useCallback(
     async (teamId: string) => {
-      const session =
-        clients.get(teamId) ??
-        (surface.kind === "team-web"
-          ? surface.attachment.client
-          : surface.kind === "preview"
-            ? surface.teams.find((team) => team.teamId === teamId)?.client
-            : null);
-      await session?.remove();
+      await sessionOf(teamId)?.remove();
       const owner = linked.find((row) => row.teamId === teamId)?.ownerUserId;
       if (registry && owner) await registry.remove({ teamDeploymentId: teamId, userId: owner });
       setForgotten((held) => new Set([...held, teamId]));
     },
-    [clients, surface, linked, registry],
+    [sessionOf, linked, registry],
+  );
+
+  const enter = useMemo(
+    () =>
+      coordination && (bridge || world)
+        ? async (teamId: string) => {
+            const team = memberRef.current.get(teamId);
+            if (!team) throw new Error("This team is not on this computer.");
+            await coordination.coordinator.enterTeam(team.origin);
+            setEntered((count) => count + 1);
+          }
+        : null,
+    [bridge, world, coordination],
   );
 
   const value = useMemo<TeamsValue>(() => {
@@ -249,16 +359,14 @@ export function TeamsProvider({
       surface.kind === "team-web"
         ? [surface.attachment]
         : surface.kind === "preview"
-          ? surface.teams
-          : linked
-              .filter((link) => link.state !== "leaving")
-              .map((link) => ({
-                teamId: link.teamId,
-                name: link.teamName,
-                origin: link.origin,
-                client: clients.get(link.teamId) ?? null,
-                link,
-              }));
+          ? withAccountTeams([...surface.teams, ...worldTeams], accountKey)
+          : [...members].map(([teamId, team]) => ({
+              teamId,
+              name: team.name,
+              origin: team.origin,
+              client: clients.get(teamId) ?? null,
+              link: linked.find((link) => link.teamId === teamId) ?? null,
+            }));
     return {
       surface: surface.kind,
       teams: teams.filter((team) => !forgotten.has(team.teamId)),
@@ -266,12 +374,96 @@ export function TeamsProvider({
       reload,
       leave,
       forget,
-      opened,
-      consumeOpened: () => setOpened(null),
+      enter,
+      coordination,
+      account,
+      navigator,
     };
-  }, [clients, leave, forget, forgotten, linked, links, opened, reload, surface]);
+  }, [
+    account,
+    clients,
+    coordination,
+    leave,
+    forget,
+    enter,
+    forgotten,
+    linked,
+    links,
+    members,
+    reload,
+    surface,
+    worldTeams,
+    accountKey,
+  ]);
   return <TeamsContext value={value}>{children}</TeamsContext>;
 }
+
+/** The mock build lists teams Account names beside the ones it holds sessions for, as desktop does. */
+function withAccountTeams(
+  held: readonly TeamAttachment[],
+  accountKey: string,
+): readonly TeamAttachment[] {
+  const ids = new Set(held.map((team) => team.teamId));
+  const listed = (JSON.parse(accountKey) as readonly TeamMembership[])
+    .filter((team) => !ids.has(team.teamDeploymentId))
+    .map((team) => ({
+      teamId: team.teamDeploymentId,
+      name: team.name,
+      origin: team.origin,
+      client: null,
+      link: null,
+    }));
+  return [...held, ...listed];
+}
+
+const noIntents: readonly TeamConnectionIntent[] = [];
+const noTeams: readonly TeamMembership[] = [];
+
+async function readTeamUser(options: TeamSessionOptions): Promise<string> {
+  return unwrapRpcResult(await options.rpc["team.bootstrap.get"]({})).member.userId;
+}
+
+/** The mock world's joined teams as attachments, each with one live session. */
+function useWorldTeams(world: MockTeamWorld | null): readonly TeamAttachment[] {
+  const held = useRef(new WeakMap<MockTeamHost, TeamAttachment>());
+  const subscribe = useCallback(
+    (listener: () => void) => (world ? world.subscribe(listener) : () => undefined),
+    [world],
+  );
+  const hosts = useSyncExternalStore(
+    subscribe,
+    () => world?.joined() ?? noHosts,
+    () => world?.joined() ?? noHosts,
+  );
+  return useMemo(
+    () =>
+      hosts.map((host) => {
+        let attachment = held.current.get(host);
+        if (!attachment) {
+          const client = new TeamSessionClient({
+            scope: { teamDeploymentId: host.teamId, userId: host.userId },
+            persistence: createMemoryTeamPersistence(),
+            rpc: host.rpc,
+            connect: host.connect,
+            readFile: host.readFile,
+            uploadFile: host.uploadFile,
+          });
+          void client.load().catch(() => undefined);
+          attachment = {
+            teamId: host.teamId,
+            name: host.bootstrap.teamName,
+            origin: host.origin,
+            client,
+            link: null,
+          };
+          held.current.set(host, attachment);
+        }
+        return attachment;
+      }),
+    [hosts],
+  );
+}
+const noHosts: readonly MockTeamHost[] = [];
 
 /** The team web app's own session, for the member signed in at this origin. */
 export function createTeamWebAttachment(
