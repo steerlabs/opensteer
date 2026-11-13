@@ -1,0 +1,299 @@
+/* Download, support, legal and not-found pages: one reading column under the shared nav. */
+.page {
+  padding-block: clamp(48px, 9vh, 96px) clamp(72px, 12vh, 128px);
+}
+.page h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 380;
+  font-size: clamp(36px, 5vw, 52px);
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  font-variation-settings: "opsz" 144;
+  text-wrap: balance;
+}
+.page__lede {
+  margin: 16px 0 0;
+  max-width: 36rem;
+  color: var(--text-soft);
+  font-size: 17px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+.page__eyebrow {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.page a:not(.btn) {
+  color: var(--text);
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+  transition: text-decoration-color 130ms;
+}
+.page a:not(.btn):hover {
+  text-decoration-color: var(--ember);
+}
+
+/* ---------- Prose: legal text and support answers ---------- */
+.prose {
+  max-width: 680px;
+}
+.prose h2 {
+  margin: 48px 0 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+  scroll-margin-top: 84px;
+}
+.prose p,
+.prose dl {
+  margin: 12px 0 0;
+  color: var(--text-soft);
+  font-size: 15.5px;
+  line-height: 1.7;
+  text-wrap: pretty;
+}
+.prose dl {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 16px 18px;
+  border-radius: var(--radius-md);
+  background: var(--fill-quiet);
+  border: 1px solid var(--line);
+}
+.prose dt {
+  color: var(--text);
+  font-weight: 600;
+}
+.prose dd {
+  margin: 2px 0 0;
+}
+.prose__note {
+  margin-top: 56px !important;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  font-size: 14px !important;
+  color: var(--muted) !important;
+}
+
+/* A long document gets a contents list beside it on wide screens; phones read it top to bottom. */
+.doc {
+  display: grid;
+  gap: 40px;
+  margin-top: 40px;
+}
+.doc__toc {
+  display: none;
+}
+@media (min-width: 960px) {
+  .doc__head {
+    padding-left: 272px;
+  }
+}
+@media (min-width: 960px) {
+  .doc {
+    grid-template-columns: 200px minmax(0, 680px);
+    gap: 72px;
+  }
+  .doc__toc {
+    display: block;
+    position: sticky;
+    top: 92px;
+    align-self: start;
+    max-height: calc(100vh - 120px);
+    overflow-y: auto;
+  }
+}
+.doc__toc p {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.doc__toc ol {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.doc__toc a {
+  display: block;
+  padding: 5px 0;
+  color: var(--muted) !important;
+  font-size: 13.5px;
+  line-height: 1.4;
+  text-decoration: none !important;
+}
+.doc__toc a:hover {
+  color: var(--text) !important;
+}
+.doc .prose > h2:first-child {
+  margin-top: 0;
+}
+
+/* ---------- Support ---------- */
+.contact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px 24px;
+  max-width: 680px;
+  margin-top: 32px;
+  padding: 20px 22px;
+  border-radius: var(--radius-lg);
+}
+.contact p {
+  flex: 1 1 280px;
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 14.5px;
+  line-height: 1.6;
+}
+.contact b {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--text);
+  font-size: 15.5px;
+  font-weight: 600;
+}
+
+/* ---------- Download and not found: one centered moment ---------- */
+.moment {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+.moment .page__lede {
+  margin-inline: auto;
+}
+.moment__icon {
+  display: grid;
+  place-items: center;
+  width: 96px;
+  height: 96px;
+  margin-bottom: 28px;
+  border-radius: 22px;
+  background: #0a0a0a;
+  border: 1px solid var(--line-strong);
+}
+.moment__icon .orb {
+  width: 62%;
+  height: 62%;
+}
+.moment__ctas {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 32px;
+}
+.moment__ctas .btn {
+  height: 44px;
+  padding: 0 22px;
+  font-size: 15px;
+}
+.moment small {
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.notice {
+  max-width: 34rem;
+  margin: 0 auto 24px;
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  background: var(--amber-wash);
+  border: 1px solid var(--amber-line);
+  color: var(--amber-text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.notice[hidden] {
+  display: none;
+}
+.steps {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  max-width: 680px;
+  margin: 64px auto 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+  text-align: left;
+}
+@media (min-width: 720px) {
+  .steps {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+.steps li {
+  counter-increment: step;
+  padding: 16px 18px;
+  border-radius: var(--radius-md);
+  color: var(--text-soft);
+  font-size: 14px;
+  line-height: 1.55;
+}
+.steps li::before {
+  content: counter(step);
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-bottom: 10px;
+  border-radius: 50%;
+  background: var(--ember-wash);
+  border: 1px solid var(--ember-line);
+  color: var(--ember);
+  font-size: 12px;
+  font-weight: 650;
+}
+.steps b {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--text);
+  font-weight: 600;
+}
+.terminal {
+  width: 100%;
+  max-width: 680px;
+  margin: 40px auto 0;
+  text-align: left;
+}
+.terminal > p {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.terminal__line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 14px;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+}
+.terminal code {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  color: var(--text-soft);
+  font: 13px/1.5 var(--font-mono);
+  scrollbar-width: none;
+  mask-image: linear-gradient(90deg, #000 calc(100% - 32px), transparent);
+}
+.terminal code::before {
+  content: "$ ";
+  color: var(--muted);
+}

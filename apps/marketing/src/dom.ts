@@ -25,3 +25,10 @@ export function restart(el: Element, className: string): void {
 
 export const clamp = (value: number, low: number, high: number): number =>
   Math.max(low, Math.min(high, value));
+
+export function watchNav(): void {
+  const bar = byId("nav");
+  addEventListener("scroll", () => bar.classList.toggle("is-scrolled", scrollY > 8), {
+    passive: true,
+  });
+}
