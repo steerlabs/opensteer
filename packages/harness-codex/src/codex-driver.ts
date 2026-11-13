@@ -1069,7 +1069,7 @@ class CodexHarnessAdapter implements HarnessAdapter {
     await this.#sessions.close();
     this.#shared = undefined;
     this.#lifetime.abort(new Error("Codex adapter closed"));
-    await Promise.allSettled([...this.#starting]);
+    await Promise.allSettled(this.#starting);
     await Promise.allSettled([...this.#servers].map((server) => server.close()));
   }
 
