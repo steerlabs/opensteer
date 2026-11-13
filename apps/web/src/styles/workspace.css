@@ -580,7 +580,6 @@
   padding: 0 var(--space-2) var(--space-2);
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
-  background: var(--surface);
 }
 
 /* The line along Tabs' top takes no height of its own: its grip reaches a
