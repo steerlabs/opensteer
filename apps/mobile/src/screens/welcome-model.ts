@@ -4,7 +4,6 @@ import { accountDoorPresentation } from "./account-door.js";
 
 export interface WelcomeProps {
   readonly account: DesktopAccountAuthState["account"];
-  /** Signed in with no Opensteer yet: who, and why the list is still empty when it can't be read. */
   readonly signedInAs?: string | null;
   readonly failure: string | null;
   readonly onAccount: () => void;

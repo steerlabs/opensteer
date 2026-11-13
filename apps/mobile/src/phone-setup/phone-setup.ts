@@ -76,12 +76,7 @@ function phoneInitialAccess(draft: PhoneSetupDraft): DeviceInitialAccess {
   };
 }
 
-/**
- * Set up this phone, from Continue to Ready: enroll with the chosen switches,
- * then one system prompt at a time — Notifications first, then each chosen
- * app — and read back how each settled. Nothing the OS refuses holds up Ready;
- * only enrollment can fail the step.
- */
+/** Nothing the OS refuses holds up Ready; only enrollment can fail the step. */
 export class PhoneSetup {
   readonly #listeners = new Set<() => void>();
   #state: PhoneSetupState;
@@ -184,12 +179,10 @@ function outcomeOf(failure: IphoneAllowFailure | undefined): PhoneSetupOutcome {
   }
 }
 
-/** Whether Ready can say the agent can use anything at all on this phone. */
 export function phoneSetupSharesAnything(state: PhoneSetupState): boolean {
   return state.browser === "on" || Object.values(state.apps).some((outcome) => outcome === "on");
 }
 
-/** This phone's membership in one personal Deployment, from the shared derivation. */
 export function phoneMembership(input: {
   readonly deploymentId: string;
   readonly host: Pick<HostSnapshot, "iphoneAppsAvailable">;

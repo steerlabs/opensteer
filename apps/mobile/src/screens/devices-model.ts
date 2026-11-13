@@ -10,7 +10,6 @@ import type { MachineSummary, OtherDevice } from "@opensteer/protocol";
 import type { SFSymbolName } from "../ui/symbol.js";
 import { computerSymbols } from "./settings-model.js";
 
-/** Where a row of Devices leads. */
 type DeviceRowOpens =
   | { readonly kind: "device"; readonly machineId: string }
   | { readonly kind: "set-up" }
@@ -33,18 +32,12 @@ interface DeviceListSection {
   readonly rows: readonly DeviceListRow[];
 }
 
-/** This phone as Devices sees it, when it is not (yet) one of this Opensteer's devices. */
 export type PhoneHere =
   | { readonly state: "member"; readonly runnerId: string }
   | { readonly state: "elsewhere"; readonly deploymentId: string; readonly deploymentName: string }
   | { readonly state: "needs-setup"; readonly deviceName: string }
   | { readonly state: "none" };
 
-/**
- * Devices, as the phone lists them: this phone and Home first under no
- * header, then other devices, then sessions that run nothing. A phone that
- * belongs to another Opensteer says so, with the explicit way to move it.
- */
 export function deviceListSections(input: {
   readonly machines: readonly MachineSummary[];
   readonly sessions: readonly AuthSessionSummary[];

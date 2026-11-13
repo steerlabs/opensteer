@@ -60,7 +60,6 @@ export function deviceSwitches(
   return { rows, footer };
 }
 
-/** The destructive action alone in the last section, and its confirmation, as on web. */
 export function deviceRemoval(
   machine: MachineSummary,
   options: {
@@ -90,7 +89,6 @@ export function deviceRemoval(
   };
 }
 
-/** What this phone leaving an Opensteer deletes, for every way it can leave. */
 export function phoneLeaves(noun: string, deploymentName: string): string {
   return `This ${noun} is removed from ${deploymentName}. Browser profiles kept on this ${noun} for it are deleted.`;
 }

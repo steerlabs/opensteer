@@ -40,11 +40,6 @@ import {
 
 const secondary = foregroundStyle({ type: "hierarchical", style: "secondary" });
 
-/**
- * Set up this iPhone as iOS draws a setup step: its own navigation bar with a
- * large title and no Back, one inset grouped form, and Continue pinned to the
- * bottom.
- */
 export function SetupStep(props: {
   readonly setup: SetupFormProps;
   readonly ready: ReadyFormProps | null;
@@ -224,11 +219,7 @@ function Value(props: { readonly row: ReadyRow }): ReactNode {
   );
 }
 
-/**
- * The step's one action, held below the form at full width above the home
- * indicator. It is the app's own prominent capsule: a SwiftUI button in a
- * second phase of this Host stopped receiving taps.
- */
+/** The action is the app's capsule: a SwiftUI button in a second phase stopped receiving taps. */
 function Page(props: { readonly action: ReactNode; readonly children: ReactNode }): ReactNode {
   const insets = useSafeAreaInsets();
   return (

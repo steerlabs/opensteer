@@ -13,7 +13,6 @@ import type { ReactNode } from "react";
 import { color } from "../theme.js";
 import type { RemovedViewProps } from "./removed-copy.js";
 
-/** The Host removed this phone: iOS's own empty state, then the two ways on. */
 export function RemovedView(props: RemovedViewProps): ReactNode {
   return (
     <Host style={{ flex: 1 }} useViewportSizeMeasurement>

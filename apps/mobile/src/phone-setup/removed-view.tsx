@@ -5,7 +5,6 @@ import { AppText, PrimaryButton, SecondaryButton } from "../ui/primitives.js";
 import { useReadingColumn } from "../ui/screen.js";
 import type { RemovedViewProps } from "./removed-copy.js";
 
-/** Android's removed state: a Material empty state with one filled and one text action. */
 export function RemovedView(props: RemovedViewProps): ReactNode {
   const column = useReadingColumn();
   return (

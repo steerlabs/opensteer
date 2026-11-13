@@ -129,11 +129,9 @@ export type DeviceAccessRow =
   | { readonly capability: DeviceCapability; readonly kind: "switch"; readonly on: boolean | null };
 
 /**
- * The "Your agent can use" rows for a device page, in order.
- *
- * Apps needs integrations both granted and advertised, as the Host's gates do:
- * an ordinary Android phone is granted integrations but lends only its browser.
- * The Host keeps a device's last advertised modules while it is offline.
+ * Apps needs integrations both granted and advertised, as the Host's gates do: an ordinary
+ * Android phone is granted integrations but lends only its browser. The Host keeps a device's
+ * last advertised modules while it is offline.
  */
 export function deviceAccessRows(
   machine: MachineSummary,

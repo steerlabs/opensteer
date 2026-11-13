@@ -13,11 +13,6 @@ import { deviceNotificationsOn, setDeviceNotifications } from "./device-preferen
 import { MacosPermissionRows, useMacosGrants } from "./macos-permission-rows.js";
 import { SetupGroup, SwitchRow } from "./set-up-this-mac.js";
 
-/**
- * First run on the Mac hosting this Opensteer: the same Set up this Mac step
- * as any other device, with only what Home can change. Its browser and files
- * are always on because the agent runs here.
- */
 export function HomeSetupStep({
   bridge,
   onBack,

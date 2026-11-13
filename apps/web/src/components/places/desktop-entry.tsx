@@ -71,11 +71,6 @@ function SecondaryPaths({
   );
 }
 
-/**
- * A new desktop install: set Opensteer up here, or open the one this person
- * already has. Signed in to an Account that lists none yet, it says so and
- * offers the one thing left to do, and keeps checking.
- */
 export function DesktopWelcome({
   error,
   onConnect,
@@ -194,10 +189,6 @@ export function DesktopWelcome({
   );
 }
 
-/**
- * The Opensteers this person can open here, with a notice above them when
- * the one they were in can't open right now and the one move that fixes it.
- */
 export function DesktopChooser({
   error,
   notice = null,
@@ -349,7 +340,6 @@ export function DesktopChooser({
   );
 }
 
-/** The secondary ways in: a pairing code with its address, or a team server's address. */
 export function DesktopConnect({
   busy,
   error,

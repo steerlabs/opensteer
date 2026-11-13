@@ -2,7 +2,6 @@ import type { IphoneAppId } from "../platform/iphone-apps.js";
 import { addIphoneFailureText } from "../iphone-apps/model.js";
 import type { PhoneSetupDraft, PhoneSetupOutcome, PhoneSetupState } from "./phone-setup.js";
 
-/** One switch on Set up, in the words both platforms show. */
 export interface SetupSwitch {
   readonly key: "browser" | "notifications" | IphoneAppId;
   readonly title: string;
@@ -44,7 +43,6 @@ const appCopy: Readonly<Record<IphoneAppId, { readonly title: string; readonly d
 
 export const photosFooter = "Shares your whole library";
 
-/** The one review the switches get: where what the agent reads goes, and what is never shared. */
 export function setupDisclosure(opensteer: string, companies: string, noun: string): string {
   return `What your agent reads here goes to ${opensteer} and may go to ${companies}. Nothing else on this ${noun} is shared: not other apps, files, messages or the screen.`;
 }
@@ -130,7 +128,6 @@ export interface ReadyFormProps {
   readonly onDone: () => void;
 }
 
-/** Ready, honestly: each switch as it settled, never as it was hoped. */
 export interface ReadyRow {
   readonly key: string;
   readonly title: string;

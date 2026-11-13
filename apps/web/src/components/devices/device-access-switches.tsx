@@ -10,14 +10,9 @@ import {
   type DeviceSwitch,
 } from "./device-access.js";
 
-const accessConflictNotice =
-  "This changed on another device. The switches show what’s set now.";
+const accessConflictNotice = "This changed on another device. The switches show what’s set now.";
 
-/**
- * One live switch write, compare-and-set against the revision on screen. A
- * stale revision is the Host saying someone else changed it first: nothing
- * is written, the page reloads, and the person sees what is set now.
- */
+/** A stale revision means another device changed it first: nothing is written; the page reloads. */
 export function useAccessSwitch(
   hostClient: Pick<HostClient, "refresh" | "updateMachineAccess">,
   machine: MachineSummary,
@@ -60,10 +55,6 @@ export function useAccessSwitch(
   return { notice, pending, set };
 }
 
-/**
- * The "Your agent can use" group: one row per capability with its switch,
- * and its finer editor underneath while it is on.
- */
 export function DeviceAccessSwitches({
   editors,
   machine,

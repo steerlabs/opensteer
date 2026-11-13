@@ -734,11 +734,7 @@ export function DeploymentsScreen(): ReactNode {
   );
 }
 
-/**
- * Signed in, with no Opensteer yet: the Account is read again while this is on
- * screen and whenever the app returns, so it advances by itself once the Mac
- * has one.
- */
+/** The Account is read again while this is on screen and on return, so it advances by itself. */
 function SignedInWaiting(props: {
   readonly children: ReactNode;
   readonly onRefresh: () => void;

@@ -229,10 +229,7 @@ export class PushRegistration {
     });
   }
 
-  /**
-   * Turns every kind of alert on or off, as one durable choice. Off never asks
-   * the operating system, now or later; on asks only if it still can.
-   */
+  /** Off never asks the operating system, now or later; on asks only if it still can. */
   async choose(on: boolean): Promise<NotificationChoice> {
     return this.#queue.run(async () => {
       const file = await this.#load();
@@ -450,7 +447,6 @@ export class PushRegistration {
   }
 }
 
-/** Whether the person wants any alert at all; a phone that wants none is never asked. */
 export function wantsAlerts(preferences: NotificationPreferences): boolean {
   return preferences.approvalsEnabled || preferences.runOutcomesEnabled;
 }
