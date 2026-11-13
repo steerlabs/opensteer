@@ -82,6 +82,13 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
   // Trigger actions expand and validate in their production handler before the
   // fixture replaces the backend.
   const triggers = new TriggerToolHandlers({ manage: async () => unavailable() });
+  const browserHandlers = {
+    browser_tab_read: async () => unavailable(),
+    browser_tab_write: async () => unavailable(),
+    browser_session_list: async () => unavailable(),
+    browser_session_open: async () => unavailable(),
+    browser_session_close: async () => unavailable(),
+  };
   const handlers: AgentToolHandlers = {
     settings_read: async () => unavailable(),
     settings_write: async () => unavailable(),
@@ -118,11 +125,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     browser_profile_request: async () => unavailable(),
     device_access_request: async () => unavailable(),
     machine_full_disk_access_request: async () => unavailable(),
-    browser_tab_read: async () => unavailable(),
-    browser_tab_write: async () => unavailable(),
-    browser_session_list: async () => unavailable(),
-    browser_session_open: async () => unavailable(),
-    browser_session_close: async () => unavailable(),
+    ...browserHandlers,
     trigger_read: (call) => triggers.trigger_read(call),
     trigger_write: (call) => triggers.trigger_write(call),
     integration_search: async () => unavailable(),
@@ -282,7 +285,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
                   original.content.some(
                     (block) => isRecord(block) && block.type === "text" && block.text === validated,
                   )));
-            calls[index] = { tool: name, args, valid };
+            calls[index] = { at: calls[index]?.at ?? Date.now(), tool: name, args, valid };
             if (!valid) return original;
             let result = Object.hasOwn(testCase.mocks, name)
               ? testCase.mocks[name]
@@ -310,7 +313,13 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
                 : { status: "unavailable", message: "No case mock matches these arguments" };
             }
             if (isRecord(result) && typeof result.$error === "string") {
-              calls[index] = { tool: name, args, valid, result };
+              calls[index] = {
+                at: calls[index]?.at ?? Date.now(),
+                tool: name,
+                args,
+                valid,
+                result,
+              };
               return agentToolFailureResult({
                 code: "bad_request",
                 message: result.$error,
@@ -363,7 +372,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
                   ),
                 };
             }
-            calls[index] = { tool: name, args, valid, result };
+            calls[index] = { at: calls[index]?.at ?? Date.now(), tool: name, args, valid, result };
             if (name === "integration_describe" || !isRecord(result)) {
               return { content: [{ type: "text", text: JSON.stringify(result) }] };
             }
@@ -391,6 +400,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
             );
           activeCalls.set(callKey, calls.length);
           calls.push({
+            at: Date.now(),
             tool: params.success ? params.data.name : "<invalid-name>",
             args: params.success
               ? Object.hasOwn(params.data, "arguments")

@@ -38,6 +38,8 @@ import type { startFakeHost } from "./host.js";
 import { isolate } from "./isolation.js";
 import { fingerprint } from "./report.js";
 
+import { prepareBrowserHarness } from "./browser-harness.js";
+
 const claudeExecutable = process.env.OPENSTEER_CLAUDE_EXECUTABLE ?? "claude";
 
 // Adding an engine is one factory, with no replay prompt or native-tool copy.
@@ -160,6 +162,7 @@ export async function runEngine(input: {
   };
   const threadStateDirectory = join(p.privateRoot, "thread");
   await mkdir(threadStateDirectory, { recursive: true });
+  const browser = await prepareBrowserHarness(join(p.workspace, ".eval-browser"), c.browser);
   const context: HarnessSessionContext = {
     accessMode: "full-access",
     agentTools: {
@@ -171,7 +174,7 @@ export async function runEngine(input: {
       url: new URL("/agent", host.url).href,
     },
     environmentId: host.scope.environmentId,
-    commandEnvironment: {},
+    commandEnvironment: browser.commandEnvironment,
     environment: p.environment,
     harnessInstanceId: p.instanceId,
     history: [],
@@ -234,6 +237,7 @@ export async function runEngine(input: {
       finalText = "";
       failure = undefined;
       host.calls.splice(0);
+      await browser.reset();
       const finished = new Promise<void>((resolve) => {
         turnFinished = resolve;
       });
@@ -262,6 +266,8 @@ export async function runEngine(input: {
         signal,
       });
       await finished;
+      host.calls.push(...(await browser.calls()));
+      host.calls.sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
       if (eventFailure) throw eventFailure;
       if (failure) throw new Error(failure);
     }
