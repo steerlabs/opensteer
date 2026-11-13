@@ -58,6 +58,29 @@ describe("HTTP Host rpc response parsing", () => {
       ok: false,
     });
   });
+
+  it("tells a method an older Host lacks apart from a broken answer", async () => {
+    const answering = (body: string, status: number) =>
+      createHttpHostApiClient({
+        baseUrl: new URL("https://opensteer.example"),
+        fetch: async () => new Response(body, { status }),
+        onAuthenticationRequired: vi.fn(),
+      });
+    // Fastify's own answer for a route it doesn't have.
+    const missing = JSON.stringify({
+      message: "Route not found",
+      error: "Not Found",
+      statusCode: 404,
+    });
+    await expect(answering(missing, 404)["auth.config"]({})).resolves.toMatchObject({
+      ok: false,
+      error: { code: "not_found", reason: "unknown-method" },
+    });
+    await expect(answering("<html>", 502)["auth.config"]({})).resolves.toMatchObject({
+      ok: false,
+      error: { code: "internal" },
+    });
+  });
 });
 
 describe("bounded Host rpc requests", () => {

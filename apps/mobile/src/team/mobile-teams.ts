@@ -13,6 +13,8 @@ import {
   type WebSocketClient,
 } from "@opensteer/client/host";
 import {
+  listedTeams,
+  NativeTeamEntry,
   TeamSavedStateSchema,
   TeamTransportRegistry,
   type TeamCacheScope,
@@ -23,9 +25,11 @@ import {
 import {
   DeploymentIdSchema,
   parseTeamPageLink,
+  type DeploymentId,
   TeamChannelIdSchema,
   TeamMessageIdSchema,
   UserIdSchema,
+  type TeamInviteSecret,
   type TeamPageLink,
 } from "@opensteer/core";
 import { parseTeamLinkOffer, type HostApiClient, type TeamMember } from "@opensteer/protocol";
@@ -65,11 +69,11 @@ export interface MobileTeam {
 }
 
 export interface MobileTeamsSnapshot {
-  /** The computer the phone is showing; its teams are the ones listed. */
+  /** The computer the phone is showing; its agent links add to the teams listed. */
   readonly computerId: string | null;
-  /** The teams the computer being shown is in. */
+  /** The teams Account lists the person in, then any the computer being shown is linked to. */
   readonly teams: readonly MobileTeam[];
-  /** Teams this phone holds that no known computer of the reader's is in. */
+  /** Teams this phone holds that neither Account nor a known computer of the reader's lists. */
   readonly unlinked: readonly MobileTeam[];
   /** The one team this phone keeps a socket to. */
   readonly selected: string | null;
@@ -173,6 +177,7 @@ export class MobileTeams {
   readonly #client: MobileClient;
   readonly #transport: (connection: DeploymentConnection, scope: TeamCacheScope) => TeamTransport;
   readonly #verify: (origin: string) => Promise<VerifiedHostEndpoint>;
+  readonly #entry: NativeTeamEntry;
   readonly #usersFile: string;
   readonly #seed: Readonly<Record<string, readonly LinkedTeam[]>>;
   readonly #files: PrivateFilesystem;
@@ -209,6 +214,10 @@ export class MobileTeams {
     this.#client = options.client;
     this.#transport = options.transport;
     this.#verify = options.verify;
+    this.#entry = new NativeTeamEntry({
+      oauth: options.client.oauth,
+      catalog: options.client.catalog,
+    });
     this.#files = options.files;
     this.#previews = options.previews ?? null;
     this.#usersFile = `${options.directory}/teams.json`;
@@ -554,91 +563,103 @@ export class MobileTeams {
   > {
     const held = this.teamAt(origin);
     if (held !== null) return { kind: "held", team: held };
+    return { kind: "new", verified: await this.verifyTeam(origin) };
+  }
+
+  /** A team Host at an origin, verified through its signed discovery. Sends no credential. */
+  async verifyTeam(origin: string): Promise<VerifiedHostEndpoint> {
     const verified = await this.#verify(origin);
     if (verified.discovery.deploymentShape.kind !== "team")
       throw new Error(
         "That link isn't for a team. Ask whoever sent it for the team's invite link.",
       );
-    return { kind: "new", verified };
+    return verified;
   }
 
   /**
-   * Joining from an invite: the team enters this phone's catalog, the person
-   * signs in to it with their Opensteer Account, the invite admits them, and —
-   * when this phone holds their own Opensteer — their agent is linked.
+   * Entering a team whose server predates native team sessions, or whose Account can't vouch
+   * yet: the team enters this phone's catalog and the person signs in to it in the browser,
+   * through the invite when given so the team admits them there. Connecting their agent is the
+   * coordinator's next step, not this one's.
    */
-  async join(
-    intent: Extract<TeamLinkIntent, { kind: "invite" }>,
-    verified: VerifiedHostEndpoint | null,
-  ): Promise<string> {
-    let connection: DeploymentConnection;
-    if (verified !== null) {
-      const input = deploymentConnectionFromVerifiedEndpoints({
-        accountAccess: null,
-        endpoints: [verified],
-        kind: "team",
-        name: new URL(intent.origin).hostname,
-        source: { kind: "manual" },
-      });
-      await this.#client.catalog.upsert(input);
-      connection = (await this.#client.catalog.load()).deployments.find(
-        ({ authority }) => authority.document.deploymentId === verified.discovery.deploymentId,
-      )!;
-    } else {
-      const held = this.teamAt(intent.origin);
-      if (held === null) throw new TeamAccessError("This team is no longer on this phone.");
-      connection = this.#connection(held.teamId)!;
-    }
-    const teamId = connection.authority.document.deploymentId;
-    if (!this.#signedIn(teamId)) await this.#client.signIn(teamId);
+  async signIn(
+    verified: VerifiedHostEndpoint,
+    invite: TeamInviteSecret | null,
+  ): Promise<TeamMember> {
+    const teamId = verified.discovery.deploymentId;
+    if (this.#connection(teamId) === null)
+      await this.#client.catalog.upsert(
+        deploymentConnectionFromVerifiedEndpoints({
+          accountAccess: null,
+          endpoints: [verified],
+          kind: "team",
+          name: new URL(verified.discovery.canonicalOrigin).hostname,
+          source: { kind: "manual" },
+        }),
+      );
+    const connection = (await this.#client.catalog.load()).deployments.find(
+      ({ authority }) => authority.document.deploymentId === teamId,
+    );
+    if (connection === undefined)
+      throw new TeamAccessError("This team is no longer on this phone.");
+    if (!this.#signedIn(teamId)) await this.#client.signIn(teamId, invite);
     if (!this.#signedIn(teamId)) throw new Error("Sign in to finish joining.");
+    return (await this.#settle(connection)).member;
+  }
+
+  /**
+   * Entering a team as the signed-in Account, without a browser: the team joins this phone's
+   * catalog as an Account entry, its tokens stay in this phone's secure storage, and an invite,
+   * when given, admits the person. Connecting their agent is the coordinator's next step.
+   */
+  async enter(
+    verified: VerifiedHostEndpoint,
+    invite: TeamInviteSecret | null,
+  ): Promise<{ readonly admitted: boolean; readonly member: TeamMember }> {
+    const entered = await this.#entry.enter(verified, invite);
+    const teamId = verified.discovery.deploymentId;
+    const connection = (await this.#client.catalog.load()).deployments.find(
+      ({ authority }) => authority.document.deploymentId === teamId,
+    );
+    // Opening the team learns the same once the phone shows it; this only saves that wait.
+    if (connection !== undefined) await this.#settle(connection).catch(() => undefined);
+    return entered;
+  }
+
+  /** A team entered before a restart stays on this phone until Account's directory lists it. */
+  async restore(origin: string, teamId: DeploymentId): Promise<void> {
+    await this.#entry.restore(teamId, () => this.verifyTeam(origin));
+  }
+
+  /** Learns the team's name and who the reader is, and shows it on the computer being shown. */
+  async #settle(connection: DeploymentConnection) {
+    const teamId = connection.authority.document.deploymentId;
     const transport = this.#transport(connection, {
       teamDeploymentId: teamId,
       userId: placeholderUser,
     });
-    const accepted = await transport.rpc["commands.dispatch"]({
-      type: "team.invite.accept",
-      selector: intent.selector,
-      verifier: intent.verifier,
-    });
-    if (!accepted.ok && accepted.error.code !== "conflict") {
-      throw new HostClientRequestError({
-        code: accepted.error.code,
-        message: accepted.error.message,
-        status: 400,
-      });
-    }
     const bootstrap = unwrapRpcResult(await transport.rpc["team.bootstrap.get"]({}));
     this.#names.set(teamId, bootstrap.teamName);
     await this.#rememberUser(teamId, bootstrap.member.userId);
-    await this.session(teamId);
-    const { selection } = this.#client.getSnapshot();
-    if (selection.deploymentId !== null)
-      await this.#remember(selection.deploymentId, {
-        teamId,
-        origin: connection.authority.document.canonicalOrigin,
-        teamName: bootstrap.teamName,
-      });
-    if (selection.hostClient !== null && bootstrap.can.connectAgent) {
-      // Linking is best effort here: the person can always connect later from
-      // Ask my agent, and joining must not fail because a laptop is asleep.
-      await this.connect(teamId, selection.hostClient).catch(() => undefined);
-    }
-    return teamId;
+    await this.adopt({
+      teamId,
+      origin: connection.authority.document.canonicalOrigin,
+      teamName: bootstrap.teamName,
+    });
+    return bootstrap;
   }
 
   /**
-   * Links the reader's own Opensteer to the team: the team mints a one-time
-   * code on the reader's team session, and their own Opensteer redeems it with
-   * a secret only it ever holds.
+   * A team this phone now holds a session for joins the drawer of the computer
+   * being shown: that computer runs the agent the team asks.
    */
-  async connect(teamId: string, personal: HostClient): Promise<void> {
-    const session = await this.session(teamId);
-    const minted = unwrapRpcResult(
-      await session.rpc["commands.dispatch"]({ type: "team.link.code.create" }),
-    );
-    if (minted.type !== "team.link.code.create") throw new Error("The team did not make a code.");
-    await new PersonalTeamLinks(personal.rpc).join(minted.offer);
+  async adopt(team: LinkedTeam): Promise<void> {
+    const computerId = this.#client.getSnapshot().selection.deploymentId;
+    if (computerId === null) {
+      this.#publish();
+      return;
+    }
+    await this.#remember(computerId, team);
   }
 
   /** A code the team's web page showed, carried to the reader's own Opensteer. */
@@ -685,7 +706,9 @@ export class MobileTeams {
     const connection = this.#connection(teamId);
     if (connection !== null) {
       await this.#client.signOut(teamId).catch(() => undefined);
-      if (connection.source.kind === "manual") await this.#client.remove(teamId);
+      // An entry this phone added itself; one Account's directory lists comes back with it.
+      if (connection.source.kind === "manual" || connection.accountAccess === null)
+        await this.#client.remove(teamId);
     }
     this.#publish();
   }
@@ -808,11 +831,30 @@ export class MobileTeams {
       state.teams.map((entry) => [entry.connection.authority.document.deploymentId, entry]),
     );
     const computers = this.#memo?.computers ?? {};
-    const linked = computerId === null ? [] : (computers[computerId] ?? []);
-    const known = new Set(Object.values(computers).flatMap((teams) => teams.map((t) => t.teamId)));
+    const listed = listedTeams({
+      account: state.teams
+        .filter(({ connection }) => connection.accountAccess !== null)
+        .map(({ connection }) => ({
+          teamDeploymentId: connection.authority.document.deploymentId,
+          origin: connection.authority.document.canonicalOrigin,
+          name: connection.name,
+        })),
+      links: computerId === null ? [] : (computers[computerId] ?? []),
+      intents: [],
+    });
+    const known = new Set([
+      ...listed.map((team) => team.teamDeploymentId),
+      ...Object.values(computers).flatMap((teams) => teams.map((t) => t.teamId)),
+    ]);
     this.#snapshot = {
       computerId,
-      teams: linked.map((team) => this.#describe(team, catalog.get(team.teamId) ?? null)),
+      teams: listed.map((team) => {
+        const teamId = DeploymentIdSchema.parse(team.teamDeploymentId);
+        return this.#describe(
+          { teamId, origin: team.origin, teamName: team.name },
+          catalog.get(teamId) ?? null,
+        );
+      }),
       unlinked: state.teams
         .filter((entry) => !known.has(entry.connection.authority.document.deploymentId))
         .map((entry) =>

@@ -195,8 +195,7 @@ describe("team links", () => {
       verifier: "v_Q-".repeat(8),
     },
   };
-  const handoff = (page: Parameters<typeof teamPageAppLink>[0]) =>
-    teamPageAppLink(page, mobileDeepLinkScheme);
+  const handoff = (page: Parameters<typeof teamPageAppLink>[0]) => teamPageAppLink(page, "mobile");
 
   it("takes a first invite to the join sheet with its verifier intact, before knowing the team", () => {
     // No Deployment this phone knows is the team: joining is what the link is for.
@@ -247,9 +246,9 @@ describe("team links", () => {
   });
 
   it("ignores a team page meant for another app, a bare web page and an unencrypted team", () => {
-    expect(
-      resolveApplicationLink(teamPageAppLink(invite, opensteerDesktopClient.applicationId), []),
-    ).toEqual({ kind: "ignore" });
+    expect(resolveApplicationLink(teamPageAppLink(invite, "desktop"), [])).toEqual({
+      kind: "ignore",
+    });
     expect(resolveApplicationLink(`${origin}/c/${channelId}`, [])).toEqual({ kind: "ignore" });
     const plain = `${mobileDeepLinkScheme}:/team?${new URLSearchParams({
       url: `http://chat.acme.example/c/${channelId}`,

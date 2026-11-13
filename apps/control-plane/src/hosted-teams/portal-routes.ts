@@ -1,10 +1,17 @@
-import { randomBytes } from "node:crypto";
-import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
+import { randomBytes, randomUUID } from "node:crypto";
 import {
+  ControlPlaneAccountIdSchema,
+  type ControlPlaneAccountId,
+} from "@opensteer/control-plane-protocol";
+import {
+  CreateHostedTeamRequestSchema,
+  HostedTeamAvailabilityQuerySchema,
   HostedTeamIdSchema,
-  HostedTeamSlugSchema,
   hostedTeamsDomain,
   maximumLiveHostedTeamsPerAccount,
+  type HostedTeamId,
+  type HostedTeamOwner,
+  type HostedTeamView,
 } from "@opensteer/control-plane-protocol/hosted-teams";
 import type { BrowserPageFonts } from "@opensteer/shared/browserPage";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -13,25 +20,33 @@ import { parseForm, requireExactOrigin } from "../portal/browser-http.js";
 import {
   browserPagePolicyWithScript,
   createHostedTeamBody,
+  hostedTeamProgressBody,
   hostedTeamRow,
-  hostedTeamStartingBody,
   hostedTeamsUnavailableBody,
   sendBrowserPage,
+  transferHostedTeamBody,
 } from "../portal/pages.js";
 import type { PortalSession } from "../portal/portal-sessions.js";
 import { ControlPlaneError } from "../server/errors.js";
-import type { HostedTeamStore, HostedTeamView, IssuedSetupLink } from "./hosted-team-store.js";
+import type { HostedTeamStore } from "./hosted-team-store.js";
 
 export const portalCreateHostedTeamPath = "/teams/new";
 const portalHostedTeamsPath = "/teams";
+const portalAvailabilityPath = "/teams/availability";
 const hostedTeamPath = (id: string) => `/teams/${encodeURIComponent(id)}`;
 
 const TeamParamsSchema = z.strictObject({ id: HostedTeamIdSchema });
-const CreateFormSchema = z.strictObject({ slug: z.string().max(256) });
+const TransferFormSchema = z.strictObject({ to: z.string().max(64) });
+const CreateFormSchema = z.strictObject({
+  requestId: z.string().max(64),
+  name: z.string().max(256),
+  slug: z.string().max(256),
+});
 
 /**
- * The portal's hosted-team pages: create one, wait for it to start, get a new first-owner
- * setup link, and delete it. Without a provisioner configured, only the explanation remains.
+ * The portal's hosted-team pages, over the same store as the Account API: create a team, follow
+ * its setup into the team, retry or cancel it, transfer it, and delete it. Without a provisioner configured,
+ * only the explanation remains.
  */
 export function registerHostedTeamPortal(
   app: FastifyInstance,
@@ -55,12 +70,24 @@ export function registerHostedTeamPortal(
     if (!hostedTeams) return unavailable(reply);
     const session = await readSession(request, reply);
     if (!session) return signIn(reply, portalCreateHostedTeamPath);
-    const live = await hostedTeams.listForAccount(accountOf(session));
+    const live = await hostedTeams.listCreatedBy(accountOf(session));
+    const created = live.filter((team) => team.stage !== "deleting").length;
     return renderCreate(reply, {
       failure: null,
-      limitReached: live.length >= maximumLiveHostedTeamsPerAccount,
+      limitReached: created >= maximumLiveHostedTeamsPerAccount,
+      name: "",
       slug: "",
     });
+  });
+
+  app.get(portalAvailabilityPath, async (request, reply) => {
+    guard(request);
+    void reply.header("cache-control", "no-store");
+    if (!hostedTeams) throw new ControlPlaneError("not_found", "Route was not found");
+    const session = await readSession(request, reply);
+    if (!session) throw new ControlPlaneError("unauthorized", "Account sign-in required");
+    const { slug } = HostedTeamAvailabilityQuerySchema.parse(request.query);
+    return hostedTeams.availability(slug);
   });
 
   app.post(portalHostedTeamsPath, async (request, reply) => {
@@ -71,27 +98,53 @@ export function registerHostedTeamPortal(
     const session = await readSession(request, reply);
     if (!session) return signIn(reply, portalCreateHostedTeamPath);
     const form = CreateFormSchema.parse(parseForm(request.body));
-    const typed = form.slug.trim().toLowerCase();
-    const slug = HostedTeamSlugSchema.safeParse(typed);
-    if (!slug.success) {
+    const typed = { name: form.name.trim(), slug: form.slug.trim().toLowerCase() };
+    const input = CreateHostedTeamRequestSchema.safeParse({ requestId: form.requestId, ...typed });
+    if (!input.success) {
       return renderCreate(reply.code(400), {
-        failure: slug.error.issues[0]?.message ?? "That address can’t be used.",
+        failure: input.error.issues[0]?.message ?? "That address can’t be used.",
         limitReached: false,
-        slug: typed,
+        ...typed,
       });
     }
-    let issued: IssuedSetupLink;
+    let team: HostedTeamView;
     try {
-      issued = await hostedTeams.create(accountOf(session), slug.data);
+      team = await hostedTeams.create(accountOf(session), input.data);
     } catch (error) {
       if (!(error instanceof ControlPlaneError) || error.code !== "conflict") throw error;
       return renderCreate(reply.code(409), {
         failure: error.message,
-        limitReached: false,
-        slug: typed,
+        limitReached: error.reason === "hosted-team-limit-reached",
+        ...typed,
       });
     }
-    return renderStarting(reply, issued);
+    return reply.redirect(hostedTeamPath(team.id), 303);
+  });
+
+  app.get(`${portalHostedTeamsPath}/:id`, async (request, reply) => {
+    guard(request);
+    void reply.header("cache-control", "no-store");
+    if (!hostedTeams) return unavailable(reply);
+    const session = await readSession(request, reply);
+    const { id } = TeamParamsSchema.parse(request.params);
+    if (!session) return signIn(reply, hostedTeamPath(id));
+    const team = await hostedTeams.forAccount(accountOf(session), id);
+    if (!team || team.stage === "deleting") return reply.redirect("/", 303);
+    if (team.stage === "ready") return reply.redirect(team.origin, 303);
+    const nonce = randomBytes(18).toString("base64url");
+    return sendBrowserPage(reply, {
+      body: hostedTeamProgressBody({
+        cancelAction: `${hostedTeamPath(id)}/delete`,
+        nonce,
+        retryAction: `${hostedTeamPath(id)}/retry`,
+        statusPath: `${hostedTeamPath(id)}/status`,
+        team,
+      }),
+      fonts,
+      layout: "card",
+      policy: browserPagePolicyWithScript(nonce, ["connect-src 'self'"]),
+      title: `Setting up ${team.name} · Opensteer`,
+    });
   });
 
   app.get(`${portalHostedTeamsPath}/:id/status`, async (request, reply) => {
@@ -103,10 +156,10 @@ export function registerHostedTeamPortal(
     const { id } = TeamParamsSchema.parse(request.params);
     const team = await hostedTeams.forAccount(accountOf(session), id);
     if (!team) throw new ControlPlaneError("not_found", "Hosted team was not found");
-    return { phase: team.phase, ready: team.ready, state: team.state };
+    return team;
   });
 
-  app.post(`${portalHostedTeamsPath}/:id/setup-link`, async (request, reply) => {
+  app.post(`${portalHostedTeamsPath}/:id/retry`, async (request, reply) => {
     guard(request);
     void reply.header("cache-control", "no-store");
     requireExactOrigin(request, portalOrigin.origin);
@@ -114,9 +167,8 @@ export function registerHostedTeamPortal(
     const session = await readSession(request, reply);
     if (!session) return signIn(reply, "/");
     const { id } = TeamParamsSchema.parse(request.params);
-    const issued = await hostedTeams.newSetupLink(accountOf(session), id);
-    if ("setupComplete" in issued) return reply.redirect(`${issued.origin}/`, 303);
-    return renderStarting(reply, issued);
+    await hostedTeams.retry(accountOf(session), id);
+    return reply.redirect(hostedTeamPath(id), 303);
   });
 
   app.post(`${portalHostedTeamsPath}/:id/delete`, async (request, reply) => {
@@ -127,46 +179,95 @@ export function registerHostedTeamPortal(
     const session = await readSession(request, reply);
     if (!session) return signIn(reply, "/");
     const { id } = TeamParamsSchema.parse(request.params);
-    await hostedTeams.deleteForAccount(accountOf(session), id);
+    await hostedTeams.remove(accountOf(session), id);
     return reply.redirect("/", 303);
   });
+
+  app.get(`${portalHostedTeamsPath}/:id/transfer`, async (request, reply) => {
+    guard(request);
+    void reply.header("cache-control", "no-store");
+    if (!hostedTeams) return unavailable(reply);
+    const session = await readSession(request, reply);
+    const { id } = TeamParamsSchema.parse(request.params);
+    if (!session) return signIn(reply, `${hostedTeamPath(id)}/transfer`);
+    return renderTransfer(reply, accountOf(session), id, null);
+  });
+
+  app.post(`${portalHostedTeamsPath}/:id/transfer`, async (request, reply) => {
+    guard(request);
+    void reply.header("cache-control", "no-store");
+    requireExactOrigin(request, portalOrigin.origin);
+    if (!hostedTeams) return unavailable(reply);
+    const session = await readSession(request, reply);
+    if (!session) return signIn(reply, "/");
+    const { id } = TeamParamsSchema.parse(request.params);
+    const to = ControlPlaneAccountIdSchema.safeParse(
+      TransferFormSchema.parse(parseForm(request.body)).to,
+    );
+    try {
+      if (!to.success) throw new ControlPlaneError("bad_request", "Choose who to transfer it to.");
+      await hostedTeams.transfer(accountOf(session), id, to.data);
+    } catch (error) {
+      if (!(error instanceof ControlPlaneError) || error.code === "not_found") throw error;
+      return renderTransfer(reply.code(error.status), accountOf(session), id, error.message);
+    }
+    return reply.redirect("/", 303);
+  });
+
+  async function renderTransfer(
+    reply: FastifyReply,
+    accountId: ControlPlaneAccountId,
+    id: HostedTeamId,
+    failure: string | null,
+  ): Promise<string> {
+    const store = hostedTeams!;
+    const team = await store.forAccount(accountId, id);
+    if (!team || team.stage === "deleting")
+      throw new ControlPlaneError("not_found", "Hosted team was not found");
+    let owners: readonly HostedTeamOwner[] | null = null;
+    try {
+      owners = await store.owners(accountId, id);
+    } catch (error) {
+      if (!(error instanceof ControlPlaneError) || error.code === "not_found") throw error;
+      failure ??= error.message;
+    }
+    return sendBrowserPage(reply, {
+      body: transferHostedTeamBody({
+        action: `${hostedTeamPath(id)}/transfer`,
+        failure,
+        name: team.name,
+        owners,
+      }),
+      fonts,
+      layout: "card",
+      title: `Transfer ${team.name} · Opensteer`,
+    });
+  }
 
   function renderCreate(
     reply: FastifyReply,
     input: {
       readonly failure: string | null;
       readonly limitReached: boolean;
+      readonly name: string;
       readonly slug: string;
     },
   ): string {
+    const nonce = randomBytes(18).toString("base64url");
     return sendBrowserPage(reply, {
       body: createHostedTeamBody({
         action: portalHostedTeamsPath,
+        availabilityPath: portalAvailabilityPath,
         domain: hostedTeamsDomain,
         limit: maximumLiveHostedTeamsPerAccount,
+        nonce,
+        requestId: randomUUID(),
         ...input,
       }),
       fonts,
       layout: "card",
-      title: "Create a team · Opensteer",
-    });
-  }
-
-  function renderStarting(reply: FastifyReply, issued: IssuedSetupLink): string {
-    const nonce = randomBytes(18).toString("base64url");
-    const host = new URL(issued.team.origin).host;
-    void reply.header("referrer-policy", "no-referrer");
-    return sendBrowserPage(reply, {
-      body: hostedTeamStartingBody({
-        host,
-        nonce,
-        setupUrl: `${issued.team.origin}/setup#${issued.setupToken}`,
-        statusPath: `${hostedTeamPath(issued.team.id)}/status`,
-      }),
-      fonts,
-      layout: "card",
       policy: browserPagePolicyWithScript(nonce, ["connect-src 'self'"]),
-      title: `Starting ${host} · Opensteer`,
+      title: "Create a team · Opensteer",
     });
   }
 
@@ -190,14 +291,13 @@ export function registerHostedTeamPortal(
 export function hostedTeamRows(teams: readonly HostedTeamView[]): readonly string[] {
   return teams.map((team) =>
     hostedTeamRow({
-      claimed: team.claimed,
-      deleteAction: `${hostedTeamPath(team.id)}/delete`,
-      host: new URL(team.origin).host,
       id: team.id,
+      name: team.name,
       origin: team.origin,
-      phase: team.phase,
-      setupLinkAction: team.state === "active" ? `${hostedTeamPath(team.id)}/setup-link` : null,
-      state: team.state,
+      progressHref: hostedTeamPath(team.id),
+      removeAction: `${hostedTeamPath(team.id)}/delete`,
+      stage: team.stage,
+      transferHref: `${hostedTeamPath(team.id)}/transfer`,
     }),
   );
 }

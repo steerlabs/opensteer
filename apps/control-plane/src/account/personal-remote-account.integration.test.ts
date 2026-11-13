@@ -672,7 +672,8 @@ integration("Personal remote Account PostgreSQL boundary", () => {
     const directory = new ControlPlaneStore(database, issuer, {
       portalOrigin: new URL("https://connect.personal.test.invalid"),
     });
-    await expect(directory.deleteAccount(ownerA)).resolves.toBeUndefined();
+    const attempt = await directory.beginAccountDeletion(ownerA);
+    await expect(directory.deleteAccount(ownerA, attempt)).resolves.toBeUndefined();
     await expect(
       database.selectFrom("users").select("id").where("id", "=", ownerA).executeTakeFirst(),
     ).resolves.toBeUndefined();

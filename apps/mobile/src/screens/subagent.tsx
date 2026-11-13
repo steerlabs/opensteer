@@ -30,7 +30,6 @@ import { useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode
 import {
   Platform,
   Pressable,
-  ScrollView,
   StyleSheet,
   View,
   useWindowDimensions,
@@ -51,7 +50,7 @@ import {
 import { samePlain } from "../thread/agent-select.js";
 import { barOverContentOptions } from "../thread/around-button.js";
 import { AnswerPill } from "../thread/answer-pill.js";
-import { ComposerDockLayout } from "../thread/composer-dock.js";
+import { ComposerDockLayout, DockScrollView } from "../thread/composer-dock.js";
 import { useNodeWatch } from "../thread/node-watch.js";
 import { AgentEngine, AgentMark, threadEngine } from "../thread/agent-mark.js";
 import {
@@ -537,7 +536,7 @@ function Body(props: {
   const card = detail?.card ?? null;
   const settled = card !== null && card.endedAt !== null;
   return (
-    <ScrollView
+    <DockScrollView
       contentContainerStyle={[
         column,
         styles.body,
@@ -613,7 +612,7 @@ function Body(props: {
           )}
         </>
       )}
-    </ScrollView>
+    </DockScrollView>
   );
 }
 

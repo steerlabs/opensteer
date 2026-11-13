@@ -8,7 +8,9 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
   type ListViewToken,
+  type ScrollViewProps,
 } from "react-native";
+import { DockScrollView, OverDock } from "../thread/composer-dock.js";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { GlassSurface } from "../ui/glass.js";
 import { AppText } from "../ui/primitives.js";
@@ -72,6 +74,8 @@ export function Timeline(props: {
   const newestFirst = useMemo(() => [...props.items].reverse(), [props.items]);
   const list = useRef<FlatList<TimelineItem>>(null);
   const following = useRef(true);
+  // The keyboard's inset over the newest messages while it is up.
+  const inset = useRef(0);
   const anchorId = props.anchorId ?? null;
   const anchorIndex =
     anchorId === null
@@ -95,7 +99,7 @@ export function Timeline(props: {
   );
   const onScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      const near = event.nativeEvent.contentOffset.y <= followDistance;
+      const near = event.nativeEvent.contentOffset.y + inset.current <= followDistance;
       if (near !== following.current) {
         following.current = near;
         actions.onFollowingChange(near);
@@ -103,9 +107,22 @@ export function Timeline(props: {
     },
     [actions],
   );
-  // The newest message is the inverted list's top; reaching it is what follows and reads.
+  // The newest message is the inverted list's top, past the keyboard's inset
+  // while it is up; reaching it is what follows and reads.
   const jumpToNewest = useCallback(
-    () => list.current?.scrollToOffset({ offset: 0, animated: true }),
+    () => list.current?.scrollToOffset({ offset: 0 - inset.current, animated: true }),
+    [],
+  );
+  const renderScroll = useCallback(
+    (scrollProps: ScrollViewProps) => (
+      <DockScrollView
+        {...scrollProps}
+        inverted
+        onContentInsetChange={({ top }) => {
+          inset.current = top;
+        }}
+      />
+    ),
     [],
   );
   // FlatList keeps the first callback it is given, so the current actions are read through a ref.
@@ -163,6 +180,7 @@ export function Timeline(props: {
         }}
         ref={list}
         renderItem={renderItem}
+        renderScrollComponent={renderScroll}
         scrollEventThrottle={100}
         windowSize={9}
       />
@@ -253,7 +271,7 @@ export function JumpPill(props: {
   readonly onPress: () => void;
 }): ReactNode {
   const up = props.jump.direction === "up";
-  return (
+  const pill = (
     <View
       pointerEvents="box-none"
       style={[styles.jumpLane, up ? styles.jumpTop : { bottom: props.bottom }]}
@@ -281,6 +299,8 @@ export function JumpPill(props: {
       </Pressable>
     </View>
   );
+  // Toward the newest it waits just above the composer, so it rides the keyboard with it.
+  return up ? pill : <OverDock>{pill}</OverDock>;
 }
 
 /**

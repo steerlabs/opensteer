@@ -2,6 +2,8 @@ import {
   AuthSessionIdSchema,
   AuthAdmissionIdSchema,
   DeploymentIdSchema,
+  OpensteerNativeApplicationSchema,
+  TeamChannelIdSchema,
   HostInstanceIdSchema,
   HostKeyFingerprintSchema,
   IdentityEmailSchema,
@@ -27,6 +29,7 @@ import {
   PersonalHostAccessRouteDocumentSchema,
 } from "./connect.js";
 import { ControlPlaneAccountIdSchema, prefixedIdSchema } from "./account-id.js";
+import { HostedTeamIdSchema } from "./hosted-teams.js";
 export * from "./account-id.js";
 export * from "./connect.js";
 export * from "./notifications.js";
@@ -56,6 +59,8 @@ export const PersonalHostAccountLinkGrantIdSchema =
 
 export const AccountHostSessionGrantIdSchema =
   prefixedIdSchema("ahs").brand<"AccountHostSessionGrantId">();
+
+export const TeamIdentityGrantIdSchema = prefixedIdSchema("tig").brand<"TeamIdentityGrantId">();
 
 export const HostAccountAdoptionProofCredentialSchema = z
   .string()
@@ -737,6 +742,80 @@ export type IssueAccountHostSessionGrantResponse = z.infer<
   typeof IssueAccountHostSessionGrantResponseSchema
 >;
 
+/*
+ * A team identity grant lets a native app prove its Account identity to a team Host without a
+ * browser hop. It proves identity only, never membership: the team Host decides membership, or
+ * admits through an invite the app presents beside it. Signed by Account's Better Auth JWT key.
+ */
+export const accountTeamIdentityGrantsPath = (deploymentId: string) =>
+  `/v1/account/deployments/${encodeURIComponent(deploymentId)}/team-identity-grants`;
+
+/** Hard ceiling on a team identity assertion's lifetime, in seconds. */
+export const teamIdentityGrantLifetimeSeconds = 60;
+
+export const TeamIdentityAssertionSchema =
+  AccountHostSessionGrantSchema.brand<"TeamIdentityAssertion">();
+export type TeamIdentityAssertion = z.infer<typeof TeamIdentityAssertionSchema>;
+
+/**
+ * `expectedAuthority` is the team Host the app verified through signed discovery; Account
+ * refuses unless it is exactly the adopted team Deployment named in the path.
+ */
+export const IssueTeamIdentityGrantRequestSchema = z.strictObject({
+  surface: OpensteerNativeApplicationSchema,
+  expectedAuthority: HostAccountAdoptionAuthoritySchema,
+});
+export type IssueTeamIdentityGrantRequest = z.infer<typeof IssueTeamIdentityGrantRequestSchema>;
+
+export const IssueTeamIdentityGrantResponseSchema = z.object({
+  assertion: TeamIdentityAssertionSchema,
+  expiresAt: IsoDateTimeSchema,
+});
+export type IssueTeamIdentityGrantResponse = z.infer<typeof IssueTeamIdentityGrantResponseSchema>;
+
+/**
+ * The team Host verifies signature, issuer, audience and lifetime, consumes `jti` once, and
+ * issues credentials only to the native OAuth client `surface` names.
+ */
+export const TeamIdentityAssertionClaimsSchema = z
+  .strictObject({
+    tokenUse: z.literal("opensteer-team-identity"),
+    iss: DeploymentOriginSchema,
+    aud: DeploymentOriginSchema,
+    sub: ControlPlaneAccountIdSchema,
+    iat: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    exp: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    jti: TeamIdentityGrantIdSchema,
+    account: HostAccountIdentitySchema,
+    ...VerifiedDeploymentOwnerProfileSchema.pick({ email: true, displayName: true }).shape,
+    authority: HostAccountAdoptionAuthoritySchema,
+    surface: OpensteerNativeApplicationSchema,
+  })
+  .superRefine((claims, context) => {
+    if (claims.exp <= claims.iat || claims.exp - claims.iat > teamIdentityGrantLifetimeSeconds) {
+      context.addIssue({
+        code: "custom",
+        path: ["exp"],
+        message: "Team identity assertions may live for at most one minute",
+      });
+    }
+    if (claims.account.issuer !== claims.iss || claims.account.subject !== claims.sub) {
+      context.addIssue({
+        code: "custom",
+        path: ["account"],
+        message: "Account identity must match the signed issuer and subject",
+      });
+    }
+    if (claims.authority.canonicalOrigin !== claims.aud) {
+      context.addIssue({
+        code: "custom",
+        path: ["aud"],
+        message: "Assertion audience must equal the team Host origin",
+      });
+    }
+  });
+export type TeamIdentityAssertionClaims = z.infer<typeof TeamIdentityAssertionClaimsSchema>;
+
 export const IssueHostAccountAdoptionProofRequestSchema = z
   .object({
     account: HostAccountIdentitySchema,
@@ -995,6 +1074,102 @@ export const AcknowledgeHostAccountAdoptionResponseSchema = z
   })
   .strict();
 
+/** Routes a team Host serves for first-owner setup; Account calls them server-side for hosted teams. */
+export const teamSetupPaths = {
+  state: "/v1/team/setup/state",
+  exchange: "/v1/team/setup/exchange",
+  adoptionProof: "/v1/team/setup/adoption/proof",
+  adoptionComplete: "/v1/team/setup/adoption/complete",
+  /** Hosts advertising `team-hosted-bootstrap-v1`: whether an Account is one of the team's owners. */
+  ownerCheck: "/v1/team/setup/owner",
+} as const;
+
+export const HostedTeamOwnerCheckIdSchema =
+  prefixedIdSchema("hto").brand<"HostedTeamOwnerCheckId">();
+
+/**
+ * Account asks a hosted team's Host whether `sub` is an active owner before deleting the team or
+ * handing it to `sub`, because only that Host knows team roles. Signed with Account's key.
+ */
+export const HostedTeamOwnerCheckClaimsSchema = z
+  .strictObject({
+    tokenUse: z.literal("opensteer-hosted-team-owner-check"),
+    iss: DeploymentOriginSchema,
+    aud: DeploymentOriginSchema,
+    sub: ControlPlaneAccountIdSchema,
+    iat: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    exp: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    jti: HostedTeamOwnerCheckIdSchema,
+    authority: HostAccountAdoptionAuthoritySchema,
+  })
+  .superRefine((claims, context) => {
+    if (claims.exp <= claims.iat || claims.exp - claims.iat > 60) {
+      context.addIssue({ code: "custom", path: ["exp"], message: "Lives at most one minute" });
+    }
+    if (claims.authority.canonicalOrigin !== claims.aud) {
+      context.addIssue({ code: "custom", path: ["aud"], message: "Audience must be the team" });
+    }
+  });
+export type HostedTeamOwnerCheckClaims = z.infer<typeof HostedTeamOwnerCheckClaimsSchema>;
+
+export const HostedTeamOwnerCheckRequestSchema = z.strictObject({
+  assertion: AccountHostSessionGrantSchema,
+});
+/** `owner`: `sub` is an active owner. `owners`: the Accounts of every active owner, in order. */
+
+/**
+ * Account's hosted bootstrap: the team Host also commits `owner` as its owner and creates
+ * #general. `owner.subject` must equal the completion grant's signed subject. Sent only to a
+ * Host advertising `team-hosted-bootstrap-v1`.
+ */
+export const HostedTeamBootstrapSchema = z.strictObject({
+  hostedTeamId: HostedTeamIdSchema,
+  owner: VerifiedDeploymentOwnerProfileSchema,
+});
+export type HostedTeamBootstrap = z.infer<typeof HostedTeamBootstrapSchema>;
+
+export const CompleteTeamSetupAdoptionRequestSchema = z.strictObject({
+  grant: HostAccountAdoptionCompletionGrantSchema,
+  bundle: HostAccountAdoptionBundleSchema,
+  hostedBootstrap: HostedTeamBootstrapSchema.optional(),
+});
+export type CompleteTeamSetupAdoptionRequest = z.infer<
+  typeof CompleteTeamSetupAdoptionRequestSchema
+>;
+
+/**
+ * Keyed by hosted team id and exact Host authority. A replay returns the same receipt; it never
+ * re-applies the owner role, reactivates a removed creator or replaces another owner.
+ */
+export const HostedTeamBootstrapReceiptSchema = z.object({
+  hostedTeamId: HostedTeamIdSchema,
+  authority: z.object(HostAccountAdoptionAuthoritySchema.shape),
+  ownerUserId: UserIdSchema,
+  generalChannelId: TeamChannelIdSchema,
+  completedAt: IsoDateTimeSchema,
+});
+export type HostedTeamBootstrapReceipt = z.infer<typeof HostedTeamBootstrapReceiptSchema>;
+
+/**
+ * `receipt` is the Host's committed hosted bootstrap, so Account can still record a setup whose
+ * completion answer it lost after its own adoption result expired.
+ */
+export const HostedTeamOwnerCheckResponseSchema = z.object({
+  owner: z.boolean(),
+  owners: z.array(ControlPlaneAccountIdSchema).max(100),
+  receipt: HostedTeamBootstrapReceiptSchema.nullable(),
+});
+export type HostedTeamOwnerCheckResponse = z.infer<typeof HostedTeamOwnerCheckResponseSchema>;
+
+/** `receipt` is present exactly when the request carried `hostedBootstrap`. */
+export const CompleteTeamSetupAdoptionResponseSchema = z.object({
+  completed: z.literal(true),
+  receipt: HostedTeamBootstrapReceiptSchema.optional(),
+});
+export type CompleteTeamSetupAdoptionResponse = z.infer<
+  typeof CompleteTeamSetupAdoptionResponseSchema
+>;
+
 export function adoptedHostProvisioningBundle(
   controlApiOrigin: string | URL,
   request: AdoptExistingDeploymentRequest,
@@ -1058,6 +1233,11 @@ export const ControlPlaneErrorReasonSchema = z.enum([
   "connect-operation-superseded",
   "push-not-configured",
   "device-limit",
+  "hosted-team-limit-reached",
+  "hosted-team-address-taken",
+  "hosted-team-owner-required",
+  "hosted-teams-remain",
+  "account-deletion-in-progress",
 ]);
 export type ControlPlaneErrorReason = z.infer<typeof ControlPlaneErrorReasonSchema>;
 

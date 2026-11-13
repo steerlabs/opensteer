@@ -206,7 +206,7 @@ describe("fresh personal/team lineage", () => {
     );
   });
   it("migrates existing device policies without widening shell access or binding sessions", async () => {
-    await migrateToLatest(database, migrationsBefore("0007_devices"));
+    await migrateToLatest(database, migrationsBefore("0008_devices"));
     const fixture = await seedPersonalFixture(database, "/tmp/pre-devices-home");
     const original = { reach: "nobody", commands: false, forwarding: true, shares: [] };
     await sql`update runners set access_policy = ${JSON.stringify(original)}::jsonb`.execute(

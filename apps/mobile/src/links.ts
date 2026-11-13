@@ -63,7 +63,7 @@ export function resolveApplicationLink(
   url: string,
   knownDeploymentIds: readonly string[],
 ): ApplicationLinkOutcome {
-  const team = parseTeamPageAppLink(url, mobileDeepLinkScheme);
+  const team = parseTeamPageAppLink(url, "mobile");
   if (team !== null) return { kind: "team", origin: team.origin, page: teamPageUrl(team) };
   const notice = parseTeamNoticeLink(url);
   if (notice !== null) return { kind: "team-notice", ...notice };

@@ -206,6 +206,7 @@ describe("Reconciler", () => {
       phase: "ready",
       hostImage: release.host,
       observedSetupGeneration: 1,
+      setupGeneration: 1,
     });
     expect(account.reports.filter((entry) => entry.report.phase === "ready")).toHaveLength(1);
   });
@@ -226,7 +227,12 @@ describe("Reconciler", () => {
       "postgres-password": password,
       "setup-token-digest": digest("b"),
     });
-    expect(account.last(account.teams[0]!.id)).toMatchObject({ phase: "provisioning" });
+    // Says which generation it judged, so Account never applies it to a later one.
+    expect(account.last(account.teams[0]!.id)).toMatchObject({
+      phase: "provisioning",
+      observedSetupGeneration: 0,
+      setupGeneration: 2,
+    });
 
     cluster.settled.add("team-acme");
     await reconciler.pass();
@@ -325,6 +331,7 @@ describe("Reconciler", () => {
       phase: "deleted",
       hostImage: null,
       observedSetupGeneration: 0,
+      setupGeneration: 1,
     });
   });
 

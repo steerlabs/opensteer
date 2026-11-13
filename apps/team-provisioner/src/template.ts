@@ -34,6 +34,7 @@ export interface TeamImages {
 export interface TeamTemplateInput {
   readonly id: string;
   readonly slug: HostedTeamSlug;
+  readonly name: string;
   readonly images: Pick<TeamImages, "gateway" | "host">;
   readonly postgresImage: string;
   readonly replicas: 0 | 1;
@@ -272,7 +273,7 @@ function teamStatefulSet(
               image: input.images.host,
               env: [
                 { name: "OPENSTEER_DEPLOYMENT_KIND", value: "team" },
-                { name: "OPENSTEER_DEPLOYMENT_NAME", value: input.slug },
+                { name: "OPENSTEER_DEPLOYMENT_NAME", value: input.name },
                 { name: "OPENSTEER_BIND_ADDRESS", value: "0.0.0.0" },
                 { name: "OPENSTEER_PORT", value: "4310" },
                 { name: "OPENSTEER_MODE", value: "production" },

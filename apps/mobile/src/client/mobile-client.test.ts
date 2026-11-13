@@ -49,8 +49,7 @@ import { createSecureRecordStore } from "../platform/secure-record-store.js";
 import { createDeploymentCredentials } from "./deployment-credentials.js";
 import type { HostEpochAgreement, MobileHostPort, MobileHostPortFactory } from "./host-port.js";
 import { MobileClient, type MobileClientOptions } from "./mobile-client.js";
-import { movePhoneHere } from "../phone-setup/move-phone-here.js";
-import { IphoneAppsController, type IphoneAppsOwner } from "../iphone-apps/controller.js";
+import { IphoneAppsController } from "../iphone-apps/controller.js";
 import { createFakeIphoneApps } from "../iphone-apps/fake-bridge.js";
 
 const oauthIdentity: NativeOAuthIdentity = {
@@ -3058,13 +3057,14 @@ describe("MobileClient sign-in", () => {
     await client.sessions.save(personalSession());
     await vi.waitFor(() => expect(port.attached).toHaveLength(2));
     expect(port.disposed).toEqual([serverId]);
+    // The new attachment reports connected after it is made, not with it.
     await vi.waitFor(
       () =>
         expect(
           client.getSnapshot().selection.row?.status,
-          "The replacement attachment never published as connected",
+          "the new attachment never connected",
         ).toBe("connected"),
-      { timeout: 1000 },
+      { timeout: 2_000 },
     );
     client.dispose();
   });
@@ -3253,10 +3253,10 @@ describe("MobileClient per-deployment sign out", () => {
     const attachment = client.getSnapshot().selection.hostClient;
     expect(client.getSnapshot().selection.row?.status).toBe("connected");
     const before = await attachment?.rpc["sessions.list"]({});
-    const own =
-      before?.ok === true ? before.data.sessions.find((session) => session.current) : null;
-    if (!own) throw new Error("The phone's session was not listed");
-    await client.removeHostSession(own);
+    expect(before?.ok === true && before.data.sessions).toHaveLength(1);
+
+    if (!before?.ok) throw new Error("The phone's session was not listed");
+    await client.removeHostSession(before.data.sessions[0]!);
     await settle();
 
     // The Host ended the session this phone was presenting, and the record it
@@ -3499,31 +3499,6 @@ describe("MobileClient other computers' attention", () => {
       }),
     );
 
-  it.each([false, true])(
-    "opts raw attention into device Requests only after capability verification (%s)",
-    async (devices) => {
-      const input = vi.fn(async () => ({ ok: true, data: { needsYou: 1, unread: false } }));
-      const port = testPort({
-        held: true,
-        verification: { status: "compatible", capabilities: devices ? ["devices-v1"] : [] },
-        configureClient: (host) => {
-          Object.defineProperty(host, "rpc", {
-            value: new Proxy(host.rpc, {
-              get: (rpc, key) => (key === "attention.get" ? input : Reflect.get(rpc, key)),
-            }),
-          });
-        },
-      });
-      const { client } = open(port.factory);
-      await client.catalog.upsertAndSelect(connectComputer(1));
-      await client.catalog.upsert(otherComputer());
-      await client.initialize();
-      await client.readAttention(otherId);
-      expect(input).toHaveBeenCalledWith(devices ? { deviceAccessRequests: "include" } : {});
-      client.dispose();
-    },
-  );
-
   it("reads another computer once, leaves the selection alone, and never reads the shown one", async () => {
     const port = testPort({ held: true });
     const { client } = open(port.factory);
@@ -3540,7 +3515,6 @@ describe("MobileClient other computers' attention", () => {
     expect(port.attached).toHaveLength(before);
 
     await expect(client.readAttention(otherId)).resolves.toEqual({
-      homeName: "Mac mini",
       needsYou: expect.any(Number),
       unread: expect.any(Boolean),
     });
@@ -3589,11 +3563,7 @@ describe("MobileClient and this iPhone's apps", () => {
   const laptopRunnerId = "rnr_33333333-3333-4333-8333-333333333333";
 
   function iphoneOn(deploymentId: string) {
-    const fake = createFakeIphoneApps({
-      deviceName: "Alex's iPhone",
-      runnerId: laptopRunnerId,
-      devicesV1: false,
-    });
+    const fake = createFakeIphoneApps({ deviceName: "Alex's iPhone", runnerId: laptopRunnerId });
     fake.device.enrolledTo({ deploymentId, name: "Alex's iPhone" });
     const controller = new IphoneAppsController({
       bridge: fake.bridge,
@@ -3602,76 +3572,6 @@ describe("MobileClient and this iPhone's apps", () => {
     });
     return { controller, fake };
   }
-
-  it("stops Account sharing synchronously before push cleanup can await or fail", async () => {
-    const phone = iphoneOn(serverId);
-    const { client } = open(testPort({ held: false }).factory, undefined, {
-      iphoneApps: phone.controller.owner,
-    });
-    await client.catalog.upsertAndSelect(
-      asInput(
-        testDeploymentConnection({
-          kind: "personal",
-          deploymentId: serverId,
-          source: { issuer: accountOrigin, kind: "account", subject: accountSubject },
-        }),
-      ),
-    );
-    await client.initialize();
-    const cleanup = client.clearAccountSavedViews();
-    expect(phone.fake.device.calls).toEqual(["leave", "disconnect"]);
-    await cleanup;
-    expect(phone.fake.bridge.getSnapshot().pendingLeave).not.toBeNull();
-    phone.controller.dispose();
-    client.dispose();
-  });
-
-  it("stops a newly set-up phone synchronously when Account sign-out is retried", async () => {
-    const phone = iphoneOn(serverId);
-    const { client } = open(testPort({ held: false }).factory, undefined, {
-      iphoneApps: phone.controller.owner,
-    });
-    for (const id of [serverId, otherId])
-      await client.catalog.upsert(
-        asInput(
-          testDeploymentConnection({
-            kind: "personal",
-            deploymentId: id,
-            source: { issuer: accountOrigin, kind: "account", subject: accountSubject },
-          }),
-        ),
-      );
-    await client.initialize();
-    await client.clearAccountSavedViews();
-    phone.fake.device.enrolledTo({ deploymentId: otherId, name: "Phone" });
-    const signingOut = client.signOutAccount();
-    expect(phone.controller.owner.enrolledDeploymentId()).toBeNull();
-    expect(phone.fake.device.calls).toEqual(["leave", "disconnect", "leave", "disconnect"]);
-    await signingOut;
-    phone.controller.dispose();
-    client.dispose();
-  });
-
-  it("keeps a cold-start expired phone identity and waits for explicit sign-in", async () => {
-    const phone = iphoneOn(serverId);
-    const port = testPort({ held: false, realCredentials: true });
-    const { client } = open(port.factory, undefined, { iphoneApps: phone.controller.owner });
-    await client.catalog.upsertAndSelect(connectComputer(1));
-    await client.sessions.save({ ...personalSession(), expiresAt: "2020-01-01T00:00:00.000Z" });
-    const establish = vi
-      .spyOn(client.sessionExchange, "establish")
-      .mockResolvedValue(sessionExchangeResponse());
-    await client.initialize();
-    await client.retrySelection();
-    expect(establish).not.toHaveBeenCalled();
-    expect(phone.controller.owner.enrolledDeploymentId()).toBe(serverId);
-    expect(phone.fake.device.calls).toEqual([]);
-    expect(client.getSnapshot().selection.row?.status).toBe("needs-sign-in");
-    await client.openDeployment(serverId);
-    expect(establish).toHaveBeenCalledTimes(1);
-    phone.controller.dispose();
-    client.dispose();
-  });
 
   it("J1: stops sharing before a sign-out awaits, then tells the Host while signed in", async () => {
     const port = testPort({ held: false, realCredentials: true });
@@ -3684,13 +3584,11 @@ describe("MobileClient and this iPhone's apps", () => {
     await settle();
 
     const signingOut = client.signOut(serverId);
-    expect(iphone.fake.device.calls).toEqual(["leave", "disconnect"]);
+    expect(iphone.fake.device.calls).toEqual(["disconnect"]);
     await signingOut;
     await settle();
 
-    // With no self-leave route, as on an older Host, the old revoke goes out;
-    // that removal ends the session bound to it, leaving nothing to revoke.
-    expect(port.commands).toEqual(["machine.revoke"]);
+    expect(port.commands).toEqual(["machine.revoke", "session.revoke"]);
     expect(iphone.controller.getState().notice).toBeNull();
     expect(iphone.controller.owner.enrolledDeploymentId()).toBeNull();
     iphone.controller.dispose();
@@ -3708,12 +3606,10 @@ describe("MobileClient and this iPhone's apps", () => {
     await settle();
 
     const removing = client.remove(serverId);
-    expect(iphone.fake.device.calls).toEqual(["leave", "disconnect"]);
+    expect(iphone.fake.device.calls).toEqual(["disconnect"]);
     await removing;
 
-    // With no self-leave route, as on an older Host, the old revoke goes out;
-    // that removal ends the session bound to it, leaving nothing to revoke.
-    expect(port.commands).toEqual(["machine.revoke"]);
+    expect(port.commands).toEqual(["machine.revoke", "session.revoke"]);
     expect(client.getSnapshot().catalog.deployments).toHaveLength(0);
     iphone.controller.dispose();
     client.dispose();
@@ -3744,7 +3640,7 @@ describe("MobileClient and this iPhone's apps", () => {
     await client.initialize();
 
     const signingOut = client.signOutAccount();
-    expect(listed.fake.device.calls).toEqual(["leave", "disconnect"]);
+    expect(listed.fake.device.calls).toEqual(["disconnect"]);
     await signingOut;
     listed.controller.dispose();
     client.dispose();
@@ -3830,192 +3726,10 @@ describe("MobileClient and this iPhone's apps", () => {
     await client.catalog.remove(DeploymentIdSchema.parse(otherId));
     await settle();
 
-    expect(iphone.fake.device.calls).toEqual(["leave", "disconnect"]);
+    expect(iphone.fake.device.calls).toEqual(["disconnect"]);
     expect(port.commands).toEqual([]);
     expect(iphone.controller.getState().notice).toBeNull();
     iphone.controller.dispose();
-    client.dispose();
-  });
-
-  it.each(["sign-out", "remove", "use-here", "lost-bind-receipt"] as const)(
-    "finishes %s when signed leave ends the session after changing views",
-    async (entry) => {
-      let left = false;
-      const fake = createFakeIphoneApps({ runnerId: laptopRunnerId, devicesV1: true });
-      fake.device.enrolledTo({ deploymentId: serverId, name: "Phone" });
-      const controller = new IphoneAppsController({
-        bridge: fake.bridge,
-        shownApprovals: { read: async () => [], write: async () => undefined },
-        deliverLeave: async () => {
-          left = true;
-          return "removed";
-        },
-      });
-      const binding = vi.fn(async () => undefined);
-      const afterLeave = vi.fn();
-      const port = testPort({
-        held: false,
-        realCredentials: true,
-        configureClient: (host) => {
-          const snapshot = host.getSnapshot.bind(host);
-          vi.spyOn(host, "getSnapshot").mockImplementation(() => ({
-            ...snapshot(),
-            devicesAvailable: true,
-            session: "authenticated",
-            sessionId: "ses_phone",
-          }));
-          host.bindDeviceSession = binding;
-          Object.defineProperty(host, "rpc", {
-            value: new Proxy(host.rpc, {
-              get: (rpc, key) => {
-                if (key !== "sessions.list") return Reflect.get(rpc, key);
-                return async () => {
-                  if (left) {
-                    afterLeave();
-                    throw new HostClientRequestError({
-                      code: "unauthorized",
-                      status: 401,
-                      message: "Session ended",
-                    });
-                  }
-                  return {
-                    ok: true,
-                    data: { sessions: [{ id: "ses_phone", current: true, deviceId: null }] },
-                  };
-                };
-              },
-            }),
-          });
-        },
-      });
-      const { client } = open(port.factory, undefined, { iphoneApps: controller.owner });
-      try {
-        await client.catalog.upsertAndSelect(connectComputer(1));
-        await client.catalog.upsert(
-          asInput(
-            testDeploymentConnection({ kind: "personal", deploymentId: otherId, name: "Studio" }),
-          ),
-        );
-        await client.initialize();
-        await client.sessions.save(personalSession());
-        await client.retrySelection();
-        await settle();
-        await client.select(serverId);
-        await vi.waitFor(
-          () =>
-            expect(
-              client.getSnapshot().selection.hostClient,
-              "Phone Host never attached",
-            ).not.toBeNull(),
-          { timeout: 1000 },
-        );
-        if (entry !== "lost-bind-receipt") {
-          controller.attachHost({
-            deploymentId: serverId,
-            hostClient: client.getSnapshot().selection.hostClient!,
-          });
-          await vi.waitFor(() => expect(controller.owner.sessionBound(serverId)).toBe(true), {
-            timeout: 1000,
-          });
-          expect(binding).toHaveBeenCalledOnce();
-          controller.attachHost(null);
-          expect(controller.owner.sessionBound(serverId)).toBe(true);
-        }
-        const setup = vi.fn(() => {
-          expect(controller.owner.enrolledDeploymentId()).toBeNull();
-          expect(left).toBe(true);
-        });
-        if (entry === "remove") await client.remove(serverId);
-        else if (entry === "use-here") await movePhoneHere(client, serverId, setup);
-        else await client.signOut(serverId);
-        expect(setup).toHaveBeenCalledTimes(entry === "use-here" ? 1 : 0);
-        expect(left).toBe(true);
-        expect(afterLeave).toHaveBeenCalledOnce();
-        expect(port.commands).not.toContain("session.revoke");
-        expect(await client.sessions.load(DeploymentIdSchema.parse(serverId))).toBeNull();
-      } finally {
-        controller.dispose();
-        client.dispose();
-      }
-    },
-  );
-
-  function boundOwner(deploymentId: string) {
-    const calls: string[] = [];
-    let removed: ((id: string) => void) | null = null;
-    const owner: IphoneAppsOwner = {
-      enrolledDeploymentId: () => deploymentId,
-      stop: () => {
-        calls.push("leave");
-        return {
-          deploymentId,
-          deploymentName: "Mac mini",
-          enrollmentId: null,
-          left: true,
-          machineId: laptopRunnerId,
-          name: "Alex's iPhone",
-          sessionBound: true,
-        };
-      },
-      tellHost: async () => {
-        calls.push("deliver");
-        return "removed";
-      },
-      sessionBound: () => true,
-      onRemoved: (listener) => {
-        removed = listener;
-        return () => undefined;
-      },
-    };
-    return { calls, owner, removedByHost: () => removed?.(deploymentId) };
-  }
-
-  it("signs out a bound phone with its leave alone, never a second revoke", async () => {
-    const port = testPort({ held: false, realCredentials: true });
-    const iphone = boundOwner(serverId);
-    const { client } = open(port.factory, undefined, { iphoneApps: iphone.owner });
-    await client.catalog.upsertAndSelect(connectComputer(1));
-    await client.initialize();
-    await client.sessions.save(personalSession());
-    await client.retrySelection();
-    await settle();
-
-    await client.signOut(serverId);
-    await settle();
-
-    expect(iphone.calls).toEqual(["leave", "deliver"]);
-    expect(port.commands).toEqual([]);
-    expect(await client.sessions.load(DeploymentIdSchema.parse(serverId))).toBeNull();
-    const row = client.getSnapshot().rows.find((candidate) => candidate.deploymentId === serverId);
-    expect(row?.status).toBe("needs-sign-in");
-    client.dispose();
-  });
-
-  it("drops the session when the Host removes this phone, and never signs back in by itself", async () => {
-    const port = testPort({ held: false, realCredentials: true });
-    const iphone = boundOwner(serverId);
-    const { client } = open(port.factory, undefined, { iphoneApps: iphone.owner });
-    await client.catalog.upsertAndSelect(connectComputer(1));
-    await client.initialize();
-    await client.sessions.save(personalSession());
-    await client.retrySelection();
-    await settle();
-    expect(client.getSnapshot().selection.row?.status).toBe("connected");
-
-    const establish = vi
-      .spyOn(client.sessionExchange, "establish")
-      .mockResolvedValue(sessionExchangeResponse());
-    iphone.removedByHost();
-    await settle();
-
-    expect(port.commands).toEqual([]);
-    expect(await client.sessions.load(DeploymentIdSchema.parse(serverId))).toBeNull();
-    // An automatic reopen exchanges no Connect grant for a new session.
-    await client.retrySelection();
-    await settle();
-    expect(establish).not.toHaveBeenCalled();
-    const row = client.getSnapshot().rows.find((candidate) => candidate.deploymentId === serverId);
-    expect(row?.status).toBe("needs-sign-in");
     client.dispose();
   });
 

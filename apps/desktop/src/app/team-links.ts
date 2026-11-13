@@ -4,17 +4,12 @@ import type { DesktopTeamLink } from "@opensteer/protocol/desktop";
 
 /** Invite verifiers remain in memory until the application renderer acknowledges them. */
 export class DesktopTeamLinks {
-  readonly #scheme: string;
   readonly #pending: DesktopTeamLink[] = [];
   #consumer: ((link: DesktopTeamLink) => void) | null = null;
   #sent: string | null = null;
 
-  constructor(scheme: string) {
-    this.#scheme = scheme;
-  }
-
   accept(value: string): boolean {
-    const link = parseTeamPageAppLink(value, this.#scheme);
+    const link = parseTeamPageAppLink(value, "desktop");
     if (!link) return false;
     const url = teamPageUrl(link);
     if (this.#pending.some((pending) => pending.url === url)) return true;

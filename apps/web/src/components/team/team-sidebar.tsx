@@ -13,6 +13,7 @@ export interface TeamSideActions {
   readonly onBrowseChannels?: (() => void) | undefined;
   readonly onRemoveFromSidebar?: (() => void) | undefined;
   readonly onRetry?: (() => void) | undefined;
+  readonly onInvite?: (() => void) | undefined;
 }
 
 export interface TeamMenuActions {
@@ -20,6 +21,8 @@ export interface TeamMenuActions {
   readonly onInvite?: (() => void) | undefined;
   readonly onSettings?: (() => void) | undefined;
   readonly onLeave?: (() => void) | undefined;
+  readonly onCreateTeam?: (() => void) | undefined;
+  readonly onJoinTeam?: (() => void) | undefined;
 }
 
 /** What a segment says while the reader is on the other side. */
@@ -180,6 +183,9 @@ function TeamMenu({
       {item("Knowledge", actions.onKnowledge)}
       {item("Invite people", actions.onInvite)}
       {item("Team settings", actions.onSettings)}
+      {actions.onCreateTeam || actions.onJoinTeam ? <hr className="picker__divider" /> : null}
+      {item("Create a team", actions.onCreateTeam)}
+      {item("Join with an invite", actions.onJoinTeam)}
       {actions.onLeave ? <hr className="picker__divider" /> : null}
       {item(`Leave ${name}`, actions.onLeave, true)}
     </Popover>
@@ -281,6 +287,12 @@ export function TeamSide({
         onOpen={actions.onOpenChannel}
         openChannelId={openChannelId}
       />
+      {actions.onInvite ? (
+        <button className="team-side__invite" onClick={actions.onInvite} type="button">
+          <Icon name="plus" />
+          Invite people
+        </button>
+      ) : null}
       <SideLabel label="Direct messages" menu={[["New message", actions.onNewMessage]]} />
       <ChannelRows
         label={`${name} direct messages`}

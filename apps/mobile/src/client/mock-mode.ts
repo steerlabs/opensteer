@@ -3,7 +3,7 @@ import {
   type DeploymentConnectionInput,
 } from "@opensteer/client/connections";
 import { busyTeamIds } from "@opensteer/client/team";
-import { DeploymentIdSchema, HostInstanceIdSchema } from "@opensteer/core";
+import { createId, DeploymentIdSchema, HostInstanceIdSchema } from "@opensteer/core";
 
 /**
  * Development entry: `EXPO_PUBLIC_OPENSTEER_MOCK=1` runs the app against the
@@ -72,6 +72,19 @@ export function mockDeploymentConnections(): readonly DeploymentConnectionInput[
       origin: mockFamilyTeamOrigin,
     }),
   ];
+}
+
+/** A team mock mode's hosted-teams world made or let the reader into. */
+export function mockTeamConnection(input: {
+  readonly deploymentId: string;
+  readonly name: string;
+  readonly origin: string;
+}): DeploymentConnectionInput {
+  return mockConnection({
+    ...input,
+    hostInstanceId: createId("hostInstance"),
+    kind: "team",
+  });
 }
 
 function mockConnection(input: {

@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router";
 import {
   createId,
+  DeploymentIdSchema,
   TeamGroupIdSchema,
-  TeamInviteIdSchema,
   UserIdSchema,
   type TeamChannelId,
 } from "@opensteer/core";
@@ -18,35 +18,49 @@ import {
   SettingsRow,
   SettingsSegmented,
 } from "../components/settings/primitives.js";
-import {
-  GroupsAdmin,
-  InvitesAdmin,
-  PeopleAdmin,
-  type TeamRole,
-} from "../components/team/team-admin.js";
+import { GroupsAdmin, PeopleAdmin, type TeamRole } from "../components/team/team-admin.js";
 import { PeopleOnlyBadge } from "../components/team/team-marks.js";
 import { useToast } from "../components/toast.js";
 import { actionErrorMessage } from "../ui-utils.js";
 import { useTeams } from "./team-attachments.js";
+import {
+  InvitePanel,
+  useAgentLine,
+  useConnectAgent,
+  useHoldsHostedTeam,
+  useTeamDialogs,
+} from "./hosted-teams.js";
 import { teamTile } from "./team-people.js";
 import { channelPath } from "./team-paths.js";
 import { useTeamRead, useTeamView, type TeamView } from "./team-view.js";
 import { person } from "./team-view-models.js";
 
 const noPreviews: ReadonlyMap<string, string> = new Map();
+
+/** Scrolls a sideways tab row so its current tab shows whenever `tabs` (what it holds) changes. */
+function useCurrentTabInView(tabs: string) {
+  const nav = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    nav.current
+      ?.querySelector('[aria-current="page"]')
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [tabs]);
+  return nav;
+}
 const adminPages = ["people", "groups", "invites", "channels", "audit"] as const;
 
 /** Settings → a team: everyone's profile and notifications; admins' people, groups, invites, channels and audit log. */
 export function TeamSettingsRoute() {
   const { teamId = "", page = "profile" } = useParams();
   const view = useTeamView(teamId, noPreviews);
-  if (!view) return <p className="team-empty">You aren’t in this team on this computer.</p>;
-  const can = view.snapshot.bootstrap?.can;
+  const can = view?.snapshot.bootstrap?.can;
   const admin =
     !!can && (can.manageMembers || can.manageGroups || can.manageInvites || can.viewAudit);
+  const navRef = useCurrentTabInView(`${page}:${view !== null}:${admin}`);
+  if (!view) return <p className="team-empty">You aren’t in this team on this computer.</p>;
   const name = view.snapshot.bootstrap?.teamName ?? view.team.name;
   const nav = (
-    <nav aria-label={`${name} settings`} className="team-settings-nav">
+    <nav aria-label={`${name} settings`} className="team-settings-nav" ref={navRef}>
       {(["profile", "notifications", ...(admin ? adminPages : [])] as const).map((key) => (
         <Link
           aria-current={key === page ? "page" : undefined}
@@ -98,22 +112,60 @@ function useReport() {
 }
 
 function ProfilePage({ view }: { readonly view: TeamView }) {
-  const { leave } = useTeams();
+  const { coordination, leave } = useTeams();
+  const { openDelete, openTransfer } = useTeamDialogs();
   const navigate = useNavigate();
   const report = useReport();
+  const line = useAgentLine(view.team);
+  const connect = useConnectAgent(view.team);
+  const owner = view.snapshot.bootstrap?.member.role === "owner";
+  const hostedTeamId = view.snapshot.bootstrap?.hostedTeamId ?? null;
+  const holds = useHoldsHostedTeam(owner ? hostedTeamId : null);
   const me = view.me;
   if (!me) return null;
+  const name = view.snapshot.bootstrap?.teamName ?? view.team.name;
+  const hosted = hostedTeamId !== null;
+  const disconnect =
+    coordination && line !== "none"
+      ? () =>
+          void coordination.coordinator
+            .disconnectAgent(DeploymentIdSchema.parse(view.team.teamId))
+            .catch(report)
+      : null;
   return (
-    <SettingsGroup heading="Your profile" headingId="team-profile">
-      <SettingsRow
-        detail={`@${me.handle} · your agent is @${me.handle}-agent`}
-        title={me.displayName}
-      />
-      <SettingsRow
-        detail="Admins can see what agents read, searched and posted here."
-        title="Agent activity is logged"
-      />
-      {view.team.link ? (
+    <>
+      <SettingsGroup heading="Your profile" headingId="team-profile">
+        <SettingsRow
+          detail={`@${me.handle} · your agent is @${me.handle}-agent`}
+          title={me.displayName}
+        />
+        <SettingsRow
+          action={
+            line === "none" || line === "failed" ? (
+              connect ? (
+                <button className="btn btn--small" onClick={connect} type="button">
+                  Connect
+                </button>
+              ) : null
+            ) : disconnect ? (
+              <button className="btn btn--small" onClick={disconnect} type="button">
+                Disconnect
+              </button>
+            ) : null
+          }
+          detail={
+            line === "connected"
+              ? "Runs on your computer and only acts when you ask. Admins can see what agents read, searched and posted here."
+              : line === "pending-offline"
+                ? "It will connect when your computer is online."
+                : line === "connecting"
+                  ? "Connecting…"
+                  : "Connect it to ask it in threads. Your messages post either way."
+          }
+          title={line === "connected" ? "Your agent is connected" : "Your agent isn’t connected"}
+        />
+      </SettingsGroup>
+      <SettingsGroup heading="Leave, transfer or delete" headingId="team-leave">
         <SettingsRow
           action={
             <button
@@ -128,11 +180,45 @@ function ProfilePage({ view }: { readonly view: TeamView }) {
               Leave
             </button>
           }
-          detail="Tasks your agent did for this team stay on your computer."
-          title={`Leave ${view.team.name}`}
+          detail={
+            owner
+              ? "A team keeps at least one owner. Tasks your agent did for it stay on your computer."
+              : "Tasks your agent did for this team stay on your computer."
+          }
+          title={`Leave ${name}`}
         />
-      ) : null}
-    </SettingsGroup>
+        {owner && holds ? (
+          <SettingsRow
+            action={
+              <button
+                className="btn btn--small"
+                onClick={() => openTransfer(view.team.teamId)}
+                type="button"
+              >
+                Transfer
+              </button>
+            }
+            detail="Hand it to another owner, so it stays if you delete your Account."
+            title={`Transfer ${name}`}
+          />
+        ) : null}
+        {owner && hosted && coordination ? (
+          <SettingsRow
+            action={
+              <button
+                className="btn btn--danger btn--small"
+                onClick={() => openDelete(view.team.teamId)}
+                type="button"
+              >
+                Delete
+              </button>
+            }
+            detail="Deletes its channels, files and knowledge for everyone."
+            title={`Delete ${name}`}
+          />
+        ) : null}
+      </SettingsGroup>
+    </>
   );
 }
 
@@ -329,71 +415,12 @@ function GroupsPage({ view }: { readonly view: TeamView }) {
 }
 
 function InvitesPage({ view }: { readonly view: TeamView }) {
-  const report = useReport();
-  const toast = useToast();
-  const invites = useTeamRead(
-    () => view.client.rpc["team.invites.list"]({}).then(unwrapRpcResult),
-    `invites:${view.team.teamId}`,
-  );
-  const [made, setMade] = useState<{ readonly url: string; readonly expiresAt: string } | null>(
-    null,
-  );
-  const [copied, setCopied] = useState(false);
-  const active = (invites.value?.invites ?? []).filter(
-    (invite) => invite.revokedAt === null && Date.parse(invite.expiresAt) > Date.now(),
-  );
-  const newLink = async () => {
-    for (const invite of active)
-      await view.client.rpc["commands.dispatch"]({
-        type: "team.invite.revoke",
-        inviteId: invite.id,
-      }).then(unwrapRpcResult);
-    const result = unwrapRpcResult(
-      await view.client.rpc["commands.dispatch"]({
-        type: "team.invite.create",
-        id: TeamInviteIdSchema.parse(createId("teamInvite")),
-        maxUses: 1,
-        expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
-      }),
-    );
-    if (result.type === "team.invite.create")
-      setMade({ url: result.url, expiresAt: result.invite.expiresAt });
-    invites.reload();
-  };
   return (
-    <InvitesAdmin
-      copied={copied}
-      invite={{
-        enabled: active.length > 0,
-        url: made?.url ?? "",
-        expiresAt: made?.expiresAt ?? active[0]?.expiresAt ?? new Date().toISOString(),
-      }}
-      onCopy={() => {
-        if (!made) {
-          toast.error("Make a new link to copy it. Links are shown once.");
-          return;
-        }
-        void navigator.clipboard.writeText(made.url).then(() => setCopied(true));
-      }}
-      onNewLink={() => void newLink().catch(report)}
-      onToggle={(enabled) => {
-        if (enabled) void newLink().catch(report);
-        else
-          void Promise.all(
-            active.map((invite) =>
-              view.client.rpc["commands.dispatch"]({
-                type: "team.invite.revoke",
-                inviteId: invite.id,
-              }),
-            ),
-          )
-            .then(() => {
-              setMade(null);
-              invites.reload();
-            })
-            .catch(report);
-      }}
-    />
+    <SettingsGroup heading="Invite link" headingId="team-invites">
+      <div className="card__row">
+        <InvitePanel client={view.client} />
+      </div>
+    </SettingsGroup>
   );
 }
 

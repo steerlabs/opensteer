@@ -9,7 +9,7 @@ import type {
   HostedOAuthRefreshTransactionId,
   NotificationDevicePlatform,
   ProjectionGeneration,
-  PublishedNotificationKind,
+  AccountNotificationKind,
   TeamNotificationTarget,
 } from "@opensteer/control-plane-protocol";
 import type {
@@ -49,6 +49,9 @@ export interface UserTable {
   image: string | null;
   createdAt: Timestamp;
   updatedAt: Timestamp;
+  /** The deletion attempt holding this Account's fence; see `beginAccountDeletion`. */
+  deletionAttemptId: string | null;
+  deletionFencedUntil: NullableTimestamp;
 }
 
 export interface AuthAccountTable {
@@ -476,7 +479,7 @@ export interface NotificationPublicationTable {
     TeamNotificationTarget | null | undefined,
     TeamNotificationTarget | null
   >;
-  kind: PublishedNotificationKind;
+  kind: AccountNotificationKind;
   deliveries: Generated<number>;
   receivedAt: Timestamp;
 }
@@ -499,7 +502,7 @@ export interface NotificationDeliveryTable {
   >;
   requestId: string | null;
   messageId: string | null;
-  kind: PublishedNotificationKind;
+  kind: AccountNotificationKind;
   expiresAt: Timestamp;
   status: "pending" | "delivered" | "failed" | "dropped";
   attempts: Generated<number>;
@@ -527,7 +530,22 @@ export interface HostedTeamTable {
   createdAt: Timestamp;
   updatedAt: Timestamp;
   deletedAt: NullableTimestamp;
+  name: string | null;
+  createRequestId: string | null;
+  stage: Generated<HostedTeamStoredStage>;
+  stageMessage: string | null;
+  /** The plaintext first-owner setup token, sealed to this team and generation. */
+  sealedSetupToken: string | null;
+  deploymentId: DeploymentId | null;
+  bootstrapReceipt: JsonValue | null;
+  /** Bumped by each bootstrap claim, so a slower earlier attempt can never write. */
+  bootstrapAttempt: Generated<number>;
+  bootstrapNextAt: NullableTimestamp;
+  bootstrapLeaseUntil: NullableTimestamp;
+  configuringSince: NullableTimestamp;
 }
+
+export type HostedTeamStoredStage = "reserving" | "starting" | "configuring" | "ready" | "failed";
 
 export interface ControlPlaneDatabaseSchema {
   hostedTeams: HostedTeamTable;

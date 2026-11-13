@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router";
+import { Navigate, useNavigate, useParams, useSearchParams } from "react-router";
 import { createId, TeamChannelIdSchema, UserIdSchema } from "@opensteer/core";
 import { usePagedList } from "@opensteer/client/react";
 import { useWindowedRows } from "../components/workspace/windowed-rows.js";
@@ -13,8 +13,9 @@ import { SettingsSegmented, SettingsSwitch } from "../components/settings/primit
 import { useToast } from "../components/toast.js";
 import { actionErrorMessage } from "../ui-utils.js";
 import { ChannelRoute, TeamUnavailable } from "./channel-route.js";
+import { useTeamAttachment, useTeamSession } from "./team-attachments.js";
 import { TeamKnowledge } from "./team-knowledge.js";
-import { channelPath } from "./team-paths.js";
+import { channelPath, teamPath } from "./team-paths.js";
 import { useTeamView, type TeamView } from "./team-view.js";
 import { channelKind, messageView, person } from "./team-view-models.js";
 
@@ -25,7 +26,27 @@ export function TeamRoutes() {
   const { teamId = "", "*": splat = "" } = useParams();
   const [section, ...rest] = splat.split("/").filter(Boolean);
   if (section === "c") return <ChannelRoute rest={rest} teamId={teamId} />;
+  if (!section) return <TeamLanding teamId={teamId} />;
   return <TeamPage rest={rest} section={section ?? ""} teamId={teamId} />;
+}
+
+/** A team's own address lands in #general once its sidebar has loaded. */
+function TeamLanding({ teamId }: { readonly teamId: string }) {
+  const team = useTeamAttachment(teamId);
+  const snapshot = useTeamSession(team?.client ?? null);
+  const channels = snapshot?.sidebar?.channels ?? null;
+  if (!team) return <TeamUnavailable teamId={teamId} />;
+  if (!channels) return null;
+  const general =
+    channels.find((row) => row.channel.id === snapshot?.bootstrap?.generalChannelId) ??
+    channels.find((row) => row.channel.name === "general") ??
+    channels.find((row) => row.channel.kind === "public");
+  return (
+    <Navigate
+      replace
+      to={general ? channelPath(teamId, general.channel.id) : teamPath(teamId, "browse")}
+    />
+  );
 }
 
 function TeamPage({

@@ -40,6 +40,7 @@ import { useWorkspace } from "../components/workspace/workspace-context.js";
 import { DrawerButton } from "../components/workspace/place-stage.js";
 import { SidebarRestoreButton } from "../components/sidebar-chrome.js";
 import { actionErrorMessage, fromLivePage } from "../ui-utils.js";
+import { useConnectAgent, WelcomeCard } from "./hosted-teams.js";
 import { useTeams, useTeamSession } from "./team-attachments.js";
 import { channelPath } from "./team-paths.js";
 import { teamMessage } from "./team-send.js";
@@ -239,6 +240,7 @@ function ChannelScreenFor({
   const { drawer, selection, work } = useWorkspace();
   const hostClient = useOptionalShell()?.hostClient ?? null;
   const { links, surface } = useTeams();
+  const connectAgent = useConnectAgent(team);
   const toast = useToast();
   const report = (error: unknown) => toast.error(actionErrorMessage(error));
   const docked = selection.kind === "place";
@@ -527,6 +529,10 @@ function ChannelScreenFor({
   };
 
   /* ---- Composer ---- */
+  const general =
+    snapshot.bootstrap?.generalChannelId != null
+      ? snapshot.bootstrap.generalChannelId === channelId
+      : channel.name === "general" && channel.kind === "public";
   const agent: MyAgentHere = channel.peopleOnly
     ? { kind: "people-only" }
     : can?.wakeOwnAgent
@@ -574,11 +580,7 @@ function ChannelScreenFor({
         }
         me={me}
         onAddFiles={addFiles(rootId)}
-        onConnect={
-          surface === "desktop"
-            ? () => go(`/join?team=${encodeURIComponent(team.teamId)}`)
-            : undefined
-        }
+        onConnect={connectAgent ?? undefined}
         onRemoveFile={(id) => {
           retireFile(id);
           setStaged(rootId, (current) => current.filter((row) => row.id !== id));
@@ -693,7 +695,16 @@ function ChannelScreenFor({
             onEditingChange={setEditingId}
             flashId={place.messageId}
             hasOlder={timeline?.hasMore ?? false}
-            intro={<ChannelIntro channel={channel} />}
+            intro={
+              general ? (
+                <>
+                  <ChannelIntro channel={channel} />
+                  <WelcomeCard team={team} />
+                </>
+              ) : (
+                <ChannelIntro channel={channel} />
+              )
+            }
             items={items}
             label={channel.name}
             onLoadOlder={() => void client.loadPage("channel", "before").catch(report)}

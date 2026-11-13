@@ -4,7 +4,7 @@ import { color, controlFontScaleLimit, plateFill, radius, space, touchTarget } f
 import { AppText, RowGroup, SectionLabel } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { SearchField } from "./channel-details.js";
-import { GroupNote, LinkRow, SwitchSettingRow } from "./settings-rows.js";
+import { GroupNote, LinkRow } from "./settings-rows.js";
 import { AgentOrb, Avatar, TeamTile } from "./team-marks.js";
 import type { PersonView, TeamTileView } from "./team-models.js";
 
@@ -20,7 +20,14 @@ export interface TeamSettingsActions {
   readonly onChannels: () => void;
   readonly onKnowledge: () => void;
   readonly onAuditLog: () => void;
+  /** Asked to confirm already: the screen only acts. */
   readonly onLeave: () => void;
+  /** Present while the reader's agent is connected to this team. */
+  readonly onDisconnect: (() => void) | null;
+  /** Present for an owner of a team Opensteer hosts. */
+  readonly onTransfer: (() => void) | null;
+  /** Present for an owner of a team Opensteer hosts. */
+  readonly onDelete: (() => void) | null;
 }
 
 /**
@@ -35,8 +42,12 @@ export function TeamSettingsBody(props: {
   readonly address: string;
   readonly me: PersonView;
   readonly role: TeamRole;
-  /** The computer the reader's agent is connected from, or null. */
-  readonly agentLink: string | null;
+  /** Where the reader's agent stands here: "MacBook Pro", "Not connected". */
+  readonly agent: {
+    readonly value: string;
+    readonly detail: string | null;
+    readonly attention: boolean;
+  };
   readonly counts: { readonly people: number; readonly groups: number };
   readonly paddingBottom: number;
 }): ReactNode {
@@ -70,15 +81,13 @@ export function TeamSettingsBody(props: {
               onPress={actions.onNotifications}
             />,
             <LinkRow
-              detail={
-                props.agentLink === null ? "Connect your Opensteer to ask your agent here" : null
-              }
+              detail={props.agent.detail}
               key="agent"
               label="Your agent"
               mark={<AgentOrb size={20} />}
               onPress={actions.onConnect}
-              tone={props.agentLink === null ? "ember" : "default"}
-              value={props.agentLink ?? "Not connected"}
+              tone={props.agent.attention ? "ember" : "default"}
+              value={props.agent.value}
             />,
           ]}
         </RowGroup>
@@ -128,6 +137,24 @@ export function TeamSettingsBody(props: {
       <GroupNote>{`Admins can see what agents read, searched and posted in ${team.name}. Nobody here can see your own Opensteer or your tasks.`}</GroupNote>
       <RowGroup>
         {[
+          actions.onDisconnect === null ? null : (
+            <LinkRow
+              action
+              key="disconnect"
+              label="Disconnect your agent"
+              mark={<AgentOrb size={20} />}
+              onPress={() =>
+                Alert.alert(
+                  "Disconnect your agent?",
+                  `You stay in ${team.name}. Nobody can ask your agent there until you connect it again.`,
+                  [
+                    { style: "cancel", text: "Cancel" },
+                    { onPress: actions.onDisconnect!, style: "destructive", text: "Disconnect" },
+                  ],
+                )
+              }
+            />
+          ),
           <LinkRow
             action
             icon="rectangle.portrait.and.arrow.right"
@@ -145,6 +172,25 @@ export function TeamSettingsBody(props: {
             }
             tone="danger"
           />,
+          actions.onTransfer === null ? null : (
+            <LinkRow
+              action
+              icon="arrow.turn.down.right"
+              key="transfer"
+              label={`Transfer ${team.name}`}
+              onPress={actions.onTransfer}
+            />
+          ),
+          actions.onDelete === null ? null : (
+            <LinkRow
+              action
+              icon="trash"
+              key="delete"
+              label={`Delete ${team.name}`}
+              onPress={actions.onDelete}
+              tone="danger"
+            />
+          ),
         ]}
       </RowGroup>
     </ScrollView>
@@ -361,84 +407,6 @@ export function GroupDetailBody(props: {
           </RowGroup>
         )}
       </View>
-    </ScrollView>
-  );
-}
-
-/**
- * The team's invite link. Anyone with it can join while it is on; a new link
- * replaces the old one at once.
- */
-export function InvitesAdminBody(props: {
-  readonly enabled: boolean;
-  readonly onEnabled: (on: boolean) => void;
-  readonly link: string;
-  readonly copied: boolean;
-  readonly onCopy: () => void;
-  readonly onShare: () => void;
-  readonly onNewLink: () => void;
-  /** "One person can join with it. Expires Nov 18." */
-  readonly status: string;
-  readonly paddingBottom: number;
-}): ReactNode {
-  return (
-    <ScrollView contentContainerStyle={[styles.page, { paddingBottom: props.paddingBottom }]}>
-      <RowGroup>
-        {[
-          <SwitchSettingRow
-            detail={null}
-            icon="link"
-            key="on"
-            label="Invite link"
-            onChange={props.onEnabled}
-            value={props.enabled}
-          />,
-          props.enabled ? (
-            <View key="link" style={styles.link}>
-              <AppText numberOfLines={1} role="secondary" style={styles.words} tone="soft">
-                {props.link}
-              </AppText>
-              <Pressable
-                accessibilityRole="button"
-                hitSlop={8}
-                onPress={props.onCopy}
-                style={styles.linkAction}
-              >
-                <AppText role="secondaryMedium" tone="ember">
-                  {props.copied ? "Copied" : "Copy"}
-                </AppText>
-              </Pressable>
-              <Pressable
-                accessibilityLabel="Share the invite link"
-                accessibilityRole="button"
-                onPress={props.onShare}
-                style={styles.linkAction}
-              >
-                <Symbol name="square.and.arrow.up" size={17} tint={color.ember} />
-              </Pressable>
-            </View>
-          ) : null,
-          props.enabled ? (
-            <LinkRow
-              action
-              icon="arrow.clockwise"
-              key="new"
-              label="New link"
-              onPress={() =>
-                Alert.alert("Make a new invite link?", "The current link stops working at once.", [
-                  { style: "cancel", text: "Cancel" },
-                  { onPress: props.onNewLink, text: "New link" },
-                ])
-              }
-            />
-          ) : null,
-        ].filter((row) => row !== null)}
-      </RowGroup>
-      {props.enabled ? (
-        <GroupNote>{props.status}</GroupNote>
-      ) : (
-        <GroupNote>Nobody can join with a link while it is off.</GroupNote>
-      )}
     </ScrollView>
   );
 }

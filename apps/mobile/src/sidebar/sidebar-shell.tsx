@@ -408,6 +408,15 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
         if (same("TeamHome", { teamId })) return;
         go("TeamHome", { teamId }, false);
       },
+      onTeams: () => {
+        leave();
+        if (latest.current.routes[latest.current.index]?.name === "Teams") return;
+        go("Teams", {}, false);
+      },
+      onTeamSetup: (hostedTeamId) => {
+        leave();
+        navigation.dispatch(StackActions.push("TeamSetup", { hostedTeamId }));
+      },
       onSearch: (targetDeploymentId) => {
         leave();
         go("TaskSearch", { deploymentId: targetDeploymentId }, false);

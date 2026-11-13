@@ -7,6 +7,7 @@ import {
   type TeamLinkId,
   type TeamAgentRequestId,
   TeamChannelIdSchema,
+  type TeamChannelId,
   type UserId,
 } from "@opensteer/core";
 import {
@@ -21,6 +22,7 @@ import {
   hostApi,
   type HostApiCommand,
 } from "@opensteer/protocol";
+import type { HostedTeamId } from "@opensteer/control-plane-protocol/hosted-teams";
 import type { Kysely } from "kysely";
 import type { z } from "zod";
 import type { DatabaseSchema } from "@opensteer/database";
@@ -31,7 +33,7 @@ import {
 } from "@opensteer/database/team-access";
 import { TeamMembersStore } from "@opensteer/database/team-members";
 import { TeamGroupsStore } from "@opensteer/database/team-groups";
-import { TeamInvitesStore } from "@opensteer/database/team-invites";
+import { TeamInvitesStore, type TeamInviteVerifierVault } from "@opensteer/database/team-invites";
 import { TeamChatStore, teamMessageViews, teamRequestView } from "@opensteer/database/team-chat";
 import { TeamFilesStore } from "@opensteer/database/team-files";
 import { TeamAuditStore } from "@opensteer/database/team-audit";
@@ -58,6 +60,7 @@ export interface TeamServiceOptions {
   readonly teamName: string;
   readonly hostKeyFingerprint: string;
   readonly origin: string;
+  readonly inviteVerifiers?: TeamInviteVerifierVault;
   readonly dataDirectory: string;
   readonly storageLimitBytes?: number | undefined;
   readonly knowledge: {
@@ -75,6 +78,11 @@ export interface TeamServiceOptions {
     command: Extract<HostApiCommand, { type: "notification.preview.register" }>,
   ) => Promise<void>;
   readonly publishPush: (delivery: TeamPushDelivery) => Promise<void>;
+  /** A hosted team's Account id and the #general its bootstrap created; null when self-hosted. */
+  readonly hostedTeam?: () => Promise<{
+    readonly hostedTeamId: HostedTeamId;
+    readonly generalChannelId: TeamChannelId | null;
+  } | null>;
   readonly backgroundError: (area: "team-maintenance" | "team-push") => void;
 }
 export async function startTeamServices(options: TeamServiceOptions) {
@@ -93,7 +101,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
   await access.initialize();
   const members = new TeamMembersStore(access),
     groups = new TeamGroupsStore(access),
-    invites = new TeamInvitesStore(access, options.origin);
+    invites = new TeamInvitesStore(access, options.origin, options.inviteVerifiers);
   const chat = new TeamChatStore(access, {
     teamId: options.teamId,
     teamName: options.teamName,
@@ -297,6 +305,17 @@ export async function startTeamServices(options: TeamServiceOptions) {
       case "team.invite.revoke":
         await invites.revoke(actor, command.inviteId);
         break;
+      case "team.invite.reset":
+        return {
+          type: command.type,
+          invite: await invites.reset(
+            actor,
+            command.id,
+            command.replaces,
+            command.expiresInDays,
+            command.maxUses,
+          ),
+        };
       case "team.invite.accept":
         await invites.accept(actor.userId, command.selector, command.verifier);
         break;
@@ -333,6 +352,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
     switch (name) {
       case "team.bootstrap.get": {
         const member = await members.get(actor);
+        const hosted = (await options.hostedTeam?.()) ?? null;
         return TeamBootstrapSchema.strip().parse({
           teamId: options.teamId,
           teamName: options.teamName,
@@ -347,6 +367,8 @@ export async function startTeamServices(options: TeamServiceOptions) {
             connectAgent: true,
           },
           sidebar: await chat.directory(actor, undefined, true),
+          generalChannelId: hosted?.generalChannelId ?? null,
+          hostedTeamId: hosted?.hostedTeamId ?? null,
         });
       }
       case "team.sidebar.get": {
@@ -401,6 +423,9 @@ export async function startTeamServices(options: TeamServiceOptions) {
         return groups.get(actor, teamReadSchemas[name].input.parse(raw).groupId);
       case "team.invites.list":
         return invites.page(actor, teamReadSchemas[name].input.parse(raw).after);
+      case "team.invite.current.get":
+        teamReadSchemas[name].input.parse(raw);
+        return invites.current(actor);
       case "team.audit.page":
         await options.database.transaction().execute((t) => access.admin(t, actor));
         return audit.page(teamReadSchemas[name].input.parse(raw).before);
@@ -562,7 +587,8 @@ export async function startTeamServices(options: TeamServiceOptions) {
             () =>
               options.database.transaction().execute(async (t) => {
                 await access.member(t, actor.userId);
-                if (command.type === "team.invite.create") await access.admin(t, actor);
+                if (command.type === "team.invite.create" || command.type === "team.invite.reset")
+                  await access.admin(t, actor);
                 let channelId = "channelId" in command ? command.channelId : undefined;
                 if (
                   typeof result === "object" &&
