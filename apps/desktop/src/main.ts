@@ -29,6 +29,10 @@ import { NativeDictationHelperClient } from "./dictation/helper-client.js";
 import { bundledDictationBrokerPath } from "./dictation/paths.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { AuthenticatedSessionViewSchema } from "@opensteer/core";
+import { readBoundedJson } from "@opensteer/shared/boundedJson";
+import { apiVersionHeaders } from "@opensteer/deployment-authority";
+import { z } from "zod";
 import {
   app,
   BaseWindow,
@@ -534,11 +538,17 @@ async function runDesktop(
       });
     },
   });
+  let deviceLifecycle: LocalRunnerService | undefined;
+  const sessionOwners = new Set<HostSession>();
   const accountBrokeredHostSessions = new AccountBrokeredHostSessions({
     catalog: deploymentCatalog,
     clearDeploymentSession: (deploymentId) => hostNetwork.clearDeploymentSession(deploymentId),
   });
   const nativeAuth = new NativeOAuthManager({
+    beforeAccountIdentityChange: async (next) => {
+      if (!deviceLifecycle) throw new Error("Device membership is still loading.");
+      await deviceLifecycle.leaveAccountMemberships(next ?? undefined);
+    },
     accountOrigin: loaded.config.accountUrl,
     accountSessions: accountBrokeredHostSessions,
     catalog: deploymentCatalog,
@@ -584,7 +594,28 @@ async function runDesktop(
     localRuntime: personal,
     supervisedDeploymentId: async () => (await personalFiles.load())?.deploymentId ?? null,
   });
+  const deviceSessionOptions = {
+    assertSessionAllowed: async (deploymentId: string) => {
+      if (!deviceLifecycle) throw new Error("Device membership is still loading.");
+      await deviceLifecycle.assertSessionAllowed(deploymentId);
+    },
+    onSessionEnded: async (attachment: import("@opensteer/client/auth").SelectedAttachment) => {
+      if (
+        attachment.connection.authority.document.deploymentShape.kind === "personal" &&
+        attachment.resolved.access !== "owner"
+      )
+        await deviceLifecycle?.sessionLost(attachment.resolved.deploymentId);
+    },
+    onUnauthorized: async (attachment: import("@opensteer/client/auth").SelectedAttachment) => {
+      if (
+        attachment.connection.authority.document.deploymentShape.kind === "personal" &&
+        attachment.resolved.access !== "owner"
+      )
+        await deviceLifecycle?.sessionLost(attachment.resolved.deploymentId);
+    },
+  };
   const hostSessions = new HostSession({
+    ...deviceSessionOptions,
     accountCredentialRejected: () =>
       nativeAuth
         .notifyAccountCredentialRejected()
@@ -601,7 +632,10 @@ async function runDesktop(
     localOwner: personal,
     oauth: nativeAuth,
   });
+  sessionOwners.add(hostSessions);
   const hostTransport = new DesktopHostTransport({
+    observeCommand: async (deploymentId, command, result) =>
+      deviceLifecycle?.observeHostCommand(deploymentId, command, result),
     catalog: deploymentCatalog,
     log: reportEvent,
     credentials: nativeAuth,
@@ -623,13 +657,17 @@ async function runDesktop(
       network: hostNetwork,
       sessions: (attachment) => {
         const sessions = new HostSession({
+          ...deviceSessionOptions,
           attachment,
           clearDeploymentSession: (id) => hostNetwork.clearDeploymentSession(id),
           exchange: hostSessionExchange,
           localOwner: personal,
           oauth: nativeAuth,
         });
+        sessionOwners.add(sessions);
         return {
+          assertSessionAllowed: (deploymentId) => sessions.assertSessionAllowed(deploymentId),
+          sessionEnded: (selected) => sessions.sessionEnded(selected),
           recoverUnauthorized: async (selected) => {
             const outcome = await sessions.recoverUnauthorized(selected);
             if (outcome === "account-required") await nativeAuth.notifyAccountCredentialRejected();
@@ -658,10 +696,73 @@ async function runDesktop(
     transport: hostTransport,
     windowForContents: desktopWindowForContents,
   });
-  const closeClearedAccountSockets = accountBrokeredHostSessions.subscribe(() =>
-    hostTransport.closeAllConnections(),
-  );
+  const closeClearedAccountSockets = accountBrokeredHostSessions.subscribe((deploymentIds) => {
+    for (const deploymentId of deploymentIds)
+      hostTransport.closeDeploymentConnections(DeploymentIdSchema.parse(deploymentId));
+  });
   const localRunner = new LocalRunnerService(loaded.config, {
+    fenceDeployment: (deploymentId) => {
+      for (const sessions of sessionOwners) sessions.blockDeployment(deploymentId);
+      hostTransport.closeDeploymentConnections(deploymentId);
+    },
+    allowDeployment: async (deploymentId) => {
+      await Promise.all(
+        [...sessionOwners].map((sessions) => sessions.allowDeployment(deploymentId)),
+      );
+    },
+    clearDeploymentSession: (deploymentId) => hostNetwork.clearDeploymentSession(deploymentId),
+    leaveFetch: serviceNetwork.fetch.bind(serviceNetwork),
+    retireEnrollment: async (deploymentId, origin, enrollmentId) => {
+      const response = await hostNetwork.partitionFetch(
+        deploymentId,
+        new URL("/v1/rpc/commands.dispatch", origin),
+        {
+          method: "POST",
+          headers: { ...apiVersionHeaders("personal"), origin, "content-type": "application/json" },
+          body: JSON.stringify({
+            type: "runner.enrollment.retire",
+            enrollmentId,
+            idempotencyKey: `desktop-retire:${enrollmentId}`,
+          }),
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new Error("This Mac's pending setup is unconfirmed.");
+      }
+      const body = await readBoundedJson(response, {
+        maximumBytes: 4096,
+        sizeError: () => new Error("Invalid retirement confirmation."),
+      });
+      z.object({
+        ok: z.literal(true),
+        data: z.object({
+          type: z.literal("runner.enrollment.retire"),
+          state: z.enum(["consumed", "expired", "retired"]),
+        }),
+      }).parse(body);
+    },
+    readSession: async (deploymentId, origin) => {
+      const response = await hostNetwork.partitionFetch(
+        deploymentId,
+        new URL("/v1/auth/session", origin),
+        {
+          method: "GET",
+          headers: { ...apiVersionHeaders("personal"), origin },
+          signal: AbortSignal.timeout(15_000),
+        },
+      );
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new Error("The session being bound has ended.");
+      }
+      const body = await readBoundedJson(response, {
+        maximumBytes: 64 * 1024,
+        sizeError: () => new Error("Invalid Host session response."),
+      });
+      return z.object({ session: AuthenticatedSessionViewSchema }).parse(body).session;
+    },
     profileErasure,
     log: reportEvent,
     browser: (input) =>
@@ -685,6 +786,7 @@ async function runDesktop(
     }),
     userEnvironment: personalUserEnvironment,
   });
+  deviceLifecycle = localRunner;
   shutdown.add({
     component: "local-runners",
     step: "stop",
@@ -1077,7 +1179,7 @@ async function runDesktop(
         access.dispose();
         detachAccountDirectoryRefresh();
         nativeAuth.dispose();
-        hostSessions.dispose();
+        for (const sessions of sessionOwners) sessions.dispose();
         hostTransport.dispose();
         await resetWrites.quiesce();
       },
@@ -1397,7 +1499,7 @@ async function runDesktop(
       computerUsePermissionsPanel.close();
       unsubscribeOwnOrigins();
       access.dispose();
-      hostSessions.dispose();
+      for (const sessions of sessionOwners) sessions.dispose();
       closeClearedAccountSockets();
       hostTransport.dispose();
       unregisterBridge();

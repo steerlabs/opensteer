@@ -3,6 +3,9 @@ import {
   DesktopLocalExecutionStatusSchema,
   DesktopStartLocalRunnerInputSchema,
 } from "@opensteer/protocol/desktop";
+import { AuthSessionIdSchema, DeploymentIdSchema } from "@opensteer/core";
+import { DeviceSessionBindingProofSchema } from "@opensteer/protocol";
+import { z } from "zod";
 import {
   assertAuthorizedRenderer,
   trackLocalExecutionRenderer,
@@ -54,3 +57,30 @@ export const handleStopLocalRunner = (context: DesktopBridgeContext): DesktopBri
   localExecution(context, (input) =>
     context.options.runner.remove(DesktopLocalExecutionInputSchema.parse(input).deploymentId),
   );
+
+export const handleSetUpDevice = (context: DesktopBridgeContext): DesktopBridgeHandler =>
+  localExecution(context, (input) =>
+    context.options.runner.setUpDevice(DesktopStartLocalRunnerInputSchema.parse(input)),
+  );
+
+export const handleLeaveDeployment =
+  (context: DesktopBridgeContext): DesktopBridgeHandler =>
+  async (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    await context.options.runner.leaveDeployment(
+      DesktopLocalExecutionInputSchema.parse(envelope.input),
+    );
+  };
+
+const bindingInput = z.strictObject({
+  deploymentId: DeploymentIdSchema,
+  sessionId: AuthSessionIdSchema,
+});
+export const handleSignDeviceSessionBinding =
+  (context: DesktopBridgeContext): DesktopBridgeHandler =>
+  async (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    return DeviceSessionBindingProofSchema.parse(
+      await context.options.runner.signDeviceSessionBinding(bindingInput.parse(envelope.input)),
+    );
+  };

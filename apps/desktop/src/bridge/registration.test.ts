@@ -68,6 +68,44 @@ const computerAppSetupUnused = {
 };
 
 describe("desktop bridge", () => {
+  it("authorizes device intents, rejects renderer origins, and returns only a binding proof", async () => {
+    const runner = runnerController();
+    const handlers = registerWith(passwordsPort(), {}, undefined, { runner });
+    const event = ipcEvent("app://opensteer/");
+    const deploymentId = createId("deployment");
+    const sessionId = createId("authSession");
+    const envelope = { bridgeToken: "b".repeat(43), input: { deploymentId, sessionId } };
+    try {
+      await expect(
+        handlers.invoke(desktopBridgeChannels.signDeviceSessionBinding, event, envelope),
+      ).resolves.toEqual({
+        issuedAt: expect.any(String),
+        signature: "s".repeat(86),
+      });
+      expect(runner.signDeviceSessionBinding).toHaveBeenCalledWith({ deploymentId, sessionId });
+      await expect(
+        handlers.invoke(desktopBridgeChannels.signDeviceSessionBinding, event, {
+          ...envelope,
+          input: { ...envelope.input, origin: "https://attacker.test" },
+        }),
+      ).rejects.toThrow();
+      await expect(
+        handlers.invoke(desktopBridgeChannels.leaveDeployment, ipcEvent("https://attacker.test/"), {
+          bridgeToken: "b".repeat(43),
+          input: { deploymentId },
+        }),
+      ).rejects.toThrow();
+      expect(runner.leaveDeployment).not.toHaveBeenCalled();
+      await handlers.invoke(desktopBridgeChannels.leaveDeployment, event, {
+        bridgeToken: "b".repeat(43),
+        input: { deploymentId },
+      });
+      expect(runner.leaveDeployment).toHaveBeenCalledWith({ deploymentId });
+    } finally {
+      handlers.unregister();
+    }
+  });
+
   it("exposes one deployment-access snapshot stream and bounded intents", async () => {
     const handlers = new Map<string, (event: IpcMainInvokeEvent, input: unknown) => unknown>();
     const accessOperations = accessOperationMocks();
@@ -724,6 +762,12 @@ function runnerController() {
     schemaVersion: 4 as const,
   });
   return {
+    setUpDevice: vi.fn(async (input) => status(input.deploymentId)),
+    signDeviceSessionBinding: vi.fn(async () => ({
+      issuedAt: new Date().toISOString(),
+      signature: "s".repeat(86),
+    })),
+    leaveDeployment: vi.fn(async () => undefined),
     recheckEngines: vi.fn(),
     remove: vi.fn(async (deploymentId) => status(deploymentId)),
     notify: () => {

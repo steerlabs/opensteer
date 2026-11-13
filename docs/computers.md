@@ -40,13 +40,19 @@ rotation never remove a device. Old apps that do not bind remain independently s
 removal until they update. Removing bound sessions also retires their Host notification preview
 keys; Account-side generic push registration is separate.
 
-Desktop persists enrollment before starting the Runner so an exit during join cannot strand a Host
-row. Turning execution off restarts the same identity, data directory and SSH host key. Removal
-deletes the enrollment slot and every browser profile homed there; adding again creates a new computer.
-The removed device erases its profile storage when it learns of removal. If it never returns, erasure
-is unconfirmed, not claimed complete ([profile state](browser-sessions.md#profile-state)). The owner-session Host chooses the enrollment grant and
-origin, never the desktop. Only the supervising desktop can establish that a computer is local; a
-browser cannot claim it. Team administrators cannot enroll, remove or inspect another person's
+Desktop main owns remote device membership independently of its disposable route catalog. A missing
+route suspends the slot; offline state never removes it. Enrollment intent precedes worker startup,
+and a surviving enrolled key can heal a missing legacy preference unless removal or profile-erasure
+intent forbids it. Unknown membership formats stop recovery and report an error.
+
+Leave and removal persist terminal intent before stopping workers. A leave proof survives key and
+profile erasure so main can deliver it without restarting browser or computer use. Erasure still
+waits for every worker to exit; unreachable Hosts leave removal unconfirmed. Rejoining requires an
+explicit setup action and a new identity. Account sign-out or replacement leaves only memberships
+whose saved provenance names the outgoing Account, while Home keeps running. The Host chooses the
+enrollment grant; main resolves the origin and holds signing keys, and the renderer receives only
+session-binding signatures. Only the supervising desktop can establish that a computer is local.
+Team administrators cannot enroll, remove or inspect another person's
 computer through team authority.
 
 ## Machine access

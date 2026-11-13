@@ -105,6 +105,9 @@ import {
   handleGetLocalExecutionStatus,
   handleRecheckLocalEngines,
   handleStartLocalRunner,
+  handleSetUpDevice,
+  handleLeaveDeployment,
+  handleSignDeviceSessionBinding,
   handleStopLocalRunner,
 } from "./methods/local-execution.js";
 import { handleGetPasswordsStatus, handleOpenPasswords } from "./methods/passwords.js";
@@ -448,6 +451,9 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   register(desktopBridgeChannels.sendHostWebSocket, handleSendHostWebSocket(context));
   register(desktopBridgeChannels.signIn, handleSignIn(context));
   register(desktopBridgeChannels.signOut, handleSignOut(context));
+  register(desktopBridgeChannels.setUpDevice, handleSetUpDevice(context));
+  register(desktopBridgeChannels.leaveDeployment, handleLeaveDeployment(context));
+  register(desktopBridgeChannels.signDeviceSessionBinding, handleSignDeviceSessionBinding(context));
   register(desktopBridgeChannels.startLocalRunner, handleStartLocalRunner(context));
   register(desktopBridgeChannels.stopLocalRunner, handleStopLocalRunner(context));
   register(desktopBridgeChannels.unlinkPersonal, handleUnlinkPersonal(context));

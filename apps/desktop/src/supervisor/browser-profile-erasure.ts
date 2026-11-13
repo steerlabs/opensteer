@@ -77,6 +77,10 @@ export class DesktopBrowserProfileErasure {
     return true;
   }
 
+  hasPending(deploymentId: DeploymentId): Promise<boolean> {
+    return this.#pending(deploymentId);
+  }
+
   async #pending(deploymentId: DeploymentId): Promise<boolean> {
     if (!(await realDirectoryIfPresent(this.#markerDirectory()))) return false;
     const content = await readPrivateFileText(this.#marker(deploymentId), 128, {

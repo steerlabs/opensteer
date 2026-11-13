@@ -578,8 +578,8 @@ const deploymentCatalogFields = {
 };
 
 /**
- * Bumped whenever the shape below changes: this file is a rebuildable routing
- * cache, so another version is discarded empty rather than migrated.
+ * This routing cache is disposable. Compatible older shapes migrate on read;
+ * membership intent belongs to the native lifecycle owner.
  */
 const deploymentCatalogSchemaVersion = 5;
 
@@ -680,7 +680,7 @@ interface DeploymentCatalogStoreOptions {
   readonly privateFiles: PrivateFilesystem;
 }
 
-/** Rebuildable device-local routing cache: older schema versions reset empty.
+/** Rebuildable device-local routing cache; never device membership authority.
  * Credentials, tunnel tokens, Host private keys, and database passwords never
  * belong in this file. */
 export class DeploymentCatalogStore {
@@ -720,9 +720,21 @@ export class DeploymentCatalogStore {
         cause: error,
       });
     }
-    // A catalog stamped with another release's schema is that release's to
-    // read; this one starts empty beside it and never rewrites the file.
-    if (!isCurrentStoredCatalogVersion(decoded)) return emptyDeploymentCatalog();
+    // Upgrade compatible shapes without changing any signed authority bytes.
+    if (!isCurrentStoredCatalogVersion(decoded)) {
+      if (
+        typeof decoded !== "object" ||
+        decoded === null ||
+        !("schemaVersion" in decoded) ||
+        decoded.schemaVersion !== 4
+      )
+        return emptyDeploymentCatalog();
+      const migrated = DeploymentCatalogSchema.safeParse({
+        ...decoded,
+        schemaVersion: deploymentCatalogSchemaVersion,
+      });
+      return migrated.success ? migrated.data : emptyDeploymentCatalog();
+    }
     try {
       return DeploymentCatalogSchema.parse(decoded);
     } catch (error) {

@@ -45,6 +45,28 @@ const accountSource = {
 };
 
 describe("DeploymentCatalogStore", () => {
+  it("migrates a shape-compatible v4 routing cache without dropping its Deployment", async () => {
+    const files = new MemoryPrivateFilesystem();
+    const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
+    const current = persistedDeployment({ name: "Saved Mac" });
+    files.put(
+      catalogPath,
+      JSON.stringify({
+        deployments: [current],
+        revision: 7,
+        selectedDeploymentId: current.authority.document.deploymentId,
+        updatedAt: current.updatedAt,
+        schemaVersion: 4,
+      }),
+    );
+    await expect(store.load()).resolves.toMatchObject({
+      schemaVersion: 5,
+      deployments: [current],
+      revision: 7,
+    });
+    expect(JSON.parse(files.text(catalogPath)!).schemaVersion).toBe(4);
+  });
+
   it("starts empty, serializes concurrent mutations, and persists selection state atomically", async () => {
     const files = new MemoryPrivateFilesystem();
     const times = [

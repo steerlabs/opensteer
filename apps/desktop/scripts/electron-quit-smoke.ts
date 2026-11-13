@@ -343,6 +343,9 @@ async function run(): Promise<void> {
     },
   }).config;
   const target = {
+    authority: runtime.discoveryEnvelope,
+    source: { kind: "manual" as const },
+    accessRoute: null,
     deploymentId: manifest.deploymentId,
     deploymentShape: {
       kind: "personal" as const,

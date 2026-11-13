@@ -1396,6 +1396,9 @@ function bridgeOptions(
     tailscale: { share: unavailable, status: unavailable },
     portal: { openExternal: unavailable, pickFolder: unavailable },
     runner: {
+      setUpDevice: unavailable,
+      signDeviceSessionBinding: unavailable,
+      leaveDeployment: unavailable,
       recheckEngines: unavailable,
       remove: unavailable,
       start: unavailable,

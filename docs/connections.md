@@ -179,8 +179,23 @@ tunnel and detached engine helpers. See
 Host identity is the exact Deployment, instance and key-fingerprint tuple. Manual entries pin it and
 must be re-added to change it. Account entries follow only their verified issuer and subject
 directory; sync never deletes or overwrites manual entries or repoints a locally supervised Personal
-Deployment. Membership projections hold no key material
-([`deployment-catalog.ts`](../packages/client/src/connections/deployment-catalog.ts)).
+Deployment. Desktop membership intent pins the verified Host and last route separately from the catalog, so a
+catalog reset cannot remove a device. Compatible older catalog shapes load forward; incompatible
+signed shapes remain disposable because changing their bytes would invalidate Host signatures.
+
+The desktop lifecycle owner writes leave or removal intent before cleanup. Its persisted signature
+can only remove that runner on that Host, so delivery needs neither an Account credential nor a
+normal Runner connection. Local erasure and Host confirmation remain separate obligations across
+restarts. Account sign-out and identity replacement persist outgoing Account memberships' leave
+obligations before changing credentials; manual memberships survive. Legacy preferences have no
+source or Host pin until a verified catalog entry returns, so Account sign-out refuses to guess
+which waiting memberships it should remove.
+
+A durable session-ended notice reaches the lifecycle owner before unauthorized recovery. Removal
+blocks that Deployment's automatic authorization and aborts in-flight exchanges. Late results clear
+their session artifacts, and explicit setup waits for those attempts before admitting a new session.
+Transport loss and natural expiry alone do not remove membership. A fresh explicit setup is the
+only way to clear removal; other Deployments and the hosting supervisor retain their authority.
 
 ## The place list
 

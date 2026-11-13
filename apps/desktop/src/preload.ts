@@ -849,15 +849,15 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     ),
   signIn: () => invoke<void>(desktopBridgeChannels.signIn),
   signOut: () => invoke<void>(desktopBridgeChannels.signOut),
-  signDeviceSessionBinding: async () => {
-    throw new Error("not implemented");
-  },
-  leaveDeployment: async () => {
-    throw new Error("not implemented");
-  },
-  setUpDevice: async () => {
-    throw new Error("not implemented");
-  },
+  signDeviceSessionBinding: (input: { deploymentId: string; sessionId: string }) =>
+    invoke<import("@opensteer/protocol").DeviceSessionBindingProof>(
+      desktopBridgeChannels.signDeviceSessionBinding,
+      input,
+    ),
+  leaveDeployment: (input: DesktopLocalExecutionInput) =>
+    invoke<void>(desktopBridgeChannels.leaveDeployment, input),
+  setUpDevice: (input: DesktopStartLocalRunnerInput) =>
+    invoke<DesktopLocalExecutionStatus>(desktopBridgeChannels.setUpDevice, input),
   startLocalRunner: (input: DesktopStartLocalRunnerInput) =>
     invoke<DesktopLocalExecutionStatus>(
       desktopBridgeChannels.startLocalRunner,
