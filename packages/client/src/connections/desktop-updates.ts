@@ -32,7 +32,6 @@ export class DesktopUpdatesService implements DesktopUpdates {
   readonly #transport: HostTransport;
   readonly #verificationTransport: HostTransport;
   #verifiedKey: string | null = null;
-  #deploymentKind: "personal" | "team" | null = null;
   constructor(
     options: Omit<HostTransportOptions, "sessions"> & {
       readonly sessions?: (attachment: HostAttachment) => HostSessionRecovery;
@@ -46,8 +45,8 @@ export class DesktopUpdatesService implements DesktopUpdates {
       ...(credentials
         ? {
             credentials: {
-              ...(credentials.teamEntryLease
-                ? { teamEntryLease: credentials.teamEntryLease.bind(credentials) }
+              ...(credentials.teamRuntime
+                ? { teamRuntime: credentials.teamRuntime.bind(credentials) }
                 : {}),
               authorizationHeader: async (connection) => {
                 await this.#verify();
@@ -69,10 +68,6 @@ export class DesktopUpdatesService implements DesktopUpdates {
         : {}),
     });
   }
-  invalidateTeamSession(): void {
-    if (this.#deploymentKind === "team") this.invalidateSession();
-  }
-
   invalidateSession(): void {
     this.#verifiedKey = null;
     this.#verificationTransport.invalidateSession();
@@ -106,7 +101,6 @@ export class DesktopUpdatesService implements DesktopUpdates {
   async #verify(signal?: AbortSignal) {
     signal?.throwIfAborted();
     const selected = await this.#verificationTransport.current();
-    this.#deploymentKind = selected.connection.kind;
     if (selected.resolved.key === this.#verifiedKey) return selected.resolved;
     const { connection, resolved } = selected;
     const fetch: typeof globalThis.fetch = async (input, init) => {

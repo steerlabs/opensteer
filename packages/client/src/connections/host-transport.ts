@@ -115,9 +115,22 @@ export class HostTransport {
   #activeAppStreams = 0;
 
   constructor(options: HostTransportOptions) {
+    const owner =
+      options.expectedKind === "team" ? options.credentials?.teamRuntime?.() : undefined;
+    owner?.own(() => this.invalidateSession());
     this.#fence = new HostAttachmentFence({
       catalog: options.catalog,
-      ...(options.credentials === undefined ? {} : { credentials: options.credentials }),
+      ...(options.credentials === undefined
+        ? {}
+        : {
+            credentials: owner
+              ? {
+                  authorizationHeader: (connection) =>
+                    options.credentials!.authorizationHeader(connection),
+                  teamRuntime: () => owner,
+                }
+              : options.credentials,
+          }),
       ...(options.deploymentId === undefined ? {} : { deploymentId: options.deploymentId }),
       localRuntime: options.localRuntime,
     });
@@ -167,7 +180,8 @@ export class HostTransport {
     return () => {
       if (generation !== this.#sessionGeneration || selected.resolved.key !== this.currentKey())
         throw new HostTransportError("deployment-changed");
-      selected.resolved.assertAuthorizationCurrent?.();
+      if (selected.resolved.teamRuntime?.signal.aborted)
+        throw new HostTransportError("deployment-changed");
     };
   }
 
@@ -252,7 +266,12 @@ export class HostTransport {
       )
         throw new HostTransportError("deployment-changed");
       const selectionGeneration = this.#fence.generation;
-      const deadline = new HostResponseDeadline(request.signal);
+      const owner = resolved.teamRuntime;
+      const deadline = new HostResponseDeadline(
+        owner
+          ? AbortSignal.any([owner.signal, ...(request.signal ? [request.signal] : [])])
+          : request.signal,
+      );
       const controller = deadline.controller;
       this.#requestControllers.add(controller);
       if (selectionGeneration !== this.#fence.generation) {
@@ -288,6 +307,8 @@ export class HostTransport {
         assertCurrent();
         return result;
       } catch (error) {
+        if (owner?.signal.aborted)
+          throw new HostTransportError("deployment-changed", { cause: error });
         if (request.signal?.aborted) throw request.signal.reason ?? error;
         if (controller.signal.aborted) {
           throw controller.signal.reason instanceof Error
@@ -334,11 +355,13 @@ export class HostTransport {
     const pending: { close: { readonly code?: number; readonly reason?: string } | null } = {
       close: null,
     };
+    let releaseOwner: (() => void) | undefined;
     const socket: HostNetworkSocket = {
       close: (code, reason) => {
         if (released) return;
         released = true;
         this.#sockets.delete(socket);
+        releaseOwner?.();
         if (network) network.close(code, reason);
         else {
           pending.close = {
@@ -348,8 +371,7 @@ export class HostTransport {
         }
       },
       send: (data) => {
-        if (!authorizationCurrent() || released || network === null)
-          throw new Error("This Host WebSocket is not open.");
+        if (released || network === null) throw new Error("This Host WebSocket is not open.");
         network.send(data);
       },
     };
@@ -361,15 +383,10 @@ export class HostTransport {
       String(apiNegotiation(connection.authority.document.deploymentShape.kind).apiVersion),
     );
     assertCurrent();
-    const authorizationCurrent = () => {
-      try {
-        assertCurrent();
-        return true;
-      } catch {
-        socket.close(deploymentChangedCloseCode, "Deployment changed");
-        return false;
-      }
-    };
+    this.#sockets.add(socket);
+    releaseOwner = resolved.teamRuntime?.own(() =>
+      socket.close(deploymentChangedCloseCode, "Deployment changed"),
+    );
     network = this.#network.openWebSocket(
       {
         authorization: resolved.authorization,
@@ -385,15 +402,11 @@ export class HostTransport {
       },
       {
         close: (code, reason) => {
-          let current = true;
-          try {
-            assertCurrent();
-          } catch {
-            current = false;
-          }
+          const current = !released && sessionGeneration === this.#sessionGeneration;
           if (current && !released && code === 4003 && reason === "Session ended")
             this.#sessions?.sessionEnded?.({ connection, resolved });
           released = true;
+          releaseOwner?.();
           this.#sockets.delete(socket);
           bound.close(
             current ? code : deploymentChangedCloseCode,
@@ -401,16 +414,13 @@ export class HostTransport {
           );
         },
         error: (message) => {
-          if (authorizationCurrent() && !released && sessionGeneration === this.#sessionGeneration)
-            bound.error(message);
+          if (!released && sessionGeneration === this.#sessionGeneration) bound.error(message);
         },
         message: (data) => {
-          if (authorizationCurrent() && !released && sessionGeneration === this.#sessionGeneration)
-            bound.message(data);
+          if (!released && sessionGeneration === this.#sessionGeneration) bound.message(data);
         },
         open: () => {
-          if (authorizationCurrent() && !released && sessionGeneration === this.#sessionGeneration)
-            bound.open();
+          if (!released && sessionGeneration === this.#sessionGeneration) bound.open();
         },
       },
     );
@@ -422,7 +432,6 @@ export class HostTransport {
     const pendingClose = pending.close;
     if (pendingClose) network.close(pendingClose.code, pendingClose.reason);
     if (released) return socket;
-    this.#sockets.add(socket);
     return socket;
   }
 
@@ -447,7 +456,7 @@ export class HostTransport {
     signal: AbortSignal,
   ): Promise<Response> {
     signal.throwIfAborted();
-    resolved.assertAuthorizationCurrent?.();
+    resolved.teamRuntime?.assertCurrent();
     let response: Response;
     try {
       response = await this.#network.request({

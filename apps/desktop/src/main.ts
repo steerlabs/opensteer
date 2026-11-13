@@ -548,10 +548,6 @@ async function runDesktop(
     clearDeploymentSession: (deploymentId) => hostNetwork.clearDeploymentSession(deploymentId),
   });
   const nativeAuth = new NativeOAuthManager({
-    onAccountIdentityChange: () => {
-      hostTransport.invalidateTeamSessions();
-      for (const updates of deploymentUpdates.values()) updates.invalidateTeamSession();
-    },
     beforeHostChange: async (connection) => {
       hostTransport.closeDeploymentConnections(connection.authority.document.deploymentId);
     },

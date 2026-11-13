@@ -19,7 +19,7 @@ import {
   TeamEntryRefusedError,
   TeamIdentityGrantUnsupportedError,
   type HostOAuthState,
-  type TeamEntryLease,
+  type TeamEntryFence,
   type NativeOAuthManager,
 } from "../auth/native-oauth.js";
 import {
@@ -93,7 +93,7 @@ export async function previewTeamInvite(
 
 type TeamEntryOAuth = Pick<
   NativeOAuthManager,
-  | "teamEntryLease"
+  | "teamEntryFence"
   | "authorizationHeader"
   | "refreshTeamAuthorization"
   | "isTeamSignInSuppressed"
@@ -157,12 +157,12 @@ export class NativeTeamEntry {
     readonly invite?: TeamInviteSecret | null;
     readonly recover?: { readonly authorization: string | null | undefined };
   }): Promise<TeamEntryOutcome> {
-    return this.#enqueue(input, this.#oauth.teamEntryLease(input.deploymentId));
+    return this.#enqueue(input, this.#oauth.teamEntryFence(input.deploymentId));
   }
 
   async #enqueue(
     input: Parameters<NativeTeamEntry["authorize"]>[0],
-    lease: TeamEntryLease,
+    lease: TeamEntryFence,
   ): Promise<TeamEntryOutcome> {
     try {
       lease.assertCurrent();
@@ -212,7 +212,7 @@ export class NativeTeamEntry {
   async #passiveDuringBrowser(
     input: Parameters<NativeTeamEntry["authorize"]>[0],
     pending: Promise<TeamEntryOutcome>,
-    lease: TeamEntryLease,
+    lease: TeamEntryFence,
   ): Promise<TeamEntryOutcome> {
     const entry = lease;
     try {
@@ -238,7 +238,7 @@ export class NativeTeamEntry {
   }
 
   async #authorize(input: Parameters<NativeTeamEntry["authorize"]>[0]): Promise<TeamEntryOutcome> {
-    const entry = this.#oauth.teamEntryLease(input.deploymentId, input.mode === "interactive");
+    const entry = this.#oauth.teamEntryFence(input.deploymentId, input.mode === "interactive");
     let createdRevision: number | undefined;
     try {
       if (input.recover) {
@@ -353,7 +353,7 @@ export class NativeTeamEntry {
   async bootstrap(
     deploymentId: DeploymentId,
   ): Promise<Pick<TeamSessionExchangeResponse, "admitted" | "member">> {
-    const entry = this.#oauth.teamEntryLease(deploymentId);
+    const entry = this.#oauth.teamEntryFence(deploymentId);
     const connection = (await this.#held(deploymentId))!;
     entry.assertCurrent();
     const member = await this.#bootstrap(connection);
@@ -401,7 +401,7 @@ export class NativeTeamEntry {
   async #browserSignIn(
     connection: DeploymentConnection,
     invite: TeamInviteSecret | null,
-    entry: TeamEntryLease,
+    entry: TeamEntryFence,
   ): Promise<void> {
     entry.assertCurrent();
     const deploymentId = connection.authority.document.deploymentId;

@@ -453,8 +453,11 @@ export function App({
         account={
           preview
             ? { subject: mockAccountSubject, email: mockAccountEmail }
-            : deploymentAccess?.account.status === "signed-in" && deploymentAccess.account.subject
+            : deploymentAccess?.account.subject
               ? {
+                  ...(deploymentAccess.account.issuer
+                    ? { issuer: deploymentAccess.account.issuer }
+                    : {}),
                   subject: deploymentAccess.account.subject,
                   email: deploymentAccess.account.email ?? null,
                 }

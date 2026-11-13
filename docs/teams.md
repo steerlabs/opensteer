@@ -39,10 +39,10 @@ rerunning the work or duplicating the post; revoked access or cancellation canno
 
 ## Entering a team
 
-Desktop and mobile share one entry operation. Each call captures the current Account and team
-sign-out fence on arrival; queued continuations and recovery retries retain it and return
-superseded if it changes. An interactive attempt advances the team fence when it starts. Entry checks
-the fence after fetching fresh signed discovery, including for manually added teams, then reuses or refreshes their team credential. With an Account session, they
+Desktop and mobile share `NativeTeamEntry.authorize` for startup, explicit entry and recovery.
+Its short-lived attempt fence handles single-flight entry, supersession and explicit team sign-out.
+It is independent of Account authorization and persistent viewer state. Entry verifies fresh signed
+discovery before updating the catalog or reusing a credential. With an Account session, they
 enter a team advertising `team-session-exchange-v1` without a
 browser. Account signs a single-use assertion, valid for one minute, of who the person is for
 that exact team Host and app; it proves identity, never membership. The team Host verifies it
@@ -54,15 +54,20 @@ after an identity change. Legacy credentials without a binding never authorize a
 are stored separately from the previous credential format so Stable/Beta downgrades preserve Account
 authorization; missing or mismatched binding metadata requires silent reauthorization.
 Credential reads and refreshes enforce the binding even if deletion or revocation fails.
-Every native team transport retains the credential read’s team/Account lease, checks it before
-sending and at delivery, including after RPC decoding and desktop binary disk reads and handle
-close, and refuses stale socket sends and events. This includes
-the first resolution before the selected attachment is known. Real
-identity changes synchronously invalidate active native team transports, including teams with no
-stored credential: sockets close and late events and outstanding responses cannot be delivered.
-Team invalidation leaves personal Host transports and personal maintenance requests alone.
-Mobile also retires active team viewer clients at that boundary. Credential cleanup is best-effort;
-loading the same saved Account is hydration and preserves its credentials. Explicit team
+A `TeamRuntimeOwner` belongs to one Account issuer and subject, or explicitly to no Account.
+Native OAuth creates it during hydration or identity establishment on desktop main and mobile;
+the desktop renderer's team provider owns the corresponding UI runtime. An identity change
+retires the outgoing owner synchronously, before asynchronous credential cleanup: its signal
+aborts, transports and sockets close, viewer clients dispose, and read caches drop. It owns
+Account-partitioned persistence handles and in-flight team file transfers, uploads, exports,
+notifications and previews. Storage commits, IPC and response delivery, and OS handoffs check
+that owner; aborted or completed exports erase their staged files. Team UI subtrees are keyed
+by the owner id, including nested knowledge and settings screens, so no hook carries an old
+Account's values into the next one. Each surface has one shared terminal and recovery gate.
+
+Token rotation and same-Account reauthorization retain the owner and its drafts. Entry-attempt
+supersession affects only entry work. Hydration preserves credentials for the saved Account.
+Personal Host connections and maintenance requests are outside the team owner. Explicit team
 sign-out suppresses silent entry until an explicit sign-in. Account or JWKS outages remain
 retryable; membership refusals ask for an invite without a browser loop. Among entry refusals, only membership
 refusals (not-a-member or removed) erase the viewer partition. For older servers, a reasonless
@@ -81,7 +86,8 @@ storage); neither it nor the tokens reach a renderer. A team just joined shows f
 discovery until Account's directory lists it, and is restored from the device's connection intent
 if the app restarts before then; the intent is kept even when no agent connects from that device.
 
-The device scopes cached team state to the viewer returned by authenticated team bootstrap. An
+Within the Account partition, the device scopes cached team state to the viewer returned by
+authenticated team bootstrap. An
 agent link's owner can be a different person and never supplies the device's team identity.
 
 ## Access and removal

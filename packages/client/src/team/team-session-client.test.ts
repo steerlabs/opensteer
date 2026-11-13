@@ -307,10 +307,11 @@ describe("team synchronization", () => {
       );
       const current = notify.mock.calls[0]![1] as () => boolean;
       expect(current()).toBe(true);
+      expect(client.getSnapshot().sidebar?.nextCursor).toBe(cursor);
       client.dispose();
       expect(current()).toBe(false);
       expect(host.calls.slice(before)).toEqual(["team.sidebar.get"]);
-      expect(client.getSnapshot().sidebar?.nextCursor).toBe(cursor);
+      expect(client.getSnapshot().sidebar).toBeNull();
     } finally {
       client.dispose();
       host.dispose();

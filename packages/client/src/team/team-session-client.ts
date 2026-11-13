@@ -1,3 +1,4 @@
+import type { TeamRuntimeOwner } from "./team-runtime-owner.js";
 import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import type { TeamFileUpload } from "./files.js";
 import {
@@ -67,6 +68,7 @@ export interface TeamSessionSnapshot {
   readonly contentGeneration: number;
 }
 export interface TeamSessionOptions {
+  readonly owner?: TeamRuntimeOwner;
   readonly scope: TeamCacheScope;
   readonly rpc: HostApiClient;
   readonly persistence: TeamPersistence;
@@ -93,6 +95,10 @@ const healthyConnectionMs = 30_000;
 
 export class TeamSessionClient {
   readonly rpc: HostApiClient;
+  readonly owner: TeamRuntimeOwner | undefined;
+  readonly #controller = new AbortController();
+  readonly signal: AbortSignal;
+  readonly #releaseOwner: (() => void) | undefined;
   readonly #options: TeamSessionOptions;
   readonly #listeners = new Set<() => void>();
   #snapshot: TeamSessionSnapshot = {
@@ -137,8 +143,13 @@ export class TeamSessionClient {
   #searchInput: SearchInput | null = null;
   #searchMore: Promise<void> | null = null;
   constructor(options: TeamSessionOptions) {
+    this.owner = options.owner;
+    this.signal = options.owner
+      ? AbortSignal.any([options.owner.signal, this.#controller.signal])
+      : this.#controller.signal;
     this.#options = options;
-    this.rpc = options.rpc;
+    this.rpc = options.owner ? options.owner.rpc(options.rpc) : options.rpc;
+    this.#releaseOwner = options.owner?.own(() => this.dispose());
   }
   readonly getSnapshot = (): TeamSessionSnapshot => this.#snapshot;
   readonly subscribe = (listener: () => void): (() => void) => {
@@ -1019,7 +1030,11 @@ export class TeamSessionClient {
     if (!this.#options.readFile) throw new Error("The platform has no team file transport.");
     const lifetime = this.#lifetime,
       contentGeneration = this.#contentGeneration;
-    const blob = await this.#options.readFile(file, part, signal);
+    const blob = await this.#options.readFile(
+      file,
+      part,
+      signal ? AbortSignal.any([signal, this.signal]) : this.signal,
+    );
     if (blob.size > (open ? teamUploadMaxBytes : teamPreviewMaxBytes))
       throw new Error("Team file exceeds its byte bound.");
     if (
@@ -1046,7 +1061,10 @@ export class TeamSessionClient {
     if (!this.#options.uploadFile) throw new Error("The platform has no team upload transport.");
     const lifetime = this.#lifetime,
       generation = this.#contentGeneration;
-    const file = await this.#options.uploadFile(input);
+    const file = await this.#options.uploadFile({
+      ...input,
+      signal: input.signal ? AbortSignal.any([input.signal, this.signal]) : this.signal,
+    });
     if (lifetime !== this.#lifetime || generation !== this.#contentGeneration)
       throw new Error("Team access changed during the upload.");
     return file;
@@ -1089,6 +1107,7 @@ export class TeamSessionClient {
         ended === "sign-in" ? undefined : this.#options.persistence.remove(this.#options.scope),
       );
     this.#removed = true;
+    this.#controller.abort(new Error("Team session ended."));
     this.#lifetime++;
     this.disconnect();
     this.#files.clear();
@@ -1111,9 +1130,10 @@ export class TeamSessionClient {
     return this.#removal;
   }
   dispose(): void {
+    if (this.#disposed) return;
+    void this.remove("sign-in");
     this.#disposed = true;
-    this.#lifetime++;
-    this.disconnect();
+    this.#releaseOwner?.();
     this.#listeners.clear();
   }
 }

@@ -1,3 +1,4 @@
+import { MockTeamHost, TeamSessionClient, createMemoryTeamPersistence } from "../team/index.js";
 import { HostTransport, type HostNetworkSocketEvents } from "../connections/host-transport.js";
 import { TeamMemberSchema } from "@opensteer/protocol";
 import * as teamEntryModule from "../team/native-team-entry.js";
@@ -864,6 +865,7 @@ describe("NativeOAuthManager", () => {
     const fixture = await managerFixture({ tokenLifetimeSeconds: 61 });
     await fixture.manager.initialize();
     await fixture.signInAccount();
+    const owner = fixture.manager.teamRuntime();
     const lease = await fixture.manager.accountAuthorizationLease();
     const listener = vi.fn();
     fixture.manager.subscribe(listener);
@@ -883,6 +885,8 @@ describe("NativeOAuthManager", () => {
     });
     const refreshed = await fixture.manager.accountAuthorizationLease();
     expect(refreshed?.authorization).toBe(expected);
+    expect(fixture.manager.teamRuntime()).toBe(owner);
+    expect(owner.signal.aborted).toBe(false);
     expect(refreshed?.signal).toBe(lease?.signal);
     expect(lease?.signal.aborted).toBe(false);
     await expect(fixture.manager.accountAuthorizationHeader()).resolves.toBe(expected);
@@ -1393,9 +1397,30 @@ describe("NativeOAuthManager team session exchange", () => {
     await f.manager.initialize();
     await f.signInAccount();
     await f.manager.exchangeTeamSession(f.connection);
+    const owner = f.manager.teamRuntime();
+    const host = new MockTeamHost();
+    const persistence = createMemoryTeamPersistence();
+    const scope = { teamDeploymentId: host.teamId, userId: host.userId };
+    const session = new TeamSessionClient({
+      scope,
+      owner,
+      persistence,
+      rpc: host.rpc,
+      connect: host.connect,
+    });
+    const channel = { kind: "channel" as const, channelId: [...host.channels.values()][0]!.id };
+    await session.setDraft(channel, "Before reauthorization");
     const lease = await f.manager.accountAuthorizationLease();
     await f.signInAccount();
+    expect(f.manager.teamRuntime()).toBe(owner);
+    expect(owner.signal.aborted).toBe(false);
     expect(lease?.signal.aborted).toBe(true);
+    await session.setDraft(channel, "After reauthorization");
+    expect(Object.values((await persistence.load(scope))!.drafts)).toEqual([
+      "After reauthorization",
+    ]);
+    host.dispose();
+    session.dispose();
     expect(await f.manager.authorizationHeader(f.connection)).toBe(`Bearer ${"a".repeat(32)}`);
   });
 

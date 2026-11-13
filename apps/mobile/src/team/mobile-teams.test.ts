@@ -1,3 +1,4 @@
+import { TeamRuntimeOwner } from "@opensteer/client/team";
 import { HostClientRequestError } from "@opensteer/client/host";
 import { TeamEntryRefusalReasonSchema } from "@opensteer/protocol";
 import { TeamEntryRefusedError } from "@opensteer/client/auth";
@@ -96,15 +97,27 @@ function fixture(
     ],
   };
   let suppressed = false;
+  let owner = new TeamRuntimeOwner(null);
+  const identities = new Set<() => void>();
+  let entryGeneration = 0;
   const client = {
     oauth: {
-      subscribeAccountIdentityChanges: () => () => undefined,
+      teamRuntime: () => owner,
+      subscribeAccountIdentityChanges: (listener: () => void) => {
+        identities.add(listener);
+        return () => identities.delete(listener);
+      },
       accountIdentity: () => null,
-      teamEntryLease: () => ({
-        generation: 0,
-        signal: new AbortController().signal,
-        assertCurrent: () => {},
-      }),
+      teamEntryFence: () => {
+        const generation = entryGeneration;
+        return {
+          generation,
+          signal: new AbortController().signal,
+          assertCurrent: () => {
+            if (generation !== entryGeneration) throw new Error("Entry superseded");
+          },
+        };
+      },
       hostCredentialState: () => ({ detail: null }),
       isTeamSignInSuppressed: () => suppressed,
     },
@@ -135,6 +148,14 @@ function fixture(
     hosts,
     signOut,
     releaseAcme,
+    reauthorize: () => {
+      entryGeneration++;
+    },
+    switchAccount: () => {
+      owner.retire();
+      owner = new TeamRuntimeOwner({ issuer: "https://accounts.test", subject: "B" });
+      for (const listener of identities) listener();
+    },
     showComputer(deploymentId: string) {
       snapshot = { ...snapshot, selection: { deploymentId, hostClient: null } } as never;
       for (const listener of listeners) listener();
@@ -407,12 +428,14 @@ describe("adding a computer's team to the phone", () => {
       connection: held,
     }));
     let entryCurrent = true;
+    const owner = new TeamRuntimeOwner(null);
     const client = {
       catalog,
       oauth: {
+        teamRuntime: () => owner,
         subscribeAccountIdentityChanges: () => () => undefined,
         accountIdentity: () => null,
-        teamEntryLease: () => {
+        teamEntryFence: () => {
           const captured = entryCurrent;
           return {
             generation: 0,
@@ -542,3 +565,46 @@ it.each(["load", "save-directory", "save-write"] as const)(
     }
   },
 );
+
+it("retires an Account runtime before its pending bootstrap can populate the replacement", async () => {
+  const f = fixture();
+  f.teams.start();
+  const owner = f.teams.owner;
+  const pending = f.teams.session(mockTeamId);
+  const rejected = expect(pending).rejects.toThrow();
+  await vi.waitFor(() => expect(f.hosts.has(mockTeamId), "bootstrap never started").toBe(true), {
+    timeout: 1000,
+  });
+  f.switchAccount();
+  expect(owner.signal.aborted).toBe(true);
+  expect(f.teams.owner).not.toBe(owner);
+  expect(
+    f.teams.getSnapshot().teams.every((team) => team.session === null && team.userId === null),
+  ).toBe(true);
+  f.releaseAcme();
+  await rejected;
+  expect(
+    f.teams.getSnapshot().teams.every((team) => team.session === null && team.userId === null),
+  ).toBe(true);
+  f.teams.dispose();
+});
+it("keeps draft persistence through same-Account reauthorization and entry supersession", async () => {
+  const f = fixture();
+  f.teams.start();
+  try {
+    const owner = f.teams.owner;
+    const session = await f.teams.session(mockFamilyTeamId);
+    const scope = {
+      kind: "channel" as const,
+      channelId: TeamChannelIdSchema.parse("tch_00000000-0000-4000-8000-000000000001"),
+    };
+    await session.setDraft(scope, "Before");
+    f.reauthorize();
+    await session.setDraft(scope, "After");
+    expect(f.teams.owner).toBe(owner);
+    expect(owner.signal.aborted).toBe(false);
+    expect(Object.values(session.getSnapshot().drafts)).toEqual(["After"]);
+  } finally {
+    f.teams.dispose();
+  }
+});

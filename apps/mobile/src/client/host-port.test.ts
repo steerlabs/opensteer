@@ -1,3 +1,4 @@
+import { TeamRuntimeOwner } from "@opensteer/client/team";
 import { expect, it, vi } from "vitest";
 import { HostSessionExchange, type NativeOAuthManager } from "@opensteer/client/auth";
 import { DeploymentCatalogSchema } from "@opensteer/client/connections";
@@ -63,7 +64,9 @@ it.each([false, true])(
         absoluteExpiresAt: "2099-01-01T00:00:00.000Z",
       },
     } as Awaited<ReturnType<HostSessionExchange["establish"]>>);
+    const owner = new TeamRuntimeOwner(null);
     const oauth = {
+      teamRuntime: () => owner,
       subscribe: () => () => {},
       subscribeHostCredentials: () => () => {},
       authorizationHeader: vi.fn(),

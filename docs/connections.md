@@ -211,28 +211,18 @@ and a failed refresh never renews stale evidence. Only the Account refusing the 
 its session; network failure, rate limiting and outage stay retryable
 ([`deployment-access-service.ts`](../apps/desktop/src/connections/deployment-access-service.ts)).
 
-Native team entry owns startup, explicit entry and pinned 401 recovery. Passive callers join entry in flight, but can use or refresh a valid credential while a browser
-entry is pending; interactive callers join interactive work or await passive work before proceeding
-if needed. Every public call captures a non-advancing arrival lease and keeps it through queued
-continuations and retries; invalidated callers return superseded. Account identity changes, explicit
-team sign-out and a new interactive attempt starting advance the fence. Recovery refreshes the rejected credential before discovery
-and skips discovery when refresh succeeds. A joined attempt only recovers a request when its
-authorization differs from the rejected authorization. Definitively refused credentials are dropped without
-erasing drafts or suppressing entry. Other entry verifies fresh discovery before catalog updates
-and credential reuse, permits Account identity exchange, then
-falls back to browser sign-in only for interactive entry to a team advertising
-`team-native-browser-return-v1`, including invites. Missing support asks for a team server update
-or, when exchange is supported, Account sign-in on this device. Passive browser-required entry
-offers explicit Sign in. An Account outage
-leaves entry retryable. Explicit team sign-out survives restart and suppresses silent entry
-until explicit sign-in. Passive attachment never opens a browser. Real Account identity changes
-synchronously invalidate active native team transports, regardless of whether
-a credential remains stored, before asynchronous credential cleanup. This closes sockets and
-suppresses their late events and outstanding responses. The shared credential path retains a team/Account lease from credential read through send and
-response delivery, including initial resolution; maintenance transports use the same check. Personal Host transports and maintenance requests
-are excluded from team invalidation. Browser entry releases its shared slot
-on committed callback, flow expiry or fence invalidation, even if the platform browser never returns.
+Native team entry and Account runtime ownership are separate lifetimes
+([team entry](teams.md#entering-a-team)). `NativeTeamEntry.authorize` owns startup, explicit
+entry and pinned 401 recovery. Passive callers can use or refresh a valid credential while
+browser entry is pending; they never open a browser or clear explicit sign-out suppression.
+Recovery refreshes a rejected credential before discovery and replays only with a different
+authorization. Browser entry releases its single-flight slot on callback, expiry or attempt
+supersession even if the platform browser never returns.
 
-Team entry refusal handling preserves drafts and pending sends except for confirmed membership
-refusals, including reasonless forbidden at authenticated bootstrap from older servers
-([team entry](teams.md)). Channel permission failures remain nonterminal. Explicit sign-out and viewer replacement retain their own cleanup rules.
+The Account runtime owns native team transports, sockets, clients, caches and persistence
+handles. An issuer or subject change, including a transition to or from no Account, retires it
+synchronously. Delivery boundaries use that owner's signal or assertion; token rotation and
+same-Account reauthorization keep it. Initial resolution captures the owner before any await,
+so it cannot start an old caller's request under a new Account. Personal Host attachments and
+maintenance requests are excluded. Credential reads and refreshes still enforce the stored
+Account binding, independently of transport disposal and best-effort credential deletion.

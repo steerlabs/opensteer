@@ -103,7 +103,7 @@ export function createNetworkHostPort(options: {
       return new DesktopUpdatesService({
         catalog,
         credentials: {
-          teamEntryLease: (id) => oauth.teamEntryLease(id),
+          teamRuntime: () => oauth.teamRuntime(),
           authorizationHeader: (connection) => credentials.authorization(connection),
         },
         deploymentId,

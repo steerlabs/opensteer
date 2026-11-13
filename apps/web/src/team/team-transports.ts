@@ -16,6 +16,7 @@ import type {
   TeamPersistence,
   TeamSavedState,
   TeamSessionOptions,
+  TeamRuntimeOwner,
 } from "@opensteer/client/team";
 import { teamCacheKey, TeamSavedStateSchema } from "@opensteer/client/team";
 import type { z } from "zod";
@@ -140,12 +141,14 @@ export function browserTeamSession(input: {
  * bridge pinned to the team's own Host, which holds its credential.
  */
 export function desktopTeamSession(input: {
+  readonly owner?: TeamRuntimeOwner;
   readonly bridge: OpensteerDesktopBridge;
   readonly origin: string;
   readonly scope: TeamCacheScope;
   readonly notify?: Notify;
 }): TeamSessionOptions {
   const deploymentId = DeploymentIdSchema.parse(input.scope.teamDeploymentId);
+  const owner = input.owner;
   const socket = createDesktopHostWebSocketFactory(input.bridge, input.origin, deploymentId);
   const transfer = async (
     path: string,
@@ -154,6 +157,7 @@ export function desktopTeamSession(input: {
     body: Blob | null,
     signal?: AbortSignal,
   ): Promise<{ readonly bytes: Uint8Array; readonly contentType: string | null }> => {
+    owner?.assertCurrent();
     const opened = await input.bridge.hostBinaryOpen({
       expectedDeploymentId: deploymentId,
       headers: { apiVersion: String(teamApiVersion), ...headers },
@@ -163,9 +167,11 @@ export function desktopTeamSession(input: {
     });
     if (!opened.ok) throw new Error("The team file could not be reached.");
     const transferId = opened.data.transferId;
+    signal = owner ? AbortSignal.any([owner.signal, ...(signal ? [signal] : [])]) : signal;
     const abort = () => void input.bridge.hostBinaryClose({ transferId }).catch(() => undefined);
     signal?.addEventListener("abort", abort, { once: true });
     try {
+      signal?.throwIfAborted();
       if (body) {
         const bytes = new Uint8Array(await body.arrayBuffer());
         for (let offset = 0; offset < bytes.byteLength; offset += 256 * 1024) {
@@ -173,9 +179,11 @@ export function desktopTeamSession(input: {
             bytes: bytes.subarray(offset, offset + 256 * 1024),
             transferId,
           });
+          signal?.throwIfAborted();
           if (!written.ok) throw new Error("The team file could not be uploaded.");
         }
         const finished = await input.bridge.hostBinaryFinish({ transferId });
+        signal?.throwIfAborted();
         if (!finished.ok || finished.data.status >= 400)
           throw new Error("The team file could not be uploaded.");
         return {
@@ -187,6 +195,7 @@ export function desktopTeamSession(input: {
       let contentType: string | null = null;
       for (;;) {
         const read = await input.bridge.hostBinaryRead({ transferId });
+        signal?.throwIfAborted();
         if (!read.ok || read.data.status >= 400)
           throw new Error("The team file is no longer available.");
         contentType ??= read.data.contentType;
@@ -207,11 +216,22 @@ export function desktopTeamSession(input: {
   };
   return {
     scope: input.scope,
-    persistence: localTeamPersistence,
+    ...(owner ? { owner } : {}),
+    persistence: owner ? ownedLocalTeamPersistence(owner) : localTeamPersistence,
     rpc: createHttpHostApiClient({
       baseUrl: new URL(input.origin),
       bufferedResponses: true,
-      fetch: createDesktopHostFetch(input.bridge, input.origin, deploymentId),
+      fetch: async (url, init) => {
+        owner?.assertCurrent();
+        const response = await createDesktopHostFetch(
+          input.bridge,
+          input.origin,
+          deploymentId,
+        )(url, { ...init, ...(owner ? { signal: owner.signal } : {}) });
+        owner?.assertCurrent();
+        return response;
+      },
+      assertResponseCurrent: () => owner?.assertCurrent(),
       kind: "team",
       onAuthenticationRequired: () => undefined,
     }),
@@ -241,5 +261,25 @@ export function desktopTeamSession(input: {
       return TeamFileSchema.parse(JSON.parse(new TextDecoder().decode(bytes)));
     },
     ...(input.notify ? { notify: input.notify } : {}),
+  };
+}
+
+function ownedLocalTeamPersistence(owner: TeamRuntimeOwner): TeamPersistence {
+  const scoped = (scope: TeamCacheScope) => ({ ...scope, userId: scope.userId });
+  const key = (scope: TeamCacheScope) =>
+    savedPrefix + owner.partition + ":" + teamCacheKey(scoped(scope));
+  return {
+    async load(scope) {
+      owner.assertCurrent();
+      const stored = localStorage.getItem(key(scope));
+      return stored ? TeamSavedStateSchema.parse(JSON.parse(stored)) : null;
+    },
+    async save(scope, state) {
+      owner.assertCurrent();
+      localStorage.setItem(key(scope), JSON.stringify(state));
+    },
+    async remove(scope) {
+      localStorage.removeItem(key(scope));
+    },
   };
 }

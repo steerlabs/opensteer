@@ -1,8 +1,12 @@
+import type { TeamRuntimeOwner } from "@opensteer/client/team";
 export class TeamPreviewUrls {
   #generation = 0;
   #urls: ReadonlyMap<string, string> = new Map();
   readonly #asked = new Set<string>();
   readonly #listeners = new Set<() => void>();
+  constructor(owner?: TeamRuntimeOwner) {
+    owner?.own(() => this.clear());
+  }
   getSnapshot = () => this.#urls;
   subscribe = (listener: () => void) => {
     this.#listeners.add(listener);

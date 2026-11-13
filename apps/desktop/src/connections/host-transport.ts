@@ -168,7 +168,6 @@ export class DesktopHostTransport extends HostTransport {
   readonly #socketGenerations = new WeakMap<HostTransport, number>();
   #openingBinary = 0;
   #selectedDeploymentId: DeploymentId | null = null;
-  #selectedKind: "personal" | "team" | null = null;
   #disposed = false;
   readonly #bootstrapDiagnostics = new BootstrapNoticeDiagnostics();
 
@@ -447,6 +446,9 @@ export class DesktopHostTransport extends HostTransport {
         size: 0,
       };
       this.#binary.set(transferId, transfer);
+      selected.resolved.teamRuntime?.own(() => {
+        void this.closeBinary(ownerId, { transferId }).catch(() => undefined);
+      });
       this.#touchBinary(transferId, transfer);
       if (transfer.outcome) void transfer.outcome.catch(() => undefined);
       directory = null;
@@ -962,13 +964,7 @@ export class DesktopHostTransport extends HostTransport {
   override async current(): Promise<import("@opensteer/client/auth").SelectedAttachment> {
     const selected = await super.current();
     this.#selectedDeploymentId = selected.resolved.deploymentId;
-    this.#selectedKind = selected.connection.kind;
     return selected;
-  }
-
-  invalidateTeamSessions(): void {
-    for (const id of this.#teams.keys()) this.closeDeploymentConnections(id);
-    if (this.#selectedKind === "team") this.invalidateSession();
   }
 
   closeDeploymentConnections(deploymentId: DeploymentId): void {
@@ -1007,6 +1003,7 @@ export class DesktopHostTransport extends HostTransport {
   async #transport(deploymentId?: DeploymentId, summary = false): Promise<HostTransport> {
     if (this.#disposed) throw new HostTransportError("cancelled");
     if (deploymentId === undefined) return this;
+    const owner = this.#teamOptions.credentials?.teamRuntime?.();
     const catalog = await this.#catalog.load();
     if (this.#disposed) throw new HostTransportError("cancelled");
     const connection = catalog.deployments.find(
@@ -1026,11 +1023,16 @@ export class DesktopHostTransport extends HostTransport {
       }
       return transport;
     }
+    if (owner?.signal.aborted) throw new HostTransportError("deployment-changed");
     const existing = this.#teams.get(deploymentId);
     if (existing) return existing;
     const team = new HostTransport({ ...this.#teamOptions, deploymentId });
     team.onAttachmentInvalidated(() => this.#closeTransportSockets(team));
     this.#teams.set(deploymentId, team);
+    owner?.own(() => {
+      this.#closeTransportSockets(team);
+      this.#teams.delete(deploymentId);
+    });
     return team;
   }
 

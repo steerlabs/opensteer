@@ -1,3 +1,4 @@
+import { TeamRuntimeOwner } from "@opensteer/client/team";
 import { HostSession } from "../auth/host-session.js";
 import type { NativeOAuthManager } from "../auth/native-oauth.js";
 import type { HostSessionExchange } from "../auth/host-session-exchange.js";
@@ -18,7 +19,7 @@ import {
 } from "../test-support/host-authority.js";
 import type { HostNetworkRequest } from "./host-transport.js";
 
-function fixture(epoch = hostApiVersion - 1, scoped = false) {
+function fixture(epoch = hostApiVersion - 1, scoped = false, owner = new TeamRuntimeOwner(null)) {
   const keys = testHostAuthorityKeys();
   const authority = signTestDiscoveryEnvelope(
     {
@@ -88,7 +89,7 @@ function fixture(epoch = hostApiVersion - 1, scoped = false) {
   const authorizationHeader = vi.fn(async () => "PersonalRemote owner-session");
   const service = new DesktopUpdatesService({
     catalog: { load: async () => catalog, subscribe: () => () => {} },
-    credentials: { authorizationHeader },
+    credentials: { authorizationHeader, teamRuntime: () => owner },
     localRuntime: { current: async () => null },
     network: {
       request,
@@ -162,7 +163,7 @@ it.each(["transport", "credential"])(
     const maintenance = vi.fn(async () => gate.promise);
     const credentialGate = Promise.withResolvers<void>();
     const read = vi.fn();
-    let current = true;
+    const owner = new TeamRuntimeOwner(null);
     const service = new DesktopUpdatesService({
       catalog: {
         load: async () =>
@@ -178,11 +179,7 @@ it.each(["transport", "credential"])(
       deploymentId: authority.document.deploymentId,
       localRuntime: { current: async () => null },
       credentials: {
-        teamEntryLease: () => ({
-          assertCurrent: () => {
-            if (!current) throw new Error("Account changed");
-          },
-        }),
+        teamRuntime: () => owner,
         authorizationHeader: async () => {
           read();
           if (stage === "credential") await credentialGate.promise;
@@ -212,8 +209,7 @@ it.each(["transport", "credential"])(
         () => expect(stage === "credential" ? read : maintenance).toHaveBeenCalledOnce(),
         { timeout: 1000 },
       );
-      current = false;
-      if (stage === "transport") service.invalidateTeamSession();
+      owner.retire();
       credentialGate.resolve();
       gate.resolve(
         Response.json({ supported: true, state: null, operation: null, revision: "host:0" }),
@@ -230,7 +226,8 @@ it.each(["transport", "credential"])(
 it.each([false, true])(
   "keeps personal update requests during Account changes (scoped: %s)",
   async (scoped) => {
-    const { service, maintenance, status } = fixture(hostApiVersion, scoped);
+    const owner = new TeamRuntimeOwner(null);
+    const { service, maintenance, status } = fixture(hostApiVersion, scoped, owner);
     const response = Promise.withResolvers<Response>();
     maintenance.mockImplementationOnce(async () => {
       return response.promise;
@@ -238,7 +235,7 @@ it.each([false, true])(
     const pending = service.status();
     try {
       await vi.waitFor(() => expect(maintenance).toHaveBeenCalledOnce(), { timeout: 1000 });
-      service.invalidateTeamSession();
+      owner.retire();
       response.resolve(Response.json(status));
       await expect(pending).resolves.toEqual(status);
     } finally {

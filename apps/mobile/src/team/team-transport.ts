@@ -27,8 +27,25 @@ export function networkTeamTransport(options: {
   readonly network: HostNetwork;
   readonly oauth: NativeOAuthManager;
 }): (connection: DeploymentConnection, scope: TeamCacheScope) => TeamTransport {
-  const transports = new Map<string, ReturnType<typeof pinnedTeamTransport>>();
+  let owner = options.oauth.teamRuntime();
+  let transports = owner.cache<string, ReturnType<typeof pinnedTeamTransport>>();
+  const observeSignOut = () =>
+    owner.own(
+      options.oauth.subscribeHostCredentials((state) => {
+        if (!options.oauth.isTeamSignInSuppressed(state.connection)) return;
+        const id = state.connection.authority.document.deploymentId;
+        transports.get(id)?.transport.invalidateSession();
+        transports.delete(id);
+      }),
+    );
+  observeSignOut();
   return (connection, scope) => {
+    if (owner !== options.oauth.teamRuntime()) {
+      owner = options.oauth.teamRuntime();
+      transports = owner.cache();
+      observeSignOut();
+    }
+    owner.assertCurrent();
     const deploymentId = DeploymentIdSchema.parse(connection.authority.document.deploymentId);
     let pinned = transports.get(deploymentId);
     if (!pinned) {
@@ -58,9 +75,7 @@ export function networkTeamTransport(options: {
       );
       transports.set(deploymentId, pinned);
       const transport = pinned.transport;
-      options.oauth.subscribeAccountIdentityChanges(() => {
-        transport.invalidateSession();
-      });
+      owner.own(() => transport.invalidateSession());
     }
     const held = pinned;
     return {

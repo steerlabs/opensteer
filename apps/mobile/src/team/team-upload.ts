@@ -62,16 +62,20 @@ export function uploadRefusal(source: TeamUploadSource): string | null {
  * until it fits the team's preview bound; a picture that won't fit any goes
  * without one.
  */
-export async function makeImagePreview(uri: string): Promise<string | null> {
+export async function makeImagePreview(uri: string, signal?: AbortSignal): Promise<string | null> {
   for (const [width, compress] of [
     [320, 0.6],
     [240, 0.45],
     [160, 0.35],
   ] as const) {
+    signal?.throwIfAborted();
     const image = await ImageManipulator.manipulate(uri).resize({ width }).renderAsync();
     const saved = await image.saveAsync({ compress, format: SaveFormat.JPEG });
-    const size = new File(saved.uri).size ?? Number.POSITIVE_INFINITY;
-    if (size > 0 && size <= teamPreviewMaxBytes) return saved.uri;
+    const file = new File(saved.uri);
+    const size = file.size ?? Number.POSITIVE_INFINITY;
+    if (!signal?.aborted && size > 0 && size <= teamPreviewMaxBytes) return saved.uri;
+    if (file.exists) file.delete();
+    signal?.throwIfAborted();
   }
   return null;
 }
@@ -88,30 +92,50 @@ export async function uploadToTeam(input: {
   readonly signal?: AbortSignal;
 }): Promise<string> {
   const { source } = input;
+  const owner = input.session.owner;
+  const signal = input.signal
+    ? AbortSignal.any([input.signal, input.session.signal])
+    : input.session.signal;
+  signal?.throwIfAborted();
   const bytes = new Uint8Array(await new File(source.uri).arrayBuffer());
   const sha256 = [...new Uint8Array(await digest(CryptoDigestAlgorithm.SHA256, bytes))]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
   const previewUri = source.mediaType.startsWith("image/")
-    ? await makeImagePreview(source.uri)
+    ? await makeImagePreview(source.uri, signal)
     : null;
-  // React Native's Blob carries native file bytes, never a JavaScript buffer,
-  // so both parts are read back through the platform's own fetch.
-  const original = await (await fetch(source.uri)).blob();
-  const preview = previewUri === null ? null : await (await fetch(previewUri)).blob();
-  const file = await input.session.upload({
-    channelId: input.channelId as Parameters<TeamSessionClient["upload"]>[0]["channelId"],
-    original,
-    preview,
-    metadata: {
-      clientUploadId: source.localId,
-      filename: source.name.slice(0, 255) || "file",
-      mediaType: source.mediaType,
-      sizeBytes: original.size,
-      sha256,
-      previewSizeBytes: preview?.size ?? 0,
-    },
-    ...(input.signal === undefined ? {} : { signal: input.signal }),
-  });
-  return file.id;
+  const cleanup = () => {
+    if (previewUri) {
+      const file = new File(previewUri);
+      if (file.exists) file.delete();
+    }
+  };
+  const release = owner?.own(cleanup);
+  try {
+    signal?.throwIfAborted();
+    // React Native's Blob carries native file bytes, never a JavaScript buffer,
+    // so both parts are read back through the platform's own fetch.
+    const original = await (await fetch(source.uri)).blob();
+    const preview = previewUri === null ? null : await (await fetch(previewUri)).blob();
+    signal?.throwIfAborted();
+    const file = await input.session.upload({
+      channelId: input.channelId as Parameters<TeamSessionClient["upload"]>[0]["channelId"],
+      original,
+      preview,
+      metadata: {
+        clientUploadId: source.localId,
+        filename: source.name.slice(0, 255) || "file",
+        mediaType: source.mediaType,
+        sizeBytes: original.size,
+        sha256,
+        previewSizeBytes: preview?.size ?? 0,
+      },
+      ...(signal === undefined ? {} : { signal }),
+    });
+    owner?.assertCurrent();
+    return file.id;
+  } finally {
+    release?.();
+    cleanup();
+  }
 }

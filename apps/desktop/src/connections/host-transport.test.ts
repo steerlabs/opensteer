@@ -1,3 +1,4 @@
+import { TeamRuntimeOwner } from "@opensteer/client/team";
 import * as privateFiles from "@opensteer/shared/privateFiles";
 import { promises as fs } from "node:fs";
 import { HostTransport as SharedHostTransport } from "@opensteer/client/connections";
@@ -40,15 +41,11 @@ describe("DesktopHostTransport", () => {
     async (stage) => {
       const team = deployment("Team", "https://team.example");
       const catalog = catalogStore([team], team.authority.document.deploymentId);
-      let current = true;
+      const owner = new TeamRuntimeOwner(null);
       const transport = desktopHostTransport({
         catalog,
         credentials: {
-          teamEntryLease: () => ({
-            assertCurrent: () => {
-              if (!current) throw new Error("Account changed");
-            },
-          }),
+          teamRuntime: () => owner,
           authorizationHeader: async () => "Bearer team",
         },
         network: {
@@ -63,7 +60,7 @@ describe("DesktopHostTransport", () => {
           .spyOn(privateFiles, "setPrivateFileMode")
           .mockImplementation(async (...args) => {
             await mode(...args);
-            current = false;
+            owner.retire();
           });
         try {
           await expect(
@@ -91,13 +88,13 @@ describe("DesktopHostTransport", () => {
           const append = fs.appendFile.bind(fs);
           vi.spyOn(fs, "appendFile").mockImplementation(async (...args) => {
             await append(...args);
-            current = false;
+            owner.retire();
           });
         } else if (stage === "finish-close") {
           const rm = fs.rm.bind(fs);
           vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
             await rm(...args);
-            current = false;
+            owner.retire();
           });
         } else {
           const open = fs.open.bind(fs);
@@ -108,7 +105,7 @@ describe("DesktopHostTransport", () => {
               vi.spyOn(handle, "read").mockImplementation(
                 async (...input: Parameters<typeof read>) => {
                   const result = await read(...input);
-                  current = false;
+                  owner.retire();
                   return result;
                 },
               );
@@ -117,7 +114,7 @@ describe("DesktopHostTransport", () => {
               vi.spyOn(handle, "close").mockImplementation(async () => {
                 await close();
                 if (stage === "cancel-close") await transport.closeBinary(1, transfer);
-                else current = false;
+                else owner.retire();
               });
             }
             return handle;
@@ -150,13 +147,9 @@ describe("DesktopHostTransport", () => {
     const catalog = catalogStore([team], team.authority.document.deploymentId);
     const gate = Promise.withResolvers<void>();
     const read = vi.fn();
-    let current = true;
+    const owner = new TeamRuntimeOwner(null);
     const credentials = {
-      teamEntryLease: () => ({
-        assertCurrent: () => {
-          if (!current) throw new Error("Account changed");
-        },
-      }),
+      teamRuntime: () => owner,
       authorizationHeader: async () => {
         read();
         if (stage === "credential") await gate.promise;
@@ -187,9 +180,7 @@ describe("DesktopHostTransport", () => {
         () => expect(stage === "credential" ? read : request).toHaveBeenCalledOnce(),
         { timeout: 1000 },
       );
-      current = false;
-      if (stage === "credential" && transport instanceof DesktopHostTransport)
-        transport.invalidateTeamSessions();
+      owner.retire();
       gate.resolve();
       await rejected;
       expect(request).toHaveBeenCalledTimes(stage === "credential" ? 0 : 1);
@@ -213,8 +204,10 @@ describe("DesktopHostTransport", () => {
       const gate = Promise.withResolvers<Response>();
       const started: HostNetworkRequest[] = [];
       const closes = new Map<DeploymentId, ReturnType<typeof vi.fn>>();
+      const owner = new TeamRuntimeOwner(null);
       const transport = desktopHostTransport({
         catalog,
+        credentials: { teamRuntime: () => owner, authorizationHeader: async () => null },
         network: {
           request: async (input) => {
             started.push(input);
@@ -255,7 +248,7 @@ describe("DesktopHostTransport", () => {
           ? expect(teamRequest).rejects.toMatchObject({ code: "deployment-changed" })
           : null;
         await vi.waitFor(() => expect(started).toHaveLength(withTeam ? 3 : 2), { timeout: 1000 });
-        transport.invalidateTeamSessions();
+        owner.retire();
         expect(closes.get(personal.authority.document.deploymentId)).not.toHaveBeenCalled();
         if (withTeam)
           expect(closes.get(team.authority.document.deploymentId)).toHaveBeenCalledOnce();

@@ -1,19 +1,13 @@
 import type { TeamSessionClient, TeamSidebar } from "@opensteer/client/team";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import {
-  useCallback,
-  useLayoutEffect,
-  useState,
-  useSyncExternalStore,
-  type ReactNode,
-} from "react";
-import { ActivityIndicator, Alert, StyleSheet, View } from "react-native";
+import { useCallback, useLayoutEffect, useSyncExternalStore, type ReactNode } from "react";
+import { Alert, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootParamList } from "../navigation.js";
 import { color, headerFontScaleLimit, space } from "../theme.js";
 import { NativeMenu } from "../thread/composer-menu.js";
-import { AppText, Notice, PrimaryButton } from "../ui/primitives.js";
+import { AppText } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
 import { ConnectionBanner, useConnectionBanner } from "./connection-banner.js";
@@ -32,14 +26,13 @@ type Navigation = NativeStackNavigationProp<RootParamList>;
 export function TeamHomeScreen(props: StaticScreenProps<{ readonly teamId: string }>): ReactNode {
   const { teamId } = props.route.params;
   const navigation = useNavigation<Navigation>();
-  const teams = useMobileTeams();
   const { coordinator } = useTeamEntry();
-  const { team, session, snapshot, failure } = useTeamSession(teamId);
+  const teams = useMobileTeams();
+  const { team, session, snapshot } = useTeamSession(teamId);
   const sidebar = useSidebar(session);
   const canInvite = snapshot.bootstrap?.can.manageInvites === true;
   const banner = useConnectionBanner(team, snapshot.connection, () => session?.connect());
   const padding = useSafeAreaInsets().bottom + space[24];
-  const [signingIn, setSigningIn] = useState(false);
   const name = team?.name ?? "Team";
 
   useLayoutEffect(() => {
@@ -119,87 +112,7 @@ export function TeamHomeScreen(props: StaticScreenProps<{ readonly teamId: strin
     });
   }, [canInvite, coordinator, name, navigation, teamId]);
 
-  const forget = () => void teams.forget(teamId).then(() => navigation.popToTop());
-  if (
-    team?.state === "removed" ||
-    team?.state === "join" ||
-    team?.state === "update-app" ||
-    team?.state === "update-server"
-  ) {
-    const title =
-      team.state === "removed"
-        ? `You're no longer in ${name}`
-        : team.state === "join"
-          ? "Join this team"
-          : team.state === "update-app"
-            ? "Update Opensteer"
-            : "Team server needs an update";
-    const detail =
-      team.detail ??
-      (team.state === "removed" || team.state === "join"
-        ? "Ask a team member for a new invite."
-        : team.state === "update-app"
-          ? "Install the latest Opensteer app to open this team."
-          : "Ask the team administrator to update the server.");
-    return (
-      <Screen>
-        <View style={styles.center}>
-          <Notice title={title} detail={detail} tone="neutral" />
-          <PrimaryButton label="Remove from this phone" onPress={forget} />
-        </View>
-      </Screen>
-    );
-  }
-  if (team !== null && team.state === "signed-out")
-    return (
-      <Screen>
-        <View style={styles.center}>
-          <Notice
-            detail={
-              team.detail ??
-              `${name} is one of your teams. Sign in with your Opensteer Account to read it here; it keeps working when your computer is off.`
-            }
-            title={`Sign in to ${name}`}
-            tone="neutral"
-          />
-          <PrimaryButton
-            busy={signingIn}
-            label="Sign in"
-            onPress={() => {
-              setSigningIn(true);
-              void teams
-                .addToPhone(teamId)
-                .then(() => teams.select(teamId))
-                .catch((error: unknown) =>
-                  Alert.alert("Not signed in", error instanceof Error ? error.message : undefined),
-                )
-                .finally(() => setSigningIn(false));
-            }}
-            prominent
-          />
-        </View>
-      </Screen>
-    );
-  if (session === null || sidebar === null)
-    return (
-      <Screen>
-        <View style={styles.center}>
-          {team?.state === "loading" && failure === null ? (
-            <ActivityIndicator color={color.muted} />
-          ) : (
-            <>
-              <Notice
-                detail={failure ?? "Try again when you're connected."}
-                title={`${name} didn't answer`}
-                tone="neutral"
-              />
-              <PrimaryButton label="Retry" onPress={() => void teams.select(teamId)} />
-              <PrimaryButton label="Remove from this phone" onPress={forget} />
-            </>
-          )}
-        </View>
-      </Screen>
-    );
+  if (session === null || sidebar === null) return null;
   return (
     <Screen edgeToEdge>
       {banner === null ? null : <ConnectionBanner banner={banner} />}

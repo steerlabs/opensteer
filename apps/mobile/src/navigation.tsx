@@ -1,3 +1,4 @@
+import { TeamScreenLayout } from "./team/team-screen-gate.js";
 import { screenPresentations } from "./navigation-presentations.js";
 import type { ReactNode } from "react";
 import { SheetAnchor } from "./ui/sheet.js";
@@ -157,9 +158,9 @@ const RootStack = createNativeStackNavigator({
   // A sheet or modal is presented away from the screens: its safe area is
   // where it was presented, not the stack's or the sidebar's beside it, and no
   // region the shell measured lies over it.
-  screenLayout: ({ children, options }) => (
+  screenLayout: ({ children, options, route }) => (
     <ScreenLayout modal={options.presentation !== undefined && options.presentation !== "card"}>
-      {children}
+      <TeamScreenLayout route={route}>{children}</TeamScreenLayout>
     </ScreenLayout>
   ),
   screenOptions: stackScreenOptions,

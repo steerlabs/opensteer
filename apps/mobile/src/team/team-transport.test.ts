@@ -1,3 +1,4 @@
+import { TeamRuntimeOwner } from "@opensteer/client/team";
 import { expect, it, vi } from "vitest";
 import { DeploymentConnectionSchema } from "@opensteer/client/connections";
 import type { MockTeamHost } from "@opensteer/client/team";
@@ -47,7 +48,9 @@ it("forces one team refresh for concurrent 401s on a phone", async () => {
     token = "Bearer renewed";
     return true;
   });
+  const owner = new TeamRuntimeOwner(null);
   const oauth = {
+    teamRuntime: () => owner,
     subscribeAccountIdentityChanges: () => () => undefined,
     recoverHostAuthorization,
     subscribe: () => () => undefined,
@@ -109,7 +112,7 @@ it("forces one team refresh for concurrent 401s on a phone", async () => {
 });
 
 it.each(["rpc", "rpc-decode", "original", "preview", "upload", "realtime"] as const)(
-  "withholds %s delivery when the credential lease expires at the response handoff",
+  "withholds %s delivery when the Account runtime retires at the response handoff",
   async (path) => {
     const { DeploymentCatalogSchema } = await import("@opensteer/client/connections");
     const { TeamFileSchema } = await import("@opensteer/protocol");
@@ -130,7 +133,7 @@ it.each(["rpc", "rpc-decode", "original", "preview", "upload", "realtime"] as co
       sha256: "a".repeat(64),
       preview: { mediaType: "image/png", sizeBytes: 1 },
     });
-    let current = true;
+    const owner = new TeamRuntimeOwner(null);
     let events: import("@opensteer/client/connections").HostNetworkSocketEvents | undefined;
     const transport = networkTeamTransport({
       catalog: {
@@ -146,15 +149,12 @@ it.each(["rpc", "rpc-decode", "original", "preview", "upload", "realtime"] as co
       },
       credentials: {
         authorizationHeader: async () => "Bearer team",
-        teamEntryLease: () => ({
-          assertCurrent: () => {
-            if (!current) throw new Error("Account changed");
-          },
-        }),
+        teamRuntime: () => owner,
       },
       oauth: {
         subscribeHostCredentials: () => () => {},
         subscribe: () => () => {},
+        teamRuntime: () => owner,
         subscribeAccountIdentityChanges: () => () => {},
       } as unknown as import("@opensteer/client/auth").NativeOAuthManager,
       network: {
@@ -170,7 +170,7 @@ it.each(["rpc", "rpc-decode", "original", "preview", "upload", "realtime"] as co
               pull(controller) {
                 controller.enqueue(new TextEncoder().encode(data));
                 controller.close();
-                if (path !== "rpc-decode") current = false;
+                if (path !== "rpc-decode") owner.retire();
               },
             }),
             {
@@ -183,7 +183,7 @@ it.each(["rpc", "rpc-decode", "original", "preview", "upload", "realtime"] as co
             const blob = response.blob.bind(response);
             response.blob = async () => {
               const result = await blob();
-              current = false;
+              owner.retire();
               return result;
             };
           }
@@ -208,7 +208,7 @@ it.each(["rpc", "rpc-decode", "original", "preview", "upload", "realtime"] as co
         await vi.waitFor(() => expect(events, "socket did not open").toBeDefined(), {
           timeout: 1000,
         });
-        current = false;
+        owner.retire();
         events!.message("private data");
         expect(receive).not.toHaveBeenCalled();
         events!.close(1000, "private close reason");
@@ -226,7 +226,7 @@ it.each(["rpc", "rpc-decode", "original", "preview", "upload", "realtime"] as co
           path === "rpc-decode" &&
           text === JSON.stringify({ ok: true, data: { members: [], hasMore: false } })
         )
-          current = false;
+          owner.retire();
         return value;
       });
       try {

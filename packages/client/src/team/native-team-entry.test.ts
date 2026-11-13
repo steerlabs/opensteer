@@ -67,7 +67,7 @@ function setup() {
     ({ connection, detail: null, key: "", status }) as HostOAuthState;
   const oauth = {
     refreshTeamAuthorization: vi.fn(async (): Promise<string | null> => null),
-    teamEntryLease: () => ({
+    teamEntryFence: () => ({
       generation: 0,
       signal: new AbortController().signal,
       assertCurrent: () => {},
@@ -166,7 +166,7 @@ describe("NativeTeamEntry", () => {
       const { entry, oauth, verify } = setup();
       const verified = team();
       let controller = new AbortController();
-      oauth.teamEntryLease = () => {
+      oauth.teamEntryFence = () => {
         const captured = controller;
         return {
           generation: 0,
@@ -252,7 +252,7 @@ describe("NativeTeamEntry", () => {
   it("releases unfinished browser work when the entry fence is invalidated", async () => {
     const { entry, oauth, callback } = setup();
     const controller = new AbortController();
-    oauth.teamEntryLease = () => ({
+    oauth.teamEntryFence = () => ({
       generation: 0,
       signal: controller.signal,
       assertCurrent: () => controller.signal.throwIfAborted(),
@@ -278,7 +278,7 @@ describe("NativeTeamEntry", () => {
         timeoutError: () => new Error("Browser entry never settled after its flow ended"),
       }),
     ).resolves.toMatchObject({ status: "superseded" });
-    oauth.teamEntryLease = () => ({
+    oauth.teamEntryFence = () => ({
       generation: 1,
       signal: new AbortController().signal,
       assertCurrent: () => {},
@@ -402,7 +402,7 @@ describe("NativeTeamEntry", () => {
     const pending = Promise.withResolvers<VerifiedHostEndpoint>();
     verify.mockReturnValueOnce(pending.promise);
     let current = true;
-    oauth.teamEntryLease = () => ({
+    oauth.teamEntryFence = () => ({
       generation: 0,
       signal: new AbortController().signal,
       assertCurrent: () => {
@@ -426,7 +426,7 @@ describe("NativeTeamEntry", () => {
     const lookup = Promise.withResolvers<Awaited<ReturnType<typeof catalog.load>>>();
     const original = await catalog.load();
     let invalidated = false;
-    oauth.teamEntryLease = () => ({
+    oauth.teamEntryFence = () => ({
       generation: 0,
       signal: new AbortController().signal,
       assertCurrent: () => {
