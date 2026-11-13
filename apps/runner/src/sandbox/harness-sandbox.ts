@@ -88,6 +88,8 @@ export interface HarnessSandboxRunPlan {
 export interface ProgramSandboxPlan {
   readonly environment: Readonly<Record<string, string>>;
   readonly privateDirectory: string;
+  /** The one existing file in `privateDirectory` the program may write: its result. */
+  readonly resultFile?: string;
   readonly workspacePath: string;
 }
 
@@ -153,9 +155,22 @@ export async function programSandboxMounts(
   layout: HarnessSandboxLayout,
   program: ProgramSandboxPlan,
 ): Promise<readonly string[]> {
+  if (program.resultFile) {
+    const within = relative(
+      await canonicalPath(program.privateDirectory),
+      await canonicalPath(program.resultFile),
+    );
+    if (!within || within.startsWith("..") || isAbsolute(within) || within.includes("/")) {
+      throw new Error("A program's result file must be directly in its private directory");
+    }
+  }
   return sandboxMounts(layout, program.environment, {
     launchDirectory: undefined,
-    privateDirectories: [{ mode: "--ro-bind", path: program.privateDirectory }],
+    // Bound after its directory, so only this file is writable over the read-only view.
+    privateDirectories: [
+      { mode: "--ro-bind", path: program.privateDirectory },
+      ...(program.resultFile ? [{ mode: "--bind" as const, path: program.resultFile }] : []),
+    ],
     workspaceRoots: [program.workspacePath],
   });
 }

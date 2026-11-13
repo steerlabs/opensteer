@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   getEnvironmentValue,
   planLaunch,
+  planShellLaunch,
   resolveCommand,
   type CommandProbes,
   type ResolvedCommand,
@@ -356,5 +357,30 @@ describe("planLaunch", () => {
     expect(() => planLaunch(batch, [], { environment: {}, platform: "linux" })).toThrow(
       /Windows batch script/u,
     );
+  });
+});
+
+describe("planShellLaunch", () => {
+  it("runs POSIX shell source with /bin/sh", () => {
+    expect(
+      planShellLaunch("npm install && PORT=1 npm start", { environment: {}, platform: "darwin" }),
+    ).toEqual({ args: ["-c", "npm install && PORT=1 npm start"], executable: "/bin/sh" });
+  });
+
+  it("hands Windows shell source to cmd.exe as written, inside one outer quote pair", () => {
+    const source = 'npm install && "C:\\My Tools\\server.cmd" --port %PORT% > log.txt';
+    expect(planShellLaunch(source, { environment: windowsEnvironment, platform: "win32" })).toEqual(
+      {
+        args: [],
+        executable: "C:\\Windows\\System32\\cmd.exe",
+        windowsCommandLine: `cmd.exe /d /s /c "${source}"`,
+      },
+    );
+  });
+
+  it.each(["a\0b", "a\nb", "a\rb"])("refuses Windows source cmd.exe would cut: %j", (source) => {
+    expect(() =>
+      planShellLaunch(source, { environment: windowsEnvironment, platform: "win32" }),
+    ).toThrow(/NUL or a line break/u);
   });
 });

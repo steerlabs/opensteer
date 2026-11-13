@@ -78,6 +78,8 @@ export const CaseSchema = z.strictObject({
   teamBound: z.boolean().default(false),
   teamContext: z.string().min(1).optional(),
   machineAccessNotice: z.string().min(1).optional(),
+  /** The operating system of the computer hosting the Run, as its Runner reports it. */
+  hostingPlatform: z.enum(["darwin", "linux", "win32"]).default("darwin"),
   requesterTimeZone: TimeZoneSchema.optional(),
   engines: z
     .array(z.enum(["claude", "codex", "cursor", "opencode", "pi"]))

@@ -48,6 +48,7 @@ import {
   runnerWebSocketUrl,
   waitForRunnerReconnect,
 } from "./host-connection.js";
+import { LocalMcpServers } from "../computer-apps/local-mcp-servers.js";
 import { RunnerRuntime } from "../runtime/runtime.js";
 import {
   providerContinuationIdentityProjector,
@@ -1481,6 +1482,7 @@ describe("runnerWebSocketUrl", () => {
       },
       integrationsModule: {
         descriptor: { platform: "darwin" },
+        localMcp: new LocalMcpServers(),
         providers: [
           {
             definitionId: definition.id,

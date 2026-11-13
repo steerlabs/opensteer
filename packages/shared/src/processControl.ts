@@ -3,6 +3,12 @@ import type { Writable } from "node:stream";
 /** Desktop supplies the verified native owner to every supervised Node child. */
 export const processSupervisorExecutableVariable = "OPENSTEER_PROCESS_SUPERVISOR_EXECUTABLE";
 
+/**
+ * The signals that ask a service to shut down gracefully. The supervisor stops
+ * a Windows child with CTRL_BREAK, which Node delivers as SIGBREAK.
+ */
+export const shutdownSignals = ["SIGINT", "SIGBREAK", "SIGTERM"] as const;
+
 /** A child's own stop budgets derive from this, so none can outlast the supervisor's kill. */
 export const processStopTimeoutMs = 5_000;
 

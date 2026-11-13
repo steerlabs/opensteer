@@ -3,7 +3,9 @@ import { RunFileError, type RunFileAccess } from "../attachments/run-files.js";
 import { AppServerManager } from "../apps/app-server-manager.js";
 import { VoiceCalls } from "../voice/voice-calls.js";
 
+import { appHostingGuide } from "@opensteer/agent-tools";
 import { systemClock, type Clock } from "@opensteer/shared/clock";
+import { hostCommandPlatform } from "@opensteer/shared/command";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import { selectEnvironment } from "@opensteer/shared/userEnvironment";
@@ -2799,7 +2801,12 @@ export class RunnerRuntime {
         machineAccessPlatform: launch?.machineAccessPlatform,
         machineAccessRelaySocket: launch?.machineAccessRelaySocket,
         modelSelection: context.modelSelection,
-        platformGuide: context.agentTools.instructions,
+        platformGuide: [
+          context.agentTools.instructions,
+          appHostingGuide({ platform: hostCommandPlatform(), tools: context.agentTools.tools }),
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
         providerState,
         runtimeBoundary: this.#harnessRuntimeBoundary,
         ...(sharedEngine ? { sharedEngine } : {}),

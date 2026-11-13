@@ -20,13 +20,17 @@ export interface PreparedIntegrationsModule {
    */
   readonly computerUse?: ComputerUseHandler;
   readonly descriptor: RunnerIntegrationsModule;
-  /** The MCP servers this computer runs, present exactly when `computerUse` is. */
-  readonly localMcp?: LocalMcpServers;
+  /** The MCP servers this computer runs, on every platform the module is prepared on. */
+  readonly localMcp: LocalMcpServers;
   readonly providers: readonly ComputerAppProvider[];
   /** Releases what preparation opened. Called when the Runner stops. */
   readonly close?: () => void;
 }
 
+/**
+ * The integrations module this computer offers: local MCP servers wherever it
+ * runs, and the native app providers its platform has, which may be none.
+ */
 export function prepareIntegrationsModule(options: {
   /** The bridge the desktop minted for this slot, on a Mac it supervises. */
   readonly computerUseBridge?: { readonly token: string; readonly url: URL };
@@ -66,23 +70,15 @@ export function prepareIntegrationsModule(options: {
         }
       : {},
   );
-  if (providers.length === 0) {
-    computerUse?.close();
-    return undefined;
-  }
   return {
     ...(options.helperBinary
       ? { files: { dataDirectory: options.dataDirectory, helperBinary: options.helperBinary } }
       : {}),
     close: () => computerUse?.close(),
-    ...(computerUse
-      ? {
-          computerUse,
-          localMcp: new LocalMcpServers({
-            stateDirectory: path.join(options.dataDirectory, "private", "harness-state"),
-          }),
-        }
-      : {}),
+    ...(computerUse ? { computerUse } : {}),
+    localMcp: new LocalMcpServers({
+      stateDirectory: path.join(options.dataDirectory, "private", "harness-state"),
+    }),
     descriptor: {
       // The signed descriptor states shipped protocol support. The status
       // cadence reports transient helper readiness on this same connection.
@@ -97,9 +93,9 @@ export function prepareIntegrationsModule(options: {
             loginText: 1,
             passwordSignIn: 2,
             cardUse: 1,
-            pluginDataRemoval: 1,
           }
         : {}),
+      pluginDataRemoval: 1,
       ...(options.helperBinary ? { appFiles: 1 as const } : {}),
       platform,
       protocolVersion: runnerIntegrationsProtocolVersion,

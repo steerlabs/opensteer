@@ -3,6 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { spawnSupervised } from "@opensteer/harness";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { ExecutionContainment } from "./execution-containment.js";
 
 /**
@@ -190,12 +192,72 @@ describe("ExecutionContainment.liveRoots", () => {
   });
 });
 
+describe("ExecutionContainment from supervised scopes, as on Windows", () => {
+  /** Starts `script` under the supervisor in `executionId`, once it has printed its child's pid. */
+  async function supervised(
+    containment: ExecutionContainment,
+    executionId: string,
+    script: string,
+  ) {
+    const launch = containment.wrap(
+      executionId,
+      (input) => input,
+    )({
+      args: [
+        "-e",
+        `const c=require("node:child_process").spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore"});console.log(c.pid);${script}`,
+      ],
+      cwd: tmpdir(),
+      environment: { PATH: process.env.PATH ?? "" },
+      executable: process.execPath,
+    });
+    const child = spawnSupervised({ ...launch, output: "raw", stdin: "closed" });
+    const [line] = await withTimeout(
+      (async () => {
+        for await (const chunk of child.stdout) return chunk.toString("utf8").split("\n");
+        return [];
+      })(),
+      5_000,
+      { timeoutError: () => new Error("The supervised target never reported its child") },
+    );
+    const childPid = Number(line);
+    expect(childPid).toBeGreaterThan(0);
+    spawned.push(childPid);
+    return { child, childPid };
+  }
+
+  it("counts each running supervisor as one tree and proves a stopped tree gone", async () => {
+    const containment = new ExecutionContainment({
+      bootId: "rbt_a",
+      dataDirectory: await dataDirectory(),
+      platform: "win32",
+    });
+    await expect(containment.liveRoots("run_1")).resolves.toBe(0);
+    const first = await supervised(containment, "run_1", "setInterval(()=>{},1000)");
+    const stubborn = await supervised(
+      containment,
+      "run_1",
+      `process.on("SIGTERM",()=>{});process.on("SIGBREAK",()=>{});setInterval(()=>{},1000)`,
+    );
+    const other = await supervised(containment, "run_2", "setInterval(()=>{},1000)");
+    await expect(containment.liveRoots("run_1")).resolves.toBe(2);
+
+    await expect(containment.terminate("run_1")).resolves.toBe("proven");
+    await expect(containment.liveRoots("run_1")).resolves.toBe(0);
+    for (const { childPid } of [first, stubborn]) expect(() => process.kill(childPid, 0)).toThrow();
+    expect(() => process.kill(other.childPid, 0)).not.toThrow();
+    await expect(containment.reapEarlierBoots()).resolves.toBe("proven");
+    await expect(containment.liveRoots("run_2")).resolves.toBe(1);
+    await other.child.terminate();
+  });
+});
+
 describe("ExecutionContainment without process environments", () => {
   it("says it cannot verify rather than claiming proof", async () => {
     const containment = new ExecutionContainment({
       bootId: "rbt_a",
       dataDirectory: await dataDirectory(),
-      platform: "win32",
+      platform: "freebsd",
     });
     await expect(containment.liveRoots("run_1")).resolves.toBe("unverifiable");
     await expect(containment.terminate("run_1")).resolves.toBe("unverifiable");

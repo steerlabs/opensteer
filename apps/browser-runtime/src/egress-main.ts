@@ -1,4 +1,5 @@
 import { PublicBrowserEgressProxy } from "./egress-proxy.js";
+import { shutdownSignals } from "@opensteer/shared/processControl";
 
 async function main(): Promise<void> {
   const proxy = new PublicBrowserEgressProxy({
@@ -13,8 +14,7 @@ async function main(): Promise<void> {
     closing = true;
     await proxy.close();
   };
-  process.once("SIGINT", () => void close().catch(fail));
-  process.once("SIGTERM", () => void close().catch(fail));
+  for (const signal of shutdownSignals) process.once(signal, () => void close().catch(fail));
 }
 
 function port(value: string | undefined): number {

@@ -2,6 +2,7 @@ import { pathToFileURL } from "node:url";
 import { parseHostConfig } from "@opensteer/config";
 import { hostStopper } from "./runtime/host-stop.js";
 import { createHostRuntime } from "./runtime/runtime.js";
+import { shutdownSignals } from "@opensteer/shared/processControl";
 
 export async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
   let config: ReturnType<typeof parseHostConfig>;
@@ -39,8 +40,7 @@ export async function main(environment: NodeJS.ProcessEnv = process.env): Promis
   runtime.app.log.info({ address }, "Opensteer Host listening");
 
   const stopper = hostStopper(runtime);
-  for (const signal of ["SIGINT", "SIGBREAK", "SIGTERM"] as const)
-    process.once(signal, () => stopper.signal(signal));
+  for (const signal of shutdownSignals) process.once(signal, () => stopper.signal(signal));
   void runtime.authorityLost.then((error) => stopper.authorityLost(error));
 }
 

@@ -7,7 +7,12 @@ import {
   ModelSelectionSchema,
   type ModelSelection,
 } from "@opensteer/core";
-import { opensteerAgentSkillsFor, platformGuideForRun, toolsFor } from "@opensteer/agent-tools";
+import {
+  appHostingGuide,
+  opensteerAgentSkillsFor,
+  platformGuideForRun,
+  toolsFor,
+} from "@opensteer/agent-tools";
 import {
   ClaudeHarnessDriver,
   claudeAgentSdk,
@@ -115,10 +120,19 @@ export async function runEngine(input: {
     home: (await discoverAgentHomeSkills(p.workspace)).skills,
   });
   const instructions = [c.fixtures["AGENTS.md"], c.teamContext].filter(Boolean).join("\n\n");
+  const tools = toolsFor({ kind: c.caller, accessMode: "full-access", teamBound: c.teamBound }).map(
+    ({ name }) => name,
+  );
+  // Assembled as the Host plans it and the hosting Runner completes it.
   const guide =
     c.caller === "run"
-      ? platformGuideForRun({ purpose: c.purpose, teamBound: c.teamBound }) +
-        (c.voice ? `\n\n${voiceGuide}` : "")
+      ? [
+          platformGuideForRun({ purpose: c.purpose, teamBound: c.teamBound }) +
+            (c.voice ? `\n\n${voiceGuide}` : ""),
+          appHostingGuide({ platform: c.hostingPlatform, tools }),
+        ]
+          .filter(Boolean)
+          .join("\n\n")
       : "";
   const treatment = {
     prompt: fingerprint({
@@ -144,11 +158,7 @@ export async function runEngine(input: {
   const context: HarnessSessionContext = {
     accessMode: "full-access",
     agentTools: {
-      tools: toolsFor({
-        kind: c.caller,
-        accessMode: "full-access",
-        teamBound: c.teamBound,
-      }).map(({ name }) => name),
+      tools,
       toolsRevision: "eval-tools-v1",
       instructions: guide,
       skills: selected.map(({ fullName }) => fullName),

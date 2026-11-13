@@ -56,10 +56,7 @@ export interface ComputerAppModuleHandlerOptions {
    */
   readonly computerUse?: ComputerUseHandler;
   readonly videoTransport?: RunnerTransportPolicy;
-  /**
-   * The MCP servers this computer runs, present exactly when `computerUse`
-   * is: the Host admits only the exact launch the computer owner approved.
-   */
+  /** The MCP servers this computer runs: the Host admits only the exact launch the owner approved. */
   readonly localMcp?: LocalMcpServers;
   readonly logger: RunnerLogger;
   readonly providers: readonly ComputerAppProvider[];

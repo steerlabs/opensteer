@@ -4,6 +4,7 @@ import { MessagingModule } from "@opensteer/messaging-module";
 import { RunnerMessagingConnection } from "./host-client.js";
 import { FileRunnerIdentityStore, RunnerDataDirectoryLock } from "@opensteer/runner-client";
 import { ChannelRuntimeServer } from "./server.js";
+import { shutdownSignals } from "@opensteer/shared/processControl";
 
 async function main(): Promise<void> {
   const config = parseChannelRuntimeConfig(process.env);
@@ -49,8 +50,7 @@ async function main(): Promise<void> {
     await server.app.close();
     await lock.release();
   };
-  process.once("SIGINT", () => void close().catch(fail));
-  process.once("SIGTERM", () => void close().catch(fail));
+  for (const signal of shutdownSignals) process.once(signal, () => void close().catch(fail));
   // Another process reclaimed the data directory lease: stop the same way a
   // signal stops us, but report it, because nothing asked for this shutdown.
   lock.onLost((reason) => {

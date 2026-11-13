@@ -86,9 +86,10 @@ Lists, Requests and snapshots never contain them. Delivery exposes them only to 
 launch, and transport output must redact them. This protects chat and agent context, not a
 same-user shell or the launched program itself.
 
-Servers run with the MCP SDK's minimal inherited environment plus the launch's, in their own process
-group; ending a session, stream or Runner kills the whole tree, including descendants of launchers
-such as `npx`. A malformed or stalled transport ends that session, not the integrations stream.
+Servers run with the MCP SDK's minimal inherited environment plus the launch's, under the process
+supervisor (a process group, or a Job on Windows); ending a session, stream or Runner kills the whole
+tree, including descendants of launchers such as `npx`. Every computer whose Runner offers
+integrations runs them, with or without native app providers. A malformed or stalled transport ends that session, not the integrations stream.
 
 MCP form elicitation belongs to one in-flight Run call and only works on engines qualified to hold
 it. The answer goes only to that call, never to engine context or durable events. Restart cancels

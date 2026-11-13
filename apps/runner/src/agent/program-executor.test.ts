@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createId } from "@opensteer/core";
 import { TriggerExecutionContextSchema } from "@opensteer/protocol";
 import { TriggerExecutionOutputSchema } from "@opensteer/triggers";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { startProgramEndpoints } from "./program-endpoints.js";
 import { TriggerProgramExecutor } from "./program-executor.js";
 
@@ -200,6 +200,107 @@ describe("TriggerProgramExecutor", () => {
     expect(output.error).toContain("expected failure");
     expect(output.stdout).toContain('"value":"fake"');
     expect(output.result).toBeNull();
+  });
+
+  it.each([
+    {
+      name: "undefined as null",
+      source: "export default function () {}",
+      expected: { error: null, result: null, status: "succeeded" },
+    },
+    {
+      name: "an exit before returning as no result",
+      source: "export default function () { process.exit(0); }",
+      expected: { error: "Trigger program returned no execution result", status: "failed" },
+    },
+    {
+      name: "a deleted result file as no result",
+      source: `import { rmSync } from "node:fs";
+        export default function () { rmSync(process.env.OPENSTEER_RESULT_PATH); process.exit(0); }`,
+      expected: { error: "Trigger program returned no execution result", status: "failed" },
+    },
+    {
+      name: "a malformed result as invalid",
+      source: `import { writeFileSync } from "node:fs";
+        export default function () {
+          writeFileSync(process.env.OPENSTEER_RESULT_PATH, "{not json");
+          process.exit(0);
+        }`,
+      expected: { error: "Trigger program returned an invalid execution result", status: "failed" },
+    },
+    {
+      name: "a result over 512 KiB as invalid",
+      source: `export default function () { return "x".repeat(600 * 1024); }`,
+      expected: { error: "Trigger program returned an invalid execution result", status: "failed" },
+    },
+    {
+      name: "a result file replaced by a link as invalid",
+      source: `import { rmSync, symlinkSync, writeFileSync } from "node:fs";
+        export default function () {
+          const forged = process.env.OPENSTEER_RESULT_PATH + ".forged";
+          writeFileSync(forged, JSON.stringify({ ok: true, value: "forged" }));
+          rmSync(process.env.OPENSTEER_RESULT_PATH);
+          symlinkSync(forged, process.env.OPENSTEER_RESULT_PATH);
+          process.exit(0);
+        }`,
+      expected: { error: "Trigger program returned an invalid execution result", status: "failed" },
+    },
+  ])("reads $name from the private result file", async ({ expected, source }) => {
+    const workspace = await temporaryWorkspace();
+    const privateDirectory = join(workspace.path, ".opensteer", "private");
+    const context = triggerContext({ source });
+
+    const output = await new TriggerProgramExecutor({
+      nodeExecutable: process.execPath,
+      privateDirectory,
+    }).execute({ context, ...direct(context), signal: new AbortController().signal, workspace });
+
+    expect(output).toMatchObject({ ...expected, result: expected.result ?? null });
+    expect(TriggerExecutionOutputSchema.safeParse(output).success).toBe(true);
+    await expect(stat(join(privateDirectory, context.occurrenceId))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("cancels a running program with everything it started, keeping its output", async () => {
+    const workspace = await temporaryWorkspace();
+    const childPidFile = join(workspace.path, "child.pid");
+    const context = triggerContext({
+      source: `import { spawn } from "node:child_process";
+        import { writeFileSync } from "node:fs";
+        export default async function () {
+          const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+          console.log("started");
+          writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid));
+          await new Promise(() => {});
+        }`,
+    });
+    const abort = new AbortController();
+
+    const running = new TriggerProgramExecutor({ nodeExecutable: process.execPath }).execute({
+      context,
+      ...direct(context),
+      signal: abort.signal,
+      workspace,
+    });
+    const childPid = await vi.waitFor(
+      async () => {
+        const pid = Number(await readFile(childPidFile, "utf8"));
+        if (!(pid > 0)) throw new Error("The program never reported its child");
+        return pid;
+      },
+      { interval: 25, timeout: 5_000 },
+    );
+    abort.abort();
+    const output = await running;
+
+    expect(output).toMatchObject({
+      error: "Trigger program was canceled",
+      result: null,
+      status: "canceled",
+      stdout: "started\n",
+    });
+    expect(() => process.kill(childPid, 0)).toThrow();
   });
 
   it("passes the Runner's additive CA bundle to the isolated trigger process", async () => {

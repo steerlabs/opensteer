@@ -160,7 +160,7 @@ function computerAppModuleHandler(
         }
       : {}),
     ...(integrations.computerUse ? { computerUse: integrations.computerUse } : {}),
-    ...(integrations.localMcp ? { localMcp: integrations.localMcp } : {}),
+    localMcp: integrations.localMcp,
     logger,
     providers: integrations.providers,
     videoTransport: {
