@@ -171,11 +171,17 @@ func TestWindowsDesktopPrivateAuthorityAppliesStrictACLAndPinsRoot(t *testing.T)
 	closeNode(handle)
 	root.close()
 
-	original := rootPath + ".original"
-	if err := os.Rename(rootPath, original); err != nil {
+	// The stand-in is itself a private root, so only its identity differs from the pinned one.
+	standIn := rootPath + ".stand-in"
+	if _, err := executeWithRootPolicy(request{
+		Operation: "desktop-ensure-root", Root: standIn, RootPolicy: "desktop-private",
+	}, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(rootPath, 0700); err != nil {
+	if err := os.Rename(rootPath, rootPath+".original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(standIn, rootPath); err != nil {
 		t.Fatal(err)
 	}
 	read := requestFor("desktop-read-file", "private/secret.json")

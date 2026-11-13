@@ -23,9 +23,9 @@ assign("GOCACHE", join(tmpdir(), "opensteer-go-build"));
 
 const evidence = dirname(environment.CI_INVENTORY_PATH);
 const steps = [
-  ["go", "-C", "apps/desktop/process-supervisor", "test", "-count=1", "./..."],
-  ["go", "-C", "apps/desktop/personal-runtime-launcher", "test", "-count=1", "./..."],
-  ["go", "-C", "apps/runner/native-fs-helper", "test", "-count=1", "-timeout=2m", "./..."],
+  ["go", "-C", "apps/desktop/process-supervisor", "test", "-count=1", "-v", "./..."],
+  ["go", "-C", "apps/desktop/personal-runtime-launcher", "test", "-count=1", "-v", "./..."],
+  ["go", "-C", "apps/runner/native-fs-helper", "test", "-count=1", "-v", "-timeout=2m", "./..."],
   [
     process.execPath,
     "node_modules/vitest/vitest.mjs",
@@ -41,6 +41,7 @@ const steps = [
   ],
 ];
 const log = openSync(spec.log, "a");
+// Every step runs, so one lane run reports every Windows failure; the first failure decides the result.
 let code = 0;
 for (const [command, ...arguments_] of steps) {
   writeFileSync(log, `\n$ ${[command, ...arguments_].join(" ")}\n`);
@@ -51,8 +52,7 @@ for (const [command, ...arguments_] of steps) {
     windowsHide: true,
   });
   if (result.error) writeFileSync(log, `${result.error.message}\n`);
-  code = result.status ?? 1;
-  if (code !== 0) break;
+  if (code === 0) code = result.status ?? 1;
 }
 closeSync(log);
 writeFileSync(spec.result, JSON.stringify({ code }));
