@@ -137,15 +137,15 @@ class Socket extends EventEmitter {
   }
 }
 
-function fixture() {
+function fixture(initialTargetId: string | null = binding.surfaceId) {
   const socket = new Socket();
   const client = new ActionsClient(socket, sessionId);
-  return { socket, harness: createActionsHarness(client) };
+  return { socket, harness: createActionsHarness(client, initialTargetId) };
 }
 
 describe("actions Harness conformance", () => {
   it("opens the first tab without a target and focuses before pressing or appending", async () => {
-    const { socket, harness } = fixture();
+    const { socket, harness } = fixture(null);
     socket.tabs = [];
     await harness.listTabs();
     expect(socket.requests[0]).not.toHaveProperty("surfaceId");
@@ -174,7 +174,7 @@ describe("actions Harness conformance", () => {
     ]);
   });
 
-  it("wakes a sleeping tab before its first action, however the tab was chosen", async () => {
+  it("wakes the selected sleeping tab before its first action", async () => {
     const asleep = { ...binding, state: "suspended" as const };
     const chosen = (socket: Socket) =>
       socket.requests
@@ -186,11 +186,6 @@ describe("actions Harness conformance", () => {
     expect(chosen(only.socket)).toEqual(["surface.resume"]);
     await only.harness.pageInfo();
     expect(chosen(only.socket)).toEqual(["surface.resume"]);
-
-    const named = new Socket();
-    named.tabs = [asleep];
-    await createActionsHarness(new ActionsClient(named, sessionId), asleep.surfaceId).pageInfo();
-    expect(chosen(named)).toEqual(["surface.resume"]);
   });
 
   it("never sends text after an unsuccessful focus or replays an unknown focus outcome", async () => {

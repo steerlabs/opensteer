@@ -4,7 +4,7 @@ import {
 } from "@opensteer/shared/test-support/serverProbes";
 import { once } from "node:events";
 import { spawn } from "node:child_process";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import type { Socket } from "node:net";
 import { fileURLToPath } from "node:url";
 import { createBrowserSessionId } from "@opensteer/protocol";
@@ -28,6 +28,11 @@ import {
   BrowserActionRequestSchema,
   BrowserActionResponseSchema,
 } from "@opensteer/protocol/browser-actions";
+
+import {
+  browserAgentRequestMaxBytes,
+  browserAgentResponseMaxBytes,
+} from "@opensteer/protocol/browser-agent";
 
 const servers: WebSocketServer[] = [];
 const heldHosts: Array<() => void> = [];
@@ -64,6 +69,193 @@ afterEach(async () => {
 });
 
 describe("BrowserCdpRelay", () => {
+  it("forwards only contract routes with bounded bodies and actionable Host refusals", async () => {
+    const seen: Array<{ method: string; url: string; token: string; body: string }> = [];
+    const http = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        seen.push({
+          method: request.method!,
+          url: request.url!,
+          token: request.headers.authorization!,
+          body: Buffer.concat(chunks).toString(),
+        });
+        if (request.url?.includes("plain-refusal")) {
+          response.writeHead(503).end("Unavailable");
+        } else if (request.url?.includes("oversize")) {
+          response.write('{"data":"');
+          response.end("x".repeat(browserAgentResponseMaxBytes) + '"}');
+        } else if (request.url?.endsWith("tabs/close")) {
+          response.writeHead(403).end(
+            JSON.stringify({
+              error: { code: "forbidden", message: "This tab is read-only.", retryable: false },
+            }),
+          );
+        } else response.end(JSON.stringify({ tabs: [], total: 0, nextCursor: null }));
+      });
+    });
+    http.listen(0, "127.0.0.1");
+    await once(http, "listening");
+    const address = http.address();
+    if (!address || typeof address === "string") throw new Error("Agent fixture did not bind");
+    const relay = new BrowserCdpRelay({
+      url: `http://127.0.0.1:${address.port}/internal/v1/browser-cdp`,
+      token: () => "private-token",
+      transport: developmentTransport,
+    });
+    try {
+      const base = (await relay.start()).replace(/^ws/u, "http");
+      const listed = await fetch(`${base}/agent/tabs?query=work&limit=3`);
+      expect(await listed.json()).toEqual({ tabs: [], total: 0, nextCursor: null });
+      for (const route of ["tabs/use", "tabs/open", "tabs/organize"]) {
+        expect(
+          (await fetch(`${base}/agent/${route}`, { method: "POST", body: '{"tabId":"tab"}' }))
+            .status,
+        ).toBe(200);
+      }
+      const refused = await fetch(`${base}/agent/tabs/close`, { method: "POST", body: "{}" });
+      expect(refused.status).toBe(403);
+      expect(await refused.json()).toEqual({ error: { message: "This tab is read-only." } });
+      const plainRefusal = await fetch(`${base}/agent/tabs?plain-refusal=1`);
+      expect(plainRefusal.status).toBe(503);
+      expect(await plainRefusal.json()).toEqual({
+        error: { message: "The Host refused browser control." },
+      });
+      expect((await fetch(`${base}/agent/unknown`)).status).toBe(404);
+      expect((await fetch(`${base}/agent/tabs`, { method: "DELETE" })).status).toBe(405);
+      expect(
+        (
+          await fetch(`${base}/agent/tabs/open`, {
+            method: "POST",
+            body: "x".repeat(browserAgentRequestMaxBytes + 1),
+          })
+        ).status,
+      ).toBe(413);
+      expect((await fetch(`${base}/agent/tabs?oversize=1`)).status).toBe(502);
+      expect(seen).toHaveLength(7);
+      expect(seen[0]).toEqual({
+        method: "GET",
+        url: "/internal/v1/browser-agent/tabs?query=work&limit=3",
+        token: "Bearer private-token",
+        body: "",
+      });
+      expect(seen[1]).toMatchObject({
+        method: "POST",
+        url: "/internal/v1/browser-agent/tabs/use",
+        body: '{"tabId":"tab"}',
+      });
+      expect(seen.every((entry) => entry.token === "Bearer private-token")).toBe(true);
+    } finally {
+      await relay.close();
+      await new Promise<void>((resolve) => http.close(() => resolve()));
+    }
+  });
+
+  it("captures the Run token before awaiting the request body", async () => {
+    let authorization: string | undefined;
+    const http = createServer((request, response) => {
+      authorization = request.headers.authorization;
+      request.resume();
+      request.once("end", () => response.end(JSON.stringify({ tabId: "created-tab" })));
+    });
+    http.listen(0, "127.0.0.1");
+    await once(http, "listening");
+    const address = http.address();
+    if (!address || typeof address === "string") throw new Error("Token fixture did not bind");
+    let token = "admitted-run";
+    const admitted = Promise.withResolvers<void>();
+    const relay = new BrowserCdpRelay({
+      url: `http://127.0.0.1:${address.port}/internal/v1/browser-cdp`,
+      token: () => {
+        admitted.resolve();
+        return token;
+      },
+      transport: developmentTransport,
+    });
+    try {
+      const base = (await relay.start()).replace(/^ws/u, "http");
+      const answer = Promise.withResolvers<number>();
+      const client = httpRequest(
+        `${base}/agent/tabs/open`,
+        { method: "POST", signal: AbortSignal.timeout(2_000) },
+        (response) => {
+          response.resume();
+          response.once("end", () => answer.resolve(response.statusCode!));
+        },
+      );
+      client.once("error", answer.reject);
+      try {
+        client.write('{"url":');
+        expect(
+          await settleWithin(admitted.promise, 1_000),
+          "Relay never admitted the partial request",
+        ).toMatchObject({ settled: "fulfilled" });
+        token = "later-run";
+        client.end('"about:blank"}');
+        expect(await answer.promise).toBe(200);
+        expect(authorization).toBe("Bearer admitted-run");
+      } finally {
+        client.destroy();
+      }
+    } finally {
+      await relay.close();
+      await new Promise<void>((resolve) => http.close(() => resolve()));
+    }
+  });
+
+  it.each(["suspend", "close"] as const)(
+    "fences an admitted agent response across %s",
+    async (action) => {
+      const admitted = Promise.withResolvers<void>();
+      const aborted = Promise.withResolvers<void>();
+      const http = createServer((request, response) => {
+        request.resume();
+        response.writeHead(200, { "content-type": "application/json" });
+        response.write('{"tabs":[');
+        response.once("close", () => aborted.resolve());
+        admitted.resolve();
+      });
+      http.listen(0, "127.0.0.1");
+      await once(http, "listening");
+      const address = http.address();
+      if (!address || typeof address === "string") throw new Error("Fence fixture did not bind");
+      let token = "first-run";
+      const relay = new BrowserCdpRelay({
+        url: `http://127.0.0.1:${address.port}/internal/v1/browser-cdp`,
+        token: () => token,
+        transport: developmentTransport,
+      });
+      try {
+        const base = (await relay.start()).replace(/^ws/u, "http");
+        const pending = fetch(`${base}/agent/tabs`);
+        expect(
+          await settleWithin(admitted.promise, 2_000),
+          "Host never admitted the agent request",
+        ).toMatchObject({ settled: "fulfilled" });
+        const closing = action === "close" ? relay.close() : undefined;
+        if (action === "suspend") {
+          relay.suspend();
+          expect((await fetch(`${base}/agent/tabs`)).status).toBe(403);
+          token = "next-run";
+          relay.resume();
+        }
+        expect(
+          await settleWithin(pending, 2_000),
+          "Relay never refused its fenced response",
+        ).toMatchObject({ settled: "fulfilled", value: { status: 403 } });
+        expect(
+          await settleWithin(aborted.promise, 2_000),
+          "Relay did not abort the Host request",
+        ).toMatchObject({ settled: "fulfilled" });
+        await closing;
+      } finally {
+        await relay.close();
+        await new Promise<void>((resolve) => http.close(() => resolve()));
+      }
+    },
+  );
+
   it.each([false, true])(
     "uses only advertised backend negotiation (advertised=%s)",
     async (advertised) => {
@@ -94,13 +286,11 @@ describe("BrowserCdpRelay", () => {
   it.each([
     {
       status: 403,
-      message:
-        "Browser Session bsn_00000000-0000-4000-8000-000000000001 has ended. Open a new one with browser_session_open.",
+      message: "This tab has closed. Choose a tab with listTabs() and switchTab(tabId).",
     },
     {
       status: 403,
-      message:
-        "Browser Session bsn_00000000-0000-4000-8000-000000000001 was not found. browser_session_list shows available sessions.",
+      message: "This tab is unavailable. listTabs() shows the tabs you can use.",
     },
     { status: 404, message: "The advertised backend route is unavailable." },
     { status: 503, message: "The browser service is unavailable." },
@@ -143,7 +333,7 @@ describe("BrowserCdpRelay", () => {
     },
   );
 
-  it("negotiates once for the exact session and carries actions with the same Run bearer", async () => {
+  it("uses the Host tab binding and carries actions with the same Run bearer", async () => {
     let negotiations = 0;
     const seen: string[] = [];
     const sessionId = createBrowserSessionId();
@@ -158,6 +348,17 @@ describe("BrowserCdpRelay", () => {
     const http = createServer((request, response) => {
       if (request.url === "/.well-known/opensteer") {
         response.end(JSON.stringify({ capabilities: ["browser-backend-v1"] }));
+        return;
+      }
+      if (request.url === "/internal/v1/browser-agent/tabs/use") {
+        response.end(
+          JSON.stringify({
+            tabId: binding.surfaceId,
+            sessionId,
+            backend: "actions",
+            reloaded: false,
+          }),
+        );
         return;
       }
       expect(request.url).toBe(`/internal/v1/browser-backend/${sessionId}`);
@@ -214,7 +415,7 @@ describe("BrowserCdpRelay", () => {
         sessionId,
       );
       expect(output.trim()).toBe("Phone");
-      expect(negotiations).toBe(1);
+      expect(negotiations).toBe(0);
       expect(seen).toEqual(["session.tabs", "surface.attach", "page.info", "dom.act"]);
       relay.suspend();
       const backend = new URL(url);
@@ -345,10 +546,9 @@ describe("BrowserCdpRelay", () => {
       upstream.url.replace(/^http/u, "ws"),
       sessionId,
     );
-    expect(upstream.paths()).toEqual([`/internal/v1/browser-cdp/${sessionId}`]);
+    expect(upstream.paths()).toHaveLength(1);
     expect(JSON.parse(output.trim())).toEqual({
-      surfaceId: "surface-example",
-      targetId: "target-1",
+      tabId: "surface-example",
       title: "Example",
       url: "https://example.test/",
       w: 1280,
@@ -536,14 +736,14 @@ describe("BrowserCdpRelay", () => {
       "console.log(JSON.stringify(await listTabs()))",
       url,
       sessionId,
+      "",
     );
     expect(JSON.parse(listed)).toHaveLength(2);
     expect(JSON.parse(listed)[0]).toMatchObject({
-      targetId: "viewed-tab",
-      surfaceId: "human-surface",
+      tabId: "human-surface",
     });
-    await expect(runBrowserHarness(script, "await pageInfo()", url, sessionId)).rejects.toThrow(
-      "Choose a tab",
+    await expect(runBrowserHarness(script, "await pageInfo()", url, sessionId, "")).rejects.toThrow(
+      "Call switchTab(tabId)",
     );
     expect(requests.filter((request) => request.method === "Target.attachToTarget")).toEqual([]);
     await expect(
@@ -621,8 +821,9 @@ describe("BrowserCdpRelay", () => {
         "await pageInfo()",
         upstream.url.replace(/^http/u, "ws"),
         createBrowserSessionId(),
+        "",
       ),
-    ).rejects.toThrow("initial tab is closed");
+    ).rejects.toThrow("Call switchTab(tabId)");
     expect(requests.some((request) => request.method === "Target.attachToTarget")).toBe(false);
   });
 });
@@ -967,6 +1168,7 @@ async function fakeCdpServer(
   httpPaths(): readonly string[];
 }> {
   const httpPaths: string[] = [];
+  const fixtureSessionId = createBrowserSessionId();
   const http = createServer((request, response) => {
     httpPaths.push(request.url ?? "");
     if (request.url === "/.well-known/opensteer") {
@@ -980,6 +1182,55 @@ async function fakeCdpServer(
       return;
     }
     const sessionId = request.url?.split("/").at(-1);
+    if (request.url?.includes("/agent/")) {
+      const tabs =
+        (
+          resultFor({ id: 0, method: "Target.getTargets" }) as {
+            targetInfos?: Record<string, unknown>[];
+          }
+        ).targetInfos ?? [];
+      if (new URL(request.url, "http://fixture.invalid").pathname.endsWith("/agent/tabs")) {
+        response.end(
+          JSON.stringify({
+            tabs: tabs.map((tab) => ({
+              tabId: tab.surfaceId ?? tab.targetId,
+              title: tab.title ?? "",
+              url: tab.url ?? "",
+              state: "open",
+              profile: null,
+              computer: null,
+              groupId: null,
+              usedByThisTask: false,
+              usedByOtherTask: false,
+            })),
+            total: tabs.length,
+            nextCursor: null,
+          }),
+        );
+        return;
+      }
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        const { tabId } = JSON.parse(Buffer.concat(chunks).toString()) as { tabId: string };
+        const found = tabs.find((tab) => tab.surfaceId === tabId || tab.targetId === tabId);
+        if (!found) {
+          response
+            .writeHead(403)
+            .end(JSON.stringify({ error: { message: `Tab ${tabId} is closed or unavailable.` } }));
+          return;
+        }
+        response.end(
+          JSON.stringify({
+            tabId: found.surfaceId ?? found.targetId,
+            sessionId: fixtureSessionId,
+            backend: "cdp",
+            reloaded: false,
+          }),
+        );
+      });
+      return;
+    }
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({ sessionId, backend: "cdp", version: 1 }));
   });
@@ -1034,18 +1285,14 @@ function runBrowserHarness(
   script: string,
   code: string,
   cdpUrl: string,
-  sessionId: string,
-  targetId?: string,
+  _sessionId: string,
+  targetId: string | undefined = "target-1",
 ): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(
-      script,
-      ["--session", sessionId, ...(targetId ? ["--tab", targetId] : [])],
-      {
-        env: { ...process.env, OPENSTEER_BROWSER_CDP_WS: cdpUrl },
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
+    const child = spawn(script, targetId ? ["--tab", targetId] : [], {
+      env: { ...process.env, OPENSTEER_BROWSER_CDP_WS: cdpUrl },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));

@@ -1373,7 +1373,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       /^\[opensteer\] The person clicked in this page \d+s ago\. Look at the page again before continuing\.\n$/u,
     );
     expect(JSON.parse(afterClick.stdout)).toMatchObject({
-      surfaceId: person.surface.id,
+      tabId: person.surface.id,
       userActivity: { kind: "click", sinceLastAgentCommand: true },
     });
     const unchanged = await runHarness(
