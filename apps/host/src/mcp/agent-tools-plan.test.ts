@@ -11,12 +11,18 @@ it("keeps team inventory permanent per task and invalidates a warm plan when ins
     accessMode: "full-access" as const,
   };
   const ordinary = agentToolsPlanForRun(input),
-    team = agentToolsPlanForRun({ ...input, teamBound: true });
+    team = agentToolsPlanForRun({ ...input, teamBound: true, knowledge: true }),
+    linked = agentToolsPlanForRun({ ...input, knowledge: true });
+  const knowledgeTools = ["knowledge_topics", "knowledge_read", "knowledge_write"];
   expect(RunAgentToolsPlanSchema.parse(ordinary)).toEqual(ordinary);
-  expect(ordinary.tools).not.toContain("sql");
+  for (const name of [...knowledgeTools, "team_read"]) expect(ordinary.tools).not.toContain(name);
   expect(team.tools).toEqual(
-    expect.arrayContaining(["team_read", "team_search", "team_reply", "sql"]),
+    expect.arrayContaining(["team_read", "team_search", "team_reply", ...knowledgeTools]),
   );
+  // An owner linked to a team gets knowledge in a private task too, without the team-thread tools.
+  expect(linked.tools).toEqual(expect.arrayContaining(knowledgeTools));
+  expect(linked.tools).not.toContain("team_read");
+  expect(linked.toolsRevision).not.toBe(ordinary.toolsRevision);
   expect(team.skills).toContain("opensteer:memory");
   expect(ordinary.skills).toContain("opensteer:memory");
   expect(team.toolsRevision).not.toBe(ordinary.toolsRevision);

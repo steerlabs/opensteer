@@ -168,6 +168,8 @@ async function renderOpensteer(): Promise<void> {
             if (seeded.length > 1) {
               seedBusyTeam(seeded[0]!, { name: "Acme", index: 1 });
               seedBusyTeam(seeded[1]!, { name: "Family", index: 2 });
+              // For journeys that play another member's change on the busy teams.
+              Object.assign(window, { opensteerMockTeams: seeded });
             }
             // Every preview can create and join hosted teams in memory; the seeded teams are
             // part of that world, so connecting an agent or leaving reaches them the same way.

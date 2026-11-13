@@ -28,6 +28,7 @@ const idPrefixes = {
   harnessInstance: "hin",
   hostInstance: "hst",
   knowledgeTopic: "ktp",
+  knowledgeNote: "knt",
   message: "msg",
   notification: "ntf",
   ownerEnrollment: "oen",
@@ -73,6 +74,7 @@ export type EventId = Brand<string, "EventId">;
 export type HarnessInstanceId = Brand<string, "HarnessInstanceId">;
 export type HostInstanceId = Brand<string, "HostInstanceId">;
 export type KnowledgeTopicId = Brand<string, "KnowledgeTopicId">;
+export type KnowledgeNoteId = Brand<string, "KnowledgeNoteId">;
 export type MessageId = Brand<string, "MessageId">;
 export type NotificationId = Brand<string, "NotificationId">;
 export type OwnerEnrollmentId = Brand<string, "OwnerEnrollmentId">;
@@ -130,6 +132,7 @@ export interface IdByKind {
   readonly harnessInstance: HarnessInstanceId;
   readonly hostInstance: HostInstanceId;
   readonly knowledgeTopic: KnowledgeTopicId;
+  readonly knowledgeNote: KnowledgeNoteId;
   readonly message: MessageId;
   readonly notification: NotificationId;
   readonly ownerEnrollment: OwnerEnrollmentId;
@@ -179,6 +182,7 @@ export const GrantIdSchema = idSchema("grant");
 export const HarnessInstanceIdSchema = idSchema("harnessInstance");
 export const HostInstanceIdSchema = idSchema("hostInstance");
 export const KnowledgeTopicIdSchema = idSchema("knowledgeTopic");
+export const KnowledgeNoteIdSchema = idSchema("knowledgeNote");
 export const MessageIdSchema = idSchema("message");
 export const NotificationIdSchema = idSchema("notification");
 export const ProviderSessionIdSchema = idSchema("providerSession");

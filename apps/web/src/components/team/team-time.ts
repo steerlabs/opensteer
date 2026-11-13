@@ -35,6 +35,14 @@ export function shortWhen(iso: string, now = Date.now()): string {
   return monthDay.format(new Date(iso));
 }
 
+/** When, for something just changed: "Just now", "12m ago", then as {@link shortWhen}. */
+export function recentWhen(iso: string, now = Date.now()): string {
+  const minutes = Math.floor((now - Date.parse(iso)) / 60_000);
+  if (minutes < 1) return "Just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  return shortWhen(iso, now);
+}
+
 /** A date without its time, for what is coming: "Nov 18". */
 export function shortDate(iso: string): string {
   return monthDay.format(new Date(iso));

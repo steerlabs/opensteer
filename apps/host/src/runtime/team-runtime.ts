@@ -18,8 +18,6 @@ import {
   NotificationPreviewKeyStore,
   TeamAccessStore,
   appendTeamAudit,
-  prepareKnowledgeExecutor,
-  teamChannelTopics,
   type DatabaseSchema,
   type DeploymentAuthorityLease,
 } from "@opensteer/database";
@@ -145,7 +143,6 @@ export async function createTeamHostRuntime(input: {
   }
   try {
     const access = new TeamAccessStore(database);
-    let credentials: Awaited<ReturnType<typeof prepareKnowledgeExecutor>> | undefined;
     services = await startTeamServices({
       kind: "team",
       database,
@@ -157,10 +154,6 @@ export async function createTeamHostRuntime(input: {
       inviteVerifiers: createTeamInviteVerifierVault(config.authSecret, deployment.id),
       dataDirectory: config.dataDirectory,
       storageLimitBytes: config.teamStorageLimitBytes,
-      topics: teamChannelTopics,
-      ensureKnowledge: async () => {
-        credentials = await prepareKnowledgeExecutor(database);
-      },
       knowledge: {
         read: (actor, name, raw) => {
           if (!knowledge) throw new Error("Knowledge is not ready");
@@ -196,14 +189,7 @@ export async function createTeamHostRuntime(input: {
       }),
       backgroundError: report,
     });
-    if (!credentials) throw new Error("Knowledge executor credentials are missing");
-    knowledge = await startTeamKnowledge({
-      database,
-      databaseUrl: config.databaseUrl,
-      credentials,
-      access,
-      audit: appendTeamAudit,
-    });
+    knowledge = await startTeamKnowledge({ database, access, audit: appendTeamAudit });
     const team = services;
     const adapters = createTeamMachineAdapters(team, knowledge);
     machine = createTeamLinkEndpoint({
@@ -478,7 +464,6 @@ export async function createTeamHostRuntime(input: {
             ["http", () => app.close()],
             ["Account directory", () => directory?.close()],
             ["Account authority", () => authority?.close()],
-            ["knowledge", () => knowledge?.close()],
             ["authority lease", () => authorityLease.close()],
             ["database", () => database.destroy()],
           ] as const) {
@@ -502,7 +487,6 @@ export async function createTeamHostRuntime(input: {
       app.close(),
       directory?.close(),
       authority?.close(),
-      knowledge?.close(),
     ]);
     throw error;
   }

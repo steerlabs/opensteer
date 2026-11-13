@@ -13,7 +13,6 @@ import {
   TeamInviteSchema,
   TeamMemberSchema,
   TeamNoticeSchema,
-  TeamTopicAccessEntrySchema,
   TeamTopicAccessSchema,
   TeamTopicCanSchema,
 } from "./team-access.js";
@@ -37,8 +36,7 @@ import {
   TeamSubscriptionScopeSchema,
 } from "./team-chat.js";
 import {
-  IsoDateTimeSchema,
-  KnowledgeTopicIdSchema,
+  KnowledgeNoteIdSchema,
   SequenceSchema,
   TeamAudienceSchema,
   TeamBlobIdSchema,
@@ -59,7 +57,17 @@ import {
   TeamLinkViewSchema,
 } from "./team-link.js";
 
-import { teamKnowledgeLimits, TeamFactInputSchema, TeamTopicSchema } from "./team-knowledge.js";
+import {
+  TeamKnowledgeReadResultSchema,
+  TeamKnowledgeTopicViewSchema,
+  TeamKnowledgeWriteResultSchema,
+  TeamNotePreviewSchema,
+  TeamNoteSchema,
+  TeamNoteWriterSchema,
+  TeamTopicAudienceSchema,
+  TeamTopicSchema,
+  teamKnowledgeLimits,
+} from "./team-knowledge.js";
 
 export const TeamChannelCanViewSchema = z.object({ ...TeamChannelCanSchema.shape });
 
@@ -146,10 +154,18 @@ export const TeamCommandResultViewSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("team.link.revoke") }),
   z.object({ type: z.literal("team.notice.read") }),
   z.object({ type: z.literal("team.knowledge.topic.create") }),
-  z.object({ type: z.literal("team.knowledge.topic.rename") }),
+  z.object({ type: z.literal("team.knowledge.topic.update") }),
   z.object({ type: z.literal("team.knowledge.topic.access.set") }),
-  z.object({ type: z.literal("team.knowledge.topic.peopleOnly.set") }),
-  z.object({ type: z.literal("team.knowledge.fact.append") }),
+  z.object({
+    type: z.literal("team.knowledge.note.write"),
+    noteId: KnowledgeNoteIdSchema,
+    version: z.number().int().positive(),
+  }),
+  z.object({
+    type: z.literal("team.knowledge.note.delete"),
+    noteId: KnowledgeNoteIdSchema,
+    version: z.number().int().positive(),
+  }),
   z.object({ type: z.literal("team.agent.request.cancel") }),
   z.object({ type: z.literal("teams.link.join"), link: PersonalTeamLinkViewSchema }),
   z.object({ type: z.literal("teams.link.leave") }),
@@ -168,8 +184,6 @@ export const TeamCommandResultViewSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("team.group.child.remove") }),
   z.object({ type: z.literal("team.knowledge.topic.archive") }),
   z.object({ type: z.literal("team.knowledge.topic.restore") }),
-  z.object({ type: z.literal("team.channel.topic.attach") }),
-  z.object({ type: z.literal("team.channel.topic.detach") }),
 ]);
 
 export const TeamMemberViewSchema = z.object({ ...TeamMemberSchema.shape });
@@ -247,14 +261,22 @@ export const TeamNoticeViewSchema = z.object({ ...TeamNoticeSchema.shape });
 
 export const TeamTopicCanViewSchema = z.object({ ...TeamTopicCanSchema.shape });
 
+export const TeamTopicAudienceViewSchema = z.object({ ...TeamTopicAudienceSchema.shape });
+
 export const TeamTopicViewSchema = z.object({
   ...TeamTopicSchema.shape,
+  audience: TeamTopicAudienceViewSchema,
   can: TeamTopicCanViewSchema,
 });
 
+export const TeamTopicSubjectViewSchema = z.discriminatedUnion("kind", [
+  ...TeamAccessSubjectViewSchema.options,
+  z.object({ kind: z.literal("everyone") }),
+]);
+
 export const TeamTopicAccessEntryViewSchema = z.object({
-  ...TeamTopicAccessEntrySchema.shape,
-  subject: TeamAccessSubjectViewSchema,
+  subject: TeamTopicSubjectViewSchema,
+  level: z.enum(["read", "write", "manage"]),
 });
 
 export const TeamTopicAccessViewSchema = z.object({
@@ -263,16 +285,23 @@ export const TeamTopicAccessViewSchema = z.object({
   can: TeamTopicCanViewSchema,
 });
 
-export const TeamFactInputViewSchema = z.object({ ...TeamFactInputSchema.shape });
+const TeamNoteWriterViewSchema = z.object({ ...TeamNoteWriterSchema.shape });
 
-export const TeamFactViewSchema = TeamFactInputViewSchema.extend({
-  id: SequenceSchema,
-  writerUserId: UserIdSchema,
-  /** "agent" is the writer's own agent. */
-  writerKind: z.enum(["human", "agent"]),
-  writtenAt: IsoDateTimeSchema,
-  /** The asking message an agent's write answered. */
+export const TeamNoteViewSchema = z.object({
+  ...TeamNoteSchema.shape,
+  writer: TeamNoteWriterViewSchema,
   source: z.object({ channelId: TeamChannelIdSchema, messageId: TeamMessageIdSchema }).nullable(),
+});
+
+export const TeamNotePreviewViewSchema = z.object({
+  ...TeamNotePreviewSchema.shape,
+  writer: TeamNoteWriterViewSchema,
+  source: z.object({ channelId: TeamChannelIdSchema, messageId: TeamMessageIdSchema }).nullable(),
+});
+
+const TeamKnowledgeTopicViewViewSchema = z.object({
+  ...TeamKnowledgeTopicViewSchema.shape,
+  audience: TeamTopicAudienceViewSchema,
 });
 
 export const teamReadViews = {
@@ -341,72 +370,16 @@ export const teamReadViews = {
     files: z.array(z.object({ messageId: TeamMessageIdSchema, file: TeamFileViewSchema })).max(50),
     hasMore: z.boolean(),
   }),
-  "team.knowledge.facts.page": z.object({
-    facts: z.array(TeamFactViewSchema).max(50),
-    hasMore: z.boolean(),
+  "team.knowledge.notes.page": z.object({
+    notes: z.array(TeamNotePreviewViewSchema).max(teamKnowledgeLimits.pageSize),
+    nextCursor: z.string().max(256).nullable(),
   }),
-  "team.knowledge.history.page": z.object({
-    facts: z.array(TeamFactViewSchema).max(50),
+  "team.knowledge.note.get": TeamNoteViewSchema,
+  "team.knowledge.note.history": z.object({
+    versions: z.array(TeamNoteViewSchema).max(teamKnowledgeLimits.pageSize),
     hasMore: z.boolean(),
   }),
 } as const;
-
-const TeamSqlColumnViewSchema = z.object({
-  name: z.string().max(255),
-  postgresType: z.string().max(255),
-});
-
-export const TeamSqlResultViewSchema = z.object({
-  relations: z
-    .array(
-      z.object({
-        name: z.string().max(64),
-        columns: z.array(TeamSqlColumnViewSchema).max(64),
-        insertable: z.array(z.string().max(64)).max(16),
-      }),
-    )
-    .max(8)
-    .optional(),
-  topics: z
-    .array(z.object({ id: KnowledgeTopicIdSchema, name: z.string().max(160) }))
-    .max(50)
-    .optional(),
-  nextCursor: KnowledgeTopicIdSchema.optional(),
-  columns: z.array(TeamSqlColumnViewSchema).max(1664).optional(),
-  rows: z.array(z.array(z.json()).max(1664)).max(200).optional(),
-  truncated: z.boolean().optional(),
-  receipt: z
-    .object({
-      committed: z.literal(true),
-      replayed: z.boolean(),
-      facts: z
-        .array(
-          z.object({
-            id: SequenceSchema,
-            topic: KnowledgeTopicIdSchema,
-            thing: z.string(),
-            property: z.string(),
-            replacesId: SequenceSchema.nullable(),
-            seenFactId: SequenceSchema.nullable(),
-            baseline: z.enum(["observed", "unknown"]),
-            unseenCount: z.number().int().nonnegative().nullable(),
-            unseen: z
-              .array(
-                z.object({
-                  id: SequenceSchema,
-                  writerKind: z.enum(["human", "agent"]),
-                  writerId: UserIdSchema,
-                  writtenAt: z.string(),
-                }),
-              )
-              .max(20)
-              .nullable(),
-          }),
-        )
-        .max(teamKnowledgeLimits.factsPerWrite),
-    })
-    .optional(),
-});
 
 const [channelScope, threadScope] = TeamSubscriptionScopeSchema.options;
 const TeamSubscriptionScopeViewSchema = z.discriminatedUnion("kind", [
@@ -465,7 +438,8 @@ const TeamRequestContextViewSchema = z.object({
   source: TeamSourceViewSchema,
   audience: TeamAudienceViewSchema,
 });
-const [accepted, context, receipt, read, search, sql, file, ok] = TeamLinkResultSchema.options;
+const [accepted, context, receipt, read, search, topics, knowledgeRead, write, file, ok] =
+  TeamLinkResultSchema.options;
 const TeamLinkResultViewSchema = z.discriminatedUnion("kind", [
   z.object({ ...accepted.shape, request: TeamAgentRequestViewSchema }),
   z.object({ ...context.shape, context: TeamRequestContextViewSchema }),
@@ -475,7 +449,27 @@ const TeamLinkResultViewSchema = z.discriminatedUnion("kind", [
     result: z.object({ page: TeamMessagePageViewSchema, source: TeamSourceViewSchema }),
   }),
   z.object({ ...search.shape, result: TeamSearchPageViewSchema }),
-  z.object({ ...sql.shape, result: TeamSqlResultViewSchema }),
+  z.object({
+    ...topics.shape,
+    result: z.object({
+      topics: z.array(TeamKnowledgeTopicViewViewSchema).max(teamKnowledgeLimits.agentTopics),
+    }),
+  }),
+  z.object({
+    ...knowledgeRead.shape,
+    result: z.object({
+      ...TeamKnowledgeReadResultSchema.shape,
+      notes: z.array(TeamNoteViewSchema).max(teamKnowledgeLimits.pageSize),
+      topics: z.array(TeamKnowledgeTopicViewViewSchema).max(teamKnowledgeLimits.pageSize),
+    }),
+  }),
+  z.object({
+    ...write.shape,
+    result: z.discriminatedUnion("written", [
+      TeamKnowledgeWriteResultSchema.options[0].strip(),
+      z.object({ ...TeamKnowledgeWriteResultSchema.options[1].shape, current: TeamNoteViewSchema }),
+    ]),
+  }),
   z.object({ ...file.shape, file: TeamFileViewSchema, source: TeamSourceViewSchema }),
   ok.strip(),
 ]);
@@ -504,7 +498,9 @@ const [
   receiptCall,
   readCall,
   searchCall,
-  sqlCall,
+  topicsCall,
+  knowledgeReadCall,
+  knowledgeWriteCall,
   revoke,
   ping,
 ] = TeamLinkClientFrameSchema.options;
@@ -521,7 +517,9 @@ export const TeamLinkClientFrameViewSchema = z.discriminatedUnion("type", [
   readCall.strip(),
   // Their inputs stay strict, as in the rpcs: a dropped filter or write guard would change the answer.
   searchCall.strip(),
-  sqlCall.strip(),
+  topicsCall.strip(),
+  knowledgeReadCall.strip(),
+  knowledgeWriteCall.strip(),
   revoke.strip(),
   ping.strip(),
 ]);

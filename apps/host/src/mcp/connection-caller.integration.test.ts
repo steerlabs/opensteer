@@ -236,6 +236,7 @@ async function serveMcp(
         throw new Error("Unexpected install");
       },
       teamRequestForRun: async () => null,
+      personalContextForRun: async () => true,
     }),
     store,
     publicUrl: options.runScope || options.runScopes ? url : new URL("http://runtime.invalid"),

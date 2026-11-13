@@ -12,7 +12,6 @@ import { startTeamServices } from "./services.js";
 import {
   TeamLinkIdSchema,
   createId,
-  type KnowledgeTopicId,
   type TeamActor,
   type TeamChannelId,
   type TeamMessageId,
@@ -20,7 +19,6 @@ import {
 import { createTeamKnowledgeFixture } from "@opensteer/database/test-support/team-knowledge";
 import { hostApi } from "@opensteer/protocol";
 import { teamApiVersion } from "@opensteer/deployment-authority";
-import { teamChannelTopics } from "@opensteer/database";
 import { sql } from "kysely";
 import { TeamAccessStore } from "@opensteer/database/team-access";
 import { TeamChatStore } from "@opensteer/database/team-chat";
@@ -43,7 +41,7 @@ describe("team transaction authority", () => {
     access = new TeamAccessStore(fixture.database);
     await access.initialize();
     owner = { kind: "human", userId: fixture.userId };
-    chat = new TeamChatStore(access, teamChannelTopics, {
+    chat = new TeamChatStore(access, {
       teamId: fixture.deploymentId,
       teamName: "Acme",
     });
@@ -106,8 +104,6 @@ describe("team transaction authority", () => {
       hostKeyFingerprint: `sha256:${"A".repeat(43)}`,
       origin: "https://team.example.invalid",
       dataDirectory: tmpdir(),
-      topics: chat.topics,
-      async ensureKnowledge() {},
       knowledge: {
         async read() {
           throw new Error("Unexpected knowledge call");
@@ -252,14 +248,14 @@ describe("team transaction authority", () => {
     });
     expect((await rights(owner, c.id)).read).toBe(true);
   });
-  it("applies nested topic ACLs and people-only to every agent path while retaining human access", async () => {
+  it("gives an agent its owner's nested topic access without manage, and keeps people-only channels from it", async () => {
     const member = await person("TopicReader"),
       agent = { ...member, kind: "agent" as const };
     const group = createId("teamGroup"),
       topicId = createId("knowledgeTopic");
     await groups.create(owner, group, "Topic readers");
     await groups.person(owner, group, member.userId, true);
-    await sql`insert into knowledge.topics(id,name,people_only,created_by) values(${topicId},'Shared',false,${owner.userId})`.execute(
+    await sql`insert into team_topics(id,name,created_by) values(${topicId},'Shared',${owner.userId})`.execute(
       fixture.database,
     );
     await access.mutate(async (t) => {
@@ -281,17 +277,9 @@ describe("team transaction authority", () => {
     });
     const topicRights = (actor: TeamActor) =>
       fixture.database.transaction().execute((t) => access.topic(t, actor, topicId));
-    expect(await topicRights(agent)).toMatchObject({ read: true, write: false, manage: false });
-    expect(await topicRights(owner)).toMatchObject({ read: false, write: false, manage: true });
-    await access.mutate(async (t) => {
-      await sql`update knowledge.topics set people_only=true where id=${topicId}`.execute(t);
-      return {
-        value: undefined,
-        effects: { users: [], channels: [], topics: [topicId], links: [], requests: [] },
-      };
-    });
-    expect(await topicRights(agent)).toMatchObject({ read: false, write: false });
-    expect((await topicRights(member)).read).toBe(true);
+    expect(await topicRights(agent)).toEqual({ read: true, write: false, manage: false });
+    expect(await topicRights(member)).toEqual({ read: true, write: false, manage: false });
+    expect(await topicRights(owner)).toEqual({ read: false, write: false, manage: true });
     const c = await channel("private", true);
     await chat.setAccess(owner, c.id, access.revision, [
       { subject: { kind: "person", userId: owner.userId }, level: "post", manage: true },
@@ -302,22 +290,7 @@ describe("team transaction authority", () => {
     await expect(chat.message(agent, c.id, message.message.id)).rejects.toThrow();
     expect((await chat.search(agent, { query: "confidential" })).results).toEqual([]);
     expect((await chat.directory(agent)).channels).toEqual([]);
-    const channelTopic = (
-      await sql<{
-        id: KnowledgeTopicId;
-      }>`select id from knowledge.topics where origin_channel_id=${c.id}`.execute(fixture.database)
-    ).rows[0]!.id;
-    const inherited = await fixture.database
-      .transaction()
-      .execute((t) => access.topic(t, agent, channelTopic));
-    expect(inherited).toMatchObject({ read: false, write: false, peopleOnly: true });
-    await expect(
-      access.knowledgeWrite(agent, channelTopic, async () => "unexpected"),
-    ).rejects.toThrow();
     await chat.update(owner, c.id, { peopleOnly: false });
-    expect(
-      await fixture.database.transaction().execute((t) => access.topic(t, agent, channelTopic)),
-    ).toMatchObject({ read: true, write: true, peopleOnly: false });
     expect((await chat.message(member, c.id, message.message.id)).bodyMarkdown).toBe(
       "confidential phrase",
     );

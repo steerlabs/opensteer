@@ -207,7 +207,6 @@ async function main(): Promise<void> {
       )),
     );
     artifacts.push(...(await stageSharpRuntime(staging, targetOs, targetArch)));
-    artifacts.push(...(await stageKnowledgeParserRuntime(staging, targetOs)));
     await timePhase("runtime.extension", () =>
       run(
         process.platform === "win32" ? "pnpm.cmd" : "pnpm",
@@ -551,12 +550,8 @@ export async function bundleNodeService(
   entry: string,
   workers: Readonly<Record<string, string>> = {},
 ): Promise<void> {
-  // Both resolve the native decoder staged beside them by `stageSharpRuntime`,
-  // and the Host its SQL parser, whose WASM loads relative to its own module.
-  const unbundled = [
-    ...(service === "host" || service === "runner" ? ["sharp"] : []),
-    ...(service === "host" ? ["libpg-query"] : []),
-  ];
+  // Both resolve the native decoder staged beside them by `stageSharpRuntime`.
+  const unbundled = service === "host" || service === "runner" ? ["sharp"] : [];
   await mkdir(path.dirname(scriptPath), { mode: 0o700, recursive: true });
   await timePhase(`runtime.bundle.${service}`, () =>
     build({
@@ -634,29 +629,6 @@ export async function stageSharpRuntime(
           ? ("code" as const)
           : artifact.mode,
       })),
-    );
-  }
-  return artifacts;
-}
-
-/** The Host's SQL parser and the package it declares, beside host.mjs as installed. */
-export async function stageKnowledgeParserRuntime(
-  staging: string,
-  targetOs: TargetOperatingSystem,
-): Promise<readonly StagedArtifact[]> {
-  const hostRequire = createRequire(path.join(repositoryRoot, "apps/host/package.json"));
-  const parserEntry = hostRequire.resolve("libpg-query");
-  const parserDirectory = await installedPackageDirectory(parserEntry, "libpg-query");
-  const parserRequire = createRequire(path.join(parserDirectory, "package.json"));
-  const artifacts: StagedArtifact[] = [];
-  for (const item of [
-    { name: "libpg-query", entry: parserEntry },
-    { name: "@pgsql/types", entry: parserRequire.resolve("@pgsql/types") },
-  ]) {
-    const source = await installedPackageDirectory(item.entry, item.name);
-    const prefix = `${personalRuntimeLayout.serviceModules}/${item.name}`;
-    artifacts.push(
-      ...(await stageRuntimeTree(source, staging, prefix, targetOs, { shape: "tree" })),
     );
   }
   return artifacts;

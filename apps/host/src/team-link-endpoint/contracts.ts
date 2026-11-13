@@ -20,8 +20,6 @@ import type {
   TeamReadResultSchema,
   TeamSearchInputSchema,
   TeamSearchPageSchema,
-  TeamSqlInputSchema,
-  TeamSqlResultSchema,
 } from "@opensteer/protocol";
 import type { Readable } from "node:stream";
 import type { z } from "zod";
@@ -54,14 +52,14 @@ export interface TeamMachineDataPort {
     requestId: TeamAgentRequestId,
     input: z.infer<typeof TeamSearchInputSchema>,
   ): Promise<z.infer<typeof TeamSearchPageSchema>>;
-  sql(
+  /** An agent's knowledge call as its link's owner; a buffered read carries its handoff check. */
+  knowledge(
     linkId: TeamLinkId,
-    requestId: TeamAgentRequestId,
-    input: z.infer<typeof TeamSqlInputSchema>,
+    ownerUserId: TeamActor["userId"],
+    input: Extract<TeamLinkCall, { type: `knowledge.${string}` }>,
   ): Promise<{
-    readonly result: z.infer<typeof TeamSqlResultSchema>;
-    /** Rechecks the exact topic scope that produced this buffered result, without rerunning SQL. */
-    readonly reauthorize: () => Promise<boolean>;
+    readonly result: Extract<TeamLinkResult, { kind: `knowledge.${string}` }>;
+    readonly reauthorize?: () => Promise<boolean>;
   }>;
 }
 export interface TeamMachineFilesPort {

@@ -25,7 +25,7 @@ import {
 import type { HostedTeamId } from "@opensteer/control-plane-protocol/hosted-teams";
 import type { Kysely } from "kysely";
 import type { z } from "zod";
-import type { ChannelTopicPort, DatabaseSchema } from "@opensteer/database";
+import type { DatabaseSchema } from "@opensteer/database";
 import {
   TeamAccessStore,
   requireTeam,
@@ -63,8 +63,6 @@ export interface TeamServiceOptions {
   readonly inviteVerifiers?: TeamInviteVerifierVault;
   readonly dataDirectory: string;
   readonly storageLimitBytes?: number | undefined;
-  readonly topics: ChannelTopicPort;
-  readonly ensureKnowledge: () => Promise<void>;
   readonly knowledge: {
     read(actor: TeamActor, name: string, input: unknown): Promise<unknown>;
     command(actor: TeamActor, command: z.infer<typeof TeamCommandSchema>): Promise<unknown>;
@@ -101,11 +99,10 @@ export async function startTeamServices(options: TeamServiceOptions) {
     "Team services must share the authority database",
   );
   await access.initialize();
-  await options.ensureKnowledge();
   const members = new TeamMembersStore(access),
     groups = new TeamGroupsStore(access),
     invites = new TeamInvitesStore(access, options.origin, options.inviteVerifiers);
-  const chat = new TeamChatStore(access, options.topics, {
+  const chat = new TeamChatStore(access, {
     teamId: options.teamId,
     teamName: options.teamName,
     agentOnline: (ownerUserId) => options.machine?.isOnline?.(ownerUserId) ?? false,
@@ -182,11 +179,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
       command.type.startsWith("team."),
       "Personal commands are unavailable on a team Host",
     );
-    if (
-      command.type.startsWith("team.knowledge.") ||
-      command.type === "team.channel.topic.attach" ||
-      command.type === "team.channel.topic.detach"
-    )
+    if (command.type.startsWith("team.knowledge."))
       return options.knowledge.command(actor, command);
     switch (command.type) {
       case "team.channel.create":

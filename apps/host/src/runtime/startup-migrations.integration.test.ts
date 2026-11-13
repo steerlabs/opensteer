@@ -90,23 +90,6 @@ integration("production startup migrations", () => {
       expect((await sql`select value from startup_sentinel`.execute(database)).rows).toEqual([
         { value: "preserved" },
       ]);
-      // Personal startup must not provision team knowledge.
-      expect(
-        (
-          await sql<{ trace: string }>`
-            select 'schema' as trace from pg_catalog.pg_namespace where nspname = 'knowledge'
-            union all
-            select 'login ' || rolname from pg_catalog.pg_roles
-            where rolname = 'opensteer_knowledge_executor_' || (
-              select oid from pg_catalog.pg_database where datname = current_database())
-            union all
-            select 'grant or object of ' || r.rolname from pg_catalog.pg_shdepend d
-            join pg_catalog.pg_roles r on r.oid = d.refobjid
-            where d.dbid = (select oid from pg_catalog.pg_database where datname = current_database())
-              and r.rolname like 'opensteer\\_knowledge\\_%'
-          `.execute(database)
-        ).rows,
-      ).toEqual([]);
       await runtime.close();
       runtime = undefined;
       runtime = await createHostRuntime(config);

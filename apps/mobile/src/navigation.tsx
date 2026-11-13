@@ -71,7 +71,6 @@ import {
   TeamDetailsScreen,
   TeamFilesScreen,
   TeamInstructionsScreen,
-  TeamKnowledgeScreen,
   TeamMembersScreen,
   TeamNoticesScreen,
   TeamPinnedScreen,
@@ -95,6 +94,17 @@ import {
 } from "./team/team-entry-screens.js";
 import { ConnectOpensteerScreen, JoinTeamScreen } from "./team/team-join-screens.js";
 import { TeamNewChannelScreen, TeamNewMessageScreen } from "./team/team-create-screens.js";
+import {
+  TeamKnowledgeScreen,
+  TeamNoteHistoryScreen,
+  TeamNoteScreen,
+  TeamTopicScreen,
+} from "./team/knowledge-screens.js";
+import {
+  TeamNoteEditScreen,
+  TeamTopicAccessScreen,
+  TeamTopicFormScreen,
+} from "./team/knowledge-forms.js";
 import { color } from "./theme.js";
 import { AroundScreen } from "./thread/around-sheet.js";
 import { QuietlyMovedScreen } from "./threads/quietly-moved-sheet.js";
@@ -373,7 +383,14 @@ const RootStack = createNativeStackNavigator({
     },
     TeamFiles: { screen: TeamFilesScreen, options: { title: "Files" } },
     TeamPinned: { screen: TeamPinnedScreen, options: { title: "Pinned" } },
+    // A team's knowledge: topics, their notes, and each note's versions.
     TeamKnowledge: { screen: TeamKnowledgeScreen, options: { title: "Knowledge" } },
+    TeamTopic: { screen: TeamTopicScreen, options: { title: "" } },
+    TeamTopicForm: { screen: TeamTopicFormScreen, options: { title: "New topic" } },
+    TeamTopicAccess: { screen: TeamTopicAccessScreen, options: { title: "Access" } },
+    TeamNote: { screen: TeamNoteScreen, options: { title: "" } },
+    TeamNoteEdit: { screen: TeamNoteEditScreen, options: { title: "Note" } },
+    TeamNoteHistory: { screen: TeamNoteHistoryScreen, options: { title: "History" } },
     TeamSearch: { screen: TeamSearchScreen, options: { title: "Search" } },
     TeamNotices: { screen: TeamNoticesScreen, options: { title: "Notices" } },
     // A team's own settings group, from its section's menu or Settings.
@@ -651,11 +668,22 @@ type OpensteerRootParamList = {
   readonly TeamInstructions: { readonly teamId: string; readonly channelId: string };
   readonly TeamFiles: { readonly teamId: string; readonly channelId: string };
   readonly TeamPinned: { readonly teamId: string; readonly channelId: string };
-  /** A channel's topics, or the team's when no channel is named; one topic when named. */
-  readonly TeamKnowledge: {
+  readonly TeamKnowledge: { readonly teamId: string };
+  readonly TeamTopic: { readonly teamId: string; readonly topicId: string };
+  /** A new topic, or the named one's name and description. */
+  readonly TeamTopicForm: { readonly teamId: string; readonly topicId?: string | undefined };
+  readonly TeamTopicAccess: { readonly teamId: string; readonly topicId: string };
+  readonly TeamNote: { readonly teamId: string; readonly topicId: string; readonly noteId: string };
+  /** A new note in the topic, or a change to the named one. */
+  readonly TeamNoteEdit: {
     readonly teamId: string;
-    readonly channelId?: string | undefined;
-    readonly topicId?: string | undefined;
+    readonly topicId: string;
+    readonly noteId?: string | undefined;
+  };
+  readonly TeamNoteHistory: {
+    readonly teamId: string;
+    readonly topicId: string;
+    readonly noteId: string;
   };
   readonly TeamSearch: { readonly teamId: string; readonly channelId?: string | undefined };
   readonly TeamNotices: { readonly teamId: string };

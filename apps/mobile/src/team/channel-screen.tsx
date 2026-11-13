@@ -30,7 +30,7 @@ interface PlaceBodyProps {
 /**
  * A channel, a DM or a group DM: its messages and the composer floating over
  * their foot. The bar above it is the native one; `ChannelTitle` is its title,
- * which opens Details (Members, Files, Pinned, Knowledge live there on a phone).
+ * which opens Details (Members, Files and Pinned live there on a phone).
  *
  * Asks to agents are answered in a thread under the asking message, in DMs as
  * in channels, so this screen shows only roots, their summaries and the

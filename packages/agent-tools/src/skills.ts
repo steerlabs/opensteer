@@ -10,7 +10,6 @@ export const OpensteerAgentSkillNameSchema = z.enum([
   "opensteer:devices",
   "opensteer:skills",
   "opensteer:memory",
-  "opensteer:knowledge",
 ]);
 export type OpensteerAgentSkillName = z.infer<typeof OpensteerAgentSkillNameSchema>;
 
@@ -20,14 +19,9 @@ export const opensteerAgentSkillNames: readonly OpensteerAgentSkillName[] = Obje
 ]);
 
 export function opensteerAgentSkillsFor(
-  options: {
-    readonly teamBound?: boolean;
-    readonly personalContext?: boolean;
-  } = {},
+  options: { readonly personalContext?: boolean } = {},
 ): readonly OpensteerAgentSkillName[] {
   return opensteerAgentSkillNames.filter(
-    (name) =>
-      (name !== "opensteer:knowledge" || options.teamBound === true) &&
-      (name !== "opensteer:memory" || options.personalContext !== false),
+    (name) => name !== "opensteer:memory" || options.personalContext !== false,
   );
 }

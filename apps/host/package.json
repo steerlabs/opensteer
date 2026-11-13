@@ -41,7 +41,6 @@
     "fastify": "catalog:",
     "jose": "catalog:",
     "kysely": "catalog:",
-    "libpg-query": "17.8.2",
     "quickjs-emscripten-core": "0.32.0",
     "sharp": "catalog:",
     "ws": "catalog:",

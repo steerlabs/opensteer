@@ -1,6 +1,7 @@
 import { sql, type Kysely } from "kysely";
 import { Migrator, type MigrationProvider, type MigrationResultSet } from "kysely/migration";
 import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
+import { TEAM_KNOWLEDGE_NOTES_SQL } from "./team-knowledge-schema.js";
 import type { DatabaseSchema } from "./schema.js";
 
 /**
@@ -17,6 +18,7 @@ create unique index team_invites_current on team_invites((true)) where sealed_ve
 
 export const personalTeamBaselineName = "0002_personal_team_baseline";
 export const threadVisitsMigrationName = "0004_thread_visits";
+export const teamKnowledgeNotesMigrationName = "0006_team_knowledge_notes";
 export function migrationProvider(): MigrationProvider {
   return {
     async getMigrations() {
@@ -81,7 +83,13 @@ export function migrationProvider(): MigrationProvider {
             );
           },
         },
-        "0006_team_reusable_invites": {
+        [teamKnowledgeNotesMigrationName]: {
+          /** Team knowledge becomes notes in topics, read and written through the Host's own connection. */
+          async up(database) {
+            await sql.raw(TEAM_KNOWLEDGE_NOTES_SQL).execute(database);
+          },
+        },
+        "0007_team_reusable_invites": {
           async up(database) {
             await sql.raw(TEAM_REUSABLE_INVITES_SQL).execute(database);
           },

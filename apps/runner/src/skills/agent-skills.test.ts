@@ -68,7 +68,7 @@ describe("Runner Agent Skills", () => {
 
   it("routes app UI work to the computer tool in the skill catalog and bodies", async () => {
     const bundle = await loadAgentSkillBundle(bundleDirectory);
-    const read = (name: Exclude<OpensteerAgentSkillName, "opensteer:knowledge">) =>
+    const read = (name: OpensteerAgentSkillName) =>
       readFile(join(bundle.paths[name], "SKILL.md"), "utf8");
     const computers = await read("opensteer:computers");
     const computerUse = await read("opensteer:computer-use");
@@ -270,25 +270,12 @@ describe("Runner Agent Skills", () => {
     );
   });
 
-  it("rejects a broken or missing bundled team knowledge skill", async () => {
-    expect(
-      (await loadAgentSkillBundle(bundleDirectory)).paths["opensteer:knowledge"],
-    ).toBeDefined();
-    for (const breakSkill of [
-      (directory: string) =>
-        writeFile(
-          join(directory, "skills", "knowledge", "SKILL.md"),
-          "---\nname: opensteer:knowledge\ndescription: [\n---\nBody\n",
-        ),
-      (directory: string) =>
-        rm(join(directory, "skills", "knowledge"), { force: true, recursive: true }),
-    ]) {
-      const directory = await mkdtemp(join(tmpdir(), "opensteer-agent-skills-test-"));
-      temporaryDirectories.push(directory);
-      await cp(bundleDirectory, directory, { recursive: true });
-      await breakSkill(directory);
-      await expect(loadAgentSkillBundle(directory)).rejects.toThrow();
-    }
+  it("rejects a bundle missing one of its skills", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-agent-skills-test-"));
+    temporaryDirectories.push(directory);
+    await cp(bundleDirectory, directory, { recursive: true });
+    await rm(join(directory, "skills", "memory"), { force: true, recursive: true });
+    await expect(loadAgentSkillBundle(directory)).rejects.toThrow();
   });
 });
 

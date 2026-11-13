@@ -9,61 +9,25 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
-import { createDatabase } from "./connection.js";
-import {
-  createKnowledgeExecutorPool,
-  prepareKnowledgeExecutor,
-  type KnowledgeExecutorCredentials,
-} from "./knowledge-executor.js";
-import { knowledgeExecutorRole } from "./knowledge-schema.js";
 import type { DatabaseSchema } from "./schema.js";
 import { createTeamFixture } from "./team-fixture.test-support.js";
-import {
-  createSharedTeamTopic,
-  teamChannelTopics,
-  type TeamTopicGrant,
-} from "./team-topics-store.js";
-import { ownTestDatabaseProducer } from "./test-database.test-support.js";
+import { createTeamTopic, type TeamTopicGrant } from "./team-knowledge-store.js";
 
-/**
- * A team database with the knowledge schema and its restricted login, which is
- * cluster-wide and so is dropped before the clone is.
- */
+/** A team database with helpers for the people, groups, channels, topics and agent asks knowledge tests need. */
 export async function createTeamKnowledgeFixture() {
   const team = await createTeamFixture();
-  const knowledge = await ownTestDatabaseProducer(team.databaseUrl, async () => {
-    // Its own connection: the team fixture's may already be closed when this stops.
-    const administrator = createDatabase({ connectionString: team.databaseUrl, maxConnections: 1 });
-    const credentials = await prepareKnowledgeExecutor(administrator);
-    const pool = createKnowledgeExecutorPool(team.databaseUrl, credentials);
-    return {
-      credentials,
-      pool,
-      async close() {
-        await pool.end();
-        const role = sql.id(await knowledgeExecutorRole(administrator));
-        await sql`drop owned by ${role}; drop role ${role}`.execute(administrator);
-        await administrator.destroy();
-      },
-    };
-  });
   const { database } = team;
   return Object.freeze({
     ...team,
-    credentials: knowledge.credentials as KnowledgeExecutorCredentials,
-    pool: knowledge.pool,
     owner: team.userId,
     member: (name: string, role: "admin" | "member" = "member") => addMember(database, name, role),
     group: (name: string, people: readonly UserId[], children: readonly TeamGroupId[] = []) =>
       addGroup(database, team.userId, name, people, children),
     channel: (input: Parameters<typeof addChannel>[2]) => addChannel(database, team.userId, input),
-    sharedTopic: (name: string, access: readonly TeamTopicGrant[], peopleOnly = false) =>
-      addSharedTopic(database, team.userId, name, access, peopleOnly),
-    attach: (channelId: TeamChannelId, topicId: KnowledgeTopicId) =>
-      database
-        .insertInto("teamChannelTopics")
-        .values({ channelId, topicId, attachedBy: team.userId })
-        .execute(),
+    /** A topic with exactly `access`: the fixture's owner, who creates it, keeps no grant unless listed. */
+    topic: (name: string, access: readonly TeamTopicGrant[]) =>
+      addTopic(database, team.userId, name, access),
+    link: (ownerUserId: UserId) => addLink(database, ownerUserId),
     request: (ownerUserId: UserId, channelId: TeamChannelId) =>
       addRequest(database, ownerUserId, channelId),
   });
@@ -114,7 +78,6 @@ async function addGroup(
   return id;
 }
 
-/** A channel and, in the same transaction, its topic: as team channel creation does. */
 async function addChannel(
   database: Kysely<DatabaseSchema>,
   createdBy: UserId,
@@ -129,9 +92,9 @@ async function addChannel(
       readonly manage?: boolean;
     }[];
   },
-): Promise<{ readonly channelId: TeamChannelId; readonly topicId: KnowledgeTopicId }> {
+): Promise<{ readonly channelId: TeamChannelId }> {
   const channelId = createId("teamChannel");
-  return database.transaction().execute(async (transaction) => {
+  await database.transaction().execute(async (transaction) => {
     await transaction
       .insertInto("teamChannels")
       .values({
@@ -158,27 +121,19 @@ async function addChannel(
           addedBy: createdBy,
         })
         .execute();
-    const topicId = await teamChannelTopics.createChannelTopic(transaction, {
-      channelId,
-      name: input.name,
-      createdBy,
-      peopleOnly: false,
-    });
-    return { channelId, topicId };
   });
+  return { channelId };
 }
 
-async function addSharedTopic(
+async function addTopic(
   database: Kysely<DatabaseSchema>,
   createdBy: UserId,
   name: string,
   access: readonly TeamTopicGrant[],
-  peopleOnly: boolean,
 ): Promise<KnowledgeTopicId> {
   const id = createId("knowledgeTopic");
   await database.transaction().execute(async (transaction) => {
-    await createSharedTeamTopic(transaction, { id, name, peopleOnly, createdBy, access });
-    // The fixture's owner creates every topic; drop its automatic manage grant unless asked for.
+    await createTeamTopic(transaction, { id, name, description: "", createdBy, access });
     if (
       !access.some((grant) => grant.subject.kind === "person" && grant.subject.userId === createdBy)
     )
@@ -192,6 +147,32 @@ async function addSharedTopic(
   return id;
 }
 
+/** The person's one active link, created on first use. */
+async function addLink(database: Kysely<DatabaseSchema>, ownerUserId: UserId): Promise<TeamLinkId> {
+  const existing = await database
+    .selectFrom("teamLinks")
+    .select("id")
+    .where("ownerUserId", "=", ownerUserId)
+    .where("state", "=", "active")
+    .executeTakeFirst();
+  if (existing) return existing.id;
+  const linkId = createId("teamLink");
+  await database
+    .insertInto("teamLinks")
+    .values({
+      id: linkId,
+      ownerUserId,
+      personalDeploymentId: createId("deployment"),
+      installationLabel: "Test Mac",
+      state: "active",
+      codeHash: createId("teamLink"),
+      codeExpiresAt: new Date(),
+      credentialHash: createId("teamLink"),
+    })
+    .execute();
+  return linkId;
+}
+
 /** An accepted, unexpired request from the owner's active link, asked in a new thread. */
 async function addRequest(
   database: Kysely<DatabaseSchema>,
@@ -202,28 +183,8 @@ async function addRequest(
   readonly requestId: TeamAgentRequestId;
   readonly messageId: TeamMessageId;
 }> {
+  const linkId = await addLink(database, ownerUserId);
   return database.transaction().execute(async (transaction) => {
-    const existing = await transaction
-      .selectFrom("teamLinks")
-      .select("id")
-      .where("ownerUserId", "=", ownerUserId)
-      .where("state", "=", "active")
-      .executeTakeFirst();
-    const linkId = existing?.id ?? createId("teamLink");
-    if (!existing)
-      await transaction
-        .insertInto("teamLinks")
-        .values({
-          id: linkId,
-          ownerUserId,
-          personalDeploymentId: createId("deployment"),
-          installationLabel: "Test Mac",
-          state: "active",
-          codeHash: createId("teamLink"),
-          codeExpiresAt: new Date(),
-          credentialHash: createId("teamLink"),
-        })
-        .execute();
     const message = await transaction
       .insertInto("teamMessages")
       .values({

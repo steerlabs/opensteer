@@ -137,12 +137,12 @@ describe("personal to team link", () => {
     }
   });
 
-  it("discards a buffered SQL result when its topic authority shrinks before handoff", async () => {
+  it("discards a buffered knowledge read when its topic authority shrinks before handoff", async () => {
     const f = await createTwoHostLinkFixture();
     try {
       const request = await f.ask();
       await f.deliver(request);
-      await f.sqlFence(request);
+      await f.knowledgeFence(request);
     } finally {
       await f.close();
     }

@@ -8,7 +8,6 @@ import { PersonAvatar, peopleOnlyRule } from "./team-marks.js";
 import {
   channelLabel,
   plural,
-  type ChannelTopicRef,
   type ChannelView,
   type MemberEntryView,
   type NotifyLevel,
@@ -19,7 +18,6 @@ export interface ChannelDetailsActions {
   readonly onClose: () => void;
   readonly onOpenMembers: () => void;
   readonly onNotify: (level: NotifyLevel) => void;
-  readonly onOpenTopic?: ((topicId: string) => void) | undefined;
   readonly onLeave?: (() => void) | undefined;
   /** Manage access only, from here down. */
   readonly onSaveAbout?:
@@ -27,8 +25,6 @@ export interface ChannelDetailsActions {
   readonly onSaveInstructions?: ((text: string) => void) | undefined;
   readonly onSetPrivate?: ((isPrivate: boolean) => void) | undefined;
   readonly onSetPeopleOnly?: ((peopleOnly: boolean) => void) | undefined;
-  readonly onAttachTopic?: (() => void) | undefined;
-  readonly onDetachTopic?: ((topicId: string) => void) | undefined;
   readonly onArchive?: (() => void) | undefined;
 }
 
@@ -40,13 +36,11 @@ export function ChannelDetails({
   actions,
   channel,
   notify,
-  topics,
   workingAgents,
 }: {
   readonly actions: ChannelDetailsActions;
   readonly channel: ChannelView;
   readonly notify: NotifyLevel;
-  readonly topics: readonly ChannelTopicRef[];
   /** Agents mid-run in this channel, which making it people only would stop from posting. */
   readonly workingAgents: number;
 }) {
@@ -102,45 +96,6 @@ export function ChannelDetails({
                 type="checkbox"
               />
             </div>
-          </DetailsBlock>
-        )}
-        {dm ? null : (
-          <DetailsBlock
-            action={
-              manage && actions.onAttachTopic ? (
-                <button className="details-link" onClick={actions.onAttachTopic} type="button">
-                  Attach a topic
-                </button>
-              ) : null
-            }
-            title="Knowledge"
-          >
-            <ul className="details-list">
-              {topics.map((topic) => (
-                <li className="details-list__row" key={topic.id}>
-                  <button
-                    className="details-list__main"
-                    onClick={() => actions.onOpenTopic?.(topic.id)}
-                    type="button"
-                  >
-                    <Icon name={topic.kind === "channel" ? "hash" : "table"} />
-                    <span className="details-list__text">
-                      <span className="details-list__name">{topic.name}</span>
-                      <span className="details-note">{topic.detail}</span>
-                    </span>
-                  </button>
-                  {manage && topic.kind === "shared" && actions.onDetachTopic ? (
-                    <button
-                      className="details-link"
-                      onClick={() => actions.onDetachTopic?.(topic.id)}
-                      type="button"
-                    >
-                      Detach
-                    </button>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
           </DetailsBlock>
         )}
         <DetailsBlock title="Notify me about">
