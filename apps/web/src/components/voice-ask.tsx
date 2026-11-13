@@ -1,7 +1,7 @@
 import { useVoiceValue } from "@opensteer/client/react";
 import type { VoiceAsk as VoiceAskValue, VoiceSnapshot } from "@opensteer/client/voice";
 import type { Request } from "@opensteer/core";
-import { ShellScope, useShell, type ShellSharedContext } from "./app-shell.js";
+import { ShellScope, useShell } from "./app-shell.js";
 import { RequestStack, useRequestDock } from "./input-surface.js";
 import { PasswordsSuggestion } from "./passwords-suggestion.js";
 import { useDeviceGrantFollowUps } from "./thread-device-access-action.js";
@@ -14,10 +14,10 @@ const selectAsk = ({ ask }: VoiceSnapshot) => ask;
  * call follows them onto pages with a stable shell, so the cards read it live.
  * A macOS grant a request left to finish stays after the ask ends.
  */
-export function VoiceAsk({ shell }: { readonly shell: ShellSharedContext }) {
+export function VoiceAsk() {
   const ask = useVoiceValue(selectAsk);
   return (
-    <ShellScope context={shell} live={ask !== null}>
+    <ShellScope live={ask !== null}>
       {ask ? <VoiceAskCards ask={ask} /> : <VoiceFollowUps />}
     </ShellScope>
   );

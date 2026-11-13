@@ -192,8 +192,6 @@ export function localRunnerSlotDeploymentId(input: {
   return desktopDeployment.id;
 }
 
-export type ShellSharedContext = Omit<ShellContext, "snapshot">;
-
 export const ShellContext = createContext<ShellContext | null>(null);
 
 export function useShell(): ShellContext {
@@ -208,25 +206,26 @@ export function useOptionalShell(): ShellContext | null {
 }
 
 /**
- * A subtree's view of the shell. Only a live scope observes the full streaming
- * snapshot; the rest use the stable projection, so the surrounding shell and
- * dialogs stay outside this subscription boundary.
+ * A subtree that follows the full streaming snapshot while `live` holds.
+ * AppShell gives everything it draws the stable projection, so the shell and
+ * dialogs around a live scope stay outside its subscription boundary.
  */
 export function ShellScope({
   children,
-  context,
   live,
 }: {
   readonly children: ReactNode;
-  readonly context: ShellSharedContext;
   readonly live: boolean;
 }) {
-  const snapshot = useHostSelector(
-    context.hostClient,
-    selectHostSnapshot,
-    live ? Object.is : sameStableHostSnapshot,
+  const shell = useShell();
+  const liveSnapshot = useHostSelector<HostSnapshot | null>(
+    shell.hostClient,
+    live ? selectHostSnapshot : selectNothing,
   );
-  const value = useMemo<ShellContext>(() => ({ ...context, snapshot }), [context, snapshot]);
+  const value = useMemo(
+    () => (liveSnapshot ? { ...shell, snapshot: liveSnapshot } : shell),
+    [liveSnapshot, shell],
+  );
   return <ShellContext value={value}>{children}</ShellContext>;
 }
 
@@ -239,6 +238,7 @@ const sidebarWidthRange: PaneSizeRange = {
   step: 8,
 };
 const selectHostSnapshot = (snapshot: HostSnapshot) => snapshot;
+const selectNothing = () => null;
 /** Tasks that need the reader, each once: what the sidebar's count and the app's badge both say. */
 const selectAttentionCount = (snapshot: HostSnapshot) => taskAttention(snapshot).length;
 
@@ -805,7 +805,8 @@ export function AppShell({
     });
   }, []);
 
-  const context = useMemo<ShellSharedContext>(
+  // The one shell for everything AppShell draws, routed or not.
+  const shell = useMemo<ShellContext>(
     () => ({
       actionError,
       clearActionError,
@@ -827,6 +828,7 @@ export function AppShell({
       refreshHarnessCatalog,
       reportActionError,
       setTaskDone,
+      snapshot,
     }),
     [
       actionError,
@@ -849,6 +851,7 @@ export function AppShell({
       refreshHarnessCatalog,
       reportActionError,
       setTaskDone,
+      snapshot,
     ],
   );
 
@@ -877,28 +880,32 @@ export function AppShell({
     [chromeEnvironment, hostClient, hostOnline],
   );
   const openShortcuts = useCallback(() => setShortcutsOpen(true), []);
-  const routes = <ShellRouteOutlet context={context} />;
+  const routes = <ShellRouteOutlet />;
 
   if (thisDevice && localBridge && thisDevice.membership.state === "removed") {
     return (
-      <DeviceRemovedScreen
-        bridge={localBridge}
-        deploymentId={thisDevice.deploymentId}
-        name={thisDevice.opensteerName}
-        onSetUpAgain={thisDevice.openSetup}
-        unconfirmed={viewedLocalExecutionStatus?.membership?.leaveUnconfirmed === true}
-      />
+      <ShellContext value={shell}>
+        <DeviceRemovedScreen
+          bridge={localBridge}
+          deploymentId={thisDevice.deploymentId}
+          name={thisDevice.opensteerName}
+          onSetUpAgain={thisDevice.openSetup}
+          unconfirmed={viewedLocalExecutionStatus?.membership?.leaveUnconfirmed === true}
+        />
+      </ShellContext>
     );
   }
   if (thisDevice && localBridge && thisDevice.step !== null) {
     return (
-      <ThisDeviceProvider value={thisDevice}>
-        <SetUpThisMac bridge={localBridge} device={thisDevice} />
-      </ThisDeviceProvider>
+      <ShellContext value={shell}>
+        <ThisDeviceProvider value={thisDevice}>
+          <SetUpThisMac bridge={localBridge} device={thisDevice} />
+        </ThisDeviceProvider>
+      </ShellContext>
     );
   }
 
-  return (
+  const workspace = (
     <ThisDeviceProvider value={thisDevice}>
       <VoiceContext value={voice}>
         <WorkspaceProvider
@@ -1019,7 +1026,7 @@ export function AppShell({
                       onNavigate={(path) => void navigateTo(path)}
                     />
                   ) : null}
-                  <VoiceIsland ask={<VoiceAsk shell={context} />} />
+                  <VoiceIsland ask={<VoiceAsk />} />
                   <SidebarChromeProvider
                     onRestore={toggleSidebar}
                     restoreVisible={!fullWindow && !mobileNavigation && sidebarCollapsed}
@@ -1085,6 +1092,7 @@ export function AppShell({
       </VoiceContext>
     </ThisDeviceProvider>
   );
+  return <ShellContext value={shell}>{workspace}</ShellContext>;
 }
 
 /**
@@ -1218,10 +1226,10 @@ const selectDeploymentId = (snapshot: HostSnapshot) => snapshot.deploymentId;
 const selectUserId = (snapshot: HostSnapshot) => snapshot.user?.id ?? null;
 
 /** Home at the root and a task under /tasks stream; other routes stay stable. */
-function ShellRouteOutlet({ context }: { readonly context: ShellSharedContext }) {
+function ShellRouteOutlet() {
   const { pathname } = useLocation();
   return (
-    <ShellScope context={context} live={pathname === "/" || pathname.startsWith("/tasks/")}>
+    <ShellScope live={pathname === "/" || pathname.startsWith("/tasks/")}>
       <Outlet />
     </ShellScope>
   );
