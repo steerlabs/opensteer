@@ -1,3 +1,4 @@
+import { HostSession, type NativeOAuthManager } from "@opensteer/client/auth";
 import type {
   DeploymentCatalogStore,
   DeploymentConnection,
@@ -24,19 +25,40 @@ export function networkTeamTransport(options: {
   readonly catalog: Pick<DeploymentCatalogStore, "load" | "subscribe">;
   readonly credentials: HostCredentialProvider;
   readonly network: HostNetwork;
+  readonly oauth: NativeOAuthManager;
 }): (connection: DeploymentConnection, scope: TeamCacheScope) => TeamTransport {
+  const transports = new Map<string, ReturnType<typeof pinnedTeamTransport>>();
   return (connection, scope) => {
     const deploymentId = DeploymentIdSchema.parse(connection.authority.document.deploymentId);
-    const pinned = pinnedTeamTransport(
-      {
-        catalog: options.catalog,
-        credentials: options.credentials,
-        deploymentId,
-        localRuntime: { current: async () => null },
-        network: options.network,
-      },
-      new URL(connection.authority.document.canonicalOrigin),
-    );
+    let pinned = transports.get(deploymentId);
+    if (!pinned) {
+      pinned = pinnedTeamTransport(
+        {
+          catalog: options.catalog,
+          credentials: options.credentials,
+          deploymentId,
+          localRuntime: { current: async () => null },
+          network: options.network,
+          sessions: (attachment) =>
+            new HostSession({
+              attachment,
+              clearDeploymentSession: async () => undefined,
+              exchange: {
+                supports: () => false,
+                probe: async () => "unauthenticated",
+                establish: async () => {
+                  throw new Error("Teams use native credentials.");
+                },
+              },
+              localOwner: { ownsHostSession: () => false, recoverOwnerSession: async () => false },
+              oauth: options.oauth,
+            }),
+        },
+        new URL(connection.authority.document.canonicalOrigin),
+      );
+      transports.set(deploymentId, pinned);
+    }
+    const held = pinned;
     return {
       rpc: pinned.rpc,
       connect: pinned.connect,
@@ -48,7 +70,7 @@ export function networkTeamTransport(options: {
         const preview = part === "preview";
         if (preview && metadata.preview === null) throw new Error("This file has no preview.");
         const expected = preview ? metadata.preview!.sizeBytes : metadata.sizeBytes;
-        return pinned.transport.exchange(
+        return held.transport.exchange(
           {
             expectedDeploymentId: deploymentId,
             path: `/v1/team/files/${metadata.id}/${part}`,

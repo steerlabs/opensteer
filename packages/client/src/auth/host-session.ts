@@ -513,6 +513,13 @@ export class HostSession implements HostSessionRecovery {
         return "recovered";
       }
       if (supportsHostNativeSignIn(resolved.bootstrapMethods)) {
+        const current = await this.#attachment.current();
+        if (current.resolved.key !== resolved.key) return "unavailable";
+        if (
+          current.resolved.authorization !== null &&
+          current.resolved.authorization !== resolved.authorization
+        )
+          return "recovered";
         return (await this.#oauth.recoverHostAuthorization(connection))
           ? "recovered"
           : "account-required";

@@ -61,6 +61,9 @@ function setup() {
   const state = (connection: DeploymentConnection, status: HostOAuthState["status"]) =>
     ({ connection, detail: null, key: "", status }) as HostOAuthState;
   const oauth = {
+    authorizationHeader: vi.fn(async (): Promise<string | null> =>
+      signedIn ? "Bearer team" : null,
+    ),
     accountAuthorizationLease: async () => lease,
     // Like desktop: the browser opens and the call returns; the callback lands later.
     beginHostSignIn: vi.fn(async (connection: DeploymentConnection) => {
@@ -142,6 +145,18 @@ describe("NativeTeamEntry", () => {
     verify.mockClear();
     await entry.restore(id, verify);
     expect(verify).not.toHaveBeenCalled();
+  });
+
+  it("reuses a refreshed credential and leaves an unavailable refresh retryable", async () => {
+    const { catalog, entry, oauth } = setup();
+    const verified = team();
+    oauth.authorizationHeader.mockResolvedValue("Bearer refreshed");
+    await entry.ensureAuthorized(verified);
+    expect(oauth.beginHostSignIn).not.toHaveBeenCalled();
+    oauth.authorizationHeader.mockRejectedValue(new Error("Network unavailable"));
+    await expect(entry.ensureAuthorized(verified)).rejects.toThrow("Network unavailable");
+    expect(oauth.beginHostSignIn).not.toHaveBeenCalled();
+    expect((await catalog.load()).deployments).toHaveLength(1);
   });
 
   it("signs in to an older team in the browser, settling only when the callback lands", async () => {

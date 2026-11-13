@@ -91,6 +91,17 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
     sockets: Parameters<
       import("../connections/host-transport.js").HostNetwork["openWebSocket"]
     >[0][] = [];
+  let token = "Bearer mock-session";
+  let rejectCredentials = false;
+  let recoveryOutcome: "recovered" | "unavailable" | "account-required" = "recovered";
+  const { HostSession } = await import("../auth/host-session.js");
+  const sessions: InstanceType<typeof HostSession>[] = [];
+  const refresh = vi.fn(async () => {
+    if (recoveryOutcome === "unavailable") throw new Error("Offline");
+    if (recoveryOutcome === "account-required") return false;
+    token = "Bearer refreshed";
+    return true;
+  });
   const options: import("../connections/host-transport.js").HostTransportOptions & {
     deploymentId: typeof teamId;
   } = {
@@ -111,12 +122,52 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
     credentials: {
       authorizationHeader: async (target) => {
         credentials.push(target.authority.document.deploymentId);
-        return "Bearer mock-session";
+        return token;
       },
+    },
+    sessions: (attachment) => {
+      const session = new HostSession({
+        attachment,
+        clearDeploymentSession: async () => undefined,
+        exchange: {
+          supports: () => false,
+          probe: async () => "unauthenticated",
+          establish: async () => {
+            throw new Error("Unexpected exchange");
+          },
+        },
+        localOwner: { ownsHostSession: () => false, recoverOwnerSession: async () => false },
+        oauth: {
+          recoverHostAuthorization: refresh,
+          abandonHostSignIn: () => undefined,
+          signInTeam: async () => {
+            throw new Error("Unexpected sign-in");
+          },
+          hostCredentialState: () => {
+            throw new Error("Unexpected state");
+          },
+          signOutHost: async () => {
+            throw new Error("Unexpected sign-out");
+          },
+          subscribe: () => () => undefined,
+          subscribeHostCredentials: () => () => undefined,
+        },
+      });
+      sessions.push(session);
+      return session;
     },
     network: {
       request: async (input) => {
         http.push(input);
+        if (
+          rejectCredentials &&
+          ["/needs-session", "/v1/rpc/team.bootstrap.get"].includes(input.request.path) &&
+          input.authorization !== "Bearer refreshed"
+        )
+          return Response.json(
+            { ok: false, error: { code: "unauthorized", message: "Sign in", retryable: false } },
+            { status: 401 },
+          );
         return new Response("ok");
       },
       openWebSocket: (input, events) => {
@@ -161,6 +212,82 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
     });
     expect(sockets[0]?.deploymentId).toBe(teamId);
     expect(sockets[0]?.headers).toEqual({ [teamApiVersionHeader]: String(teamApiVersion) });
+    rejectCredentials = true;
+    const request = () =>
+      pinned.transport.exchange(
+        { path: "/needs-session", method: "GET", headers: {} },
+        async (response) => response.status,
+      );
+    await expect(Promise.all([request(), request()])).resolves.toEqual([200, 200]);
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(
+      http
+        .filter((call) => call.request.path === "/needs-session")
+        .every((call) => call.deploymentId === teamId),
+    ).toBe(true);
+    token = "Bearer expired-again";
+    recoveryOutcome = "unavailable";
+    await expect(request()).rejects.toMatchObject({ code: "unreachable", retryable: true });
+    const { TeamSessionClient } = await import("./team-session-client.js");
+    const { createMemoryTeamPersistence } = await import("./persistence.js");
+    const { mockTeamUserId } = await import("./mock-team-host.js");
+    const scope = { teamDeploymentId: teamId, userId: mockTeamUserId };
+    const persistence = createMemoryTeamPersistence();
+    const saved = {
+      drafts: { channel: "Keep this draft" },
+      pending: [
+        {
+          command: {
+            type: "team.message.send" as const,
+            channelId: mockTeamChannelId,
+            threadRootId: null,
+            clientMessageId: "00000000-0000-4000-8000-000000000001",
+            bodyMarkdown: "Unsent",
+            mentions: [],
+            attachmentIds: [],
+          },
+          createdAt: now,
+          failure: null,
+        },
+      ],
+    };
+    await persistence.save(scope, saved);
+    const client = new TeamSessionClient({
+      scope,
+      persistence,
+      rpc: pinned.rpc,
+      connect: pinned.connect,
+    });
+    try {
+      await expect(client.load(false)).rejects.toMatchObject({ retryable: true });
+      expect(client.getSnapshot().ended).toBeNull();
+      expect(await persistence.load(scope)).toEqual(saved);
+    } finally {
+      client.dispose();
+    }
+    // A separate attachment has no cooldown from the unavailable attempt.
+    recoveryOutcome = "account-required";
+    await expect(
+      transport.exchange(
+        { path: "/needs-session", method: "GET", headers: {} },
+        async (response) => response.status,
+      ),
+    ).resolves.toBe(401);
+    const refused = pinnedTeamTransport(options, new URL("https://team.example"));
+    const ended = new TeamSessionClient({
+      scope,
+      persistence,
+      rpc: refused.rpc,
+      connect: refused.connect,
+    });
+    try {
+      await expect(ended.load(false)).rejects.toMatchObject({ code: "unauthorized" });
+      expect(ended.getSnapshot().ended).toBe("sign-in");
+      expect(await persistence.load(scope)).toBeNull();
+    } finally {
+      ended.dispose();
+      refused.transport.closeAllSockets();
+    }
     const socket = pinned.connect();
     socket.addEventListener("open", () => socket.send("subscription"));
     await vi.waitFor(() =>
@@ -171,5 +298,6 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
   } finally {
     transport.closeAllSockets();
     pinned.transport.closeAllSockets();
+    for (const session of sessions) session.dispose();
   }
 });
