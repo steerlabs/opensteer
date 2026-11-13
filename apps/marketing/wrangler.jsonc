@@ -1,0 +1,12 @@
+// Cloudflare Workers Builds deploys this on pushes to main (no GitHub Actions job);
+// its build settings and the opensteer.com custom domains live in the Cloudflare dashboard.
+{
+  "$schema": "https://unpkg.com/wrangler@4.161.0/config-schema.json",
+  "name": "opensteer-marketing",
+  "compatibility_date": "2026-11-13",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "404-page",
+    "html_handling": "drop-trailing-slash",
+  },
+}

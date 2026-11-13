@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "dev": "vite",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "deploy": "pnpm dlx wrangler@4.161.0 deploy"
   },
   "dependencies": {
     "@fontsource-variable/fraunces": "^5.3.0",
