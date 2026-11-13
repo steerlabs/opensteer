@@ -209,38 +209,3 @@ export function deviceAccessStates(
       : state(modules.includes("shell") && descriptors.shell !== undefined, access.files),
   };
 }
-export async function listOwnedDevices(database: Kysely<DatabaseSchema>, userId: UserId) {
-  if ((await personalDeploymentOwner(database)) !== userId) return [];
-  const rows = await database
-    .selectFrom("runners")
-    .select([
-      "id",
-      "name",
-      "kind",
-      "ownerKind",
-      "accessPolicy",
-      "allowedModules",
-      "moduleDescriptors",
-    ])
-    .where("revokedAt", "is", null)
-    .where("kind", "!=", "managed")
-    .where((eb) =>
-      eb.or([
-        eb.and([eb("ownerKind", "=", "user"), eb("ownerUserId", "=", userId)]),
-        eb.and([eb("kind", "=", "main"), eb("ownerKind", "=", "deployment")]),
-      ]),
-    )
-    .orderBy("name")
-    .orderBy("id")
-    .execute();
-  return rows.map((row) => ({
-    machineId: row.id,
-    name: row.name,
-    access: deviceAccessStates(
-      row.accessPolicy,
-      row.allowedModules,
-      row.moduleDescriptors,
-      row.kind === "main" && row.ownerKind === "deployment",
-    ),
-  }));
-}

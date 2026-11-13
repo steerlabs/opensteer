@@ -2066,7 +2066,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "type": "string",
         },
         "machineId": {
-          "description": "Stable device id from the refusal or owned-device inventory.",
+          "description": "Device id from the refusal or computer_list.",
           "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },

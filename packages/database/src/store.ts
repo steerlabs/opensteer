@@ -1,9 +1,4 @@
-import {
-  bindDeviceSession,
-  revokeDeviceSession,
-  leaveDevice,
-  listOwnedDevices,
-} from "./device-store.js";
+import { bindDeviceSession, revokeDeviceSession, leaveDevice } from "./device-store.js";
 import { enqueueNodeStop } from "./node-control.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
 import * as backgroundModelStore from "./background-model-store.js";
@@ -361,9 +356,6 @@ export class OpensteerStore {
     readonly revokedComputerConnectionIds: readonly IntegrationConnectionId[];
   }> {
     return runnerStore.revokeRunner(this.#database, this.#links, runnerId, ownerId, options);
-  }
-  listOwnedDevices(userId: UserId) {
-    return listOwnedDevices(this.database, userId);
   }
   async bindDeviceSession(input: Parameters<typeof bindDeviceSession>[1]) {
     return bindDeviceSession(this.#database, input);

@@ -1,6 +1,7 @@
 import { callMcpTool } from "../mcp/call-tool.test-support.js";
 
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createDatabase } from "@opensteer/database";
 import { connect, createServer, type Socket } from "node:net";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -225,7 +226,7 @@ integration("Machine access session lifecycle", () => {
     }
   }, 180_000);
 
-  it("ends every live session on a policy write, and nothing on a stale one", async () => {
+  it("ends sessions on shell changes, keeping them through stale and Browser/Apps-only saves", async () => {
     scenario = await startShellAccessScenario(databaseUrl, {
       policy: openPolicy,
     });
@@ -242,22 +243,32 @@ integration("Machine access session lifecycle", () => {
       runnerId: target.runnerId,
     });
     expect(conflict).toEqual({ outcome: "conflict", type: "machine.access.update" });
-    await new Promise<void>((resolve) => setTimeout(resolve, 500));
+    expect((await shellSessionRows(host)).map((row) => [row.id, row.state, row.endReason])).toEqual(
+      [[sessionId, "active", null]],
+    );
+
+    const switched = await updateAccessPolicy(host, {
+      expectedRevision: 2,
+      key: "browser-apps-only",
+      policy: { ...openPolicy, browser: false, apps: false },
+      runnerId: target.runnerId,
+    });
+    expect(switched).toEqual({ outcome: "updated", revision: 3, type: "machine.access.update" });
     expect((await shellSessionRows(host)).map((row) => [row.id, row.state, row.endReason])).toEqual(
       [[sessionId, "active", null]],
     );
 
     const written = await updateAccessPolicy(host, {
-      expectedRevision: 2,
+      expectedRevision: 3,
       key: "policy-write",
-      policy: openPolicy,
+      policy: { ...openPolicy, forwarding: true },
       runnerId: target.runnerId,
     });
-    expect(written).toEqual({ outcome: "updated", revision: 3, type: "machine.access.update" });
+    expect(written).toEqual({ outcome: "updated", revision: 4, type: "machine.access.update" });
 
-    const started = Date.now();
-    const exited = await long.exited;
-    expect(Date.now() - started).toBeLessThan(15_000);
+    const exited = await withTimeout(long.exited, 15_000, {
+      timeoutError: () => new Error("The shell policy change never ended the SSH session"),
+    });
     expect(exited.code).not.toBe(0);
     await waitForCondition(async () =>
       (await shellSessionRows(host)).every((row) => row.state === "ended"),
@@ -431,7 +442,10 @@ integration("Machine access session lifecycle", () => {
     });
     const denied = await runShim(launch, "ssh", [alias, "true"]);
     expect(denied.code).toBe(255);
-    expect(denied.stderr).toContain("Example Mac does not allow access from other computers.");
+    expect(denied.stderr).toContain(
+      `device-access-off: machineId=${target.runnerId}, capability=files.`,
+    );
+    expect(denied.stderr).toContain("Files and commands are off on Example Mac.");
     // A refusal reserves nothing, so no row was ever written for it.
     expect((await shellSessionRows(host)).every((row) => row.endReason !== null)).toBe(true);
   }, 180_000);

@@ -38,7 +38,7 @@ async function enrolled() {
     {
       type: "runner.enrollment.createLocal",
       name: "Signed in Mac",
-      allowedModules: ["agents"],
+      allowedModules: ["integrations"],
       idempotencyKey: runnerId,
       access: { browser: false, apps: false, files: false },
       preparedIdentity: { runnerId, publicKeyPem },

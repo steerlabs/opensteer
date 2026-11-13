@@ -239,12 +239,6 @@ describeStore("device access Requests", (it) => {
     expect(modern.pendingRequests.map(({ id }) => id)).toContain(opened.request.id);
     expect(old.DeploymentSnapshotSchema.safeParse(modern).success).toBe(false);
     expect(await f.store.requests.get(opened.request.id)).toMatchObject({ status: "pending" });
-    expect(await f.store.listOwnedDevices(run.userId)).toContainEqual(
-      expect.objectContaining({
-        machineId: target,
-        access: expect.objectContaining({ browser: "disabled" }),
-      }),
-    );
     await f.store.updateMachineAccessPolicy({
       runnerId: target,
       ownerId: run.userId,
@@ -271,23 +265,7 @@ describeStore("device access Requests", (it) => {
       requiredActor: "owner",
       payload: { machineId: target, machineName: "Phone", access: "browser" },
     });
-    expect(await f.store.listOwnedDevices(run.userId)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          machineId: target,
-          access: { browser: "disabled", apps: "disabled", files: "unsupported" },
-        }),
-      ]),
-    );
     expect(await f.store.listReachableMachines(run.userId, run.runnerId)).toEqual([]);
-    expect(await f.store.listOwnedDevices(run.userId)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          machineId: run.runnerId,
-          access: expect.objectContaining({ files: "enabled" }),
-        }),
-      ]),
-    );
     await expect(ask(f, run, run.runnerId, "home-files", "files")).rejects.toMatchObject({
       reason: "device-access-on",
     });

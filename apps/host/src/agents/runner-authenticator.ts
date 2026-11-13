@@ -14,6 +14,7 @@ import { OpensteerError, RunnerIdSchema } from "@opensteer/core";
 import {
   phoneRunnerGrant,
   personalReachableGrant,
+  personalReachableGrantRefusal,
   runnerAdvertisesItsEnvironmentBinding,
   runnerIdentityRevokedReason,
   type OpensteerStore,
@@ -149,6 +150,8 @@ export class RunnerAuthenticator {
     readonly expiresAt: string;
     readonly token: string;
   }> {
+    if (input.runnerKind === "local" && input.allowedModules.includes("agents"))
+      throw new OpensteerError({ code: "forbidden", message: personalReachableGrantRefusal });
     return this.#createEnrollment({
       ...input,
       purpose: "standard",

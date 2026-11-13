@@ -532,9 +532,9 @@ export const StartPage = memo(function StartPage({
         <span className="launcher__spacer" />
         {trailing}
       </div>
+      <WebTabNotice hostClient={hostClient} />
       <div className="start-page" onKeyDown={onPageKey} ref={stageRef}>
         <div className="start-page__column">
-          <WebTabNotice hostClient={hostClient} />
           <form
             className="start-page__field"
             onSubmit={(event) => event.preventDefault()}

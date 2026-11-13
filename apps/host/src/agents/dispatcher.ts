@@ -1,4 +1,3 @@
-import { ownedDeviceInventory } from "./owned-device-inventory.js";
 import { hydrateTeamTaskInput } from "@opensteer/database";
 import { dispatchNodeStop, NodeStopAuthoritySchema } from "@opensteer/database";
 import { agentToolsPlanForRun } from "./agent-tools-plan.js";
@@ -574,11 +573,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const requesterTimeZone = await this.#store.notificationState.timeZoneFor(
       context.run.requestedBy,
     );
-    const deviceInventory = await ownedDeviceInventory({
-      store: this.#store,
-      runners: this.#runners,
-      requestedBy: context.run.requestedBy,
-    });
     const toolsPlan = agentToolsPlanForRun({
       voiceCall: Boolean(context.voiceCall),
       token: toolsToken,
@@ -615,10 +609,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
               attachments: attachmentPlan,
             }
           : {}),
-        agentTools: {
-          ...toolsPlan,
-          instructions: [toolsPlan.instructions, deviceInventory].filter(Boolean).join("\n\n"),
-        },
+        agentTools: toolsPlan,
         browserCdp: {
           url: this.#agentBrowserCdpUrl,
         },
