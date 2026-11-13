@@ -61,6 +61,8 @@ function setup() {
   const state = (connection: DeploymentConnection, status: HostOAuthState["status"]) =>
     ({ connection, detail: null, key: "", status }) as HostOAuthState;
   const oauth = {
+    resumeTeamSignIn: vi.fn(async () => {}),
+    isTeamSignInSuppressed: vi.fn(() => false),
     authorizationHeader: vi.fn(async (): Promise<string | null> =>
       signedIn ? "Bearer team" : null,
     ),
@@ -102,7 +104,7 @@ function setup() {
 
 describe("NativeTeamEntry", () => {
   it("keeps an entered team as a pending Account entry, and nothing of one that refused", async () => {
-    const { catalog, entry, ids, oauth } = setup();
+    const { catalog, entry, ids, oauth, signOut } = setup();
     const joined = team();
     await expect(entry.enter(joined, null)).resolves.toMatchObject({ admitted: true });
     const [kept] = (await catalog.load()).deployments;
@@ -112,6 +114,7 @@ describe("NativeTeamEntry", () => {
       source: { kind: "account", issuer: lease.issuer, subject: lease.subject },
     });
 
+    signOut();
     const refusing = team();
     oauth.exchangeTeamSession.mockRejectedValueOnce(
       new TeamEntryRefusedError("invite-expired", "This invite has expired"),
@@ -159,9 +162,36 @@ describe("NativeTeamEntry", () => {
     expect((await catalog.load()).deployments).toHaveLength(1);
   });
 
+  it("silently exchanges for a member, but never opens the browser on refusal or outage", async () => {
+    const { entry, oauth } = setup();
+    await entry.ensureAuthorized(team());
+    expect(oauth.exchangeTeamSession).toHaveBeenCalledOnce();
+    expect(oauth.beginHostSignIn).not.toHaveBeenCalled();
+    oauth.authorizationHeader.mockResolvedValue(null);
+    for (const error of [
+      new TeamEntryRefusedError("not-a-member", "Ask for an invite"),
+      new Error("Account unreachable"),
+    ]) {
+      oauth.exchangeTeamSession.mockRejectedValueOnce(error);
+      await expect(entry.ensureAuthorized(team())).rejects.toBe(error);
+    }
+    expect(oauth.beginHostSignIn).not.toHaveBeenCalled();
+  });
+
+  it("leaves explicit sign-out suppressed during restore until explicit sign-in", async () => {
+    const { entry, oauth } = setup();
+    oauth.isTeamSignInSuppressed.mockReturnValue(true);
+    await entry.ensureAuthorized(team(), null, false);
+    expect(oauth.exchangeTeamSession).not.toHaveBeenCalled();
+    expect(oauth.beginHostSignIn).not.toHaveBeenCalled();
+    await entry.ensureAuthorized(team());
+    expect(oauth.resumeTeamSignIn).toHaveBeenCalled();
+    expect(oauth.exchangeTeamSession).toHaveBeenCalledOnce();
+  });
+
   it("signs in to an older team in the browser, settling only when the callback lands", async () => {
     const { callback, catalog, entry, ids, listeners, oauth, signOut } = setup();
-    const older = team();
+    const older = { ...team(), capabilities: ["native-oauth"] as const };
     const settled = vi.fn();
     const invite = { selector: "s".repeat(32), verifier: "v".repeat(43) };
     const signingIn = entry.signIn(older, invite).then(settled, settled);
@@ -180,7 +210,7 @@ describe("NativeTeamEntry", () => {
 
     // Stopped or expired in the browser: an error, and nothing kept of a team never entered.
     signOut();
-    const stopped = team();
+    const stopped = { ...team(), capabilities: ["native-oauth"] as const };
     const failing = entry.signIn(stopped, null);
     await vi.waitFor(() => expect(oauth.beginHostSignIn).toHaveBeenCalledTimes(2));
     const held = (await catalog.load()).deployments.find(

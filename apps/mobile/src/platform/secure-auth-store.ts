@@ -64,6 +64,7 @@ export function createSecureAuthStore(records: SecureRecordStore): ProtectedAuth
     ...emptyProtectedAuthState(),
     account: await readAccount(),
     hosts: [...(await readHosts())],
+    signedOutTeams: HostIndexSchema.parse(safeJson((await records.read("signedOutTeams")) ?? "[]")),
   });
 
   /**
@@ -90,6 +91,18 @@ export function createSecureAuthStore(records: SecureRecordStore): ProtectedAuth
 
   return {
     assertAvailable: () => records.assertAvailable(),
+    setTeamSignOutSuppression: (deploymentId, suppressed) =>
+      mutations.run(async () => {
+        const current = await load();
+        await records.write(
+          "signedOutTeams",
+          JSON.stringify([
+            ...(current.signedOutTeams ?? []).filter((id) => id !== deploymentId),
+            ...(suppressed ? [deploymentId] : []),
+          ]),
+        );
+        return load();
+      }),
 
     clearAccount: () =>
       mutations.run(async () => {

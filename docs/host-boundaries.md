@@ -156,3 +156,8 @@ renews or silently reopens, and ending it leaves task grants, holds and observat
 owner authority ends on Host restart and is never restored. Lease and retention rules are in
 [Computer use](computer-use.md). Computer app approvals use authenticated owner sessions on every
 device, and only the Host admits local MCP launches against current owner consent.
+
+Account team identity assertions travel only to the verified team authority through the existing
+team session exchange. Account access and refresh tokens stay on the device and Account service.
+The team decides membership; the assertion grants no personal Host access. Exchanged credentials
+are bound to their originating Account identity.

@@ -603,6 +603,10 @@ describe("NativeOAuthManager", () => {
       status: "signed-out",
     });
     expect(fixture.revocations).toHaveLength(1);
+    expect((await fixture.store.load()).signedOutTeams).toContain(
+      fixture.connection.authority.document.deploymentId,
+    );
+    await expect(fixture.manager.recoverHostAuthorization(fixture.connection)).resolves.toBe(false);
     await expect(fixture.manager.authorizationHeader(fixture.connection)).resolves.toBeNull();
   });
 
@@ -1075,6 +1079,62 @@ describe("NativeOAuthManager team session exchange", () => {
       `Bearer team-access-${"t".repeat(20)}`,
     );
     expect(fixture.opened.filter((url) => url.startsWith("https://host."))).toEqual([]);
+    expect((await fixture.store.load()).hosts[0]?.accountIdentity).toMatchObject({
+      issuer: "https://accounts.opensteer.test",
+      subject: fixture.manager.accountIdentity()!.subject,
+    });
+    await fixture.manager.signOutAccount();
+    await expect(fixture.manager.authorizationHeader(fixture.connection)).resolves.toBeNull();
+    expect((await fixture.store.load()).hosts).toEqual([]);
+  });
+
+  it("commits no credential if Account signs out while the team exchange is in flight", async () => {
+    const gate = deferred<void>();
+    let started = false;
+    const fixture = await managerFixture({
+      capabilities: exchangeCapability,
+      route: (url) => {
+        if (url.includes("/team-identity-grants"))
+          return Response.json({ assertion, expiresAt: "2026-08-11T19:01:00.000Z" });
+        if (url.endsWith("/v1/team/session/exchange")) {
+          started = true;
+          const body = JSON.stringify({
+            admitted: false,
+            member,
+            tokens: {
+              access_token: "a".repeat(32),
+              refresh_token: "r".repeat(32),
+              expires_in: 600,
+              scope: "openid profile email offline_access host:access",
+              token_type: "Bearer",
+            },
+          });
+          return new Response(
+            new ReadableStream({
+              async start(controller) {
+                await gate.promise;
+                controller.enqueue(new TextEncoder().encode(body));
+                controller.close();
+              },
+            }),
+            { headers: { "content-type": "application/json" } },
+          );
+        }
+        return undefined;
+      },
+    });
+    await fixture.manager.initialize();
+    await fixture.signInAccount();
+    const exchanging = fixture.manager.exchangeTeamSession(fixture.connection);
+    const rejected = expect(exchanging).rejects.toThrow();
+    await vi.waitFor(() => expect(started, "team exchange never started").toBe(true), {
+      timeout: 1000,
+    });
+    await fixture.manager.signOutAccount();
+    gate.resolve();
+    await rejected;
+    expect((await fixture.store.load()).hosts).toEqual([]);
+    expect(fixture.manager.hostCredentialState(fixture.connection).status).toBe("signed-out");
   });
 
   it("keeps a refusal's reason and stores nothing", async () => {
@@ -1481,6 +1541,8 @@ async function managerFixture(
   const store: ProtectedAuthStore = {
     assertAvailable: () => memoryStore.assertAvailable(),
     clearAccount: () => memoryStore.clearAccount(),
+    setTeamSignOutSuppression: (deploymentId, suppressed) =>
+      memoryStore.setTeamSignOutSuppression(deploymentId, suppressed),
     clearHost: (deploymentId) => memoryStore.clearHost(deploymentId),
     clearHosts: (deploymentIds) => memoryStore.clearHosts(deploymentIds),
     load: () => memoryStore.load(),

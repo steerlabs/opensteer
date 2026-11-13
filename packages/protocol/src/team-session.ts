@@ -56,6 +56,8 @@ export type TeamInvitePreviewResponse = z.infer<typeof TeamInvitePreviewResponse
  */
 export const TeamEntryRefusalReasonSchema = z.enum([
   "assertion-invalid",
+  "assertion-expired",
+  "authority-changed",
   "not-a-member",
   "invite-invalid",
   "invite-expired",

@@ -108,6 +108,48 @@ export function TeamHomeScreen(props: StaticScreenProps<{ readonly teamId: strin
     });
   }, [coordinator, name, navigation, teamId]);
 
+  if (session === null && team?.state === "update-server")
+    return (
+      <Screen>
+        <View style={styles.center}>
+          <Notice
+            title="Team server needs an update"
+            detail={team.detail ?? "Ask the team administrator to update the server."}
+            tone="neutral"
+          />
+        </View>
+      </Screen>
+    );
+  if (session === null && team?.state === "offline")
+    return (
+      <Screen>
+        <View style={styles.center}>
+          <Notice
+            title="Team couldn't be reached"
+            detail={team.detail ?? "Try again when you're connected."}
+            tone="neutral"
+          />
+          <PrimaryButton
+            label="Retry"
+            onPress={() => {
+              void teams.select(teamId);
+            }}
+          />
+        </View>
+      </Screen>
+    );
+  if (team?.state === "join")
+    return (
+      <Screen>
+        <View style={styles.center}>
+          <Notice
+            title="Join this team"
+            detail={team.detail ?? "Ask a team member for an invite."}
+            tone="neutral"
+          />
+        </View>
+      </Screen>
+    );
   if (team !== null && team.state === "signed-out")
     return (
       <Screen>

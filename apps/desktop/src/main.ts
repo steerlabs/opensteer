@@ -1147,7 +1147,11 @@ async function runDesktop(
       : null,
     teamSessions: loaded.config.accountUrl
       ? new DesktopTeamSessions({
-          entry: new NativeTeamEntry({ oauth: nativeAuth, catalog: deploymentCatalog }),
+          entry: new NativeTeamEntry({
+            oauth: nativeAuth,
+            catalog: deploymentCatalog,
+            fetch: serviceNetwork.fetch.bind(serviceNetwork),
+          }),
           fetch: serviceNetwork.fetch.bind(serviceNetwork),
         })
       : null,

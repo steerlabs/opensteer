@@ -1,5 +1,5 @@
+import { TeamEntryRefusedError } from "@opensteer/client/auth";
 import {
-  deploymentConnectionFromVerifiedEndpoints,
   HostVersionMismatchError,
   type DeploymentConnection,
   type PrivateFilesystem,
@@ -52,7 +52,14 @@ export interface TeamTransport {
 
 /** How a team stands on this phone, as the drawer and a team screen say it. */
 export type TeamState =
-  "signed-out" | "loading" | "live" | "offline" | "update-app" | "update-server" | "removed";
+  | "signed-out"
+  | "loading"
+  | "live"
+  | "offline"
+  | "update-app"
+  | "update-server"
+  | "removed"
+  | "join";
 
 export interface MobileTeam {
   readonly teamId: string;
@@ -362,27 +369,20 @@ export class MobileTeams {
    * A team the computer being shown is in, but whose Host this phone has not
    * reached yet: it is added and the person signs in to it, as on any device.
    */
-  async addToPhone(teamId: string): Promise<void> {
+  async addToPhone(teamId: string, interactive = true): Promise<void> {
     const team = this.team(teamId);
     if (team === null) throw new TeamAccessError("This team is no longer on this computer.");
-    if (!team.onPhone) {
+    if (this.#signedIn(teamId)) return;
+    try {
       const verified = await this.#verify(team.origin);
       if (verified.discovery.deploymentId !== teamId)
         throw new Error("That address now answers as a different team.");
-      await this.#client.catalog.upsert(
-        deploymentConnectionFromVerifiedEndpoints({
-          accountAccess: null,
-          endpoints: [verified],
-          kind: "team",
-          name: team.name,
-          source: { kind: "manual" },
-        }),
-      );
-    }
-    if (!this.#signedIn(teamId) || this.#states.get(teamId)?.state === "signed-out") {
-      await this.#client.signIn(teamId);
+      await this.#entry.ensureAuthorized(verified, null, interactive);
       this.#states.delete(teamId);
       this.#publish();
+    } catch (error) {
+      this.#fail(teamId, error);
+      throw error;
     }
   }
 
@@ -464,6 +464,8 @@ export class MobileTeams {
     }
     const current = () => generation === this.#selection;
     try {
+      if (!this.#signedIn(target)) await this.addToPhone(target, false);
+      if (!this.#signedIn(target) || !current()) return;
       const session = await this.session(target);
       const userId = this.#memo?.users[target];
       if (userId === undefined || !current()) return;
@@ -587,23 +589,11 @@ export class MobileTeams {
     invite: TeamInviteSecret | null,
   ): Promise<TeamMember> {
     const teamId = verified.discovery.deploymentId;
-    if (this.#connection(teamId) === null)
-      await this.#client.catalog.upsert(
-        deploymentConnectionFromVerifiedEndpoints({
-          accountAccess: null,
-          endpoints: [verified],
-          kind: "team",
-          name: new URL(verified.discovery.canonicalOrigin).hostname,
-          source: { kind: "manual" },
-        }),
-      );
+    await this.#entry.ensureAuthorized(verified, invite);
     const connection = (await this.#client.catalog.load()).deployments.find(
       ({ authority }) => authority.document.deploymentId === teamId,
     );
-    if (connection === undefined)
-      throw new TeamAccessError("This team is no longer on this phone.");
-    if (!this.#signedIn(teamId)) await this.#client.signIn(teamId, invite);
-    if (!this.#signedIn(teamId)) throw new Error("Sign in to finish joining.");
+    if (!connection) throw new TeamAccessError("This team is no longer on this phone.");
     return (await this.#settle(connection)).member;
   }
 
@@ -876,9 +866,12 @@ export class MobileTeams {
     const held = this.#states.get(team.teamId);
     const session = this.#sessions.get(team.teamId) ?? null;
     const state: TeamState =
-      entry === null || !entry.signedIn
+      held?.state ??
+      (entry === null || !entry.signedIn
         ? "signed-out"
-        : (held?.state ?? (session?.getSnapshot().bootstrap ? "live" : "loading"));
+        : session?.getSnapshot().bootstrap
+          ? "live"
+          : "loading");
     return {
       teamId: team.teamId,
       onPhone: entry !== null,
@@ -901,6 +894,7 @@ const placeholderUser = UserIdSchema.parse("usr_00000000-0000-4000-8000-00000000
 
 /** What a failed team call says about the team, for the drawer and its banner. */
 export function teamFailure(error: unknown): TeamState {
+  if (error instanceof TeamEntryRefusedError && error.reason === "not-a-member") return "join";
   if (error instanceof HostVersionMismatchError)
     return error.code === "client-too-old" ? "update-app" : "update-server";
   if (error instanceof HostClientRequestError) {

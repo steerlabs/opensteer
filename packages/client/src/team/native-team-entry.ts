@@ -15,6 +15,7 @@ import {
 import { z } from "zod";
 import {
   TeamEntryRefusedError,
+  TeamIdentityGrantUnsupportedError,
   type HostOAuthState,
   type NativeOAuthManager,
 } from "../auth/native-oauth.js";
@@ -26,6 +27,8 @@ import {
   type VerifiedHostEndpoint,
 } from "../connections/deployment-catalog.js";
 import { ClientOperationError } from "../connections/operation-error.js";
+import { createHttpHostApiClient } from "../host/host-api-client.js";
+import { unwrapRpcResult } from "../host/host-session-client.js";
 import type { VerifiedTeam } from "./team-coordinator.js";
 
 export function verifiedTeam(verified: VerifiedHostEndpoint): VerifiedTeam {
@@ -89,6 +92,8 @@ export async function previewTeamInvite(
 type TeamEntryOAuth = Pick<
   NativeOAuthManager,
   | "authorizationHeader"
+  | "isTeamSignInSuppressed"
+  | "resumeTeamSignIn"
   | "accountAuthorizationLease"
   | "beginHostSignIn"
   | "exchangeTeamSession"
@@ -101,6 +106,29 @@ type TeamEntryCatalog = Pick<
   "addPendingAccountDeployment" | "load" | "remove" | "upsert"
 >;
 
+/** Shared by device entry and an attachment's explicit authorization action. */
+export async function authorizeTeamCredential(
+  oauth: TeamEntryOAuth,
+  connection: DeploymentConnection,
+  invite: TeamInviteSecret | null,
+  interactive: boolean,
+): Promise<Pick<TeamSessionExchangeResponse, "admitted" | "member"> | null | false> {
+  if (interactive) await oauth.resumeTeamSignIn(connection);
+  else if (oauth.isTeamSignInSuppressed(connection)) return null;
+  if (await oauth.authorizationHeader(connection)) return null;
+  if (
+    connection.capabilities?.includes("team-session-exchange-v1") &&
+    (await oauth.accountAuthorizationLease())
+  ) {
+    try {
+      return await oauth.exchangeTeamSession(connection, invite ?? undefined);
+    } catch (error) {
+      if (!(error instanceof TeamIdentityGrantUnsupportedError)) throw error;
+    }
+  }
+  return false;
+}
+
 /**
  * Entering a team as the signed-in Account, where this device keeps its credentials (desktop
  * main, the phone). The team stays on the device as an Account entry until Account's directory
@@ -109,26 +137,42 @@ type TeamEntryCatalog = Pick<
 export class NativeTeamEntry {
   readonly #oauth: TeamEntryOAuth;
   readonly #catalog: TeamEntryCatalog;
+  readonly #fetch: typeof globalThis.fetch;
 
-  constructor(options: { readonly oauth: TeamEntryOAuth; readonly catalog: TeamEntryCatalog }) {
+  constructor(options: {
+    readonly oauth: TeamEntryOAuth;
+    readonly catalog: TeamEntryCatalog;
+    readonly fetch?: typeof globalThis.fetch;
+  }) {
     this.#oauth = options.oauth;
     this.#catalog = options.catalog;
+    this.#fetch = options.fetch ?? globalThis.fetch;
   }
 
   async enter(
     verified: VerifiedHostEndpoint,
     invite: TeamInviteSecret | null,
   ): Promise<Pick<TeamSessionExchangeResponse, "admitted" | "member">> {
-    const held = await this.#held(verified.discovery.deploymentId);
-    const connection = await this.#keep(verified, held);
-    try {
-      return await this.#oauth.exchangeTeamSession(connection, invite ?? undefined);
-    } catch (error) {
-      // Someone the team turned away keeps no entry for it.
-      if (held === null)
-        await this.#catalog.remove(verified.discovery.deploymentId).catch(() => undefined);
-      throw error;
-    }
+    const entered = await this.ensureAuthorized(verified, invite);
+    if (entered) return entered;
+    const connection = (await this.#held(verified.discovery.deploymentId))!;
+    const rpc = createHttpHostApiClient({
+      baseUrl: new URL(verified.discovery.canonicalOrigin),
+      kind: "team",
+      fetch: async (input, init) => {
+        const authorization = await this.#oauth.authorizationHeader(connection);
+        return this.#fetch(input, {
+          ...init,
+          credentials: "omit",
+          headers: {
+            ...Object.fromEntries(new Headers(init?.headers)),
+            ...(authorization ? { authorization } : {}),
+          },
+        });
+      },
+      onAuthenticationRequired: () => {},
+    });
+    return { admitted: false, member: unwrapRpcResult(await rpc["team.bootstrap.get"]({})).member };
   }
 
   /**
@@ -138,19 +182,38 @@ export class NativeTeamEntry {
    * expires.
    */
   async signIn(verified: VerifiedHostEndpoint, invite: TeamInviteSecret | null): Promise<void> {
-    return this.ensureAuthorized(verified, invite);
+    await this.ensureAuthorized(verified, invite);
   }
 
   async ensureAuthorized(
     verified: VerifiedHostEndpoint,
     invite: TeamInviteSecret | null = null,
-  ): Promise<void> {
+    interactive = true,
+  ): Promise<Pick<TeamSessionExchangeResponse, "admitted" | "member"> | null> {
     const deploymentId = verified.discovery.deploymentId;
     const held = await this.#held(deploymentId);
     try {
-      const connection = held ?? (await this.#keepManual(verified));
-      if (await this.#oauth.authorizationHeader(connection)) return;
-      await this.#browserSignIn(connection, invite);
+      if (held) {
+        const authorized = await authorizeTeamCredential(this.#oauth, held, invite, interactive);
+        if (authorized !== false) return authorized;
+        if (interactive) await this.#browserSignIn(held, invite);
+        return null;
+      }
+      const canExchange =
+        verified.capabilities.includes("team-session-exchange-v1") &&
+        (await this.#oauth.accountAuthorizationLease());
+      const connection = canExchange
+        ? await this.#keep(verified, held)
+        : await this.#keepManual(verified);
+      const authorized = await authorizeTeamCredential(
+        this.#oauth,
+        connection,
+        invite,
+        interactive,
+      );
+      if (authorized !== false) return authorized;
+      if (interactive) await this.#browserSignIn(connection, invite);
+      return null;
     } catch (error) {
       if (held === null) await this.#catalog.remove(deploymentId).catch(() => undefined);
       throw error;
@@ -166,13 +229,15 @@ export class NativeTeamEntry {
     verify: () => Promise<VerifiedHostEndpoint>,
   ): Promise<void> {
     const held = await this.#held(deploymentId);
-    if (held && (held.source.kind === "manual" || held.accountAccess !== null)) return;
+    if (
+      held &&
+      (this.#oauth.isTeamSignInSuppressed(held) || (await this.#oauth.authorizationHeader(held)))
+    )
+      return;
     const verified = await verify();
     if (verified.discovery.deploymentId !== deploymentId)
       throw new Error("That address now answers as a different team.");
-    const connection = await this.#keep(verified, held);
-    if (this.#oauth.hostCredentialState(connection).status === "signed-in") return;
-    await this.#oauth.exchangeTeamSession(connection);
+    await this.ensureAuthorized(verified, null, false);
   }
 
   /** Drops this device's credential and entry for the team. */

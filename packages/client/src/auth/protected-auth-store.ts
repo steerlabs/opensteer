@@ -29,6 +29,9 @@ export const AccountCredentialSchema = OAuthCredentialSchema.extend({
 export type AccountCredential = z.infer<typeof AccountCredentialSchema>;
 
 export const HostCredentialSchema = OAuthCredentialSchema.extend({
+  accountIdentity: z
+    .strictObject({ issuer: CanonicalOriginSchema, subject: ControlPlaneAccountIdSchema })
+    .optional(),
   canonicalOrigin: CanonicalOriginSchema,
   deploymentId: DeploymentIdSchema,
   hostInstanceId: HostInstanceIdSchema,
@@ -41,6 +44,7 @@ export const ProtectedAuthStateSchema = z
     account: AccountCredentialSchema.nullable(),
     hosts: z.array(HostCredentialSchema).max(100),
     schemaVersion: z.literal(2),
+    signedOutTeams: z.array(DeploymentIdSchema).max(100).optional(),
   })
   .superRefine(refineProtectedAuthState);
 export type ProtectedAuthState = z.infer<typeof ProtectedAuthStateSchema>;
@@ -57,6 +61,10 @@ export type ProtectedAuthState = z.infer<typeof ProtectedAuthStateSchema>;
  * storage that is unusable from an identity that is merely signed out.
  */
 export interface ProtectedAuthStore {
+  setTeamSignOutSuppression?(
+    deploymentId: DeploymentId,
+    suppressed: boolean,
+  ): Promise<ProtectedAuthState>;
   assertAvailable(): Promise<void>;
   clearAccount(): Promise<ProtectedAuthState>;
   clearHost(deploymentId: DeploymentId | string): Promise<ProtectedAuthState>;

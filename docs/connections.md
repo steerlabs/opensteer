@@ -210,3 +210,8 @@ verified Account read or an identity-checked manual probe. A failed check is nev
 and a failed refresh never renews stale evidence. Only the Account refusing the refresh grant ends
 its session; network failure, rate limiting and outage stay retryable
 ([`deployment-access-service.ts`](../apps/desktop/src/connections/deployment-access-service.ts)).
+
+Native team entry reuses or refreshes a credential before the Account identity exchange, then
+falls back to browser sign-in only when interactive authorization is needed. An Account outage
+leaves entry retryable. Explicit team sign-out survives restart and suppresses silent entry
+until explicit sign-in.

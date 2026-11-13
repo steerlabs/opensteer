@@ -1,3 +1,4 @@
+import { authorizeTeamCredential } from "../team/native-team-entry.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { encodeBase64Url, decodeBase64Url } from "@opensteer/shared/base64url";
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
@@ -224,6 +225,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
   readonly #fetch: OAuthFetch;
   readonly #accountListeners = new Set<AccountAuthStateListener>();
   readonly #flowExpiries = new Map<string, () => void>();
+  readonly #signedOutTeams = new Set<DeploymentId>();
   readonly #hostListeners = new Set<HostOAuthStateListener>();
   readonly #networkTimeoutMs: number;
   readonly #now: () => Date;
@@ -512,6 +514,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     // Claimed before the first await. Protected storage can take long enough
     // for a person to leave the flow, and only this fence sees that boundary.
     const generation = this.#advanceHostGeneration(deploymentId);
+    await this.resumeTeamSignIn(connection);
     await this.#beforeHostChange(connection);
     await this.#ensureStorageReady();
     if (this.#hostGeneration(deploymentId) !== generation) {
@@ -540,31 +543,25 @@ export class NativeOAuthManager implements HostCredentialProvider {
     return this.hostCredentialState(connection);
   }
 
-  /**
-   * Signs in to a team by the best door it offers: the Account's identity when the team advertises
-   * `team-session-exchange-v1` and an Account is signed in, otherwise the team's own browser
-   * sign-in. A team that turns the person away throws `TeamEntryRefusedError`; the browser would
-   * refuse them too.
-   */
+  isTeamSignInSuppressed(connection: DeploymentConnection): boolean {
+    return this.#signedOutTeams.has(connection.authority.document.deploymentId);
+  }
+
+  async resumeTeamSignIn(connection: DeploymentConnection): Promise<void> {
+    this.#signedOutTeams.delete(connection.authority.document.deploymentId);
+    await this.#store.setTeamSignOutSuppression?.(
+      connection.authority.document.deploymentId,
+      false,
+    );
+  }
+
   async signInTeam(
     connection: DeploymentConnection,
     invite?: TeamInviteSecret,
   ): Promise<HostOAuthState> {
-    if (!supportsTeamSessionExchange(connection) || !this.#accountSession) {
-      return this.beginHostSignIn(connection, invite);
-    }
-    let assertion: IssueTeamIdentityGrantResponse["assertion"];
-    try {
-      ({ assertion } = await this.issueTeamIdentityGrant(
-        connection.authority.document.deploymentId,
-        this.#teamIdentityRequest(connection),
-      ));
-    } catch {
-      // An Account that cannot vouch this time leaves the team's own sign-in.
-      return this.beginHostSignIn(connection, invite);
-    }
-    await this.exchangeTeamAssertion(connection, { assertion, ...(invite ? { invite } : {}) });
-    return this.hostCredentialState(connection);
+    const authorized = await authorizeTeamCredential(this, connection, invite ?? null, true);
+    if (authorized !== false) return this.hostCredentialState(connection);
+    return this.beginHostSignIn(connection, invite);
   }
 
   /**
@@ -577,11 +574,22 @@ export class NativeOAuthManager implements HostCredentialProvider {
     connection: DeploymentConnection,
     invite?: TeamInviteSecret,
   ): Promise<Pick<TeamSessionExchangeResponse, "admitted" | "member">> {
+    const lease = await this.accountAuthorizationLease();
+    if (!lease) throw new ClientOperationError("Account authorization changed.", "transient");
+    if (this.isTeamSignInSuppressed(connection))
+      throw new ClientOperationError("Signing in to this team was interrupted.", "transient");
+    const generation = this.#advanceHostGeneration(connection.authority.document.deploymentId);
     const { assertion } = await this.issueTeamIdentityGrant(
       connection.authority.document.deploymentId,
       this.#teamIdentityRequest(connection),
     );
-    return this.exchangeTeamAssertion(connection, { assertion, ...(invite ? { invite } : {}) });
+    if (lease.signal.aborted)
+      throw new ClientOperationError("Account authorization changed.", "transient");
+    return this.exchangeTeamAssertion(
+      connection,
+      { assertion, ...(invite ? { invite } : {}) },
+      { lease, generation },
+    );
   }
 
   #teamIdentityRequest(connection: DeploymentConnection): IssueTeamIdentityGrantRequest {
@@ -616,6 +624,11 @@ export class NativeOAuthManager implements HostCredentialProvider {
       lease.signal,
     );
     if (!response.ok) {
+      if (response.status === 409)
+        throw new TeamEntryRefusedError(
+          "authority-changed",
+          "The team authority changed. Open its address again.",
+        );
       // A route the Account doesn't have answers without Account's own error body.
       if (
         response.status === 404 &&
@@ -634,6 +647,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
   async exchangeTeamAssertion(
     connectionInput: DeploymentConnection,
     request: TeamSessionExchangeRequest,
+    context?: { readonly lease: AccountAuthorizationLease; readonly generation: number },
   ): Promise<Pick<TeamSessionExchangeResponse, "admitted" | "member">> {
     const connection = structuredClone(connectionInput);
     if (!supportsTeamSessionExchange(connection)) {
@@ -642,13 +656,14 @@ export class NativeOAuthManager implements HostCredentialProvider {
     const authority = connection.authority;
     const deploymentId = authority.document.deploymentId;
     const origin = authority.document.canonicalOrigin;
-    const generation = this.#advanceHostGeneration(deploymentId);
+    const generation = context?.generation ?? this.#advanceHostGeneration(deploymentId);
     await this.#beforeHostChange(connection);
     await this.#ensureStorageReady();
     const exchanged = await this.#postJson(
       `${origin}${teamSessionExchangePath}`,
       TeamSessionExchangeRequestSchema.parse(request),
       { [teamApiVersionHeader]: String(teamApiVersion) },
+      context?.lease.signal,
     );
     if (!exchanged.ok) throw teamExchangeFailure(exchanged.status, exchanged.body);
     const entered = TeamSessionExchangeResponseSchema.parse(exchanged.body);
@@ -661,6 +676,9 @@ export class NativeOAuthManager implements HostCredentialProvider {
           opensteerHostOAuthScopes,
           this.#now(),
         ),
+        ...(context
+          ? { accountIdentity: { issuer: context.lease.issuer, subject: context.lease.subject } }
+          : {}),
         viewLoginId: globalThis.crypto.randomUUID(),
         canonicalOrigin: origin,
         deploymentId,
@@ -671,7 +689,10 @@ export class NativeOAuthManager implements HostCredentialProvider {
       await this.#revokeLateCredential(hostEndpoints(origin), entered.tokens.refresh_token, origin);
       throw error;
     }
-    const current = () => this.#hostGeneration(deploymentId) === generation && !this.#disposed;
+    const current = () =>
+      this.#hostGeneration(deploymentId) === generation &&
+      !this.#disposed &&
+      !context?.lease.signal.aborted;
     const committed = await this.#mutateCredentials(async () => {
       if (!current()) return false;
       const state = await this.#store.setHost(credential);
@@ -924,14 +945,8 @@ export class NativeOAuthManager implements HostCredentialProvider {
       (await this.#refreshHostCredential(connection, credential)) !== null
     )
       return true;
-    if (!supportsTeamSessionExchange(connection) || !this.#accountSession) return false;
-    try {
-      await this.exchangeTeamSession(connection);
-    } catch (error) {
-      if (error instanceof TeamIdentityGrantUnsupportedError) return false;
-      throw error;
-    }
-    return true;
+    if (this.isTeamSignInSuppressed(connection)) return false;
+    return (await authorizeTeamCredential(this, connection, null, false)) !== false;
   }
 
   async #refreshHostCredential(
@@ -1227,12 +1242,13 @@ export class NativeOAuthManager implements HostCredentialProvider {
     this.#assertStorageReady();
     const deploymentId = connection.authority.document.deploymentId;
     const key = hostAttachmentKey(connection);
+    const credential = this.#hostCredential(deploymentId);
+    this.#signedOutTeams.add(deploymentId);
     this.#removePending(
       (flow) =>
         flow.kind === "host" && flow.connection.authority.document.deploymentId === deploymentId,
     );
     const generation = this.#advanceHostGeneration(deploymentId);
-    const credential = this.#hostCredential(deploymentId);
     this.#hostCredentials = this.#hostCredentials.filter(
       (candidate) => candidate.deploymentId !== deploymentId,
     );
@@ -1240,6 +1256,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     this.#hostDetails.delete(key);
     await this.#beforeHostChange(connection);
     await this.#mutateCredentials(async () => {
+      await this.#store.setTeamSignOutSuppression?.(deploymentId, true);
       this.#adoptHostCredentials((await this.#store.clearHost(deploymentId)).hosts);
     });
     this.#emitHost(connection);
@@ -1531,7 +1548,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
         method: "POST",
         redirect: "error",
         referrerPolicy: "no-referrer",
-        signal: controller.signal,
+        signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
       });
       if (response.redirected || (response.url !== "" && response.url !== endpoint)) {
         throw new Error("The server endpoint redirected.");
@@ -1626,12 +1643,47 @@ export class NativeOAuthManager implements HostCredentialProvider {
     if (this.#pendingAccountWrite !== next?.credential) this.#pendingAccountWrite = null;
     if (previous && previous.controller !== next?.controller) {
       previous.controller.abort(new Error("The Account authorization changed."));
+      const affected = this.#disposed
+        ? []
+        : this.#hostCredentials.filter(
+            (host) =>
+              host.accountIdentity &&
+              host.accountIdentity.issuer === previous.credential.issuerOrigin &&
+              host.accountIdentity.subject === previous.credential.subject,
+          );
+      for (const host of affected) {
+        this.#advanceHostGeneration(host.deploymentId);
+        this.#pendingHostWrites.delete(host.deploymentId);
+      }
+      this.#hostCredentials = this.#hostCredentials.filter((host) => !affected.includes(host));
+      void this.#mutateCredentials(async () => {
+        this.#adoptHostCredentials(
+          (await this.#store.clearHosts(affected.map((host) => host.deploymentId))).hosts,
+        );
+        for (const connection of (await this.#catalog.load()).deployments) {
+          if (
+            affected.some(
+              (host) => host.deploymentId === connection.authority.document.deploymentId,
+            )
+          ) {
+            await this.#beforeHostChange(connection);
+            this.#emitHost(connection);
+          }
+        }
+      }).catch(() => undefined);
+      for (const host of affected)
+        void this.#revokeLateCredential(
+          hostEndpoints(host.canonicalOrigin),
+          host.refreshToken,
+          host.canonicalOrigin,
+        );
     }
   }
 
   /** Adopts persisted credentials, replacing whatever the process held. */
   #adoptProtectedState(state: ProtectedAuthState): void {
     this.#hostCredentials = state.hosts;
+    for (const id of state.signedOutTeams ?? []) this.#signedOutTeams.add(id);
     this.#replaceAccountSession(
       state.account && state.account.issuerOrigin === this.#accountOrigin
         ? newAccountSession(state.account)
@@ -1664,7 +1716,15 @@ export class NativeOAuthManager implements HostCredentialProvider {
   }
 
   #hostCredential(deploymentId: DeploymentId | string): HostCredential | undefined {
-    return this.#hostCredentials.find((candidate) => candidate.deploymentId === deploymentId);
+    return this.#hostCredentials.find(
+      (candidate) =>
+        candidate.deploymentId === deploymentId &&
+        !this.#signedOutTeams.has(candidate.deploymentId) &&
+        (!candidate.accountIdentity ||
+          (candidate.accountIdentity.issuer === this.#accountSession?.credential.issuerOrigin &&
+            candidate.accountIdentity.subject === this.#accountSession?.credential.subject &&
+            !this.#accountSession.controller.signal.aborted)),
+    );
   }
 
   #hostGeneration(deploymentId: DeploymentId): number {

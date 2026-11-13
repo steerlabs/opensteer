@@ -33,12 +33,19 @@ posted an explicit reply; reconnect recovers pending publication without rerunni
 
 ## Entering a team
 
-The desktop and mobile apps enter a team advertising `team-session-exchange-v1` without a
+Desktop and mobile first reuse or refresh their team credential. With an Account session, they
+enter a team advertising `team-session-exchange-v1` without a
 browser. Account signs a single-use assertion, valid for one minute, of who the person is for
 that exact team Host and app; it proves identity, never membership. The team Host verifies it
 against Account's published keys and, in one transaction, spends it and either signs in an active
 member or admits a newcomer through the invite sent beside it. It then issues the same native
-tokens a browser sign-in would. Older teams keep the browser sign-in; the app carries an invite
+tokens a browser sign-in would. Exchanges record the Account issuer and subject; Account
+sign-out or switch fences in-flight exchanges and stops use of those credentials. Legacy
+credentials without provenance are never attributed to the current Account. Explicit team
+sign-out suppresses silent entry until an explicit sign-in. Account or JWKS outages remain
+retryable; membership refusals ask for an invite without a browser loop. Silent entry sends no
+invite unless the person explicitly joins with one. Older teams keep the browser sign-in; the
+app carries an invite
 through it only when the team advertises `team-invite-native-continuation-v1`, because older invite
 pages drop the app's sign-in. Otherwise the person joins on the invite page in their browser and
 the app signs in once they come back, a member by then. An invite re-admits a
