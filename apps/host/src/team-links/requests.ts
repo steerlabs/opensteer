@@ -5,6 +5,8 @@ import {
   type RunId,
   type TeamAgentRequestId,
   type MessageId,
+  type UserId,
+  type TeamAskDecision,
 } from "@opensteer/core";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
@@ -12,6 +14,7 @@ import {
   TeamAgentRequestSchema,
   TeamMarkdownSchema,
   type PersonalTeamRequest,
+  type PersonalTeamRequestMirror,
   type TeamRunRequest,
 } from "@opensteer/protocol";
 import type { TaskAdmissionPort } from "../threads/task-admission.js";
@@ -35,6 +38,11 @@ export interface PersonalTeamRequestsOptions {
   readonly admission: TaskAdmissionPort;
   readonly runs: PersonalTeamRunPort;
   readonly rpc: (teamId: DeploymentId) => TeamLinkRpc;
+  readonly onConsentChanged?: (
+    teamId: DeploymentId,
+    requestId: TeamAgentRequestId,
+    opened: boolean,
+  ) => Promise<void>;
 }
 
 export class PersonalTeamRequests {
@@ -61,7 +69,6 @@ export class PersonalTeamRequests {
     const link = await links.get(teamId);
     if (!link || !["active", "unreachable"].includes(link.state)) throw linkError();
     const request = TeamAgentRequestSchema.parse(value.request);
-    if (request.kind !== "self") throw linkError();
     const source = TeamSourceSchema.parse(value.source);
     if (
       source.teamId !== teamId ||
@@ -73,6 +80,55 @@ export class PersonalTeamRequests {
     )
       throw linkError();
     await links.observeName(teamId, source.audience.teamName);
+    if (request.kind !== "self") {
+      if (
+        request.kind === "ask" &&
+        (!value.presentation ||
+          !request.consentExpiresAt ||
+          value.presentation.destination.teamId !== teamId ||
+          value.presentation.destination.channelId !== source.channelId ||
+          value.presentation.destination.threadRootId !== source.threadRootId ||
+          value.presentation.audience.peopleOnly)
+      )
+        throw linkError("bad_request");
+      if (request.kind === "return" && !value.returnPayload) throw linkError("bad_request");
+      const opened = await requests.observe({
+        teamId,
+        requestId: request.id,
+        kind: request.kind,
+        remoteState: request.state,
+        presentation: value.presentation,
+        consentExpiresAt: request.consentExpiresAt,
+        returnPayload: value.returnPayload,
+        localDecision: null,
+        decisionAt: null,
+        returnAdmission: null,
+        triggerMessageId: request.triggerMessageId,
+        taskId: null,
+        inputId: null,
+        runId: null,
+        source,
+        terminalState: null,
+        publicationState: "pending",
+        replyMessageId: null,
+        answerMessageId: null,
+        answerPayload: null,
+        clientMessageId: null,
+        deliveryVia: null,
+        blockedReason: null,
+        createdAt: request.createdAt,
+      });
+      const mirror = (await requests.mirror(teamId, request.id))!;
+      if (["declined", "done", "failed", "stopped", "cancelled"].includes(request.state)) {
+        await this.cancel(teamId, request.id);
+        return;
+      }
+      if (request.kind === "ask") {
+        if (opened) await this.options.onConsentChanged?.(teamId, request.id, true);
+        await this.#decided(mirror);
+      } else await this.#return(mirror);
+      return;
+    }
     let local = await requests.get(teamId, request.id);
     if (local && local.triggerMessageId !== request.triggerMessageId) throw linkError("conflict");
     if (local?.publicationState === "blocked") return;
@@ -146,17 +202,125 @@ export class PersonalTeamRequests {
     await this.reconcileOne(local);
   }
 
+  async decide(
+    ownerId: UserId,
+    teamId: DeploymentId,
+    requestId: TeamAgentRequestId,
+    decision: TeamAskDecision,
+  ): Promise<void> {
+    const local = await this.options.requests.decide(ownerId, teamId, requestId, decision);
+    await this.options.onConsentChanged?.(teamId, requestId, false);
+    await this.#decided(local);
+  }
+
+  async #decided(local: PersonalTeamRequestMirror): Promise<void> {
+    if (!local.localDecision || local.terminalState || local.publicationState === "blocked") return;
+    if (local.taskId) {
+      const admitted = await this.options.requests.get(local.teamId, local.requestId);
+      if (admitted) await this.reconcileOne(admitted);
+      return;
+    }
+    try {
+      const ack = await this.options
+        .rpc(local.teamId)
+        .call({ type: "accept", requestId: local.requestId, decision: local.localDecision });
+      if (
+        ack.kind !== "accepted" ||
+        ack.request.id !== local.requestId ||
+        ack.request.kind !== "ask"
+      )
+        throw linkError("bad_request");
+      await this.options.requests.remote(local.teamId, local.requestId, ack.request.state);
+      if (
+        local.localDecision === "decline" ||
+        !["queued", "working", "needs_you"].includes(ack.request.state)
+      ) {
+        await this.cancel(local.teamId, local.requestId);
+        return;
+      }
+      const presentation = local.presentation!;
+      await this.options.admission.admitTeamRequest({
+        bodyMarkdown: presentation.bodyMarkdown,
+        attachments: presentation.attachments,
+        origin: presentation.destination,
+        requestId: local.requestId,
+        triggerMessageId: local.triggerMessageId,
+        source: local.source,
+      });
+      const admitted = await this.options.requests.get(local.teamId, local.requestId);
+      if (admitted) await this.reconcileOne(admitted);
+    } catch (error) {
+      await this.#failure(local, error);
+      throw error;
+    }
+  }
+
+  async #return(local: PersonalTeamRequestMirror): Promise<void> {
+    if (local.terminalState && !local.returnAdmission) return;
+    await this.options.admission.admitTeamReturn({
+      teamId: local.teamId,
+      requestId: local.requestId,
+    });
+    const ack = await this.options
+      .rpc(local.teamId)
+      .call({ type: "accept", requestId: local.requestId });
+    if (
+      ack.kind !== "accepted" ||
+      ack.request.id !== local.requestId ||
+      ack.request.kind !== "return"
+    )
+      throw linkError("bad_request");
+    await this.options.requests.remote(local.teamId, local.requestId, "done");
+  }
+
   async reconnect(teamId: DeploymentId): Promise<void> {
-    for (const request of await this.options.requests.forTeam(teamId)) {
+    const all = await this.options.requests.mirrors(teamId);
+    for (const local of all.filter((row) => row.kind === "self")) {
+      const admitted = await this.options.requests.get(teamId, local.requestId);
+      if (!admitted) continue;
       try {
-        await this.#receipt(request);
-        const current = (await this.options.requests.get(teamId, request.requestId))!;
+        await this.#receipt(admitted);
+        const current = (await this.options.requests.get(teamId, local.requestId))!;
         const outcome = await this.options.runs.outcome(current);
         if (["pending", "working", "needs_you"].includes(outcome.state))
-          await this.options.rpc(teamId).call({ type: "accept", requestId: request.requestId });
+          await this.options.rpc(teamId).call({ type: "accept", requestId: local.requestId });
         await this.reconcileOne(current);
       } catch (error) {
-        await this.#failure(request, error);
+        await this.#failure(local, error);
+      }
+    }
+    const mirrors = all.filter((row) => row.kind !== "self");
+    for (let offset = 0; offset < mirrors.length; offset += 200) {
+      const batch = mirrors.slice(offset, offset + 200);
+      const result = await this.options
+        .rpc(teamId)
+        .call({ type: "reconcile", requestIds: batch.map((row) => row.requestId) });
+      if (result.kind !== "reconciled") throw linkError("bad_request");
+      for (const local of batch) {
+        try {
+          const remote = result.requests.find(
+            (entry) => entry.requestId === local.requestId,
+          )?.request;
+          if (
+            !remote ||
+            ["declined", "done", "failed", "stopped", "cancelled"].includes(remote.state)
+          ) {
+            if (local.kind === "return" && local.returnAdmission) {
+              await this.options.requests.remote(teamId, local.requestId, "done");
+            } else if (local.taskId) {
+              const admitted = await this.options.requests.get(teamId, local.requestId);
+              if (admitted && (await this.#receipt(admitted))) continue;
+              await this.cancel(teamId, local.requestId);
+            } else await this.cancel(teamId, local.requestId);
+            continue;
+          }
+          await this.options.requests.remote(teamId, local.requestId, remote.state);
+          if (local.kind === "ask") {
+            await this.#decided({ ...local, remoteState: remote.state });
+          } else if (local.kind === "return") await this.#return(local);
+        } catch (error) {
+          await this.#failure(local, error);
+        }
       }
     }
   }
@@ -176,7 +340,7 @@ export class PersonalTeamRequests {
     return true;
   }
 
-  async #failure(request: PersonalTeamRequest, error: unknown): Promise<void> {
+  async #failure(request: PersonalTeamRequestMirror, error: unknown): Promise<void> {
     if (
       error instanceof OpensteerError &&
       ["forbidden", "unauthorized", "not_found"].includes(error.code)
@@ -345,18 +509,19 @@ export class PersonalTeamRequests {
     reason = "The team request was cancelled.",
   ): Promise<void> {
     this.#lastStatus.delete(`${teamId}:${requestId}`);
-    const request = await this.options.requests.get(teamId, requestId);
+    const request = await this.options.requests.mirror(teamId, requestId);
     if (request) {
       await this.options.requests.terminal(teamId, requestId, request.runId, "cancelled");
-      if (request.publicationState !== "accepted")
+      if (request.taskId && request.publicationState !== "accepted")
         await this.options.requests.publication(teamId, requestId, "blocked", null, reason);
     }
     await this.options.admission.cancelTeamRequest({ teamId, requestId });
+    await this.options.onConsentChanged?.(teamId, requestId, false);
   }
 
   async revoked(teamId: DeploymentId): Promise<void> {
     await this.options.links.state(teamId, "revoked");
-    for (const request of await this.options.requests.forTeam(teamId))
+    for (const request of await this.options.requests.mirrors(teamId))
       await this.cancel(teamId, request.requestId, "The team link was revoked.");
   }
 }

@@ -121,6 +121,7 @@ export const TeamAgentReturnOutcomeSchema = z.enum([
 export type TeamAgentReturnOutcome = z.infer<typeof TeamAgentReturnOutcomeSchema>;
 // This payload is private to the receiving link; never include it in team member views.
 export const TeamAgentReturnPayloadSchema = z.strictObject({
+  author: TeamAskerSchema.optional(),
   originAskId: TeamAgentRequestIdSchema,
   resumeRunId: RunIdSchema,
   outcome: TeamAgentReturnOutcomeSchema,
@@ -129,6 +130,7 @@ export const TeamAgentReturnPayloadSchema = z.strictObject({
 });
 export const TeamAgentReturnPayloadViewSchema = z.object({
   ...TeamAgentReturnPayloadSchema.shape,
+  author: z.object(TeamAskerSchema.shape).optional(),
   attachments: z.array(z.object(TeamAttachmentRefSchema.shape)).max(10),
 });
 export type TeamAgentReturnPayload = z.infer<typeof TeamAgentReturnPayloadSchema>;

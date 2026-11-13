@@ -127,7 +127,7 @@ export class PersonalTeamLinks {
       if (remote.state !== "active" || remote.personalDeploymentId !== this.options.deploymentId)
         throw linkError();
       if (existing?.remoteLinkId !== remote.id) {
-        for (const request of await this.options.requests.options.requests.forTeam(offer.teamId))
+        for (const request of await this.options.requests.options.requests.mirrors(offer.teamId))
           await this.options.requests.cancel(offer.teamId, request.requestId);
       }
       await links.observeName(offer.teamId, remote.teamName);
@@ -206,7 +206,7 @@ export class PersonalTeamLinks {
     await this.options.links.state(teamId, "leaving");
     this.#connections.get(teamId)?.stop();
     this.#connections.delete(teamId);
-    for (const request of await this.options.requests.options.requests.forTeam(teamId))
+    for (const request of await this.options.requests.options.requests.mirrors(teamId))
       await this.options.requests.cancel(teamId, request.requestId, "You left this team.");
     this.#retryLeave(teamId);
   }

@@ -13684,6 +13684,32 @@
                       {
                         "type": "object",
                         "properties": {
+                          "author": {
+                            "type": "object",
+                            "properties": {
+                              "teamUserId": {
+                                "type": "string",
+                                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                              },
+                              "displayName": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 160
+                              },
+                              "actor": {
+                                "type": "string",
+                                "enum": [
+                                  "human",
+                                  "agent"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "teamUserId",
+                              "displayName",
+                              "actor"
+                            ]
+                          },
                           "originAskId": {
                             "type": "string",
                             "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"

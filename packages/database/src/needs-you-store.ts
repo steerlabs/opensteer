@@ -2,13 +2,12 @@ import { boundedSerializedPrefix } from "./message-window.js";
 import {
   OpensteerError,
   PendingRequestViewSchema,
-  RequestIdSchema,
   type ThreadId,
   type RequestId,
   type TaskPurpose,
   type UserId,
 } from "@opensteer/core";
-import { NeedsYouPageSchema, type NeedsYouPage } from "@opensteer/protocol";
+import { NeedsYouPageSchema, type NeedsYouPage, type NeedsYouEntry } from "@opensteer/protocol";
 import { sql, type Kysely } from "kysely";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
@@ -51,17 +50,47 @@ export function needsYouPage(
         query = query.where((eb) =>
           eb.or([
             eb("createdAt", "<", cursor.timestamp),
+            eb.and([eb("createdAt", "=", cursor.timestamp), sql<boolean>`id < ${cursor.id}`]),
+          ]),
+        );
+      let asks = transaction
+        .selectFrom("personalTeamRequests")
+        .where(
+          "teamDeploymentId",
+          "in",
+          transaction
+            .selectFrom("personalTeamLinks")
+            .select("teamDeploymentId")
+            .where("state", "in", ["active", "unreachable", "needs_update"]),
+        )
+        .where("kind", "=", "ask")
+        .where("remoteState", "=", "awaiting_approval")
+        .where("localDecision", "is", null)
+        .where("terminalState", "is", null)
+        .where("consentExpiresAt", ">", new Date());
+      let askQuery = asks
+        .selectAll()
+        .orderBy("createdAt", "desc")
+        .orderBy("teamDeploymentId", "desc")
+        .orderBy("requestId", "desc")
+        .limit(limit + 1);
+      if (cursor)
+        askQuery = askQuery.where((eb) =>
+          eb.or([
+            eb("createdAt", "<", cursor.timestamp),
             eb.and([
               eb("createdAt", "=", cursor.timestamp),
-              eb("id", "<", RequestIdSchema.parse(cursor.id)),
+              sql<boolean>`concat('team:', team_deployment_id, ':', request_id) < ${cursor.id}`,
             ]),
           ]),
         );
-      const [rows, total] = await Promise.all([
+      const [rows, total, askRows, askTotal] = await Promise.all([
         query.execute(),
         pending.select(({ fn }) => fn.countAll<string>().as("count")).executeTakeFirstOrThrow(),
+        askQuery.execute(),
+        asks.select(({ fn }) => fn.countAll<string>().as("count")).executeTakeFirstOrThrow(),
       ]);
-      const selected = rows.slice(0, limit);
+      const selected = rows;
       const navigation = selected.length
         ? await sql<{
             requestId: RequestId;
@@ -89,7 +118,7 @@ export function needsYouPage(
       from navigation order by request_id, depth desc`.execute(transaction)
         : { rows: [] };
       const byRequest = new Map(navigation.rows.map((row) => [row.requestId, row]));
-      const candidates = selected.map((row) => {
+      const requests = selected.map((row) => {
         const target = byRequest.get(row.id);
         if (!target) throw new Error("Request lost its originating task");
         return {
@@ -101,25 +130,58 @@ export function needsYouPage(
           purpose: target.purpose,
         };
       });
-      const bounded = boundedSerializedPrefix(candidates, limit, maxBytes);
+      const candidates: { entry: NeedsYouEntry; createdAt: string; id: string }[] = [
+        ...requests.map((entry) => ({
+          entry,
+          createdAt: entry.request.createdAt,
+          id: entry.request.id,
+        })),
+        ...askRows.map((row) => ({
+          entry: {
+            kind: "team-ask" as const,
+            teamId: row.teamDeploymentId,
+            requestId: row.requestId,
+            presentation: row.presentation!,
+            createdAt: row.createdAt.toISOString(),
+            consentExpiresAt: row.consentExpiresAt!.toISOString(),
+          },
+          createdAt: row.createdAt.toISOString(),
+          id: `team:${row.teamDeploymentId}:${row.requestId}`,
+        })),
+      ].sort((a, b) =>
+        a.createdAt === b.createdAt
+          ? a.id < b.id
+            ? 1
+            : a.id > b.id
+              ? -1
+              : 0
+          : a.createdAt < b.createdAt
+            ? 1
+            : -1,
+      );
+      const bounded = boundedSerializedPrefix(
+        candidates.map((item) => item.entry),
+        limit,
+        maxBytes,
+      );
       if (candidates.length && !bounded.items.length)
         throw new OpensteerError({
           code: "resource_exhausted",
           message: "A pending Request exceeds the page byte limit.",
         });
       const entries = [...bounded.items];
-      const last = entries.at(-1)?.request;
-      const count = safeCount(total.count);
+      const last = candidates[entries.length - 1];
+      const count = safeCount(total.count) + safeCount(askTotal.count);
       return NeedsYouPageSchema.parse({
         count,
         entries,
         window: {
           byteCount: bounded.byteCount,
-          hasMore: rows.length > entries.length,
+          hasMore: candidates.length > entries.length,
           itemCount: entries.length,
           totalItems: count,
           nextBefore:
-            rows.length > entries.length && last
+            candidates.length > entries.length && last
               ? encodeWindowCursor("request", input.userId, last.createdAt, last.id)
               : null,
         },
