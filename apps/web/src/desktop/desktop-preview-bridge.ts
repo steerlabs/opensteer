@@ -957,7 +957,6 @@ export function desktopPreviewBridge(
       });
     },
 
-
     // Every place the preview lists is on this computer or answers at once.
     checkDeployments: async () => {
       emitAccess();
