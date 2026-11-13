@@ -1,3 +1,4 @@
+import { NeedsYouRow } from "./needs-you-row.js";
 import { NeedsYouList } from "./needs-you-list.js";
 import { TeamAskReview } from "./team-ask-review.js";
 import { placeByKey } from "@opensteer/client/host";
@@ -494,6 +495,7 @@ export function Sidebar({
         ...(doneMore ? ["show-more"] : []),
       ]
     : [
+        ...teamAsks.map(needsYouEntryKey),
         ...rows.map((row) => row.threadId),
         ...(list.hasMore ? ["show-more"] : []),
         ...(doneLine ? ["done-shelf"] : []),
@@ -777,18 +779,6 @@ export function Sidebar({
         >
           {side === "tasks" ? (
             <>
-              {teamAsks.map((entry) => (
-                <button
-                  className="side-task"
-                  type="button"
-                  key={entry.requestId}
-                  onClick={() => setReviewAskKey(needsYouEntryKey(entry))}
-                >
-                  {entry.presentation.asker.displayName}
-                  {entry.presentation.asker.actor === "agent" ? "'s agent" : ""} · #
-                  {entry.presentation.audience.channelName}
-                </button>
-              ))}
               {doneView ? (
                 <div className="side-head side-head--done">
                   <button
@@ -870,6 +860,13 @@ export function Sidebar({
                         ...(doneMore ? [showMore] : []),
                       ]
                     : [
+                        ...teamAsks.map((entry) => (
+                          <NeedsYouRow
+                            entry={entry}
+                            key={needsYouEntryKey(entry)}
+                            onOpen={() => setReviewAskKey(needsYouEntryKey(entry))}
+                          />
+                        )),
                         ...rows.map((row) => taskRow(row)),
                         ...(list.hasMore ? [showMore] : []),
                         ...(doneLine

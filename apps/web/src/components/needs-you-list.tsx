@@ -3,6 +3,7 @@ import { useHostSelector } from "@opensteer/client/react";
 import { needsYouEntryKey, type HostClient } from "@opensteer/client/host";
 import type { NeedsYouEntry } from "@opensteer/protocol";
 import { Dialog } from "./dialog.js";
+import { NeedsYouRow } from "./needs-you-row.js";
 
 export function NeedsYouList({
   client,
@@ -30,18 +31,19 @@ export function NeedsYouList({
   return (
     <Dialog title="Needs you" onClose={onClose}>
       {page?.entries.length === 0 ? <p>Nothing needs you.</p> : null}
-      {page?.entries.map((entry) => (
-        <p key={needsYouEntryKey(entry)}>
-          <button type="button" onClick={() => onOpen(entry)}>
-            {entry.kind === "team-ask"
-              ? `${entry.presentation.asker.displayName}${entry.presentation.asker.actor === "agent" ? "'s agent" : ""} · #${entry.presentation.audience.channelName}`
-              : entry.title}
-          </button>
-        </p>
-      ))}
+      <ul className="side-list" aria-label="Needs you">
+        {page?.entries.map((entry) => (
+          <NeedsYouRow entry={entry} key={needsYouEntryKey(entry)} onOpen={() => onOpen(entry)} />
+        ))}
+      </ul>
       {failure ? <p role="alert">{failure}</p> : null}
       {page?.window.hasMore ? (
-        <button type="button" disabled={loading} onClick={() => void loadMore()}>
+        <button
+          className="sidebar__more"
+          type="button"
+          disabled={loading}
+          onClick={() => void loadMore()}
+        >
           {loading ? "Loading…" : "Earlier requests"}
         </button>
       ) : null}
