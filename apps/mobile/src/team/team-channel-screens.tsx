@@ -26,6 +26,7 @@ import {
 import { ActivityIndicator, Alert, AppState, Pressable, StyleSheet, View } from "react-native";
 import type { RootParamList } from "../navigation.js";
 import { color, space } from "../theme.js";
+import { BarControl } from "../ui/bar-control.js";
 import { useCopy } from "../ui/copy-mark.js";
 import { useMobileClient, useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { AppText, Notice } from "../ui/primitives.js";
@@ -122,23 +123,27 @@ export function TeamChannelScreen(props: StaticScreenProps<TeamChannelRoute>): R
     navigation.setOptions({
       headerTitle: () =>
         header === null ? null : (
-          <Pressable
-            accessibilityHint="Opens members, files, pinned messages and settings"
-            accessibilityRole="button"
-            onPress={() => navigation.navigate("TeamDetails", { teamId, channelId })}
-          >
-            <ChannelTitle channel={header} />
-          </Pressable>
+          <BarControl>
+            <Pressable
+              accessibilityHint="Opens members, files, pinned messages and settings"
+              accessibilityRole="button"
+              onPress={() => navigation.navigate("TeamDetails", { teamId, channelId })}
+            >
+              <ChannelTitle channel={header} />
+            </Pressable>
+          </BarControl>
         ),
       headerRight: () => (
-        <Pressable
-          accessibilityLabel="Search this channel"
-          accessibilityRole="button"
-          hitSlop={10}
-          onPress={() => navigation.navigate("TeamSearch", { teamId, channelId })}
-        >
-          <Symbol name="magnifyingglass" size={18} tint={color.ember} />
-        </Pressable>
+        <BarControl>
+          <Pressable
+            accessibilityLabel="Search this channel"
+            accessibilityRole="button"
+            hitSlop={10}
+            onPress={() => navigation.navigate("TeamSearch", { teamId, channelId })}
+          >
+            <Symbol name="magnifyingglass" size={18} tint={color.ember} />
+          </Pressable>
+        </BarControl>
       ),
     });
   }, [channelId, header, navigation, teamId]);
