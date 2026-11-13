@@ -10,7 +10,7 @@ import type { TeamKnowledgePort, TeamToolPort } from "../team-tool-port.js";
 type TeamToolName = "team_read" | "team_search" | "team_post";
 export function teamToolHandlers(options: {
   readonly port: TeamToolPort | undefined;
-  readonly requestForRun: (runId: RunId, threadId: ThreadId) => Promise<TeamAgentRequestId | null>;
+  readonly personalContext: (runId: RunId) => Promise<boolean>;
 }): Pick<AgentToolHandlers, TeamToolName> {
   const invoke = async <Name extends TeamToolName>(
     name: Name,
@@ -19,10 +19,11 @@ export function teamToolHandlers(options: {
     const caller = call.caller;
     if (caller.kind !== "run")
       throw new OpensteerError({ code: "forbidden", message: "This tool requires a live Run" });
-    const origin = caller.thread.teamOrigin;
-    const requestId = await options.requestForRun(caller.claims.runId, caller.thread.id);
-    if (!origin || !requestId)
-      throw new OpensteerError({ code: "forbidden", message: "no team request in this turn" });
+    if (!(await options.personalContext(caller.claims.runId)))
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Team access isn't available in a conversation other people share.",
+      });
     if (!options.port)
       throw new OpensteerError({ code: "conflict", message: "The team link is unavailable" });
     await call.checkLive?.();

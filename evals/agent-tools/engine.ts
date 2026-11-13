@@ -118,11 +118,11 @@ export async function runEngine(input: {
     integration: [],
     home: (await discoverAgentHomeSkills(p.workspace)).skills,
   });
-  const instructions = [c.fixtures["AGENTS.md"], c.teamContext].filter(Boolean).join("\n\n");
+  const instructions = c.fixtures["AGENTS.md"] ?? "";
   const tools = toolsFor({
     kind: c.caller,
     accessMode: "full-access",
-    teamBound: c.teamBound,
+    teamsAvailable: c.teamBound || c.knowledge,
     knowledge: c.knowledge,
   }).map(({ name }) => name);
   // Assembled as the Host plans it and the hosting Runner completes it.
@@ -131,7 +131,7 @@ export async function runEngine(input: {
       ? [
           platformGuideForRun({
             purpose: c.purpose,
-            teamBound: c.teamBound,
+            teamsAvailable: c.teamBound || c.knowledge,
             knowledge: c.knowledge,
           }) + (c.voice ? `\n\n${voiceGuide}` : ""),
           appHostingGuide({ platform: c.hostingPlatform, tools }),
@@ -250,6 +250,7 @@ export async function runEngine(input: {
                   parentThreadId: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000001"),
                 }
               : null,
+          teamTurnContext: c.teamContext ?? null,
           requesterTimeZone: c.requesterTimeZone ?? null,
           threadState: { previousAssignment: null, previousRun: null },
         },

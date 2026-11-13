@@ -27,6 +27,7 @@ export class TeamRunEvents {
   observe(event: AgentEvent): void {
     if (
       this.#closed ||
+      event.type === "run.delivery-updated" ||
       event.runId === null ||
       !(
         event.type.startsWith("run.") ||

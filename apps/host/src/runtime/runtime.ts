@@ -1,4 +1,3 @@
-import { MessageContentSchema } from "@opensteer/core";
 import { DeviceAccessService } from "../administration/device-access-service.js";
 import { requireDeviceAccess } from "../administration/device-access.js";
 import { digestSecret } from "@opensteer/shared/secretDigest";
@@ -1965,26 +1964,16 @@ export async function createHostRuntime(
         if (context.request.id !== requestId)
           throw new OpensteerError({ code: "forbidden", message: "Team request changed" });
         return {
-          ownerDisplayName: context.ownerDisplayName,
           instructionsMarkdown: context.instructionsMarkdown,
+          instructionsRevision: context.instructionsRevision,
           source: context.source,
-          content: MessageContentSchema.parse(
-            (
-              await database
-                .selectFrom("messages")
-                .select("content")
-                .innerJoin("runs", "runs.seedInputId", "messages.id")
-                .where("runs.id", "=", runId)
-                .executeTakeFirstOrThrow()
-            ).content,
-          ),
         };
       },
-      teamKnowledgeAvailable: async () =>
+      teamsAvailable: async () =>
         (await database
           .selectFrom("personalTeamLinks")
           .select("id")
-          .where("state", "=", "active")
+          .where("state", "in", ["active", "unreachable"])
           .executeTakeFirst()) !== undefined,
       onRunAdmitted: (threadId) => {
         void naming?.request(threadId);
@@ -2335,6 +2324,12 @@ export async function createHostRuntime(
       (ownerId) => integrationStore.listConnections(ownerId),
     );
     const agentTools = new OpensteerMcpService({
+      teamsAvailable: async () =>
+        (await database
+          .selectFrom("personalTeamLinks")
+          .select("id")
+          .where("state", "in", ["active", "unreachable"])
+          .executeTakeFirst()) !== undefined,
       requestHold: new RequestHold({
         store,
         continuations,
@@ -2445,6 +2440,7 @@ export async function createHostRuntime(
           credentialVault: teamLinkVault,
           admission: taskAdmission,
           runs: personalTeamRunPort(database),
+          onDeliveryEvent: publishDeploymentEvent,
           onPublished: async () => {
             const ownerId = service.options.ownerId;
             realtime.publishViewerTasksChanged(ownerId);

@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createId, TeamMessageIdSchema, TeamSourceSchema } from "@opensteer/core";
 import { team_read, team_post, team_search } from "@opensteer/agent-tools/tools";
-import {
-  PersonalTeamRequestSchema,
-  TeamMessagePageSchema,
-  type TeamMessage,
-} from "@opensteer/protocol";
+import { TeamMessagePageSchema, type TeamMessage } from "@opensteer/protocol";
 import { PersonalTeamToolAdapter } from "./team-tool-adapter.js";
 
 function fixture() {
@@ -28,18 +24,6 @@ function fixture() {
     requestId: createId("teamAgentRequest"),
     runId: createId("run"),
   };
-  const request = PersonalTeamRequestSchema.parse({
-    teamId: run.teamId,
-    requestId: run.requestId,
-    triggerMessageId: source.messageId,
-    taskId: createId("thread"),
-    inputId: createId("message"),
-    runId: run.runId,
-    source,
-    terminalState: null,
-    publicationState: "pending",
-    replyMessageId: null,
-  });
   const page = TeamMessagePageSchema.parse({
     messages: [],
     hasMore: false,
@@ -83,14 +67,22 @@ function fixture() {
     requests: [],
   }));
   const tools: ConstructorParameters<typeof PersonalTeamToolAdapter>[0] = {
+    async teams() {
+      return [{ teamId: run.teamId, teamName: "Acme", state: "active" }] as Awaited<
+        ReturnType<ConstructorParameters<typeof PersonalTeamToolAdapter>[0]["teams"]>
+      >;
+    },
     async authority(id) {
-      if (id !== run.runId) throw new Error("no team request in this turn");
-      return request;
+      if (id && id !== run.teamId) throw new Error("That team is not linked");
+      return run.teamId;
+    },
+    async channels() {
+      return { channels: [], hasMore: false, nextAfter: null };
     },
     async receipt() {
       return replyId ? { messageId: replyId, source } : null;
     },
-    async read(_id, input) {
+    async read(_run, _teamId, input) {
       const selected =
         input.channelId === source.channelId && input.threadRootId === source.threadRootId
           ? messages.filter((m) => !input.before || BigInt(m.id) < BigInt(input.before))
@@ -100,7 +92,7 @@ function fixture() {
     async search() {
       return { results: [], hasMore: false };
     },
-    async reply(_id, bodyMarkdown, attachmentIds) {
+    async post(_run, _teamId, { bodyMarkdown, attachmentIds }) {
       wire.push({ bodyMarkdown, attachmentIds });
       replyId = TeamMessageIdSchema.parse("99");
       if (lostAck) throw new Error("connection lost after commit");
@@ -129,7 +121,7 @@ function fixture() {
         },
       };
     },
-    async uploadPath(_id, path) {
+    async uploadPath(_run, _teamId, _channelId, path) {
       uploads.push(path);
       if (path !== "/private/EXPLICIT_FILE") throw new Error("path not admitted for Run");
       return {
@@ -168,10 +160,15 @@ describe("Run-bound team tool adapter", () => {
     expect(team_search.output.parse(found)).toEqual({ results: [], hasMore: false });
     await expect(
       f.adapter.search(f.run, { ...input, teamId: createId("deployment") }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(f.adapter.search({ ...f.run, runId: createId("run") }, input)).rejects.toThrow(
-      "no team request in this turn",
-    );
+    ).rejects.toThrow("not linked");
+    expect(await f.adapter.read(f.run, {})).toEqual({
+      teams: [{ teamId: f.run.teamId, teamName: "Acme", state: "active" }],
+    });
+    expect(await f.adapter.read(f.run, { teamId: f.run.teamId })).toEqual({
+      channels: [],
+      hasMore: false,
+      nextAfter: null,
+    });
   });
 
   it("paginates a byte-bounded asking-thread page without losing messages or its snapshot fence", async () => {
@@ -179,7 +176,13 @@ describe("Run-bound team tool adapter", () => {
     const seen: string[] = [];
     let before: ReturnType<typeof TeamMessageIdSchema.parse> | undefined;
     for (let index = 0; index < 50; index++) {
-      const result = team_read.output.parse(await f.adapter.read(f.run, before ? { before } : {}));
+      const result = team_read.output.parse(
+        await f.adapter.read(f.run, {
+          channelId: f.source.channelId,
+          threadRootId: f.source.threadRootId!,
+          ...(before ? { before } : {}),
+        }),
+      );
       if (!("page" in result)) throw new Error("Expected page");
       expect(result.page.throughSeq).toBe("91");
       expect(result.source).toEqual(f.source);

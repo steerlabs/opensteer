@@ -80,7 +80,14 @@ describeStore("personal team reply watermark", (it) => {
           data: { messageId: replyId, content: [{ type: "text", text: "Published answer" }] },
         }),
       });
-      if (explicit) await requests.prepareExplicitReply(teamId, requestId);
+      if (explicit)
+        await requests.freeze(teamId, requestId, {
+          runId: run.runId,
+          via: "tool",
+          answerMessageId: null,
+          clientMessageId: crypto.randomUUID(),
+          payload: { bodyMarkdown: "Explicit reply", attachmentIds: [] },
+        });
       await requests.publication(teamId, requestId, "accepted", input.replyMessageId);
       expect(await requests.replyTask(personal.userId, input)).toEqual(empty);
       if (explicit)
@@ -194,7 +201,7 @@ describeStore("personal team reply watermark", (it) => {
       expect(read?.lastVisitedAt).toBe(expected.completedAt);
       expect(read?.latestRunCompletedAt).toBe(privateCompletion);
       expect(read!.lastVisitedAt! < read!.latestRunCompletedAt!).toBe(true);
-      await requests.publication(teamId, requestId, "blocked");
-      expect(await requests.replyTask(personal.userId, input)).toEqual(empty);
+      await requests.publication(teamId, requestId, "blocked", null, "The team link was revoked.");
+      expect(await requests.replyTask(personal.userId, input)).toEqual(expected);
     });
 });

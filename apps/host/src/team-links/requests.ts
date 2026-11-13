@@ -1,21 +1,22 @@
-import { createHash } from "node:crypto";
 import {
   TeamSourceSchema,
   OpensteerError,
   type DeploymentId,
   type RunId,
   type TeamAgentRequestId,
-  type TeamBlobId,
+  type MessageId,
 } from "@opensteer/core";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import {
   TeamAgentRequestSchema,
+  TeamMarkdownSchema,
   type PersonalTeamRequest,
   type TeamRunRequest,
 } from "@opensteer/protocol";
 import type { TaskAdmissionPort } from "../threads/task-admission.js";
 import { linkError, type TeamLinkRpc } from "../team-link-endpoint/contracts.js";
+import { teamOperationId } from "./operation-id.js";
 import { publicTeamStatus, type PrivateTeamProgress } from "./status.js";
 
 export interface PersonalTeamRunPort {
@@ -25,6 +26,7 @@ export interface PersonalTeamRunPort {
     readonly state:
       "pending" | "working" | "needs_you" | "done" | "failed" | "stopped" | "cancelled";
     readonly finalMessage: string | null;
+    readonly answerMessageId: MessageId | null;
   }>;
 }
 export interface PersonalTeamRequestsOptions {
@@ -73,7 +75,12 @@ export class PersonalTeamRequests {
     let local = await requests.get(teamId, request.id);
     if (local && local.triggerMessageId !== request.triggerMessageId) throw linkError("conflict");
     if (local?.publicationState === "blocked") return;
-    if (local && (local.terminalState !== null || local.publicationState === "accepted")) {
+    if (
+      local &&
+      (local.answerPayload !== null ||
+        local.terminalState !== null ||
+        local.publicationState === "accepted")
+    ) {
       await this.reconcileOne(local);
       return;
     }
@@ -84,6 +91,7 @@ export class PersonalTeamRequests {
     if (!local) {
       const receipt = await admission.admitTeamRequest({
         bodyMarkdown: value.bodyMarkdown,
+        attachments: value.attachments,
         origin: { teamId, channelId: request.channelId, threadRootId: request.threadRootId },
         requestId: request.id,
         triggerMessageId: request.triggerMessageId,
@@ -131,33 +139,57 @@ export class PersonalTeamRequests {
 
   async reconnect(teamId: DeploymentId): Promise<void> {
     for (const request of await this.options.requests.forTeam(teamId)) {
-      const outcome = await this.options.runs.outcome(request);
-      if (["done", "failed", "stopped", "cancelled"].includes(outcome.state)) {
-        await this.reconcileOne(request);
-        continue;
-      }
       try {
-        const receipt = await this.options
-          .rpc(teamId)
-          .call({ type: "receipt", requestId: request.requestId });
-        if (receipt.kind !== "receipt") throw linkError("bad_request");
-        if (receipt.messageId !== null)
-          await this.options.requests.publication(
-            teamId,
-            request.requestId,
-            "accepted",
-            receipt.messageId,
-          );
-        else await this.options.rpc(teamId).call({ type: "accept", requestId: request.requestId });
+        await this.#receipt(request);
+        const current = (await this.options.requests.get(teamId, request.requestId))!;
+        const outcome = await this.options.runs.outcome(current);
+        if (["pending", "working", "needs_you"].includes(outcome.state))
+          await this.options.rpc(teamId).call({ type: "accept", requestId: request.requestId });
+        await this.reconcileOne(current);
       } catch (error) {
-        if (
-          error instanceof OpensteerError &&
-          ["forbidden", "unauthorized", "not_found"].includes(error.code)
-        )
-          await this.cancel(teamId, request.requestId);
-        else throw error;
+        await this.#failure(request, error);
       }
     }
+  }
+
+  async #receipt(request: PersonalTeamRequest): Promise<boolean> {
+    const receipt = await this.options
+      .rpc(request.teamId)
+      .call({ type: "receipt", requestId: request.requestId });
+    if (receipt.kind !== "receipt") throw linkError("bad_request");
+    if (receipt.messageId === null) return false;
+    await this.options.requests.publication(
+      request.teamId,
+      request.requestId,
+      "accepted",
+      receipt.messageId,
+    );
+    return true;
+  }
+
+  async #failure(request: PersonalTeamRequest, error: unknown): Promise<void> {
+    if (
+      error instanceof OpensteerError &&
+      ["forbidden", "unauthorized", "not_found"].includes(error.code)
+    ) {
+      await this.cancel(
+        request.teamId,
+        request.requestId,
+        error.code === "unauthorized"
+          ? "The team link was revoked."
+          : error.code === "not_found"
+            ? "The team or reply thread is no longer available."
+            : "Team access was removed or the channel is people-only.",
+      );
+      return;
+    }
+    // A frozen answer remains sending until the same operation can reconcile on reconnect.
+    if (
+      error instanceof OpensteerError &&
+      ["runner_offline", "timeout", "internal"].includes(error.code)
+    )
+      return;
+    throw error;
   }
 
   async reconcileOne(request: PersonalTeamRequest): Promise<void> {
@@ -165,10 +197,32 @@ export class PersonalTeamRequests {
     const outcome = await runs.outcome(request);
     if (!["done", "failed", "stopped", "cancelled"].includes(outcome.state)) return;
     const terminalState = outcome.state as NonNullable<PersonalTeamRequest["terminalState"]>;
-    await requests.terminal(request.teamId, request.requestId, outcome.runId, terminalState);
     this.#lastStatus.delete(`${request.teamId}:${request.requestId}`);
-    if (request.publicationState !== "pending") return;
-    await this.#publish({ ...request, terminalState, runId: outcome.runId }, outcome.finalMessage);
+    const current = (await requests.get(request.teamId, request.requestId))!;
+    if (current.publicationState === "pending")
+      await this.#publish(
+        { ...current, terminalState, runId: outcome.runId },
+        outcome.finalMessage,
+        outcome.answerMessageId,
+      );
+    if (
+      current.terminalState !== null ||
+      (await requests.get(request.teamId, request.requestId))?.publicationState === "pending"
+    )
+      return;
+    try {
+      await this.options
+        .rpc(request.teamId)
+        .call({ type: "status", requestId: request.requestId, state: terminalState, steps: [] });
+      await requests.terminal(request.teamId, request.requestId, outcome.runId, terminalState);
+    } catch (error) {
+      await this.#failure(current, error);
+      if (
+        error instanceof OpensteerError &&
+        ["forbidden", "unauthorized", "not_found"].includes(error.code)
+      )
+        await requests.terminal(request.teamId, request.requestId, outcome.runId, terminalState);
+    }
   }
 
   async runChanged(runId: RunId, progress?: PrivateTeamProgress): Promise<void> {
@@ -189,76 +243,70 @@ export class PersonalTeamRequests {
     }
   }
 
-  async #publish(request: PersonalTeamRequest, finalMessage: string | null): Promise<void> {
+  async #publish(
+    request: PersonalTeamRequest,
+    finalMessage: string | null,
+    answerMessageId: MessageId | null,
+  ): Promise<void> {
     const { requests } = this.options;
     try {
-      const rpc = this.options.rpc(request.teamId);
-      const receipt = await rpc.call({ type: "receipt", requestId: request.requestId });
-      if (receipt.kind !== "receipt") throw linkError("bad_request");
-      if (receipt.messageId !== null) {
+      if (
+        !request.answerPayload &&
+        finalMessage &&
+        !TeamMarkdownSchema.safeParse(finalMessage).success
+      ) {
         await requests.publication(
           request.teamId,
           request.requestId,
-          "accepted",
-          receipt.messageId,
+          "blocked",
+          null,
+          "The final answer exceeds the team message limit.",
         );
         return;
       }
-      if (finalMessage !== null) {
-        await this.reply(request, finalMessage, []);
-      } else {
-        await rpc.call({
-          type: "status",
-          requestId: request.requestId,
-          state: request.terminalState === "done" ? "failed" : (request.terminalState ?? "failed"),
-          steps: [],
+      if (!request.answerPayload && finalMessage && request.runId)
+        request = await requests.freeze(request.teamId, request.requestId, {
+          runId: request.runId,
+          via: "final",
+          answerMessageId,
+          payload: { bodyMarkdown: finalMessage, attachmentIds: [] },
+          clientMessageId: teamOperationId("final", request.teamId, request.requestId),
         });
-        await requests.publication(request.teamId, request.requestId, "accepted");
-      }
-    } catch (error) {
-      if (
-        error instanceof OpensteerError &&
-        ["forbidden", "unauthorized", "not_found"].includes(error.code)
-      ) {
-        await requests.publication(request.teamId, request.requestId, "blocked");
+      if (await this.#receipt(request)) return;
+      if (request.terminalState === "cancelled") {
+        await requests.publication(
+          request.teamId,
+          request.requestId,
+          "blocked",
+          null,
+          "The team request was cancelled.",
+        );
         return;
       }
-      throw error;
+      if (request.answerPayload && request.clientMessageId && request.runId) {
+        const result = await this.options.rpc(request.teamId).call({
+          type: "post",
+          runId: request.runId,
+          clientMessageId: request.clientMessageId,
+          channelId: request.source.channelId,
+          ...(request.source.threadRootId ? { threadRootId: request.source.threadRootId } : {}),
+          requestId: request.requestId,
+          ...request.answerPayload,
+        });
+        if (result.kind !== "receipt" || result.messageId === null) throw linkError("bad_request");
+        await requests.publication(request.teamId, request.requestId, "accepted", result.messageId);
+      } else {
+        await requests.publication(
+          request.teamId,
+          request.requestId,
+          "blocked",
+          null,
+          "The Run ended without an answer to post.",
+        );
+      }
+    } catch (error) {
+      await this.#failure(request, error);
     }
-  }
-
-  async reply(
-    request: PersonalTeamRequest,
-    bodyMarkdown: string,
-    attachmentIds: readonly TeamBlobId[],
-  ) {
-    const result = await this.options.rpc(request.teamId).call({
-      type: "post",
-      runId:
-        request.runId ??
-        (() => {
-          throw linkError("conflict");
-        })(),
-      clientMessageId: (() => {
-        const hex = createHash("sha256")
-          .update(request.teamId + ":" + request.requestId)
-          .digest("hex");
-        return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
-      })(),
-      channelId: request.source.channelId,
-      ...(request.source.threadRootId ? { threadRootId: request.source.threadRootId } : {}),
-      requestId: request.requestId,
-      bodyMarkdown,
-      attachmentIds: [...attachmentIds],
-    });
-    if (result.kind !== "receipt" || result.messageId === null) throw linkError("bad_request");
-    await this.options.requests.publication(
-      request.teamId,
-      request.requestId,
-      "accepted",
-      result.messageId,
-    );
-    return { messageId: result.messageId, source: request.source };
   }
 
   async status(
@@ -284,13 +332,17 @@ export class PersonalTeamRequests {
       .call({ type: "status", requestId, ...publicTeamStatus(progress) });
   }
 
-  async cancel(teamId: DeploymentId, requestId: TeamAgentRequestId): Promise<void> {
+  async cancel(
+    teamId: DeploymentId,
+    requestId: TeamAgentRequestId,
+    reason = "The team request was cancelled.",
+  ): Promise<void> {
     this.#lastStatus.delete(`${teamId}:${requestId}`);
     const request = await this.options.requests.get(teamId, requestId);
     if (request) {
       await this.options.requests.terminal(teamId, requestId, request.runId, "cancelled");
       if (request.publicationState !== "accepted")
-        await this.options.requests.publication(teamId, requestId, "blocked");
+        await this.options.requests.publication(teamId, requestId, "blocked", null, reason);
     }
     await this.options.admission.cancelTeamRequest({ teamId, requestId });
   }
@@ -298,6 +350,6 @@ export class PersonalTeamRequests {
   async revoked(teamId: DeploymentId): Promise<void> {
     await this.options.links.state(teamId, "revoked");
     for (const request of await this.options.requests.forTeam(teamId))
-      await this.cancel(teamId, request.requestId);
+      await this.cancel(teamId, request.requestId, "The team link was revoked.");
   }
 }

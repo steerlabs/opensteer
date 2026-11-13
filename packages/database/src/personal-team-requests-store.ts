@@ -1,5 +1,7 @@
 import {
   MessageIdSchema,
+  type AgentEvent,
+  type TeamRunDelivery,
   OpensteerError,
   type DeploymentId,
   type RunId,
@@ -13,14 +15,21 @@ import { PersonalTeamRequestSchema, type PersonalTeamRequest } from "@opensteer/
 import { sql, type Kysely, type Selectable } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { eventFromRow } from "./deployment-events.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
+import { appendHostDeploymentEvent, eventFromRow } from "./deployment-events.js";
 
 export class PersonalTeamRequestsStore {
   readonly database: Kysely<DatabaseSchema>;
   readonly #onPublished: ((taskId: ThreadId) => Promise<void>) | undefined;
-  constructor(database: Kysely<DatabaseSchema>, onPublished?: (taskId: ThreadId) => Promise<void>) {
+  readonly #onDeliveryEvent: ((event: AgentEvent) => void) | undefined;
+  constructor(
+    database: Kysely<DatabaseSchema>,
+    onPublished?: (taskId: ThreadId) => Promise<void>,
+    onDeliveryEvent?: (event: AgentEvent) => void,
+  ) {
     this.database = database;
     this.#onPublished = onPublished;
+    this.#onDeliveryEvent = onDeliveryEvent;
   }
 
   async get(
@@ -77,7 +86,9 @@ export class PersonalTeamRequestsStore {
       .selectFrom("personalTeamRequests")
       .selectAll()
       .where("teamDeploymentId", "=", teamId)
-      .where("publicationState", "=", "pending")
+      .where((eb) =>
+        eb.or([eb("publicationState", "=", "pending"), eb("terminalState", "is", null)]),
+      )
       .orderBy("createdAt")
       .orderBy("requestId")
       .execute();
@@ -116,31 +127,114 @@ export class PersonalTeamRequestsStore {
       .execute();
   }
 
+  async freeze(
+    teamId: DeploymentId,
+    requestId: TeamAgentRequestId,
+    input: {
+      readonly runId: RunId;
+      readonly via: "final" | "tool";
+      readonly clientMessageId: string;
+      readonly answerMessageId: PersonalTeamRequest["answerMessageId"];
+      readonly payload: NonNullable<PersonalTeamRequest["answerPayload"]>;
+    },
+  ): Promise<PersonalTeamRequest> {
+    const result = await this.#change(teamId, requestId, (row) =>
+      row.answerPayload === null && row.publicationState === "pending"
+        ? {
+            runId: input.runId,
+            answerPayload: input.payload,
+            answerMessageId: input.answerMessageId,
+            clientMessageId: input.clientMessageId,
+            deliveryVia: input.via,
+            explicitReply: input.via === "tool",
+          }
+        : null,
+    );
+    return result;
+  }
+
   async publication(
     teamId: DeploymentId,
     requestId: TeamAgentRequestId,
     state: "accepted" | "blocked",
     messageId: PersonalTeamRequest["replyMessageId"] = null,
+    reason: string | null = null,
   ): Promise<void> {
-    const request = await this.database
-      .updateTable("personalTeamRequests")
-      .set({ publicationState: state, acceptedMessageId: messageId })
-      .where("teamDeploymentId", "=", teamId)
-      .where("requestId", "=", requestId)
-      .returning("localTaskId")
-      .executeTakeFirst();
-    if (request && state === "accepted" && messageId !== null)
-      await this.#onPublished?.(request.localTaskId);
+    const saved = await this.#change(teamId, requestId, (row) => {
+      if (row.publicationState !== "pending") return null;
+      return {
+        publicationState: state,
+        acceptedMessageId: messageId,
+        blockedReason: state === "blocked" ? (reason ?? "The team request was cancelled.") : null,
+      };
+    });
+    if (state === "accepted" && messageId !== null) await this.#onPublished?.(saved.taskId);
   }
 
-  async prepareExplicitReply(teamId: DeploymentId, requestId: TeamAgentRequestId): Promise<void> {
-    // Persist before sending: even a lost receipt must never attribute this reply to a later final.
-    await this.database
-      .updateTable("personalTeamRequests")
-      .set({ explicitReply: true })
-      .where("teamDeploymentId", "=", teamId)
-      .where("requestId", "=", requestId)
-      .execute();
+  async #change(
+    teamId: DeploymentId,
+    requestId: TeamAgentRequestId,
+    change: (
+      row: Selectable<DatabaseSchema["personalTeamRequests"]>,
+    ) => import("kysely").Updateable<DatabaseSchema["personalTeamRequests"]> | null,
+  ): Promise<PersonalTeamRequest> {
+    const result = await withPersonalTransaction(this.database, async (tx) => {
+      const observed = await tx
+        .selectFrom("personalTeamRequests")
+        .selectAll()
+        .where("teamDeploymentId", "=", teamId)
+        .where("requestId", "=", requestId)
+        .executeTakeFirstOrThrow();
+      const run = await tx
+        .selectFrom("runs")
+        .select(["id", "threadId", "environmentId"])
+        .where("threadId", "=", observed.localTaskId)
+        .where("seedInputId", "=", observed.localInputId)
+        .where(sql<string>`reply_target->>'requestId'`, "=", requestId)
+        .where(sql<string>`reply_target->>'teamId'`, "=", teamId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      const row = await tx
+        .selectFrom("personalTeamRequests")
+        .selectAll()
+        .where("teamDeploymentId", "=", teamId)
+        .where("requestId", "=", requestId)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      const patch = change(row);
+      if (!patch) return { saved: this.#view(row), event: null };
+      const saved = await tx
+        .updateTable("personalTeamRequests")
+        .set(patch)
+        .where("teamDeploymentId", "=", teamId)
+        .where("requestId", "=", requestId)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      const delivery: TeamRunDelivery = {
+        state:
+          saved.publicationState === "accepted"
+            ? "sent"
+            : saved.publicationState === "blocked"
+              ? "blocked"
+              : "sending",
+        via: saved.deliveryVia ?? (saved.explicitReply ? "tool" : "final"),
+        answerMessageId: saved.answerMessageId,
+        teamMessageId: saved.acceptedMessageId,
+        reason: saved.blockedReason,
+      };
+      const event = run
+        ? await appendHostDeploymentEvent(tx, {
+            type: "run.delivery-updated",
+            runId: run.id,
+            threadId: run.threadId,
+            environmentId: run.environmentId,
+            data: { delivery },
+          })
+        : null;
+      return { saved: this.#view(saved), event };
+    });
+    if (result.event) this.#onDeliveryEvent?.(result.event);
+    return result.saved;
   }
 
   async replyTask(

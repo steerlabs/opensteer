@@ -568,6 +568,7 @@ export async function createTwoHostLinkFixture() {
           runId: null,
           state: input.state === "cancelled" ? "cancelled" : "pending",
           finalMessage: null,
+          answerMessageId: null,
         };
       const run = await database
         .selectFrom("runs")
@@ -576,7 +577,7 @@ export async function createTwoHostLinkFixture() {
         .executeTakeFirstOrThrow();
       const message = await database
         .selectFrom("messages")
-        .select("content")
+        .select(["id", "content"])
         .where("runId", "=", run.id)
         .where("kind", "=", "assistant")
         .orderBy("sequence", "desc")
@@ -593,6 +594,7 @@ export async function createTwoHostLinkFixture() {
                 ? "stopped"
                 : "working",
         finalMessage: text,
+        answerMessageId: message?.id ?? null,
       };
     },
   };
@@ -946,14 +948,15 @@ export async function createTwoHostLinkFixture() {
       await sql`insert into runs(id,thread_id,environment_id,harness_instance_id,access_mode,activation_input_id,causal_chain_id,model_selection,requested_by,actor_principal_id,authority_source,run_ordinal,seed_input_id,status,reply_target) select ${privateRun},thread_id,environment_id,harness_instance_id,access_mode,activation_input_id,causal_chain_id,model_selection,requested_by,actor_principal_id,authority_source,99,seed_input_id,'queued',null from runs where id=${runId}`.execute(
         database,
       );
-      const tools = new TeamRunTools(requests, publisher, () => ({ call }), {
-        async fetch() {
-          throw new Error("Unused file import");
-        },
-      });
+      const tools = new TeamRunTools(personalLinks, requests, () => ({ call }));
       expect((await tools.context(runId)).source.audience.teamName).toBe("Acme");
-      await expect(tools.context(privateRun)).rejects.toThrow("no team request in this turn");
-      await tools.reply(runId, "Explicit team reply");
+      await expect(tools.context(privateRun)).rejects.toMatchObject({ code: "forbidden" });
+      await tools.post({ runId, operationId: "explicit" }, team.deploymentId, {
+        channelId: request.channelId,
+        threadRootId: request.threadRootId,
+        bodyMarkdown: "Explicit team reply",
+        attachmentIds: [],
+      });
       await finish(request, "Private final fallback");
       const messages = await team.database
         .selectFrom("teamMessages")

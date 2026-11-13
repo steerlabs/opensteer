@@ -12401,6 +12401,7 @@
               "enum": [
                 "working",
                 "needs_you",
+                "done",
                 "failed",
                 "stopped",
                 "cancelled"

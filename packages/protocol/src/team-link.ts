@@ -156,7 +156,7 @@ export const TeamLinkClientFrameSchema = z.discriminatedUnion("type", [
     ...call,
     ...request,
     type: z.literal("status"),
-    state: z.enum(["working", "needs_you", "failed", "stopped", "cancelled"]),
+    state: z.enum(["working", "needs_you", "done", "failed", "stopped", "cancelled"]),
     steps: z.array(TeamStatusStepSchema).max(8),
   }),
   z.strictObject({

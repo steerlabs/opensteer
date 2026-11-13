@@ -207,7 +207,7 @@ export class PersonalTeamLinks {
     this.#connections.get(teamId)?.stop();
     this.#connections.delete(teamId);
     for (const request of await this.options.requests.options.requests.forTeam(teamId))
-      await this.options.requests.cancel(teamId, request.requestId);
+      await this.options.requests.cancel(teamId, request.requestId, "You left this team.");
     this.#retryLeave(teamId);
   }
 

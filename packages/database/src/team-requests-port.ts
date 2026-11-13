@@ -30,7 +30,7 @@ export interface TeamRequestStorePort {
     linkId: TeamLinkId,
     requestId: TeamAgentRequestId,
     input: {
-      readonly state: "working" | "needs_you" | "failed" | "stopped" | "cancelled";
+      readonly state: "working" | "needs_you" | "done" | "failed" | "stopped" | "cancelled";
       readonly steps: readonly z.infer<typeof TeamStatusStepSchema>[];
     },
   ): Promise<void>;

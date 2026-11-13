@@ -193,7 +193,7 @@ export const runDeliverySelection = sql<import("@opensteer/core").TeamRunDeliver
   select jsonb_build_object(
     'state',case p.publication_state when 'accepted' then 'sent' when 'blocked' then 'blocked' else 'sending' end,
     'via',coalesce(p.delivery_via,case when p.explicit_reply then 'tool' else 'final' end),
-    'answerMessageId',p.answer_message_id,'teamMessageId',p.accepted_message_id,'reason',p.blocked_reason)
+    'answerMessageId',p.answer_message_id,'teamMessageId',p.accepted_message_id::text,'reason',p.blocked_reason)
   from personal_team_requests p where p.local_task_id=runs.thread_id and p.local_input_id=runs.seed_input_id
     and runs.reply_target->>'kind'='team' and runs.reply_target->>'teamId'=p.team_deployment_id
     and runs.reply_target->>'requestId'=p.request_id

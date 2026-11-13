@@ -2,8 +2,6 @@ import { sql } from "kysely";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import type { RevokedRunGrant } from "./run-grants.js";
 import {
-  TeamSourceSchema,
-  MessageContentSchema,
   OpensteerError,
   type AgentEvent,
   type DeploymentId,
@@ -20,14 +18,15 @@ import { appendHostDeploymentEvent } from "./deployment-events.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import type { DatabaseSchema } from "./schema.js";
-import { jsonValue, lockCommandIdempotency, threadPathLinks } from "./store-primitives.js";
+import { lockCommandIdempotency, threadPathLinks } from "./store-primitives.js";
 import { enqueueThreadInputInTransaction, ensureQueuedRun } from "./thread-inbox.js";
-import { messageFromRow, threadInputFromRow } from "./thread-row-mappers.js";
+import { threadInputFromRow } from "./thread-row-mappers.js";
 import { createThreadInTransaction } from "./thread-store.js";
 import { projectThreadState } from "./thread-status.js";
 
 interface TeamAdmissionInput {
   readonly bodyMarkdown: string;
+  readonly attachments?: readonly { readonly id: string; readonly filename: string }[];
   readonly origin: TeamTaskOrigin;
   readonly requestId: TeamAgentRequestId;
   readonly triggerMessageId: TeamMessageId;
@@ -106,7 +105,8 @@ export function admitTeamTaskRequest(
         createdBy: input.ownerId,
         teamOrigin: input.origin,
         idempotencyKey: `team-task:${input.origin.teamId}:${input.origin.channelId}:${input.origin.threadRootId}`,
-        title: `From ${input.source.audience.channelName}`,
+        title:
+          input.bodyMarkdown.trim().slice(0, 120) || input.attachments?.[0]?.filename || "Team ask",
         generateTitle: true,
       });
       taskId = created.thread.id;
@@ -118,10 +118,11 @@ export function admitTeamTaskRequest(
       source: { kind: "human" },
       policy: "queue",
       content: [
-        {
-          type: "text",
-          text: input.bodyMarkdown,
-        },
+        ...(input.bodyMarkdown.trim() ? [{ type: "text" as const, text: input.bodyMarkdown }] : []),
+        ...(input.attachments ?? []).map((file) => ({
+          type: "text" as const,
+          text: `Attached team file: ${JSON.stringify(file.filename)} (fileId: ${file.id}; use team_read to download).`,
+        })),
       ],
       idempotencyKey: `team:${input.origin.teamId}:${input.requestId}`,
       teamRequest: {
@@ -276,83 +277,5 @@ export function cancelTeamTaskRequest(
       );
     }
     return { events, revokedGrants };
-  });
-}
-
-export function hydrateTeamTaskInput(
-  database: Kysely<DatabaseSchema>,
-  input: {
-    readonly runId: import("@opensteer/core").RunId;
-    readonly requestId: TeamAgentRequestId;
-    readonly content: readonly import("@opensteer/core").ContentPart[];
-    readonly source: TeamSource;
-  },
-) {
-  return withPersonalTransaction(database, async (transaction) => {
-    const run = await transaction
-      .selectFrom("runs")
-      .selectAll()
-      .where("id", "=", input.runId)
-      .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
-    const request = await transaction
-      .selectFrom("personalTeamRequests")
-      .selectAll()
-      .where("requestId", "=", input.requestId)
-      .where("localTaskId", "=", run.threadId)
-      .where("localInputId", "=", run.seedInputId)
-      .executeTakeFirst();
-    if (
-      run.replyTarget?.kind !== "team" ||
-      run.replyTarget.requestId !== input.requestId ||
-      run.status !== "starting" ||
-      !request ||
-      request.terminalState !== null ||
-      request.localInputId !== run.seedInputId ||
-      request.localTaskId !== run.threadId
-    )
-      throw new OpensteerError({
-        code: "conflict",
-        message: "The team request is no longer starting in this Run.",
-      });
-    const source = TeamSourceSchema.parse(input.source);
-    if (
-      source.teamId !== request.teamDeploymentId ||
-      source.channelId !== request.source.channelId ||
-      source.threadRootId !== request.source.threadRootId
-    )
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Team context belongs to another request.",
-      });
-    const content = MessageContentSchema.parse([
-      { type: "text", text: `Team source and audience: ${JSON.stringify(source)}` },
-      ...input.content,
-    ]);
-    await transaction
-      .selectFrom("threads")
-      .select("id")
-      .where("id", "=", run.threadId)
-      .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
-    const inbox = await transaction
-      .selectFrom("threadInputs")
-      .selectAll()
-      .where("messageId", "=", run.seedInputId)
-      .executeTakeFirstOrThrow();
-    const message = await transaction
-      .updateTable("messages")
-      .set({ content: jsonValue(content) })
-      .where("id", "=", run.seedInputId)
-      .returningAll()
-      .executeTakeFirstOrThrow();
-    const event = await appendHostDeploymentEvent(transaction, {
-      type: "message.created",
-      environmentId: run.environmentId,
-      threadId: run.threadId,
-      runId: run.id,
-      data: { message: messageFromRow(message), input: threadInputFromRow(inbox) },
-    });
-    return { events: [event] };
   });
 }
