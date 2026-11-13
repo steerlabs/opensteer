@@ -3561,6 +3561,13 @@ function claudeMessageOrigin(input: HarnessInput, body: string): SDKMessageOrigi
       return { kind: "human" };
     case "agent":
       return { body, from: author.threadId, kind: "peer", name: author.displayName };
+    case "team-member":
+      return {
+        body,
+        from: `${author.teamId}:${author.teamUserId}`,
+        kind: "peer",
+        name: author.actor === "agent" ? `${author.displayName}'s agent` : author.displayName,
+      };
     case "connection":
       return { body, from: author.connectionId, kind: "peer", name: author.displayName };
     case "trigger":

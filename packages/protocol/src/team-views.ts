@@ -40,6 +40,8 @@ import {
   KnowledgeNoteIdSchema,
   SequenceSchema,
   TeamAudienceSchema,
+  TeamAskPresentationViewSchema,
+  TeamAgentReturnPayloadViewSchema,
   TeamBlobIdSchema,
   TeamChannelIdSchema,
   TeamGroupIdSchema,
@@ -171,6 +173,7 @@ export const TeamCommandResultViewSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("team.agent.request.cancel") }),
   z.object({ type: z.literal("teams.link.join"), link: PersonalTeamLinkViewSchema }),
   z.object({ type: z.literal("teams.link.leave") }),
+  z.object({ type: z.literal("teams.ask.decide") }),
   z.object({ type: z.literal("team.channel.archive") }),
   z.object({ type: z.literal("team.channel.restore") }),
   z.object({ type: z.literal("team.channel.join") }),
@@ -440,11 +443,24 @@ export const TeamClientFrameViewSchema = z.discriminatedUnion("type", [
 const TeamRequestContextViewSchema = z.object({
   ...TeamRequestContextSchema.shape,
   request: TeamAgentRequestViewSchema,
+  presentation: TeamAskPresentationViewSchema.nullable().default(null),
   source: TeamSourceViewSchema,
   audience: TeamAudienceViewSchema,
 });
-const [accepted, context, receipt, read, search, topics, knowledgeRead, write, file, ok, channels] =
-  TeamLinkResultSchema.options;
+const [
+  accepted,
+  context,
+  receipt,
+  read,
+  search,
+  topics,
+  knowledgeRead,
+  write,
+  file,
+  ok,
+  channels,
+  reconciled,
+] = TeamLinkResultSchema.options;
 const TeamLinkResultViewSchema = z.discriminatedUnion("kind", [
   z.object({ ...accepted.shape, request: TeamAgentRequestViewSchema }),
   z.object({ ...context.shape, context: TeamRequestContextViewSchema }),
@@ -484,6 +500,17 @@ const TeamLinkResultViewSchema = z.discriminatedUnion("kind", [
       channels: z.array(TeamChannelSummaryViewSchema).max(50),
     }),
   }),
+  z.object({
+    ...reconciled.shape,
+    requests: z
+      .array(
+        z.object({
+          requestId: reconciled.shape.requests.element.shape.requestId,
+          request: TeamAgentRequestViewSchema.nullable(),
+        }),
+      )
+      .max(200),
+  }),
 ]);
 const [ready, requests, cancel, result, error, revoked, pong] = TeamLinkServerFrameSchema.options;
 export const TeamLinkServerFrameViewSchema = z.discriminatedUnion("type", [
@@ -494,6 +521,8 @@ export const TeamLinkServerFrameViewSchema = z.discriminatedUnion("type", [
       .array(
         z.object({
           request: TeamAgentRequestViewSchema,
+          presentation: TeamAskPresentationViewSchema.nullable().default(null),
+          returnPayload: TeamAgentReturnPayloadViewSchema.nullable().default(null),
           source: TeamSourceViewSchema,
           bodyMarkdown: TeamMarkdownSchema,
           attachments: z.array(TeamFileViewSchema).max(10),
@@ -523,6 +552,7 @@ const [
   channelsCall,
   revoke,
   ping,
+  reconcile,
 ] = TeamLinkClientFrameSchema.options;
 export const TeamLinkClientFrameViewSchema = z.discriminatedUnion("type", [
   z.object({
@@ -543,6 +573,7 @@ export const TeamLinkClientFrameViewSchema = z.discriminatedUnion("type", [
   channelsCall.strip(),
   revoke.strip(),
   ping.strip(),
+  reconcile.strip(),
 ]);
 
 /** A frame from a peer of any version in the window, or null for a type this side does not know. */

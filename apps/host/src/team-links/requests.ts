@@ -61,6 +61,7 @@ export class PersonalTeamRequests {
     const link = await links.get(teamId);
     if (!link || !["active", "unreachable"].includes(link.state)) throw linkError();
     const request = TeamAgentRequestSchema.parse(value.request);
+    if (request.kind !== "self") throw linkError();
     const source = TeamSourceSchema.parse(value.source);
     if (
       source.teamId !== teamId ||
@@ -98,6 +99,14 @@ export class PersonalTeamRequests {
         source,
       });
       local = await requests.record({
+        kind: request.kind,
+        remoteState: request.state,
+        presentation: null,
+        consentExpiresAt: null,
+        localDecision: null,
+        decisionAt: null,
+        returnPayload: null,
+        returnAdmission: null,
         teamId,
         requestId: request.id,
         triggerMessageId: request.triggerMessageId,

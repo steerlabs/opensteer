@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   TeamStatusStepSchema,
   type TeamAgentRequestId,
+  type TeamAskDecision,
   type TeamLinkId,
   type TeamMessageId,
 } from "@opensteer/core";
@@ -109,6 +110,8 @@ export class TeamRequestsStore implements TeamRequestStorePort {
           bodyMarkdown: trigger.bodyMarkdown,
           attachments: trigger.attachments,
           request: teamRequestView(row),
+          returnPayload: row.returnPayload,
+          presentation: row.presentation,
           source: await this.chat.source(
             t,
             { kind: "agent", userId: row.ownerUserId },
@@ -130,12 +133,16 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       () => result,
     );
   }
-  async accept(linkId: TeamLinkId, id: TeamAgentRequestId) {
+  async accept(linkId: TeamLinkId, id: TeamAgentRequestId, decision?: TeamAskDecision) {
     const observed = await this.access.database
       .selectFrom("teamAgentRequests")
       .selectAll()
       .where("id", "=", id)
       .executeTakeFirstOrThrow();
+    requireTeam(
+      observed.kind === "self" && decision === undefined,
+      "Team ask decisions are unavailable",
+    );
     const result = await this.access.contentWrite(
       { kind: "agent", userId: observed.ownerUserId },
       observed.channelId,
@@ -174,7 +181,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       "context",
       request.channelId,
       async (t) => {
-        await this.#record(t, linkId, id);
+        const row = await this.#record(t, linkId, id);
         const channel = await this.chat.channelView(t, actor, request.channelId);
         const source = await this.chat.source(
           t,
@@ -185,6 +192,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         );
         return TeamRequestContextSchema.parse({
           request,
+          presentation: row.presentation,
           instructionsMarkdown: channel.instructionsMarkdown,
           instructionsRevision: channel.instructionsRevision,
           source,

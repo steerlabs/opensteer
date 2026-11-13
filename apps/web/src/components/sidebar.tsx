@@ -417,7 +417,9 @@ export function Sidebar({
   );
   const needsYouCount = useHostSelector(hostClient, (current) => current.needsYou?.count ?? 0);
   const openNeedsYou = () => {
-    const first = hostClient.getSnapshot().needsYou?.entries[0];
+    const first = hostClient
+      .getSnapshot()
+      .needsYou?.entries.find((entry) => entry.kind === "request");
     if (!first) return;
     onCloseMobile();
     nav.openConversation(nav.threadPath(first.navigationThreadId), {

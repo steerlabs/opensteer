@@ -168,6 +168,9 @@ export function statusView(
   const mine = request.ownerUserId === input.viewerId;
   const steps = request.steps.reduce((total, step) => total + step.count, 0);
   switch (request.state) {
+    case "awaiting_approval":
+    case "declined":
+      return null;
     case "queued":
       return input.ownerOnline === false
         ? {

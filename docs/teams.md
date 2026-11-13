@@ -88,7 +88,7 @@ session exchange both admit through `TeamInvitesStore.acceptInTransaction`
 
 ## Transport and versions
 
-Team API version 4 requires version 4 peers for standing access and sticky recipients.
+Team API version 5 requires version 5 peers for consent-gated asks and private returns.
 A team Host checks only `teamApiVersion`, before authentication and parsing on every team
 surface, including bootstrap, subscriptions, binary routes and the link. Personal Hosts check
 only the personal Host epoch. Team updates use [deploy/team](../deploy/team/README.md); desktop

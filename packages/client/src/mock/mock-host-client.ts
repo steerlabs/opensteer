@@ -1851,6 +1851,7 @@ function mockNeedsYou(
     return thread
       ? [
           {
+            kind: "request" as const,
             request,
             originThreadId: thread.id,
             navigationThreadId: listedRowThreadId(snapshot, thread.id),
@@ -2599,6 +2600,15 @@ async function executeMockCommand(
       client.teamLinks.set(link.teamId, link);
       return rpcSuccess({ type: command.type, link });
     }
+    case "teams.ask.decide":
+      return {
+        ok: false,
+        error: HostApiErrorSchema.parse({
+          code: "not_found",
+          message: "Pending team ask not found.",
+          retryable: false,
+        }),
+      };
     case "teams.link.leave":
       client.teamLinks.delete(command.teamId);
       return rpcSuccess({ type: command.type });

@@ -349,7 +349,10 @@ export class TeamLinkEndpoint {
       };
     if (frame.type === "accept")
       return {
-        result: { kind: "accepted", request: await requests.accept(linkId, frame.requestId) },
+        result: {
+          kind: "accepted",
+          request: await requests.accept(linkId, frame.requestId, frame.decision),
+        },
       };
     // Knowledge acts as the link's owner and records its own audit.
     if (isKnowledgeCall(frame)) return data.knowledge(linkId, link.ownerUserId, frame);
@@ -357,6 +360,8 @@ export class TeamLinkEndpoint {
     try {
       let result: TeamLinkResult;
       switch (frame.type) {
+        case "reconcile":
+          throw linkError();
         case "channels":
           result = { kind: "channels", result: await data.channels(actor, linkId, frame) };
           break;

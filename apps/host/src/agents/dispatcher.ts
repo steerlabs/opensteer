@@ -260,6 +260,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       context.run.replyTarget?.kind === "team-thread"
         ? {
             kind: "team",
+            asker: null,
             ...(await this.#teamRequestContext(
               {
                 runId: context.run.id,

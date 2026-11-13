@@ -959,9 +959,9 @@ describeStore("managed memory passes", (it) => {
                 },
               },
       });
-      const waiting = (
-        await needsYouPage(f.database, { userId: base.userId, limit: 100 })
-      ).entries.find(({ request }) => request.id === opened.request.id)!;
+      const waiting = (await needsYouPage(f.database, { userId: base.userId, limit: 100 })).entries
+        .filter((entry) => entry.kind === "request")
+        .find(({ request }) => request.id === opened.request.id)!;
       expect(waiting).toMatchObject({
         originThreadId: light.anchorThreadId,
         navigationThreadId: light.anchorThreadId,

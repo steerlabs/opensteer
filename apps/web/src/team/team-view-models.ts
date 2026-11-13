@@ -114,6 +114,7 @@ const failureWords: Readonly<Record<NonNullable<TeamAgentRequest["failureCode"]>
   access_revoked: "Access changed before it could post.",
   link_revoked: "Your Opensteer is no longer connected to this team.",
   trigger_deleted: "The message it answered was deleted.",
+  trigger_edited: "The message it answered was edited.",
   execution_failed: "It stopped with an error. Open the task to see why.",
 };
 
@@ -122,6 +123,9 @@ export function requestView(words: TeamWords, request: TeamAgentRequest): AgentR
   const owner = person(words, request.ownerUserId);
   const base = { id: request.id, owner, askedAt: request.createdAt };
   switch (request.state) {
+    case "awaiting_approval":
+    case "declined":
+      return null;
     case "queued":
       return words.linkOnline.get(request.ownerUserId) === false
         ? {

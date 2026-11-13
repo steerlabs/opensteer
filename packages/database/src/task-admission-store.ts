@@ -49,6 +49,11 @@ export async function findTeamTaskAdmission(
       code: "conflict",
       message: "This team request already names another triggering message.",
     });
+  if (!existing.localTaskId || !existing.localInputId)
+    throw new OpensteerError({
+      code: "conflict",
+      message: "This team request has not been admitted.",
+    });
   const task = await database
     .selectFrom("threads")
     .select(["teamId", "channelId", "threadRootId"])

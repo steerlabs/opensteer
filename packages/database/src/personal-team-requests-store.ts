@@ -11,7 +11,12 @@ import {
   type TeamMessageId,
   type UserId,
 } from "@opensteer/core";
-import { PersonalTeamRequestSchema, type PersonalTeamRequest } from "@opensteer/protocol";
+import {
+  PersonalTeamRequestSchema,
+  PersonalTeamRequestMirrorSchema,
+  type PersonalTeamRequestMirror,
+  type PersonalTeamRequest,
+} from "@opensteer/protocol";
 import { sql, type Kysely, type Selectable } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
@@ -39,6 +44,8 @@ export class PersonalTeamRequestsStore {
     const row = await this.database
       .selectFrom("personalTeamRequests")
       .selectAll()
+      .where("localTaskId", "is not", null)
+      .where("localInputId", "is not", null)
       .where("teamDeploymentId", "=", teamId)
       .where("requestId", "=", requestId)
       .executeTakeFirst();
@@ -51,6 +58,14 @@ export class PersonalTeamRequestsStore {
       .values({
         teamDeploymentId: input.teamId,
         requestId: input.requestId,
+        kind: input.kind,
+        remoteState: input.remoteState,
+        presentation: input.presentation,
+        returnPayload: input.returnPayload,
+        consentExpiresAt: input.consentExpiresAt,
+        localDecision: input.localDecision,
+        decisionAt: input.decisionAt,
+        returnAdmission: input.returnAdmission,
         triggerMessageId: input.triggerMessageId,
         localTaskId: input.taskId,
         localInputId: MessageIdSchema.parse(input.inputId),
@@ -85,6 +100,8 @@ export class PersonalTeamRequestsStore {
     const rows = await this.database
       .selectFrom("personalTeamRequests")
       .selectAll()
+      .where("localTaskId", "is not", null)
+      .where("localInputId", "is not", null)
       .where("teamDeploymentId", "=", teamId)
       .where((eb) =>
         eb.or([eb("publicationState", "=", "pending"), eb("terminalState", "is", null)]),
@@ -105,6 +122,8 @@ export class PersonalTeamRequestsStore {
     const row = await this.database
       .selectFrom("personalTeamRequests")
       .selectAll()
+      .where("localTaskId", "is not", null)
+      .where("localInputId", "is not", null)
       .where("teamDeploymentId", "=", run.replyTarget.teamId)
       .where("requestId", "=", run.replyTarget.requestId)
       .where("localTaskId", "=", run.threadId)
@@ -205,6 +224,11 @@ export class PersonalTeamRequestsStore {
         .where("teamDeploymentId", "=", teamId)
         .where("requestId", "=", requestId)
         .executeTakeFirstOrThrow();
+      if (!observed.localTaskId || !observed.localInputId)
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Team request has no admitted input",
+        });
       const run = await tx
         .selectFrom("runs")
         .select(["id", "threadId", "environmentId"])
@@ -312,22 +336,36 @@ export class PersonalTeamRequestsStore {
   }
 
   #view(row: Selectable<DatabaseSchema["personalTeamRequests"]>): PersonalTeamRequest {
-    return PersonalTeamRequestSchema.parse({
-      teamId: row.teamDeploymentId,
-      requestId: row.requestId,
-      triggerMessageId: row.triggerMessageId,
-      taskId: row.localTaskId,
-      inputId: row.localInputId,
-      runId: row.runId,
-      publicationState: row.publicationState,
-      terminalState: row.terminalState,
-      replyMessageId: row.acceptedMessageId,
-      source: row.source,
-      answerMessageId: row.answerMessageId,
-      answerPayload: row.answerPayload,
-      clientMessageId: row.clientMessageId,
-      deliveryVia: row.deliveryVia,
-      blockedReason: row.blockedReason,
-    });
+    return PersonalTeamRequestSchema.parse(personalTeamRequestMirrorFromRow(row));
   }
+}
+
+export function personalTeamRequestMirrorFromRow(
+  row: Selectable<DatabaseSchema["personalTeamRequests"]>,
+): PersonalTeamRequestMirror {
+  return PersonalTeamRequestMirrorSchema.parse({
+    teamId: row.teamDeploymentId,
+    requestId: row.requestId,
+    kind: row.kind,
+    remoteState: row.remoteState,
+    presentation: row.presentation,
+    returnPayload: row.returnPayload,
+    consentExpiresAt: row.consentExpiresAt?.toISOString() ?? null,
+    localDecision: row.localDecision,
+    decisionAt: row.decisionAt?.toISOString() ?? null,
+    returnAdmission: row.returnAdmission,
+    triggerMessageId: row.triggerMessageId,
+    taskId: row.localTaskId,
+    inputId: row.localInputId,
+    runId: row.runId,
+    publicationState: row.publicationState,
+    terminalState: row.terminalState,
+    replyMessageId: row.acceptedMessageId,
+    source: row.source,
+    answerMessageId: row.answerMessageId,
+    answerPayload: row.answerPayload,
+    clientMessageId: row.clientMessageId,
+    deliveryVia: row.deliveryVia,
+    blockedReason: row.blockedReason,
+  });
 }

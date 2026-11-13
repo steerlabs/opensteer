@@ -505,6 +505,8 @@ export async function createTwoHostLinkFixture() {
     const input = TeamAgentRequestSchema.parse(request.body);
     await publisher.deliver(team.deploymentId, {
       request: input,
+      presentation: null,
+      returnPayload: null,
       source: sourceFor(input),
       bodyMarkdown: "Team ask",
       attachments: [],

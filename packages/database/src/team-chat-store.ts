@@ -54,6 +54,7 @@ export function teamRequestView(row: Selectable<TeamAgentRequestTable>) {
     createdAt: row.createdAt.toISOString(),
     acceptedAt: row.acceptedAt?.toISOString() ?? null,
     expiresAt: row.expiresAt?.toISOString() ?? null,
+    consentExpiresAt: row.consentExpiresAt?.toISOString() ?? null,
     finishedAt: row.finishedAt?.toISOString() ?? null,
   });
 }

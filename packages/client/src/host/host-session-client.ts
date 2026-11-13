@@ -1,3 +1,4 @@
+import { needsYouEntryKey } from "./needs-you.js";
 import type { MachineSummary } from "@opensteer/protocol";
 import type { PersonalStreamCache, PersonalCacheScope } from "./personal-stream-cache.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -3266,12 +3267,15 @@ export class HttpHostClient {
     );
     if (generation !== this.#viewerGeneration || this.#disposed || this.#snapshot.needsYou !== held)
       return;
-    const ids = new Set(held.entries.map(({ request }) => request.id));
+    const ids = new Set(held.entries.map(needsYouEntryKey));
     this.#update({
       ...this.#snapshot,
       needsYou: {
         ...page,
-        entries: [...held.entries, ...page.entries.filter(({ request }) => !ids.has(request.id))],
+        entries: [
+          ...held.entries,
+          ...page.entries.filter((entry) => !ids.has(needsYouEntryKey(entry))),
+        ],
       },
     });
   }

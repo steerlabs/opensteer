@@ -13,6 +13,11 @@ import type {
   TeamBlobId,
   TeamNoticeId,
   TeamAgentRequestState,
+  TeamAgentRequestKind,
+  TeamAskPresentation,
+  TeamAskDecision,
+  TeamAgentReturnPayload,
+  TeamReturnAdmission,
   TeamChannelKind,
   TeamHandle,
 } from "@opensteer/core";
@@ -2483,6 +2488,18 @@ export interface TeamLinkTable {
   revokedAt: NullableTimestamp;
 }
 export interface TeamAgentRequestTable {
+  kind: Generated<TeamAgentRequestKind>;
+  presentation: ColumnType<
+    TeamAskPresentation | null,
+    TeamAskPresentation | null | undefined,
+    TeamAskPresentation | null
+  >;
+  returnPayload: ColumnType<
+    TeamAgentReturnPayload | null,
+    TeamAgentReturnPayload | null | undefined,
+    TeamAgentReturnPayload | null
+  >;
+  consentExpiresAt: NullableTimestamp;
   id: TeamAgentRequestId;
   ownerUserId: UserId;
   channelId: TeamChannelId;
@@ -2522,6 +2539,22 @@ export interface TeamAgentRecipientTable {
   updatedAt: Generated<Timestamp>;
 }
 export interface PersonalTeamRequestTable {
+  kind: Generated<TeamAgentRequestKind>;
+  remoteState: Generated<TeamAgentRequestState>;
+  presentation: ColumnType<
+    TeamAskPresentation | null,
+    TeamAskPresentation | null | undefined,
+    TeamAskPresentation | null
+  >;
+  returnPayload: ColumnType<
+    TeamAgentReturnPayload | null,
+    TeamAgentReturnPayload | null | undefined,
+    TeamAgentReturnPayload | null
+  >;
+  consentExpiresAt: NullableTimestamp;
+  localDecision: Generated<TeamAskDecision | null>;
+  decisionAt: NullableTimestamp;
+  returnAdmission: Generated<TeamReturnAdmission | null>;
   answerMessageId: Generated<MessageId | null>;
   answerPayload: ColumnType<
     { readonly bodyMarkdown: string; readonly attachmentIds: readonly TeamBlobId[] } | null,
@@ -2536,8 +2569,8 @@ export interface PersonalTeamRequestTable {
   teamDeploymentId: DeploymentId;
   requestId: TeamAgentRequestId;
   triggerMessageId: TeamMessageId;
-  localTaskId: ThreadId;
-  localInputId: MessageId;
+  localTaskId: ThreadId | null;
+  localInputId: MessageId | null;
   runId: RunId | null;
   publicationState: "pending" | "accepted" | "blocked";
   terminalState: "done" | "failed" | "stopped" | "cancelled" | null;

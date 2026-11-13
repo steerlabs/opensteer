@@ -5,6 +5,9 @@ import {
   IsoDateTimeSchema,
   SequenceSchema,
   TeamAgentRequestIdSchema,
+  TeamAgentRequestKindSchema,
+  TeamAskPresentationSchema,
+  TeamRequestTextSchema,
   TeamAgentRequestStateSchema,
   TeamAudienceSchema,
   TeamBlobIdSchema,
@@ -22,13 +25,7 @@ export const teamResumeMaxRows = 200;
 export const teamResumeMaxBytes = 256 * 1024;
 export const teamUploadMaxBytes = 100 * 1024 * 1024;
 export const teamPreviewMaxBytes = 64 * 1024;
-export const TeamMarkdownSchema = z
-  .string()
-  .max(16384)
-  .refine(
-    (value) => new TextEncoder().encode(value).byteLength <= 16384,
-    "Markdown exceeds 16 KiB",
-  );
+export const TeamMarkdownSchema = TeamRequestTextSchema;
 export const TeamMentionSchema = z.strictObject({
   userId: UserIdSchema,
   kind: z.enum(["person", "agent"]),
@@ -49,6 +46,8 @@ export const TeamFileSchema = z.strictObject({
 });
 export const TeamAgentRequestSchema = z.strictObject({
   id: TeamAgentRequestIdSchema,
+  kind: TeamAgentRequestKindSchema.default("self"),
+  consentExpiresAt: IsoDateTimeSchema.nullable().default(null),
   ownerUserId: UserIdSchema,
   channelId: TeamChannelIdSchema,
   threadRootId: TeamMessageIdSchema,
@@ -61,7 +60,14 @@ export const TeamAgentRequestSchema = z.strictObject({
   finishedAt: IsoDateTimeSchema.nullable(),
   replyMessageId: TeamMessageIdSchema.nullable(),
   failureCode: z
-    .enum(["expired", "access_revoked", "link_revoked", "trigger_deleted", "execution_failed"])
+    .enum([
+      "expired",
+      "access_revoked",
+      "link_revoked",
+      "trigger_deleted",
+      "trigger_edited",
+      "execution_failed",
+    ])
     .nullable(),
   changeSeq: SequenceSchema,
 });
@@ -225,6 +231,7 @@ export const TeamFileResultSchema = z.strictObject({
 });
 export const TeamRequestContextSchema = z.strictObject({
   request: TeamAgentRequestSchema,
+  presentation: TeamAskPresentationSchema.nullable().default(null),
   instructionsMarkdown: TeamMarkdownSchema,
   instructionsRevision: SequenceSchema,
   source: TeamSourceSchema,

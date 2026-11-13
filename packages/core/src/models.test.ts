@@ -79,6 +79,20 @@ describe("durable message authorship", () => {
         triggerId: createId("trigger"),
       },
       { cause: "continuation", kind: "platform" },
+      {
+        kind: "team-member",
+        actor: "human",
+        teamId: createId("deployment"),
+        teamUserId: createId("user"),
+        displayName: "Maya",
+      },
+      {
+        kind: "team-member",
+        actor: "agent",
+        teamId: createId("deployment"),
+        teamUserId: createId("user"),
+        displayName: "Maya",
+      },
     ];
     const kinds: readonly MessageKind[] = ["input", "assistant", "run-result", "continuation"];
 

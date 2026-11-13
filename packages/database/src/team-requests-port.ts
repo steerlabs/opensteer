@@ -1,6 +1,7 @@
 import type {
   RunId,
   TeamAgentRequestId,
+  TeamAskDecision,
   TeamBlobId,
   TeamLinkId,
   TeamMessageId,
@@ -21,7 +22,11 @@ export interface TeamRequestStorePort {
   ): Promise<TeamAgentRequest>;
   pending(linkId: TeamLinkId): Promise<readonly TeamRunRequest[]>;
   /** First accept fixes expiry at seven days; repeated accepts never extend it. */
-  accept(linkId: TeamLinkId, requestId: TeamAgentRequestId): Promise<TeamAgentRequest>;
+  accept(
+    linkId: TeamLinkId,
+    requestId: TeamAgentRequestId,
+    decision?: TeamAskDecision,
+  ): Promise<TeamAgentRequest>;
   context(
     linkId: TeamLinkId,
     requestId: TeamAgentRequestId,

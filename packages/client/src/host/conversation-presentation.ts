@@ -7,6 +7,8 @@ export function conversationName(title: string): string {
   return title;
 }
 export function messageAuthorName(author: MessageAuthor): string {
+  if (author.kind === "team-member" && author.actor === "agent")
+    return `${author.displayName}'s agent`;
   return author.kind === "platform" ? "Opensteer" : author.displayName;
 }
 

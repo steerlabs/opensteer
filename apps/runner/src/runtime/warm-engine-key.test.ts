@@ -39,6 +39,7 @@ it("invalidates warm reuse for tool inventory, instructions, roots and discovere
   const before = warmEngineKey(input);
   const teamTurnContext = {
     kind: "team" as const,
+    asker: null,
     source: TeamSourceSchema.parse({
       teamId: createId("deployment"),
       channelId: createId("teamChannel"),

@@ -535,6 +535,7 @@ describe("the Needs you pill", () => {
     await click(pill);
     expect(history.length).toBe(before + 1);
     const first = client.getSnapshot().needsYou!.entries[0]!;
+    if (first.kind !== "request") throw new Error("Expected a pending task request");
     expect(history.at(-1)!.path).toBe(`/tasks/${first.navigationThreadId}`);
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
     expect(element(".place").getAttribute("data-place-key")).toBe(place.key);
@@ -775,6 +776,8 @@ describe("a channel and back", () => {
     const root = host.post({ channelId, bodyMarkdown: "Ask my agent" });
     host.setRequest({
       id: TeamAgentRequestIdSchema.parse(createId("teamAgentRequest")),
+      kind: "self",
+      consentExpiresAt: null,
       ownerUserId: host.userId,
       channelId,
       threadRootId: root.id,

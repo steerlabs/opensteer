@@ -93,6 +93,7 @@ export function needsYouPage(
         const target = byRequest.get(row.id);
         if (!target) throw new Error("Request lost its originating task");
         return {
+          kind: "request" as const,
           request: PendingRequestViewSchema.parse(requestFromRow(row)),
           originThreadId: row.originatingThreadId,
           navigationThreadId: target.id,

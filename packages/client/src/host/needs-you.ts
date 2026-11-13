@@ -1,7 +1,8 @@
-import type { NeedsYouPage } from "@opensteer/protocol";
+import type { NeedsYouEntry, NeedsYouPage } from "@opensteer/protocol";
 export function needsYouIndex(page: NeedsYouPage | null) {
-  const byTask = new Map<string, NeedsYouPage["entries"]>();
+  const byTask = new Map<string, Extract<NeedsYouPage["entries"][number], { kind: "request" }>[]>();
   for (const entry of page?.entries ?? []) {
+    if (entry.kind !== "request") continue;
     const entries = byTask.get(entry.navigationThreadId) ?? [];
     byTask.set(entry.navigationThreadId, [...entries, entry]);
   }
@@ -11,4 +12,10 @@ export function needsYouIndex(page: NeedsYouPage | null) {
     byTask,
     hasMore: page?.window.hasMore ?? false,
   };
+}
+
+export function needsYouEntryKey(entry: NeedsYouEntry): string {
+  return entry.kind === "request"
+    ? `request:${entry.request.id}`
+    : `team-ask:${entry.teamId}:${entry.requestId}`;
 }
