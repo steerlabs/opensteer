@@ -4,7 +4,7 @@ import {
   HostedTeamResponseSchema,
   HostedTeamViewSchema,
 } from "@opensteer/control-plane-protocol/hosted-teams";
-import { TeamEntryRefusedError } from "@opensteer/client/auth";
+import { TeamEntryRefusedError, TeamIdentityGrantUnsupportedError } from "@opensteer/client/auth";
 import { AccountRequestError } from "@opensteer/client/connections";
 import {
   createHttpHostApiClient,
@@ -81,6 +81,8 @@ export function desktopTeamSessions(
     if (result.ok) return schema.parse(result.data);
     const reason = TeamEntryRefusalReasonSchema.safeParse(result.error.reason);
     if (reason.success) throw new TeamEntryRefusedError(reason.data, result.error.message);
+    if (result.error.reason === TeamIdentityGrantUnsupportedError.reason)
+      throw new TeamIdentityGrantUnsupportedError();
     throw new Error(result.error.message);
   };
   const origins = new Map<DeploymentId, string>();

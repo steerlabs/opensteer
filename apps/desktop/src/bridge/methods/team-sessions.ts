@@ -1,4 +1,4 @@
-import { TeamEntryRefusedError } from "@opensteer/client/auth";
+import { TeamEntryRefusedError, TeamIdentityGrantUnsupportedError } from "@opensteer/client/auth";
 import {
   DesktopTeamSessionsCallSchema,
   type DesktopTeamSessionsResult,
@@ -28,6 +28,8 @@ export const handleTeamSessions =
     } catch (error) {
       if (error instanceof TeamEntryRefusedError)
         return { ok: false, error: { status: 403, reason: error.reason, message: error.message } };
+      if (error instanceof TeamIdentityGrantUnsupportedError)
+        return { ok: false, error: { status: 404, reason: error.reason, message: error.message } };
       return {
         ok: false,
         error: {

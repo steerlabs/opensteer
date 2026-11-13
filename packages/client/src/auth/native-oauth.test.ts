@@ -19,7 +19,7 @@ import {
   signTestDiscoveryEnvelope,
   testHostAuthorityKeys,
 } from "../test-support/index.js";
-import { NativeOAuthManager } from "./native-oauth.js";
+import { NativeOAuthManager, TeamIdentityGrantUnsupportedError } from "./native-oauth.js";
 import type { ProtectedAuthStore } from "./protected-auth-store.js";
 
 describe("NativeOAuthManager", () => {
@@ -977,6 +977,32 @@ describe("NativeOAuthManager team session exchange", () => {
     });
     expect(fixture.opened.filter((url) => url.startsWith("https://host."))).toEqual([]);
     await expect(fixture.store.load()).resolves.toMatchObject({ hosts: [] });
+  });
+
+  it("tells an Account without identity grants apart from one that refuses the grant", async () => {
+    let grant: Response = Response.json(
+      { error: "Not Found", message: "Route POST:/v1/account/… not found", statusCode: 404 },
+      { status: 404 },
+    );
+    const fixture = await managerFixture({
+      capabilities: exchangeCapability,
+      route: (url) => (url.includes("/team-identity-grants") ? grant : undefined),
+    });
+    await fixture.manager.initialize();
+    await fixture.signInAccount();
+    const invite = { selector: "s".repeat(32), verifier: "v".repeat(43) };
+    await expect(
+      fixture.manager.exchangeTeamSession(fixture.connection, invite),
+    ).rejects.toBeInstanceOf(TeamIdentityGrantUnsupportedError);
+    grant = Response.json(
+      { error: { code: "not_found", message: "Team was not found" } },
+      { status: 404 },
+    );
+    const refused = await fixture.manager
+      .exchangeTeamSession(fixture.connection, invite)
+      .catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(Error);
+    expect(refused).not.toBeInstanceOf(TeamIdentityGrantUnsupportedError);
   });
 
   it("signs in through the browser when the team does not advertise the exchange", async () => {

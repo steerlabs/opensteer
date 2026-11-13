@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DeploymentIdSchema, type DeploymentId } from "@opensteer/core";
 import type { HostedTeamSlug } from "@opensteer/control-plane-protocol/hosted-teams";
+import { TeamEntryRefusedError, TeamIdentityGrantUnsupportedError } from "../auth/native-oauth.js";
 import { MockTeamWorld } from "./mock-hosted-teams.js";
 import { MockTeamHost } from "./mock-team-host.js";
 import { createTeamCoordinator, type TeamCoordinator } from "./team-coordinator.js";
@@ -252,6 +253,34 @@ describe("TeamCoordinator", () => {
       { teamDeploymentId: opened[0], personalDeploymentId: null, state: "no-agent" },
     ]);
     expect(world.joined()).toHaveLength(1);
+  });
+
+  it("joins in the browser with the invite when Account can't vouch yet, never when the team refuses", async () => {
+    const { coordinator, world } = track(start());
+    const signIn = vi.spyOn(world.sessions, "signIn");
+    const exchange = vi
+      .spyOn(world.sessions, "exchange")
+      .mockRejectedValueOnce(
+        new TeamEntryRefusedError("invite-invalid", "This invite no longer works."),
+      );
+    await expect(
+      coordinator.joinWithInvite({
+        inviteUrl: world.sampleInviteUrl,
+        personalDeploymentId: personal,
+      }),
+    ).rejects.toThrow(/no longer works/u);
+    expect(signIn).not.toHaveBeenCalled();
+    // An Account replica from before identity grants answers the grant with a missing route.
+    exchange.mockRejectedValueOnce(new TeamIdentityGrantUnsupportedError());
+    const entered = await coordinator.joinWithInvite({
+      inviteUrl: world.sampleInviteUrl,
+      personalDeploymentId: personal,
+    });
+    expect(signIn).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ selector: expect.any(String) }),
+    );
+    expect(entered).toMatchObject({ admitted: true, intent: { state: "connected" } });
   });
 
   it("refuses a bad invite without recording anything, and signs in to old servers in the browser", async () => {

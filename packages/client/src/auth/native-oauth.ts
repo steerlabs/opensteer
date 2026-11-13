@@ -84,6 +84,20 @@ export class TeamEntryRefusedError extends ClientOperationError {
   }
 }
 
+/**
+ * The Account answered from a release before team identity grants, so it can't vouch for anyone
+ * at a team yet. The team's own sign-in still works; this is never the team refusing someone.
+ */
+export class TeamIdentityGrantUnsupportedError extends ClientOperationError {
+  static readonly reason = "team-identity-grant-unsupported";
+  readonly reason = TeamIdentityGrantUnsupportedError.reason;
+
+  constructor() {
+    super("Sign in to the team to finish joining.", "blocked");
+    this.name = "TeamIdentityGrantUnsupportedError";
+  }
+}
+
 /** Whether a team Host can be entered with the Account's identity alone, without a browser. */
 export function supportsTeamSessionExchange(connection: DeploymentConnection): boolean {
   return (
@@ -569,6 +583,12 @@ export class NativeOAuthManager implements HostCredentialProvider {
       lease.signal,
     );
     if (!response.ok) {
+      // A route the Account doesn't have answers without Account's own error body.
+      if (
+        response.status === 404 &&
+        !z.object({ error: z.object({ code: z.string() }) }).safeParse(response.body).success
+      )
+        throw new TeamIdentityGrantUnsupportedError();
       throw new ClientOperationError(
         accountUnreachableDetail,
         transientHttpStatus(response.status) ? "transient" : "blocked",
@@ -863,7 +883,12 @@ export class NativeOAuthManager implements HostCredentialProvider {
     )
       return true;
     if (!supportsTeamSessionExchange(connection) || !this.#accountSession) return false;
-    await this.exchangeTeamSession(connection);
+    try {
+      await this.exchangeTeamSession(connection);
+    } catch (error) {
+      if (error instanceof TeamIdentityGrantUnsupportedError) return false;
+      throw error;
+    }
     return true;
   }
 

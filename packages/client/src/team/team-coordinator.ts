@@ -24,7 +24,7 @@ import type {
   TeamInvitePreviewResponse,
   TeamSessionExchangeResponse,
 } from "@opensteer/protocol";
-import { TeamEntryRefusedError } from "../auth/native-oauth.js";
+import { TeamEntryRefusedError, TeamIdentityGrantUnsupportedError } from "../auth/native-oauth.js";
 import { delay } from "@opensteer/shared/delay";
 import { z } from "zod";
 import type { AccountTeamsClient } from "./account-teams.js";
@@ -334,9 +334,15 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
     signal?: AbortSignal,
   ): Promise<TeamSessionEstablished> => {
     const team = await ports.sessions.verify(origin, signal);
-    return team.capabilities.includes("team-session-exchange-v1")
-      ? ports.sessions.exchange(team, invite, signal)
-      : ports.sessions.signIn(team, invite);
+    if (!team.capabilities.includes("team-session-exchange-v1"))
+      return ports.sessions.signIn(team, invite);
+    try {
+      return await ports.sessions.exchange(team, invite, signal);
+    } catch (error) {
+      // Account can't vouch yet (an older replica), so the team's own sign-in, with the invite.
+      if (!(error instanceof TeamIdentityGrantUnsupportedError)) throw error;
+      return ports.sessions.signIn(team, invite);
+    }
   };
 
   const scheduleRetry = (intent: TeamConnectionIntent, attempt: number) => {
