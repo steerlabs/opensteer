@@ -998,6 +998,18 @@ export class OpensteerStore {
     return environmentStore.assignEnvironmentRunner(this.#database, environmentId, runnerId);
   }
 
+  /** The name of the computer a personal Deployment runs on; null on a team server. */
+  async homeComputerName(): Promise<string | null> {
+    const row = await this.#database
+      .selectFrom("runners")
+      .select("name")
+      .where("kind", "=", "main")
+      .where("ownerKind", "=", "deployment")
+      .where("revokedAt", "is", null)
+      .executeTakeFirst();
+    return row?.name ?? null;
+  }
+
   async countLiveThreadsByEnvironment(
     environmentIds: readonly EnvironmentId[],
   ): Promise<ReadonlyMap<EnvironmentId, number>> {

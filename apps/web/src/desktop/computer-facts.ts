@@ -32,13 +32,9 @@ export async function readComputerFacts(
     kind: "personal",
     onAuthenticationRequired: () => undefined,
   });
-  const [attention, linked, homeName] = await Promise.all([
+  const [attention, linked] = await Promise.all([
     rpc["attention.get"]({}).then(unwrapRpcResult),
     rpc["teams.links.list"]({}).then(unwrapRpcResult),
-    rpc["devices.overview.get"]({})
-      .then(unwrapRpcResult)
-      .then(({ devices }) => devices.find((device) => device.kind === "home")?.name ?? null)
-      .catch(() => null),
   ]);
   const teams = await Promise.all(
     linked.links
@@ -65,5 +61,10 @@ export async function readComputerFacts(
         }
       }),
   );
-  return { ...attention, homeName, teams };
+  return {
+    homeName: attention.homeName ?? null,
+    needsYou: attention.needsYou,
+    teams,
+    unread: attention.unread,
+  };
 }

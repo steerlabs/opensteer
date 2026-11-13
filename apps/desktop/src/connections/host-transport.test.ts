@@ -1910,7 +1910,7 @@ describe("joined team routing", () => {
           id: expectedDeploymentId,
           canonicalOrigin: second.authority.document.canonicalOrigin,
         } as DeploymentAccessDeployment),
-      ).resolves.toEqual({ needsYou: 3, unread: true, teams: [] });
+      ).resolves.toEqual({ homeName: null, needsYou: 3, unread: true, teams: [] });
       expect(network.request.mock.calls.map(([request]) => request.request.method)).toEqual([
         "POST",
         "POST",

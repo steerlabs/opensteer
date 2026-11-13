@@ -1495,10 +1495,13 @@ export async function createHostServer(
         hostApi["thread.requests.list"].success.parse({ ...page, threadId: input.threadId }),
       );
     },
-    "attention.get": async (_input, context) =>
-      rpcSuccess(
-        await dependencies.store.notificationState.attention(requireRpcSession(context).user.id),
-      ),
+    "attention.get": async (_input, context) => {
+      const [attention, homeName] = await Promise.all([
+        dependencies.store.notificationState.attention(requireRpcSession(context).user.id),
+        dependencies.store.homeComputerName(),
+      ]);
+      return rpcSuccess({ ...attention, homeName });
+    },
     "needsYou.get": async (input, context) =>
       rpcSuccess(
         await needsYouPage(dependencies.store.database, {
