@@ -1,5 +1,29 @@
 import type { Request } from "@opensteer/core";
+import type { MachineAccessPolicy } from "@opensteer/protocol";
 import type { HostClient, MachineAccessUpdateOutcome } from "../host/client.js";
+
+export type DeviceSwitchName = "browser" | "apps" | "files";
+
+/**
+ * The policy one "Your agent can use" switch writes. Only the changed one of
+ * the optional switches rides along, so the Host keeps whatever the other is
+ * now. Files is reach alone: turning it back on restores the commands,
+ * forwarding and folders saved underneath, which only new enrollment sets.
+ */
+export function withDeviceSwitch(
+  policy: MachineAccessPolicy,
+  name: DeviceSwitchName,
+  on: boolean,
+): MachineAccessPolicy {
+  const base = {
+    reach: policy.reach,
+    commands: policy.commands,
+    forwarding: policy.forwarding,
+    shares: policy.shares,
+  };
+  if (name === "files") return { ...base, reach: on ? "owner" : "nobody" };
+  return { ...base, [name]: on };
+}
 
 export async function answerDeviceAccessRequest(
   client: Pick<HostClient, "dispatch" | "getSnapshot" | "updateMachineAccess">,
@@ -24,9 +48,6 @@ export async function answerDeviceAccessRequest(
   return client.updateMachineAccess({
     runnerId: machineId,
     expectedRevision: machine.access.revision,
-    policy:
-      access === "files"
-        ? { ...machine.access.policy, reach: "owner" }
-        : { ...machine.access.policy, [access]: true },
+    policy: withDeviceSwitch(machine.access.policy, access, true),
   });
 }

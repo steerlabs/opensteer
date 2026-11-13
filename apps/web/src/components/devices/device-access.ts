@@ -1,4 +1,4 @@
-import { deviceAccess, type MachineAccessPolicy, type MachineSummary } from "@opensteer/protocol";
+import { deviceAccess, type DeviceInitialAccess, type MachineSummary } from "@opensteer/protocol";
 import { hostsDeployment } from "@opensteer/client/computers";
 import { isAgentPhone } from "@opensteer/client/integrations";
 
@@ -26,9 +26,15 @@ const capabilityDetail: Readonly<Record<DeviceCapability, string>> = {
 };
 
 export const homeFixedDetail = "Always on. Your agent runs here.";
+export const olderHostDetail = "Always on. Update Opensteer on your Home Mac to switch it off.";
 
 export type DeviceSwitch =
-  | { readonly capability: DeviceCapability; readonly kind: "fixed" }
+  /** Home's own browser and files, or a switch an older Host can't store. */
+  | {
+      readonly capability: DeviceCapability;
+      readonly kind: "fixed";
+      readonly reason: "home" | "older-host";
+    }
   | {
       readonly capability: DeviceCapability;
       readonly kind: "switch";
@@ -42,24 +48,29 @@ export type DeviceSwitch =
  *
  * What a device can offer at all is its enrollment's fixed ceiling, so a
  * capability its grant never allowed has no row rather than a switch that
- * cannot work. Home runs the agent, so its browser and files are fixed.
+ * cannot work. Apps is the integrations grant: computer use on a Mac, a
+ * phone's data apps, and MCP a computer hosts on any platform. Home runs the
+ * agent, so its browser and files are fixed. Browser and Apps are switches
+ * only on a Host that says `devices-v1`; an older one never gates them.
  */
-export function deviceSwitches(machine: MachineSummary): readonly DeviceSwitch[] {
+export function deviceSwitches(
+  machine: MachineSummary,
+  devicesAvailable: boolean,
+): readonly DeviceSwitch[] {
   const policy = machine.access?.policy ?? null;
   const switches = policy ? deviceAccess(policy) : null;
   const home = hostsDeployment(machine);
   const offered: Record<DeviceCapability, boolean> = {
     browser: home || machine.allowedModules.includes("browser"),
-    apps:
-      isAgentPhone(machine) ||
-      (machine.allowedModules.includes("integrations") &&
-        (machine.device?.platform === "macos" || machine.device?.platform === "ios")),
+    apps: isAgentPhone(machine) || machine.allowedModules.includes("integrations"),
     files: home || (machine.allowedModules.includes("shell") && machine.device?.form !== "phone"),
   };
   return deviceCapabilities
     .filter((capability) => offered[capability])
     .flatMap((capability): DeviceSwitch[] => {
-      if (home && capability !== "apps") return [{ capability, kind: "fixed" }];
+      if (home && capability !== "apps") return [{ capability, kind: "fixed", reason: "home" }];
+      if (!devicesAvailable && capability !== "files")
+        return [{ capability, kind: "fixed", reason: "older-host" }];
       if (!switches) return [];
       const on = switches[capability];
       return [
@@ -75,38 +86,44 @@ function needsMacos(machine: MachineSummary, capability: DeviceCapability): bool
   return false;
 }
 
-export function deviceSwitchDetail(item: DeviceSwitch, thisDevice: boolean): string {
-  if (item.kind === "fixed") return homeFixedDetail;
+function appsDetail(machine: MachineSummary): string {
+  if (isAgentPhone(machine)) return "See and control the phone";
+  if (machine.device?.platform === "ios") return "Calendar, Contacts and other iPhone apps";
+  if (machine.device?.platform === "macos") return capabilityDetail.apps;
+  return "Apps and tools it hosts";
+}
+
+export function deviceSwitchDetail(
+  item: DeviceSwitch,
+  machine: MachineSummary,
+  thisDevice: boolean,
+): string {
+  if (item.kind === "fixed") return item.reason === "home" ? homeFixedDetail : olderHostDetail;
   if (item.needsMacos) return "On · needs macOS permission";
-  return (thisDevice ? capabilityDetailHere : capabilityDetail)[item.capability];
+  if (thisDevice) return capabilityDetailHere[item.capability];
+  return item.capability === "apps" ? appsDetail(machine) : capabilityDetail[item.capability];
 }
 
 /**
- * The policy one switch writes. Only the changed switch rides along of the two
- * optional ones, so the Host keeps whatever the other is now; the required
- * fields are the revision the editor read, which the Host checks.
+ * What setup actually left switched on: the Host's stored policy once it lists
+ * this device, else the person's choices only where the Host took them. Null
+ * while that is unknown, so Ready never claims a choice an older Host dropped.
  */
-export function switchPolicy(
-  policy: MachineAccessPolicy,
-  capability: DeviceCapability,
-  on: boolean,
-): MachineAccessPolicy {
-  const base = {
-    reach: policy.reach,
-    commands: policy.commands,
-    forwarding: policy.forwarding,
-    shares: policy.shares,
-  };
-  if (capability === "browser") return { ...base, browser: on };
-  if (capability === "apps") return { ...base, apps: on };
-  return on
-    ? { ...base, reach: "owner", commands: true, forwarding: true }
-    : { ...base, reach: "nobody" };
+export function appliedSetupAccess(input: {
+  readonly machine: MachineSummary | null;
+  readonly chosen: DeviceInitialAccess | null;
+  readonly devicesAvailable: boolean;
+}): DeviceInitialAccess | null {
+  const policy = input.machine?.access?.policy;
+  if (policy) return deviceAccess(policy);
+  return input.devicesAvailable ? input.chosen : null;
 }
 
 /** A one-line summary for a Devices row: what the agent can use there. */
-export function deviceUsesLine(machine: MachineSummary): string | null {
-  const items = deviceSwitches(machine).filter((item) => item.kind === "fixed" || item.on);
+export function deviceUsesLine(machine: MachineSummary, devicesAvailable: boolean): string | null {
+  const items = deviceSwitches(machine, devicesAvailable).filter(
+    (item) => item.kind === "fixed" || item.on,
+  );
   if (items.length === 0) return machine.access ? "Your agent can’t use it" : null;
   return items
     .map((item) =>

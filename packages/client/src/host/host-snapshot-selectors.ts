@@ -34,6 +34,7 @@ export function sameStableHostSnapshot(previous: HostSnapshot, next: HostSnapsho
       previous.taskMarksAvailable === next.taskMarksAvailable &&
       previous.harnessUpdateAvailable === next.harnessUpdateAvailable &&
       previous.iphoneAppsAvailable === next.iphoneAppsAvailable &&
+      previous.devicesAvailable === next.devicesAvailable &&
       sameThreadsIgnoringActivityTime(previous.threads, next.threads))
   );
 }

@@ -227,5 +227,10 @@ it("writes a switch against the revision on screen, and shows a newer one instea
 
   // Turning it on from a request reads the newer revision and asks once more.
   await turnOnDeviceAccess(host, laptopId, "files");
-  expect(machine().access!.policy).toMatchObject({ reach: "owner", commands: true });
+  expect(machine().access!.policy).toMatchObject({
+    reach: "owner",
+    commands: stale.access!.policy.commands,
+    forwarding: stale.access!.policy.forwarding,
+    shares: stale.access!.policy.shares,
+  });
 });

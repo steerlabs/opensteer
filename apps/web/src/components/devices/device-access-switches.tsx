@@ -1,11 +1,11 @@
 import { useCallback, useRef, useState, type ReactNode } from "react";
 import type { MachineSummary } from "@opensteer/protocol";
+import { withDeviceSwitch } from "@opensteer/client/computers";
 import type { HostClient } from "@opensteer/client/host";
 import { actionErrorMessage } from "../../ui-utils.js";
 import {
   capabilityLabel,
   deviceSwitchDetail,
-  switchPolicy,
   type DeviceCapability,
   type DeviceSwitch,
 } from "./device-access.js";
@@ -38,7 +38,7 @@ export function useAccessSwitch(
       try {
         const result = await hostClient.updateMachineAccess({
           expectedRevision: access.revision,
-          policy: switchPolicy(access.policy, capability, on),
+          policy: withDeviceSwitch(access.policy, capability, on),
           runnerId: machine.id,
         });
         if (result.outcome === "conflict") {
@@ -107,7 +107,7 @@ export function DeviceAccessSwitches({
                     className={`card__row-detail${waiting ? " device-uses__waiting" : ""}`}
                     id={`device-use-${item.capability}-detail`}
                   >
-                    {deviceSwitchDetail(item, thisDevice)}
+                    {deviceSwitchDetail(item, machine, thisDevice)}
                   </span>
                 </span>
                 <span className="card__row-actions">

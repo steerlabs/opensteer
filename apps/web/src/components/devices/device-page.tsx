@@ -120,7 +120,7 @@ function DeviceDetail({ machine }: { readonly machine: MachineSummary }) {
     inDesktopApp: desktopBridge !== null,
     lentByThisDesktop: here && !home,
   });
-  const switches = deviceSwitches(machine);
+  const switches = deviceSwitches(machine, snapshot.devicesAvailable === true);
   const removal = deviceRemovalCopy({
     machine,
     thisDevice: leavesHere,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createId, type AuthSessionSummary } from "@opensteer/core";
 import { MachineSummarySchema, deviceAccess } from "@opensteer/protocol";
+import { withDeviceSwitch } from "./device-access-request.js";
 import { deviceMembership, devicesView, type DeviceMembershipInput } from "./devices.js";
 const base: DeviceMembershipInput = {
   applicable: true,
@@ -61,12 +62,16 @@ const machine = (id: string, kind: "home" | "computer") =>
     revocable: kind !== "home",
     status: "online",
   });
-const session = (id: string, deviceId?: string | null): AuthSessionSummary =>
+const session = (
+  id: string,
+  deviceId?: string | null,
+  deviceLabel = "Chrome on Mac",
+): AuthSessionSummary =>
   ({
     id,
     deviceId,
     current: false,
-    deviceLabel: "Chrome on Mac",
+    deviceLabel,
     form: "computer",
     absoluteExpiresAt: "2026-11-12T12:00:00Z",
     createdAt: "2026-11-12T12:00:00Z",
@@ -84,13 +89,26 @@ it("groups bound sessions without losing legacy sessions or plugin equipment", (
   };
   const view = devicesView({
     machines: [machine("other", "computer"), machine("home", "home"), machine("here", "computer")],
-    sessions: [session("a", "here"), session("b", "here"), session("web", null), session("legacy")],
+    sessions: [
+      session("a", "here"),
+      session("b", "here"),
+      session("web", null),
+      session("legacy"),
+      session("phone", null, "Opensteer for iPhone"),
+      session("gone", "removed-device"),
+    ],
     hereId: "here",
     otherDevices: [plugin],
   });
+  // A session is never a device row: only machines are, and every session lands once.
   expect(view.devices.map((row) => row.label)).toEqual(["here", "home", "other"]);
   expect(view.devices[0]?.sessions.map((row) => row.id)).toEqual(["a", "b"]);
-  expect(view.alsoSignedIn.map((row) => row.session.id)).toEqual(["web", "legacy"]);
+  expect(view.alsoSignedIn.map((row) => [row.session.id, row.status])).toEqual([
+    ["web", "Signed in"],
+    ["legacy", "Signed in"],
+    ["phone", "Update to finish setup"],
+    ["gone", "Signed in"],
+  ]);
   expect(view.otherDevices).toEqual([plugin]);
 });
 it("reads legacy switches without widening files access", () => {
@@ -99,5 +117,36 @@ it("reads legacy switches without widening files access", () => {
     browser: false,
     apps: false,
     files: true,
+  });
+});
+it("turns a switch off and on again without widening what was saved underneath", () => {
+  const saved = {
+    browser: true,
+    apps: true,
+    reach: "owner" as const,
+    commands: false,
+    forwarding: false,
+    shares: [{ path: "/Users/person/Projects", mode: "read" as const }],
+  };
+  const off = withDeviceSwitch(saved, "files", false);
+  expect(off).toEqual({
+    reach: "nobody",
+    commands: false,
+    forwarding: false,
+    shares: saved.shares,
+  });
+  expect(withDeviceSwitch(off, "files", true)).toEqual({
+    reach: "owner",
+    commands: false,
+    forwarding: false,
+    shares: saved.shares,
+  });
+  // The other optional switch stays out, so the Host keeps whatever it is now.
+  expect(withDeviceSwitch(saved, "browser", false)).toEqual({
+    reach: "owner",
+    commands: false,
+    forwarding: false,
+    shares: saved.shares,
+    browser: false,
   });
 });

@@ -5,7 +5,12 @@ import { Icon } from "../icon.js";
 import { SetupFooter, SetupFrame } from "../first-run/setup-frame.js";
 import { SetupList, SetupRow } from "../first-run/setup-list.js";
 import { ErrorNotice } from "../onboarding-card.js";
-import { capabilityDetailHere, capabilityLabel, type DeviceCapability } from "./device-access.js";
+import {
+  appliedSetupAccess,
+  capabilityDetailHere,
+  capabilityLabel,
+  type DeviceCapability,
+} from "./device-access.js";
 import { MacosPermissionRows, missingMacosGrant, useMacosGrants } from "./macos-permission-rows.js";
 import { deviceRoute } from "./device-routes.js";
 import { finishSetupLine } from "./device-setup.js";
@@ -130,18 +135,25 @@ function ChooseStep({ device }: { readonly device: ThisDevice }) {
           value={name}
         />
       </label>
-      <SetupGroup title="Your agent can use">
-        {(["browser", "apps", "files"] as const).map((capability) => (
-          <SwitchRow
-            checked={access[capability]}
-            detail={capabilityDetailHere[capability]}
-            disabled={working}
-            key={capability}
-            label={capabilityLabel[capability]}
-            onChange={(on) => setAccess((current) => ({ ...current, [capability]: on }))}
-          />
-        ))}
-      </SetupGroup>
+      {device.devicesAvailable ? (
+        <SetupGroup title="Your agent can use">
+          {(["browser", "apps", "files"] as const).map((capability) => (
+            <SwitchRow
+              checked={access[capability]}
+              detail={capabilityDetailHere[capability]}
+              disabled={working}
+              key={capability}
+              label={capabilityLabel[capability]}
+              onChange={(on) => setAccess((current) => ({ ...current, [capability]: on }))}
+            />
+          ))}
+        </SetupGroup>
+      ) : (
+        <p className="setup-frame__note">
+          Update Opensteer on {device.homeName} to choose what your agent can use here. Until then
+          it joins with what that version allows.
+        </p>
+      )}
       <SetupGroup title="On this Mac">
         <SwitchRow
           checked={notifications}
@@ -165,7 +177,7 @@ function MacosStep({
   readonly device: ThisDevice;
 }) {
   const { grants, reload } = useMacosGrants(bridge);
-  const access = device.choice?.access ?? switchesOf(device);
+  const access = applied(device) ?? device.choice?.access ?? allOn;
   const finish = () => device.goTo("ready");
   return (
     <SetupFrame
@@ -210,20 +222,21 @@ function ReadyStep({
   readonly device: ThisDevice;
 }) {
   const { grants } = useMacosGrants(bridge);
-  const access = device.choice?.access ?? switchesOf(device);
+  const access = applied(device);
   const name = device.machine?.name ?? device.choice?.name ?? device.computerName;
-  const anything = access.browser || access.apps || access.files;
+  const anything = access !== null && (access.browser || access.apps || access.files);
   const rows: readonly {
     readonly label: string;
     readonly state: string;
     readonly waiting: boolean;
   }[] = [
     ...(["browser", "apps", "files"] as const).map((capability: DeviceCapability) => {
-      const on = access[capability];
-      const waiting = on && missingMacosGrant(grants, capability);
+      const on = access?.[capability] ?? null;
+      const waiting = on === true && missingMacosGrant(grants, capability);
       return {
         label: capabilityLabel[capability],
-        state: waiting ? "On · needs macOS permission" : on ? "On" : "Off",
+        state:
+          on === null ? "Checking…" : waiting ? "On · needs macOS permission" : on ? "On" : "Off",
         waiting,
       };
     }),
@@ -236,9 +249,11 @@ function ReadyStep({
   return (
     <SetupFrame
       description={
-        anything
-          ? `It’s one of your devices now. Tabs you open here run here, and your agent can reach it from ${device.homeName}.`
-          : "Your agent can’t use it until you turn something on."
+        access === null
+          ? "Checking what your agent can use here."
+          : anything
+            ? `It’s one of your devices now. Tabs you open here run here, and your agent can reach it from ${device.homeName}.`
+            : "Your agent can’t use it until you turn something on."
       }
       footer={
         <SetupFooter
@@ -283,13 +298,14 @@ function ReadyStep({
   );
 }
 
-function switchesOf(device: ThisDevice): DeviceSetupChoice["access"] {
-  const policy = device.machine?.access?.policy;
-  return {
-    browser: policy?.browser ?? true,
-    apps: policy?.apps ?? true,
-    files: policy ? policy.reach !== "nobody" : true,
-  };
+const allOn: DeviceSetupChoice["access"] = { browser: true, apps: true, files: true };
+
+function applied(device: ThisDevice): DeviceSetupChoice["access"] | null {
+  return appliedSetupAccess({
+    machine: device.machine,
+    chosen: device.choice?.access ?? null,
+    devicesAvailable: device.devicesAvailable,
+  });
 }
 
 /**
