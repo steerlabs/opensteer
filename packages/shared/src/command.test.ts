@@ -7,15 +7,24 @@ import {
   type CommandProbes,
   type ResolvedCommand,
 } from "./command.js";
+import { generatedShims } from "./commandShims.test-support.js";
 
 /** NTFS compares names without case. */
-function windowsDisk(files: readonly string[], aliases: readonly string[] = []): CommandProbes {
+function windowsDisk(
+  files: readonly string[],
+  aliases: readonly string[] = [],
+  contents: Readonly<Record<string, string>> = {},
+): CommandProbes {
   const has = (list: readonly string[], candidate: string) =>
     list.some((file) => file.toLowerCase() === candidate.toLowerCase());
   return {
     isExecutable: (candidate) => has(files, candidate),
     isExecutionAlias: (candidate) => has(aliases, candidate),
     isFile: (candidate) => has(files, candidate),
+    readStart: (candidate, bytes) =>
+      contents[candidate] === undefined
+        ? undefined
+        : Buffer.from(contents[candidate]).subarray(0, bytes),
   };
 }
 
@@ -25,6 +34,7 @@ function posixDisk(executables: readonly string[], plainFiles: readonly string[]
     isExecutionAlias: () => false,
     isFile: (candidate: string) =>
       executables.includes(candidate) || plainFiles.includes(candidate),
+    readStart: () => undefined,
   } satisfies CommandProbes;
 }
 
@@ -163,6 +173,52 @@ describe("resolveCommand on Windows", () => {
   });
 });
 
+describe("resolveCommand with a batch file", () => {
+  const kindOf = (text: string | undefined) =>
+    resolveCommand("C:\\bin\\tool.cmd", {
+      cwd: "C:\\work",
+      environment: {},
+      platform: "win32",
+      probes: windowsDisk(
+        ["C:\\bin\\tool.cmd"],
+        [],
+        text === undefined ? {} : { "C:\\bin\\tool.cmd": text },
+      ),
+    })?.kind;
+  const npmPreamble = generatedShims.npm.program.slice(
+    0,
+    generatedShims.npm.program.indexOf('"%dp0%'),
+  );
+
+  it.each([
+    ["npm", "a Node script", generatedShims.npm.node],
+    ["npm", "a program", generatedShims.npm.program],
+    ["pnpm", "a Node script", generatedShims.pnpm.node],
+    ["pnpm", "a program", generatedShims.pnpm.program],
+  ])("recognizes %s's shim for %s as forwarding %*", (_manager, _target, text) => {
+    expect(kindOf(text)).toBe("batch-shim");
+  });
+
+  it.each([
+    ["a script that reads its parameters", '@echo off\r\nif exist "%~1" type "%~1"\r\n'],
+    [
+      "a hand-written forwarder",
+      '@ECHO off\r\nSETLOCAL\r\nSET "dp0=%~dp0"\r\n"node" "%dp0%\\x.js" %*\r\n',
+    ],
+    ["a shim preamble before a script reading %1", `${npmPreamble}node "%dp0%\\x.js" %1 %*\r\n`],
+    ["a shim preamble before a %* that is not last", "@SETLOCAL\r\nnode x.js %* > log.txt\r\n"],
+    ["a shim preamble without %*", "@SETLOCAL\r\nnode x.js\r\n"],
+    ["a shim preamble before a %~$PATH:1 search", "@SETLOCAL\r\nnode %~$PATH:1 %*\r\n"],
+    [
+      "a file larger than any generated shim",
+      `${generatedShims.pnpm.program}${"REM\r\n".repeat(5000)}`,
+    ],
+    ["an unreadable file", undefined],
+  ])("runs %s as an ordinary batch file", (_name, text) => {
+    expect(kindOf(text)).toBe("batch");
+  });
+});
+
 describe("resolveCommand on POSIX", () => {
   const resolve = (command: string, path: string, probes: CommandProbes) =>
     resolveCommand(command, {
@@ -217,17 +273,66 @@ describe("getEnvironmentValue", () => {
 });
 
 const windowsEnvironment = { SystemRoot: "C:\\Windows" };
-const batch: ResolvedCommand = { kind: "batch", path: "C:\\Program Files\\npm\\tool.cmd" };
+const ordinary: ResolvedCommand = { kind: "batch", path: "C:\\My Tools\\tool.cmd" };
+const shim: ResolvedCommand = { kind: "batch-shim", path: "C:\\Program Files\\npm\\tool.cmd" };
 
-function batchLine(args: readonly string[]): string {
-  const plan = planLaunch(batch, args, { environment: windowsEnvironment, platform: "win32" });
+function batchLine(script: ResolvedCommand, args: readonly string[]): string {
+  const plan = planLaunch(script, args, { environment: windowsEnvironment, platform: "win32" });
   expect(plan).toMatchObject({ args: [], executable: "C:\\Windows\\System32\\cmd.exe" });
   return plan.windowsCommandLine!;
 }
 
-/** One cmd.exe parse of text the serializer escaped: every caret takes the next character literally. */
-function cmdPass(text: string): string {
-  return text.replace(/\^(.)/gsu, "$1");
+/**
+ * cmd.exe parsing one line. With an environment, `%name%` first becomes a
+ * defined variable's value. Then `"` toggles quoting; outside quotes `^` takes
+ * the next character literally and an operator would start another command.
+ */
+function cmdParse(line: string, environment?: Readonly<Record<string, string>>): string {
+  let text = "";
+  for (let index = 0; index < line.length;) {
+    const end = environment && line[index] === "%" ? line.indexOf("%", index + 1) : -1;
+    const value = end > index ? environment?.[line.slice(index + 1, end)] : undefined;
+    if (value === undefined) text += line[index++];
+    else [text, index] = [text + value, end + 1];
+  }
+  let parsed = "";
+  let quoted = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]!;
+    if (character === '"') quoted = !quoted;
+    else if (!quoted && character === "^") index += 1;
+    else if (!quoted && "&|<>()".includes(character))
+      throw new Error(`cmd.exe would act on ${character} in ${text}`);
+    parsed += text[index] ?? "";
+  }
+  return parsed;
+}
+
+/** What the script receives: the outer cmd's `/s` strips one quote pair, then it parses the rest once. */
+function scriptCommandLine(line: string, script: string): string {
+  const prefix = "cmd.exe /d /s /v:off /c ";
+  expect(line.startsWith(`${prefix}""${script}"`) && line.endsWith('"')).toBe(true);
+  const parsed = cmdParse(line.slice(prefix.length + 1, -1), { PATH: "C:\\Windows" });
+  expect(parsed.startsWith(`"${script}"`)).toBe(true);
+  return parsed.slice(script.length + 2);
+}
+
+/** How a batch file splits its command line into %1, %2…: at delimiters outside quotes. */
+function batchParameters(text: string): string[] {
+  const parameters: string[] = [];
+  let current: string | undefined;
+  let quoted = false;
+  for (const character of text) {
+    if (!quoted && /[ \t,;=]/u.test(character)) {
+      if (current !== undefined) parameters.push(current);
+      current = undefined;
+      continue;
+    }
+    if (character === '"') quoted = !quoted;
+    current = (current ?? "") + character;
+  }
+  if (current !== undefined) parameters.push(current);
+  return parameters;
 }
 
 /** CommandLineToArgvW and the MSVC runtime. */
@@ -319,29 +424,40 @@ describe("planLaunch", () => {
   });
 
   it("needs SystemRoot to find cmd.exe", () => {
-    expect(() => planLaunch(batch, [], { environment: {}, platform: "win32" })).toThrow(
+    expect(() => planLaunch(ordinary, [], { environment: {}, platform: "win32" })).toThrow(
       /SystemRoot/u,
     );
   });
 
-  it("starts a batch file as one cmd.exe command line", () => {
-    expect(batchLine(["a b", "x&y"])).toBe(
-      'cmd.exe /d /s /v:off /c ""C:\\Program Files\\npm\\tool.cmd" ^^^"a^^^ b^^^" x^^^&y"',
-    );
+  it.each([
+    [ordinary, '""C:\\My Tools\\tool.cmd" plain ^"a^ b^" ^"x^&y^""'],
+    [shim, '""C:\\Program Files\\npm\\tool.cmd" plain ^^^"a^^^ b^^^" x^^^&y"'],
+  ])("starts the batch file $path as one cmd.exe command line", (script, expected) => {
+    expect(batchLine(script, ["plain", "a b", "x&y"])).toBe(`cmd.exe /d /s /v:off /c ${expected}`);
   });
 
-  it("gives the script's final program exactly the arguments, through both cmd parses", () => {
-    const line = batchLine(trickyArguments);
-    const prefix = `cmd.exe /d /s /v:off /c ""${batch.path}"`;
-    expect(line.startsWith(prefix) && line.endsWith('"')).toBe(true);
-    const escaped = line.slice(prefix.length, -1);
-    // After this line's parse, the script's `%*` line still sees every metacharacter escaped.
-    expect(cmdPass(escaped)).not.toMatch(/(?<!\^)[&|<>()%!"]/u);
-    expect(commandLineToArgv(cmdPass(cmdPass(escaped)))).toEqual(trickyArguments);
+  it("gives an ordinary batch file each argument as its %~n, through cmd's one parse", () => {
+    const args = ["--flag", ...trickyArguments.filter((argument) => !argument.includes('"'))];
+    const parameters = batchParameters(scriptCommandLine(batchLine(ordinary, args), ordinary.path));
+    expect(parameters.map((parameter) => parameter.replace(/^"|"$/gu, ""))).toEqual(args);
+    // A plain word stays bare, so `if "%1"=="--flag"` still matches.
+    expect(parameters[0]).toBe("--flag");
+  });
+
+  it("refuses a quote an ordinary batch file's parameters cannot hold", () => {
+    expect(() => batchLine(ordinary, ['say "hi"'])).toThrow(/double quote/u);
+  });
+
+  it("gives a shim's program exactly the arguments, through cmd's parse of its %* line too", () => {
+    const forwarded = scriptCommandLine(batchLine(shim, trickyArguments), shim.path);
+    // Text `%*` expands to is not expanded again, only parsed.
+    const programLine = cmdParse(`"C:\\node\\node.exe" "C:\\npm\\cli.js"${forwarded}`);
+    expect(commandLineToArgv(programLine).slice(2)).toEqual(trickyArguments);
   });
 
   it.each(["a\0b", "a\nb", "a\rb"])("refuses an argument cmd.exe would cut: %j", (argument) => {
-    expect(() => batchLine([argument])).toThrow(/NUL or a line break/u);
+    expect(() => batchLine(ordinary, [argument])).toThrow(/NUL or a line break/u);
+    expect(() => batchLine(shim, [argument])).toThrow(/NUL or a line break/u);
   });
 
   it("refuses a script path cmd.exe would expand", () => {
@@ -354,7 +470,7 @@ describe("planLaunch", () => {
   });
 
   it("does not start a Windows script elsewhere", () => {
-    expect(() => planLaunch(batch, [], { environment: {}, platform: "linux" })).toThrow(
+    expect(() => planLaunch(shim, [], { environment: {}, platform: "linux" })).toThrow(
       /Windows batch script/u,
     );
   });

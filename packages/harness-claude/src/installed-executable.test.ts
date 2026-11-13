@@ -19,7 +19,12 @@ async function cli(version = "2.1.295") {
 
 function windowsFiles(...files: string[]) {
   const isFile = (candidate: string) => files.includes(candidate);
-  return { isExecutable: isFile, isExecutionAlias: () => false, isFile };
+  return {
+    isExecutable: isFile,
+    isExecutionAlias: () => false,
+    isFile,
+    readStart: () => undefined,
+  };
 }
 
 describe("installed Claude executable", () => {
