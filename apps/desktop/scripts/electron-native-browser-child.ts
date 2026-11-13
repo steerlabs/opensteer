@@ -1402,7 +1402,7 @@ function bridgeOptions(
       },
       accountSignOutPreview: async () => [],
       setUpDevice: unavailable,
-      signDeviceSessionBinding: unavailable,
+      bindDeviceSession: unavailable,
       leaveDeployment: unavailable,
       retryDeviceConnection: unavailable,
       recheckEngines: unavailable,

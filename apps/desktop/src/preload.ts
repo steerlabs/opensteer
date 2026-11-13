@@ -86,6 +86,7 @@ import type {
   DesktopHostWebSocketEvent,
   DesktopLocalExecutionStatus,
   DesktopLocalExecutionInput,
+  DesktopDeviceSessionBinding,
   DesktopOpenExternalUrlInput,
   DesktopOpenExternalUrlResult,
   DesktopOpenHostWebSocketInput,
@@ -861,11 +862,8 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     ),
   signIn: () => invoke<void>(desktopBridgeChannels.signIn),
   signOut: () => invoke<void>(desktopBridgeChannels.signOut),
-  signDeviceSessionBinding: (input: { deploymentId: string; sessionId: string }) =>
-    invoke<import("@opensteer/protocol").DeviceSessionBindingProof>(
-      desktopBridgeChannels.signDeviceSessionBinding,
-      input,
-    ),
+  bindDeviceSession: (input: DesktopLocalExecutionInput) =>
+    invoke<DesktopDeviceSessionBinding>(desktopBridgeChannels.bindDeviceSession, input),
   retryDeviceConnection: (input: DesktopLocalExecutionInput) =>
     invoke<void>(desktopBridgeChannels.retryDeviceConnection, input),
   leaveDeployment: (input: DesktopLocalExecutionInput) =>

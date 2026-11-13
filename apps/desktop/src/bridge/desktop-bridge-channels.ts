@@ -130,7 +130,7 @@ export const desktopBridgeChannels = {
   sendHostWebSocket: "opensteer.desktop.host.websocket.send",
   signIn: "opensteer.desktop.access.sign-in",
   signOut: "opensteer.desktop.access.sign-out",
-  signDeviceSessionBinding: "opensteer.desktop.device.sign-session-binding",
+  bindDeviceSession: "opensteer.desktop.device.bind-session",
   retryDeviceConnection: "opensteer.desktop.device.retry",
   leaveDeployment: "opensteer.desktop.device.leave",
   prepareDeviceSetup: "opensteer.desktop.device.prepare-setup",

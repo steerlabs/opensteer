@@ -74,6 +74,7 @@ async function attach(input: {
       runnerId: input.runnerId,
     },
     connectRunner: (token) => host.connectLocalRunner(token),
+    host: host.rpc,
     leaveDevice: async () => {
       const result = await host.rpc["sessions.list"]({});
       if (!result.ok) throw new Error(result.error.message);

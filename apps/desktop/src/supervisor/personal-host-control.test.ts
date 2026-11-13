@@ -11,14 +11,15 @@ import type { PersonalDeploymentManifest } from "../secrets/personal-deployment-
 import {
   NativePersonalHostControl,
   NativePersonalRemoteHostControl,
-  personalHostBootstrapUrl,
   PersonalHostRefusalError,
 } from "./personal-host-control.js";
 import { testPersonalHostRuntime } from "./personal-host-runtime-test-support.js";
 
 const hostOrigin = "http://127.0.0.1:4310";
-/** The route under test is the declaration's, never a string typed twice. */
-const bootstrapUrl = personalHostBootstrapUrl(hostOrigin).toString();
+/** The typed client's GET spelling: the member is the route, the empty payload the query. */
+const bootstrapUrl = `${hostOrigin}/v1/rpc/bootstrap.get?input=${encodeURIComponent(
+  JSON.stringify(hostApi["bootstrap.get"].payload.parse({})),
+)}`;
 
 describe("NativePersonalHostControl bootstrap", () => {
   it("claims on first boot and returns enrollment before reading agent home readiness", async () => {

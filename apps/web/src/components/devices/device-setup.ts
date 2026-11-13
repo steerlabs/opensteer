@@ -1,9 +1,5 @@
 import { DeploymentIdSchema } from "@opensteer/core";
-import type {
-  DevicePreparedIdentity,
-  DeviceInitialAccess,
-  DeviceSessionBindingProof,
-} from "@opensteer/protocol";
+import type { DevicePreparedIdentity, DeviceInitialAccess } from "@opensteer/protocol";
 import { actionErrorMessage } from "../../ui-utils.js";
 
 /**
@@ -26,7 +22,7 @@ export function finishSetupLine(cause: FinishSetupCause): {
         action: "Turn on",
       };
     case "bind":
-      return { text: "Finish setting up this Mac", action: "Try again" };
+      return { text: "This Mac couldn’t confirm your sign-in", action: "Try again" };
     case "failed":
       return { text: "Finish setting up this Mac", action: "Finish setup" };
   }
@@ -111,26 +107,6 @@ export async function setUpThisDevice(
     return { ok: false, cause: { kind: "bind", detail: actionErrorMessage(reason) }, runnerId };
   }
   return { ok: true, runnerId };
-}
-
-/**
- * Replays accepted bindings through main so its durable record survives a lost receipt.
- */
-export async function bindSessionToDevice(
-  ports: {
-    readonly currentSession: () => Promise<{
-      readonly id: string;
-      readonly deviceId: string | null;
-    } | null>;
-    readonly sign: (sessionId: string) => Promise<DeviceSessionBindingProof>;
-    readonly bind: (machineId: string, proof: DeviceSessionBindingProof) => Promise<void>;
-  },
-  runnerId: string,
-): Promise<"bound" | "already-bound"> {
-  const session = await ports.currentSession();
-  if (!session) throw new Error("This window has no Opensteer session to bind.");
-  await ports.bind(runnerId, await ports.sign(session.id));
-  return session.deviceId === runnerId ? "already-bound" : "bound";
 }
 
 export async function resumeDeviceSignIn(

@@ -13,7 +13,8 @@ import {
   PersonalHostAccountUnlinkStepRequestSchema,
   ResumePersonalHostAccountLinkRequestSchema,
   PublishPersonalConnectProjectionRequestSchema,
-  hostApi,
+  type hostApi,
+  type HostApiClient,
   type ConfigurePersonalRemoteAccessRequest,
   type PublishPersonalConnectProjectionRequest,
 } from "@opensteer/protocol";
@@ -43,6 +44,7 @@ import {
 } from "@opensteer/deployment-authority";
 import { z } from "zod";
 import { verifyAccessEndpoint, type VerifiedHostEndpoint } from "@opensteer/client/connections";
+import { createDesktopHostApi } from "../connections/desktop-host-api.js";
 import { clientTimeoutError } from "@opensteer/client/connections";
 import type { PersonalDeploymentManifest } from "../secrets/personal-deployment-store.js";
 import {
@@ -121,40 +123,9 @@ export class PersonalHostBootstrapRefusedError extends Error {
   }
 }
 
-/**
- * The rpc declaration is the only place the product bootstrap contract lives:
- * the member name is the route and its payload/success schemas are the wire
- * bodies. Deriving all three from it makes a renamed or reshaped member a
- * compile error here rather than a 404 that a readiness poll would mistake for
- * a Host that has not finished starting.
- */
-const bootstrapMember = "bootstrap.get";
-const bootstrapDeclaration = hostApi[bootstrapMember];
-type PersonalHostBootstrap = z.output<(typeof bootstrapDeclaration)["success"]>;
+type PersonalHostBootstrap = z.output<(typeof hostApi)["bootstrap.get"]["success"]>;
 
 const personalVersionHeaders = apiVersionHeaders("personal");
-
-export function personalHostBootstrapUrl(origin: string): URL {
-  const url = new URL(`/v1/rpc/${bootstrapMember}`, origin);
-  url.searchParams.set("input", JSON.stringify(bootstrapDeclaration.payload.parse({})));
-  return url;
-}
-
-const bootstrapSuccessSchema = z.strictObject({
-  data: bootstrapDeclaration.success,
-  ok: z.literal(true),
-});
-
-const bootstrapFailureSchema = z.strictObject({
-  error: bootstrapDeclaration.error,
-  ok: z.literal(false),
-});
-
-const ownerClaimDeclaration = hostApi["auth.setup.claim"];
-const ownerClaimSuccessSchema = z.strictObject({
-  data: ownerClaimDeclaration.success,
-  ok: z.literal(true),
-});
 
 export class NativePersonalHostControl implements PersonalHostControlPort {
   readonly #fetch: PersonalHostFetch;
@@ -312,24 +283,13 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     signal: AbortSignal,
   ): Promise<void> {
     const claimToken = OwnerClaimTokenSchema.parse(ownerClaimToken);
-    const claimed = await this.#request(
-      manifest.deploymentId,
-      new URL("/v1/rpc/auth.setup.claim", origin),
-      signal,
-      true,
-      "POST",
-      {
-        "content-type": "application/json",
-        origin: new URL(origin).origin,
-      },
-      JSON.stringify(
-        ownerClaimDeclaration.payload.parse({ kind: "local-machine-owner", token: claimToken }),
+    const claimed = await this.#withDeadline(signal, (deadline) =>
+      this.#hostApi(manifest.deploymentId, origin)["auth.setup.claim"](
+        { kind: "local-machine-owner", token: claimToken },
+        { signal: deadline },
       ),
     );
     if (!claimed.ok) throw new PersonalOwnerClaimRequiredError();
-    ownerClaimSuccessSchema.parse(
-      await readBoundedJson(claimed, personalHostJsonOptions(64 * 1_024)),
-    );
   }
 
   async waitForRunner(
@@ -407,32 +367,37 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     origin: string,
     signal: AbortSignal,
   ): Promise<PersonalHostBootstrap> {
-    const response = await this.#request(
-      deploymentId,
-      personalHostBootstrapUrl(origin),
-      signal,
-      true,
-      "GET",
+    const result = await this.#withDeadline(signal, (deadline) =>
+      this.#hostApi(deploymentId, origin)["bootstrap.get"]({}, { signal: deadline }),
     );
-    if (!response.ok) throw await bootstrapRefusal(response);
-    let body: unknown;
+    if (result.ok) return result.data;
+    throw bootstrapRefusal(result.error);
+  }
+
+  #hostApi(deploymentId: string, origin: string): HostApiClient {
+    return createDesktopHostApi({
+      origin,
+      fetch: (input, init) => this.#fetch(deploymentId, input, init),
+    });
+  }
+
+  /** One request's budget: the caller's abort, or this control's per-request timeout. */
+  async #withDeadline<T>(signal: AbortSignal, request: (deadline: AbortSignal) => Promise<T>) {
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(clientTimeoutError("Personal Host request timed out.")),
+      this.#requestTimeoutMs,
+    );
+    timeout.unref?.();
+    const relayAbort = () => controller.abort(signal.reason);
+    if (signal.aborted) relayAbort();
+    else signal.addEventListener("abort", relayAbort, { once: true });
     try {
-      body = await readBoundedJson(response, personalHostJsonOptions(4 * 1_024 * 1_024));
-    } catch (error) {
-      await response.body?.cancel().catch(() => undefined);
-      throw new PersonalHostBootstrapRefusedError(
-        "unreadable",
-        error instanceof Error ? error.message : "Personal Host returned an unreadable bootstrap.",
-      );
+      return await request(controller.signal);
+    } finally {
+      clearTimeout(timeout);
+      signal.removeEventListener("abort", relayAbort);
     }
-    const envelope = bootstrapSuccessSchema.safeParse(body);
-    if (!envelope.success) {
-      throw new PersonalHostBootstrapRefusedError(
-        "incompatible",
-        `Personal Host answered ${bootstrapMember} with an incompatible body.`,
-      );
-    }
-    return envelope.data.data;
   }
 
   async #request(
@@ -444,32 +409,19 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     headers: Readonly<Record<string, string>> = {},
     body?: BodyInit,
   ): Promise<Response> {
-    const controller = new AbortController();
-    const timeout = setTimeout(
-      () => controller.abort(clientTimeoutError("Personal Host request timed out.")),
-      this.#requestTimeoutMs,
-    );
-    timeout.unref?.();
-    const relayAbort = () => controller.abort(signal.reason);
-    if (signal.aborted) relayAbort();
-    else signal.addEventListener("abort", relayAbort, { once: true });
-    try {
-      return await this.#fetch(deploymentId, url, {
+    return this.#withDeadline(signal, (deadline) =>
+      this.#fetch(deploymentId, url, {
         cache: "no-store",
         ...(body === undefined ? {} : { body }),
         credentials: credentials ? "include" : "omit",
-        // Desktop main reaches its Host without the typed client, so every
-        // request states the epoch here; the Host exempts nobody.
+        // These control routes sit outside the typed API; the Host exempts nobody from the epoch.
         headers: { accept: "application/json", ...personalVersionHeaders, ...headers },
         method,
         redirect: "error",
         referrerPolicy: "no-referrer",
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timeout);
-      signal.removeEventListener("abort", relayAbort);
-    }
+        signal: deadline,
+      }),
+    );
   }
 }
 
@@ -860,24 +812,21 @@ async function personalHostRefusal(response: Response): Promise<Error> {
  * names itself retryable can still become success on a later poll; every other
  * answer is the Host's final word and would repeat for as long as anyone waits.
  */
-async function bootstrapRefusal(response: Response): Promise<Error> {
-  const body = await readBoundedJson(response, personalHostJsonOptions(64 * 1_024)).catch(
-    async () => {
-      await response.body?.cancel().catch(() => undefined);
-      return null;
-    },
-  );
-  const failure = bootstrapFailureSchema.safeParse(body);
-  const message = failure.success
-    ? `Personal Host refused ${bootstrapMember} (${failure.data.error.code}): ${failure.data.error.message}`
-    : `Personal Host answered ${bootstrapMember} with HTTP ${response.status}.`;
-  if (response.status >= 500 || (failure.success && failure.data.error.retryable)) {
-    return new Error(message);
-  }
-  return new PersonalHostBootstrapRefusedError(
-    failure.success ? failure.data.error.code : "http_error",
-    message,
-  );
+/**
+ * A fault the Host may outgrow while it starts keeps the poll waiting; any
+ * other answer, including a body this Desktop cannot read, has settled it.
+ */
+function bootstrapRefusal(error: {
+  readonly code: string;
+  readonly message: string;
+  readonly reason?: string | undefined;
+  readonly retryable: boolean;
+}): Error {
+  const message = `Personal Host refused bootstrap.get (${error.code}): ${error.message}`;
+  if (error.reason === "invalid-response")
+    return new PersonalHostBootstrapRefusedError("incompatible", message);
+  if (error.retryable || error.code === "internal") return new Error(message);
+  return new PersonalHostBootstrapRefusedError(error.code, message);
 }
 
 const RuntimeIdSchema = z.string().trim().min(1).max(255);

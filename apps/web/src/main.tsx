@@ -280,6 +280,7 @@ async function renderOpensteer(): Promise<void> {
                     scenario === "this-mac" ? "rnr_33333333-3333-4333-8333-333333333333" : null,
                 },
                 connectRunner: (token) => client.connectLocalRunner(token),
+                host: client.rpc,
               });
               if (!bridge) return client;
               const access = await bridge.getDeploymentAccessSnapshot();

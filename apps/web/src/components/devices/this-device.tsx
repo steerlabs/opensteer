@@ -27,12 +27,7 @@ import {
   type HostClient,
   type HostSnapshot,
 } from "@opensteer/client/host";
-import {
-  bindSessionToDevice,
-  setUpThisDevice,
-  type DeviceSetupStage,
-  type FinishSetupCause,
-} from "./device-setup.js";
+import { setUpThisDevice, type DeviceSetupStage, type FinishSetupCause } from "./device-setup.js";
 import {
   deferredSetup,
   rememberDeferredSetup,
@@ -163,34 +158,19 @@ export function useThisDeviceLifecycle(input: {
       setStep(remembered);
   }, [applicable, deploymentId, homeName, hosting, membership.state, record]);
 
-  const bindPorts = useMemo(
-    () =>
-      bridge && deploymentId
-        ? {
-            currentSession: async () => {
-              const { sessions } = unwrapRpcResult(await hostClient.rpc["sessions.list"]({}));
-              const current = sessions.find((session) => session.current);
-              return current ? { id: current.id, deviceId: current.deviceId ?? null } : null;
-            },
-            sign: (sessionId: string) =>
-              bridge.signDeviceSessionBinding({ deploymentId, sessionId }),
-            bind: (
-              machineId: string,
-              proof: Parameters<HostClient["bindDeviceSession"]>[0]["proof"],
-            ) => hostClient.bindDeviceSession({ machineId, proof }),
-          }
-        : null,
-    [bridge, deploymentId, hostClient],
+  const bindThisDevice = useMemo(
+    () => (bridge && deploymentId ? () => bridge.bindDeviceSession({ deploymentId }) : null),
+    [bridge, deploymentId],
   );
 
   // Every new sign-in on an existing device binds that session to it.
   const boundFor = useRef<string | null>(null);
   if (snapshot.session !== "authenticated") boundFor.current = null;
   useEffect(() => {
-    if (!bindPorts || !devicesAvailable || hosting || membership.state !== "ready") return;
+    if (!bindThisDevice || !devicesAvailable || hosting || membership.state !== "ready") return;
     if (!machineId || boundFor.current === machineId) return;
     boundFor.current = machineId;
-    void bindSessionToDevice(bindPorts, machineId).then(
+    void bindThisDevice().then(
       () => {
         if (deploymentId && deferredSetup(deploymentId) === "bind") {
           rememberDeferredSetup(deploymentId, null);
@@ -205,7 +185,7 @@ export function useThisDeviceLifecycle(input: {
         });
       },
     );
-  }, [bindPorts, deploymentId, devicesAvailable, hosting, machineId, membership.state]);
+  }, [bindThisDevice, deploymentId, devicesAvailable, hosting, machineId, membership.state]);
 
   const setUp = useCallback(
     async (next: DeviceSetupChoice) => {
@@ -247,9 +227,9 @@ export function useThisDeviceLifecycle(input: {
             await applyDeviceAccess(hostClient, runnerId, access);
           },
           bind: async (runnerId) => {
-            if (!bindPorts) return;
+            if (!bindThisDevice) return;
             boundFor.current = runnerId;
-            await bindSessionToDevice(bindPorts, runnerId);
+            await bindThisDevice();
           },
         },
         { name: next.name, access: next.access, devicesAvailable, homeName },
@@ -268,7 +248,7 @@ export function useThisDeviceLifecycle(input: {
       goTo(macos ? "macos" : "ready");
     },
     [
-      bindPorts,
+      bindThisDevice,
       bridge,
       deploymentId,
       devicesAvailable,
@@ -285,15 +265,15 @@ export function useThisDeviceLifecycle(input: {
       goTo("choose");
       return;
     }
-    if (!bindPorts || !machineId || !deploymentId) return;
+    if (!bindThisDevice || !deploymentId) return;
     try {
-      await bindSessionToDevice(bindPorts, machineId);
+      await bindThisDevice();
       rememberDeferredSetup(deploymentId, null);
       setCause(null);
     } catch (reason) {
       setCause({ kind: "bind", detail: reason instanceof Error ? reason.message : "" });
     }
-  }, [bindPorts, deploymentId, machineId, record?.enrolled, goTo]);
+  }, [bindThisDevice, deploymentId, record?.enrolled, goTo]);
 
   const leave = useCallback(async () => {
     if (!bridge || !deploymentId) return;
