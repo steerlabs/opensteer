@@ -111,7 +111,7 @@ export function SidebarSearch({
   readonly hostClient: HostClient;
   readonly inputRef: RefObject<HTMLInputElement | null>;
   readonly listsRef: RefObject<HTMLDivElement | null>;
-  readonly listsStyle: CSSProperties;
+  readonly listsStyle: CSSProperties | undefined;
   /** The device each tab names beside its title, by place key, as the list names them. */
   readonly deviceLabels: ReadonlyMap<string, DeviceElsewhere>;
   readonly onClose: () => void;

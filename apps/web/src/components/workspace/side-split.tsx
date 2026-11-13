@@ -1,64 +1,57 @@
-import { useCallback, useEffect, useRef } from "react";
-import { usePersistedPaneSize, type PaneSizeRange } from "../pane-resize-handle.js";
-import { fitWholeRows, wholeRowSteps } from "./scroll-edges.js";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { fitWholeRows } from "./scroll-edges.js";
+
+const tabsHeightKey = "opensteer.sidebar-tabs-height";
 
 /**
- * Tasks' share of the height Tasks and Tabs divide, in ten-thousandths: the
- * weight its section grows by, Tabs growing by the rest. Whole weights let
- * either section take all the room the other leaves (flex factors summing
- * under one take only that fraction of it), and are fine enough that a share
- * lands Tasks within the half pixel a whole row allows.
+ * Tabs' height in pixels, as this device keeps it, and the commit that keeps a
+ * new one. Null until the person moves the line: the stylesheet's default then
+ * holds. Tabs owns its height, so what shows above it (Tasks, Done, a team)
+ * never moves it.
  */
-const shares = 10_000;
-const tasksShareRange: PaneSizeRange = {
-  defaultValue: shares / 2,
-  max: shares - 1,
-  min: 1,
-  step: 1,
-};
-
-/** Tasks' share, as this device keeps it, and the commit that keeps a new one. */
-export function useTasksShare() {
-  const [share, , commit] = usePersistedPaneSize("opensteer.sidebar-tasks-share", tasksShareRange);
-  return [share, commit] as const;
+export function useTabsHeight() {
+  const [height, setHeight] = useState(readTabsHeight);
+  const commit = useCallback((next: number | null) => {
+    setHeight(next);
+    try {
+      if (next === null) localStorage.removeItem(tabsHeightKey);
+      else localStorage.setItem(tabsHeightKey, String(next));
+    } catch {
+      // A preference only: the height still applies for this window.
+    }
+  }, []);
+  return [height, commit] as const;
 }
 
-/** Where the line can stop, read from the layout as it stands. */
+function readTabsHeight(): number | null {
+  try {
+    const stored = Number(localStorage.getItem(tabsHeightKey));
+    return Number.isFinite(stored) && stored > 0 ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+/** How far the line can move, read from the layout as it stands. */
 interface Reach {
-  readonly sidebar: HTMLElement;
-  readonly tasks: HTMLElement;
-  /** The height Tasks and Tabs divide: from Tasks' top to their container's end. */
-  readonly room: number;
-  /** Where the line stands: Tasks' height. */
+  /** The sections' container, which carries `--side-tabs-height`. */
+  readonly lists: HTMLElement;
+  /** Where the line stands: Tabs' height. */
   readonly start: number;
-  /**
-   * Tasks' height to the foot of its last row in view: where the line
-   * stands, or above it while a scroll's rest leaves a taller row's gap.
-   */
-  readonly foot: number;
-  /**
-   * The heights Tasks can stop at, lowest first, each ending its list at a
-   * row's foot: from its floor, or what all of Tabs' rows leave, to all its
-   * rows, or what Tabs' floor leaves.
-   */
-  readonly stops: readonly number[];
+  /** Tabs' least height, its floor, and its most: all its rows, or what the pane above's floor leaves. */
+  readonly least: number;
+  readonly most: number;
+  /** One tab row and the gap after it: a key's step. */
+  readonly row: number;
 }
 
 /**
- * The line between Tasks and Tabs. It stops at the row edge nearest the
- * pointer, and only as far as the rows go; the share it keeps is the one that
- * gives Tasks exactly what it then shows. While it moves it reads where it can
- * stop each frame (a move scrolls Tasks to keep its open row, the window may
- * change), writes the share straight to the sidebar and fits the lists in the
- * same frame, so the sidebar renders only at the release.
+ * The line along Tabs' top. It follows the pointer, as far as Tabs' floor
+ * and its rows go; a row in part at Tabs' foot says there is more. While it
+ * moves it writes Tabs' height straight to the sections' container and fits
+ * the lists in the same frame, so the sidebar renders only at the release.
  */
-export function SideSplit({
-  onCommit,
-  share,
-}: {
-  readonly onCommit: (share: number) => void;
-  readonly share: number;
-}) {
+export function SideSplit({ onCommit }: { readonly onCommit: (height: number | null) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const drag = useRef<Drag | null>(null);
   const commit = useRef(onCommit);
@@ -73,28 +66,47 @@ export function SideSplit({
     if (!current) return;
     cancelAnimationFrame(current.frame);
     if (ref.current) follow(ref.current, current);
-    if (current.latest !== current.from) commit.current(current.latest);
+    // Once it has moved Tabs, what it shows is kept, even back where it started: a window
+    // that holds Tabs under the height kept is no start to return to.
+    if (current.moved) commit.current(current.latest);
   }, []);
   useEffect(() => finish, [finish]);
+  // Its value follows Tabs and the pane above as they are laid out, however they change.
+  useEffect(() => {
+    const divider = ref.current;
+    const above = divider?.previousElementSibling;
+    const tabs = divider?.nextElementSibling;
+    if (!divider || !(above instanceof HTMLElement) || !(tabs instanceof HTMLElement)) return;
+    const describe = () => {
+      const height = tabs.getBoundingClientRect().height;
+      const room = above.getBoundingClientRect().height + height;
+      const percent = room > 0 ? Math.round((height / room) * 100) : 0;
+      divider.setAttribute("aria-valuenow", String(percent));
+      divider.setAttribute("aria-valuetext", `Tabs ${percent}%`);
+    };
+    describe();
+    if (typeof ResizeObserver === "undefined") return;
+    const resize = new ResizeObserver(describe);
+    resize.observe(above);
+    resize.observe(tabs);
+    return () => resize.disconnect();
+  }, []);
   // Reached for, it says whether it can move; a line that cannot never lights.
   const probe = (divider: HTMLDivElement) =>
     divider.toggleAttribute("data-fixed", reachOf(divider) === null);
-  const percent = Math.round((share / shares) * 100);
 
   return (
     <div
-      aria-label="Resize Tasks and Tabs"
+      aria-label="Resize Tabs"
       aria-orientation="horizontal"
       aria-valuemax={100}
       aria-valuemin={0}
-      aria-valuenow={percent}
-      aria-valuetext={`Tasks ${percent}%, Tabs ${100 - percent}%`}
       className="side-split"
-      onDoubleClick={() => {
-        const sidebar = ref.current?.parentElement;
-        if (!sidebar) return;
-        apply(sidebar, tasksShareRange.defaultValue);
-        onCommit(tasksShareRange.defaultValue);
+      onDoubleClick={(event) => {
+        const lists = event.currentTarget.parentElement;
+        if (!lists) return;
+        fitWholeRows(lists, () => lists.style.removeProperty("--side-tabs-height"));
+        onCommit(null);
       }}
       onFocus={(event) => probe(event.currentTarget)}
       onKeyDown={(event) => {
@@ -102,7 +114,8 @@ export function SideSplit({
         const height = reach ? keyedHeight(reach, event.key) : null;
         if (!reach || height === null) return;
         event.preventDefault();
-        onCommit(place(reach, height));
+        place(reach, height);
+        onCommit(height);
       }}
       onLostPointerCapture={finish}
       onPointerCancel={finish}
@@ -115,10 +128,10 @@ export function SideSplit({
         event.currentTarget.setAttribute("data-resizing", "");
         document.documentElement.classList.add("is-resizing-split");
         drag.current = {
-          anchor: reach.start - event.clientY,
+          anchor: reach.start + event.clientY,
           frame: 0,
-          from: share,
-          latest: share,
+          latest: reach.start,
+          moved: false,
           pointerId: event.pointerId,
           y: event.clientY,
         };
@@ -147,109 +160,81 @@ export function SideSplit({
   );
 }
 
-/** A held line: the share it was pressed at and the one it keeps now. */
+/** A held line and the height it keeps now. */
 interface Drag {
   readonly pointerId: number;
-  /** Tasks' height where the line was pressed, less the pointer's height then. */
+  /** Tabs' height where the line was pressed, plus the pointer's height then. */
   readonly anchor: number;
-  readonly from: number;
   frame: number;
   latest: number;
+  /** Whether it has moved Tabs. */
+  moved: boolean;
   y: number;
 }
 
-/**
- * Moves the line to the row edge nearest the pointer, once one is nearer than
- * where it stands. Once it has moved, what it keeps is what Tasks shows now,
- * in the room there is now: the window may change while the line is held.
- */
+/** Gives Tabs the height the pointer asks for, within its reach (which the window may change). */
 function follow(divider: HTMLElement, drag: Drag): void {
   const reach = reachOf(divider);
   if (!reach) return;
-  const height = drag.anchor + drag.y;
-  const stop = nearestStop(reach, height);
-  if (Math.abs(height - reach.start) > Math.abs(height - stop)) drag.latest = place(reach, stop);
-  else if (drag.latest !== drag.from) drag.latest = shareOf(reach, reach.foot);
+  const height = within(reach, drag.anchor - drag.y);
+  if (height === reach.start) return;
+  place(reach, height);
+  drag.latest = height;
+  drag.moved = true;
 }
 
-/**
- * Gives Tasks `height` and returns the share that gives it exactly what it
- * then shows, written to the sidebar: the fit, not the reading, decides which
- * row ends it.
- */
-function place(reach: Reach, height: number): number {
-  const aimed = shareOf(reach, height);
-  apply(reach.sidebar, aimed);
-  const shown = shareOf(reach, reach.tasks.getBoundingClientRect().height);
-  if (shown !== aimed) apply(reach.sidebar, shown);
-  return shown;
-}
-
-function apply(sidebar: HTMLElement, share: number): void {
-  fitWholeRows(sidebar, () => sidebar.style.setProperty("--side-tasks-share", String(share)));
-}
-
-function nearestStop(reach: Reach, height: number): number {
-  return reach.stops.reduce((best, stop) =>
-    Math.abs(stop - height) < Math.abs(best - height) ? stop : best,
+function place(reach: Reach, height: number): void {
+  fitWholeRows(reach.lists, () =>
+    reach.lists.style.setProperty("--side-tabs-height", `${height}px`),
   );
 }
 
-/** The row edge above or below the last row in view, or as far as Tasks goes. */
-function keyedHeight({ foot, stops }: Reach, key: string): number | null {
+function within({ least, most }: Reach, height: number): number {
+  return Math.min(most, Math.max(least, height));
+}
+
+/** A row up or down, or as far as Tabs goes; up grows Tabs. */
+function keyedHeight(reach: Reach, key: string): number | null {
   switch (key) {
     case "ArrowUp":
-      return stops.findLast((stop) => stop < foot - 0.5) ?? stops[0]!;
+      return within(reach, reach.start + reach.row);
     case "ArrowDown":
-      return stops.find((stop) => stop > foot + 0.5) ?? stops.at(-1)!;
+      return within(reach, reach.start - reach.row);
     case "Home":
-      return stops[0]!;
+      return within(reach, reach.most);
     case "End":
-      return stops.at(-1)!;
+      return within(reach, reach.least);
     default:
       return null;
   }
 }
 
-/**
- * The share that gives Tasks `height`, aimed a quarter pixel past it: within
- * what the fit lets either list overrun, and more than rounding the share can
- * take back, so a row the line stopped below is never lost.
- */
-function shareOf(reach: Reach, height: number): number {
-  return Math.min(shares - 1, Math.max(1, Math.round(((height + 0.25) / reach.room) * shares)));
+/** Null when Tabs can neither grow nor shrink: it is at its floor and shows every row. */
+function reachOf(divider: HTMLElement): Reach | null {
+  const lists = divider.parentElement;
+  const above = divider.previousElementSibling;
+  const tabs = divider.nextElementSibling;
+  if (!lists || !(above instanceof HTMLElement) || !(tabs instanceof HTMLElement)) return null;
+  const list = tabs.querySelector<HTMLElement>(".side-list");
+  if (!list) return null;
+  const start = tabs.getBoundingClientRect().height;
+  const room = above.getBoundingClientRect().height + start;
+  const least = floorOf(tabs);
+  const most = Math.max(least, Math.min(fullHeightOf(tabs), room - floorOf(above)));
+  if (most - least < 1) return null;
+  return { lists, start, least, most, row: rowOf(list) };
 }
 
-/** Null when Tasks can neither grow nor shrink: every row of both fits, or a floor holds. */
-function reachOf(divider: HTMLElement): Reach | null {
-  // The sections' container: Tabs, last, runs to its end.
-  const sidebar = divider.parentElement;
-  const tasks = divider.previousElementSibling;
-  const tabs = divider.nextElementSibling;
-  const list = tasks?.querySelector<HTMLElement>("[data-whole-rows]");
-  if (!sidebar || !(tasks instanceof HTMLElement) || !(tabs instanceof HTMLElement)) return null;
-  // A Tasks heading with no rows under it has nothing to give or take.
-  if (!list) return null;
-  const box = tasks.getBoundingClientRect();
-  const room = sidebar.getBoundingClientRect().bottom - box.top;
-  const foot = list.getBoundingClientRect().bottom - box.top;
-  const feet = wholeRowSteps(list).map((step) => foot + step);
-  const below = (limit: number) => Math.max(...feet.filter((stop) => stop <= limit + 0.5));
-  const above = (limit: number) => Math.min(...feet.filter((stop) => stop >= limit - 0.5));
-  // Its floor is three short rows' pitch: where taller rows end it, the next
-  // row's foot, so no gap opens that no row fills. Below what all of Tabs'
-  // rows leave, Tabs would take nothing more.
-  const least = Math.max(above(floorOf(tasks)), below(room - fullHeightOf(tabs)));
-  const most = below(Math.min(fullHeightOf(tasks), room - floorOf(tabs)));
-  if (most - least < 1) return null;
-  return {
-    sidebar,
-    tasks,
-    room,
-    start: box.height,
-    foot,
-    stops: feet.filter((stop) => stop >= least - 0.5 && stop <= most + 0.5).sort((a, b) => a - b),
-  };
+/** The first drawn row's height and the gap after it. */
+function rowOf(list: HTMLElement): number {
+  const row = [...list.children].find(
+    (child) => !child.classList.contains("side-list__spacer") && child.clientHeight >= 2,
+  );
+  const gap = parseFloat(getComputedStyle(list).rowGap) || 0;
+  return (
+    (row?.getBoundingClientRect().height ??
+      parseFloat(getComputedStyle(list).getPropertyValue("--side-pitch"))) + gap
+  );
 }
 
 function floorOf(section: HTMLElement): number {
@@ -260,14 +245,7 @@ function floorOf(section: HTMLElement): number {
 export function fullHeightOf(section: HTMLElement): number {
   const held = parseFloat(section.style.maxHeight);
   if (!Number.isNaN(held)) return held;
-  const box = section.getBoundingClientRect();
   const list = section.querySelector<HTMLElement>(".side-list");
-  if (!list) return box.height;
-  return (
-    list.getBoundingClientRect().top -
-    box.top +
-    list.offsetHeight -
-    list.clientHeight +
-    list.scrollHeight
-  );
+  if (!list) return section.getBoundingClientRect().height;
+  return section.getBoundingClientRect().height - list.clientHeight + list.scrollHeight;
 }

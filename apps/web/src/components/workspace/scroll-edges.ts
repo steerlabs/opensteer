@@ -217,39 +217,6 @@ export function fitWholeRows(container: HTMLElement, change?: () => void): void 
 }
 
 /**
- * How much a fit can change the list's window from where it stands, by whole
- * rows, no change first: rows leave as a fit takes them (from the foot, then,
- * once only the row it keeps is left at the foot, from the top), and rows
- * come from below, then (a list scrolled to its end grows upward) from above.
- */
-export function wholeRowSteps(list: HTMLElement): number[] {
-  const gap = parseFloat(getComputedStyle(list).rowGap) || 0;
-  const { top, bottom } = windowEdges(list);
-  const rows = [...list.children]
-    .map((row) => ({ box: row.getBoundingClientRect(), row }))
-    .filter(({ box }) => box.height >= 2);
-  const shown = rows.filter(
-    ({ box }) => box.top >= top - landing && box.bottom <= bottom + landing,
-  );
-  const kept = keptRow(list);
-  const keptAt = shown.findIndex(({ row }) => row === kept);
-  const leaving =
-    keptAt < 0
-      ? shown.reverse()
-      : [...shown.slice(keptAt + 1).reverse(), ...shown.slice(0, keptAt)];
-  const coming = [
-    ...rows.filter(({ box }) => box.top >= bottom - landing),
-    ...rows.filter(({ box }) => box.bottom <= top + landing).reverse(),
-  ];
-  const steps = [0];
-  let fewer = 0;
-  for (const { box } of leaving) steps.push((fewer -= box.height + gap));
-  let more = 0;
-  for (const { box } of coming) steps.push((more += box.height + gap));
-  return steps;
-}
-
-/**
  * Ends a list's window, from the space it is given with no window set, at the
  * foot of its last whole row, from the row top its scroll stands at (or the
  * next one, where it stopped between rows at the list's end), moved only as
