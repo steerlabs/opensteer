@@ -10,17 +10,11 @@ import {
   type,
 } from "../theme.js";
 import { NativeMenu, type NativeMenuOption } from "../thread/composer-menu.js";
-import { AppText } from "../ui/primitives.js";
+import { AppText, Notice } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
-import { TaskMark } from "../ui/task-mark.js";
 import { SearchField } from "./channel-details.js";
 import { Avatar, TeamTile } from "./team-marks.js";
-import type {
-  SearchFilter,
-  SearchMessageResult,
-  SearchTaskResult,
-  TeamTileView,
-} from "./team-models.js";
+import type { SearchFilter, SearchMessageResult, TeamTileView } from "./team-models.js";
 
 export interface SearchFilters {
   /** "#support". */
@@ -38,9 +32,9 @@ export interface SearchMessageGroup {
 }
 
 /**
- * One field for the reader's tasks and every team's messages. Filters are the
- * four the team server answers: a channel, an author, in threads, has a file.
- * Results open where they live, and Back returns here.
+ * One field for a team's messages. Filters are the four the team server
+ * answers: a channel, an author, in threads, has a file. Results open where
+ * they live, and Back returns here.
  */
 export function SearchBody(props: {
   readonly query: string;
@@ -51,10 +45,11 @@ export function SearchBody(props: {
   /** Channel and author are chosen from the team's own channels and people. */
   readonly channelChoices: readonly NativeMenuOption[];
   readonly authorChoices: readonly NativeMenuOption[];
-  readonly tasks: readonly SearchTaskResult[];
   readonly groups: readonly SearchMessageGroup[];
   readonly searching: boolean;
-  readonly onOpenTask: (taskId: string) => void;
+  /** The last search didn't answer; it is never shown as "nothing matches". */
+  readonly failure: string | null;
+  readonly onRetry: () => void;
   readonly onOpenMessage: (teamId: string, result: SearchMessageResult) => void;
   readonly onMore: (teamId: string) => void;
   readonly paddingBottom: number;
@@ -63,7 +58,7 @@ export function SearchBody(props: {
   const nothing =
     props.query.trim() !== "" &&
     !props.searching &&
-    props.tasks.length === 0 &&
+    props.failure === null &&
     // Older pages still to read are never "nothing".
     props.groups.every((group) => group.results.length === 0 && !group.more);
   return (
@@ -73,7 +68,7 @@ export function SearchBody(props: {
           <SearchField
             autoFocus
             onChange={props.onQuery}
-            placeholder="Search tasks and messages"
+            placeholder="Search messages"
             value={props.query}
           />
         </View>
@@ -116,36 +111,19 @@ export function SearchBody(props: {
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
       >
+        {props.failure === null ? null : (
+          <Notice
+            action={{ label: "Try again", onPress: props.onRetry }}
+            detail={props.failure}
+            title="Search didn't answer"
+            tone="neutral"
+          />
+        )}
         {nothing ? (
           <AppText role="secondary" style={styles.nothing} tone="muted">
             Nothing matches “{props.query.trim()}”.
           </AppText>
         ) : null}
-        {props.tasks.length === 0 ? null : (
-          <View style={styles.group}>
-            <AppText role="secondaryMedium" style={styles.groupLabel} tone="muted">
-              Tasks
-            </AppText>
-            {props.tasks.map((task) => (
-              <Pressable
-                accessibilityRole="button"
-                key={task.id}
-                onPress={() => props.onOpenTask(task.id)}
-                style={({ pressed }) => [styles.task, pressed && styles.pressed]}
-              >
-                <TaskMark mark={task.mark} />
-                <AppText
-                  maxFontSizeMultiplier={controlFontScaleLimit}
-                  numberOfLines={1}
-                  role="secondary"
-                  style={styles.grow}
-                >
-                  {task.title}
-                </AppText>
-              </Pressable>
-            ))}
-          </View>
-        )}
         {props.groups.map((group) =>
           group.results.length === 0 && !group.more ? null : (
             <View key={group.team.id} style={styles.group}>
@@ -382,14 +360,6 @@ const styles = StyleSheet.create({
   },
   resultHead: { alignItems: "baseline", flexDirection: "row", gap: space[6] },
   results: { gap: space[16], paddingHorizontal: space[10], paddingTop: space[8] },
-  task: {
-    alignItems: "center",
-    borderRadius: radius.md,
-    flexDirection: "row",
-    gap: space[12],
-    minHeight: touchTarget,
-    paddingHorizontal: space[6],
-  },
   top: { gap: space[8], paddingBottom: space[6], paddingTop: space[4] },
   where: { color: color.mutedDim, flexShrink: 1 },
 });

@@ -1,18 +1,22 @@
 import { unwrapRpcResult } from "@opensteer/client/host";
 import type { TeamSessionClient } from "@opensteer/client/team";
 import type { HostedTeamId } from "@opensteer/control-plane-protocol/hosted-teams";
-import { createId, DeploymentIdSchema, TeamGroupIdSchema, UserIdSchema } from "@opensteer/core";
+import { DeploymentIdSchema, TeamGroupIdSchema, UserIdSchema } from "@opensteer/core";
 import type { HostApiCommandInput, TeamGroupSchema } from "@opensteer/protocol";
 import type { z } from "zod";
-import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import {
+  useFocusEffect,
+  useIsFocused,
+  useNavigation,
+  type StaticScreenProps,
+} from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootParamList } from "../navigation.js";
-import { color, space } from "../theme.js";
-import { Notice, RowGroup } from "../ui/primitives.js";
-import { LinkRow } from "./settings-rows.js";
+import { color, controlFontScaleLimit, space, touchTarget } from "../theme.js";
+import { AppText, Notice, RowGroup } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 import {
   GroupDetailBody,
@@ -22,7 +26,7 @@ import {
   type GroupMemberRow,
   type PersonAdminRow,
 } from "./team-admin.js";
-import { useMobileTeams, useTeamEntry, useTeamMembers, useTeamSession } from "./team-context.js";
+import { useTeamEntry, useTeamMembers, useTeamSession } from "./team-context.js";
 import { agentWords, useAgentConnection } from "./team-entry-screens.js";
 import { personView } from "./team-views.js";
 
@@ -38,40 +42,70 @@ function failed(error: unknown): void {
   Alert.alert("That didn't work", error instanceof Error ? error.message : undefined);
 }
 
-function Waiting(props: { readonly failure: string | null }): ReactNode {
+function Waiting(props: {
+  readonly failure: string | null;
+  readonly onRetry?: () => void;
+}): ReactNode {
   return (
     <Screen>
       <View style={styles.center}>
         {props.failure === null ? (
           <ActivityIndicator color={color.muted} />
         ) : (
-          <Notice detail={props.failure} title="This team didn't answer" tone="neutral" />
+          <Notice
+            {...(props.onRetry ? { action: { label: "Try again", onPress: props.onRetry } } : {})}
+            detail={props.failure}
+            title="This team didn't answer"
+            tone="neutral"
+          />
         )}
       </View>
     </Screen>
   );
 }
 
+/** Enough groups for any team this app serves, as the people list is bounded. */
+const groupBound = 1000;
+
 function useGroups(session: TeamSessionClient | null): {
   readonly groups: readonly TeamGroup[] | null;
+  readonly failure: string | null;
   readonly reload: () => void;
 } {
   const [groups, setGroups] = useState<readonly TeamGroup[] | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
   useEffect(() => {
     if (session === null) return;
     let current = true;
-    void session.rpc["team.groups.list"]({})
-      .then(unwrapRpcResult)
-      .then(
-        (page) => current && setGroups(page.groups),
-        () => undefined,
-      );
+    // Every page: a group just made, or one past the first 50, must be found by its id.
+    const read = async (): Promise<readonly TeamGroup[]> => {
+      const all: TeamGroup[] = [];
+      let after: TeamGroup["id"] | undefined;
+      do {
+        const page = unwrapRpcResult(
+          await session.rpc["team.groups.list"](after === undefined ? {} : { after }),
+        );
+        all.push(...page.groups);
+        after = page.hasMore ? page.groups.at(-1)?.id : undefined;
+      } while (current && after !== undefined && all.length < groupBound);
+      return all;
+    };
+    void read().then(
+      (next) => {
+        if (!current) return;
+        setGroups(next);
+        setFailure(null);
+      },
+      (error: unknown) =>
+        current && setFailure(error instanceof Error ? error.message : "The team didn't answer."),
+    );
     return () => {
       current = false;
     };
   }, [generation, session]);
-  return { groups, reload: () => setGeneration((next) => next + 1) };
+  const reload = useCallback(() => setGeneration((next) => next + 1), []);
+  return { groups, failure, reload };
 }
 
 /**
@@ -102,7 +136,9 @@ export function TeamSettingsScreen(props: TeamParams): ReactNode {
   const { coordinator } = useTeamEntry();
   const { session, snapshot, team, failure } = useTeamSession(teamId);
   const { members, directory } = useTeamMembers(teamId);
-  const { groups } = useGroups(session);
+  const canManageGroups = snapshot.bootstrap?.can.manageGroups === true;
+  // Only people who manage groups are shown the count, so only they ask for the list.
+  const { groups } = useGroups(canManageGroups ? session : null);
   const padding = useSafeAreaInsets().bottom + space[24];
   const agent = useAgentConnection(teamId);
   const bootstrap = snapshot.bootstrap;
@@ -155,7 +191,8 @@ export function TeamSettingsScreen(props: TeamParams): ReactNode {
                 }
               : { value: "Not connected", detail: words.line, attention: true }
         }
-        counts={{ people: members.length, groups: groups?.length ?? 0 }}
+        can={bootstrap.can}
+        counts={{ people: members.length, groups: groups?.length ?? null }}
         me={personView(bootstrap.member.userId, directory)}
         paddingBottom={padding}
         role={bootstrap.member.role}
@@ -169,12 +206,25 @@ export function TeamSettingsScreen(props: TeamParams): ReactNode {
 export function TeamPeopleScreen(props: TeamParams): ReactNode {
   const { teamId } = props.route.params;
   const navigation = useNavigation<Navigation>();
-  const teams = useMobileTeams();
-  const { session, snapshot, failure } = useTeamSession(teamId);
-  const { members, directory } = useTeamMembers(teamId);
+  const { session, snapshot, team, failure } = useTeamSession(teamId);
+  const roster = useTeamMembers(teamId);
+  const { members, directory, reload } = roster;
   const [query, setQuery] = useState("");
   const padding = useSafeAreaInsets().bottom + space[24];
   if (session === null || snapshot.bootstrap === null) return <Waiting failure={failure} />;
+  if (members.length === 0 && roster.failure !== null)
+    return (
+      <Screen>
+        <View style={styles.center}>
+          <Notice
+            action={{ label: "Try again", onPress: reload }}
+            detail={roster.failure}
+            title="People didn't load"
+            tone="neutral"
+          />
+        </View>
+      </Screen>
+    );
   const lower = query.trim().toLowerCase();
   const people: PersonAdminRow[] = members
     .filter((member) => lower === "" || member.displayName.toLowerCase().includes(lower))
@@ -185,7 +235,6 @@ export function TeamPeopleScreen(props: TeamParams): ReactNode {
       lastActive: "",
       deactivated: member.state === "removed",
     }));
-  const reload = (): void => teams.forgetMembers(teamId);
   return (
     <Screen edgeToEdge>
       <PeopleAdminBody
@@ -208,7 +257,22 @@ export function TeamPeopleScreen(props: TeamParams): ReactNode {
               style: "destructive",
               text: "Remove from team",
               onPress: () =>
-                void command(session, { type: "team.member.remove", userId }).then(reload, failed),
+                Alert.alert(
+                  `Remove ${member.displayName}?`,
+                  `They lose access to ${team?.name ?? "the team"} and its channels right away. Their messages stay.`,
+                  [
+                    { style: "cancel", text: "Cancel" },
+                    {
+                      style: "destructive",
+                      text: "Remove",
+                      onPress: () =>
+                        void command(session, { type: "team.member.remove", userId }).then(
+                          reload,
+                          failed,
+                        ),
+                    },
+                  ],
+                ),
             },
             { style: "cancel", text: "Cancel" },
           ]);
@@ -227,13 +291,23 @@ export function TeamGroupsScreen(props: TeamParams): ReactNode {
   const { teamId } = props.route.params;
   const navigation = useNavigation<Navigation>();
   const { session, failure } = useTeamSession(teamId);
-  const { groups, reload } = useGroups(session);
+  const groups = useGroups(session);
   const padding = useSafeAreaInsets().bottom + space[24];
-  if (session === null || groups === null) return <Waiting failure={failure} />;
+  // A group made on its own screen is listed on the way back.
+  const { reload } = groups;
+  const returned = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (returned.current) reload();
+      returned.current = true;
+    }, [reload]),
+  );
+  if (session === null || groups.groups === null)
+    return <Waiting failure={failure ?? groups.failure} onRetry={groups.reload} />;
   return (
     <Screen edgeToEdge>
       <GroupsAdminBody
-        groups={groups.map((group) => ({
+        groups={groups.groups.map((group) => ({
           id: group.id,
           name: group.name,
           members: [
@@ -247,16 +321,7 @@ export function TeamGroupsScreen(props: TeamParams): ReactNode {
           usedBy: null,
         }))}
         onGroup={(groupId) => navigation.navigate("TeamGroup", { teamId, groupId })}
-        onNew={() =>
-          Alert.prompt?.("New group", undefined, (name) => {
-            if (name.trim() === "") return;
-            void command(session, {
-              type: "team.group.create",
-              id: createId("teamGroup"),
-              name: name.trim(),
-            }).then(reload, failed);
-          })
-        }
+        onNew={() => navigation.navigate("TeamNewGroup", { teamId })}
         paddingBottom={padding}
       />
     </Screen>
@@ -270,10 +335,18 @@ export function TeamGroupScreen(
   const { teamId, groupId } = props.route.params;
   const { session, failure } = useTeamSession(teamId);
   const { members, directory } = useTeamMembers(teamId);
-  const { groups, reload } = useGroups(session);
+  const { groups, reload, failure: groupsFailure } = useGroups(session);
   const padding = useSafeAreaInsets().bottom + space[24];
   const group = groups?.find((row) => row.id === groupId) ?? null;
-  if (session === null || group === null) return <Waiting failure={failure} />;
+  if (session === null || group === null)
+    return (
+      <Waiting
+        failure={
+          failure ?? groupsFailure ?? (groups === null ? null : "This group no longer exists.")
+        }
+        onRetry={reload}
+      />
+    );
   const id = TeamGroupIdSchema.parse(groupId);
   const rows: GroupMemberRow[] = [
     ...group.people.map((userId) => {
@@ -338,6 +411,8 @@ export function TeamAuditScreen(props: TeamParams): ReactNode {
   const { session, failure } = useTeamSession(teamId);
   const { directory } = useTeamMembers(teamId);
   const [rows, setRows] = useState<readonly TeamAuditRow[] | null>(null);
+  const [readFailure, setReadFailure] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (session === null) return;
     let current = true;
@@ -345,13 +420,24 @@ export function TeamAuditScreen(props: TeamParams): ReactNode {
       .then(unwrapRpcResult)
       .then(
         (page) => current && setRows(page.audit),
-        () => undefined,
+        (error: unknown) =>
+          current &&
+          setReadFailure(error instanceof Error ? error.message : "The team didn't answer."),
       );
     return () => {
       current = false;
     };
-  }, [session]);
-  if (session === null || rows === null) return <Waiting failure={failure} />;
+  }, [attempt, session]);
+  if (session === null || rows === null)
+    return (
+      <Waiting
+        failure={failure ?? readFailure}
+        onRetry={() => {
+          setReadFailure(null);
+          setAttempt((next) => next + 1);
+        }}
+      />
+    );
   return (
     <Screen edgeToEdge>
       <ScrollView contentContainerStyle={styles.page}>
@@ -364,12 +450,14 @@ export function TeamAuditScreen(props: TeamParams): ReactNode {
                   ? `${personView(row.actor.userId, directory).name}'s agent`
                   : personView(row.actor.userId, directory).name;
             return (
-              <LinkRow
-                detail={`${new Date(row.occurredAt).toLocaleString()} · ${row.resourceKind}${row.outcome === "denied" ? " · refused" : ""}`}
-                key={row.id}
-                label={`${who}: ${row.action}`}
-                onPress={() => undefined}
-              />
+              <View accessible key={row.id} style={styles.auditRow}>
+                <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="body">
+                  {`${who}: ${row.action}`}
+                </AppText>
+                <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" tone="muted">
+                  {`${new Date(row.occurredAt).toLocaleString()} · ${row.resourceKind}${row.outcome === "denied" ? " · refused" : ""}`}
+                </AppText>
+              </View>
             );
           })}
         </RowGroup>
@@ -381,6 +469,13 @@ export function TeamAuditScreen(props: TeamParams): ReactNode {
 type TeamAuditRow = import("zod").infer<typeof import("@opensteer/protocol").TeamAuditSchema>;
 
 const styles = StyleSheet.create({
+  auditRow: {
+    gap: 1,
+    justifyContent: "center",
+    minHeight: touchTarget + 6,
+    paddingHorizontal: space[14],
+    paddingVertical: space[8],
+  },
   page: { gap: space[16], padding: space[16] },
   center: { alignItems: "center", flex: 1, justifyContent: "center", padding: space[16] },
 });

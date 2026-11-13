@@ -12,7 +12,6 @@ import {
 import type { HostApiCommandInput, TeamMember, TeamMessage } from "@opensteer/protocol";
 import { useFocusEffect, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import * as Clipboard from "expo-clipboard";
 import { File, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
 import {
@@ -24,9 +23,10 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { ActivityIndicator, AppState, Pressable, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Alert, AppState, Pressable, StyleSheet, View } from "react-native";
 import type { RootParamList } from "../navigation.js";
 import { color, space } from "../theme.js";
+import { useCopy } from "../ui/copy-mark.js";
 import { useMobileClient, useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { AppText, Notice } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
@@ -38,6 +38,7 @@ import {
   ThreadTitle,
 } from "./channel-screen.js";
 import { sendFromComposer } from "./composer-send.js";
+import { useConnectionBanner } from "./connection-banner.js";
 import { messageActions, type MessageActionId } from "./message-row.js";
 import type { MobileTeam } from "./mobile-teams.js";
 import { dataUri, useTeamMembers, useTeamPreviews, useTeamSession } from "./team-context.js";
@@ -314,9 +315,12 @@ function PlaceWaiting(props: { readonly failure: string | null }): ReactNode {
   );
 }
 
-/** How many people and groups the channel's list holds, read once it is open. */
-function useChannelMemberCount(session: TeamSessionClient | null, channelId: string): number {
-  const [count, setCount] = useState(0);
+/** How many people and groups the channel's list holds, read once it is open; null until known. */
+function useChannelMemberCount(
+  session: TeamSessionClient | null,
+  channelId: string,
+): number | null {
+  const [count, setCount] = useState<number | null>(null);
   useEffect(() => {
     if (session === null) return;
     let current = true;
@@ -337,6 +341,8 @@ interface PlaceProps {
   readonly actions: Parameters<typeof ChannelScreenBody>[0]["actions"];
   readonly banner: ConnectionBannerView | null;
   readonly composer: TeamComposerProps;
+  /** Why the reader can't post here, in the composer's place; null when they can. */
+  readonly closed: string | null;
   readonly items: Parameters<typeof ChannelScreenBody>[0]["items"];
   readonly jump: JumpView | null;
   readonly typing: string | null;
@@ -455,7 +461,16 @@ function Place(props: {
 
   // The composer: words, mentions, files, and whether it asks the reader's agent.
   const [text, setText] = useState(() => snapshot.drafts[scopeKey] ?? "");
-  const [editing, setEditing] = useState<TeamMessageId | null>(null);
+  // Editing one of the reader's messages sets their unsent words aside until it ends.
+  const [editing, setEditing] = useState<{
+    readonly id: TeamMessageId;
+    readonly draft: string;
+  } | null>(null);
+  // The edit open now. A save that ends after it was cancelled, or another began, leaves
+  // the composer as the reader has it since.
+  const openEdit = useRef(editing);
+  openEdit.current = editing;
+  const [savingEdit, setSavingEdit] = useState(false);
   const [selection, setSelection] = useState({ start: 0, end: 0 });
   const ownActive = view.requests.some(
     (request) =>
@@ -526,6 +541,31 @@ function Place(props: {
 
   const send = async (): Promise<void> => {
     const words = text.trim();
+    setFailure(null);
+    if (editing !== null) {
+      if (words === "" || savingEdit) return;
+      const saving = editing;
+      setSavingEdit(true);
+      try {
+        await command(session, {
+          type: "team.message.edit",
+          channelId,
+          messageId: saving.id,
+          bodyMarkdown: words,
+          mentions: writtenMentions(words, props.members),
+        });
+        if (openEdit.current === saving) {
+          setText(saving.draft);
+          setEditing(null);
+        }
+      } catch (error) {
+        if (openEdit.current === saving)
+          setFailure(error instanceof Error ? error.message : "That edit wasn't saved.");
+      } finally {
+        setSavingEdit(false);
+      }
+      return;
+    }
     const files = staged.filter((row) => row.fileId !== null).map((row) => row.fileId!);
     if (words === "" && files.length === 0) return;
     if (staged.some((row) => row.fileId === null)) return;
@@ -538,36 +578,24 @@ function Place(props: {
           ...found.filter((row) => row.userId !== me.userId || row.kind !== "agent"),
         ]
       : found;
-    setFailure(null);
     try {
-      if (editing !== null) {
-        await command(session, {
-          type: "team.message.edit",
+      session.typing(channelId, rootId, false);
+      await sendFromComposer(
+        session,
+        view.scope,
+        {
           channelId,
-          messageId: editing,
-          bodyMarkdown: words,
-          mentions: found,
-        });
-        setEditing(null);
-      } else {
-        session.typing(channelId, rootId, false);
-        await sendFromComposer(
-          session,
-          view.scope,
-          {
-            channelId,
-            threadRootId: rootId,
-            bodyMarkdown: body,
-            mentions: mentioned.slice(0, 20),
-            attachmentIds: files as never,
-          },
-          () => {
-            // A pending draft save would put the sent words back.
-            if (draftTimer.current !== null) clearTimeout(draftTimer.current);
-            setStaged([]);
-          },
-        );
-      }
+          threadRootId: rootId,
+          bodyMarkdown: body,
+          mentions: mentioned.slice(0, 20),
+          attachmentIds: files as never,
+        },
+        () => {
+          // A pending draft save would put the sent words back.
+          if (draftTimer.current !== null) clearTimeout(draftTimer.current);
+          setStaged([]);
+        },
+      );
       setText("");
       // After sending it stays as the reader left it, in a thread; a channel's
       // ask opens its own thread, so the channel's composer starts off again.
@@ -576,6 +604,15 @@ function Place(props: {
       setFailure(error instanceof Error ? error.message : "That message wasn't sent.");
     }
   };
+
+  const cancelEdit = (): void => {
+    if (editing === null) return;
+    setText(editing.draft);
+    setEditing(null);
+  };
+  const report = (error: unknown): void =>
+    setFailure(error instanceof Error ? error.message : "That didn't work.");
+  const { copy } = useCopy();
 
   // Long press: the platform's own menu, mounted only while it is open.
   const [held, setHeld] = useState<TeamMessage | null>(null);
@@ -600,6 +637,7 @@ function Place(props: {
       : messageActions({
           canAskAgent: reach === "available" && rootId === null,
           canModerate: channel.can.manage,
+          canPost: channel.can.post,
           inThread: rootId !== null,
           message: heldView,
         });
@@ -622,7 +660,7 @@ function Place(props: {
       case "copy-link": {
         const origin = props.team?.origin;
         if (origin !== undefined)
-          await Clipboard.setStringAsync(
+          await copy(
             teamPageUrl({
               origin,
               target: { kind: "message", channelId, messageId: message.id },
@@ -631,11 +669,23 @@ function Place(props: {
         return;
       }
       case "edit":
-        setEditing(message.id);
+        setEditing((held) => ({ id: message.id, draft: held?.draft ?? text }));
         setText(message.bodyMarkdown);
         return;
       case "delete":
-        await command(session, { type: "team.message.delete", channelId, messageId: message.id });
+        Alert.alert("Delete this message?", "It's removed for everyone here.", [
+          { style: "cancel", text: "Cancel" },
+          {
+            style: "destructive",
+            text: "Delete",
+            onPress: () =>
+              void command(session, {
+                type: "team.message.delete",
+                channelId,
+                messageId: message.id,
+              }).catch(report),
+          },
+        ]);
         return;
     }
   };
@@ -654,15 +704,27 @@ function Place(props: {
     }
     const taskId = await new PersonalTeamLinks(personal.rpc).task(teamId, channelId, threadRoot);
     if (taskId !== null) navigation.navigate("Thread", { deploymentId, threadId: taskId });
+    else Alert.alert("That task isn't on your computer");
   };
 
+  // One file opens at a time, named over the composer until its sheet is closed.
+  const [opening, setOpening] = useState<string | null>(null);
   const openFile = async (messageId: string, fileId: string): Promise<void> => {
     const file = view.messages
       .find((message) => message.id === messageId)
       ?.attachments.find((row) => row.id === fileId);
-    if (file === undefined) return;
+    if (file === undefined || opening !== null) return;
+    setFailure(null);
+    setOpening(file.filename);
+    try {
+      await shareFile(file);
+    } finally {
+      setOpening(null);
+    }
+  };
+  const shareFile = async (file: TeamMessage["attachments"][number]): Promise<void> => {
     const blob = await session.file(file, true);
-    if (blob === null) return;
+    if (blob === null) throw new Error(`${file.filename} isn't available to you any more.`);
     const uri = await dataUri(blob);
     const target = new File(
       Paths.cache,
@@ -675,6 +737,11 @@ function Place(props: {
   };
 
   const banner = useConnectionBanner(props.team, snapshot.connection, () => session.connect());
+  const closed = channel.can.post
+    ? null
+    : channel.archivedAt !== null
+      ? "This channel is archived."
+      : "You can read this channel but not post here.";
   const typingKey = JSON.stringify([channelId, rootId]);
   const composer: TeamComposerProps = {
     placeholder:
@@ -698,15 +765,27 @@ function Place(props: {
     onRemoveAttachment: (id) =>
       setStaged((held) => held.filter((row) => row.source.localId !== id)),
     onSend: () => void send(),
-    ...(failure === null
-      ? {}
-      : {
+    editing: editing === null ? null : { onCancel: cancelEdit, saving: savingEdit },
+    ...(failure !== null
+      ? {
           hint: (
-            <AppText role="caption" style={styles.failure} tone="danger">
+            <AppText role="caption" style={styles.line} tone="danger">
               {failure}
             </AppText>
           ),
-        }),
+        }
+      : opening !== null
+        ? {
+            hint: (
+              <View style={[styles.line, styles.opening]}>
+                <ActivityIndicator color={color.muted} size="small" />
+                <AppText numberOfLines={1} role="caption" style={styles.grow} tone="muted">
+                  Opening {opening}…
+                </AppText>
+              </View>
+            ),
+          }
+        : {}),
   };
   const byId = (id: string) => view.messages.find((message) => message.id === id) ?? null;
   return (
@@ -714,11 +793,10 @@ function Place(props: {
       {props.children({
         actions: {
           onHold: (id) => setHeld(byId(id)),
-          onOpenAttachment: (messageId, fileId) =>
-            void openFile(messageId, fileId).catch(() => undefined),
+          onOpenAttachment: (messageId, fileId) => void openFile(messageId, fileId).catch(report),
           onOpenThread: (id) =>
             navigation.navigate("TeamThread", { teamId, channelId, rootId: id }),
-          onOpenTask: (messageId) => void openTask(null, messageId).catch(() => undefined),
+          onOpenTask: (messageId) => void openTask(null, messageId).catch(report),
           onUnsent: (messageId, choice) => {
             const clientMessageId = messageId.replace(/^pending:/, "");
             const pending = snapshot.pending.find(
@@ -731,19 +809,17 @@ function Place(props: {
                     .editPending(clientMessageId, pending.command.bodyMarkdown)
                     .then(() => setText(pending.command.bodyMarkdown))
                 : session.discardPending(clientMessageId);
-            void done.catch((error: unknown) =>
-              setFailure(error instanceof Error ? error.message : "That didn't work."),
-            );
+            void done.catch(report);
           },
           onCardAction: (requestId, action) => {
             if (action === "cancel" || action === "stop")
               void command(session, {
                 type: "team.agent.request.cancel",
                 requestId: TeamAgentRequestIdSchema.parse(requestId),
-              }).catch(() => undefined);
-            else void openTask(requestId, null).catch(() => undefined);
+              }).catch(report);
+            else void openTask(requestId, null).catch(report);
           },
-          onOpenCardTask: (requestId) => void openTask(requestId, null).catch(() => undefined),
+          onOpenCardTask: (requestId) => void openTask(requestId, null).catch(report),
           onLoadOlder: () =>
             void session
               .loadPage(rootId === null ? "channel" : "thread", "before")
@@ -752,6 +828,7 @@ function Place(props: {
           onVisibleMessages: setVisible,
         },
         banner,
+        closed,
         composer,
         items,
         jump,
@@ -760,13 +837,15 @@ function Place(props: {
       })}
       {held === null ? null : (
         <MenuView
-          actions={heldActions.map(({ id, title }) => ({ id, title }))}
+          actions={heldActions.map(({ destructive, id, title }) => ({
+            id,
+            title,
+            ...(destructive === true ? { attributes: { destructive: true } } : {}),
+          }))}
           colorScheme="dark"
           onCloseMenu={() => setHeld(null)}
           onPressAction={({ nativeEvent }) =>
-            void act(held, nativeEvent.event as MessageActionId).catch((error: unknown) =>
-              setFailure(error instanceof Error ? error.message : "That didn't work."),
-            )
+            void act(held, nativeEvent.event as MessageActionId).catch(report)
           }
           ref={menu}
           style={styles.anchor}
@@ -835,39 +914,11 @@ function base64Bytes(base64: string): Uint8Array {
   return bytes;
 }
 
-/** One line per team, shown only once a reconnect has taken two seconds. Never a modal. */
-function useConnectionBanner(
-  team: MobileTeam | null,
-  connection: "offline" | "connecting" | "connected",
-  retry: () => void,
-): ConnectionBannerView | null {
-  const [late, setLate] = useState(false);
-  useEffect(() => {
-    if (connection === "connected") {
-      setLate(false);
-      return;
-    }
-    const timer = setTimeout(() => setLate(true), 2_000);
-    return () => clearTimeout(timer);
-  }, [connection]);
-  const name = team?.name ?? "the team";
-  if (team?.state === "update-app")
-    return { text: `Update Opensteer to keep using ${name}`, tone: "amber", action: null };
-  if (team?.state === "update-server")
-    return { text: `${name}'s server needs an update`, tone: "amber", action: null };
-  if (!late || connection === "connected") return null;
-  return connection === "connecting"
-    ? { text: `Reconnecting to ${name}…`, tone: "muted", action: null }
-    : {
-        text: `Can't reach ${name}`,
-        tone: "danger",
-        action: { label: "Try again", onPress: retry },
-      };
-}
-
 const styles = StyleSheet.create({
   anchor: { bottom: 0, left: 0, position: "absolute" },
-  failure: { paddingHorizontal: space[14] },
   fill: { flex: 1 },
+  grow: { flex: 1, minWidth: 0 },
+  line: { paddingHorizontal: space[14] },
+  opening: { alignItems: "center", flexDirection: "row", gap: space[8] },
   waiting: { alignItems: "center", flex: 1, justifyContent: "center", padding: space[16] },
 });

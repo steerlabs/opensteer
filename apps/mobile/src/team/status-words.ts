@@ -16,7 +16,7 @@ export interface StatusFace {
   readonly dashed: boolean;
   /** The owner's one control on the card. */
   readonly action: {
-    readonly kind: "stop" | "cancel" | "answer" | "retry";
+    readonly kind: "stop" | "cancel" | "answer";
     readonly label: string;
   } | null;
   /** Tapping the card opens the owner's task. */
@@ -89,7 +89,8 @@ export function statusFace(card: AgentCardView, now: number): StatusFace {
     case "failed":
       return {
         ...base,
-        action: mine ? { kind: "retry", label: "Try again" } : null,
+        // The team has no retry; the card itself opens the task.
+        action: null,
         lead: "failed",
         line: mine ? (status.cause ?? "Open the task to see why") : "Nothing was posted",
         lineTone: mine ? "danger" : "muted",

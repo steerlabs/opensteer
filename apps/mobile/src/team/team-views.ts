@@ -64,7 +64,8 @@ function channelKind(kind: TeamMessage["channelId"] extends never ? never : stri
 
 export function channelHeader(input: {
   readonly channel: NonNullable<TeamTimeline["channel"]>;
-  readonly memberCount: number;
+  /** Null until the channel's list has been read. */
+  readonly memberCount: number | null;
   readonly people: readonly PersonView[];
 }): ChannelHeaderView {
   const { channel } = input;
