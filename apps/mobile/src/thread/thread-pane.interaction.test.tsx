@@ -3196,6 +3196,31 @@ describe("paging back through a long task", () => {
     expect(keys()).toEqual([askA.id, `turn:run:${runA}`, askB.id, `turn:run:${runB}`]);
   });
 
+  it("never takes away a turn already on screen when a message joins it", async () => {
+    const runId = createId("run");
+    // The latest page is only the tail of one long turn, so it is drawn.
+    const tail = [command(runId, "git log"), command(runId, "git diff", true)];
+    const live = { id: runId, status: "running" as const };
+    const host = fakeHost(
+      snapshotFor({ earlier: true, entries: tail, run: live, threadId: workId }),
+    );
+    const { container } = await mount(host, workId);
+    const turnKey = `turn:${tail[0]!.id}`;
+    expect(rows(container).map(({ key }) => key)).toContain(turnKey);
+
+    const steer = said("Also check the tests", runId);
+    host.move(
+      snapshotFor({
+        earlier: true,
+        entries: [...tail, steer, command(runId, "pnpm test", true)],
+        run: live,
+        threadId: workId,
+      }),
+    );
+    await settle();
+    expect(rows(container).map(({ key }) => key)).toContain(turnKey);
+  });
+
   it("asks for the page before a screen ahead of the reader, only as they scroll", async () => {
     const host = fakeHost(
       snapshotFor({

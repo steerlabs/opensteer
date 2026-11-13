@@ -628,15 +628,26 @@ function ThreadPaneForUser(
   // The oldest turn loaded may still be missing its start, on the page before
   // it. Drawn now, that page would grow it in place under a reader near the
   // top, which no scroll anchor can hold still, so it waits for that page.
-  // A link into it, or a list with nothing else to show, draws it.
+  // A link into it, or a list with nothing else to show, draws it, and a turn
+  // once drawn stays drawn: the Run it belongs to names it across pages.
+  const shownHead = useRef<{ readonly key: string; readonly runId: string | null } | null>(null);
+  const head = drawn[0]?.group;
   const heldHead =
     canLoadEarlier &&
     drawn.length > 1 &&
-    drawn[0]!.group.kind === "turn" &&
+    head?.kind === "turn" &&
     anchor?.index !== 0 &&
-    receipt?.index !== 0
+    receipt?.index !== 0 &&
+    !(
+      shownHead.current !== null &&
+      (head.key === shownHead.current.key ||
+        (head.turn.runId !== null && head.turn.runId === shownHead.current.runId))
+    )
       ? 1
       : 0;
+  if (heldHead === 0 && head?.kind === "turn") {
+    shownHead.current = { key: head.key, runId: head.turn.runId };
+  }
 
   const loadEarlier = useCallback(() => {
     if (paging.current || !canLoadEarlier) return;
@@ -1688,7 +1699,7 @@ const styles = StyleSheet.create({
   // never nudges the transcript under it.
   earlier: {
     alignItems: "center",
-    height: touchTarget,
+    minHeight: touchTarget,
     justifyContent: "center",
     marginBottom: space[8],
   },
