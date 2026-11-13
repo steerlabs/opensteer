@@ -635,6 +635,11 @@ test("native-windows runs for its Go modules, closure, CI definition and Windows
     // What the Windows-real files and build scripts import, counted whole for a package.
     "scripts/dev-supervisor.ts",
     "packages/shared/src/processControl.ts",
+    // The launch sites the Windows-real files drive.
+    "packages/harness/src/process-supervisor.ts",
+    "packages/harness-cursor/src/plugin.ts",
+    "apps/runner/src/agent/program-executor.ts",
+    "apps/runner/src/runtime/execution-containment.ts",
     "tsconfig.base.json",
     "vitest.windows.config.ts",
     // A new Windows-real file selects the lane before the closure is regenerated.
