@@ -1,17 +1,20 @@
 package main
 
 import (
+	"io"
+	"runtime"
 	"strings"
 	"testing"
 )
 
-func TestParseTarget(t *testing.T) {
-	target, arguments, err := parseTarget([]string{"--", "/absolute/target", "one", "two"})
+func TestParseLaunch(t *testing.T) {
+	target := absoluteTestPath("target")
+	parsed, err := parseLaunch([]string{"--", target, "one", "two"}, false)
 	if err != nil {
-		t.Fatalf("parseTarget returned an error: %v", err)
+		t.Fatalf("parseLaunch returned an error: %v", err)
 	}
-	if target != "/absolute/target" || strings.Join(arguments, ",") != "one,two" {
-		t.Fatalf("unexpected target: %q %#v", target, arguments)
+	if parsed.executable != target || strings.Join(parsed.arguments, ",") != "one,two" || parsed.windowsCommandLine != "" {
+		t.Fatalf("unexpected launch: %#v", parsed)
 	}
 	for _, input := range [][]string{
 		nil,
@@ -19,11 +22,59 @@ func TestParseTarget(t *testing.T) {
 		{"--"},
 		{"--", " "},
 		{"--", "relative/target"},
+		{"one", "--", target},
 	} {
-		if _, _, err := parseTarget(input); err == nil {
-			t.Fatalf("parseTarget accepted %#v", input)
+		for _, onWindows := range []bool{false, true} {
+			if _, err := parseLaunch(input, onWindows); err == nil {
+				t.Fatalf("parseLaunch(windows=%v) accepted %#v", onWindows, input)
+			}
 		}
 	}
+}
+
+func TestParseLaunchWindowsCommandLine(t *testing.T) {
+	target := absoluteTestPath("cmd.exe")
+	line := `cmd.exe /d /s /c ""C:\a b\run.cmd" "x&y""`
+	parsed, err := parseLaunch([]string{"--windows-command-line", line, "--", target}, true)
+	if err != nil {
+		t.Fatalf("parseLaunch returned an error: %v", err)
+	}
+	if parsed.executable != target || len(parsed.arguments) != 0 || parsed.windowsCommandLine != line {
+		t.Fatalf("unexpected launch: %#v", parsed)
+	}
+	for _, input := range [][]string{
+		{"--windows-command-line"},
+		{"--windows-command-line", "--", target},
+		{"--windows-command-line", " ", "--", target},
+		{"--windows-command-line", "cmd.exe\x00", "--", target},
+		{"--windows-command-line", line, target},
+		{"--windows-command-line", line, "--", target, "trailing"},
+	} {
+		if _, err := parseLaunch(input, true); err == nil {
+			t.Fatalf("parseLaunch accepted %#v", input)
+		}
+	}
+	if _, err := parseLaunch([]string{"--windows-command-line", line, "--", target}, false); err == nil {
+		t.Fatal("parseLaunch accepted --windows-command-line off Windows")
+	}
+}
+
+func TestRunRejectsWindowsCommandLineOffWindowsAsUsageError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the option is supported on Windows")
+	}
+	var stderr strings.Builder
+	code := run([]string{"--windows-command-line", "cmd.exe", "--", absoluteTestPath("cmd.exe")}, nil, io.Discard, &stderr)
+	if code != 64 || !strings.Contains(stderr.String(), "only supported on Windows") {
+		t.Fatalf("run = %d, stderr %q; want usage error 64", code, stderr.String())
+	}
+}
+
+func absoluteTestPath(name string) string {
+	if runtime.GOOS == "windows" {
+		return `C:\opensteer-test\` + name
+	}
+	return "/opensteer-test/" + name
 }
 
 func TestReadControlCommandsFailsClosed(t *testing.T) {

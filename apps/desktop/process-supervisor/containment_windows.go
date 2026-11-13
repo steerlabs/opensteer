@@ -61,11 +61,20 @@ func newProcessContainment() (processContainment, error) {
 	return &windowsProcessContainment{job: job}, nil
 }
 
-func (containment *windowsProcessContainment) prepare(command *exec.Cmd) error {
-	command.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: windows.CREATE_NEW_PROCESS_GROUP,
-		HideWindow:    true,
+func targetCommand(target launch) *exec.Cmd {
+	command := exec.Command(target.executable, target.arguments...)
+	if target.windowsCommandLine != "" {
+		command.SysProcAttr = &syscall.SysProcAttr{CmdLine: target.windowsCommandLine}
 	}
+	return command
+}
+
+func (containment *windowsProcessContainment) prepare(command *exec.Cmd) error {
+	if command.SysProcAttr == nil {
+		command.SysProcAttr = &syscall.SysProcAttr{}
+	}
+	command.SysProcAttr.CreationFlags |= windows.CREATE_NEW_PROCESS_GROUP
+	command.SysProcAttr.HideWindow = true
 	return nil
 }
 
@@ -120,14 +129,6 @@ func terminationSignals() []os.Signal {
 func processAlreadyGone(err error) bool {
 	return errors.Is(err, windows.ERROR_INVALID_PARAMETER) ||
 		errors.Is(err, windows.ERROR_NOT_FOUND)
-}
-
-func secureControlChannel(control *os.File) error {
-	return windows.SetHandleInformation(
-		windows.Handle(control.Fd()),
-		windows.HANDLE_FLAG_INHERIT,
-		0,
-	)
 }
 
 var (

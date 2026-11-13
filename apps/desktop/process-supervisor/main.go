@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -47,32 +48,24 @@ func main() {
 }
 
 func run(arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) int {
-	target, targetArguments, err := parseTarget(arguments)
+	target, err := parseLaunch(arguments, runtime.GOOS == "windows")
 	if err != nil {
 		fmt.Fprintf(stderr, "opensteer-process-supervisor: %v\n", err)
 		return 64
 	}
-	control := os.NewFile(controlFileDescriptor, "opensteer-process-control")
-	if control == nil {
-		fmt.Fprintln(stderr, "opensteer-process-supervisor: control channel is unavailable")
+	control, err := openControlChannel()
+	if err != nil {
+		fmt.Fprintf(stderr, "opensteer-process-supervisor: control channel is unavailable: %v\n", err)
 		return 70
 	}
 	defer control.Close()
-	if _, err := control.Stat(); err != nil {
-		fmt.Fprintf(stderr, "opensteer-process-supervisor: control channel is invalid: %v\n", err)
-		return 70
-	}
-	if err := secureControlChannel(control); err != nil {
-		fmt.Fprintf(stderr, "opensteer-process-supervisor: control channel could not be isolated: %v\n", err)
-		return 70
-	}
 
 	containment, err := newProcessContainment()
 	if err != nil {
 		fmt.Fprintf(stderr, "opensteer-process-supervisor: containment setup failed: %v\n", err)
 		return 70
 	}
-	command := exec.Command(target, targetArguments...)
+	command := targetCommand(target)
 	command.Stdin = stdin
 	command.Stdout = stdout
 	command.Stderr = stderr
@@ -192,14 +185,39 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer
 	}
 }
 
-func parseTarget(arguments []string) (string, []string, error) {
+type launch struct {
+	executable         string
+	arguments          []string
+	windowsCommandLine string
+}
+
+func parseLaunch(arguments []string, onWindows bool) (launch, error) {
+	var parsed launch
+	if len(arguments) > 0 && arguments[0] == "--windows-command-line" {
+		if !onWindows {
+			return launch{}, errors.New("--windows-command-line is only supported on Windows")
+		}
+		if len(arguments) < 2 || strings.TrimSpace(arguments[1]) == "" {
+			return launch{}, errors.New("--windows-command-line requires a command line")
+		}
+		if strings.ContainsRune(arguments[1], 0) {
+			return launch{}, errors.New("--windows-command-line must not contain NUL")
+		}
+		parsed.windowsCommandLine = arguments[1]
+		arguments = arguments[2:]
+	}
 	if len(arguments) < 2 || arguments[0] != "--" || strings.TrimSpace(arguments[1]) == "" {
-		return "", nil, errors.New("expected -- followed by an executable")
+		return launch{}, errors.New("expected -- followed by an executable")
 	}
 	if !filepath.IsAbs(arguments[1]) {
-		return "", nil, errors.New("target executable must be absolute")
+		return launch{}, errors.New("target executable must be absolute")
 	}
-	return arguments[1], arguments[2:], nil
+	if parsed.windowsCommandLine != "" && len(arguments) > 2 {
+		return launch{}, errors.New("--windows-command-line takes no arguments after the executable")
+	}
+	parsed.executable = arguments[1]
+	parsed.arguments = arguments[2:]
+	return parsed, nil
 }
 
 func readControlCommands(reader io.Reader) <-chan controlCommand {
