@@ -10,6 +10,7 @@ import {
   pickablePeople,
 } from "@opensteer/client/team";
 import { unwrapRpcResult } from "@opensteer/client/host";
+import { useMountedRef } from "@opensteer/client/react";
 import { Dialog } from "../components/dialog.js";
 import { Icon } from "../components/icon.js";
 import { LoadingRows } from "../components/loading-rows.js";
@@ -42,6 +43,7 @@ export function NewChannelDialog({
   const view = useTeamView(teamId, noPreviews);
   const navigate = useNavigate();
   const toast = useToast();
+  const shown = useMountedRef();
   const formId = useId();
   const [id] = useState(() => TeamChannelIdSchema.parse(createId("teamChannel")));
   const [name, setName] = useState(initialName);
@@ -69,10 +71,13 @@ export function NewChannelDialog({
     )
       .then(unwrapRpcResult)
       .then(() => {
+        // Closed while it was being made: the channel is in the sidebar, and nothing moves.
+        if (!shown.current) return;
         onClose();
         void navigate(channelPath(teamId, id));
       })
       .catch((error: unknown) => {
+        if (!shown.current) return;
         setBusy(false);
         if (isChannelNameTaken(error))
           setRefusal({ name: words, message: actionErrorMessage(error) });
@@ -210,6 +215,7 @@ export function NewMessageDialog({
   const view = useTeamView(teamId, noPreviews);
   const navigate = useNavigate();
   const toast = useToast();
+  const shown = useMountedRef();
   const labelId = useId();
   const [chosen, setChosen] = useState<readonly UserId[]>([]);
   const [busy, setBusy] = useState(false);
@@ -222,11 +228,12 @@ export function NewMessageDialog({
     void view.client.rpc["commands.dispatch"]({ type: "team.dm.open", participants: [...chosen] })
       .then(unwrapRpcResult)
       .then((result) => {
-        if (result.type !== "team.dm.open") return;
+        if (result.type !== "team.dm.open" || !shown.current) return;
         onClose();
         void navigate(channelPath(teamId, result.channel.id));
       })
       .catch((error: unknown) => {
+        if (!shown.current) return;
         setBusy(false);
         toast.error(actionErrorMessage(error));
       });

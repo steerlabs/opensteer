@@ -1,5 +1,5 @@
 import { unwrapRpcResult } from "@opensteer/client/host";
-import { useChannelDirectory } from "@opensteer/client/react";
+import { useChannelDirectory, useMountedRef } from "@opensteer/client/react";
 import {
   browsableChannels,
   channelNameFromInput,
@@ -66,16 +66,25 @@ import { personView, type MemberDirectory } from "./team-views.js";
 type Navigation = NativeStackNavigationProp<RootParamList>;
 type TeamParams = StaticScreenProps<{ readonly teamId: string }>;
 
-/** A sheet that made something leaves for it, so Back returns to where the sheet was opened. */
-function useOpenChannel(teamId: string): (channelId: string) => void {
+/**
+ * A sheet that made something leaves for it, so Back returns to where the sheet was opened.
+ * An answer that arrives after the person closed the sheet moves nothing.
+ */
+function useSheetAnswer(teamId: string): {
+  readonly shown: { readonly current: boolean };
+  readonly openChannel: (channelId: string) => void;
+} {
   const navigation = useNavigation<Navigation>();
-  return useCallback(
+  const shown = useMountedRef();
+  const openChannel = useCallback(
     (channelId: string) => {
+      if (!shown.current) return;
       navigation.dispatch(StackActions.pop());
       navigation.dispatch(StackActions.push("TeamChannel", { teamId, channelId }));
     },
-    [navigation, teamId],
+    [navigation, shown, teamId],
   );
+  return { shown, openChannel };
 }
 
 function failureText(error: unknown): string {
@@ -127,7 +136,7 @@ export function TeamChannelsScreen(props: TeamParams): ReactNode {
   submit.current = () => {
     const first = channels[0];
     if (first) open(first);
-    else if (canCreate && words !== "") newChannel(words);
+    else if (canCreate && words !== "" && directory.complete) newChannel(words);
   };
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -154,32 +163,33 @@ export function TeamChannelsScreen(props: TeamParams): ReactNode {
       },
     });
   }, [canCreate, navigation, newChannel]);
-  const empty = directory.loading ? (
-    <View style={styles.state}>
-      <ActivityIndicator color={color.muted} />
-    </View>
-  ) : directory.error !== null && directory.items.length === 0 ? (
-    <View style={styles.state}>
-      <Notice
-        detail={failureText(directory.error) || (failure ?? "")}
-        title="Channels didn't load"
-        tone="neutral"
-      />
-      <SecondaryButton label="Try again" onPress={directory.reload} />
-    </View>
-  ) : (
-    <View style={styles.state}>
-      <AppText role="secondary" style={styles.centered} tone="muted">
-        {words === "" ? "No channels yet." : `No channel called “${words}”.`}
-      </AppText>
-      {canCreate ? (
-        <SecondaryButton
-          label={words === "" ? "New channel" : `Create #${words}`}
-          onPress={() => newChannel(words)}
+  const empty =
+    directory.loading || (!directory.complete && directory.error === null) ? (
+      <View style={styles.state}>
+        <ActivityIndicator color={color.muted} />
+      </View>
+    ) : directory.error !== null ? (
+      <View style={styles.state}>
+        <Notice
+          detail={failureText(directory.error) || (failure ?? "")}
+          title="Channels didn't load"
+          tone="neutral"
         />
-      ) : null}
-    </View>
-  );
+        <SecondaryButton label="Try again" onPress={directory.retry} />
+      </View>
+    ) : (
+      <View style={styles.state}>
+        <AppText role="secondary" style={styles.centered} tone="muted">
+          {words === "" ? "No channels yet." : `No channel called “${words}”.`}
+        </AppText>
+        {canCreate ? (
+          <SecondaryButton
+            label={words === "" ? "New channel" : `Create #${words}`}
+            onPress={() => newChannel(words)}
+          />
+        ) : null}
+      </View>
+    );
   return (
     <Screen edgeToEdge>
       <FlatList
@@ -192,7 +202,20 @@ export function TeamChannelsScreen(props: TeamParams): ReactNode {
         keyExtractor={(channel) => channel.id}
         ListEmptyComponent={empty}
         ListFooterComponent={
-          words === "" && channels.length === 1 && canCreate ? (
+          directory.error !== null && channels.length > 0 ? (
+            <View style={styles.state}>
+              <AppText role="caption" style={styles.centered} tone="muted">
+                Some channels didn't load.
+              </AppText>
+              <SecondaryButton label="Try again" onPress={directory.retry} />
+            </View>
+          ) : !directory.complete && channels.length > 0 ? (
+            <ActivityIndicator color={color.muted} style={styles.more} />
+          ) : directory.capped ? (
+            <AppText role="caption" style={styles.hint} tone="muted">
+              Only the first 1,000 channels are listed here.
+            </AppText>
+          ) : words === "" && channels.length === 1 && canCreate ? (
             <AppText role="caption" style={styles.hint} tone="muted">
               {`It's just #${channels[0]!.name} so far. Start a channel for a project, a topic or a group of people.`}
             </AppText>
@@ -300,7 +323,7 @@ export function TeamNewChannelScreen(
 ): ReactNode {
   const { teamId } = props.route.params;
   const navigation = useNavigation<Navigation>();
-  const openChannel = useOpenChannel(teamId);
+  const { shown, openChannel } = useSheetAnswer(teamId);
   const insets = useSafeAreaInsets();
   const { session, snapshot } = useTeamSession(teamId);
   const people = useTeamMembers(teamId);
@@ -327,6 +350,7 @@ export function TeamNewChannelScreen(
       .then(
         () => openChannel(id),
         (error: unknown) => {
+          if (!shown.current) return;
           setBusy(false);
           if (isChannelNameTaken(error)) setRefusal({ name: words, message: failureText(error) });
           else Alert.alert("The channel wasn't made", failureText(error));
@@ -460,7 +484,7 @@ export function TeamNewChannelScreen(
 export function TeamNewMessageScreen(props: TeamParams): ReactNode {
   const { teamId } = props.route.params;
   const navigation = useNavigation<Navigation>();
-  const openChannel = useOpenChannel(teamId);
+  const { shown, openChannel } = useSheetAnswer(teamId);
   const insets = useSafeAreaInsets();
   const { session, snapshot } = useTeamSession(teamId);
   const people = useTeamMembers(teamId);
@@ -479,6 +503,7 @@ export function TeamNewMessageScreen(props: TeamParams): ReactNode {
           if (result.type === "team.dm.open") openChannel(result.channel.id);
         },
         (error: unknown) => {
+          if (!shown.current) return;
           setBusy(false);
           Alert.alert("That message couldn't start", failureText(error));
         },

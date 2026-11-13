@@ -274,7 +274,7 @@ function BrowseChannels({ view }: { readonly view: TeamView }) {
               setQuery("");
             } else if (event.key === "Enter") {
               if (first) open(first);
-              else if (canCreate && words) openNewChannel(teamId, words);
+              else if (canCreate && words && directory.complete) openNewChannel(teamId, words);
             }
           }}
           placeholder="Find a channel"
@@ -287,10 +287,14 @@ function BrowseChannels({ view }: { readonly view: TeamView }) {
       ) : directory.error !== null && directory.items.length === 0 ? (
         <div className="team-browse__empty" role="alert">
           <p>{actionErrorMessage(directory.error)}</p>
-          <button className="btn btn--small" onClick={directory.reload} type="button">
+          <button className="btn btn--small" onClick={directory.retry} type="button">
             Try again
           </button>
         </div>
+      ) : channels.length === 0 && !directory.complete ? (
+        directory.error === null ? (
+          <LoadingRows label="Searching every channel" />
+        ) : null
       ) : channels.length === 0 ? (
         <div className="team-browse__empty">
           <p>{words ? `No channel called “${words}”.` : `${teamName} has no channels yet.`}</p>
@@ -324,7 +328,17 @@ function BrowseChannels({ view }: { readonly view: TeamView }) {
           })}
         </ul>
       )}
-      {!words && channels.length === 1 && canCreate ? (
+      {directory.error !== null && directory.items.length > 0 ? (
+        <p className="team-browse__hint" role="alert">
+          Some channels didn’t load.{" "}
+          <button className="link-button" onClick={directory.retry} type="button">
+            Try again
+          </button>
+        </p>
+      ) : directory.capped ? (
+        <p className="team-browse__hint">Only the first 1,000 channels are listed here.</p>
+      ) : null}
+      {!words && channels.length === 1 && canCreate && directory.complete ? (
         <p className="team-browse__hint">
           It’s just #{channels[0]!.name} so far. Start a channel for a project, a topic or a group
           of people.

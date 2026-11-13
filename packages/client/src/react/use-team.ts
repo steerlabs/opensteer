@@ -33,5 +33,11 @@ export function useChannelDirectory(session: TeamSessionClient | null, key: stri
   useEffect(() => {
     if (nextCursor !== null && !loadingMore && error === null) more();
   }, [nextCursor, loadingMore, error]);
-  return list;
+  return {
+    ...list,
+    /** Every channel is read: a search that finds nothing means there is none to find. */
+    complete: list.first !== null && nextCursor === null && error === null,
+    /** Reads again from where a failure stopped, keeping the channels already read. */
+    retry: list.items.length === 0 ? list.reload : more,
+  };
 }
