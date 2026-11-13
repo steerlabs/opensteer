@@ -1547,9 +1547,13 @@ export class ControlPlaneStore {
     accountId: ControlPlaneAccountId,
     successors: ReadonlyMap<HostedTeamId, ControlPlaneAccountId> = new Map(),
   ): Promise<void> {
+    // Handing a team to an owner its Host confirmed is right even if the deletion then fails, so
+    // it commits on its own and each transaction keeps the lock order.
+    if (successors.size > 0)
+      await this.#database
+        .transaction()
+        .execute((transaction) => handOverHostedTeams(transaction, accountId, successors));
     await this.#database.transaction().execute(async (transaction) => {
-      // First: its origin locks come before the Account rows, as a team's bootstrap takes them.
-      await handOverHostedTeams(transaction, accountId, successors);
       await transaction.deleteFrom("authAccounts").where("userId", "=", accountId).execute();
       const account = await transaction
         .selectFrom("users")

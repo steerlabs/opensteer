@@ -90,6 +90,8 @@ const nativeOAuthReference = (clientId: string) => `${legacyNativeOAuthReference
 const nativeOAuthScopes = ["openid", "profile", "email", "offline_access", "host:access"] as const;
 const maxPendingAdmissions = 1_024;
 const maxPendingAdmissionsPerSubject = 1;
+/** A shared invite link may be opened by several people at once; one admission per remaining use, bounded. */
+const maxPendingAdmissionsPerInvite = 64;
 const accountAdoptionProofLifetimeMilliseconds = 5 * 60 * 1_000;
 const maxPendingAccountAdoptionProofs = 64;
 const accountAdoptionProofIdPattern =
@@ -2189,8 +2191,15 @@ export class IdentityService {
     if (!team)
       throw new OpensteerError({ code: "not_found", message: "Team invitations are unavailable" });
     const invite = await team.invites.verify(selector, verifier);
+    const remaining =
+      invite.maxUses === null ? maxPendingAdmissionsPerInvite : invite.maxUses - invite.usedCount;
     return this.#createOrReuseAdmission(
-      { purpose: "invitation", reservedEmail: null, subjectSelector: invite.selector },
+      {
+        purpose: "invitation",
+        reservedEmail: null,
+        subjectSelector: invite.selector,
+        maxPending: Math.max(1, Math.min(maxPendingAdmissionsPerInvite, remaining)),
+      },
       headers,
     );
   }
@@ -2325,6 +2334,7 @@ export class IdentityService {
     readonly purpose: "setup" | "recovery" | "invitation";
     readonly reservedEmail: string | null;
     readonly subjectSelector: string;
+    readonly maxPending?: number;
   }): Promise<{ readonly headers: Headers }> {
     const id = createId("authAdmission");
     const nonce = randomBytes(32).toString("base64url");
@@ -2368,7 +2378,7 @@ export class IdentityService {
             );
       if (
         Number(total.count) >= maxPendingAdmissions ||
-        subjectCount >= maxPendingAdmissionsPerSubject
+        subjectCount >= (input.maxPending ?? maxPendingAdmissionsPerSubject)
       ) {
         throw new OpensteerError({
           code: "timeout",
@@ -2409,6 +2419,7 @@ export class IdentityService {
       readonly purpose: "setup" | "recovery" | "invitation";
       readonly reservedEmail: string | null;
       readonly subjectSelector: string;
+      readonly maxPending?: number;
     },
     headers: Headers,
   ): Promise<{ readonly headers: Headers }> {

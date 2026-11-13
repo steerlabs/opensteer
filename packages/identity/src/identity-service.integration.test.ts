@@ -1964,6 +1964,67 @@ integration("IdentityService", () => {
     });
   });
 
+  it("lets several browsers hold admissions for a shared invite, but only one for a single-use one", async () => {
+    const access = new TeamAccessStore(database);
+    await access.initialize();
+    const invites = new TeamInvitesStore(access, "http://127.0.0.1:4310");
+    const ownerId = await createUser("Team Owner");
+    await database
+      .insertInto("teamMembers")
+      .values({
+        userId: ownerId,
+        handle: "owner",
+        role: "owner",
+        state: "active",
+        joinedAt: new Date(),
+        changedAt: new Date(),
+        changedBy: null,
+      })
+      .execute();
+    const owner = { kind: "human", userId: ownerId } as const;
+    const team = new TeamIdentityAdmission({
+      access,
+      invites,
+      authority: {
+        canonicalOrigin: "http://127.0.0.1:4310",
+        deploymentId: createId("deployment"),
+        hostInstanceId: createId("hostInstance"),
+        hostKeyFingerprint: HostKeyFingerprintSchema.parse(hostKeyFingerprint),
+      },
+      grantVerifier: {
+        async verify() {
+          throw new Error("No adoption grant in this fixture");
+        },
+      },
+      async installAccountBundle() {
+        throw new Error("No bundle in this fixture");
+      },
+    });
+    const identity = identityService({ team, localPasswordEnabled: false });
+    await identity.initialize();
+    const exchange = (url: string) => {
+      const parsed = new URL(url);
+      return identity.exchangeTeamInvitation(
+        parsed.pathname.split("/").pop()!,
+        parsed.hash.slice(1),
+        new Headers({ origin: "http://127.0.0.1:4310" }),
+      );
+    };
+    const shared = await invites.create(owner, createId("teamInvite"));
+    await database
+      .updateTable("teamInvites")
+      .set({ maxUses: null })
+      .where("id", "=", shared.invite.id)
+      .execute();
+    await expect(exchange(shared.url)).resolves.toBeDefined();
+    await expect(exchange(shared.url)).resolves.toBeDefined();
+    await expect(exchange(shared.url)).resolves.toBeDefined();
+
+    const single = await invites.create(owner, createId("teamInvite"));
+    await expect(exchange(single.url)).resolves.toBeDefined();
+    await expect(exchange(single.url)).rejects.toMatchObject({ code: "timeout" });
+  });
+
   it("rotates an unfinished setup admission instead of locking out a valid setup retry", async () => {
     const origin = "http://127.0.0.1:4310";
     const token = "initial-owner-token-with-enough-entropy";

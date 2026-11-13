@@ -213,7 +213,6 @@ export const databaseLockOrder = [
   "trigger_revisions",
   // Host User fences precede auth sessions, adoption proofs and account reconciliation.
   "users",
-  "account_directory_projections",
   "auth_sessions",
   "personal_remote_administration",
   "personal_desktop_update",
@@ -221,6 +220,8 @@ export const databaseLockOrder = [
   "host_account_adoption_proofs",
   "account_directory_provider",
   "auth_accounts",
+  // Triggers write a projection after the users, auth_accounts or team_members row it mirrors.
+  "account_directory_projections",
   "personal_remote_pairing_codes",
   "personal_remote_session_grant_uses",
   "watch_control_requests",

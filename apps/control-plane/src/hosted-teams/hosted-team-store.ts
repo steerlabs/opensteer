@@ -262,6 +262,13 @@ export class HostedTeamStore {
         // The adoption that lets a Host commit its owner holds this lock too, so a cancel either
         // lands before it (and the adoption fails) or sees its Deployment.
         await lockDeploymentOrigin(transaction, origin);
+        const adopted = await transaction
+          .selectFrom("deployments")
+          .select("id")
+          .where("canonicalOrigin", "=", origin)
+          // FOR UPDATE: a delete removes this Deployment; it ranks before the team row.
+          .forUpdate()
+          .executeTakeFirst();
         const row = await transaction
           .selectFrom("hostedTeams")
           .selectAll()
@@ -270,11 +277,6 @@ export class HostedTeamStore {
           .executeTakeFirstOrThrow();
         if (row.state === "deleted") return row;
         if (!confirmedOwner) {
-          const adopted = await transaction
-            .selectFrom("deployments")
-            .select("id")
-            .where("canonicalOrigin", "=", origin)
-            .executeTakeFirst();
           if (row.bootstrapReceipt !== null || adopted) return "owner-check" as const;
           if (row.creatorAccountId !== accountId) throw ownerRequired();
         }
@@ -846,6 +848,8 @@ export async function handOverHostedTeams(
     const origin = hostedTeamOrigin(slug as HostedTeamSlug);
     const successor = successors.get(id)!;
     // Serializes with deleting the team and with its bootstrap, as both take the origin first.
+    // Every writer of a team's creator or state holds this lock, so the reads below are stable
+    // without row locks, which are then taken in rank order.
     await lockDeploymentOrigin(transaction, origin);
     const team = await transaction
       .selectFrom("hostedTeams")
@@ -853,16 +857,32 @@ export async function handOverHostedTeams(
       .where("id", "=", id)
       .where("creatorAccountId", "=", accountId)
       .where("state", "!=", "deleted")
-      .forNoKeyUpdate()
       .executeTakeFirst();
-    const heir = await transaction
+    // The Deployment's owner foreign key keeps the heir from vanishing once it is moved.
+    const heirExists = await transaction
       .selectFrom("users")
       .select("id")
       .where("id", "=", successor)
       .where("id", "!=", accountId)
-      .forKeyShare()
       .executeTakeFirst();
-    if (!team || !heir) continue;
+    if (!team || !heirExists) continue;
+    const adopted = await transaction
+      .selectFrom("deployments")
+      .select(["id", "oidcClientId"])
+      .where("canonicalOrigin", "=", origin)
+      .where("ownerAccountId", "=", accountId)
+      .execute();
+    if (adopted.length > 0)
+      // An owner keeps no hide marker; the directory shows them their team.
+      await transaction
+        .deleteFrom("deploymentDirectoryVisibility")
+        .where(
+          "deploymentId",
+          "in",
+          adopted.map((deployment) => deployment.id),
+        )
+        .where("accountId", "=", successor)
+        .execute();
     const moved = await transaction
       .updateTable("deployments")
       .set({ ownerAccountId: successor })
@@ -879,12 +899,6 @@ export async function handOverHostedTeams(
           .where("clientId", "=", deployment.oidcClientId)
           .where("userId", "=", accountId)
           .execute();
-      // An owner keeps no hide marker; the directory shows them their team.
-      await transaction
-        .deleteFrom("deploymentDirectoryVisibility")
-        .where("deploymentId", "=", deployment.id)
-        .where("accountId", "=", successor)
-        .execute();
     }
     await transaction
       .updateTable("hostedTeams")
