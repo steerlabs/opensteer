@@ -785,7 +785,12 @@ function NoteEditor({
 }) {
   const navigate = useNavigate();
   const toast = useToast();
-  const [id] = useState(() => noteId ?? KnowledgeNoteIdSchema.parse(createId("knowledgeNote")));
+  const draftKey = `opensteer.knowledge.draft:${view.team.teamId}:${noteId ?? `new:${topicId}`}`;
+  /** A draft left by leaving this editor unsaved, restored on return. */
+  const [kept] = useState(() => readKeptDraft(draftKey));
+  const [id] = useState(
+    () => noteId ?? kept?.id ?? KnowledgeNoteIdSchema.parse(createId("knowledgeNote")),
+  );
   const topic = useTopic(view, topicId);
   const existing = useTeamRead(
     noteId
@@ -795,15 +800,40 @@ function NoteEditor({
   );
   /** The version this draft is written on; null for a new note. */
   const [base, setBase] = useState<TeamNote | null>(null);
-  const [draft, setDraft] = useState<NoteDraft | null>(noteId ? null : { title: "", body: "" });
+  const [draft, setDraft] = useState<NoteDraft | null>(
+    noteId ? null : kept ? { title: kept.title, body: kept.body } : { title: "", body: "" },
+  );
   const [theirs, setTheirs] = useState<TeamNote | null>(null);
   const [showTheirs, setShowTheirs] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [restored, setRestored] = useState(kept !== null);
   useEffect(() => {
     if (!existing.value || draft) return;
     setBase(existing.value);
-    setDraft({ title: existing.value.title, body: existing.value.body });
+    if (!kept) {
+      setDraft({ title: existing.value.title, body: existing.value.body });
+      return;
+    }
+    setDraft({ title: kept.title, body: kept.body });
+    // The note moved on while the draft waited: treat it like any other edit conflict.
+    if (kept.baseVersion !== existing.value.version) setTheirs(existing.value);
   }, [existing.value]);
+  const dirty =
+    draft !== null &&
+    (base
+      ? draft.title !== base.title || draft.body !== base.body
+      : draft.title.trim() !== "" || draft.body.trim() !== "");
+  useEffect(() => {
+    if (!draft) return;
+    if (dirty) keepDraft(draftKey, { id, baseVersion: base?.version ?? null, ...draft });
+    else forgetDraft(draftKey);
+  }, [draft, base, dirty]);
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
   const teamId = view.team.teamId;
   const leave = noteId ? knowledgePath(teamId, topicId, noteId) : knowledgePath(teamId, topicId);
   const back = (
@@ -833,7 +863,10 @@ function NoteEditor({
       noteWriteCommand({ noteId: id, topicId, base, draft }),
     )
       .then(unwrapRpcResult)
-      .then(() => void navigate(knowledgePath(teamId, topicId, id), { replace: true }))
+      .then(() => {
+        forgetDraft(draftKey);
+        void navigate(knowledgePath(teamId, topicId, id), { replace: true });
+      })
       .catch(async (error: unknown) => {
         if (!isNoteChangedConflict(error)) {
           toast.error(actionErrorMessage(error));
@@ -874,6 +907,23 @@ function NoteEditor({
                 ? "Archived — nothing new can be saved here."
                 : "You can read this topic but not write in it."}
             </div>
+          </div>
+        ) : null}
+        {restored && !theirs ? (
+          <div className="notice knowledge__notice">
+            <Icon name="history" />
+            <div>This is the draft you left unsaved.</div>
+            <button
+              className="btn btn--small"
+              onClick={() => {
+                forgetDraft(draftKey);
+                setRestored(false);
+                setDraft(base ? { title: base.title, body: base.body } : { title: "", body: "" });
+              }}
+              type="button"
+            >
+              Discard draft
+            </button>
           </div>
         ) : null}
         {theirs ? (
@@ -927,7 +977,14 @@ function NoteEditor({
           <span className="knowledge-editor__hint">
             {base ? `Saving makes version ${base.version + 1}.` : "Saved notes keep every version."}
           </span>
-          <button className="btn btn--ghost" onClick={() => void navigate(leave)} type="button">
+          <button
+            className="btn btn--ghost"
+            onClick={() => {
+              forgetDraft(draftKey);
+              void navigate(leave);
+            }}
+            type="button"
+          >
             Cancel
           </button>
           <button className="btn btn--primary" disabled={!ready} type="submit">
@@ -937,6 +994,48 @@ function NoteEditor({
       </form>
     </KnowledgeShell>
   );
+}
+
+interface KeptDraft extends NoteDraft {
+  readonly id: KnowledgeNoteId;
+  /** The version the draft was written on; null for a new note. */
+  readonly baseVersion: number | null;
+}
+
+// A per-browser convenience: storage can be missing or refuse, and the editor works without it.
+function readKeptDraft(key: string): KeptDraft | null {
+  try {
+    const raw: unknown = JSON.parse(window.localStorage.getItem(key) ?? "null");
+    if (typeof raw !== "object" || raw === null) return null;
+    const { id, baseVersion, title, body } = raw as Record<string, unknown>;
+    const noteId = KnowledgeNoteIdSchema.safeParse(id);
+    if (
+      !noteId.success ||
+      typeof title !== "string" ||
+      typeof body !== "string" ||
+      !(baseVersion === null || (typeof baseVersion === "number" && baseVersion >= 1))
+    )
+      return null;
+    return { id: noteId.data, baseVersion, title, body };
+  } catch {
+    return null;
+  }
+}
+
+function keepDraft(key: string, draft: KeptDraft): void {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(draft));
+  } catch {
+    // Without storage the draft only lives while the editor is open.
+  }
+}
+
+function forgetDraft(key: string): void {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // Nothing kept to forget.
+  }
 }
 
 /* ---- History ---- */

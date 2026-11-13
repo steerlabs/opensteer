@@ -12,4 +12,8 @@ it("turns Markdown into one plain line for a list", () => {
   );
   expect(markdownPreview("snake_case_name stays", 200)).toBe("snake_case_name stays");
   expect(markdownPreview("a".repeat(10), 5)).toBe("aaaa…");
+  // Emoji take two units each; the preview stays within the limit and keeps whole emoji.
+  const emoji = markdownPreview("😀".repeat(101), 200);
+  expect(emoji.length).toBeLessThanOrEqual(200);
+  expect(emoji).toBe(`${"😀".repeat(99)}…`);
 });

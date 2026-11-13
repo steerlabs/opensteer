@@ -137,7 +137,11 @@ export interface TeamKnowledge {
     agent: TeamKnowledgeAgent,
     input: TeamKnowledgeReadInput,
   ): Promise<TeamKnowledgeAnswer<TeamKnowledgeReadResult>>;
-  write(agent: TeamKnowledgeAgent, input: TeamKnowledgeWrite): Promise<TeamKnowledgeWriteResult>;
+  /** The answer can return the current note, so it is handed over only while that stays readable. */
+  write(
+    agent: TeamKnowledgeAgent,
+    input: TeamKnowledgeWrite,
+  ): Promise<TeamKnowledgeAnswer<TeamKnowledgeWriteResult>>;
   /** A person's knowledge read; the output matches `teamReadSchemas[name].output`. */
   read(actor: TeamActor, name: string, input: unknown): Promise<unknown>;
   command(actor: TeamActor, command: TeamCommand): Promise<TeamKnowledgeCommandResult>;
@@ -471,7 +475,8 @@ export async function startTeamKnowledge(options: {
   async function writeAsAgent(
     agent: TeamKnowledgeAgent,
     input: TeamKnowledgeWrite,
-  ): Promise<TeamKnowledgeWriteResult> {
+  ): Promise<TeamKnowledgeAnswer<TeamKnowledgeWriteResult>> {
+    const authorizedAt = access.revision;
     return denied(agent, "knowledge.write", async () => {
       const outcome = await access.knowledgeWrite(async (transaction) => {
         const { actor, room } = await caller(transaction, agent);
@@ -485,9 +490,15 @@ export async function startTeamKnowledge(options: {
           }),
           (topicId) => authorizeWrite(transaction, actor, topicId),
         );
-        return { result, room };
+        return { result, room, actor };
       });
-      const { result, room } = outcome;
+      const { result, room, actor } = outcome;
+      const topicId = result.written ? result.topicId : result.current.topicId;
+      const reauthorize = async () =>
+        (await caller(database, agent).then(
+          () => true,
+          () => false,
+        )) && (await readableBy(actor, [topicId])());
       await agentAudit(
         agent,
         room,
@@ -499,11 +510,12 @@ export async function startTeamKnowledge(options: {
           ...(result.written ? { version: result.version } : {}),
           ...(input.delete ? { deleted: true } : {}),
         },
-        result.written ? result.topicId : result.current.topicId,
+        topicId,
       );
-      return result.written
+      const answer: TeamKnowledgeWriteResult = result.written
         ? { written: true, noteId: result.noteId, topicId: result.topicId, version: result.version }
         : { written: false, current: note(result.current) };
+      return { result: await handOff(authorizedAt, reauthorize, answer), reauthorize };
     });
   }
 

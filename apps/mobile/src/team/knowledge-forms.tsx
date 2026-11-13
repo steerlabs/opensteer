@@ -67,6 +67,11 @@ import { personView, type MemberDirectory } from "./team-views.js";
 type Navigation = NativeStackNavigationProp<RootParamList>;
 type PersonOrGroup = Exclude<TeamTopicSubject, { readonly kind: "everyone" }>;
 type AccessList = readonly TeamTopicAccessEntry[];
+interface AccessDraft {
+  readonly entries: AccessList;
+  readonly base: AccessList;
+  readonly revision: string;
+}
 
 /** The people and groups on a list, without its Everyone entry. */
 function listedPeople(
@@ -467,7 +472,8 @@ export function TeamTopicAccessScreen(
   const navigation = useNavigation<Navigation>();
   const { session, team } = useTeamSession(teamId);
   const padding = useBottomPadding();
-  const [draft, setDraft] = useState<AccessList | null>(null);
+  /** Edits on top of the list as it was read, kept with that list's revision until saved or reloaded. */
+  const [draft, setDraft] = useState<AccessDraft | null>(null);
   const [adding, setAdding] = useState(false);
   const [saving, setSaving] = useState(false);
   const [failure, setFailure] = useState<{ text: string; stale: boolean } | null>(null);
@@ -478,10 +484,10 @@ export function TeamTopicAccessScreen(
     topicId,
   );
   const held = read.value?.entries ?? null;
-  const shown = draft ?? held;
+  const shown = draft?.entries ?? held;
   const manage = read.value?.can.manage === true;
   const directory = useDirectory(teamId, true);
-  const dirty = held !== null && draft !== null && !sameTopicAccess(held, draft);
+  const dirty = draft !== null && !sameTopicAccess(draft.base, draft.entries);
   useKeepDraft(dirty && !saving);
 
   const save = (): void => {
@@ -491,8 +497,8 @@ export function TeamTopicAccessScreen(
     void teamCommand(session, {
       type: "team.knowledge.topic.access.set",
       topicId,
-      expectedRevision: SequenceSchema.parse(read.value.revision),
-      access: [...draft],
+      expectedRevision: SequenceSchema.parse(draft.revision),
+      access: [...draft.entries],
     })
       .then(
         () => {
@@ -533,7 +539,11 @@ export function TeamTopicAccessScreen(
     );
   const edit = (next: AccessList): void => {
     setFailure(null);
-    setDraft(next);
+    setDraft((current) =>
+      current
+        ? { ...current, entries: next }
+        : { entries: next, base: read.value!.entries, revision: read.value!.revision },
+    );
   };
   const teamName = team?.name ?? "the team";
   const people = listedPeople(shown);

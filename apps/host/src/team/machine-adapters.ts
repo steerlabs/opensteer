@@ -63,13 +63,13 @@ export function createTeamMachineAdapters(
               reauthorize: answer.reauthorize,
             };
           }
-          case "knowledge.write":
+          case "knowledge.write": {
+            const answer = await knowledge.write(agent, frame.input);
             return {
-              result: {
-                kind: "knowledge.write" as const,
-                result: await knowledge.write(agent, frame.input),
-              },
+              result: { kind: "knowledge.write" as const, result: answer.result },
+              reauthorize: answer.reauthorize,
             };
+          }
         }
       },
       async read(actor: TeamActor, linkId: TeamLinkId, input: ReadCall) {

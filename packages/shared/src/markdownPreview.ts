@@ -1,6 +1,6 @@
 /**
  * The start of a Markdown text as one plain line, for lists: no markup, list items and
- * paragraphs joined with " · ", at most `maxChars` characters ending in "…" when cut.
+ * paragraphs joined with " · ", at most `maxChars` UTF-16 units ending in "…" when cut.
  */
 export function markdownPreview(markdown: string, maxChars: number): string {
   const parts: string[] = [];
@@ -16,13 +16,14 @@ export function markdownPreview(markdown: string, maxChars: number): string {
     if (line && !/^(?:[-*_]\s*){3,}$/u.test(line)) parts.push(line);
   }
   const flat = parts.join(" · ");
-  const chars = [...flat];
-  return chars.length <= maxChars
-    ? flat
-    : `${chars
-        .slice(0, maxChars - 1)
-        .join("")
-        .trimEnd()}…`;
+  if (flat.length <= maxChars) return flat;
+  // Lengths count UTF-16 units, as string limits do; never split a character in two.
+  let cut = "";
+  for (const char of flat) {
+    if (cut.length + char.length > maxChars - 1) break;
+    cut += char;
+  }
+  return `${cut.trimEnd()}…`;
 }
 
 function inline(text: string): string {

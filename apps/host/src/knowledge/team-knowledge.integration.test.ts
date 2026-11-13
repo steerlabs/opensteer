@@ -97,15 +97,17 @@ async function team() {
     title = "Note",
     noteId: KnowledgeNoteId = createId("knowledgeNote"),
   ) =>
-    knowledge.write(agent, {
-      noteId,
-      topicId,
-      expectedVersion: null,
-      title,
-      body: `${title} body`,
-    });
+    knowledge
+      .write(agent, {
+        noteId,
+        topicId,
+        expectedVersion: null,
+        title,
+        body: `${title} body`,
+      })
+      .then((answer) => answer.result);
   const write = (agent: TeamKnowledgeAgent, input: TeamKnowledgeWrite) =>
-    knowledge.write(agent, input);
+    knowledge.write(agent, input).then((answer) => answer.result);
   const person = (userId: UserId): TeamActor => ({ kind: "human", userId });
   /** A person's read, checked against the wire contract. */
   const read = async <Name extends TeamKnowledgeReadName>(
@@ -516,6 +518,25 @@ describe("team knowledge", () => {
       await expect(reading).rejects.toMatchObject({ code: "forbidden" });
       // The link's own final handoff rechecks the same topics.
       expect(await delivered.reauthorize()).toBe(false);
+    });
+
+    it("withholds the current note from a stale write when access is lost before handoff", async () => {
+      const t = await team();
+      const created = await t.create(t.agents.mira, t.topicIds.pricing, "Discount ladder");
+      if (!created.written) throw new Error("Mira's agent could not write pricing");
+      const { noteId } = created;
+      await t.write(t.agents.mira, { noteId, expectedVersion: 1, body: "Ten percent" });
+      const paused = hold();
+      t.pauses.beforeHandoff = paused.pause;
+      const stale = t.knowledge.write(t.agents.mira, {
+        noteId,
+        expectedVersion: 1,
+        body: "Five percent",
+      });
+      await paused.reached;
+      await losses[loss]!(t);
+      paused.release();
+      await expect(stale).rejects.toMatchObject({ code: "forbidden" });
     });
   });
 
