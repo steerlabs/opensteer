@@ -120,6 +120,12 @@ it("records a successful Codex command with large inline arguments without faili
   const skillsRoot = fileURLToPath(new URL("../../agent-skills", import.meta.url));
   const skillPath = (name: string) => join(skillsRoot, "skills", name);
   const runtime = new RunnerRuntime({
+    nativeFsHelperBinary: fileURLToPath(
+      new URL(
+        `../../native-fs-helper/opensteer-native-fs${process.platform === "win32" ? ".exe" : ""}`,
+        import.meta.url,
+      ),
+    ),
     nodeExecutable: process.execPath,
     agentSkills: {
       rootPath: skillsRoot,

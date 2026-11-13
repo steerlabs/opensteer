@@ -1,7 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createId } from "@opensteer/core";
 import { TriggerExecutionContextSchema } from "@opensteer/protocol";
 import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
@@ -115,6 +115,7 @@ it.each(["memory-light", "memory-nightly"] as const)(
           triggerId,
         });
         const output = await new TriggerProgramExecutor({
+          nativeFsHelperBinary: resolve("apps/runner/native-fs-helper/opensteer-native-fs"),
           nodeExecutable: process.execPath,
           privateDirectory: join(directory, "private"),
         }).execute({

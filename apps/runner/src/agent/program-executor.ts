@@ -1,4 +1,5 @@
 import { programEnvironment, spawnSupervised } from "@opensteer/harness";
+import { NativeFsHelper, NativeFsHelperError } from "@opensteer/shared/files/native-fs-helper";
 import {
   readBoundedRegularFile,
   setPrivateDirectoryMode,
@@ -19,6 +20,7 @@ const resultByteLimit = 512 * 1_024;
 const truncationMarker = "\n[Opensteer truncated earlier process output]\n";
 
 interface TriggerProgramExecutorOptions {
+  readonly nativeFsHelperBinary: string;
   readonly nodeExecutable: string;
   readonly privateDirectory?: string;
 }
@@ -39,10 +41,12 @@ export type ProgramLaunchPlanner = (input: {
 }) => Promise<HarnessProcessLaunchWrapper>;
 
 export class TriggerProgramExecutor {
+  readonly #nativeFs: NativeFsHelper;
   readonly #nodeExecutable: string;
   readonly #privateDirectory: string;
 
   constructor(options: TriggerProgramExecutorOptions) {
+    this.#nativeFs = new NativeFsHelper({ binary: options.nativeFsHelperBinary });
     this.#nodeExecutable = options.nodeExecutable;
     this.#privateDirectory = resolve(
       options.privateDirectory ?? join(tmpdir(), "opensteer-trigger-programs"),
@@ -69,7 +73,19 @@ export class TriggerProgramExecutor {
     const runtimeFile = join(privateExecutionRoot, "runtime.mjs");
     const eventFile = join(privateExecutionRoot, "event.json");
     const resultFile = join(privateExecutionRoot, "result.json");
-    await mkdir(privateExecutionRoot, { mode: 0o700, recursive: true });
+    // A mode does not restrict a Windows ACL, so everything below inherits this root's.
+    await this.#nativeFs
+      .ensurePrivateRoot(this.#privateDirectory, input.signal)
+      .catch((error: unknown) => {
+        if (error instanceof NativeFsHelperError && error.code === "unsafe-permissions") {
+          throw new Error(
+            `Trigger program directory ${this.#privateDirectory} is open to other accounts on this computer`,
+            { cause: error },
+          );
+        }
+        throw error;
+      });
+    await mkdir(privateExecutionRoot, { mode: 0o700 });
     await setPrivateDirectoryMode(privateExecutionRoot);
     try {
       await Promise.all([

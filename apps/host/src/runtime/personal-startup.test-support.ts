@@ -329,6 +329,7 @@ export async function startPersonalRuntime(input: {
       maxConcurrentRuns: vertical?.maxConcurrentRuns ?? input.maxConcurrentRuns ?? 1,
       maxConcurrentTriggerPrograms: 1,
       mode: "development",
+      nativeFsHelperBinary: resolve("apps/runner/native-fs-helper/opensteer-native-fs"),
       nodeExecutable: process.execPath,
       privateStateDirectory: join(directory, "private", "harness-state"),
       projectContinuationIdentity: providerContinuationIdentityProjector(keys.privateKey),
