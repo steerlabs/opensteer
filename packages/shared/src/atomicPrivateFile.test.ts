@@ -2,7 +2,11 @@ import * as files from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { expect, it, vi } from "vitest";
-import { replacePrivateFileAtomically, serializePrivateFileCommit } from "./atomicPrivateFile.js";
+import {
+  readPrivateFileText,
+  replacePrivateFileAtomically,
+  serializePrivateFileCommit,
+} from "./atomicPrivateFile.js";
 import { withTimeout } from "./withTimeout.js";
 
 vi.mock("node:fs/promises", async (importOriginal) => {
@@ -76,5 +80,33 @@ it("keeps a replacement publisher behind an already-issued commit until it settl
   } finally {
     released.resolve();
     await Promise.all([first, second]);
+  }
+});
+
+it("reads the newer file when an atomic replace lands between its check and open", async () => {
+  const root = await files.mkdtemp(path.join(tmpdir(), "private-read-replace-"));
+  const target = path.join(root, "state.json");
+  await files.writeFile(target, "older", { mode: 0o600 });
+  const originalOpen = (
+    await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")
+  ).open;
+  let replacements = 1;
+  const opening = vi.spyOn(files, "open").mockImplementation(async (name, flags, mode) => {
+    if (name === target && replacements > 0) {
+      replacements -= 1;
+      const next = `${target}.next`;
+      await files.writeFile(next, "newer", { mode: 0o600 });
+      await files.rename(next, target);
+    }
+    return originalOpen(name, flags, mode);
+  });
+  const errors = { invalid: () => new Error("invalid"), exposed: () => new Error("exposed") };
+  try {
+    await expect(readPrivateFileText(target, 1024, errors)).resolves.toBe("newer");
+    replacements = Number.POSITIVE_INFINITY;
+    await expect(readPrivateFileText(target, 1024, errors)).rejects.toThrow("invalid");
+  } finally {
+    opening.mockRestore();
+    await files.rm(root, { recursive: true, force: true });
   }
 });

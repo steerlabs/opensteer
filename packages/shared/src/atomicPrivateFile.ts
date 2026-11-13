@@ -99,17 +99,31 @@ export async function readPrivateFileText(
   maximumBytes: number,
   errors: PrivateFileErrors,
 ): Promise<string | undefined> {
-  const bytes = await readBoundedRegularFile(path, maximumBytes, {
-    changedError: errors.invalid,
-    invalidFileError: errors.invalid,
-    missing: "null",
-    sizeError: errors.invalid,
-    validateMetadata: (metadata) => {
-      if (process.platform !== "win32" && (metadata.mode & 0o077) !== 0) throw errors.exposed();
-    },
-  });
-  return bytes?.toString("utf8");
+  // An atomic replace between the metadata check and the open is a newer file, not corruption.
+  for (let attempt = 1; ; attempt += 1) {
+    let replaced = false;
+    try {
+      const bytes = await readBoundedRegularFile(path, maximumBytes, {
+        changedError: () => {
+          replaced = true;
+          return errors.invalid();
+        },
+        invalidFileError: errors.invalid,
+        missing: "null",
+        sizeError: errors.invalid,
+        validateMetadata: (metadata) => {
+          if (process.platform !== "win32" && (metadata.mode & 0o077) !== 0) throw errors.exposed();
+        },
+      });
+      return bytes?.toString("utf8");
+    } catch (error) {
+      if (replaced && attempt < privateFileReadAttempts) continue;
+      throw error;
+    }
+  }
 }
+
+const privateFileReadAttempts = 3;
 
 async function writePrivateTemporaryFile(path: string, content: string): Promise<string> {
   await securePrivateDirectory(dirname(path));
