@@ -121,7 +121,14 @@ export type TeamEntryOutcome =
 // Entry owners on the same OAuth manager share browser and refresh work.
 const entryAttempts = new WeakMap<
   TeamEntryOAuth,
-  Map<DeploymentId, { mode: "passive" | "interactive"; promise: Promise<TeamEntryOutcome> }>
+  Map<
+    DeploymentId,
+    {
+      mode: "passive" | "interactive";
+      invite: TeamInviteSecret | null;
+      promise: Promise<TeamEntryOutcome>;
+    }
+  >
 >();
 
 export class NativeTeamEntry {
@@ -153,7 +160,11 @@ export class NativeTeamEntry {
     if (!attempts) entryAttempts.set(this.#oauth, (attempts = new Map()));
     const held = attempts.get(input.deploymentId);
     if (held) {
-      if (input.mode === "passive" || held.mode === "interactive") return held.promise;
+      if (
+        input.mode === "passive" ||
+        (held.mode === "interactive" && sameInvite(held.invite, input.invite))
+      )
+        return held.promise;
       return held.promise.then((outcome) =>
         outcome.status === "authorized" && !input.invite ? outcome : this.authorize(input),
       );
@@ -162,7 +173,7 @@ export class NativeTeamEntry {
       if (attempts.get(input.deploymentId)?.promise === promise)
         attempts.delete(input.deploymentId);
     });
-    attempts.set(input.deploymentId, { mode: input.mode, promise });
+    attempts.set(input.deploymentId, { mode: input.mode, invite: input.invite ?? null, promise });
     return promise;
   }
 
@@ -351,4 +362,8 @@ export function assertTeamEntryOutcome(outcome: TeamEntryOutcome): void {
       outcome.status === "sign-in-required" ? "blocked" : "transient",
     )
   );
+}
+
+function sameInvite(a: TeamInviteSecret | null, b: TeamInviteSecret | null | undefined): boolean {
+  return a?.selector === b?.selector && a?.verifier === b?.verifier;
 }

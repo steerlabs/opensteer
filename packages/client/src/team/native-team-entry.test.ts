@@ -141,6 +141,30 @@ describe("NativeTeamEntry", () => {
     },
   );
 
+  it("does not fold an explicit invite join into an in-flight plain sign-in", async () => {
+    const { entry, oauth, verify } = setup();
+    const verified = team();
+    const gate = Promise.withResolvers<VerifiedHostEndpoint>();
+    verify.mockReturnValueOnce(gate.promise);
+    oauth.authorizationHeader.mockResolvedValue("Bearer held");
+    const input = {
+      deploymentId: verified.discovery.deploymentId,
+      origin: verified.discovery.canonicalOrigin,
+      mode: "interactive" as const,
+    };
+    const invite = { selector: "s".repeat(32), verifier: "v".repeat(43) };
+    const plain = entry.authorize(input);
+    const joining = entry.authorize({ ...input, invite });
+    gate.resolve(verified);
+    await plain;
+    await joining;
+    expect(oauth.exchangeTeamSession).toHaveBeenCalledWith(
+      expect.anything(),
+      invite,
+      expect.anything(),
+    );
+  });
+
   it("does not remove a newer entry when an obsolete exchange refuses", async () => {
     const { entry, oauth, catalog } = setup();
     const verified = team();
