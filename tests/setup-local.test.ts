@@ -2,8 +2,17 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { initializeLocalDevelopment } from "../scripts/setup-local.js";
+
+const pnpmEntrypoint = join(tmpdir(), `opensteer-local-pnpm-${randomUUID()}`, "pnpm.cjs");
+const environment = { npm_execpath: pnpmEntrypoint };
+const tool = (command: string, arguments_: readonly string[]) =>
+  command === process.execPath && arguments_[0] === pnpmEntrypoint ? "pnpm" : command;
+beforeAll(async () => {
+  await mkdir(join(pnpmEntrypoint, ".."), { recursive: true });
+  await writeFile(pnpmEntrypoint, "");
+});
 
 const template = `OPENSTEER_AUTH_SECRET=replace-with-at-least-32-random-characters
 OPENSTEER_CANONICAL_ORIGIN=http://localhost:43100
@@ -18,13 +27,17 @@ describe("local development initialization", () => {
     await writeFile(join(repositoryRoot, ".env.example"), template);
     const commands: string[] = [];
     const runCommand = vi.fn(async (command: string, arguments_: readonly string[]) => {
-      commands.push([command, ...arguments_].join(" "));
+      command = tool(command, arguments_);
+      commands.push(
+        [command, ...(command === "pnpm" ? arguments_.slice(1) : arguments_)].join(" "),
+      );
       if (command === "pnpm") return "10.29.3\n";
       if (command === "go") return "go version go1.26.2 test/arch\n";
       return "ok\n";
     });
 
     const first = await initializeLocalDevelopment({
+      environment,
       nodeVersion: "24.18.0",
       repositoryRoot,
       runCommand,
@@ -45,6 +58,7 @@ describe("local development initialization", () => {
     }
 
     const second = await initializeLocalDevelopment({
+      environment,
       nodeVersion: "24.18.0",
       repositoryRoot,
       runCommand,
@@ -63,13 +77,14 @@ describe("local development initialization", () => {
       `OPENSTEER_AUTH_SECRET=${authSecret}\nOPENSTEER_CANONICAL_ORIGIN=http://localhost:43100\nOPENSTEER_BIND_ADDRESS=127.0.0.1\n`,
       { mode: 0o644 },
     );
-    const runCommand = async (command: string) => {
-      if (command === "pnpm") return "10.29.3";
+    const runCommand = async (command: string, arguments_: readonly string[]) => {
+      if (tool(command, arguments_) === "pnpm") return "10.29.3";
       if (command === "go") return "go version go1.25.0 test/arch";
       return "ok";
     };
 
     const result = await initializeLocalDevelopment({
+      environment,
       nodeVersion: "24.13.0",
       repositoryRoot,
       runCommand,
@@ -84,8 +99,8 @@ describe("local development initialization", () => {
     const repositoryRoot = join(tmpdir(), `opensteer-local-race-${randomUUID()}`);
     await mkdir(repositoryRoot, { recursive: true });
     await writeFile(join(repositoryRoot, ".env.example"), template);
-    const runCommand = async (command: string) => {
-      if (command === "pnpm") return "10.29.3";
+    const runCommand = async (command: string, arguments_: readonly string[]) => {
+      if (tool(command, arguments_) === "pnpm") return "10.29.3";
       if (command === "go") return "go version go1.26.0 test/arch";
       return "ok";
     };
@@ -93,6 +108,7 @@ describe("local development initialization", () => {
     await Promise.all(
       Array.from({ length: 12 }, () =>
         initializeLocalDevelopment({
+          environment,
           nodeVersion: "24.18.0",
           repositoryRoot,
           runCommand,
@@ -104,6 +120,21 @@ describe("local development initialization", () => {
     expect(content).not.toContain("replace-with");
   });
 
+  it("runs the pnpm that launched it, and refuses to run outside pnpm", async () => {
+    const repositoryRoot = join(tmpdir(), `opensteer-local-pnpm-${randomUUID()}`);
+    const runCommand = vi.fn(async () => "ok");
+    for (const npm_execpath of [undefined, join(pnpmEntrypoint, "..", "npm-cli.js"), "pnpm.cjs"])
+      await expect(
+        initializeLocalDevelopment({
+          environment: { npm_execpath },
+          nodeVersion: "24.18.0",
+          repositoryRoot,
+          runCommand,
+        }),
+      ).rejects.toThrow(/Run this through pnpm/);
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
   it("rejects an unsafe existing environment path", async () => {
     const repositoryRoot = join(tmpdir(), `opensteer-local-unsafe-${randomUUID()}`);
     await mkdir(join(repositoryRoot, ".env"), { recursive: true });
@@ -112,8 +143,9 @@ describe("local development initialization", () => {
       initializeLocalDevelopment({
         nodeVersion: "24.18.0",
         repositoryRoot,
-        runCommand: async (command) =>
-          command === "pnpm"
+        environment,
+        runCommand: async (command, arguments_) =>
+          tool(command, arguments_) === "pnpm"
             ? "10.29.3"
             : command === "go"
               ? "go version go1.26.0 test/arch"

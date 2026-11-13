@@ -35,7 +35,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist *.tsbuildinfo"
+    "clean": "node ../../scripts/clean.mjs dist *.tsbuildinfo"
   },
   "dependencies": {
     "@opensteer/browser-profile": "workspace:*",

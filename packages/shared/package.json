@@ -65,7 +65,7 @@
     "./files/native-fs-helper": "./src/files/native-fs-helper.ts"
   },
   "scripts": {
-    "clean": "rm -rf dist *.tsbuildinfo",
+    "clean": "node ../../scripts/clean.mjs dist *.tsbuildinfo",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

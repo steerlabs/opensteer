@@ -9,7 +9,7 @@
     "./hosted-teams": "./src/hosted-teams.ts"
   },
   "scripts": {
-    "clean": "rm -rf dist *.tsbuildinfo",
+    "clean": "node ../../scripts/clean.mjs dist *.tsbuildinfo",
     "test": "vitest run --config vitest.config.ts",
     "typecheck": "tsc --noEmit"
   },

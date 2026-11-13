@@ -7,6 +7,7 @@ import {
   darwinOnlyTests,
   optInIntegrationBenchmarks,
   realBrowserTests,
+  windowsTestInclude,
 } from "../.github/scripts/ci-test-files.mjs";
 import config from "../vitest.config.js";
 import browserConfig from "../vitest.browser.config.js";
@@ -42,6 +43,8 @@ const suites = [
     directory: root,
     config: { test: { include: optInIntegrationBenchmarks } },
   },
+  // vitest.windows.config.ts, which loads only on Windows, includes exactly these.
+  { name: "windows", directory: root, config: { test: { include: windowsTestInclude } } },
 ];
 const browserConfigPath = resolve(root, "apps/browser-runtime/vitest.config.ts");
 if (existsSync(browserConfigPath)) {
@@ -132,6 +135,7 @@ describe("test tiers", () => {
     expect(config.test?.exclude).toContain("**/*.integration.test.*");
     expect(config.test?.exclude).toContain("**/*.gui.test.*");
     expect(config.test?.exclude).toContain("**/*.vm.test.*");
+    expect(config.test?.exclude).toContain("**/*.windows.test.*");
   });
 });
 

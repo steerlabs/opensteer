@@ -10,7 +10,7 @@
   "scripts": {
     "generate:protocol": "muse schema generate-ts --out src/generated && pnpm exec prettier --write src/generated/msp.d.ts",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist *.tsbuildinfo"
+    "clean": "node ../../scripts/clean.mjs dist *.tsbuildinfo"
   },
   "dependencies": {
     "@muse-code/sdk": "1.4.6",

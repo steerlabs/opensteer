@@ -6,6 +6,7 @@ import {
   nativeMacMatrix,
   decide,
   detect,
+  lanes,
   lastFullRunSha,
   parseDiff,
   readGraph,
@@ -42,10 +43,10 @@ test("unknown/root/config/lock/toolchain and malformed diff fail open", () => {
     "packages/leaf/tsconfig.json",
     "go.work",
   ])
-    // Every lane but native-mac, whose tasks run for their own inputs.
+    // Every lane but the native ones, which run for their own inputs.
     assert.ok(
       Object.entries(decide([file], graph).lanes).every(
-        ([lane, on]) => on || lane === "native-mac",
+        ([lane, on]) => on || lane.startsWith("native-"),
       ),
       file,
     );
@@ -126,7 +127,7 @@ test("git fixture: a main push picks macOS tasks from its one commit", async () 
     write("apps/desktop/native/passwords/Sources/Broker.swift", "// changed");
     const second = commit();
     const push = detect({ root, event: "push", before: first });
-    assert.ok(Object.entries(push.lanes).every(([lane, on]) => on || lane === "native-mac"));
+    assert.ok(Object.entries(push.lanes).every(([lane, on]) => on || lane.startsWith("native-")));
     assert.deepEqual(push.nativeMac, ["passwords-helper", "passwords-tests", "release-native"]);
     // Several commits in one push, or a new branch, run every task.
     write("docs/a.md", "x");
@@ -489,7 +490,7 @@ test("a root test edit selects its own lane, the test guards and typecheck, not 
   // Support modules and fixtures under tests/ can feed any suite.
   assert.ok(
     Object.entries(decide(["tests/browser-deployment.test-support.ts"], realGraph).lanes).every(
-      ([lane, on]) => on || lane === "native-mac",
+      ([lane, on]) => on || lane.startsWith("native-"),
     ),
   );
 });
@@ -623,4 +624,60 @@ test("real-browser owners, dependencies, root files and deletions select browser
     );
   }
   assert.equal(decide(["vitest.browser.config.ts"], realGraph).lanes["browser-journeys"], true);
+});
+
+test("native-windows runs for its Go modules, closure, CI definition and Windows-real files only", () => {
+  const windows = (files) => decide(files, realGraph).lanes["native-windows"];
+  for (const file of [
+    "apps/desktop/process-supervisor/main.go",
+    "apps/desktop/personal-runtime-launcher/exec_windows.go",
+    "apps/runner/native-fs-helper/go.mod",
+    // What the Windows-real files and build scripts import, counted whole for a package.
+    "scripts/dev-supervisor.ts",
+    "packages/shared/src/processControl.ts",
+    "tsconfig.base.json",
+    "vitest.windows.config.ts",
+    // A new Windows-real file selects the lane before the closure is regenerated.
+    "packages/harness/src/new-case.windows.test.ts",
+    "pnpm-lock.yaml",
+    ".github/workflows/ci.yml",
+    ".github/scripts/run-as-standard-user.ps1",
+  ])
+    assert.equal(windows([file]), true, file);
+  for (const file of [
+    "apps/web/src/app-model.ts",
+    "scripts/test-integration.ts",
+    "docs/testing.md",
+    "apps/desktop/process-supervisor-x/main.go",
+  ])
+    assert.equal(windows([file]), false, file);
+  assert.ok(nativeInputs["native-windows"].includes("tests/windows-lane.windows.test.ts"));
+});
+test("main selects native-windows per push; scheduled, manual and failed detection always run it", () => {
+  assert.equal(
+    decide(["apps/web/src/app-model.ts"], realGraph, realGraph, true, { fullNative: false }).lanes[
+      "native-windows"
+    ],
+    false,
+  );
+  assert.equal(decide([], realGraph, realGraph, true).lanes["native-windows"], true);
+  for (const event of ["schedule", "workflow_dispatch"])
+    assert.equal(detect({ event }).lanes["native-windows"], true, event);
+  assert.equal(
+    detect({ event: "schedule", unchangedSince: "a".repeat(40) }).lanes["native-windows"],
+    false,
+  );
+  assert.equal(detect({ root: "/missing", event: "pull_request" }).lanes["native-windows"], true);
+});
+test("Check needs native-windows, and the changes job and action publish its flag", async () => {
+  const { readFileSync } = await import("node:fs");
+  const { parse } = await import("yaml");
+  const workflow = parse(readFileSync(".github/workflows/ci.yml", "utf8"));
+  const action = parse(readFileSync(".github/actions/ci-changes/action.yml", "utf8"));
+  for (const lane of lanes) {
+    assert.ok(workflow.jobs.Check.needs.includes(lane), lane);
+    assert.ok(workflow.jobs.changes.outputs[lane], lane);
+    assert.ok(action.outputs[lane], lane);
+  }
+  assert.equal(workflow.jobs["native-windows"]["runs-on"], "windows-2025");
 });

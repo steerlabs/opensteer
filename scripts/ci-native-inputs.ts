@@ -1,7 +1,8 @@
 /**
  * Writes .github/scripts/ci-native-inputs.json: for each native-mac task that runs
  * node, what its scripts and Vitest files statically import (the lane task also runs
- * the Darwin-only files, and Vitest loads its config). A workspace package counts
+ * the Darwin-only files, and Vitest loads its config), and for native-windows what its
+ * build scripts, Vitest config and Windows-real files import. A workspace package counts
  * whole, manifest included, so a new module in it needs no regeneration. The
  * `changes` job stays dependency-free by reading this list;
  * tests/ci-native-inputs.test.ts fails when it is stale.
@@ -13,7 +14,11 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { z } from "zod";
-import { darwinOnlyTests, defaultTestExclude } from "../.github/scripts/ci-test-files.mjs";
+import {
+  darwinOnlyTests,
+  defaultTestExclude,
+  windowsTestInclude,
+} from "../.github/scripts/ci-test-files.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const configSchema = z.object({
@@ -26,7 +31,10 @@ const configSchema = z.object({
     }),
   ),
 });
+const windowsSchema = z.object({ scripts: z.array(z.string()), vitest: z.array(z.string()) });
 export const nativeInputsPath = path.join(root, ".github/scripts/ci-native-inputs.json");
+// The list holds Git paths, with forward slashes even when generated on Windows.
+const gitPath = (file: string) => file.split(path.sep).join("/");
 
 /** Everything `entries` statically import, from one build. */
 async function bundled(entries: readonly string[]): Promise<string[]> {
@@ -57,7 +65,7 @@ async function bundled(entries: readonly string[]): Promise<string[]> {
   });
   // A key can carry its import attributes: `data.json with { type: 'json' }`.
   return Object.keys(result.metafile.inputs)
-    .map((file) => file.replace(/ with \{.*\}$/u, ""))
+    .map((file) => gitPath(file.replace(/ with \{.*\}$/u, "")))
     .filter((file) => !file.includes("node_modules/"));
 }
 
@@ -70,7 +78,7 @@ const required =
 export function requiredFiles(file: string, source: string): string[] {
   if (!source.includes("createRequire")) return [];
   return [...source.matchAll(required)].map(([, , specifier]) =>
-    path.relative(root, path.resolve(root, path.dirname(file), specifier!)),
+    gitPath(path.relative(root, path.resolve(root, path.dirname(file), specifier!))),
   );
 }
 
@@ -117,17 +125,27 @@ export async function nativeInputs(): Promise<Record<string, string[]>> {
       readFileSync(path.join(root, tsconfig), "utf8"),
     )?.[1];
     if (!target?.startsWith(".")) return [tsconfig];
-    const file = path.join(path.dirname(tsconfig), target);
+    const file = path.posix.join(path.posix.dirname(tsconfig), target);
     return [tsconfig, ...(tracked.includes(file) ? extended(file) : [])];
   };
   const tsconfigs = (file: string) =>
-    path
+    path.posix
       .dirname(file)
       .split("/")
-      .map((_, index, parts) => path.join(...parts.slice(0, index + 1), "tsconfig.json"))
+      .map((_, index, parts) => path.posix.join(...parts.slice(0, index + 1), "tsconfig.json"))
       .concat("tsconfig.json")
       .filter((candidate) => tracked.includes(candidate))
       .flatMap(extended);
+  const closure = async (entries: readonly string[]) => {
+    const files = new Set<string>();
+    const collapse = (file: string) =>
+      /^packages\/[^/]+\//u.test(file) ? file.split("/").slice(0, 2).join("/") : file;
+    for (const file of await imports(entries)) {
+      files.add(collapse(file));
+      for (const tsconfig of tsconfigs(file)) files.add(collapse(tsconfig));
+    }
+    return [...files].sort((left, right) => left.localeCompare(right, "en"));
+  };
   const inputs: Record<string, string[]> = {};
   for (const { task, scripts = [], vitest = [], lane } of config.tasks) {
     const entries = [
@@ -136,16 +154,16 @@ export async function nativeInputs(): Promise<Record<string, string[]>> {
       ...(lane ? darwinOnlyTests : []),
       ...(vitest.length || lane ? ["vitest.config.ts"] : []),
     ];
-    if (!entries.length) continue;
-    const files = new Set<string>();
-    const collapse = (file: string) =>
-      /^packages\/[^/]+\//u.test(file) ? file.split("/").slice(0, 2).join("/") : file;
-    for (const file of await imports(entries)) {
-      files.add(collapse(file));
-      for (const tsconfig of tsconfigs(file)) files.add(collapse(tsconfig));
-    }
-    inputs[task] = [...files].sort((left, right) => left.localeCompare(right, "en"));
+    if (entries.length) inputs[task] = await closure(entries);
   }
+  const windows = windowsSchema.parse(
+    JSON.parse(readFileSync(path.join(root, ".github/scripts/ci-native-windows.json"), "utf8")),
+  );
+  inputs["native-windows"] = await closure([
+    ...windows.scripts,
+    ...windows.vitest,
+    ...tracked.filter((file) => windowsTestInclude.some((glob) => path.matchesGlob(file, glob))),
+  ]);
   return inputs;
 }
 

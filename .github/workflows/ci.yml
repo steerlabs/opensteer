@@ -9,7 +9,7 @@ on:
   push:
     branches:
       - main
-  # Main picks its macOS tasks per push; this full run backs that up, and skips
+  # Main picks its native tasks per push; this full run backs that up, and skips
   # when main has not changed since the last full run.
   schedule:
     - cron: "23 */4 * * *"
@@ -36,6 +36,7 @@ jobs:
       tests: ${{ steps.changes.outputs.tests }}
       integration: ${{ steps.changes.outputs.integration }}
       native-mac: ${{ steps.changes.outputs.native-mac }}
+      native-windows: ${{ steps.changes.outputs.native-windows }}
       android: ${{ steps.changes.outputs.android }}
       browser-journeys: ${{ steps.changes.outputs.browser-journeys }}
     steps:
@@ -349,6 +350,54 @@ jobs:
           name: native-mac-${{ matrix.task }}-${{ github.sha }}
           path: ${{ runner.temp }}/evidence
           if-no-files-found: ${{ matrix.darwin && 'error' || 'ignore' }}
+  native-windows:
+    needs: changes
+    if: ${{ always() && !cancelled() && needs.changes.outputs.native-windows != 'false' }}
+    # Inputs live in .github/scripts/ci-native-windows.json and the generated import closure.
+    runs-on: windows-2025
+    timeout-minutes: 25
+    env:
+      CI_LANE: windows
+      CI_SHARD: 1
+      CI_SHARDS: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup
+      - shell: bash
+        run: |-
+          mkdir -p "$RUNNER_TEMP/evidence"
+          # The image ships PostgreSQL with its service stopped; tests start their own disposable server.
+          test -x "$PGBIN/initdb.exe" && test -x "$PGBIN/postgres.exe"
+          {
+            echo "CI_DISCOVERY_PATH=$RUNNER_TEMP/evidence/windows-1.discovered.json"
+            echo "CI_INVENTORY_PATH=$RUNNER_TEMP/evidence/windows-1.inventory.json"
+            echo "OPENSTEER_TEST_POSTGRES_BIN=$PGBIN"
+          } >> "$GITHUB_ENV"
+      - name: Build the process supervisor and native filesystem helper
+        shell: bash
+        run: |
+          pnpm --filter @opensteer/desktop build:process-supervisor
+          pnpm --filter @opensteer/runner build:native-fs
+      - shell: bash
+        run: pnpm exec vitest list --config vitest.windows.config.ts --filesOnly --json "$CI_DISCOVERY_PATH"
+      # Hosted runners run steps as an administrator with UAC off. Junctions, private
+      # roots and launches must work without that, so these run as a disposable
+      # standard user, and tests/windows-lane.windows.test.ts asserts its token.
+      - name: Test Go helpers and Windows-real files as a standard user
+        shell: pwsh
+        run: >-
+          ./.github/scripts/run-as-standard-user.ps1
+          -Script .github/scripts/ci-native-windows.mjs
+          -Writable "$env:RUNNER_TEMP\evidence"
+          -Variables PATH,GOPROXY,GOTOOLCHAIN,CI_LANE,CI_SHARD,CI_SHARDS,CI_DISCOVERY_PATH,CI_INVENTORY_PATH,OPENSTEER_TEST_POSTGRES_BIN
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-windows-${{ github.sha }}
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: error
   android:
     needs: changes
     if: ${{ always() && !cancelled() && needs.changes.outputs.android != 'false' }}
@@ -460,6 +509,7 @@ jobs:
       - tests
       - integration
       - native-mac
+      - native-windows
       - android
       - browser-journeys
     runs-on: ubuntu-24.04

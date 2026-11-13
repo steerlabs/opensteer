@@ -1,9 +1,14 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, matchesGlob } from "node:path";
 import { darwinTask } from "../.github/scripts/ci-changes.mjs";
 import { validateResults } from "../.github/scripts/ci-check.mjs";
 import { checkInventories } from "../.github/scripts/ci-inventories.mjs";
-import { darwinOnlyTests, realBrowserTests } from "../.github/scripts/ci-test-files.mjs";
+import {
+  darwinOnlyTests,
+  realBrowserTests,
+  windowsTestInclude,
+} from "../.github/scripts/ci-test-files.mjs";
 import { mergeLockGraphs } from "./ci-lock-merge.js";
 const directory = process.argv[2]!;
 const read = (name: string) => JSON.parse(readFileSync(join(directory, name), "utf8"));
@@ -45,6 +50,20 @@ if (plan.nativeMac?.includes(darwinTask)) {
     JSON.stringify([...inventory.discovered].sort()) !== JSON.stringify([...darwinOnlyTests].sort())
   )
     throw new Error("Darwin discovery differs from the required files");
+}
+// The Windows lane must have run every tracked Windows-real file, and at least one.
+if (plan.lanes["native-windows"]) {
+  const inventory = read("windows-1.inventory.json");
+  checkInventories([inventory], 1, "windows");
+  const expected = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" })
+    .split("\0")
+    .filter((file) => windowsTestInclude.some((glob) => matchesGlob(file, glob)))
+    .sort();
+  if (
+    !expected.length ||
+    JSON.stringify([...inventory.discovered].sort()) !== JSON.stringify(expected)
+  )
+    throw new Error("Windows discovery differs from the tracked Windows-real files");
 }
 if (plan.lanes.integration) {
   const merged = mergeLockGraphs(

@@ -57,6 +57,13 @@ export const optInIntegrationBenchmarks = [
   "tests/team-mobile-network.integration.test.ts",
   "tests/team-performance.integration.test.ts",
 ];
+// Real Windows behaviour (the supervisor's Job, cmd, junctions, a non-administrator token).
+// Only the native-windows lane runs them, through vitest.windows.config.ts.
+export const windowsTestInclude = [
+  "apps/**/*.windows.test.ts",
+  "packages/**/*.windows.test.ts",
+  "tests/**/*.windows.test.ts",
+];
 export const defaultTestExclude = [
   "**/*.integration.test.*",
   "**/*.gui.test.*",
@@ -65,6 +72,7 @@ export const defaultTestExclude = [
   "**/*.soak.test.ts",
   // VM journeys select their own config inside pnpm test:vm.
   "**/*.vm.test.*",
+  "**/*.windows.test.*",
 ];
 // The native-mac lane runs `node .github/scripts/ci-test-files.mjs darwin-only`.
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
