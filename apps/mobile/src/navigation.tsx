@@ -15,7 +15,7 @@ import {
 } from "@react-navigation/native-stack";
 import { Platform } from "react-native";
 import type { SurfacesRoute } from "./browser/surface-route.js";
-import { PhoneReadyScreen, SetUpPhoneScreen } from "./phone-setup/setup-screen.js";
+import { SetUpPhoneScreen } from "./phone-setup/setup-screen.js";
 import { headerActions, stackScreenOptions } from "./navigation-header.js";
 import { AddDeploymentScreen } from "./screens/add-deployment.js";
 import { AddPersonalScreen } from "./screens/add-personal.js";
@@ -504,7 +504,7 @@ const RootStack = createNativeStackNavigator({
       }),
     },
     // A full-screen step with its own native bar, pushed over Home after
-    // sign-in; it leaves only forward, to Ready.
+    // sign-in; it leaves only forward, through Ready.
     SetUpPhone: {
       screen: SetUpPhoneScreen,
       options: {
@@ -512,10 +512,6 @@ const RootStack = createNativeStackNavigator({
         headerShown: false,
         title: `Set up this ${thisPhoneNoun}`,
       },
-    },
-    PhoneReady: {
-      screen: PhoneReadyScreen,
-      options: { gestureEnabled: false, headerShown: false, title: "Ready" },
     },
     // Asked once, over Home, the first time this phone reaches a computer. It
     // sizes to its content and is dismissed like any sheet.
@@ -630,11 +626,6 @@ type OpensteerRootParamList = {
   readonly TeamHome: { readonly teamId: string };
   readonly AddDeployment: undefined;
   readonly SetUpPhone: { readonly deploymentId: string };
-  readonly PhoneReady: {
-    readonly deploymentId: string;
-    readonly name: string;
-    readonly outcome: import("./phone-setup/phone-setup.js").PhoneSetupState;
-  };
   readonly AgentAuthorization: { readonly deploymentId: string; readonly requestId: string };
   /** A pairing link or scanned code fills the form; the person still confirms it. */
   readonly AddPersonal:

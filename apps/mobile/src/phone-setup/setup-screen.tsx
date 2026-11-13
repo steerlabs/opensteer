@@ -1,14 +1,10 @@
 import { hostsDeployment, isServiceMachine } from "@opensteer/client/computers";
 import type { HostClient } from "@opensteer/client/host";
-import {
-  StackActions,
-  useNavigation,
-  usePreventRemove,
-  type StaticScreenProps,
-} from "@react-navigation/native";
-import { useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useNavigation, usePreventRemove, type StaticScreenProps } from "@react-navigation/native";
+import { useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Linking, Platform } from "react-native";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
+import { resetToDeployment } from "../navigation-ref.js";
 import { useIphoneApps } from "../iphone-apps/context.js";
 import { opensteerOn } from "../iphone-apps/model.js";
 import { aiCompanies, aiCompanyNames, genericAiCompany } from "@opensteer/client/ai-sharing";
@@ -20,9 +16,8 @@ import {
   phoneSetupDraft,
   phoneSetupSharesAnything,
   type PhoneSetupDraft,
-  type PhoneSetupState,
 } from "./phone-setup.js";
-import { ReadyForm, SetupForm } from "./setup-form.js";
+import { SetupStep } from "./setup-form.js";
 import { dismissPhoneSetup } from "./use-phone-setup.js";
 import {
   readyBody,
@@ -93,66 +88,11 @@ function SetUpPhone(props: { readonly deploymentId: string; readonly hostClient:
           },
         },
       })
-      .then((settled) => {
-        if (settled.phase.kind !== "ready") return;
-        navigation.dispatch(
-          StackActions.replace("PhoneReady", {
-            deploymentId: props.deploymentId,
-            name: draft.name.trim(),
-            outcome: settled,
-          }),
-        );
-      });
+      .catch(() => undefined);
   };
 
-  return (
-    <SetupForm
-      agent={switches.agent}
-      busy={busy}
-      continueLabel={failed ? "Try again" : "Continue"}
-      disclosure={setupDisclosure(opensteer, companies, thisPhoneNoun)}
-      failure={setupFailureText(state, opensteer, thisPhoneNoun)}
-      name={draft.name}
-      notifications={switches.notifications}
-      noun={thisPhoneNoun}
-      onContinue={run}
-      onName={(name) => setDraft((current) => ({ ...current, name }))}
-      onNotNow={
-        failed
-          ? () => {
-              dismissPhoneSetup(props.deploymentId);
-              navigation.goBack();
-            }
-          : null
-      }
-      onOpenSettings={() => void Linking.openSettings()}
-      onToggle={(key, value) =>
-        setDraft((current) =>
-          key === "browser"
-            ? { ...current, browser: value }
-            : key === "notifications"
-              ? { ...current, notifications: value }
-              : { ...current, apps: { ...current.apps, [key]: value } },
-        )
-      }
-      photos={switches.photos}
-      title={`Set up this ${thisPhoneNoun}`}
-    />
-  );
-}
-
-type ReadyProps = StaticScreenProps<{
-  readonly deploymentId: string;
-  readonly name: string;
-  readonly outcome: PhoneSetupState;
-}>;
-
-/** Ready, reached only forward from setup; Start using Opensteer returns to Home. */
-export function PhoneReadyScreen({ route }: ReadyProps): ReactNode {
-  const navigation = useNavigation();
-  const hostClient = useAttachedHost(route.params.deploymentId);
   const homeName = useHostValue(
-    hostClient,
+    props.hostClient,
     (snapshot) =>
       snapshot.machines.find(
         (machine) =>
@@ -160,21 +100,51 @@ export function PhoneReadyScreen({ route }: ReadyProps): ReactNode {
       )?.name ?? null,
     null,
   );
-  const devicesAvailable = useHostValue(
-    hostClient,
-    (snapshot) => snapshot.devicesAvailable === true,
-    false,
-  );
-  const { outcome, name } = route.params;
-  const rows = useMemo(() => readyRows(outcome, devicesAvailable), [devicesAvailable, outcome]);
+  const name = draft.name.trim();
+  const settled = readyRows(state, devicesAvailable);
   return (
-    <ReadyForm
-      agent={rows.agent}
-      body={readyBody({ homeName, name, sharesAnything: phoneSetupSharesAnything(outcome) })}
-      here={rows.here}
-      noun={thisPhoneNoun}
-      onDone={() => navigation.goBack()}
-      title={readyTitle(name)}
+    <SetupStep
+      ready={
+        state.phase.kind === "ready"
+          ? {
+              agent: settled.agent,
+              body: readyBody({ homeName, name, sharesAnything: phoneSetupSharesAnything(state) }),
+              here: settled.here,
+              noun: thisPhoneNoun,
+              onDone: () => resetToDeployment(props.deploymentId),
+              title: readyTitle(name),
+            }
+          : null
+      }
+      setup={{
+        agent: switches.agent,
+        busy,
+        continueLabel: failed ? "Try again" : "Continue",
+        disclosure: setupDisclosure(opensteer, companies, thisPhoneNoun),
+        failure: setupFailureText(state, opensteer, thisPhoneNoun),
+        name: draft.name,
+        notifications: switches.notifications,
+        noun: thisPhoneNoun,
+        onContinue: run,
+        onName: (next) => setDraft((current) => ({ ...current, name: next })),
+        onNotNow: failed
+          ? () => {
+              dismissPhoneSetup(props.deploymentId);
+              navigation.goBack();
+            }
+          : null,
+        onOpenSettings: () => void Linking.openSettings(),
+        onToggle: (key, value) =>
+          setDraft((current) =>
+            key === "browser"
+              ? { ...current, browser: value }
+              : key === "notifications"
+                ? { ...current, notifications: value }
+                : { ...current, apps: { ...current.apps, [key]: value } },
+          ),
+        photos: switches.photos,
+        title: `Set up this ${thisPhoneNoun}`,
+      }}
     />
   );
 }

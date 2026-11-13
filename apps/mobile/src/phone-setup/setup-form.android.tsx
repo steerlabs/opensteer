@@ -19,7 +19,7 @@ import {
   allowInSettings,
   photosFooter,
   readyFooter,
-  type ReadyRow,
+  type ReadyFormProps,
   type SetupFormProps,
   type SetupSwitch,
 } from "./setup-view.js";
@@ -28,7 +28,14 @@ import {
  * Set up this phone in Material 3: a large title, list items with trailing
  * switches, and one filled button held at the bottom.
  */
-export function SetupForm(props: SetupFormProps): ReactNode {
+export function SetupStep(props: {
+  readonly setup: SetupFormProps;
+  readonly ready: ReadyFormProps | null;
+}): ReactNode {
+  return props.ready === null ? <SetupForm {...props.setup} /> : <ReadyForm {...props.ready} />;
+}
+
+function SetupForm(props: SetupFormProps): ReactNode {
   return (
     <Page
       action={
@@ -74,14 +81,7 @@ export function SetupForm(props: SetupFormProps): ReactNode {
   );
 }
 
-export function ReadyForm(props: {
-  readonly title: string;
-  readonly body: string;
-  readonly agent: readonly ReadyRow[];
-  readonly here: readonly ReadyRow[];
-  readonly noun: string;
-  readonly onDone: () => void;
-}): ReactNode {
+function ReadyForm(props: ReadyFormProps): ReactNode {
   return (
     <Page
       action={<PrimaryButton label="Start using Opensteer" onPress={props.onDone} />}

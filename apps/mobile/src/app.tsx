@@ -52,6 +52,7 @@ import { forgetDraftFiles } from "./thread/draft-attachments.js";
 import {
   mockDeploymentConnections,
   mockDeploymentId,
+  mockSignedOutDeploymentId,
   mockTeamId,
   mockTeamOrigin,
   mockFamilyTeamId,
@@ -204,8 +205,18 @@ function mobileClient(): MobileRoot {
           : null,
     });
     // The mock world's own iPhone, which lends a browser there, is this phone.
-    if (!android && configuration.mockPhone === null)
+    const scene = configuration.mockPhone;
+    if (!android && (scene === null || scene === "removed"))
       fakeIphone.device.enrolledTo({ deploymentId: mockDeploymentId, name: "Alex's iPhone" });
+    if (!android && scene === "elsewhere")
+      fakeIphone.device.enrolledTo({
+        deploymentId: mockSignedOutDeploymentId,
+        name: "Alex's iPhone",
+      });
+    if (scene === "removed") {
+      const removed = fakeIphone;
+      setTimeout(() => removed.device.removedByHost(), 4_000);
+    }
   }
   const iphone = new IphoneAppsController({
     bridge: fakeIphone?.bridge ?? androidPhoneBridge ?? iphoneApps,
@@ -336,7 +347,9 @@ function mobileClient(): MobileRoot {
       keyPrefix: `${storeName}.auth`,
       secureStore: SecureStore,
     }),
-    ...(configuration.mock ? { seed: mockDeploymentConnections() } : {}),
+    ...(configuration.mock && configuration.mockPhone !== "first-run"
+      ? { seed: mockDeploymentConnections() }
+      : {}),
     selectionFilePath: `${root}${storeName}/selection.json`,
     signedOutFilePath: `${root}${storeName}/signed-out.json`,
   });

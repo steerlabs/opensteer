@@ -1232,11 +1232,16 @@ export class IphoneAppsController {
       adding: this.#adding?.deploymentId ?? null,
       answering: [...this.#answering],
       notice: this.#notice,
+      // A request for an app being turned on from here is that change's own;
+      // prompting for it too would ask the person twice.
       prompt: this.#shownLoaded
         ? (this.#approvals
             .filter(
-              ({ setupRequestId }) =>
-                !this.#shown.has(setupRequestId) && !this.#answering.has(setupRequestId),
+              ({ definitionId, setupRequestId }) =>
+                !this.#shown.has(setupRequestId) &&
+                !this.#answering.has(setupRequestId) &&
+                !this.#changes.has(definitionId) &&
+                !this.#queued.includes(definitionId),
             )
             .sort((left, right) => left.createdAt.localeCompare(right.createdAt))[0] ?? null)
         : null,

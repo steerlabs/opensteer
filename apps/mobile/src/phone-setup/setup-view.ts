@@ -121,6 +121,15 @@ export function setupFailureText(
     : null;
 }
 
+export interface ReadyFormProps {
+  readonly title: string;
+  readonly body: string;
+  readonly agent: readonly ReadyRow[];
+  readonly here: readonly ReadyRow[];
+  readonly noun: string;
+  readonly onDone: () => void;
+}
+
 /** Ready, honestly: each switch as it settled, never as it was hoped. */
 export interface ReadyRow {
   readonly key: string;

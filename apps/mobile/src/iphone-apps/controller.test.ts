@@ -6,6 +6,7 @@ import type {
   IphoneAppsApproval,
   IphoneApprovalOutcome,
   IphonePendingLeave,
+  IphonePermission,
 } from "../platform/iphone-apps.js";
 import {
   IphoneAppsController,
@@ -468,6 +469,34 @@ describe("approvals on this iPhone", () => {
     expect(
       controller.getState().snapshot.approvals.map(({ setupRequestId }) => setupRequestId),
     ).toEqual(["req-1"]);
+  });
+
+  it("never shows on its own a request this iPhone is itself turning on", async () => {
+    const { controller, fake } = open();
+    fake.device.enrolledTo({ deploymentId, name: "Alex's iPhone" });
+    const host = fakeHost();
+    controller.attachHost({ deploymentId, hostClient: host.client });
+    await controller.load();
+    const asked = deferred<IphonePermission>();
+    fake.device.answerPermissionWith("apple-calendar", asked.promise);
+    const turning = controller.allow({
+      access: "read",
+      app: "apple-calendar",
+      hostClient: host.client,
+    });
+    await vi.waitFor(() =>
+      expect(controller.getState().changes["apple-calendar"]?.phase).toBe("asking-iphone"),
+    );
+    fake.device.listApprovals([
+      approval("req-own", "apple-calendar", "read"),
+      approval("req-task", "apple-reminders", "read"),
+    ]);
+    // Only the request a task made for another app interrupts.
+    await vi.waitFor(() => expect(controller.getState().prompt?.setupRequestId).toBe("req-task"));
+    controller.markShown("req-task");
+    expect(controller.getState().prompt).toBeNull();
+    asked.resolve("denied");
+    await turning;
   });
 
   it("auto-shows each request once, oldest first, even after a restart", async () => {

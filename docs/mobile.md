@@ -156,9 +156,7 @@ delete cannot restore sharing.
 
 Only a live stream with an unexpired lease admits work; a write crosses a second fence right before
 the EventKit save, and a lost write answer is never replayed. Backgrounding closes admission and
-drains admitted work. Sign-out, removal of the enrolled Deployment, Account sign-out and catalog
-removal call native disconnect before their first await, and a failed Host revocation cannot undo
-that stop. Switching the viewed Deployment never moves or stops the enrolled iPhone.
+drains admitted work. Switching the viewed Deployment never moves or stops the enrolled iPhone.
 
 Only a person's action prompts for iOS permission or approves agent access. OS permission and
 Host approval are separate; neither widens the other. Calendar and Reminders need full access,
@@ -168,6 +166,25 @@ permission label never authorizes writes or image access.
 Enrollment and OS prompts need the iPhone; the owner can approve from any signed-in device.
 Read back uncertain approval outcomes rather than submitting again. Lowering or revocation works
 while the phone is offline, stops future use and cannot undo returned data.
+
+## This phone as a device
+
+A phone becomes one of a personal Opensteer's devices only through Set up, which follows sign-in
+and asks the OS nothing before Continue. Native storage holds one identity, so a phone belongs to
+one Opensteer; moving it to another is an explicit leave there, never automatic.
+
+Sign-out is the device's leave. Sign-out, removal, Account sign-out and catalog removal sign the
+leave natively and persist it before the same synchronous call starts erasing the key, so erasure
+never waits on the network. The leave goes to the runner's pinned route at `/v1/runner/leave` with
+no session, and survives restarts until that Host answers for good; the Host ends the sessions bound
+to the device, so a bound session is never revoked a second time. Only a Host without self-leave
+gets the old authenticated revoke. The phone binds its session after every attachment on a
+`devices-v1` Host.
+
+A 4010 removal is remembered until the person chooses Set up again: it drops the local session,
+saved views and preview keys without revoking anything, and no automatic sign-in may restore a
+session meanwhile. A lost bound session suppresses automatic sign-in too, whether removal or expiry
+ended it; expiry then reads as Sign in again, and removal arrives as 4010.
 
 ## Notifications
 

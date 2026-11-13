@@ -2,6 +2,21 @@ import { mockSubagentScenes, type MockSubagentScene } from "@opensteer/client/mo
 import { bareServiceOrigin } from "@opensteer/core";
 import { z } from "zod";
 
+/**
+ * Mock mode's phone: `first-run` has no Opensteer at all, `new` is not yet
+ * set up, `elsewhere` is set up with another Opensteer, and `removed` is
+ * removed by its Host a moment after opening.
+ */
+export const mockPhoneScenes = [
+  "away",
+  "needs-update",
+  "no-browser",
+  "first-run",
+  "new",
+  "elsewhere",
+  "removed",
+] as const;
+
 const MobileEnvironmentSchema = z.object({
   EXPO_PUBLIC_OPENSTEER_PORTAL_ORIGIN: z.string().min(1).max(2_048).optional(),
   EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN: z.string().min(1).max(2_048).optional(),
@@ -10,7 +25,7 @@ const MobileEnvironmentSchema = z.object({
   EXPO_PUBLIC_OPENSTEER_MOCK_TEAM: z
     .enum(["admin", "admin-stale", "member", "guest", "suspended", "removed"])
     .optional(),
-  EXPO_PUBLIC_OPENSTEER_MOCK_PHONE: z.enum(["away", "needs-update", "no-browser"]).optional(),
+  EXPO_PUBLIC_OPENSTEER_MOCK_PHONE: z.enum(mockPhoneScenes).optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS: z.enum(mockSubagentScenes).optional(),
 });
 
@@ -30,7 +45,7 @@ export interface MobileConfiguration {
     z.infer<typeof MobileEnvironmentSchema>["EXPO_PUBLIC_OPENSTEER_MOCK_TEAM"]
   > | null;
   /** What becomes of this phone in mock mode once it is added; null for the ordinary phone. */
-  readonly mockPhone: "away" | "needs-update" | "no-browser" | null;
+  readonly mockPhone: (typeof mockPhoneScenes)[number] | null;
   /** One subagent scene of the design, as the web's `?mock-subagents=` seeds it; null for none. */
   readonly mockSubagents: MockSubagentScene | null;
   /**
