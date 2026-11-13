@@ -137,15 +137,18 @@ async function role(
   if (!found[0]) throw new Error("Managed role missing");
   return detail(f, ownerId, found[0].id);
 }
+// Advance a separate scheduler clock so a tick cannot claim another role's real cron boundary.
+let nextTickAt = Date.parse("2000-01-01T00:00:00.000Z");
 async function tick(f: StoreFixture, base: Awaited<ReturnType<typeof fixture>>, trigger: Trigger) {
+  const now = new Date(nextTickAt++);
   await f.database
     .updateTable("triggers")
     .set({
-      nextFireAt: new Date(Date.now() - 1_000),
+      nextFireAt: now,
     })
     .where("id", "=", trigger.id)
     .execute();
-  const occurrence = (await f.triggers.claimDueSchedules()).occurrences.find(
+  const occurrence = (await f.triggers.claimDueSchedules(now)).occurrences.find(
     ({ triggerId }) => triggerId === trigger.id,
   );
   if (!occurrence) throw new Error("Due managed tick missing");
@@ -1154,6 +1157,12 @@ describeStore("managed memory passes", (it) => {
     await sql`update thread_inputs set updated_at = updated_at - interval '1 hour'
       where thread_id in (${voice.id}, ${light.anchorThreadId})`.execute(f.database);
     const nightly = (await role(f, base.userId, "memory-nightly")).trigger;
+    // A light-pass boundary can arrive while the nightly fixture starts.
+    await f.database
+      .updateTable("triggers")
+      .set({ nextFireAt: new Date(Date.now() - 1_000) })
+      .where("id", "=", light.id)
+      .execute();
     const other = await f.store.enqueueThreadInput({
       content: [
         {
