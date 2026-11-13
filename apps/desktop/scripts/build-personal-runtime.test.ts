@@ -23,12 +23,12 @@ describe("bundleNodeService", () => {
     await bundleNodeService(
       script,
       "browser-harness",
-      fileURLToPath(
-        new URL("../../runner/browser-harness/browser-harness.mjs", import.meta.url),
-      ),
+      fileURLToPath(new URL("../../runner/browser-harness/browser-harness.mjs", import.meta.url)),
     );
     // Functions sent into a page run against its own globals; a bundler that
     // renames a same-named local makes them throw there (`document2 is not defined`).
-    expect((await readFile(script, "utf8")).match(/\b(?:document|window|location)\d+\b/gu)).toBeNull();
+    expect(
+      (await readFile(script, "utf8")).match(/\b(?:document|window|location)\d+\b/gu),
+    ).toBeNull();
   }, 60_000);
 });

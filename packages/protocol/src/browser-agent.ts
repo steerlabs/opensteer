@@ -120,7 +120,9 @@ export const BrowserAgentTabCloseInputSchema = z.strictObject({
 });
 export const BrowserAgentTabCloseResultSchema = z.strictObject({
   closed: z.array(BrowserSurfaceIdSchema),
-  failed: z.array(z.strictObject({ tabId: BrowserSurfaceIdSchema, message: z.string().max(1_000) })),
+  failed: z.array(
+    z.strictObject({ tabId: BrowserSurfaceIdSchema, message: z.string().max(1_000) }),
+  ),
 });
 export type BrowserAgentTabCloseResult = z.infer<typeof BrowserAgentTabCloseResultSchema>;
 
