@@ -109,7 +109,7 @@ import { useTabCloser } from "./workspace/tab-closer.js";
 import { TabGroupHeader, tabGroupStyle } from "./workspace/tab-group.js";
 import { NativeTabMenu, TabMenu, nativeTabMenuOffered } from "./workspace/tab-menu.js";
 import { RowMotion } from "./workspace/row-motion.js";
-import { fullHeightOf, SideSplit, useTasksShare } from "./workspace/side-split.js";
+import { fullHeightOf, SideSplit, useTabsHeight } from "./workspace/side-split.js";
 import { DoneLine, useQuietSeen } from "./workspace/done-line.js";
 import { SidebarSearch, type SidebarSearchSources } from "./sidebar-search.js";
 import { TabFilterControl } from "./workspace/tab-filter.js";
@@ -195,8 +195,8 @@ export function Sidebar({
     setHeldTabs(null);
   }, [hostClient]);
   const tabsSection = useRef<HTMLElement | null>(null);
-  // A filter draws fewer rows in the box all of them took, its floor included, so the line
-  // between Tasks and Tabs stays put until the filter clears.
+  // A filter draws fewer rows in the box all of them took, its floor included, so Tabs
+  // keeps its height until the filter clears.
   const filterTabs = (next: TabFilter) => {
     if (!tabFilterActive(next)) setHeldTabs(null);
     else if (!tabFilterActive(filter) && tabsSection.current)
@@ -263,7 +263,7 @@ export function Sidebar({
   // Where the keyboard was when search opened, to go back to when it closes.
   const searchOpener = useRef<HTMLElement | null>(null);
   const searchOnOpen = useRef(false);
-  const [tasksShare, commitTasksShare] = useTasksShare();
+  const [tabsHeight, commitTabsHeight] = useTabsHeight();
   useWholeRows(listsRef, !collapsed);
   const { openDrawer } = workspace;
   const openThreadId = taskAt(pathname);
@@ -278,10 +278,8 @@ export function Sidebar({
     if (enteredTeam) setSide(enteredTeam);
   }, [enteredTeam, setSide]);
   const doneShelf = useRef<HTMLLIElement | null>(null);
-  // Done takes the place of Tasks while it is open, at the height Tasks had,
-  // so Tabs below never move.
-  const tasksSection = useRef<HTMLElement | null>(null);
-  const [doneView, setDoneView] = useState<{ readonly height: number } | null>(null);
+  // Done takes the place of Tasks while it is open.
+  const [doneView, setDoneView] = useState(false);
   const quietTasks = directory.snapshot.quietTasksAvailable === true;
   useEffect(() => {
     if (quietTasks) void hostClient.loadDoneTasks().catch(() => undefined);
@@ -292,7 +290,7 @@ export function Sidebar({
   const [quietSeen, markQuietSeen] = useQuietSeen(quietSeenScope(directory.snapshot));
   const moved = useMemo(() => quietlyMoved(doneList, quietSeen, Date.now()), [doneList, quietSeen]);
   const openDone = () => {
-    setDoneView({ height: tasksSection.current?.getBoundingClientRect().height ?? 0 });
+    setDoneView(true);
     markQuietSeen(moved);
   };
   const [loadingEarlier, setLoadingEarlier] = useState(false);
@@ -711,7 +709,11 @@ export function Sidebar({
         hostClient={hostClient}
         inputRef={searchRef}
         listsRef={listsRef}
-        listsStyle={{ "--side-tasks-share": tasksShare } as CSSProperties}
+        listsStyle={
+          tabsHeight === null
+            ? undefined
+            : ({ "--side-tabs-height": `${tabsHeight}px` } as CSSProperties)
+        }
         deviceLabels={searchDeviceLabels}
         onClose={closeSearch}
         onLoadMore={loadMore}
@@ -728,14 +730,9 @@ export function Sidebar({
           aria-label={side === "tasks" ? undefined : "Team"}
           className="side-section side-section--tasks"
           onKeyDown={(event) => {
-            if (doneView && event.key === "Escape" && !event.defaultPrevented) setDoneView(null);
+            if (doneView && event.key === "Escape" && !event.defaultPrevented) setDoneView(false);
           }}
-          ref={tasksSection}
-          style={
-            side === "tasks" && doneView?.height
-              ? { flex: "none", height: doneView.height, maxHeight: doneView.height, minHeight: 0 }
-              : sectionFloor(side === "tasks" ? rowKeys.length + 1 : 8)
-          }
+          style={sectionFloor(side === "tasks" ? rowKeys.length + 1 : 8)}
         >
           {side === "tasks" ? (
             <>
@@ -744,7 +741,7 @@ export function Sidebar({
                   <button
                     aria-label="Back to Tasks"
                     className="icon-btn icon-btn--small side-head__back"
-                    onClick={() => setDoneView(null)}
+                    onClick={() => setDoneView(false)}
                     title="Back to Tasks · Esc"
                     type="button"
                   >
@@ -846,7 +843,7 @@ export function Sidebar({
             <TeamSideFor onNavigate={onCloseMobile} teamId={side} />
           )}
         </section>
-        <SideSplit onCommit={commitTasksShare} share={tasksShare} />
+        <SideSplit onCommit={commitTabsHeight} />
         <section
           aria-labelledby="sidebar-tabs"
           className="side-section side-section--tabs"
