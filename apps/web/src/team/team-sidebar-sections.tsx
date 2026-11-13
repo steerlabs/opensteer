@@ -272,7 +272,9 @@ export function TeamSideFor({
       ended
         ? surface === "team-web"
           ? window.location.reload()
-          : go("/teams")
+          : enter && (ended === "sign-in" || ended === "viewer-changed")
+            ? void enter(teamId).catch((error: unknown) => toast.error(actionErrorMessage(error)))
+            : go("/teams")
         : client?.connect(),
   });
   const hrefFor = useCallback((channelId: string) => channelPath(teamId, channelId), [teamId]);

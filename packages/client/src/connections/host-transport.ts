@@ -12,7 +12,11 @@ import {
   type HostCredentialProvider,
   type LocalHostRuntimeSource,
 } from "./host-attachment-fence.js";
-import type { HostSessionRecovery, SelectedAttachment } from "../auth/host-session.js";
+import type {
+  HostAttachment,
+  HostSessionRecovery,
+  SelectedAttachment,
+} from "../auth/host-session.js";
 import {
   HostResponseDeadline,
   hostResponseHeadersTimeoutMs,
@@ -116,7 +120,13 @@ export class HostTransport {
     });
     this.#network = options.network;
     this.#expectedKind = options.expectedKind;
-    this.#sessions = options.sessions ?? null;
+    this.#sessions =
+      typeof options.sessions === "function"
+        ? options.sessions({
+            current: () => this.#fence.current(),
+            currentKey: () => this.#fence.currentKey(),
+          })
+        : (options.sessions ?? null);
     this.#fence.onInvalidated((reason) => {
       for (const controller of this.#requestControllers)
         controller.abort(new HostTransportError("deployment-changed", { cause: reason }));
@@ -442,6 +452,7 @@ export class HostTransport {
       });
       const outcome = await Promise.race([sessions.recoverUnauthorized(selected), abandoned]);
       signal.throwIfAborted();
+      if (outcome === "unavailable") throw new HostTransportError("unreachable");
       if (outcome !== "recovered") return refusal;
     } finally {
       if (abortRecovery) signal.removeEventListener("abort", abortRecovery);
@@ -488,7 +499,7 @@ export interface HostTransportOptions {
   readonly localRuntime: LocalHostRuntimeSource;
   readonly network: HostNetwork;
   readonly expectedKind?: "personal" | "team";
-  readonly sessions?: HostSessionRecovery;
+  readonly sessions?: HostSessionRecovery | ((attachment: HostAttachment) => HostSessionRecovery);
 }
 
 /**

@@ -15,7 +15,7 @@ import {
   teamPreviewMaxBytes,
   teamUploadMaxBytes,
 } from "@opensteer/protocol";
-import type { HostSessionRecovery } from "@opensteer/client/auth";
+import type { HostAttachment, HostSessionRecovery } from "@opensteer/client/auth";
 import {
   HostTransport,
   HostTransportError,
@@ -179,6 +179,7 @@ export class DesktopHostTransport extends HostTransport {
     readonly log?: (event: string, fields: Record<string, string | number | boolean>) => void;
     readonly projection: Pick<DesktopAccessProjection, "read">;
     readonly sessions?: HostSessionRecovery;
+    readonly pinnedSessions?: (attachment: HostAttachment) => HostSessionRecovery;
     readonly withPreparedEnrollment?: <T>(
       deploymentId: DeploymentId,
       command: HostApiCommandInput,
@@ -208,7 +209,7 @@ export class DesktopHostTransport extends HostTransport {
         current: async () => desktopLocalHostRuntime(await options.localRuntime.current()),
       },
       network: options.network,
-      ...(options.sessions === undefined ? {} : { sessions: options.sessions }),
+      ...(options.pinnedSessions === undefined ? {} : { sessions: options.pinnedSessions }),
       expectedKind: "team",
     };
     this.#unsubscribeCatalog = options.catalog.subscribe(() => {

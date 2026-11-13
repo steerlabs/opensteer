@@ -48,6 +48,9 @@ storage); neither it nor the tokens reach a renderer. A team just joined shows f
 discovery until Account's directory lists it, and is restored from the device's connection intent
 if the app restarts before then; the intent is kept even when no agent connects from that device.
 
+The device scopes cached team state to the viewer returned by authenticated team bootstrap. An
+agent link's owner can be a different person and never supplies the device's team identity.
+
 ## Access and removal
 
 Channel membership and topic grants define access, including nested groups. A channel marked

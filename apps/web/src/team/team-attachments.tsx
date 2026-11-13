@@ -35,6 +35,7 @@ import { channelKind } from "./team-view-models.js";
 import { teamTile } from "./team-people.js";
 import { browserTeamSession, desktopTeamSession } from "./team-transports.js";
 import {
+  desktopTeamSessions,
   desktopTeamCoordination,
   previewTeamCoordination,
   type WebTeamCoordination,
@@ -121,8 +122,6 @@ export function useTeamAttachment(teamId: string | undefined): TeamAttachment | 
   const { teams } = useTeams();
   return teams.find((team) => team.teamId === teamId) ?? null;
 }
-
-const activeLink = new Set<PersonalTeamLink["state"]>(["active", "unreachable", "needs_update"]);
 
 /** A desktop notification for a team message, from the team's own sidebar socket. */
 function notifyTeam(
@@ -272,23 +271,16 @@ export function TeamsProvider({
     if (!registry || !bridge) return;
     let live = true;
     const next = new Map<string, TeamSessionClient>();
-    const owners = new Map<string, string>(
-      linked
-        .filter((link) => activeLink.has(link.state) && link.ownerUserId !== null)
-        .map((link) => [link.teamId, link.ownerUserId!]),
-    );
     void Promise.all(
       [...members].map(async ([teamId, team]) => {
         try {
-          const userId =
-            owners.get(teamId) ??
-            (await readTeamUser(
-              desktopTeamSession({
-                bridge,
-                origin: team.origin,
-                scope: { teamDeploymentId: teamId, userId: "pending" },
-              }),
-            ));
+          const userId = await readTeamUser(
+            desktopTeamSession({
+              bridge,
+              origin: team.origin,
+              scope: { teamDeploymentId: teamId, userId: "pending" },
+            }),
+          );
           next.set(teamId, await registry.join({ teamDeploymentId: teamId, userId }));
         } catch {
           // Not signed in to that team on this computer yet: it shows as a link.
@@ -315,7 +307,7 @@ export function TeamsProvider({
 
   const leave = useCallback(
     async (teamId: string) => {
-      const owner = linked.find((row) => row.teamId === teamId)?.ownerUserId;
+      const owner = sessionOf(teamId)?.getSnapshot().bootstrap?.member.userId;
       const coordinated =
         coordination !== null &&
         (world === null || worldTeams.some((team) => team.teamId === teamId));
@@ -333,8 +325,8 @@ export function TeamsProvider({
 
   const forget = useCallback(
     async (teamId: string) => {
+      const owner = sessionOf(teamId)?.getSnapshot().bootstrap?.member.userId;
       await sessionOf(teamId)?.remove();
-      const owner = linked.find((row) => row.teamId === teamId)?.ownerUserId;
       if (registry && owner) await registry.remove({ teamDeploymentId: teamId, userId: owner });
       setForgotten((held) => new Set([...held, teamId]));
     },
@@ -347,7 +339,13 @@ export function TeamsProvider({
         ? async (teamId: string) => {
             const team = memberRef.current.get(teamId);
             if (!team) throw new Error("This team is not on this computer.");
-            await coordination.coordinator.enterTeam(team.origin);
+            if (bridge?.teamSessions) {
+              const sessions = desktopTeamSessions({
+                ...bridge,
+                teamSessions: bridge.teamSessions,
+              });
+              await sessions.signIn(await sessions.verify(team.origin), null);
+            } else await coordination.coordinator.enterTeam(team.origin);
             setEntered((count) => count + 1);
           }
         : null,

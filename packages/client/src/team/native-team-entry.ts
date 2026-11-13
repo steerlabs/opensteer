@@ -88,6 +88,7 @@ export async function previewTeamInvite(
 
 type TeamEntryOAuth = Pick<
   NativeOAuthManager,
+  | "authorizationHeader"
   | "accountAuthorizationLease"
   | "beginHostSignIn"
   | "exchangeTeamSession"
@@ -137,10 +138,19 @@ export class NativeTeamEntry {
    * expires.
    */
   async signIn(verified: VerifiedHostEndpoint, invite: TeamInviteSecret | null): Promise<void> {
+    return this.ensureAuthorized(verified, invite);
+  }
+
+  async ensureAuthorized(
+    verified: VerifiedHostEndpoint,
+    invite: TeamInviteSecret | null = null,
+  ): Promise<void> {
     const deploymentId = verified.discovery.deploymentId;
     const held = await this.#held(deploymentId);
     try {
-      await this.#browserSignIn(held ?? (await this.#keepManual(verified)), invite);
+      const connection = held ?? (await this.#keepManual(verified));
+      if (await this.#oauth.authorizationHeader(connection)) return;
+      await this.#browserSignIn(connection, invite);
     } catch (error) {
       if (held === null) await this.#catalog.remove(deploymentId).catch(() => undefined);
       throw error;

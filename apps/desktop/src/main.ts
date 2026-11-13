@@ -615,6 +615,18 @@ async function runDesktop(
         await deviceLifecycle?.sessionLost(attachment.resolved.deploymentId);
     },
   };
+  const sessionsForAttachment = (attachment: import("@opensteer/client/auth").HostAttachment) => {
+    const sessions = new HostSession({
+      ...deviceSessionOptions,
+      attachment,
+      clearDeploymentSession: (id) => hostNetwork.clearDeploymentSession(id),
+      exchange: hostSessionExchange,
+      localOwner: personal,
+      oauth: nativeAuth,
+    });
+    sessionOwners.add(sessions);
+    return sessions;
+  };
   const hostSessions = new HostSession({
     ...deviceSessionOptions,
     accountCredentialRejected: () =>
@@ -648,6 +660,7 @@ async function runDesktop(
     network: hostNetwork,
     projection: accessProjection,
     sessions: hostSessions,
+    pinnedSessions: sessionsForAttachment,
   });
   hostTransport.onAttachmentInvalidated(() => appOriginPolicy.setAttachedHost(null));
   const deploymentUpdates = new Map<DeploymentId, DesktopUpdatesService>();
@@ -661,15 +674,7 @@ async function runDesktop(
       localRuntime: { current: async () => desktopLocalHostRuntime(await personal.current()) },
       network: hostNetwork,
       sessions: (attachment) => {
-        const sessions = new HostSession({
-          ...deviceSessionOptions,
-          attachment,
-          clearDeploymentSession: (id) => hostNetwork.clearDeploymentSession(id),
-          exchange: hostSessionExchange,
-          localOwner: personal,
-          oauth: nativeAuth,
-        });
-        sessionOwners.add(sessions);
+        const sessions = sessionsForAttachment(attachment);
         return {
           assertSessionAllowed: (deploymentId) => sessions.assertSessionAllowed(deploymentId),
           sessionEnded: (selected) => sessions.sessionEnded(selected),
