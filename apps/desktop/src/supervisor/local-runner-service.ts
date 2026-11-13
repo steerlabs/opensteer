@@ -1179,11 +1179,6 @@ export class LocalRunnerService {
     await this.#finishObligation(deploymentId);
   }
 
-  async remove(deploymentIdInput: DeploymentId | string): Promise<DesktopLocalExecutionStatus> {
-    await this.markRemoved(deploymentIdInput);
-    return this.status(deploymentIdInput);
-  }
-
   async assertSessionAllowed(deploymentIdInput: string): Promise<void> {
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
     const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];

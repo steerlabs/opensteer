@@ -1453,7 +1453,7 @@ describe("LocalRunnerService", () => {
 
     const firstChild = childFor(running.children, first.hostUrl);
     const secondChild = childFor(running.children, second.hostUrl);
-    const removing = running.service.remove(first.deploymentId);
+    const removing = removeDevice(running.service, first.deploymentId);
     await eventually(() => hasStopMessage(firstChild));
     expect(hasStopMessage(secondChild)).toBe(false);
     firstChild.emit("exit", 0);
@@ -1872,7 +1872,7 @@ describe("LocalRunnerService", () => {
     await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 100));
     expect(relaunched.fork).not.toHaveBeenCalled();
 
-    await expect(relaunched.service.remove(target.deploymentId)).resolves.toMatchObject({
+    await expect(removeDevice(relaunched.service, target.deploymentId)).resolves.toMatchObject({
       membership: { state: "removed" },
       runner: { detail: "This Mac was removed from this Deployment.", state: "disabled" },
     });
@@ -1915,7 +1915,7 @@ describe("LocalRunnerService", () => {
     connect(child);
     await start;
 
-    const removing = running.service.remove(target.deploymentId);
+    const removing = removeDevice(running.service, target.deploymentId);
     await eventually(() => stop.mock.calls.length === 1);
     expect(existsSync(profileRoot)).toBe(true);
     stopped.resolve();
@@ -1962,7 +1962,7 @@ describe("LocalRunnerService", () => {
     await eventually(() => running.children.length === 1);
     const child = childAt(running.children, 0);
 
-    const removing = running.service.remove(target.deploymentId);
+    const removing = removeDevice(running.service, target.deploymentId);
     await eventually(() => hasStopMessage(child));
     child.emit("exit", 0);
 
@@ -1990,7 +1990,7 @@ describe("LocalRunnerService", () => {
     const child = childAt(running.children, 0);
     const dataDirectory = path.join(directory, "runner", "deployments", target.deploymentId);
 
-    const removing = running.service.remove(target.deploymentId);
+    const removing = removeDevice(running.service, target.deploymentId);
     const removalOutcome = removing.then(
       () => "removed",
       (error: unknown) => error,
@@ -2027,7 +2027,7 @@ describe("LocalRunnerService", () => {
     // Nothing is in flight but the worker itself: the graceful stop and the
     // kill both go unanswered, and the slot's record of the process is all
     // that stands between its files and a delete.
-    const removing = running.service.remove(target.deploymentId);
+    const removing = removeDevice(running.service, target.deploymentId);
     const removalOutcome = removing.then(
       () => "removed",
       (error: unknown) => error,
@@ -2055,7 +2055,7 @@ describe("LocalRunnerService", () => {
     await eventually(() => running.children.length === 1);
     const dataDirectory = path.join(directory, "runner", "deployments", target.deploymentId);
 
-    await expect(running.service.remove(target.deploymentId)).rejects.toThrow(
+    await expect(removeDevice(running.service, target.deploymentId)).rejects.toThrow(
       "The Runner on this Mac is still running, so nothing was deleted.",
     );
 
@@ -2166,7 +2166,7 @@ describe("LocalRunnerService", () => {
     const child = childAt(running.children, 0);
     connect(child);
     await starting;
-    const removing = running.service.remove(target.deploymentId);
+    const removing = removeDevice(running.service, target.deploymentId);
     await eventually(() => hasStopMessage(child));
     child.emit("exit", 0);
     await removing;
@@ -2227,7 +2227,7 @@ describe("LocalRunnerService", () => {
     const dataDirectory = path.join(directory, "runner", "deployments", target.deploymentId);
     await expect(lstat(path.join(dataDirectory, "identity.json"))).resolves.toBeDefined();
 
-    const removing = running.service.remove(target.deploymentId);
+    const removing = removeDevice(running.service, target.deploymentId);
     await eventually(() => hasStopMessage(child));
     child.emit("exit", 0);
 
@@ -2261,7 +2261,7 @@ describe("LocalRunnerService", () => {
     );
     await eventually(() => running.children.length === 1);
     const child = childAt(running.children, 0);
-    const removing = running.service.remove(target.deploymentId);
+    const removing = removeDevice(running.service, target.deploymentId);
     await eventually(() => hasStopMessage(child));
     connect(child);
 
@@ -2457,7 +2457,7 @@ describe("LocalRunnerService", () => {
     await eventually(
       async () => (await running.service.status(target.deploymentId)).runner.state === "failed",
     );
-    await running.service.remove(target.deploymentId);
+    await removeDevice(running.service, target.deploymentId);
     await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 200));
 
     expect(running.fork).toHaveBeenCalledTimes(1);
@@ -2507,7 +2507,7 @@ describe("LocalRunnerService", () => {
 
     // Removing this Mac gives the listener back: nothing keeps a loopback
     // listener for a slot that no longer exists.
-    const removing = running.service.remove(personal.deploymentId);
+    const removing = removeDevice(running.service, personal.deploymentId);
     await eventually(() => hasStopMessage(child));
     child.emit("exit", 0);
     await removing;
@@ -2756,6 +2756,11 @@ function postedSecrets(child: FakeUtilityProcess): Readonly<Record<string, strin
   const posted = RunnerWorkerSecretsMessageSchema.safeParse(child.messages[0]);
   if (!posted.success) throw new Error("The worker was not sent its secrets first.");
   return posted.data.secrets;
+}
+
+async function removeDevice(service: LocalRunnerService, deploymentId: string) {
+  await service.markRemoved(deploymentId);
+  return service.status(deploymentId);
 }
 
 function hasStopMessage(child: FakeUtilityProcess): boolean {

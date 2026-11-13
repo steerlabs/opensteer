@@ -869,16 +869,6 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     ),
   setUpDevice: (input: DesktopStartLocalRunnerInput) =>
     invoke<DesktopLocalExecutionStatus>(desktopBridgeChannels.setUpDevice, input),
-  startLocalRunner: (input: DesktopStartLocalRunnerInput) =>
-    invoke<DesktopLocalExecutionStatus>(
-      desktopBridgeChannels.startLocalRunner,
-      DesktopStartLocalRunnerInputSchema.parse(input),
-    ),
-  stopLocalRunner: (input: DesktopLocalExecutionInput) =>
-    invoke<DesktopLocalExecutionStatus>(
-      desktopBridgeChannels.stopLocalRunner,
-      DesktopLocalExecutionInputSchema.parse(input),
-    ),
   unlinkPersonal: () => invoke<void>(desktopBridgeChannels.unlinkPersonal),
 });
 

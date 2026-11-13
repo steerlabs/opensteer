@@ -203,8 +203,6 @@ export interface DesktopBridgeOptions {
   readonly runner: Pick<
     LocalRunnerService,
     | "recheckEngines"
-    | "remove"
-    | "start"
     | "status"
     | "subscribe"
     | "setUpDevice"

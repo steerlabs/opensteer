@@ -134,8 +134,6 @@ export const desktopBridgeChannels = {
   prepareDeviceSetup: "opensteer.desktop.device.prepare-setup",
   accountSignOutPreview: "opensteer.desktop.device.account-sign-out-preview",
   setUpDevice: "opensteer.desktop.device.set-up",
-  startLocalRunner: "opensteer.desktop.local-execution.start",
-  stopLocalRunner: "opensteer.desktop.local-execution.stop",
   unlinkPersonal: "opensteer.desktop.access.unlink-personal",
   usbDeviceChoice: "opensteer.desktop.usb.device-choice",
 } as const;

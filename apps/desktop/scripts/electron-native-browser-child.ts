@@ -1405,8 +1405,6 @@ function bridgeOptions(
       leaveDeployment: unavailable,
       retryDeviceConnection: unavailable,
       recheckEngines: unavailable,
-      remove: unavailable,
-      start: unavailable,
       status: unavailable,
       subscribe,
     },

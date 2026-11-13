@@ -1962,7 +1962,5 @@ export interface OpensteerDesktopBridge {
   leaveDeployment(input: DesktopLocalExecutionInput): Promise<void>;
   retryDeviceConnection(input: DesktopLocalExecutionInput): Promise<void>;
   setUpDevice(input: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus>;
-  startLocalRunner(input: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus>;
-  stopLocalRunner(input: DesktopLocalExecutionInput): Promise<DesktopLocalExecutionStatus>;
   unlinkPersonal(): Promise<void>;
 }
