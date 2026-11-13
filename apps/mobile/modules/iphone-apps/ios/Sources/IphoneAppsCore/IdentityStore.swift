@@ -58,8 +58,11 @@ public struct PersistedIphoneIdentity: Codable {
   public var browserReplayStorageInstanceId: String? = nil
 }
 
-/// A signed self-leave waiting for its Host. It outlives the key it was signed
-/// with, so erasure never waits on the network.
+public struct DevicePreparedIdentity: Codable, Equatable {
+  public let runnerId: String
+  public let publicKeyPem: String
+}
+
 public struct DeviceLeaveObligation: Codable, Equatable {
   public let version: Int
   public let deploymentId: String
@@ -71,6 +74,18 @@ public struct DeviceLeaveObligation: Codable, Equatable {
   public var enrollmentId: String? = nil
   public var enrolled: Bool? = nil
   public var hostInstanceId: String? = nil
+  public var preparedIdentity: DevicePreparedIdentity? = nil
+  public var mintKey: String? = nil
+  public var name: String? = nil
+  public var profile: String? = nil
+
+  public var publicSnapshot: [String: Any?] {
+    ["deploymentId": deploymentId, "runnerId": runnerId, "hostUrl": hostUrl,
+      "issuedAt": issuedAt, "signature": signature, "devicesV1": devicesV1,
+      "enrollmentId": enrollmentId, "enrolled": enrolled, "hostInstanceId": hostInstanceId,
+      "preparedIdentity": preparedIdentity.map { ["runnerId": $0.runnerId, "publicKeyPem": $0.publicKeyPem] },
+      "mintKey": mintKey, "name": name, "profile": profile]
+  }
 }
 
 public struct RemovedDevice: Codable {
@@ -117,7 +132,10 @@ public final class IdentityStore {
       runnerId: identity.runnerId, hostUrl: hostUrl, issuedAt: issuedAt,
       signature: try IphoneProofs.deviceLeave(try runnerKey(), deploymentId: identity.deploymentId,
         runnerId: identity.runnerId, issuedAt: issuedAt), devicesV1: identity.devicesV1,
-      enrollmentId: identity.enrollmentId, enrolled: identity.state == .enrolled, hostInstanceId: identity.hostInstanceId)
+      enrollmentId: identity.enrollmentId, enrolled: identity.state == .enrolled, hostInstanceId: identity.hostInstanceId,
+      preparedIdentity: identity.devicesV1 == true && identity.state != .enrolled
+        ? DevicePreparedIdentity(runnerId: identity.runnerId, publicKeyPem: IphoneProofs.publicKeyPem(try runnerKey())) : nil,
+      mintKey: identity.mintKey, name: identity.name, profile: "iphone")
     obligations.append(obligation)
     try leaveRecord.write(JSONEncoder().encode(obligations))
     return obligation
@@ -160,7 +178,7 @@ public final class IdentityStore {
   }
 
   public func beginIssuance(deploymentId: String, deploymentName: String, hostInstanceId: String,
-    hostUrl: String, devicesV1: Bool) throws {
+    hostUrl: String, devicesV1: Bool, name: String? = nil) throws {
     lock.lock(); defer { lock.unlock() }
     guard var identity = try load(), identity.deploymentId == deploymentId,
       identity.browserErasurePending != true, identity.state != .enrolled else { throw IdentityStoreError.notPrepared }
@@ -168,6 +186,7 @@ public final class IdentityStore {
     identity.hostInstanceId = hostInstanceId
     identity.hostUrl = hostUrl
     identity.devicesV1 = devicesV1
+    identity.name = name
     identity.issuanceStarted = true
     try save(identity)
   }
@@ -220,7 +239,6 @@ public final class IdentityStore {
       hostUrl: nil, runnerId: "rnr_\(UUID().uuidString.lowercased())", name: nil,
       state: .prepared, enrollmentId: nil, expiresAt: nil,
       mintKey: "iphone-enroll:\(UUID().uuidString.lowercased())")
-    // The prepared record is durable before returning the mint key to JS.
     try save(identity)
     return PreparedIdentity(deploymentId: deploymentId, runnerId: identity.runnerId, mintKey: identity.mintKey)
   }
@@ -251,8 +269,7 @@ public final class IdentityStore {
     guard identity.browserErasurePending != true else { throw IdentityStoreError.erasurePending }
     identity.state = .enrolled
     try save(identity)
-    // The durable state wins if Keychain cleanup is briefly unavailable. A
-    // later load removes the consumed token; reconnect must authenticate.
+    // The durable state wins while Keychain cleanup is unavailable.
     try? vault.remove(.enrollmentToken)
     return identity
   }
@@ -328,12 +345,9 @@ public final class IdentityStore {
   }
 
   private func wipeConfirmed() throws {
-    // Removing the sandbox marker first prevents a restart from restoring
-    // sharing even if protected Keychain data cannot be erased yet.
+    // The missing marker fences admission even if Keychain erasure fails.
     do { try record.remove() }
     catch {
-      // If removal failed, an invalid record is also a durable refusal to
-      // restore. The next launch retries cleanup instead of accepting it.
       try record.write(Data())
     }
     var firstFailure: Error?

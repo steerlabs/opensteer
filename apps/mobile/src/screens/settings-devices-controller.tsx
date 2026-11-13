@@ -8,6 +8,7 @@ import { useNavigation } from "@react-navigation/native";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { thisPhoneNoun } from "../computers/phone-noun.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
+import { movePhoneHere } from "../phone-setup/move-phone-here.js";
 import { phoneMembership } from "../phone-setup/phone-setup.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { headerActions } from "../navigation-header.js";
@@ -126,14 +127,13 @@ export function DevicesSettingsController(): ReactNode {
           confirm: "Use it here",
           onConfirm: () => {
             setFailure(null);
-            void client
-              .signOut(opens.elsewhere)
-              .then(() => navigation.navigate("SetUpPhone", { deploymentId }))
-              .catch((error: unknown) =>
-                setFailure(
-                  operationDetail(error, `This ${thisPhoneNoun} couldn't leave ${elsewhere}.`),
-                ),
-              );
+            void movePhoneHere(client, opens.elsewhere, () =>
+              navigation.navigate("SetUpPhone", { deploymentId }),
+            ).catch((error: unknown) =>
+              setFailure(
+                operationDetail(error, `This ${thisPhoneNoun} couldn't leave ${elsewhere}.`),
+              ),
+            );
           },
         });
         return;

@@ -42,6 +42,7 @@ import {
 } from "@opensteer/client/connections";
 import {
   createUsageNoticeDismissals,
+  HostClientRequestError,
   mutationIdempotencyKey,
   isHostRefusal,
   unwrapRpcResult,
@@ -91,7 +92,11 @@ import { createSignedOutFile, type SignedOutFile } from "./signed-out-file.js";
 import { createThreadDraftStore, type ThreadDraftStore } from "./thread-drafts.js";
 import type { SecureRecordStore } from "../platform/secure-record-store.js";
 import { createSecureAuthStore } from "../platform/secure-auth-store.js";
-import type { IphoneAppsOwner, IphoneAppsStopped } from "../iphone-apps/owner.js";
+import type {
+  IphoneAppsOwner,
+  IphoneAppsStopped,
+  IphoneLeaveOutcome,
+} from "../iphone-apps/owner.js";
 
 /**
  * Whether the selected Deployment is attached, and why it is not when it is
@@ -816,10 +821,11 @@ export class MobileClient {
         await integrationCleanup;
         await previewCleanup;
         await invalidation;
-        if (iphone !== null) await this.#tellHostIphoneStopped(id, iphone);
-        // A bound session ends with the device's leave; revoking it again would
-        // fail after a successful removal.
-        await this.#signOutNow(id, { revoke: iphone?.sessionBound !== true });
+        const leave = iphone === null ? null : await this.#tellHostIphoneStopped(id, iphone);
+        await this.#signOutNow(id, {
+          revoke: leave === "removed" || iphone?.sessionBound !== true,
+          removed: leave === "removed",
+        });
       } catch (error) {
         // A sign-out or removal that did not happen leaves the login and its live
         // attachment in place; the saved view it erased stays erased.
@@ -853,7 +859,7 @@ export class MobileClient {
         await this.#signedOutFile.write(this.#signedOutIds());
         return;
       }
-      await this.#signOutNow(id, { revoke: false }).catch(() => this.#republish());
+      await this.#signOutNow(id, { revoke: false, removed: true }).catch(() => this.#republish());
     });
   }
 
@@ -1406,8 +1412,11 @@ export class MobileClient {
         await integrationCleanup;
         await previewCleanup;
         await invalidation;
-        if (iphone !== null) await this.#tellHostIphoneStopped(id, iphone);
-        await this.#removeNow(id, { revoke: iphone?.sessionBound !== true });
+        const leave = iphone === null ? null : await this.#tellHostIphoneStopped(id, iphone);
+        await this.#removeNow(id, {
+          revoke: leave === "removed" || iphone?.sessionBound !== true,
+          removed: leave === "removed",
+        });
       } catch (error) {
         // A sign-out or removal that did not happen leaves the login and its live
         // attachment in place; the saved view it erased stays erased.
@@ -1769,12 +1778,12 @@ export class MobileClient {
     this.#attachedDeploymentId = id;
   }
 
-  async #signOutNow(id: DeploymentId, options = { revoke: true }): Promise<void> {
+  async #signOutNow(id: DeploymentId, options = { revoke: true, removed: false }): Promise<void> {
     const connection = this.#requireConnection(id);
     try {
       if (connection.kind === "team") await this.oauth.signOutHost(connection);
       else {
-        if (options.revoke) await this.#revokePersonalSession(connection);
+        if (options.revoke) await this.#revokePersonalSession(connection, options.removed);
         await this.sessions.clear(id);
       }
     } catch (error) {
@@ -1795,12 +1804,12 @@ export class MobileClient {
     await this.#republish();
   }
 
-  async #removeNow(id: DeploymentId, options = { revoke: true }): Promise<void> {
+  async #removeNow(id: DeploymentId, options = { revoke: true, removed: false }): Promise<void> {
     const connection = this.#requireConnection(id);
     try {
       if (connection.kind === "team") await this.oauth.signOutHost(connection);
       else {
-        if (options.revoke) await this.#revokePersonalSession(connection);
+        if (options.revoke) await this.#revokePersonalSession(connection, options.removed);
         await this.sessions.clear(id);
       }
     } catch (error) {
@@ -2271,23 +2280,11 @@ export class MobileClient {
     });
   }
 
-  /**
-   * Ends a Personal Deployment's header-delivered session on the Host that
-   * issued it, through that Host's own `session.revoke` for the session this
-   * phone is presenting.
-   *
-   * It throws when the session could not be ended. That is the honest answer: a
-   * computer that is asleep has not revoked anything, and telling a person they
-   * are signed out while the Host still honours the credential is worse than
-   * telling them to try again when it wakes.
-   */
-  async #revokePersonalSession(connection: DeploymentConnection): Promise<void> {
+  async #revokePersonalSession(connection: DeploymentConnection, removed = false): Promise<void> {
     const deploymentId = connection.authority.document.deploymentId;
     const authorization = await this.#host.credentials.authorization(connection);
     if (authorization === null) return;
     const attached = this.#attachedDeploymentId === deploymentId ? this.#hostClient : null;
-    // One command, over HTTP, on a client that opens no socket — and only when
-    // this Deployment is not the attached one, whose client is used as it is.
     const client =
       attached ??
       this.#host.attach({
@@ -2298,21 +2295,22 @@ export class MobileClient {
       });
     try {
       const listed = await client.rpc["sessions.list"]({});
+      if (!listed.ok && removed && listed.error.code === "unauthorized") return;
       if (!listed.ok) {
         throw new Error(
           listed.error.message || "That deployment would not list this phone's session.",
         );
       }
-      // Its own session and no other: this phone is signing itself out, not
-      // ending anybody else's access to that computer. A Host that no longer
-      // reports one has already ended it, and there is nothing left to revoke.
       const own = listed.data.sessions.find((session) => session.current);
-      if (own === undefined) return;
+      if (own === undefined || (removed && own.deviceId)) return;
       await client.dispatch({
         idempotencyKey: mutationIdempotencyKey("session"),
         sessionId: own.id,
         type: "session.revoke",
       });
+    } catch (error) {
+      if (!(removed && error instanceof HostClientRequestError && error.status === 401))
+        throw error;
     } finally {
       if (client !== attached) client.dispose();
     }
@@ -2324,14 +2322,12 @@ export class MobileClient {
     return owner !== null && owner.enrolledDeploymentId() === id ? owner.stop() : null;
   }
 
-  /**
-   * Tells the Host the iPhone stopped, with this Deployment's credential while
-   * it is still held. The owner bounds it and never throws: a Host that cannot
-   * be told holds up nothing and undoes nothing.
-   */
-  async #tellHostIphoneStopped(id: DeploymentId, stopped: IphoneAppsStopped): Promise<void> {
+  async #tellHostIphoneStopped(
+    id: DeploymentId,
+    stopped: IphoneAppsStopped,
+  ): Promise<IphoneLeaveOutcome | null> {
     const owner = this.#iphoneApps;
-    if (owner === null) return;
+    if (owner === null) return null;
     const connection = this.#state.catalog.deployments.find(
       ({ authority }) => authority.document.deploymentId === id,
     );
@@ -2340,8 +2336,7 @@ export class MobileClient {
         ? null
         : await this.#host.credentials.authorization(connection).catch(() => null);
     if (connection === undefined || authorization === null) {
-      await owner.tellHost(stopped, null);
-      return;
+      return owner.tellHost(stopped, null);
     }
     const attached = this.#attachedDeploymentId === id ? this.#hostClient : null;
     let client: HostClient;
@@ -2355,11 +2350,10 @@ export class MobileClient {
           origin: resolveConnection(connection, null, { authorization }).origin,
         });
     } catch {
-      await owner.tellHost(stopped, null);
-      return;
+      return owner.tellHost(stopped, null);
     }
     try {
-      await owner.tellHost(stopped, (command) => client.dispatch(command));
+      return await owner.tellHost(stopped, (command) => client.dispatch(command));
     } finally {
       if (client !== attached) client.dispose();
     }

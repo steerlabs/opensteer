@@ -4,10 +4,6 @@ import XCTest
 
 @testable import IphoneAppsCore
 
-/// The session-binding and leave proofs against the TypeScript Host's own
-/// vectors (packages/runner-auth/fixtures/device-proofs.v1.json). CryptoKit
-/// randomizes Ed25519 signatures, so bytes are compared at the transcript and
-/// each side verifies the other's signature.
 final class DeviceProofTests: XCTestCase {
   func testTranscriptsMatchTheHostByteForByte() throws {
     let fixture = try vectors()
@@ -38,7 +34,6 @@ final class DeviceProofTests: XCTestCase {
     XCTAssertTrue(ownBind.range(of: "^[A-Za-z0-9_-]{86}$", options: .regularExpression) != nil)
     XCTAssertTrue(key.publicKey.isValidSignature(try unbase64url(ownBind), for: bindTranscript))
     XCTAssertTrue(key.publicKey.isValidSignature(try unbase64url(ownLeave), for: leaveTranscript))
-    // Domain separation: a bind signature never passes as a leave.
     XCTAssertFalse(key.publicKey.isValidSignature(try unbase64url(ownBind), for: leaveTranscript))
   }
 
@@ -104,10 +99,20 @@ final class DeviceProofTests: XCTestCase {
     try store.beginIssuance(deploymentId: "dep_one", deploymentName: "Home", hostInstanceId: "hst_one", hostUrl: "https://home.example", devicesV1: true)
     let first = try XCTUnwrap(try store.persistLeave(issuedAt: "2026-11-12T18:30:00.000Z"))
     XCTAssertEqual(first.devicesV1, true)
+    XCTAssertEqual(first.preparedIdentity?.runnerId, try store.load()?.runnerId)
+    XCTAssertEqual(first.preparedIdentity?.publicKeyPem, IphoneProofs.publicKeyPem(try store.runnerKey()))
+    XCTAssertEqual((first.publicSnapshot["preparedIdentity"] as? [String: String])?["publicKeyPem"], first.preparedIdentity?.publicKeyPem)
     try store.wipe()
     _ = try store.prepare(deploymentId: "dep_two")
-    try store.beginIssuance(deploymentId: "dep_two", deploymentName: "Studio", hostInstanceId: "hst_two", hostUrl: "https://studio.example", devicesV1: true)
+    try store.beginIssuance(deploymentId: "dep_two", deploymentName: "Studio", hostInstanceId: "hst_two", hostUrl: "https://studio.example", devicesV1: false, name: "iPhone")
     let second = try XCTUnwrap(try store.persistLeave(issuedAt: "2026-11-12T18:31:00.000Z"))
+    XCTAssertNil(second.preparedIdentity)
+    XCTAssertEqual(second.mintKey, try store.load()?.mintKey)
+    XCTAssertEqual(second.name, "iPhone")
+    XCTAssertEqual(second.profile, "iphone")
+    XCTAssertEqual(second.publicSnapshot["mintKey"] as? String, second.mintKey)
+    XCTAssertEqual(second.publicSnapshot["name"] as? String, second.name)
+    XCTAssertEqual(second.publicSnapshot["profile"] as? String, "iphone")
     try store.wipe()
     let restarted = IdentityStore(vault: vault, record: record, leaveRecord: leaves)
     XCTAssertEqual(try restarted.pendingLeaves(), [first, second])

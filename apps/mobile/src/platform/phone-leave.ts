@@ -6,10 +6,6 @@ type LeaveFetch = (
   init: { body: string; headers: Record<string, string>; method: "POST"; redirect: "error" },
 ) => Promise<{ readonly ok: boolean; readonly status: number; json(): Promise<unknown> }>;
 
-/**
- * Delivers a persisted self-leave to the route the phone's runner was pinned
- * to. It carries no session: the native signature is its only authority.
- */
 export function networkLeaveDelivery(fetch: LeaveFetch): DeliverLeave {
   return async (leave): Promise<LeaveDelivery> => {
     const origin = new URL(leave.hostUrl);
@@ -19,6 +15,7 @@ export function networkLeaveDelivery(fetch: LeaveFetch): DeliverLeave {
       issuedAt: leave.issuedAt,
       runnerId: leave.runnerId,
       signature: leave.signature,
+      ...(leave.preparedIdentity ? { preparedIdentity: leave.preparedIdentity } : {}),
     });
     let response: Awaited<ReturnType<LeaveFetch>>;
     try {

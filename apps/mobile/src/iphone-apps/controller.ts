@@ -17,7 +17,7 @@ import type {
   IphoneApprovalOutcome,
   IphonePendingLeave,
   IphonePermission,
-} from "../platform/iphone-apps.js";
+} from "../platform/iphone-apps-types.js";
 import {
   maxShownApprovals,
   type ShownApproval,
@@ -128,7 +128,15 @@ export class IphoneAppsController {
         this.#bridge.getSnapshot().removedFrom?.deploymentId ??
         this.#removedFrom?.deploymentId ??
         null,
-      sessionBound: (deploymentId) => this.#bound.has(deploymentId),
+      sessionBound: (deploymentId) => {
+        const bound = this.#bound.get(deploymentId);
+        if (bound === undefined) return false;
+        const sessionId =
+          this.#host?.deploymentId === deploymentId
+            ? this.#host.hostClient.getSnapshot().sessionId
+            : undefined;
+        return sessionId === undefined || sessionId === bound;
+      },
       onRemoved: (listener) => {
         this.#removedListeners.add(listener);
         return () => this.#removedListeners.delete(listener);
@@ -199,7 +207,6 @@ export class IphoneAppsController {
     }
     this.#detachHost?.();
     this.#host = host;
-    this.#bound.clear();
     this.#bindingAttempts = 0;
     if (this.#bindingRetry !== null) clearTimeout(this.#bindingRetry);
     this.#bindingRetry = null;
@@ -584,8 +591,6 @@ export class IphoneAppsController {
     this.#publish();
   }
 
-  /** Registration failed; the person asked to try again. */
-
   /** Stops this iPhone at once, then tells the Host while this phone can. */
   async remove(input: { readonly hostClient: HostClient }): Promise<void> {
     const stopped = this.#stop();
@@ -648,7 +653,7 @@ export class IphoneAppsController {
           const target = unwrapRpcResult(await input.hostClient.rpc["agentPhone.target.get"]({}));
           if (!current()) return superseded;
           if (target.deploymentId !== input.deploymentId) return failed("host-mismatch");
-          await this.#bridge.beginIssuance?.({ pairing: target, devicesV1 });
+          await this.#bridge.beginIssuance?.({ pairing: target, devicesV1, name: input.name });
           if (!current()) return superseded;
           if (devicesV1 && (!publicKeyPem || !this.#bridge.beginIssuance))
             return failed("needs-update");
@@ -973,8 +978,6 @@ export class IphoneAppsController {
     const enrollment = before.enrollment;
     const adding = this.#adding?.deploymentId ?? null;
     if (enrollment === null && adding === null) return null;
-    // Everything awaiting is fenced before the native stop, which returns only
-    // once nothing new can run.
     this.#generation += 1;
     this.#adding = null;
     this.#changes.clear();
@@ -983,8 +986,8 @@ export class IphoneAppsController {
     const ids = this.#bridge.leave();
     for (const wake of this.#wakers) wake();
     const deploymentId = enrollment?.deploymentId ?? ids.deploymentId ?? adding;
-    const sessionBound = deploymentId !== null && this.#bound.has(deploymentId);
-    this.#bound.clear();
+    const sessionBound = deploymentId !== null && this.owner.sessionBound(deploymentId);
+    if (deploymentId !== null) this.#bound.delete(deploymentId);
     this.#publish();
     if (deploymentId === null) return null;
     return {
@@ -1056,6 +1059,20 @@ export class IphoneAppsController {
             : null);
         if (authenticated) {
           try {
+            let enrollmentId = pending.enrollmentId;
+            if (pending.enrolled === false && !enrollmentId && pending.mintKey && pending.name) {
+              const minted = await withDeadline(
+                authenticated({
+                  type: "runner.enrollment.createPhone",
+                  idempotencyKey: pending.mintKey,
+                  name: pending.name,
+                  ...(pending.profile ? { profile: pending.profile } : {}),
+                }),
+                this.#timing.revokeMs,
+              );
+              if (minted?.type === "runner.enrollment.createPhone")
+                enrollmentId = minted.enrollmentId;
+            }
             const result = await withDeadline(
               pending.enrolled !== false
                 ? authenticated({
@@ -1063,10 +1080,10 @@ export class IphoneAppsController {
                     machineId: pending.runnerId,
                     idempotencyKey: `phone-leave:${pending.runnerId}`,
                   })
-                : pending.enrollmentId
+                : enrollmentId
                   ? authenticated({
                       type: "runner.enrollment.retire",
-                      enrollmentId: pending.enrollmentId,
+                      enrollmentId,
                       idempotencyKey: `phone-leave:${pending.runnerId}`,
                     })
                   : Promise.resolve(null),
@@ -1102,11 +1119,6 @@ export class IphoneAppsController {
     return delivering;
   }
 
-  /**
-   * Binds the session open here to this phone, once per attachment, so that
-   * signing out removes the device and removing the device signs it out. The
-   * proof is signed natively; the session id is the Host's own answer.
-   */
   #maybeBind(): void {
     const host = this.#host;
     const enrollment = this.#bridge.getSnapshot().enrollment;
@@ -1120,8 +1132,12 @@ export class IphoneAppsController {
     ) {
       return;
     }
-    const at = `${this.#hostGeneration}:${enrollment.runnerId}`;
-    if (this.#binding === at || this.#bound.has(host.deploymentId)) return;
+    const snapshot = host.hostClient.getSnapshot();
+    const bound = this.#bound.get(host.deploymentId);
+    if (bound && (snapshot.sessionId === undefined || snapshot.sessionId === bound)) return;
+    if (bound && snapshot.sessionId !== undefined) this.#bound.delete(host.deploymentId);
+    const at = `${this.#hostGeneration}:${enrollment.runnerId}:${snapshot.sessionId ?? ""}`;
+    if (this.#binding === at) return;
     if (this.#bindingRetry !== null) clearTimeout(this.#bindingRetry);
     this.#bindingRetry = null;
     this.#binding = at;

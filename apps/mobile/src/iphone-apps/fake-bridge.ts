@@ -9,17 +9,9 @@ import type {
   IphoneAppsSnapshot,
   IphonePairingTarget,
   IphonePermission,
-} from "../platform/iphone-apps.js";
+} from "../platform/iphone-apps-types.js";
 import { iphonePermissionOf } from "./controller.js";
 
-/**
- * A JS stand-in for the native iPhone apps module, for tests and mock mode
- * only. It keeps the bridge's contract — one Deployment at a time, a mint key
- * stable until discarded, signatures only for listed requests — and nothing
- * else: it holds no keys, opens no socket, prompts nothing and runs no app.
- * Production never constructs it; the composition root picks it only when the
- * build runs against the in-memory Host.
- */
 export interface FakeIphoneApps {
   readonly bridge: IphoneAppsBridge;
   /** What iOS, the native executor and the Host would do on their own. */
@@ -190,7 +182,8 @@ export function createFakeIphoneApps(
     }, 3_000);
   };
 
-  let issuance: (IphonePairingTarget & { readonly devicesV1: boolean }) | null = null;
+  let issuance:
+    (IphonePairingTarget & { readonly devicesV1: boolean; readonly name: string }) | null = null;
   const bridge: IphoneAppsBridge = {
     getSnapshot: () => snapshot,
 
@@ -244,8 +237,8 @@ export function createFakeIphoneApps(
       }
     },
 
-    async beginIssuance({ pairing, devicesV1 }) {
-      issuance = { ...pairing, devicesV1 };
+    async beginIssuance({ pairing, devicesV1, name }) {
+      issuance = { ...pairing, devicesV1, name };
     },
     async clearRemoved() {
       set({ removedFrom: null });
@@ -300,6 +293,12 @@ export function createFakeIphoneApps(
               hostInstanceId: issuance?.hostInstanceId ?? hostInstanceId,
               devicesV1: issuance?.devicesV1 ?? options.devicesV1 ?? true,
               enrolled: held?.state === "enrolled",
+              mintKey: prepared?.mintKey ?? null,
+              ...(options.platform !== "android" ? { profile: "iphone" as const } : {}),
+              name: held?.name ?? issuance?.name ?? null,
+              ...(issuance?.devicesV1 && held?.state !== "enrolled"
+                ? { preparedIdentity: { runnerId, publicKeyPem: "fake-public-key" } }
+                : {}),
               enrollmentId: held?.enrollmentId ?? null,
               signature: "L".repeat(86),
             };

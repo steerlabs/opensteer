@@ -49,6 +49,7 @@ import { createSecureRecordStore } from "../platform/secure-record-store.js";
 import { createDeploymentCredentials } from "./deployment-credentials.js";
 import type { HostEpochAgreement, MobileHostPort, MobileHostPortFactory } from "./host-port.js";
 import { MobileClient, type MobileClientOptions } from "./mobile-client.js";
+import { movePhoneHere } from "../phone-setup/move-phone-here.js";
 import { IphoneAppsController, type IphoneAppsOwner } from "../iphone-apps/controller.js";
 import { createFakeIphoneApps } from "../iphone-apps/fake-bridge.js";
 
@@ -3828,6 +3829,109 @@ describe("MobileClient and this iPhone's apps", () => {
     iphone.controller.dispose();
     client.dispose();
   });
+
+  it.each(["sign-out", "remove", "use-here", "lost-bind-receipt"] as const)(
+    "finishes %s when signed leave ends the session after changing views",
+    async (entry) => {
+      let left = false;
+      const fake = createFakeIphoneApps({ runnerId: laptopRunnerId, devicesV1: true });
+      fake.device.enrolledTo({ deploymentId: serverId, name: "Phone" });
+      const controller = new IphoneAppsController({
+        bridge: fake.bridge,
+        shownApprovals: { read: async () => [], write: async () => undefined },
+        deliverLeave: async () => {
+          left = true;
+          return "removed";
+        },
+      });
+      const binding = vi.fn(async () => undefined);
+      const afterLeave = vi.fn();
+      const port = testPort({
+        held: false,
+        realCredentials: true,
+        configureClient: (host) => {
+          const snapshot = host.getSnapshot.bind(host);
+          vi.spyOn(host, "getSnapshot").mockImplementation(() => ({
+            ...snapshot(),
+            devicesAvailable: true,
+            session: "authenticated",
+            sessionId: "ses_phone",
+          }));
+          host.bindDeviceSession = binding;
+          Object.defineProperty(host, "rpc", {
+            value: new Proxy(host.rpc, {
+              get: (rpc, key) => {
+                if (key !== "sessions.list") return Reflect.get(rpc, key);
+                return async () => {
+                  if (left) {
+                    afterLeave();
+                    throw new HostClientRequestError({
+                      code: "unauthorized",
+                      status: 401,
+                      message: "Session ended",
+                    });
+                  }
+                  return {
+                    ok: true,
+                    data: { sessions: [{ id: "ses_phone", current: true, deviceId: null }] },
+                  };
+                };
+              },
+            }),
+          });
+        },
+      });
+      const { client } = open(port.factory, undefined, { iphoneApps: controller.owner });
+      try {
+        await client.catalog.upsertAndSelect(connectComputer(1));
+        await client.catalog.upsert(
+          asInput(
+            testDeploymentConnection({ kind: "personal", deploymentId: otherId, name: "Studio" }),
+          ),
+        );
+        await client.initialize();
+        await client.sessions.save(personalSession());
+        await client.retrySelection();
+        await settle();
+        await client.select(serverId);
+        await vi.waitFor(
+          () =>
+            expect(
+              client.getSnapshot().selection.hostClient,
+              "Phone Host never attached",
+            ).not.toBeNull(),
+          { timeout: 1000 },
+        );
+        if (entry !== "lost-bind-receipt") {
+          controller.attachHost({
+            deploymentId: serverId,
+            hostClient: client.getSnapshot().selection.hostClient!,
+          });
+          await vi.waitFor(() => expect(controller.owner.sessionBound(serverId)).toBe(true), {
+            timeout: 1000,
+          });
+          expect(binding).toHaveBeenCalledOnce();
+          controller.attachHost(null);
+          expect(controller.owner.sessionBound(serverId)).toBe(true);
+        }
+        const setup = vi.fn(() => {
+          expect(controller.owner.enrolledDeploymentId()).toBeNull();
+          expect(left).toBe(true);
+        });
+        if (entry === "remove") await client.remove(serverId);
+        else if (entry === "use-here") await movePhoneHere(client, serverId, setup);
+        else await client.signOut(serverId);
+        expect(setup).toHaveBeenCalledTimes(entry === "use-here" ? 1 : 0);
+        expect(left).toBe(true);
+        expect(afterLeave).toHaveBeenCalledOnce();
+        expect(port.commands).not.toContain("session.revoke");
+        expect(await client.sessions.load(DeploymentIdSchema.parse(serverId))).toBeNull();
+      } finally {
+        controller.dispose();
+        client.dispose();
+      }
+    },
+  );
 
   function boundOwner(deploymentId: string) {
     const calls: string[] = [];

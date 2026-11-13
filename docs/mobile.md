@@ -181,11 +181,14 @@ leave state. Obligations are keyed by runner identity, so moving to another Open
 an earlier offline leave. Each survives restart until removal is confirmed.
 
 Setup records the Host's advertised `devices-v1` support and pinned route before issuance. New
-Hosts receive the prepared runner ID and public key, so signed leave can retire issuance even when
-the enrollment response was lost. A never-issued prepared identity needs only local cleanup. On
-older Hosts the retained obligation uses authenticated revoke or enrollment retirement; an HTTP
-404 never selects that compatibility path and never clears an obligation. The phone binds its
-session when the authenticated Host snapshot becomes capable, independently of native timing.
+Hosts receive the prepared runner ID and public key. The durable leave retains that public key
+after private-key erasure, so the Host can retire even an issuance that never committed and reject
+a late mint or redemption. A prepared identity whose issuance never started needs only local
+cleanup. On older Hosts, uncertain issuance replays the original issuance intent to recover its
+receipt before authenticated retirement; enrolled identities use authenticated revoke.
+Older obligations lacking recovery fields stay unconfirmed. An HTTP 404 never selects that
+compatibility path or clears an obligation. Session binding survives viewing another Deployment;
+a confirmed leave accepts an already-ended session and revokes only a still-live unbound session.
 
 Native storage remembers 4010 removal before erasure, carries its Deployment after enrollment
 vanishes, and exposes it before restored attachments may authorize. It stays until Set up again.

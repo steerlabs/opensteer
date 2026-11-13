@@ -1,6 +1,7 @@
+export { cancelDeviceSetup } from "@opensteer/client/computers";
 import { deviceAccess, type DeviceInitialAccess, type MachineSummary } from "@opensteer/protocol";
 import { hostsDeployment } from "@opensteer/client/computers";
-import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
+
 import { isAgentPhone } from "@opensteer/client/integrations";
 
 export type DeviceCapability = "browser" | "apps" | "files";
@@ -158,24 +159,6 @@ function expiryWords(at: Date, now: Date): string {
 /** A row the Host lists before any device redeemed its token: only its setup can be cancelled. */
 export function pendingEnrollmentId(machine: MachineSummary): string | null {
   return machine.status === "pending" ? machine.enrollmentId : null;
-}
-
-/**
- * Retires a setup token so nothing can join with it. "consumed" means a
- * device already joined with it, and is now a device to remove instead.
- */
-export async function cancelDeviceSetup(
-  hostClient: Pick<HostClient, "dispatch" | "refresh">,
-  enrollmentId: string,
-): Promise<"cancelled" | "joined"> {
-  const result = await hostClient.dispatch({
-    enrollmentId,
-    idempotencyKey: mutationIdempotencyKey(`device-setup-cancel:${enrollmentId}`),
-    type: "runner.enrollment.retire",
-  });
-  if (result.type !== "runner.enrollment.retire") throw new Error("Cancelling didn’t finish.");
-  await hostClient.refresh();
-  return result.state === "consumed" ? "joined" : "cancelled";
 }
 
 function lastSeenWords(seen: Date, now: Date): string {

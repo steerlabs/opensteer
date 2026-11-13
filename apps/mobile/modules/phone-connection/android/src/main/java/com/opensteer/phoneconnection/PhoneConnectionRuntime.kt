@@ -126,7 +126,7 @@ class PhoneConnectionRuntime private constructor(context: Context) {
             Wire.requireThat(foreground && identity?.text("deploymentId") == deploymentId && identity?.get("leaveRequested") != JsonPrimitive(true), "not-foreground")
             Wire.requireThat(identity!!.text("state") in setOf("prepared", "pending"), "not-prepared")
             val prepared = JsonObject(identity!! + mapOf("hostUrl" to JsonPrimitive(Proofs.origin(origin)),
-                "hostInstanceId" to JsonPrimitive(hostInstanceId), "devicesV1" to JsonPrimitive(devicesV1), "issuanceStarted" to JsonPrimitive(true)))
+                "name" to JsonPrimitive(name), "hostInstanceId" to JsonPrimitive(hostInstanceId), "devicesV1" to JsonPrimitive(devicesV1), "issuanceStarted" to JsonPrimitive(true)))
             storage.save(prepared)
             identity = prepared
             prepared to generation
@@ -193,11 +193,7 @@ class PhoneConnectionRuntime private constructor(context: Context) {
             if (current != null && current.text("state") != "retiring" &&
                 (current.text("state") != "prepared" || current["issuanceStarted"] == JsonPrimitive(true)) && current["hostUrl"] is JsonPrimitive) {
                 val issuedAt = iso(System.currentTimeMillis())
-                Wire.fields("version" to JsonPrimitive(1), "deploymentId" to current.getValue("deploymentId"),
-                    "runnerId" to current.getValue("runnerId"), "hostUrl" to current.getValue("hostUrl"), "issuedAt" to JsonPrimitive(issuedAt),
-                    "signature" to JsonPrimitive(storage.sign(current, Proofs.deviceLeave(current.text("deploymentId"), current.text("runnerId"), issuedAt))),
-                    "devicesV1" to (current["devicesV1"] ?: JsonNull), "enrollmentId" to (current["enrollmentId"] ?: JsonNull),
-                    "enrolled" to JsonPrimitive(current.text("state") == "enrolled"), "hostInstanceId" to (current["hostInstanceId"] ?: JsonNull))
+                storage.leaveObligation(current, issuedAt)
             } else null
         }, erase = { disconnect() })
         return if (persisted) JsonObject(ids + ("leave" to JsonPrimitive("persisted"))) else ids

@@ -19,52 +19,6 @@ import type { RemovedFile, RemovedFrom } from "./removed-file.js";
 import type { ShownApproval, ShownApprovalsFile } from "./shown-approvals-file.js";
 import { createFakeIphoneApps, type FakeIphoneApps } from "./fake-bridge.js";
 
-/*
- * The JS controller over the native iPhone apps bridge. The bridge here is the
- * labelled JS fake: these tests prove the controller's sequencing against the
- * pinned bridge contract, not Swift, iOS prompts or a Host.
- *
- * Failure cases, written before the controller:
- * - J3: a Host without `iphone-apps-v1` is asked to mint an iPhone enrollment;
- * - J4: an iPhone held by another Deployment, or already added here, mints again;
- * - J5: a lost mint answer uses a new idempotency key; an expired or refused
- *   enrollment is retried without retiring it, retried more than three times,
- *   or retried after the Host said it was still usable; a pairing target for
- *   another Deployment is enrolled anyway;
- * - J6: an approval that is not in the iPhone's current list, or that names a
- *   different app or access than the one tapped, is signed;
- * - J7: the approval key is registered more than once per connection, before
- *   the iPhone is online, or for a Deployment other than the one it holds;
- * - J8: an OS prompt happens without a tap, or the signature starts before the
- *   prompt settles; a request is sent or signed after iOS refused the app (a
- *   task's request is then left waiting, not declined);
- * - C5–C8: a lost answer from the Host is taken as "off" or asked again blindly,
- *   rather than read back from the Host's own requests and connections;
- * - C9/C10: an upgrade in flight hides the current access, or outlives a stop;
- * - C12: read-back releases the busy state before it settles, allowing a second
- *   request, or leaves the approving state behind after it succeeds;
- * - C13: changing the attached Deployment strands a superseded change forever;
- * - a late outcome after the iPhone was stopped changes anything, or an
- *   operation started for one Deployment completes against another;
- * - switching the open Deployment stops the iPhone;
- * - a request is auto-shown twice;
- * - Add's apps ask iOS about more than one app at once, stop at the first
- *   refusal, lose why one didn't turn on, or go on after the iPhone stopped.
- *
- * Location and Photos, written before the controller took them:
- * - B5: iOS is asked, or the Host is sent a request, for an app the attached
- *   Host's catalog doesn't list (an older Host), or while that catalog can't
- *   be read; a missing catalog is taken as "listed";
- * - an installed build that doesn't report an app's permission (an older
- *   build) is prompted, sent a request, signs a task's request or is asked to
- *   choose photos for it, because the Host knows the app;
- * - limited is taken as Location permission, or limited Photos isn't usable;
- * - Choose photos runs without limited access, or closing it reads as denied;
- * - a task's Location request after a temporary permission ended signs
- *   without asking iOS again, or signs after iOS refused;
- * - a lost reply to a signed Photos answer is taken as "off" or signed twice.
- */
-
 const deploymentId = "dep_0192f4a1-1111-4000-8000-000000000001";
 const otherDeploymentId = "dep_0192f4a1-4444-4000-8000-000000000004";
 const fast: IphoneAppsTiming = { approvalWaitMs: 50, enrollWaitMs: 50, revokeMs: 50 };
@@ -149,7 +103,7 @@ describe("adding this iPhone", () => {
       },
     });
     const prepared = await fake.bridge.prepare({ deploymentId });
-    await fake.bridge.beginIssuance!({ pairing, devicesV1: true });
+    await fake.bridge.beginIssuance!({ pairing, devicesV1: true, name: "Phone" });
     const read = fake.bridge.getSnapshot;
     let uncertain = true;
     fake.bridge.getSnapshot = () =>
@@ -1491,6 +1445,54 @@ describe("leaving and binding", () => {
     await restarted.load();
     expect(restarted.getState().removedFrom).toEqual(durable.removedFrom);
     expect(controller.getState().snapshot.enrollment).toBeNull();
+  });
+
+  it("retains binding across views and binds a replacement session independently", async () => {
+    const { controller, fake } = open();
+    fake.device.enrolledTo({ deploymentId, name: "Phone" });
+    const host = sessionHost({ devices: true });
+    let sessionId = "ses_first";
+    Object.assign(host.client, {
+      getSnapshot: () => ({
+        machines: [],
+        devicesAvailable: true,
+        session: "authenticated",
+        sessionId,
+      }),
+    });
+    Object.assign(host.client.rpc, {
+      "sessions.list": async () => ({
+        ok: true,
+        data: { sessions: [{ id: sessionId, current: true, deviceId: null }] },
+      }),
+    });
+    controller.attachHost({ deploymentId, hostClient: host.client });
+    await vi.waitFor(
+      () =>
+        expect(
+          controller.owner.sessionBound(deploymentId),
+          "The first session was never bound",
+        ).toBe(true),
+      { timeout: 1000 },
+    );
+    controller.attachHost({ deploymentId: otherDeploymentId, hostClient: fakeHost().client });
+    expect(controller.owner.sessionBound(deploymentId)).toBe(true);
+    sessionId = "ses_second";
+    controller.attachHost({ deploymentId, hostClient: host.client });
+    expect(controller.owner.sessionBound(deploymentId)).toBe(false);
+    await vi.waitFor(
+      () =>
+        expect(
+          controller.owner.sessionBound(deploymentId),
+          "The replacement session was never bound",
+        ).toBe(true),
+      { timeout: 1000 },
+    );
+    expect(host.bound).toHaveLength(2);
+    expect(fake.device.calls.filter((call) => call.startsWith("signSessionBinding:"))).toEqual([
+      "signSessionBinding:ses_first",
+      "signSessionBinding:ses_second",
+    ]);
   });
 
   it("binds when capabilities arrive, and retries a failed sessions read", async () => {

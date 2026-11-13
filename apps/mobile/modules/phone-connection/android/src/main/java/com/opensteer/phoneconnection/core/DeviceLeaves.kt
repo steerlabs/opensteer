@@ -3,6 +3,18 @@ package com.opensteer.phoneconnection.core
 import kotlinx.serialization.json.*
 
 class DeviceLeaves(private val storage: DurableBytes) {
+    companion object {
+        fun obligation(identity: JsonObject, publicKeyPem: String, issuedAt: String, signature: String): JsonObject {
+            val prepared = identity["devicesV1"] == JsonPrimitive(true) && identity.text("state") != "enrolled"
+            return Wire.fields("version" to JsonPrimitive(1), "deploymentId" to identity.getValue("deploymentId"),
+                "runnerId" to identity.getValue("runnerId"), "hostUrl" to identity.getValue("hostUrl"), "issuedAt" to JsonPrimitive(issuedAt),
+                "signature" to JsonPrimitive(signature), "devicesV1" to (identity["devicesV1"] ?: JsonNull),
+                "enrollmentId" to (identity["enrollmentId"] ?: JsonNull), "enrolled" to JsonPrimitive(identity.text("state") == "enrolled"),
+                "hostInstanceId" to (identity["hostInstanceId"] ?: JsonNull), "mintKey" to (identity["mintKey"] ?: JsonNull), "name" to (identity["name"] ?: JsonNull),
+                "preparedIdentity" to if (prepared) Wire.fields("runnerId" to identity.getValue("runnerId"), "publicKeyPem" to JsonPrimitive(publicKeyPem)) else JsonNull)
+        }
+    }
+
     @Synchronized fun pending(): List<JsonObject> {
         val bytes = storage.read()?.takeIf { it.isNotEmpty() } ?: return emptyList()
         val value = Json.parseToJsonElement(Wire.decode(bytes))
