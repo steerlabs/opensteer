@@ -315,10 +315,11 @@ export class PasswordSignInService {
     if (
       result.status !== "unavailable" ||
       result.reason !== "expired" ||
-      deploymentId === undefined
+      deploymentId === undefined ||
+      request.payload.kind !== "browser.password-sign-in"
     )
       return result;
-    return this.#ready(deploymentId, result.site) ?? result;
+    return this.#ready(deploymentId, result.site, request.payload.credential) ?? result;
   }
 
   leaseForOperation(operationId: string): PasswordLoginLease | null {

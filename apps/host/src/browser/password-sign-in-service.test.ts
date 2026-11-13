@@ -972,6 +972,11 @@ describe("card personal lifecycle", () => {
         permissionVersion: 7,
       },
     });
+    // A call whose Request settled while it was reading it replays the live card lease.
+    expect(h.service.replayResult(h.request(), h.call.deploymentId)).toMatchObject({
+      status: "ready",
+      loginRef: h.loginRef(),
+    });
     expect(await h.service.requestCard({ ...input, callId: "reuse" })).toMatchObject({
       status: "ready",
       cardRef: h.loginRef(),

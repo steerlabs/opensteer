@@ -442,8 +442,7 @@ export function turnState(turn: Turn): TurnState {
  * What to offer of Opensteer Passwords, or null. The latest word on a sign-in
  * since the person last spoke decides, and only once the agent has stopped:
  * their next message, or a sign-in that got further, ends the offer, so a
- * Thread shows it once, at its end. A Chrome Request's ending is newer than
- * the `pending` that opened it; a repeated call adds nothing.
+ * Thread shows it once, at its end. A repeated call adds nothing.
  */
 export interface PasswordsSetupOffer {
   readonly credential: "login" | "card";

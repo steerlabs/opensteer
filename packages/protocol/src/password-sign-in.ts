@@ -27,7 +27,7 @@ export const passwordSignInProbeTimeoutMs = 5_000;
 /** Concurrent pending login authorizations one browser host accepts. */
 export const maxPasswordSignInsPerHost = 4;
 /**
- * The longest one `sign_in` call waits for its operation before it
+ * The longest one `use_saved_login` or `use_card` call waits for its operation before it
  * answers with what is known, kept under the engines' 60-second tool limit.
  */
 export const passwordSignInAgentWaitMs = 45_000;
