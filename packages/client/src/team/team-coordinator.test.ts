@@ -112,6 +112,23 @@ describe("TeamCoordinator", () => {
     ]);
   });
 
+  it("leaves a team set up on another device to Account's listing, entering nothing here", async () => {
+    const { coordinator, world } = track(start());
+    // Created on the phone; this computer holds no intent for it.
+    const view = await world.account.createHostedTeam({
+      requestId: crypto.randomUUID(),
+      name: "Acme",
+      slug: "acme" as HostedTeamSlug,
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect((await world.account.hostedTeam(view.id))?.stage).toBe("ready");
+    const exchange = vi.spyOn(world.sessions, "exchange");
+    await coordinator.resume();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(coordinator.getSnapshot()).toMatchObject({ hostedTeams: [], intents: [], ready: [] });
+    expect(exchange).not.toHaveBeenCalled();
+  });
+
   it("keeps an offline computer pending and retries with a fresh code", async () => {
     const { coordinator, opened, world } = track(start());
     world.personalOnline = false;

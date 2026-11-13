@@ -12,3 +12,4 @@ export * from "./native-team-entry.js";
 export * from "./mock-hosted-teams.js";
 export * from "./hosted-team-address.js";
 export * from "../mock/mock-team-world.js";
+export * from "./team-memberships.js";

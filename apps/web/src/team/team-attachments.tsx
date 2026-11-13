@@ -15,12 +15,14 @@ import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { PersonalTeamLinks, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import {
   createMemoryTeamPersistence,
+  listedTeams,
   TeamSessionClient,
   TeamTransportRegistry,
   type MockTeamHost,
   type MockTeamWorld,
   type TeamCacheScope,
   type TeamConnectionIntent,
+  type TeamMembership,
   type TeamSessionOptions,
   type TeamSessionSnapshot,
   type TeamSidebar,
@@ -146,10 +148,13 @@ function notifyTeam(
 
 export function TeamsProvider({
   account = null,
+  accountTeams = noTeams,
   children,
   surface,
 }: {
   readonly account?: TeamAccount | null;
+  /** The teams Account's catalog lists the person in, wherever they joined. */
+  readonly accountTeams?: readonly TeamMembership[];
   readonly children: ReactNode;
   readonly surface: TeamSurface;
 }) {
@@ -196,20 +201,20 @@ export function TeamsProvider({
     () => coordination?.coordinator.getSnapshot().intents ?? noIntents,
     () => coordination?.coordinator.getSnapshot().intents ?? noIntents,
   );
-  // Teams entered on this device count as membership even while no agent link exists.
-  const members = useMemo(() => {
-    const byTeam = new Map<string, { readonly origin: string; readonly name: string }>();
-    for (const link of linked)
-      if (link.state !== "leaving")
-        byTeam.set(link.teamId, { origin: link.origin, name: link.teamName });
-    for (const intent of intents)
-      if (intent.teamDeploymentId && !byTeam.has(intent.teamDeploymentId))
-        byTeam.set(intent.teamDeploymentId, {
-          origin: intent.teamOrigin,
-          name: new URL(intent.teamOrigin).hostname.split(".")[0] ?? intent.teamOrigin,
-        });
-    return byTeam;
-  }, [linked, intents]);
+  // By content: the catalog snapshot is rebuilt on every status change, and each new member list
+  // rejoins every team's sidebar.
+  const accountKey = JSON.stringify(accountTeams);
+  const members = useMemo(
+    () =>
+      new Map(
+        listedTeams({
+          account: JSON.parse(accountKey) as readonly TeamMembership[],
+          links: linked,
+          intents,
+        }).map((team) => [team.teamDeploymentId, { origin: team.origin, name: team.name }]),
+      ),
+    [accountKey, linked, intents],
+  );
   const memberRef = useRef(members);
   memberRef.current = members;
   const registry = useMemo(
@@ -370,6 +375,7 @@ export function TeamsProvider({
 }
 
 const noIntents: readonly TeamConnectionIntent[] = [];
+const noTeams: readonly TeamMembership[] = [];
 
 async function readTeamUser(options: TeamSessionOptions): Promise<string> {
   return unwrapRpcResult(await options.rpc["team.bootstrap.get"]({})).member.userId;

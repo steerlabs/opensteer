@@ -525,6 +525,13 @@ export function App({
                 }
               : null
         }
+        accountTeams={(deploymentAccess?.deployments ?? [])
+          .filter((deployment) => deployment.kind === "team" && deployment.accountAccess !== null)
+          .map((deployment) => ({
+            teamDeploymentId: deployment.id,
+            origin: deployment.canonicalOrigin,
+            name: deployment.name,
+          }))}
         surface={
           preview
             ? { kind: "preview", hostClient, teams: preview.teams, world: preview.world }
