@@ -3032,6 +3032,44 @@ describe("BrowserService", () => {
       type: "stream.unsubscribe",
       surfaceId: "page-1",
     });
+    runtime.publishTabs({ surfaces: [{ ...surfaces[1]!, state: "suspended" }] });
+    await vi.waitFor(
+      () =>
+        expect(
+          service.clientStreams.source.ports.live(opened.session.id)?.records.get("page-2")?.state,
+          "The Host never received the suspended tab row",
+        ).toBe("suspended"),
+      { timeout: 1_000 },
+    );
+    const sleeping = new RecordingPeer("sleeping-native");
+    const asleep = await withTimeout(
+      service.attach(ownerId, opened.session.id, sleeping, consumerOptions()),
+      1_000,
+      {
+        timeoutError: () => new Error("The suspended control viewer never received its snapshot"),
+      },
+    );
+    expect(sleeping.textFrames.map((frame) => JSON.parse(frame))).toContainEqual(
+      expect.objectContaining({
+        type: "browser.snapshot",
+        sessionId: opened.session.id,
+        state: "ready",
+      }),
+    );
+    await asleep.handle(
+      Buffer.from(JSON.stringify({ type: "stream.subscribe", surfaceId: "page-2", frames: false })),
+      false,
+    );
+    expect(await runtime.nextCommand()).toEqual({
+      type: "stream.subscribe",
+      surfaceId: "page-2",
+      frames: false,
+    });
+    asleep.close();
+    expect(await runtime.nextCommand()).toEqual({
+      type: "stream.unsubscribe",
+      surfaceId: "page-2",
+    });
   });
 
   it("tells a popup only to the viewer whose input opened it, if it asked to hear", async () => {

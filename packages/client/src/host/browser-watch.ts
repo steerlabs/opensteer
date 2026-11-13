@@ -41,6 +41,7 @@ interface Watch {
   readonly surfaceId: string;
   holds: number;
   pictureHolds: number;
+  asleepHolds: number;
   captureRegionHolds: number;
   frameWindowHolds: number;
   rasterDemandHolds: number;
@@ -87,7 +88,10 @@ export class BrowserWatchStore {
   #authorized: (sessionId: string, surfaceId: string) => boolean = () => true;
   #suspended = false;
   #keepControlOnly = false;
-  #allowed: (sessionId: string, surfaceId: string) => boolean = () => true;
+  #allowed: (sessionId: string, surfaceId: string, asleep: boolean) => boolean = () => true;
+  #isAllowed(target: Watch): boolean {
+    return this.#allowed(target.sessionId, target.surfaceId, target.asleepHolds > 0);
+  }
   readonly #surfaces = new Map<string, Map<string, BrowserViewerSurface>>();
   surface(sessionId: string, surfaceId: string): BrowserViewerSurface | undefined {
     return this.#surfaces.get(sessionId)?.get(surfaceId);
@@ -117,7 +121,7 @@ export class BrowserWatchStore {
       if (!listeners.size) this.#statusListeners.delete(key);
     };
   };
-  readonly connect: (sessionId: string, surfaceId: string) => WebSocketClient;
+  readonly connect: (sessionId: string, surfaceId: string, asleep: boolean) => WebSocketClient;
   readonly mode: "watch" | "control";
   readonly retryDelay: (attempt: number, unreadableFrames: number) => number;
   readonly captureRegions: () => boolean;
@@ -128,7 +132,7 @@ export class BrowserWatchStore {
   readonly onDisconnect:
     ((sessionId: string, surfaceId: string, hadSurface: boolean) => void) | undefined;
   constructor(
-    connect: (sessionId: string, surfaceId: string) => WebSocketClient,
+    connect: (sessionId: string, surfaceId: string, asleep: boolean) => WebSocketClient,
     mode: "watch" | "control",
     onMessage:
       ((sessionId: string, message: BrowserServerMessage, surfaceId: string) => void) | undefined,
@@ -198,6 +202,7 @@ export class BrowserWatchStore {
     surfaceId: string,
     options: {
       readonly picture?: boolean;
+      readonly asleep?: boolean;
       readonly captureRegion?: boolean;
       readonly frameWindow?: boolean;
       /** This holder's presenter states its raster density through `rasterDemand`. */
@@ -205,6 +210,7 @@ export class BrowserWatchStore {
     } = {},
   ): () => void {
     const picture = options.picture !== false;
+    const asleep = !picture && options.asleep === true;
     const key = this.#key(sessionId, surfaceId);
     let target = this.#targets.get(key);
     if (!target) {
@@ -215,6 +221,7 @@ export class BrowserWatchStore {
         surfaceId,
         holds: 0,
         pictureHolds: 0,
+        asleepHolds: 0,
         captureRegionHolds: 0,
         frameWindowHolds: 0,
         rasterDemandHolds: 0,
@@ -241,6 +248,7 @@ export class BrowserWatchStore {
     const rasterDemand = picture && options.rasterDemand === true;
     target.holds++;
     if (picture) target.pictureHolds++;
+    if (asleep) target.asleepHolds++;
     if (captureRegion) target.captureRegionHolds++;
     if (frameWindow) target.frameWindowHolds++;
     if (rasterDemand) target.rasterDemandHolds++;
@@ -253,12 +261,7 @@ export class BrowserWatchStore {
       this.#subscribeTarget(target);
     this.#diagnose({ stage: "retain", holds: target.holds });
     if (picture) this.#scheduleDemand(key);
-    if (
-      !this.#paused(target) &&
-      this.#allowed(sessionId, surfaceId) &&
-      !target.socket &&
-      !target.timer
-    )
+    if (!this.#paused(target) && this.#isAllowed(target) && !target.socket && !target.timer)
       this.#open(target);
     const current = target;
     let released = false;
@@ -269,10 +272,16 @@ export class BrowserWatchStore {
       const previouslyOptedIn = current.captureRegionHolds === current.pictureHolds;
       const previouslyWindowed = current.frameWindowHolds === current.pictureHolds;
       if (picture) current.pictureHolds--;
+      if (asleep) current.asleepHolds--;
       if (captureRegion) current.captureRegionHolds--;
       if (frameWindow) current.frameWindowHolds--;
       if (rasterDemand) current.rasterDemandHolds--;
       if (--current.holds > 0) {
+        if (asleep && current.asleepHolds === 0 && !this.#isAllowed(current)) {
+          this.#close(current);
+          this.#set(current, this.#kept(current));
+          return;
+        }
         if (picture) this.#scheduleDemand(key);
         if (
           (picture && current.pictureHolds === 0) ||
@@ -384,7 +393,7 @@ export class BrowserWatchStore {
     );
   }
   reconcile(
-    allowed: (sessionId: string, surfaceId: string) => boolean = this.#allowed,
+    allowed: (sessionId: string, surfaceId: string, asleep: boolean) => boolean = this.#allowed,
     authorized: (sessionId: string, surfaceId: string) => boolean = this.#authorized,
   ): void {
     this.#allowed = allowed;
@@ -407,7 +416,7 @@ export class BrowserWatchStore {
     }
     for (const target of this.#targets.values()) {
       if (!authorized(target.sessionId, target.surfaceId)) continue;
-      if (!allowed(target.sessionId, target.surfaceId)) {
+      if (!this.#isAllowed(target)) {
         this.#close(target);
         this.#set(target, this.#kept(target));
       } else if (this.#paused(target)) {
@@ -435,7 +444,7 @@ export class BrowserWatchStore {
         target.synchronized &&
         target.socket?.readyState === 1 &&
         !this.#paused(target) &&
-        this.#allowed(target.sessionId, target.surfaceId)
+        this.#isAllowed(target)
       )
         this.#subscribeTarget(target);
     }
@@ -462,7 +471,7 @@ export class BrowserWatchStore {
   #open(target: Watch): void {
     if (
       this.#paused(target) ||
-      !this.#allowed(target.sessionId, target.surfaceId) ||
+      !this.#isAllowed(target) ||
       !this.#authorized(target.sessionId, target.surfaceId)
     )
       return;
@@ -476,7 +485,7 @@ export class BrowserWatchStore {
     }
     let socket: WebSocketClient;
     try {
-      socket = this.connect(target.sessionId, target.surfaceId);
+      socket = this.connect(target.sessionId, target.surfaceId, target.asleepHolds > 0);
     } catch (error) {
       this.#set(target, {
         ...empty,

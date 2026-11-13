@@ -39,7 +39,9 @@ export function LocalPhoneTab(props: {
     void (async () => {
       if (!liveSession) {
         if (!hostClient.activatePersonalTab) throw new Error("This Host cannot reopen saved tabs.");
-        const activated = await hostClient.activatePersonalTab(admission.surfaceId);
+        const activated = await hostClient.activatePersonalTab(admission.surfaceId, {
+          asleep: true,
+        });
         if (!activated) throw new Error("This tab could not reopen.");
       }
       if (cancelled) return;
@@ -65,7 +67,10 @@ export function LocalPhoneTab(props: {
   useLayoutEffect(() => {
     if (!active || !ready) return;
     try {
-      return hostClient.retainBrowserViewer(ready.sessionId, ready.surfaceId, { picture: false });
+      return hostClient.retainBrowserViewer(ready.sessionId, ready.surfaceId, {
+        picture: false,
+        asleep: true,
+      });
     } catch (error) {
       setFailure(error);
     }

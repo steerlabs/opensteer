@@ -124,7 +124,8 @@ export interface BrowserTabOpenOptions {
   readonly idempotencyKey?: string;
 }
 export interface PersonalTabActivationOptions {
-  readonly opening: string;
+  readonly opening?: string;
+  readonly asleep?: boolean;
 }
 export interface PendingBrowserTab extends Omit<BrowserTabOpenOptions, "idempotencyKey"> {
   readonly idempotencyKey: string;
@@ -1197,6 +1198,8 @@ export interface HostClient {
     surfaceId: string,
     options?: {
       readonly picture?: boolean;
+      // Only a holder whose own browser holds the tab may set this; other engines refuse to observe sleeping tabs.
+      readonly asleep?: boolean;
       readonly captureRegion?: boolean;
       readonly frameWindow?: boolean;
       readonly rasterDemand?: boolean;

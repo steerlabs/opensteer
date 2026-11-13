@@ -4223,7 +4223,11 @@ export class MockHostClient implements HostClient {
       ),
     });
   }
-  readonly retainBrowserViewer = (sessionId: string, surfaceId: string): (() => void) => {
+  readonly retainBrowserViewer = (
+    sessionId: string,
+    surfaceId: string,
+    _options?: Parameters<HostClient["retainBrowserViewer"]>[2],
+  ): (() => void) => {
     const release = this.#places.retain(sessionId, surfaceId);
     this.#state.refreshBrowserView();
     return () => {
