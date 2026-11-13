@@ -1,5 +1,6 @@
 import {
   processSupervisorExecutableVariable,
+  supervisedExitCode,
   writeProcessControl,
 } from "@opensteer/shared/processControl";
 import { ensurePrivateDirectorySync } from "@opensteer/shared/privateFiles";
@@ -320,7 +321,12 @@ function managedChild(child: ChildProcess): PersonalChildProcess {
     stderr: child.stderr,
     stdout: child.stdout,
     once(event, listener) {
-      child.once(event === "exit" ? "close" : event, listener as never);
+      if (event === "exit") {
+        const exited = listener as (code: number | null, signal: NodeJS.Signals | null) => void;
+        child.once("close", (code: number | null, signal: NodeJS.Signals | null) =>
+          exited(supervisedExitCode(code, hostPlatform()), signal),
+        );
+      } else child.once(event, listener as never);
       return this;
     },
     async terminate(mode) {

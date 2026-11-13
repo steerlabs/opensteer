@@ -8,7 +8,8 @@ import {
 } from "@opensteer/shared/command";
 import {
   processSupervisorExecutableVariable,
-  processSupervisorUndrainedExitCode,
+  supervisedExitCode,
+  windowsSupervisorDrained,
   writeProcessControl,
 } from "@opensteer/shared/processControl";
 import { delay } from "@opensteer/shared/delay";
@@ -152,8 +153,9 @@ export function spawnSupervised(options: SupervisedProcessOptions): SupervisedPr
       reject(error);
     });
     child.once("exit", (code, signal) => {
-      if (code !== processSupervisorUndrainedExitCode) running.delete(entry);
-      resolve({ code, signal });
+      // Only Windows lists trees from here; elsewhere the process group does.
+      if (platform !== "win32" || windowsSupervisorDrained(code)) running.delete(entry);
+      resolve({ code: supervisedExitCode(code, platform), signal });
     });
   });
 

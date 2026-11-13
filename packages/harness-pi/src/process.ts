@@ -1,3 +1,4 @@
+import { supervisedExitCode } from "@opensteer/shared/processControl";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { OpensteerError } from "@opensteer/core";
@@ -145,7 +146,10 @@ export class PiRpcClient {
 
   /** The cwd/session mismatch signature: a clean exit that never spoke the protocol. */
   get exitedWithoutProtocolOutput(): boolean {
-    return this.#protocolLines === 0 && this.#process.child.exitCode === 0;
+    return (
+      this.#protocolLines === 0 &&
+      supervisedExitCode(this.#process.child.exitCode, process.platform) === 0
+    );
   }
 
   get exited(): Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }> {

@@ -1,7 +1,7 @@
 import { DeploymentKindSchema } from "../packages/core/src/index.js";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
 import { isNodeError } from "@opensteer/shared/nodeError";
-import { writeProcessControl } from "@opensteer/shared/processControl";
+import { supervisedExitCode, writeProcessControl } from "@opensteer/shared/processControl";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, open, readFile, rm } from "node:fs/promises";
@@ -174,7 +174,7 @@ export function spawnDevelopmentProcess(
       });
       child.once("exit", (code, signal) => {
         running = false;
-        resolvePromise({ code, signal });
+        resolvePromise({ code: supervisedExitCode(code, process.platform), signal });
       });
     },
   );
