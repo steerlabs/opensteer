@@ -1,6 +1,9 @@
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { builtProcessSupervisor } from "../scripts/process-supervisor-path.js";
+import {
+  builtProcessSupervisor,
+  provideBuiltProcessSupervisor,
+} from "../scripts/process-supervisor-path.js";
 import {
   developmentPreflightCommands,
   configureDevelopmentEnvironment,
@@ -88,6 +91,18 @@ describe("development service selection", () => {
     expect(builtProcessSupervisor("/r", "linux", "arm64")).toBe(
       join("/r", "apps/desktop/generated-native/linux-arm64/opensteer-process-supervisor"),
     );
+  });
+
+  it("gives source entrypoints the built supervisor, or names the build that is missing", () => {
+    const missing: NodeJS.ProcessEnv = {};
+    expect(() => provideBuiltProcessSupervisor(missing, "/no/such/checkout")).toThrow(
+      "pnpm --filter @opensteer/desktop build:process-supervisor",
+    );
+    expect(missing.OPENSTEER_PROCESS_SUPERVISOR_EXECUTABLE).toBeUndefined();
+    const provided: NodeJS.ProcessEnv = {
+      OPENSTEER_PROCESS_SUPERVISOR_EXECUTABLE: process.execPath,
+    };
+    expect(provideBuiltProcessSupervisor(provided, "/no/such/checkout")).toBe(process.execPath);
   });
 
   it("uses the hosting computer’s native file helper", () => {

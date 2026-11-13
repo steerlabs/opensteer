@@ -1,4 +1,6 @@
+import { statSync } from "node:fs";
 import { join } from "node:path";
+import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 
 /** Where `pnpm --filter @opensteer/desktop build:process-supervisor` writes this computer's supervisor. */
 export function builtProcessSupervisor(
@@ -20,4 +22,20 @@ export function builtProcessSupervisor(
     `${operatingSystem}-${goArchitecture}`,
     `opensteer-process-supervisor${platform === "win32" ? ".exe" : ""}`,
   );
+}
+
+/** Points a source entrypoint's engine launches at the built supervisor, or says how to build it. */
+export function provideBuiltProcessSupervisor(
+  environment: NodeJS.ProcessEnv,
+  repositoryRoot: string,
+): string {
+  const supervisor =
+    environment[processSupervisorExecutableVariable]?.trim() ||
+    builtProcessSupervisor(repositoryRoot);
+  if (!statSync(supervisor, { throwIfNoEntry: false })?.isFile())
+    throw new Error(
+      `${supervisor} is missing; build it with: pnpm --filter @opensteer/desktop build:process-supervisor`,
+    );
+  environment[processSupervisorExecutableVariable] = supervisor;
+  return supervisor;
 }

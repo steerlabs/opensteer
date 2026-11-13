@@ -302,7 +302,8 @@ function runBoundedProbe(
       chunks.push(chunk);
     });
     child.once("error", (error) => finish(error));
-    child.once("exit", (code, signal) => {
+    // `close` follows the end of stdout; `exit` can arrive while output is still queued.
+    child.once("close", (code, signal) => {
       if (code === 0) finish();
       else {
         finish(
@@ -437,8 +438,12 @@ function windowsRegistryExpansion(
   return (entry) => expandEntry(entry, 0);
 }
 
+function unquotedPathEntry(entry: string): string {
+  return entry.trim().replace(/^"(.*)"$/u, "$1");
+}
+
 function windowsPathKey(entry: string): string {
-  const unquoted = entry.trim().replace(/^"(.*)"$/u, "$1");
+  const unquoted = unquotedPathEntry(entry);
   if (!unquoted) return "";
   const normalized = path.win32.normalize(unquoted);
   const trimmed = /^[A-Za-z]:\\$/u.test(normalized) ? normalized : normalized.replace(/\\+$/u, "");
@@ -521,7 +526,9 @@ function requireUsablePath(
   const paths = platform === "win32" ? path.win32 : path.posix;
   if (
     !executablePath ||
-    !executablePath.split(paths.delimiter).some((entry) => paths.isAbsolute(entry))
+    !executablePath
+      .split(paths.delimiter)
+      .some((entry) => paths.isAbsolute(platform === "win32" ? unquotedPathEntry(entry) : entry))
   ) {
     throw new PersonalUserEnvironmentError(
       `The ${source} did not provide a usable executable PATH for local agents.`,

@@ -76,6 +76,22 @@ describe("Personal user environment", () => {
     expect(JSON.stringify(await environment.resolve())).not.toContain("SECRET");
   });
 
+  it("keeps every byte a probe wrote before it exited", async () => {
+    if (process.platform === "win32") return;
+    const directory = await mkdtemp(path.join(tmpdir(), "opensteer-login-shell-"));
+    temporaryDirectories.push(directory);
+    const shell = path.join(directory, "chatty-shell");
+    await writeFile(shell, "#!/bin/sh\nhead -c 300000 /dev/zero | tr '\\000' a\n", { mode: 0o700 });
+    await chmod(shell, 0o700);
+    const output = await probeLoginShell({
+      environment: { HOME: directory, PATH: "/usr/bin:/bin" },
+      maximumOutputBytes: 400_000,
+      shell,
+      timeoutMs: 5_000,
+    });
+    expect(output.byteLength).toBe(300_000);
+  });
+
   it("bounds the native login-shell probe to five seconds or less", async () => {
     if (process.platform === "win32") return;
     const directory = await mkdtemp(path.join(tmpdir(), "opensteer-login-shell-"));
@@ -203,6 +219,18 @@ describe("Personal user environment", () => {
     );
   });
 
+  it("accepts a Windows PATH whose entries are quoted", async () => {
+    const environment = new NativePersonalUserEnvironment({
+      environment: { Path: '"C:\\Windows\\System32";"D:\\Tools"', SystemRoot: "C:\\Windows" },
+      isDirectory: () => false,
+      platform: "win32",
+      registryProbe: async () => [],
+    });
+    await expect(environment.resolve()).resolves.toMatchObject({
+      PATH: '"C:\\Windows\\System32";"D:\\Tools"',
+    });
+  });
+
   it("decodes the registry probe's UTF-8 JSON and rejects anything else", () => {
     const value: WindowsRegistryValue = {
       kind: "ExpandString",
@@ -280,6 +308,7 @@ describe("Personal user environment", () => {
 
   it("filters the Desktop environment with the Windows baseline only on Windows", () => {
     const source = {
+      CLAUDE_CODE_GIT_BASH_PATH: "D:\\Git\\bin\\bash.exe",
       ComSpec: "C:\\Windows\\system32\\cmd.exe",
       HOME: "/Users/ada",
       NODE_OPTIONS: "--require evil.js",
@@ -288,12 +317,16 @@ describe("Personal user environment", () => {
       SystemRoot: "C:\\Windows",
     };
     expect(filterUserEnvironment(source, "win32")).toEqual({
+      CLAUDE_CODE_GIT_BASH_PATH: "D:\\Git\\bin\\bash.exe",
       ComSpec: "C:\\Windows\\system32\\cmd.exe",
       HOME: "/Users/ada",
       PATH: "C:\\Windows\\system32",
       ProgramData: "C:\\ProgramData",
       SystemRoot: "C:\\Windows",
     });
-    expect(filterUserEnvironment(source, "darwin")).toEqual({ HOME: "/Users/ada" });
+    expect(filterUserEnvironment(source, "darwin")).toEqual({
+      CLAUDE_CODE_GIT_BASH_PATH: "D:\\Git\\bin\\bash.exe",
+      HOME: "/Users/ada",
+    });
   });
 });
