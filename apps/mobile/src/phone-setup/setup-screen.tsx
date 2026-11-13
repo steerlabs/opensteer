@@ -81,12 +81,7 @@ function SetUpPhone(props: { readonly deploymentId: string; readonly hostClient:
         deploymentId: props.deploymentId,
         draft,
         hostClient: props.hostClient,
-        notifications: {
-          request: async () => {
-            await registration.requestPermission();
-            return registration.getSnapshot().status !== "permission-denied";
-          },
-        },
+        notifications: registration,
       })
       .catch(() => undefined);
   };

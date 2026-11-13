@@ -2,6 +2,7 @@ import { deviceMembership, type DeviceMembership } from "@opensteer/client/compu
 import type { HostClient, HostSnapshot } from "@opensteer/client/host";
 import { RunnerIdSchema } from "@opensteer/core";
 import type { DeviceInitialAccess } from "@opensteer/protocol";
+import type { NotificationChoice } from "../notifications/push-registration.js";
 import type { IphoneAppId } from "../platform/iphone-apps.js";
 import {
   iphonePermissionOf,
@@ -40,9 +41,9 @@ export interface PhoneSetupState {
   readonly apps: Readonly<Partial<Record<IphoneAppId, PhoneSetupOutcome>>>;
 }
 
-/** The OS notification prompt, asked once, only after Continue. */
+/** The Notifications choice, applied durably after Continue; only on asks the OS. */
 export interface SetupNotifications {
-  request(): Promise<boolean>;
+  choose(on: boolean): Promise<NotificationChoice>;
 }
 
 /** The apps this build offers on Set up, with Photos off by default: it shares the whole library. */
@@ -140,11 +141,11 @@ export class PhoneSetup {
         });
         return this.#state;
       }
-      if (draft.notifications) {
-        this.#set({ phase: { kind: "asking", item: "notifications" } });
-        const granted = await input.notifications.request().catch(() => false);
-        this.#set({ notifications: granted ? "on" : "denied" });
-      }
+      if (draft.notifications) this.#set({ phase: { kind: "asking", item: "notifications" } });
+      const notifications = await input.notifications
+        .choose(draft.notifications)
+        .catch((): NotificationChoice => "unavailable");
+      this.#set({ notifications });
       const chosen = iphoneAppIds.filter((app) => draft.apps[app] === true);
       for (const app of chosen) {
         this.#set({ phase: { kind: "asking", item: app } });

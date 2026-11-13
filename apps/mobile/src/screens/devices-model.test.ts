@@ -71,7 +71,22 @@ describe("Devices on the phone", () => {
   it("lists this phone and Home first, then other devices, then sessions that run nothing", () => {
     const sections = deviceListSections({
       here: { state: "member", runnerId: phone },
-      machines,
+      machines: [
+        ...machines,
+        // Both Android: only the Host's kind marks the Agent Phone, never the shape.
+        machine({
+          id: "rnr_55555555-5555-4555-8555-555555555555",
+          kind: "phone",
+          name: "Pixel 9",
+          device: { app: "opensteer", form: "phone", platform: "android" },
+        }),
+        machine({
+          id: "rnr_66666666-6666-4666-8666-666666666666",
+          kind: "agent-phone",
+          name: "Pixel 7",
+          device: { form: "phone", platform: "android" },
+        }),
+      ],
       noun: "iPhone",
       sessions: [
         session({
@@ -94,7 +109,15 @@ describe("Devices on the phone", () => {
         title: "",
         rows: ["Alex's iPhone — This iPhone · Online", "Mac mini — Home · your agent runs here"],
       },
-      { title: "Other devices", rows: ["Studio Mac — Online", "MacBook Pro (2) — Online"] },
+      {
+        title: "Other devices",
+        rows: [
+          "Studio Mac — Online",
+          "MacBook Pro (2) — Online",
+          "Pixel 9 — Online",
+          "Pixel 7 — Agent Phone · Online",
+        ],
+      },
       {
         title: "Also signed in",
         rows: ["Chrome on Mac — Signed in", "Opensteer for iPhone — Update to finish setup"],

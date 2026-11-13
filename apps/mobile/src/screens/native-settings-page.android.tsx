@@ -1,8 +1,10 @@
 import { Box, ModalBottomSheet, RNHostView, Row, Text, TextButton } from "@expo/ui/jetpack-compose";
 import { fillMaxWidth, padding } from "@expo/ui/jetpack-compose/modifiers";
+import { SymbolView, type AndroidSymbol } from "expo-symbols";
 import { useState, type ReactNode } from "react";
 import { color } from "../theme.js";
 import { IntegrationIcon } from "../ui/integration-icon.js";
+import type { SFSymbolName } from "../ui/symbol.js";
 import type { NativeSettingsPageProps, NativeSettingsRow } from "./native-settings-page.types.js";
 import {
   ActionRow,
@@ -121,10 +123,17 @@ function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
         <InputRow label={row.label} onChange={row.onChange} secure={row.secure} value={row.value} />
       );
     case "button": {
+      const material = row.symbol === undefined ? undefined : materialSymbols[row.symbol];
       const lead = row.mark ? (
         <Box modifiers={[]}>
           <RNHostView matchContents>
             <IntegrationIcon definitionId={row.mark.definitionId} name={row.mark.name} size={28} />
+          </RNHostView>
+        </Box>
+      ) : material !== undefined ? (
+        <Box modifiers={[]}>
+          <RNHostView matchContents>
+            <SymbolView name={{ android: material }} size={24} tintColor={color.muted} />
           </RNHostView>
         </Box>
       ) : null;
@@ -163,3 +172,18 @@ function Row_({ row }: { readonly row: NativeSettingsRow }): ReactNode {
     }
   }
 }
+
+/** The Material Symbol Android's own Settings would lead a row with, for each SF Symbol a row names. */
+const materialSymbols: Partial<Record<SFSymbolName, AndroidSymbol>> = {
+  camera: "videocam",
+  desktopcomputer: "desktop_mac",
+  globe: "language",
+  hifispeaker: "speaker",
+  laptopcomputer: "laptop_mac",
+  lightbulb: "lightbulb",
+  macmini: "host",
+  powerplug: "power",
+  "server.rack": "dns",
+  smartphone: "smartphone",
+  tv: "tv",
+};

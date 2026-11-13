@@ -62,9 +62,9 @@ describe("Set up this phone", () => {
       if (phase.kind === "asking" && asked.at(-1) !== phase.item) asked.push(phase.item);
     });
     const notifications = {
-      request: async () => {
-        calls.push("notifications");
-        return false;
+      choose: async (on: boolean) => {
+        calls.push(`notifications:${on}`);
+        return "denied" as const;
       },
     };
     const state = await setup.run({
@@ -76,7 +76,7 @@ describe("Set up this phone", () => {
     });
     expect(calls).toEqual([
       'add:{"browser":true,"apps":true,"files":false}',
-      "notifications",
+      "notifications:true",
       "share:apple-calendar",
       "share:iphone-location",
     ]);
@@ -90,6 +90,33 @@ describe("Set up this phone", () => {
     });
   });
 
+  it("applies Notifications Off without a prompt, and reads back how it settled", async () => {
+    const { controller } = fakeController({});
+    const off = { ...draft, apps: {}, notifications: false };
+    const setup = new PhoneSetup(off);
+    const asked: string[] = [];
+    setup.subscribe(() => {
+      const phase = setup.getState().phase;
+      if (phase.kind === "asking") asked.push(phase.item);
+    });
+    const chosen: boolean[] = [];
+    const state = await setup.run({
+      controller,
+      deploymentId,
+      draft: off,
+      hostClient: host(true),
+      notifications: {
+        choose: async (on) => {
+          chosen.push(on);
+          return "off";
+        },
+      },
+    });
+    expect(chosen).toEqual([false]);
+    expect(asked).toEqual([]);
+    expect(state.notifications).toBe("off");
+  });
+
   it("sends no switches to a Host without devices-v1, and asks nothing when enrollment fails", async () => {
     const { calls, controller } = fakeController({
       add: { failure: { kind: "remote-access-off" }, kind: "failed" },
@@ -99,7 +126,7 @@ describe("Set up this phone", () => {
       deploymentId,
       draft,
       hostClient: host(false),
-      notifications: { request: async () => true },
+      notifications: { choose: async () => "on" },
     });
     expect(calls).toEqual(["add:null"]);
     expect(state.phase).toEqual({ kind: "failed", failure: { kind: "remote-access-off" } });

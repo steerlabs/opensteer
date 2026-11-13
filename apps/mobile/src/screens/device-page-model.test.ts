@@ -70,21 +70,30 @@ describe("a device page's switches", () => {
 
 describe("removing a device", () => {
   it("says what removal does here and elsewhere, and never offers it for Home", () => {
-    expect(deviceRemoval(machine({}), { noun: "iPhone", thisDevice: true })).toEqual({
+    const none = { noun: "iPhone", profiles: [], thisDevice: false };
+    expect(deviceRemoval(machine({}), { ...none, thisDevice: true })).toEqual({
       label: "Sign out and remove this iPhone",
       title: "Sign out and remove this iPhone?",
-      message: "Your agent can no longer use this iPhone. Browser data kept here is deleted.",
+      message: "Your agent can no longer use this iPhone. Browser profiles kept here are deleted.",
     });
-    expect(
-      deviceRemoval(machine({ status: "offline" }), { noun: "iPhone", thisDevice: false }),
-    ).toEqual({
+    expect(deviceRemoval(machine({ status: "offline" }), none)).toEqual({
       label: "Remove",
       title: "Remove MacBook Pro (2)?",
       message:
-        "It is signed out and your agent can't use it. It finishes the next time it connects.",
+        "It is signed out and your agent can't use it. It finishes the next time it connects. Browser profiles kept on it are deleted.",
     });
+    // The profiles it holds are named, and an away device erases them when it next connects.
     expect(
-      deviceRemoval(machine({ kind: "home" }), { noun: "iPhone", thisDevice: false }),
-    ).toBeNull();
+      deviceRemoval(machine({ id: "rnr_mbp", status: "offline" }), {
+        ...none,
+        profiles: [
+          { homeRunnerId: "rnr_mbp", name: "Work" },
+          { homeRunnerId: "rnr_other", name: "Personal" },
+        ],
+      })?.message,
+    ).toBe(
+      "It is signed out and your agent can't use it. It finishes the next time it connects. Its browser profile Work and its sign-ins are deleted. MacBook Pro (2) erases it the next time it connects.",
+    );
+    expect(deviceRemoval(machine({ kind: "home" }), none)).toBeNull();
   });
 });

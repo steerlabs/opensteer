@@ -13,6 +13,7 @@ import { iphonePermissionOf } from "../iphone-apps/controller.js";
 import { iphoneAppIds, iphoneAppRow, opensteerOn } from "../iphone-apps/model.js";
 import { resetToDeployments } from "../navigation-ref.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
+import { wantsAlerts } from "../notifications/push-registration.js";
 import { useMobileNotifications, usePushRegistration } from "../ui/notifications-context.js";
 import { confirmDestructive } from "./confirm.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
@@ -23,6 +24,7 @@ import {
   withSwitch,
   type DeviceSwitchKey,
 } from "./device-page-model.js";
+import { deviceKindLabel } from "./devices-model.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
 
@@ -53,6 +55,7 @@ function DevicePage(props: {
   const machines = useHostSelector(props.hostClient, selectMachines);
   const revision = useHostSelector(props.hostClient, selectRevision);
   const devicesAvailable = useHostSelector(props.hostClient, selectDevices);
+  const profiles = useHostSelector(props.hostClient, selectProfiles);
   const machine = machines.find(({ id }) => id === props.machineId) ?? null;
   const iphoneController = useIphoneApps();
   const iphone = useIphoneAppsState(iphoneController);
@@ -171,11 +174,12 @@ function DevicePage(props: {
         ];
       })
     : [];
-  const removal = deviceRemoval(machine, { noun: thisPhoneNoun, thisDevice });
-  const status = isHome(machine) ? "Home · your agent runs here" : computerStatus(machine).label;
-  const notificationsOn =
-    push.status === "registered" &&
-    (push.preferences.approvalsEnabled || push.preferences.runOutcomesEnabled);
+  const removal = deviceRemoval(machine, { noun: thisPhoneNoun, profiles, thisDevice });
+  const kind = isHome(machine) ? null : deviceKindLabel(machine);
+  const status = isHome(machine)
+    ? "Home · your agent runs here"
+    : [kind, computerStatus(machine).label].filter(Boolean).join(" · ");
+  const notificationsOn = push.status === "registered" && wantsAlerts(push.preferences);
 
   const sections: NativeSettingsSection[] = [
     {
@@ -253,13 +257,7 @@ function DevicePage(props: {
                     void Linking.openSettings();
                     return;
                   }
-                  void (async () => {
-                    if (on) await registration.requestPermission();
-                    await registration.setPreferences({
-                      approvalsEnabled: on,
-                      runOutcomesEnabled: on,
-                    });
-                  })().catch(() => undefined);
+                  void registration.choose(on).catch(() => undefined);
                 },
               },
             ],
@@ -317,3 +315,4 @@ function DevicePage(props: {
 const selectMachines = (snapshot: HostSnapshot) => snapshot.machines;
 const selectRevision = (snapshot: HostSnapshot) => snapshot.machineRevision;
 const selectDevices = (snapshot: HostSnapshot) => snapshot.devicesAvailable === true;
+const selectProfiles = (snapshot: HostSnapshot) => snapshot.browserProfiles;

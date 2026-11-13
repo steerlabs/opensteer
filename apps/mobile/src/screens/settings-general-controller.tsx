@@ -120,7 +120,8 @@ function notificationOperation(
     case "open-settings":
       return () => Linking.openSettings();
     case "request-permission":
-      return () => registration.requestPermission();
+      // Asking to be notified also undoes an earlier Off.
+      return async () => void (await registration.choose(true));
     case "retry-notifications":
       return () => registration.sync();
   }
