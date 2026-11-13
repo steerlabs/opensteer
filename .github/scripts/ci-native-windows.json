@@ -18,5 +18,11 @@
     "apps/desktop/scripts/build-process-supervisor.ts",
     "apps/runner/scripts/build-native-fs.ts"
   ],
-  "vitest": ["vitest.windows.config.ts", "tests/process-supervisor-setup.test-support.ts", "scripts/process-supervisor-path.ts"]
+  "vitest": [
+    "vitest.windows.config.ts",
+    "tests/process-supervisor-setup.test-support.ts",
+    "scripts/process-supervisor-path.ts",
+    "apps/host/src/main.ts",
+    "apps/runner/src/main.ts"
+  ]
 }

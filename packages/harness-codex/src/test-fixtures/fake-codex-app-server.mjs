@@ -66,6 +66,11 @@ const version =
   scenario === "version-mismatch"
     ? "0.0.0"
     : createRequire(import.meta.url)("@openai/codex/package.json").version;
+// `codex --version` is how the Runner reads a person's own install.
+if (process.argv.includes("--version")) {
+  writeFileSync(1, `codex-cli ${version}\n`);
+  process.exit(0);
+}
 const writeCaptureRecord = capturePath ? createCaptureRecordWriter(capturePath) : undefined;
 let captureRunId = null;
 
