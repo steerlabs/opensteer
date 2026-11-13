@@ -7,6 +7,8 @@ import type {
 import { createDesktopHostFetch } from "./desktop-host-transport.js";
 
 export interface ComputerFacts {
+  /** The Mac this Opensteer lives on, as its Host names it; null where the Host doesn't say. */
+  readonly homeName: string | null;
   readonly needsYou: number;
   readonly unread: boolean;
   readonly teams: readonly {
@@ -30,9 +32,13 @@ export async function readComputerFacts(
     kind: "personal",
     onAuthenticationRequired: () => undefined,
   });
-  const [attention, linked] = await Promise.all([
+  const [attention, linked, homeName] = await Promise.all([
     rpc["attention.get"]({}).then(unwrapRpcResult),
     rpc["teams.links.list"]({}).then(unwrapRpcResult),
+    rpc["devices.overview.get"]({})
+      .then(unwrapRpcResult)
+      .then(({ devices }) => devices.find((device) => device.kind === "home")?.name ?? null)
+      .catch(() => null),
   ]);
   const teams = await Promise.all(
     linked.links
@@ -59,5 +65,5 @@ export async function readComputerFacts(
         }
       }),
   );
-  return { ...attention, teams };
+  return { ...attention, homeName, teams };
 }

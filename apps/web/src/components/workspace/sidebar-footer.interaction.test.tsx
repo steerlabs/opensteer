@@ -36,9 +36,14 @@ function desktop(expired = false) {
   const id = createId("deployment");
   const secondId = createId("deployment");
   const teamId = createId("deployment");
-  const facts = { needsYou: 3, unread: false, teams: [{ id: teamId, name: "Acme", mentions: 7 }] };
+  const facts = {
+    homeName: null,
+    needsYou: 3,
+    unread: false,
+    teams: [{ id: teamId, name: "Acme", mentions: 7 }],
+  };
   readFacts.mockImplementation(async (_bridge, computer) =>
-    computer.id === id ? { ...facts } : { needsYou: 0, unread: true, teams: [] },
+    computer.id === id ? { ...facts } : { homeName: null, needsYou: 0, unread: true, teams: [] },
   );
   const select = vi.fn(async () => undefined);
   const onAddPlace = vi.fn();
