@@ -64,7 +64,8 @@ async function fixture() {
     })
     .execute();
   const admitted = await admitTeamTaskRequest(f.database, {
-    origin: { teamId, channelId: source.channelId, threadRootId: source.threadRootId },
+    bodyMarkdown: "Team ask",
+    origin: { teamId, channelId: source.channelId, threadRootId: source.threadRootId! },
     requestId: createId("teamAgentRequest"),
     triggerMessageId: source.messageId!,
     source,
@@ -197,7 +198,7 @@ it("imports verified bytes into the private attachment store and the exact Run c
   });
 });
 
-it("discards a bad digest and refuses provenance from another team task", async () => {
+it("discards a bad digest and imports authorized files from other team channels", async () => {
   const f = await fixture();
   const file = {
     id: createId("teamBlob"),
@@ -218,15 +219,20 @@ it("discards a bad digest and refuses provenance from another team task", async 
     }),
   ).rejects.toThrow("checksum");
   const bytes = Buffer.from("yes");
-  await expect(
-    f.port.import({
-      runId: f.runId,
-      file: { ...file, sha256: createHash("sha256").update(bytes).digest("hex") },
-      source: { ...f.source, channelId: createId("teamChannel") },
-      bytes: Readable.from([bytes]),
-      signal: AbortSignal.timeout(5_000),
-    }),
-  ).rejects.toMatchObject({ code: "forbidden" });
-  expect(await f.database.selectFrom("attachments").selectAll().execute()).toEqual([]);
-  expect(f.received).toEqual([]);
+  // A private Run can import a standing team read; provenance is data, not task authority.
+  await f.database
+    .updateTable("runs")
+    .set({ replyTarget: null })
+    .where("id", "=", f.runId)
+    .execute();
+  const imported = await f.port.import({
+    runId: f.runId,
+    file: { ...file, sha256: createHash("sha256").update(bytes).digest("hex") },
+    source: { ...f.source, channelId: createId("teamChannel") },
+    bytes: Readable.from([bytes]),
+    signal: AbortSignal.timeout(5_000),
+  });
+  expect(imported.path).toBeTruthy();
+  expect(await f.database.selectFrom("attachments").selectAll().execute()).toHaveLength(1);
+  expect(f.received).toHaveLength(1);
 });

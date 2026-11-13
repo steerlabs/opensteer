@@ -29,11 +29,8 @@ export interface TeamComposerProps {
     readonly end: number;
   }) => void;
   readonly agent: AgentReach;
-  /**
-   * This message asks the reader's agent. One state, three ways in: the pill,
-   * @ My agent, and (where a task for this thread is still open) it starts on.
-   */
   readonly toMyAgent: boolean;
+  readonly sticky?: boolean;
   readonly onToMyAgentChange: (on: boolean) => void;
   /** Asking with no Opensteer linked: opens "Connect your Opensteer". */
   readonly onAgentUnavailable: () => void;
@@ -76,7 +73,7 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
   const hasContent = props.text.trim() !== "" || props.attachments.length > 0;
   const editing = props.editing ?? null;
   // An edit changes words only: it carries no files and asks no agent.
-  const toMyAgent = props.toMyAgent && props.agent === "available" && editing === null;
+  const toMyAgent = props.toMyAgent && editing === null;
   const isEditing = editing !== null;
   const open = focused || hasContent || toMyAgent || isEditing;
   useEffect(() => {
@@ -91,8 +88,9 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
       <AskMyAgentPill
         on={toMyAgent}
         onPress={() => {
-          if (props.agent === "not-connected") props.onAgentUnavailable();
-          else props.onToMyAgentChange(!toMyAgent);
+          if (toMyAgent) props.onToMyAgentChange(false);
+          else if (props.agent === "not-connected") props.onAgentUnavailable();
+          else if (props.agent === "available") props.onToMyAgentChange(true);
         }}
       />
     );
@@ -102,8 +100,15 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
         <MentionList onPick={props.onPickMention} options={props.mentions} />
       )}
       {props.hint ?? null}
+      {props.sticky && editing === null && (toMyAgent || props.agent === "available") ? (
+        <Pressable accessibilityRole="button" onPress={() => props.onToMyAgentChange(!toMyAgent)}>
+          <AppText role="caption" tone="muted">
+            {toMyAgent ? "→ your agent ✕" : "+ your agent"}
+          </AppText>
+        </Pressable>
+      ) : null}
       {editing === null ? null : <EditingBar onCancel={editing.onCancel} />}
-      <View style={[styles.rim, toMyAgent && styles.rimOn]}>
+      <View style={[styles.rim, toMyAgent && !props.sticky && styles.rimOn]}>
         <ComposerBar
           {...(props.attachments.length === 0 && !uploading
             ? {}
@@ -128,7 +133,7 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
               onPress={() => input.current?.focus()}
               style={styles.lane}
             >
-              {toMyAgent ? (
+              {toMyAgent && !props.sticky ? (
                 <Pressable
                   accessibilityHint="Turns off asking your agent"
                   accessibilityLabel="To my agent"
@@ -193,7 +198,7 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
               ) : null}
             </View>
           }
-          {...(open && editing === null ? { accessory: askPill } : {})}
+          {...(open && !props.sticky && editing === null ? { accessory: askPill } : {})}
           action={
             open ? (
               <ComposerAction
@@ -204,7 +209,7 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
                 onPress={props.onSend}
               />
             ) : (
-              <View style={styles.restAction}>{askPill}</View>
+              <View style={styles.restAction}>{props.sticky ? null : askPill}</View>
             )
           }
           shape={open ? "rounded" : "capsule"}

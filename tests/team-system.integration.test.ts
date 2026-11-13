@@ -403,12 +403,10 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
       .selectAll()
       .where("id", "=", local.requestId)
       .executeTakeFirstOrThrow();
-    expect(request.state).toBe("done");
+    expect(request.state).toBe("needs_you");
+    expect(request.finishedAt).toBeNull();
     const replyMessageId = request.replyMessageId;
-    if (replyMessageId === null) throw new Error("The finished request named no reply");
-    expect([...statusStates]).toEqual(
-      expect.arrayContaining(["queued", "working", "needs_you", "done"]),
-    );
+    if (replyMessageId === null) throw new Error("The published request named no reply");
     expect(request.steps.length).toBeGreaterThan(0);
     expect(request.steps.every((step) => Object.keys(step).sort().join() === "count,kind")).toBe(
       true,
@@ -480,6 +478,17 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
       true,
     );
     releasePublication.resolve();
+    await teamCondition(
+      session.client,
+      () =>
+        session.client
+          .getSnapshot()
+          .thread?.requests.find((row) => row.id === local.requestId && row.state === "done"),
+      "Terminal status never finished the published request",
+    );
+    expect([...statusStates]).toEqual(
+      expect.arrayContaining(["queued", "working", "needs_you", "done"]),
+    );
     await teamCondition(
       personalClient,
       () => {
@@ -562,7 +571,8 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
         const run = await personal.host.store.database
           .selectFrom("runs")
           .selectAll()
-          .where("teamRequestId", "=", row.requestId)
+          .where("threadId", "=", row.localTaskId)
+          .where("seedInputId", "=", row.localInputId)
           .where("status", "=", "running")
           .executeTakeFirst();
         return run;
@@ -607,14 +617,14 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
     await command({ type: "team.channel.update", channelId, name: "support", peopleOnly: false });
     const pendingPost = Promise.withResolvers<void>();
     const postFinished = Promise.withResolvers<boolean>();
-    const originalReply = team.host.team.requests.reply.bind(team.host.team.requests);
-    vi.spyOn(team.host.team.requests, "reply").mockImplementation(async (...args) => {
+    const originalPost = team.host.team.requests.post.bind(team.host.team.requests);
+    vi.spyOn(team.host.team.requests, "post").mockImplementation(async (...args) => {
       pendingPost.resolve();
       await withTimeout(releasePost.promise, 10000, {
         timeoutError: () => new Error("Pending team post was not released"),
       });
       try {
-        const result = await originalReply(...args);
+        const result = await originalPost(...args);
         postFinished.resolve(true);
         return result;
       } catch (error) {

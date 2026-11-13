@@ -1,3 +1,5 @@
+import { gate } from "@opensteer/shared/test-support/observation";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createBrowserSessionId } from "@opensteer/protocol/browser";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -25,8 +27,8 @@ import {
 } from "./password-sign-in-service.js";
 
 const services: PasswordSignInService[] = [];
-afterEach(() => {
-  for (const service of services.splice(0)) service.close();
+afterEach(async () => {
+  for (const service of services.splice(0)) await service.close();
   vi.useRealTimers();
 });
 
@@ -399,6 +401,62 @@ describe("human Passwords settlement", () => {
     await call;
     return h;
   }
+  it.each(["shutdown", "authority loss"])(
+    "joins %s Request settlement before close completes",
+    async (cause) => {
+      const h = await pending();
+      vi.useRealTimers();
+      const settlement = gate({ label: "shutdown Request settlement", deadlineMs: 1_000 });
+      const settle = h.requests.settlePasswordSignInRequest.getMockImplementation()!;
+      h.requests.settlePasswordSignInRequest.mockImplementationOnce(async (input) => {
+        await settlement.enter();
+        return settle(input);
+      });
+      if (cause === "authority loss") h.end();
+      const closed = Promise.resolve(h.service.close()).then(() => h.request().status);
+      try {
+        await settlement.entered;
+      } finally {
+        settlement.release();
+      }
+      expect(
+        await withTimeout(closed, 1_000, {
+          timeoutError: () => new Error("password sign-in shutdown never joined settlement"),
+        }),
+      ).toBe("fulfilled");
+      expect(h.request().response).toEqual({ kind: "external", value: { outcome: "interrupted" } });
+    },
+  );
+  it("joins a Request still opening when shutdown begins", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const call = h.start();
+    await vi.advanceTimersByTimeAsync(1);
+    vi.useRealTimers();
+    const opening = gate({ label: "lazy Request creation", deadlineMs: 1_000 });
+    const open = h.requests.openPasswordSignIn.getMockImplementation()!;
+    h.requests.openPasswordSignIn.mockImplementationOnce(async (input) => {
+      await opening.enter();
+      return open(input);
+    });
+    h.event({ kind: "needs", need: "approval" });
+    try {
+      await opening.entered;
+      const closed = Promise.resolve(h.service.close()).then(() => h.request()?.status);
+      opening.release();
+      expect(
+        await withTimeout(closed, 1_000, {
+          timeoutError: () => new Error("password sign-in shutdown never joined Request creation"),
+        }),
+      ).toBe("fulfilled");
+      expect(h.request().response).toEqual({ kind: "external", value: { outcome: "interrupted" } });
+    } finally {
+      opening.release();
+      await withTimeout(call, 1_000, {
+        timeoutError: () => new Error("the sign-in caller never finished after shutdown"),
+      });
+    }
+  });
   const decision = {
     kind: "approve",
     loginId: "00000000-0000-4000-8000-000000000001",

@@ -3,7 +3,7 @@ import { app_publish, app_list, app_fetch } from "./apps.js";
 import { pending_request, request_withdraw } from "./requests.js";
 import { environment_list, orchestrator_capabilities } from "./environment.js";
 import { plugin_install } from "./plugins.js";
-import { team_read, team_search, team_reply } from "./team.js";
+import { team_read, team_search, team_post } from "./team.js";
 import {
   thread_read,
   thread_list,
@@ -72,7 +72,7 @@ export const agentTools = [
   ...integrationTools,
   team_read,
   team_search,
-  team_reply,
+  team_post,
   knowledge_topics,
   knowledge_read,
   knowledge_write,

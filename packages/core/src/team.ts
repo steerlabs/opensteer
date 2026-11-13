@@ -4,6 +4,8 @@ import {
   TeamChannelIdSchema,
   TeamMessageIdSchema,
   UserIdSchema,
+  MessageIdSchema,
+  SequenceSchema,
 } from "./ids.js";
 
 export const TeamChannelKindSchema = z.enum(["public", "private", "dm", "group_dm"]);
@@ -23,6 +25,7 @@ export const TeamTaskOriginSchema = z.strictObject({
 });
 export type TeamTaskOrigin = z.infer<typeof TeamTaskOriginSchema>;
 export const TeamSourceSchema = TeamTaskOriginSchema.extend({
+  threadRootId: TeamMessageIdSchema.nullable(),
   messageId: TeamMessageIdSchema.nullable(),
   audience: TeamAudienceSchema,
 }).strict();
@@ -85,3 +88,30 @@ export const TeamStatusStepSchema = z.strictObject({
   kind: TeamStatusStepKindSchema,
   count: z.number().int().nonnegative(),
 });
+
+export const TeamRunDeliverySchema = z.strictObject({
+  state: z.enum(["sending", "sent", "blocked"]),
+  via: z.enum(["final", "tool"]),
+  answerMessageId: MessageIdSchema.nullable(),
+  teamMessageId: TeamMessageIdSchema.nullable(),
+  reason: z.string().trim().min(1).max(500).nullable(),
+});
+export const TeamRunDeliveryViewSchema = z.object(TeamRunDeliverySchema.shape);
+export type TeamRunDelivery = z.infer<typeof TeamRunDeliverySchema>;
+
+export const TeamTurnContextSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("team"),
+    source: TeamSourceSchema,
+    instructionsMarkdown: z
+      .string()
+      .max(16384)
+      .refine(
+        (value) => new TextEncoder().encode(value).byteLength <= 16384,
+        "Instructions exceed 16 KiB",
+      ),
+    instructionsRevision: SequenceSchema,
+  }),
+  z.strictObject({ kind: z.literal("private") }),
+]);
+export type TeamTurnContext = z.infer<typeof TeamTurnContextSchema>;

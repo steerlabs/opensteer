@@ -1,5 +1,9 @@
+import { useNavigation } from "@react-navigation/native";
+import { useTeamsSnapshot } from "../team/team-context.js";
+import type { TeamSource } from "@opensteer/core";
 import {
   incomingMessageAction,
+  teamDeliveryLabel,
   activityStepHead,
   conversationActivities,
   conversationTurn,
@@ -90,6 +94,7 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
    * and keeps everything else it did in its Activity, opened from that
    * message's menu.
    */
+  readonly deliveryChannelName?: string;
   readonly conversation?: boolean;
   /**
    * In a conversation, the Activity this turn's reply opens: the key from
@@ -127,6 +132,12 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
   readonly voiceThread?: boolean;
 }): ReactNode {
   const { group } = props;
+  const deliveryLine =
+    group.kind === "turn" && !group.turn.continued && group.turn.run?.delivery ? (
+      <AppText role="caption" tone="muted">
+        {teamDeliveryLabel(group.turn.run.delivery, props.deliveryChannelName ?? "channel")}
+      </AppText>
+    ) : null;
   return (
     <View style={{ marginTop: props.spacingTop }}>
       {props.time ? (
@@ -139,6 +150,7 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
       ) : group.kind === "turn" ? (
         props.conversation === true ? (
           <ConversationTurn
+            deliveryLine={deliveryLine}
             activityKey={props.activityKey ?? null}
             continued={props.continued === true}
             live={props.live ?? true}
@@ -151,6 +163,7 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
           />
         ) : (
           <TurnView
+            deliveryLine={deliveryLine}
             reveal={props.reveal ?? null}
             highlightRequestId={props.highlightRequestId}
             onOpenStep={props.onOpenStep}
@@ -199,6 +212,7 @@ export function transcriptSpacing(previous: TranscriptVoice | null, next: Transc
 
 function TurnView(props: {
   readonly reveal?: string | null;
+  readonly deliveryLine?: ReactNode;
   readonly highlightRequestId: string | null;
   readonly onOpenStep: (entryId: string) => void;
   readonly onToggle: (turnKey: string, open: boolean) => void;
@@ -220,6 +234,7 @@ function TurnView(props: {
         turn={turn}
         live={props.live ?? true}
       />
+      {props.deliveryLine}
       {/* A Run split by a message that joined it shows its pages once, on its latest
           stretch, and only once it is done: while it works, its stops are in the trace. */}
       {turn.continued === true || turnState(turn) !== "settled" ? null : (
@@ -327,6 +342,7 @@ export function replyActivityKeys(groups: readonly TranscriptGroup[]): ReadonlyM
  * reads as what was said.
  */
 function ConversationTurn(props: {
+  readonly deliveryLine?: ReactNode;
   readonly onOpenThread: (threadId: string) => void;
   readonly activityKey: string | null;
   readonly continued: boolean;
@@ -392,6 +408,7 @@ function ConversationTurn(props: {
       ) : view.startHold !== null ? (
         <WorkingIndicator indicator={{ kind: "status", label: view.startHold }} live={props.live} />
       ) : null}
+      {props.deliveryLine}
       {/* Typing alone would not say the reader's steered message is why it began again. */}
       {composing && restarting(turn.run) ? (
         <Animated.View accessibilityLiveRegion="polite" entering={appear}>
@@ -1402,6 +1419,7 @@ export function Message(props: {
           {fold}
         </View>
       )}
+      {message.teamSource ? <TeamInputSource source={message.teamSource} /> : null}
       {message.delivery ? (
         <View accessibilityRole="alert" style={styles.failure}>
           <AppText role="secondaryMedium" tone="danger">
@@ -1835,3 +1853,28 @@ const styles = StyleSheet.create({
   turn: { gap: space[4] },
   working: { alignItems: "center", flexDirection: "row", gap: space[8], minHeight: touchTarget },
 });
+
+function TeamInputSource({ source }: { readonly source: TeamSource }): ReactNode {
+  const navigation = useNavigation();
+  const team = useTeamsSnapshot().teams.find((row) => row.teamId === source.teamId);
+  const label = (
+    <AppText role="caption" tone="muted">{`#${source.audience.channelName} ↗`}</AppText>
+  );
+  const rootId = source.threadRootId ?? source.messageId;
+  if (!team || team.state === "removed" || !rootId) return label;
+  return (
+    <Pressable
+      accessibilityRole="link"
+      onPress={() =>
+        navigation.navigate("TeamThread", {
+          teamId: source.teamId,
+          channelId: source.channelId,
+          rootId,
+          ...(source.messageId && source.messageId !== rootId ? { replyId: source.messageId } : {}),
+        })
+      }
+    >
+      {label}
+    </Pressable>
+  );
+}

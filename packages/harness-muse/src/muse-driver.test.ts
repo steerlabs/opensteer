@@ -656,6 +656,7 @@ async function setup(scenario: string) {
     turn(text: string): HarnessRunInput {
       return {
         context: {
+          teamTurnContext: null,
           assignment: null,
           requesterTimeZone: null,
           threadState: { previousAssignment: null, previousRun: null },

@@ -14,6 +14,7 @@ import {
   type HostApiClient,
   type HostApiCommandInput,
   type TeamMessage,
+  type TeamAgentRecipient,
 } from "@opensteer/protocol";
 import type { z } from "zod";
 import type {
@@ -48,6 +49,7 @@ type TeamBootstrap = z.infer<typeof TeamBootstrapSchema>;
 type SearchInput = z.infer<typeof TeamSearchInputSchema>;
 type SearchPage = z.infer<typeof TeamSearchPageSchema>;
 export interface TeamSessionSnapshot {
+  readonly agentRecipients: readonly TeamAgentRecipient[];
   readonly bootstrap: TeamBootstrap | null;
   readonly sidebar: TeamSidebar | null;
   readonly channel: TeamTimeline | null;
@@ -92,6 +94,7 @@ export class TeamSessionClient {
   readonly #options: TeamSessionOptions;
   readonly #listeners = new Set<() => void>();
   #snapshot: TeamSessionSnapshot = {
+    agentRecipients: [],
     bootstrap: null,
     sidebar: null,
     channel: null,
@@ -519,9 +522,44 @@ export class TeamSessionClient {
     this.#update({ [view]: { ...next, hasMore: before.hasMore, anchorId: message.id } });
     return message;
   }
+  async setAgentRecipient(
+    channelId: TeamChannelId,
+    rootId: TeamMessageId,
+    enabled: boolean,
+  ): Promise<void> {
+    if (this.#removed || this.#disposed) throw new Error("Team session ended.");
+    const lifetime = this.#lifetime;
+    const contentGeneration = this.#contentGeneration;
+    await this.rpc["commands.dispatch"]({
+      type: "team.agent.recipient.set",
+      channelId,
+      rootId,
+      enabled,
+    }).then(unwrapRpcResult);
+    if (lifetime !== this.#lifetime) return;
+    const recipient = await this.rpc["team.agent.recipient.get"]({ channelId, rootId }).then(
+      unwrapRpcResult,
+    );
+    if (lifetime === this.#lifetime && contentGeneration === this.#contentGeneration)
+      this.#applyRecipients([recipient]);
+  }
+  #applyRecipients(recipients: readonly TeamAgentRecipient[]): void {
+    const merged = new Map(
+      this.#snapshot.agentRecipients.map((row) => [`${row.channelId}:${row.rootId}`, row]),
+    );
+    for (const row of recipients) {
+      const key = `${row.channelId}:${row.rootId}`;
+      const prior = merged.get(key);
+      if (!prior || BigInt(row.version) >= BigInt(prior.version)) merged.set(key, row);
+    }
+    this.#update({ agentRecipients: [...merged.values()].slice(-1000) });
+  }
   receive(frame: z.infer<typeof TeamServerFrameViewSchema>): void {
     if (this.#removed) return;
     switch (frame.type) {
+      case "team.agent.recipient":
+        this.#applyRecipients([frame.recipient]);
+        break;
       case "team.cut": {
         const view = frame.cut.scope.kind === "channel" ? "channel" : "thread";
         const held = this.#snapshot[view];
@@ -529,6 +567,7 @@ export class TeamSessionClient {
         const next = reduceTeamCut(held, frame.cut);
         if (next !== held) {
           this.#update({ [view]: next });
+          this.#applyRecipients(frame.cut.agentRecipients);
           if (
             frame.cut.type === "snapshot" &&
             held.anchorId &&
@@ -550,6 +589,7 @@ export class TeamSessionClient {
         const channel = this.#snapshot.channel,
           thread = this.#snapshot.thread;
         this.#update({
+          agentRecipients: [],
           sidebar: null,
           channel: channel ? emptyTeamTimeline("channel", ++this.#generation, channel.scope) : null,
           thread: thread ? emptyTeamTimeline("thread", ++this.#generation, thread.scope) : null,
@@ -1034,6 +1074,7 @@ export class TeamSessionClient {
     this.#searchMore = null;
     this.#typingAt.clear();
     this.#update({
+      agentRecipients: [],
       bootstrap: null,
       sidebar: null,
       channel: null,

@@ -1,3 +1,4 @@
+export { TeamTurnContextSchema, type TeamTurnContext } from "@opensteer/core";
 import { DelegationModelChoiceSchema } from "@opensteer/core";
 import { ComputerFolderSchema } from "@opensteer/core";
 import { RunnerSkillMetadataReportSchema } from "./runner-skill-metadata.js";
@@ -6,6 +7,7 @@ import { HostRunFileRequestSchema, RunnerRunFileResultSchema } from "./run-files
 import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
 import {
   AssignmentRunContextSchema,
+  TeamTurnContextSchema,
   CommandIdSchema,
   EnvironmentIdSchema,
   ExecutionNodeIdSchema,
@@ -137,6 +139,7 @@ export const executionLeaseMsSchema = z.number().int().min(10_000).max(3_600_000
 const capabilityTokenSchema = z.string().min(1).max(4_096);
 
 export const RunExecutionContextSchema = z.strictObject({
+  teamTurnContext: TeamTurnContextSchema.nullable().default(null),
   personalContext: z.boolean(),
   accessMode: ThreadAccessModeSchema,
   assignment: AssignmentRunContextSchema.nullable(),

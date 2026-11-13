@@ -8,6 +8,8 @@ import type {
 } from "@opensteer/core";
 
 export interface TeamTaskAdmission {
+  readonly bodyMarkdown: string;
+  readonly attachments?: readonly { readonly id: string; readonly filename: string }[];
   readonly origin: TeamTaskOrigin;
   readonly requestId: TeamAgentRequestId;
   readonly triggerMessageId: TeamTaskOrigin["threadRootId"];

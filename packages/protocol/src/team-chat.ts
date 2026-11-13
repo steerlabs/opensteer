@@ -130,7 +130,15 @@ export const TeamLinkPresenceSchema = z.strictObject({
   ownerUserId: UserIdSchema,
   online: z.boolean(),
 });
+export const TeamAgentRecipientSchema = z.strictObject({
+  version: SequenceSchema.default("0" as z.infer<typeof SequenceSchema>),
+  channelId: TeamChannelIdSchema,
+  rootId: TeamMessageIdSchema,
+  enabled: z.boolean(),
+});
+export type TeamAgentRecipient = z.infer<typeof TeamAgentRecipientSchema>;
 const cutShape = {
+  agentRecipients: z.array(TeamAgentRecipientSchema).max(200).default([]),
   linkPresence: z.array(TeamLinkPresenceSchema).max(200),
   subscriptionId: z.string().min(1).max(128),
   generation: z.number().int().positive(),
@@ -215,18 +223,18 @@ export const TeamFileResultSchema = z.strictObject({
   file: TeamFileSchema,
   source: TeamSourceSchema,
 });
-export const TeamRequestContextSchema = z
-  .strictObject({
-    request: TeamAgentRequestSchema,
-    instructionsMarkdown: TeamMarkdownSchema,
-    messages: z.array(TeamMessageSchema).max(50),
-    source: TeamSourceSchema,
-    audience: TeamAudienceSchema,
-  })
-  .refine(
-    (value) => new TextEncoder().encode(JSON.stringify(value.messages)).byteLength <= 32768,
-    "Context exceeds 32 KiB",
-  );
+export const TeamRequestContextSchema = z.strictObject({
+  request: TeamAgentRequestSchema,
+  instructionsMarkdown: TeamMarkdownSchema,
+  instructionsRevision: SequenceSchema,
+  source: TeamSourceSchema,
+  audience: TeamAudienceSchema,
+});
+export const TeamChannelsResultSchema = z.strictObject({
+  channels: z.array(TeamChannelSummarySchema).max(50),
+  hasMore: z.boolean(),
+  nextAfter: TeamChannelIdSchema.nullable(),
+});
 export const TeamClientFrameSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("team.subscribe"),
@@ -273,4 +281,5 @@ export const TeamServerFrameSchema = z.discriminatedUnion("type", [
     people: z.array(z.strictObject({ userId: UserIdSchema, online: z.boolean() })).max(50),
   }),
   z.strictObject({ type: z.literal("team.access.changed"), accessRevision: SequenceSchema }),
+  z.strictObject({ type: z.literal("team.agent.recipient"), recipient: TeamAgentRecipientSchema }),
 ]);

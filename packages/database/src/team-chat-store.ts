@@ -41,7 +41,7 @@ import {
   teamReadableChannels,
   teamReadableChannelIds,
 } from "./team-access-store.js";
-import { appendTeamAudit } from "./team-audit-store.js";
+import { appendTeamAudit, type TeamAgentOperation } from "./team-audit-store.js";
 import { bindTeamFiles, teamFileView } from "./team-files-store.js";
 
 type Mention = z.infer<typeof TeamMentionSchema>;
@@ -169,7 +169,7 @@ export class TeamChatStore {
     transaction: Transaction<DatabaseSchema>,
     actor: TeamActor,
     channelId: TeamChannelId,
-    rootId: TeamMessageId,
+    rootId: TeamMessageId | null,
     messageId: TeamMessageId | null = null,
   ): Promise<TeamSource> {
     return {
@@ -789,6 +789,7 @@ export class TeamChatStore {
       mentions: readonly Mention[];
       attachmentIds: readonly import("@opensteer/core").TeamBlobId[];
       agentRequestId?: import("@opensteer/core").TeamAgentRequestId;
+      linkId?: TeamLinkId;
     },
   ) {
     const result = await this.access.contentWrite(
@@ -796,6 +797,10 @@ export class TeamChatStore {
       input.channelId,
       async (transaction, authority) => {
         requireTeam(authority.post);
+        if (actor.kind === "agent") {
+          requireTeam(input.linkId);
+          await this.access.link(transaction, actor, input.linkId);
+        }
         TeamMarkdownSchema.parse(input.bodyMarkdown);
         requireTeam(input.attachmentIds.length <= 10);
         const existing = await transaction
@@ -837,6 +842,8 @@ export class TeamChatStore {
       mentions: readonly Mention[];
       attachmentIds: readonly import("@opensteer/core").TeamBlobId[];
       agentRequestId?: import("@opensteer/core").TeamAgentRequestId;
+      linkId?: TeamLinkId;
+      agent?: TeamAgentOperation;
     },
   ) {
     TeamMarkdownSchema.parse(input.bodyMarkdown);
@@ -844,24 +851,11 @@ export class TeamChatStore {
       input.bodyMarkdown.trim() || input.attachmentIds.length,
       "A message needs text or files",
     );
-    requireTeam(
-      actor.kind === "human" || input.agentRequestId,
-      "An agent reply requires a request",
-    );
+    requireTeam((await this.access.channel(transaction, actor, input.channelId)).post);
+    let link;
     if (actor.kind === "agent") {
-      const request = await transaction
-        .selectFrom("teamAgentRequests as r")
-        .innerJoin("teamLinks as l", "l.id", "r.linkId")
-        .select("r.id")
-        .where("r.id", "=", input.agentRequestId!)
-        .where("r.ownerUserId", "=", actor.userId)
-        .where("r.channelId", "=", input.channelId)
-        .where("r.threadRootId", "=", input.threadRootId!)
-        .where("r.state", "in", ["working", "needs_you"])
-        .where("r.expiresAt", ">", new Date())
-        .where("l.state", "=", "active")
-        .executeTakeFirst();
-      requireTeam(request, "Active request scope required");
+      requireTeam(input.linkId);
+      link = await this.access.link(transaction, actor, input.linkId);
     }
     const mentions = await this.#mentions(transaction, actor, input.channelId, input.mentions);
     if (input.threadRootId) {
@@ -891,6 +885,10 @@ export class TeamChatStore {
         threadRootId: input.threadRootId,
         authorUserId: actor.userId,
         authorKind: actor.kind,
+        agentLinkId: link?.id ?? null,
+        personalDeploymentId: link?.personalDeploymentId ?? null,
+        callerRunId: input.agent?.runId ?? null,
+        operationId: input.agent?.operationId ?? null,
         agentRequestId: input.agentRequestId ?? null,
         clientMessageId: input.clientMessageId,
         bodyMarkdown: input.bodyMarkdown,
@@ -926,13 +924,21 @@ export class TeamChatStore {
         .set({ changeSeq })
         .where("id", "=", input.threadRootId)
         .execute();
-    await bindTeamFiles(transaction, actor, row, input.attachmentIds);
     let wake: "queued" | "no-link" | "not-requested" | "rate-limited" | "people-only" =
       "not-requested";
-    if (
-      actor.kind === "human" &&
-      mentions.some((m) => m.kind === "agent" && m.userId === actor.userId)
-    ) {
+    let wakeLinkId: TeamLinkId | undefined;
+    const ownMention = mentions.some((m) => m.kind === "agent" && m.userId === actor.userId);
+    const sticky =
+      actor.kind === "human" && input.threadRootId
+        ? await transaction
+            .selectFrom("teamAgentRecipients")
+            .select("enabled")
+            .where("userId", "=", actor.userId)
+            .where("channelId", "=", row.channelId)
+            .where("rootId", "=", input.threadRootId)
+            .executeTakeFirst()
+        : undefined;
+    if (actor.kind === "human" && (ownMention || sticky?.enabled)) {
       const authority = await this.access.channel(
         transaction,
         { kind: "agent", userId: actor.userId },
@@ -958,28 +964,49 @@ export class TeamChatStore {
         if (Number(counts.minute) >= 10 || Number(counts.queued) >= 32) wake = "rate-limited";
         else {
           wake = "queued";
-          await transaction
-            .insertInto("teamAgentRequests")
-            .values({
-              id: createId("teamAgentRequest"),
-              ownerUserId: actor.userId,
-              channelId: row.channelId,
-              threadRootId: input.threadRootId ?? row.id,
-              triggerMessageId: row.id,
-              linkId: link.id,
-              state: "queued",
-              steps: sql`'[]'::jsonb`,
-              createdAt: new Date(),
-              acceptedAt: null,
-              expiresAt: null,
-              finishedAt: null,
-              replyMessageId: null,
-              failureCode: null,
-              changeSeq,
-            })
-            .execute();
+          if (ownMention)
+            await transaction
+              .insertInto("teamAgentRecipients")
+              .values({
+                userId: actor.userId,
+                channelId: row.channelId,
+                rootId: input.threadRootId ?? row.id,
+                enabled: true,
+              })
+              .onConflict((c) =>
+                c.columns(["userId", "channelId", "rootId"]).doUpdateSet({
+                  enabled: true,
+                  version: sql`case when team_agent_recipients.enabled then team_agent_recipients.version else team_agent_recipients.version+1 end`,
+                  updatedAt: new Date(),
+                }),
+              )
+              .execute();
+          wakeLinkId = link.id;
         }
       }
+    }
+    await bindTeamFiles(transaction, actor, row, input.attachmentIds);
+    if (wakeLinkId) {
+      await transaction
+        .insertInto("teamAgentRequests")
+        .values({
+          id: createId("teamAgentRequest"),
+          ownerUserId: actor.userId,
+          channelId: row.channelId,
+          threadRootId: input.threadRootId ?? row.id,
+          triggerMessageId: row.id,
+          linkId: wakeLinkId,
+          state: "queued",
+          steps: sql`'[]'::jsonb`,
+          createdAt: new Date(),
+          acceptedAt: null,
+          expiresAt: null,
+          finishedAt: null,
+          replyMessageId: null,
+          failureCode: null,
+          changeSeq,
+        })
+        .execute();
     }
     await transaction
       .insertInto("teamOutbox")
@@ -994,6 +1021,9 @@ export class TeamChatStore {
     if (actor.kind === "agent")
       await appendTeamAudit(transaction, {
         actor,
+        ...input.agent,
+        linkId: link?.id,
+        metadata: { personalDeploymentId: link?.personalDeploymentId ?? null },
         action: "agent.post",
         resourceKind: "message",
         resourceId: row.id,
@@ -1242,6 +1272,8 @@ export class TeamChatStore {
     action: string,
     channelId: TeamChannelId | undefined,
     read: (transaction: Transaction<DatabaseSchema>) => Promise<Value>,
+    linkId?: TeamLinkId,
+    agent?: TeamAgentOperation,
   ): Promise<Value> {
     const revision = this.access.revision;
     try {
@@ -1249,6 +1281,7 @@ export class TeamChatStore {
         .transaction()
         .setIsolationLevel("repeatable read")
         .execute(async (transaction) => {
+          const link = linkId ? await this.access.link(transaction, actor, linkId) : undefined;
           await this.access.member(transaction, actor.userId);
           await this.access.checkSession(transaction);
           if (channelId)
@@ -1257,6 +1290,9 @@ export class TeamChatStore {
           if (actor.kind === "agent")
             await appendTeamAudit(transaction, {
               actor,
+              ...agent,
+              linkId,
+              metadata: { personalDeploymentId: link?.personalDeploymentId ?? null },
               action: `agent.${action}`,
               resourceKind: channelId ? "channel" : "team",
               ...(channelId ? { resourceId: channelId, channelId } : {}),
@@ -1267,6 +1303,7 @@ export class TeamChatStore {
         revision,
         () =>
           this.access.database.transaction().execute(async (t) => {
+            if (linkId) await this.access.link(t, actor, linkId);
             await this.access.member(t, actor.userId);
             await this.access.checkSession(t);
             return channelId ? (await this.access.channel(t, actor, channelId)).read : false;
@@ -1335,7 +1372,19 @@ export class TeamChatStore {
   ) {
     return this.read(actor, "read", input.scope.channelId, async (t) => {
       const channel = await this.channelView(t, actor, input.scope.channelId);
+      let recipientQuery = t
+        .selectFrom("teamAgentRecipients")
+        .select(["channelId", "rootId", "enabled", "version"])
+        .where("userId", "=", actor.userId)
+        .where("channelId", "=", channel.id);
+      if (input.scope.kind === "thread")
+        recipientQuery = recipientQuery.where("rootId", "=", input.scope.rootId);
+      const agentRecipients =
+        actor.kind === "human"
+          ? await recipientQuery.orderBy("rootId", "desc").limit(200).execute()
+          : [];
       const base = {
+        agentRecipients,
         subscriptionId: input.subscriptionId,
         generation: input.generation,
         scope: input.scope,
@@ -1413,63 +1462,77 @@ export class TeamChatStore {
       return TeamConsistentCutSchema.parse(cut);
     });
   }
-  async search(actor: TeamActor, input: z.infer<typeof TeamSearchInputSchema>) {
+  async search(
+    actor: TeamActor,
+    input: z.infer<typeof TeamSearchInputSchema>,
+    linkId?: TeamLinkId,
+    agent?: TeamAgentOperation,
+  ) {
     const revision = this.access.revision;
-    const result = await this.read(actor, "search", undefined, async (t) => {
-      await sql`set local statement_timeout='2s'`.execute(t);
-      let query = t
-        .selectFrom("teamMessages")
-        .selectAll()
-        .where("channelId", "in", teamReadableChannels(actor))
-        .where("deletedAt", "is", null)
-        .where(sql<boolean>`search_document @@ websearch_to_tsquery('simple',${input.query})`);
-      if (input.channelId) query = query.where("channelId", "=", input.channelId);
-      if (input.authorUserId) query = query.where("authorUserId", "=", input.authorUserId);
-      if (input.threadRootId)
-        query = query.where((e) =>
-          e.or([e("threadRootId", "=", input.threadRootId!), e("id", "=", input.threadRootId!)]),
-        );
-      if (input.threadsOnly) query = query.where("threadRootId", "is not", null);
-      if (input.before) query = query.where("id", "<", input.before);
-      if (input.hasFile !== undefined)
-        query = query.where((e) =>
-          input.hasFile
-            ? e.exists(
-                e
-                  .selectFrom("teamMessageAttachments as a")
-                  .select("a.blobId")
-                  .whereRef("a.messageId", "=", "teamMessages.id"),
-              )
-            : e.not(
-                e.exists(
+    const result = await this.read(
+      actor,
+      "search",
+      undefined,
+      async (t) => {
+        if (input.channelId)
+          requireTeam((await this.access.channel(t, actor, input.channelId)).read);
+        await sql`set local statement_timeout='2s'`.execute(t);
+        let query = t
+          .selectFrom("teamMessages")
+          .selectAll()
+          .where("channelId", "in", teamReadableChannels(actor))
+          .where("deletedAt", "is", null)
+          .where(sql<boolean>`search_document @@ websearch_to_tsquery('simple',${input.query})`);
+        if (input.channelId) query = query.where("channelId", "=", input.channelId);
+        if (input.authorUserId) query = query.where("authorUserId", "=", input.authorUserId);
+        if (input.threadRootId)
+          query = query.where((e) =>
+            e.or([e("threadRootId", "=", input.threadRootId!), e("id", "=", input.threadRootId!)]),
+          );
+        if (input.threadsOnly) query = query.where("threadRootId", "is not", null);
+        if (input.before) query = query.where("id", "<", input.before);
+        if (input.hasFile !== undefined)
+          query = query.where((e) =>
+            input.hasFile
+              ? e.exists(
                   e
                     .selectFrom("teamMessageAttachments as a")
                     .select("a.blobId")
                     .whereRef("a.messageId", "=", "teamMessages.id"),
+                )
+              : e.not(
+                  e.exists(
+                    e
+                      .selectFrom("teamMessageAttachments as a")
+                      .select("a.blobId")
+                      .whereRef("a.messageId", "=", "teamMessages.id"),
+                  ),
                 ),
-              ),
+          );
+        const rows = await query.orderBy("id", "desc").limit(51).execute();
+        const messages = await teamMessageViews(t, rows.slice(0, 50));
+        const audiences = await this.#sourceAudiences(
+          t,
+          actor,
+          messages.map((message) => message.channelId),
         );
-      const rows = await query.orderBy("id", "desc").limit(51).execute();
-      const messages = await teamMessageViews(t, rows.slice(0, 50));
-      const audiences = await this.#sourceAudiences(
-        t,
-        actor,
-        messages.map((message) => message.channelId),
-      );
-      return {
-        results: messages.map((message) => ({
-          message,
-          source: {
-            teamId: this.identity.teamId,
-            channelId: message.channelId,
-            threadRootId: message.threadRootId ?? message.id,
-            messageId: message.id,
-            audience: audiences.get(message.channelId)!,
-          },
-        })),
-        hasMore: rows.length > 50,
-      };
-    });
+        return {
+          results: messages.map((message) => ({
+            message,
+            source: {
+              teamId: this.identity.teamId,
+              channelId: message.channelId,
+              threadRootId: message.threadRootId ?? message.id,
+              messageId: message.id,
+              audience: audiences.get(message.channelId)!,
+            },
+          })),
+          hasMore: rows.length > 50,
+        };
+      },
+      linkId,
+      agent,
+    );
     return this.access.handoff(
       revision,
       () =>
@@ -1511,6 +1574,59 @@ export class TeamChatStore {
     });
     this.changed(channelId);
   }
+  async agentRecipient(actor: TeamActor, channelId: TeamChannelId, rootId: TeamMessageId) {
+    requireTeam(actor.kind === "human");
+    return this.read(actor, "read", channelId, async (t) => {
+      const row = await t
+        .selectFrom("teamAgentRecipients")
+        .select(["enabled", "version"])
+        .where("userId", "=", actor.userId)
+        .where("channelId", "=", channelId)
+        .where("rootId", "=", rootId)
+        .executeTakeFirst();
+      return {
+        channelId,
+        rootId,
+        enabled: row?.enabled ?? false,
+        version: row?.version ?? SequenceSchema.parse("0"),
+      };
+    });
+  }
+  async setAgentRecipient(
+    actor: TeamActor,
+    channelId: TeamChannelId,
+    rootId: TeamMessageId,
+    enabled: boolean,
+  ) {
+    const recipient = await this.access.contentWrite(actor, channelId, async (t, authority) => {
+      requireTeam(
+        actor.kind === "human" &&
+          authority.read &&
+          (!enabled || (authority.post && !authority.peopleOnly)),
+      );
+      const root = await t
+        .selectFrom("teamMessages")
+        .select(["id", "threadRootId", "deletedAt"])
+        .where("channelId", "=", channelId)
+        .where("id", "=", rootId)
+        .executeTakeFirst();
+      requireTeam(root && root.threadRootId === null && root.deletedAt === null);
+      return t
+        .insertInto("teamAgentRecipients")
+        .values({ userId: actor.userId, channelId, rootId, enabled })
+        .onConflict((c) =>
+          c.columns(["userId", "channelId", "rootId"]).doUpdateSet({
+            enabled,
+            version: sql`case when team_agent_recipients.enabled=excluded.enabled then team_agent_recipients.version else team_agent_recipients.version+1 end`,
+            updatedAt: new Date(),
+          }),
+        )
+        .returning(["channelId", "rootId", "enabled", "version"])
+        .executeTakeFirstOrThrow();
+    });
+    this.changed(channelId);
+    return recipient;
+  }
   async preferences(
     actor: TeamActor,
     channelId: TeamChannelId,
@@ -1541,10 +1657,13 @@ export class TeamChatStore {
     after?: TeamChannelId,
     sidebar = false,
     channelIds?: readonly TeamChannelId[],
+    linkId?: TeamLinkId,
+    agent?: TeamAgentOperation,
   ) {
     for (;;) {
       const revision = this.access.revision;
       const result = await this.access.database.transaction().execute(async (t) => {
+        const link = linkId ? await this.access.link(t, actor, linkId) : undefined;
         const member = await this.access.member(t, actor.userId);
         let query = t
           .selectFrom("teamChannels")
@@ -1641,7 +1760,14 @@ export class TeamChatStore {
           });
         }
         if (actor.kind === "agent")
-          await appendTeamAudit(t, { actor, action: "agent.directory", resourceKind: "team" });
+          await appendTeamAudit(t, {
+            actor,
+            ...agent,
+            linkId,
+            metadata: { personalDeploymentId: link?.personalDeploymentId ?? null },
+            action: "agent.channels",
+            resourceKind: "team",
+          });
         return {
           channels,
           totalMentionCount: Number(mentions.rows[0]!.total),

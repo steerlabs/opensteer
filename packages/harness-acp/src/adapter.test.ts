@@ -595,6 +595,7 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
       return {
         context: {
           assignment: null,
+          teamTurnContext: null,
           requesterTimeZone: null,
           threadState: { previousAssignment: null, previousRun: null },
         },

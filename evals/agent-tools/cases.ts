@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createId, TimeZoneSchema } from "@opensteer/core";
+import { createId, TimeZoneSchema, TeamTurnContextSchema } from "@opensteer/core";
 import { HarnessInputSchema } from "@opensteer/protocol";
 
 const regex = z.string().superRefine((value, ctx) => {
@@ -78,7 +78,7 @@ export const CaseSchema = z.strictObject({
   teamBound: z.boolean().default(false),
   /** The owner is linked to a team, so the Run gets team knowledge. */
   knowledge: z.boolean().default(false),
-  teamContext: z.string().min(1).optional(),
+  teamContext: TeamTurnContextSchema.optional(),
   machineAccessNotice: z.string().min(1).optional(),
   /** The operating system of the computer hosting the Run, as its Runner reports it. */
   hostingPlatform: z.enum(["darwin", "linux", "win32"]).default("darwin"),

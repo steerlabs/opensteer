@@ -36,6 +36,67 @@ function fixture() {
   return { host, persistence, client };
 }
 describe("team synchronization", () => {
+  it("reconciles recipient state across devices, snapshot and resume without inferring from requests", async () => {
+    const f = fixture();
+    const rootId = TeamMessageIdSchema.parse("1");
+    try {
+      await f.client.load();
+      await vi.waitFor(() => expect(f.client.getSnapshot().connection).toBe("connected"), {
+        timeout: 1000,
+      });
+      f.client.selectChannel(mockTeamChannelId);
+      await f.client.setAgentRecipient(mockTeamChannelId, rootId, true);
+      await f.client.setAgentRecipient(mockTeamChannelId, rootId, true);
+      expect(f.client.getSnapshot().agentRecipients).toEqual([
+        { channelId: mockTeamChannelId, rootId, enabled: true, version: "1" },
+      ]);
+      const cut = f.host.cut(
+        channelScope,
+        "channel",
+        f.client.getSnapshot().channel!.generation,
+        null,
+      );
+      f.client.receive({
+        type: "team.agent.recipient",
+        recipient: {
+          channelId: mockTeamChannelId,
+          rootId,
+          enabled: false,
+          version: SequenceSchema.parse("2"),
+        },
+      });
+      expect(f.client.getSnapshot().agentRecipients[0]?.enabled).toBe(false);
+      f.client.receive({ type: "team.cut", cut });
+      expect(f.client.getSnapshot().agentRecipients[0]?.enabled).toBe(false);
+      f.client.receive({
+        type: "team.agent.recipient",
+        recipient: { ...cut.agentRecipients[0]!, enabled: true },
+      });
+      expect(f.client.getSnapshot().agentRecipients[0]?.enabled).toBe(false);
+      f.host.agentRecipients.set(`${mockTeamChannelId}:${rootId}`, {
+        channelId: mockTeamChannelId,
+        rootId,
+        enabled: false,
+        version: SequenceSchema.parse("2"),
+      });
+      const resumed = f.host.cut(channelScope, "channel", cut.generation, cut.throughSeq);
+      expect(resumed.type).toBe("resumed");
+      f.client.receive({ type: "team.cut", cut: resumed });
+      expect(f.client.getSnapshot().agentRecipients).toEqual([
+        { channelId: mockTeamChannelId, rootId, enabled: false, version: "2" },
+      ]);
+      f.client.receive({ type: "team.cut", cut: { ...cut, generation: cut.generation + 1 } });
+      expect(f.client.getSnapshot().agentRecipients[0]?.enabled).toBe(false);
+      await f.client.setAgentRecipient(mockTeamChannelId, rootId, true);
+      expect(f.client.getSnapshot().agentRecipients[0]).toMatchObject({
+        enabled: true,
+        version: "3",
+      });
+    } finally {
+      f.client.dispose();
+      f.host.dispose();
+    }
+  });
   it("keeps synchronizing through a newer team server's fields and frame types", async () => {
     const host = new MockTeamHost(),
       sockets: MockTeamSocket[] = [];
@@ -136,6 +197,7 @@ describe("team synchronization", () => {
       generation: base.generation,
       scope: base.scope,
       channel: base.channel,
+      agentRecipients: base.agentRecipients,
       linkPresence: base.linkPresence,
       type: "resumed",
       throughSeq: SequenceSchema.parse("78"),
@@ -156,6 +218,7 @@ describe("team synchronization", () => {
       generation: initial.generation,
       scope: initial.scope,
       channel: initial.channel,
+      agentRecipients: initial.agentRecipients,
       linkPresence: initial.linkPresence,
       throughSeq: initial.throughSeq,
       type: "resumed",

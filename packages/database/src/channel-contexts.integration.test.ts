@@ -518,7 +518,9 @@ describeStore("personal Messaging conversation contexts", (it) => {
         .where("seedInputId", "=", later.message.id)
         .executeTakeFirstOrThrow();
       expect(await runAllowsPersonalContext(f.database, next.id)).toBe(ownerDm);
-      expect(next.teamRequestId).toBeNull();
+      expect(
+        next.replyTarget?.kind === "team-thread" ? next.replyTarget.requestId : null,
+      ).toBeNull();
       await startPersonalQueuedRunFixture(f.store, next.id);
       const grandchild = await delegate(next, "grandchild");
       expect(await runAllowsPersonalContext(f.database, grandchild.run.id)).toBe(ownerDm);

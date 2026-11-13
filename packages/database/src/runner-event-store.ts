@@ -639,7 +639,7 @@ async function applyEventProjection(
         const replyTarget = waiting?.replyTarget
           ? ReplyTargetSchema.parse(waiting.replyTarget)
           : null;
-        if (replyTarget) {
+        if (replyTarget?.kind === "channel") {
           await enqueueChannelConversationStatus(transaction, {
             conversationId: replyTarget.conversationId,
             text: `The agent has asked for your input. Open the Thread in Opensteer: ${links.threadUrl(event.threadId)}`,
@@ -720,7 +720,7 @@ async function projectRunPhase(
     .executeTakeFirstOrThrow();
   const replyTarget = run.replyTarget ? ReplyTargetSchema.parse(run.replyTarget) : null;
   const reply =
-    background && replyTarget
+    background && replyTarget?.kind === "channel"
       ? await runReply(transaction, {
           id: event.runId,
           threadId: run.threadId,
@@ -744,7 +744,7 @@ async function projectRunPhase(
     })
     .where("id", "=", event.runId)
     .execute();
-  if (deliver && replyTarget) {
+  if (deliver && replyTarget?.kind === "channel") {
     await enqueueChannelReply(transaction, {
       content: reply.content,
       conversationId: replyTarget.conversationId,

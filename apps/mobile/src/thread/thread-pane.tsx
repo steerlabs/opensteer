@@ -36,8 +36,7 @@ import {
   type ThreadSummary,
 } from "@opensteer/client/host";
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
-import type { BrowserPageContentPart, TeamTaskOrigin } from "@opensteer/core";
-import { AudienceLine, TaskSourceChip } from "../home/task-source.js";
+import type { BrowserPageContentPart } from "@opensteer/core";
 import { useTeamsSnapshot } from "../team/team-context.js";
 import { useHostSnapshot, useThreadInputQueue } from "@opensteer/client/react";
 import { useHeaderHeight } from "@react-navigation/elements";
@@ -926,6 +925,7 @@ function ThreadPaneForUser(
           {/* Rows open the files messages carry through this Thread's own client. */}
           <TranscriptHostClientContext value={hostClient}>
             <TranscriptGroupRow
+              deliveryChannelName={channelName ?? "channel"}
               activityKey={item.activityKey}
               continued={item.continued}
               conversation={conversational}
@@ -1396,9 +1396,6 @@ function ThreadPaneForUser(
             </>
           ) : (
             <View>
-              {teamOrigin === null ? null : (
-                <TeamTaskSource channelName={channelName} origin={teamOrigin} />
-              )}
               <Composer
                 variant={conversational ? "conversation" : "work"}
                 voice={false}
@@ -1690,7 +1687,6 @@ function EmptyThread(props: { readonly loading: boolean; readonly voice: boolean
 }
 
 const styles = StyleSheet.create({
-  teamSource: { gap: space[6], paddingBottom: space[6] },
   body: { flex: 1 },
   centred: { flex: 1, gap: space[12], justifyContent: "center" },
   // The title's menu sizes to its own words, so the column holds it at the
@@ -1753,40 +1749,4 @@ function useChannelName(teamId: string | null, channelId: string | null): string
     [session],
   );
   return useSyncExternalStore(subscribe, read, read);
-}
-
-/**
- * Above a team task's composer: the way back to the thread that asked, and who
- * sees what the agent posts. Words typed here stay private to the task.
- */
-function TeamTaskSource(props: {
-  readonly origin: TeamTaskOrigin;
-  readonly channelName: string | null;
-}): ReactNode {
-  const navigation = useNavigation();
-  const team = useTeamsSnapshot().teams.find(
-    (candidate) => candidate.teamId === props.origin.teamId,
-  );
-  const place = `#${props.channelName ?? "channel"}`;
-  const available = team !== undefined && team.state !== "removed";
-  return (
-    <View style={styles.teamSource}>
-      <TaskSourceChip
-        onOpen={() =>
-          navigation.navigate("TeamThread", {
-            teamId: props.origin.teamId,
-            channelId: props.origin.channelId,
-            rootId: props.origin.threadRootId,
-          })
-        }
-        source={{
-          team: { id: props.origin.teamId, name: team?.name ?? "Team", imageUri: null },
-          place,
-          thread: "thread",
-          available,
-        }}
-      />
-      {available ? <AudienceLine text={`Replies post to ${place} in ${team.name}.`} /> : null}
-    </View>
-  );
 }

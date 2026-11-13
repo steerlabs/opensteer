@@ -108,6 +108,18 @@ function foldTranscriptOwnEvent(
     case "thread.input-queue-updated":
     case "thread.state-changed":
       return [...entries];
+    case "run.delivery-updated": {
+      const prior = entries.find((entry) => entry.kind === "run" && entry.runId === event.runId);
+      if (prior?.kind !== "run")
+        return upsertEntry(entries, {
+          kind: "run-delivery",
+          id: `run:${event.runId}`,
+          runId: event.runId,
+          createdAt: event.createdAt,
+          delivery: event.data.delivery,
+        });
+      return upsertEntry(entries, { ...prior, delivery: event.data.delivery });
+    }
     case "run.started":
       return upsertRunEntry(entries, event, "running");
     case "run.status":
@@ -449,7 +461,18 @@ function foldTranscriptOwnEvent(
     case "message.placed": {
       const placed = toTranscriptEntry({ ...event.data.message, published: false }, "queue");
       const rest = entries.filter((entry) => entry.id !== event.data.message.id);
-      return placed ? [...rest, placed] : rest;
+      const prior = entries.find((entry) => entry.id === event.data.message.id);
+      return placed
+        ? [
+            ...rest,
+            {
+              ...placed,
+              ...(prior?.kind === "message" && prior.teamSource
+                ? { teamSource: prior.teamSource }
+                : {}),
+            },
+          ]
+        : rest;
     }
     // The message itself already entered the transcript when it committed;
     // injection only records that the active Run accepted it.
@@ -483,6 +506,7 @@ function foldTranscriptOwnEvent(
       if (held?.kind === "message") {
         const settled = {
           ...withDelivery(held, outcome.delivery),
+          ...(input.teamSource ? { teamSource: input.teamSource } : {}),
           published,
           runId: input.runId,
         };
@@ -496,6 +520,7 @@ function foldTranscriptOwnEvent(
         ...outcome,
         published,
         inputRunId: input.runId,
+        ...(input.teamSource ? { teamSource: input.teamSource } : {}),
         id: input.messageId,
         kind: "delivery",
         runId: null,
@@ -581,6 +606,16 @@ export function mergeTranscriptSegments(
   earlier: readonly TranscriptEntry[],
   later: readonly TranscriptEntry[],
 ): TranscriptEntry[] {
+  const sources = new Map(
+    earlier.flatMap((entry) =>
+      entry.kind === "message" && entry.teamSource ? [[entry.id, entry.teamSource] as const] : [],
+    ),
+  );
+  later = later.map((entry) =>
+    entry.kind === "message" && !entry.teamSource && sources.has(entry.id)
+      ? { ...entry, teamSource: sources.get(entry.id)! }
+      : entry,
+  );
   const earlierIds = new Set(earlier.map((entry) => entry.id));
   const laterById = new Map(later.map((entry) => [entry.id, entry]));
   const consumed = new Set<string>();
@@ -681,6 +716,10 @@ function mergeLifecycle(previous: TranscriptEntry, next: TranscriptEntry): Trans
           : boundedStreamText(`${previous.text}${next.text}`),
     };
   }
+  if (previous.kind === "run" && next.kind === "run-delivery")
+    return { ...previous, delivery: next.delivery };
+  if (previous.kind === "run-delivery" && next.kind === "run")
+    return { ...next, delivery: next.delivery ?? previous.delivery };
   if (previous.kind === "run" && next.kind === "run") {
     const usage = next.usage ?? previous.usage;
     const startedBy = next.startedBy ?? previous.startedBy;
@@ -694,6 +733,7 @@ function mergeLifecycle(previous: TranscriptEntry, next: TranscriptEntry): Trans
         ? { startedAt: next.startedAt ?? previous.startedAt }
         : {}),
       personWaiting: next.personWaiting === true || previous.personWaiting === true,
+      ...(next.delivery === undefined && previous.delivery ? { delivery: previous.delivery } : {}),
       error: next.error ?? previous.error,
       replyMessageId: next.replyMessageId ?? previous.replyMessageId,
       ...(usage === undefined ? {} : { usage }),
@@ -705,6 +745,7 @@ function mergeLifecycle(previous: TranscriptEntry, next: TranscriptEntry): Trans
   if (previous.kind === "message" && next.kind === "delivery") {
     return {
       ...withDelivery(previous, next.delivery),
+      ...(next.teamSource ? { teamSource: next.teamSource } : {}),
       published: next.published ?? next.waiting !== true,
       runId:
         next.inputRunId !== undefined
@@ -726,7 +767,10 @@ function mergeLifecycle(previous: TranscriptEntry, next: TranscriptEntry): Trans
         createdAt: previous.createdAt,
       };
     }
-    return next;
+    return {
+      ...next,
+      ...(previous.teamSource && !next.teamSource ? { teamSource: previous.teamSource } : {}),
+    };
   }
   return next;
 }
@@ -968,6 +1012,7 @@ export function visibleTranscript(
       entry.kind === "selection" ||
       entry.kind === "withdrawn" ||
       entry.kind === "delivery" ||
+      entry.kind === "run-delivery" ||
       entry.kind === "request-wait"
     )
       continue;
@@ -1004,7 +1049,7 @@ type TranscriptMessageKind = Extract<MessageKind, "assistant" | "input">;
 export function toTranscriptEntry(
   message: MessageView,
   policy: ThreadInputPolicy | undefined = message.policy,
-  input?: Pick<ThreadInput, "policy" | "state"> | null,
+  input?: (Pick<ThreadInput, "policy" | "state"> & Partial<Pick<ThreadInput, "teamSource">>) | null,
 ): AssignmentReturnEntry | MessageEntry | null {
   const assignmentId = assignmentReturnId(message);
   if (assignmentId === null) return toMessageEntry(message, policy, input);
@@ -1032,7 +1077,7 @@ export function assignmentReturnId(message: Pick<MessageView, "author">): string
 export function toMessageEntry(
   message: MessageView,
   policy: ThreadInputPolicy | undefined = message.policy,
-  input?: Pick<ThreadInput, "policy" | "state"> | null,
+  input?: (Pick<ThreadInput, "policy" | "state"> & Partial<Pick<ThreadInput, "teamSource">>) | null,
 ): MessageEntry | null {
   const recovery =
     message.kind === "continuation" &&
@@ -1052,6 +1097,7 @@ export function toMessageEntry(
     (part) => part.type === "computer-app" || part.type === "phone",
   );
   return {
+    ...(input?.teamSource ? { teamSource: input.teamSource } : {}),
     author: message.author,
     ...(message.addressedToUserId ? { addressedToUserId: message.addressedToUserId } : {}),
     sequence: message.sequence,
@@ -1083,6 +1129,8 @@ function upsertRunEntry(
 ): TranscriptEntry[] {
   const id = event.runId ? `run:${event.runId}` : `event:${event.eventId}`;
   const prior = findEntry(entries, id, "run");
+  const fragment = findEntry(entries, id, "run-delivery");
+  const delivery = prior?.delivery ?? fragment?.delivery;
   const startedBy = "startedBy" in event.data ? event.data.startedBy : prior?.startedBy;
   return upsertEntry(entries, {
     ...runContext(prior, event),
@@ -1094,6 +1142,7 @@ function upsertRunEntry(
     status,
     // A Stop already asked for holds until the Run ends, whatever it reports meanwhile.
     ...(prior?.stopping === true && !isTerminalRunEntryStatus(status) ? { stopping: true } : {}),
+    ...(delivery ? { delivery } : {}),
     ...(prior?.usage ? { usage: prior.usage } : {}),
     ...(prior?.attempt ? { attempt: prior.attempt } : {}),
     ...(startedBy ? { startedBy } : {}),

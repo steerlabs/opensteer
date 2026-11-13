@@ -53,6 +53,7 @@ export const hostApiScopes = {
   "team.knowledge.topic.get": "session",
   "team.knowledge.topic.access.get": "session",
   "team.agent.requests.get": "session",
+  "team.agent.recipient.get": "session",
   "team.links.list": "session",
   "teams.links.list": "session",
   "teams.threadTask.get": "session",

@@ -33,6 +33,7 @@ import {
 } from "./team-access.js";
 import {
   TeamAgentRequestSchema,
+  TeamAgentRecipientSchema,
   TeamBootstrapSchema,
   TeamChannelSchema,
   TeamChannelSummarySchema,
@@ -60,7 +61,7 @@ import {
 } from "./team-knowledge.js";
 import {
   PersonalTeamLinkSchema,
-  TeamBinaryUploadMetadataSchema,
+  TeamUploadMetadataSchema,
   TeamLinkOfferTextSchema,
   TeamLinkViewSchema,
 } from "./team-link.js";
@@ -76,6 +77,12 @@ export const teamChannelNameTakenReason = "channel-name-taken";
 /** The most people a direct message can add to the one who opens it. */
 export const teamDmMaxParticipants = 31;
 export const TeamCommandSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    type: z.literal("team.agent.recipient.set"),
+    channelId: TeamChannelIdSchema,
+    rootId: TeamMessageIdSchema,
+    enabled: z.boolean(),
+  }),
   z.strictObject({
     type: z.literal("team.channel.create"),
     id: TeamChannelIdSchema,
@@ -141,7 +148,7 @@ export const TeamCommandSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("team.upload.begin"),
     channelId: TeamChannelIdSchema,
-    metadata: TeamBinaryUploadMetadataSchema,
+    metadata: TeamUploadMetadataSchema,
   }),
   z.strictObject({
     type: z.literal("team.member.role.set"),
@@ -278,6 +285,10 @@ export const teamIdentityRpcNames = [
   "sessions.list",
 ] as const;
 export const teamReadSchemas = {
+  "team.agent.recipient.get": {
+    input: z.strictObject({ channelId: TeamChannelIdSchema, rootId: TeamMessageIdSchema }),
+    output: TeamAgentRecipientSchema,
+  },
   "team.bootstrap.get": { input: z.strictObject({}), output: TeamBootstrapSchema },
   "team.sidebar.get": {
     input: z

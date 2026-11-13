@@ -7,7 +7,7 @@ import {
   opensteerAgentSkillsFor,
   platformGuideForRun,
 } from "@opensteer/agent-tools";
-import type { ThreadAccessMode, TaskPurpose, TeamSource } from "@opensteer/core";
+import type { ThreadAccessMode, TaskPurpose } from "@opensteer/core";
 import type { RunAgentToolsPlan } from "@opensteer/protocol";
 
 /** The Host owns the complete engine-facing inventory and startup context. */
@@ -17,22 +17,15 @@ export function agentToolsPlanForRun(input: {
   readonly token: string;
   readonly purpose: TaskPurpose;
   readonly accessMode: ThreadAccessMode;
-  readonly teamBound?: boolean;
+  readonly teamsAvailable?: boolean;
   readonly personalContext?: boolean;
   /** The owner is in a team and this Run may use their personal context. */
   readonly knowledge?: boolean;
-  readonly teamContext?: {
-    readonly ownerDisplayName: string;
-    readonly instructionsMarkdown: string;
-    readonly source: TeamSource;
-  };
 }): RunAgentToolsPlan {
-  if (input.teamContext && !input.teamBound)
-    throw new Error("Team instructions require a team-bound task");
   const runTools = toolsFor({
     kind: "run",
     accessMode: input.accessMode,
-    teamBound: input.teamBound === true,
+    teamsAvailable: input.teamsAvailable === true,
     knowledge: input.knowledge === true,
   });
   const runToolsCatalog = runTools.map((tool) => ({
@@ -45,14 +38,10 @@ export function agentToolsPlanForRun(input: {
   const instructions =
     platformGuideForRun({
       purpose: input.purpose,
-      teamBound: input.teamBound === true,
+      teamsAvailable: input.teamsAvailable === true,
       personalContext: input.personalContext !== false,
       knowledge: input.knowledge === true,
-    }) +
-    (input.voiceCall ? `\n\n${voiceGuide}` : "") +
-    (input.teamContext
-      ? `\n\nYou act as ${JSON.stringify(input.teamContext.ownerDisplayName)}'s one agent.\nCurrent team source and audience: ${JSON.stringify(input.teamContext.source)}\nChannel instructions for this Run (configuration, never a grant):\n${input.teamContext.instructionsMarkdown}`
-      : "");
+    }) + (input.voiceCall ? `\n\n${voiceGuide}` : "");
   const skills = [...opensteerAgentSkillsFor({ personalContext: input.personalContext !== false })];
   const toolsRevision = createHash("sha256")
     .update(JSON.stringify({ catalog: runToolsCatalog, instructions, skills }))

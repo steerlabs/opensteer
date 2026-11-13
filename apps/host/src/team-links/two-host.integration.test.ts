@@ -51,7 +51,7 @@ describe("personal to team link", () => {
       const request = await f.ask();
       await f.deliver(request);
       f.loseReplyAcknowledgement();
-      await expect(f.run(request, "One reply")).rejects.toMatchObject({ code: "runner_offline" });
+      await f.run(request, "One reply");
       expect((await f.local(request)).publicationState).toBe("pending");
       await f.deliver(request);
       await f.reconnect();
@@ -71,11 +71,12 @@ describe("personal to team link", () => {
         const request = await f.ask();
         await f.deliver(request);
         f.offline = true;
-        await expect(f.run(request, null, state)).rejects.toMatchObject({ code: "runner_offline" });
+        await f.run(request, null, state);
         f.offline = false;
         await f.reconnect();
         expect((await f.teamRequest(request.id)).state).toBe(state);
-        expect((await f.local(request)).publicationState).toBe("accepted");
+        expect((await f.local(request)).publicationState).toBe("blocked");
+        expect((await f.local(request)).blockedReason).toContain("without an answer");
         expect(f.runCount).toBe(1);
       } finally {
         await f.close();
@@ -148,7 +149,7 @@ describe("personal to team link", () => {
     }
   });
 
-  it("keeps authority on the request Run and uses an explicit team reply once", async () => {
+  it("claims the request reply with team_post and suppresses the automatic final", async () => {
     const f = await createTwoHostLinkFixture();
     try {
       const request = await f.ask();

@@ -5,13 +5,12 @@ import type {
   knowledge_write,
   team_read,
   team_search,
-  team_reply,
+  team_post,
 } from "@opensteer/agent-tools/tools";
 import type { z } from "zod";
 
 export interface TeamToolRun {
-  readonly teamId: DeploymentId;
-  readonly requestId: TeamAgentRequestId;
+  readonly operationId: string;
   readonly runId: RunId;
 }
 /** L implements this over its private link; credentials never enter model input or output. */
@@ -26,11 +25,11 @@ export interface TeamToolPort {
     input: z.output<typeof team_search.input>,
     signal?: AbortSignal,
   ): Promise<z.output<typeof team_search.output>>;
-  reply(
+  post(
     run: TeamToolRun,
-    input: z.output<typeof team_reply.input>,
+    input: z.output<typeof team_post.input>,
     signal?: AbortSignal,
-  ): Promise<z.output<typeof team_reply.output>>;
+  ): Promise<z.output<typeof team_post.output>>;
 }
 
 /** A Run reaching team knowledge as its owner; a team thread's Run also names its team and request. */

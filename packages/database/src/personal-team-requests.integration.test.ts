@@ -43,6 +43,7 @@ describeStore("personal team reply watermark", (it) => {
       };
       const requestId = createId("teamAgentRequest");
       const admitted = await admitTeamTaskRequest(f.database, {
+        bodyMarkdown: "Team ask",
         origin: { teamId, channelId, threadRootId },
         requestId,
         triggerMessageId: threadRootId,
@@ -64,6 +65,24 @@ describeStore("personal team reply watermark", (it) => {
       const empty = { taskId: null, completedAt: null };
       expect(await requests.replyTask(personal.userId, input)).toEqual(empty);
       const run = await startPersonalQueuedRunFixture(f.store, admitted.receipt.runId!);
+      if (ending === "automatic") {
+        const operation = crypto.randomUUID();
+        await requests.freeze(teamId, requestId, {
+          runId: run.runId,
+          via: "tool",
+          answerMessageId: null,
+          clientMessageId: operation,
+          payload: { bodyMarkdown: "Rejected tool post", attachmentIds: [] },
+        });
+        await requests.clearFreeze(teamId, requestId, crypto.randomUUID());
+        expect((await requests.get(teamId, requestId))?.clientMessageId).toBe(operation);
+        await requests.clearFreeze(teamId, requestId, operation);
+        expect(await requests.get(teamId, requestId)).toMatchObject({
+          answerPayload: null,
+          clientMessageId: null,
+          deliveryVia: null,
+        });
+      }
       const replyId = createId("message");
       await f.store.commitRunnerEvent({
         environmentId: personal.environmentId,
@@ -79,7 +98,14 @@ describeStore("personal team reply watermark", (it) => {
           data: { messageId: replyId, content: [{ type: "text", text: "Published answer" }] },
         }),
       });
-      if (explicit) await requests.prepareExplicitReply(teamId, requestId);
+      if (explicit)
+        await requests.freeze(teamId, requestId, {
+          runId: run.runId,
+          via: "tool",
+          answerMessageId: null,
+          clientMessageId: crypto.randomUUID(),
+          payload: { bodyMarkdown: "Explicit reply", attachmentIds: [] },
+        });
       await requests.publication(teamId, requestId, "accepted", input.replyMessageId);
       expect(await requests.replyTask(personal.userId, input)).toEqual(empty);
       if (explicit)
@@ -193,7 +219,7 @@ describeStore("personal team reply watermark", (it) => {
       expect(read?.lastVisitedAt).toBe(expected.completedAt);
       expect(read?.latestRunCompletedAt).toBe(privateCompletion);
       expect(read!.lastVisitedAt! < read!.latestRunCompletedAt!).toBe(true);
-      await requests.publication(teamId, requestId, "blocked");
-      expect(await requests.replyTask(personal.userId, input)).toEqual(empty);
+      await requests.publication(teamId, requestId, "blocked", null, "The team link was revoked.");
+      expect(await requests.replyTask(personal.userId, input)).toEqual(expected);
     });
 });

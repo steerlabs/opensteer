@@ -1964,17 +1964,16 @@ export async function createHostRuntime(
         if (context.request.id !== requestId)
           throw new OpensteerError({ code: "forbidden", message: "Team request changed" });
         return {
-          ownerDisplayName: context.ownerDisplayName,
           instructionsMarkdown: context.instructionsMarkdown,
+          instructionsRevision: context.instructionsRevision,
           source: context.source,
-          content: [{ type: "text" as const, text: JSON.stringify(context.messages) }],
         };
       },
-      teamKnowledgeAvailable: async () =>
+      teamsAvailable: async () =>
         (await database
           .selectFrom("personalTeamLinks")
           .select("id")
-          .where("state", "=", "active")
+          .where("state", "in", ["active", "unreachable"])
           .executeTakeFirst()) !== undefined,
       onRunAdmitted: (threadId) => {
         void naming?.request(threadId);
@@ -2325,6 +2324,12 @@ export async function createHostRuntime(
       (ownerId) => integrationStore.listConnections(ownerId),
     );
     const agentTools = new OpensteerMcpService({
+      teamsAvailable: async () =>
+        (await database
+          .selectFrom("personalTeamLinks")
+          .select("id")
+          .where("state", "in", ["active", "unreachable"])
+          .executeTakeFirst()) !== undefined,
       requestHold: new RequestHold({
         store,
         continuations,
@@ -2352,19 +2357,19 @@ export async function createHostRuntime(
         product: productHandlers,
         integrations: integrationTools,
         triggers: new TriggerToolHandlers(triggers),
-        teamRequestForRun: async (runId, threadId) =>
-          (
-            await database
-              .selectFrom("runs")
-              .select("teamRequestId")
-              .where("id", "=", runId)
-              .where("threadId", "=", threadId)
-              .executeTakeFirst()
-          )?.teamRequestId ?? null,
+        teamRequestForRun: async (runId, threadId) => {
+          const run = await database
+            .selectFrom("runs")
+            .select("replyTarget")
+            .where("id", "=", runId)
+            .where("threadId", "=", threadId)
+            .executeTakeFirst();
+          return run?.replyTarget?.kind === "team-thread" ? run.replyTarget.requestId : null;
+        },
         team: {
           read: async (...args) => (await ensureLinks()).teamTools.read(...args),
           search: async (...args) => (await ensureLinks()).teamTools.search(...args),
-          reply: async (...args) => (await ensureLinks()).teamTools.reply(...args),
+          post: async (...args) => (await ensureLinks()).teamTools.post(...args),
         },
         knowledge: {
           topics: async (...args) => (await ensureLinks()).knowledge.topics(...args),
@@ -2435,6 +2440,7 @@ export async function createHostRuntime(
           credentialVault: teamLinkVault,
           admission: taskAdmission,
           runs: personalTeamRunPort(database),
+          onDeliveryEvent: publishDeploymentEvent,
           onPublished: async () => {
             const ownerId = service.options.ownerId;
             realtime.publishViewerTasksChanged(ownerId);
@@ -2827,7 +2833,7 @@ export async function createHostRuntime(
         await step("administration catalogs", () => administrationCatalogs?.close());
         await step("integration platform", () => integrationPlatform.close());
         await step("browser", () => browser.close());
-        passwordSignIns.close();
+        await step("password sign-ins", () => passwordSignIns.close());
         browserSources.close();
         runnerBrowsers.close();
         browserRelay.close();

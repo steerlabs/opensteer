@@ -1,43 +1,40 @@
-import type { TeamActor, TeamAgentRequestId, TeamBlobId, TeamLinkId } from "@opensteer/core";
+import type { TeamActor, TeamLinkId } from "@opensteer/core";
 import {
   TeamFileResultSchema,
   TeamLinkClientFrameSchema,
   TeamReadResultSchema,
-  type TeamBinaryUploadMetadataSchema,
-  type TeamSearchInputSchema,
 } from "@opensteer/protocol";
 import { requireTeam } from "@opensteer/database/team-access";
 import { teamFileView } from "@opensteer/database/team-files";
 import type { z } from "zod";
 import type { TeamKnowledge } from "../knowledge/team-knowledge.js";
-import type { TeamLinkCall } from "../team-link-endpoint/contracts.js";
+import type { TeamLinkCall, TeamMachineFilesPort } from "../team-link-endpoint/contracts.js";
 import type { startTeamServices } from "./services.js";
 
 type Services = Awaited<ReturnType<typeof startTeamServices>>;
 type ReadCall = Extract<z.infer<typeof TeamLinkClientFrameSchema>, { type: "read" }>;
-type UploadPart = {
-  readonly name: "original" | "preview";
-  readonly bytes: AsyncIterable<Uint8Array>;
-};
-
 export function createTeamMachineAdapters(
-  services: Services,
+  services: Pick<Services, "access" | "chat" | "files">,
   knowledge: Pick<TeamKnowledge, "topics" | "readNotes" | "write">,
 ) {
-  const { access, chat, requests, files } = services;
-  async function authorize(
-    actor: TeamActor,
-    linkId: TeamLinkId,
-    requestId: TeamAgentRequestId,
-    action: "read" | "post",
-  ) {
-    requireTeam(actor.kind === "agent");
-    const request = await requests.authorize(linkId, requestId, action);
-    requireTeam(request.ownerUserId === actor.userId);
-    return request;
-  }
+  const { access, chat, files } = services;
   return {
     data: {
+      async channels(
+        actor: TeamActor,
+        linkId: TeamLinkId,
+        input: Extract<TeamLinkCall, { type: "channels" }>,
+      ) {
+        const page = await chat.directory(actor, input.after, false, undefined, linkId, {
+          ...input,
+          operationId: input.operationId ?? input.id,
+        });
+        return {
+          channels: page.channels.map((entry) => entry.channel),
+          hasMore: page.nextCursor !== null,
+          nextAfter: page.nextCursor,
+        };
+      },
       async knowledge(
         linkId: TeamLinkId,
         ownerUserId: TeamActor["userId"],
@@ -73,45 +70,45 @@ export function createTeamMachineAdapters(
         }
       },
       async read(actor: TeamActor, linkId: TeamLinkId, input: ReadCall) {
-        await authorize(actor, linkId, input.requestId, "read");
-        return chat.read(actor, "read", input.channelId, async (t) => {
-          const page = await chat.pageIn(
-            t,
-            actor,
-            input.channelId,
-            input.before
-              ? { direction: "before", messageId: input.before }
-              : { direction: "newest" },
-            input.threadRootId,
-          );
-          const rootId =
-            input.threadRootId ?? page.messages[0]?.threadRootId ?? page.messages[0]?.id;
-          requireTeam(rootId, "This channel has no messages");
-          const source = await chat.source(t, actor, input.channelId, rootId);
-          return TeamReadResultSchema.parse({ page, source });
-        });
+        return chat.read(
+          actor,
+          "read",
+          input.channelId,
+          async (t) => {
+            const page = await chat.pageIn(
+              t,
+              actor,
+              input.channelId,
+              input.after
+                ? { direction: "after", messageId: input.after }
+                : input.before
+                  ? { direction: "before", messageId: input.before }
+                  : { direction: "newest" },
+              input.threadRootId,
+            );
+            const rootId =
+              input.threadRootId ?? page.messages[0]?.threadRootId ?? page.messages[0]?.id;
+            const source = await chat.source(t, actor, input.channelId, rootId ?? null);
+            return TeamReadResultSchema.parse({ page, source });
+          },
+          linkId,
+          { ...input, operationId: input.operationId ?? input.id },
+        );
       },
       async search(
         actor: TeamActor,
         linkId: TeamLinkId,
-        requestId: TeamAgentRequestId,
-        input: z.infer<typeof TeamSearchInputSchema>,
+        input: Extract<TeamLinkCall, { type: "search" }>,
       ) {
-        await authorize(actor, linkId, requestId, "read");
-        return chat.search(actor, input);
+        return chat.search(actor, input.input, linkId, {
+          ...input,
+          operationId: input.operationId ?? input.id,
+        });
       },
     },
     files: {
-      async open(input: {
-        actor: TeamActor;
-        linkId: TeamLinkId;
-        requestId: TeamAgentRequestId;
-        blobId: TeamBlobId;
-        part: "original" | "preview";
-        signal: AbortSignal;
-      }) {
-        await authorize(input.actor, input.linkId, input.requestId, "read");
-        const blob = await files.store.authorized(input.actor, input.blobId, input.requestId);
+      async open(input: Parameters<TeamMachineFilesPort["open"]>[0]) {
+        const blob = await files.store.authorized(input.actor, input.blobId, input);
         const source = await access.database.transaction().execute(async (t) => {
           const message = await t
             .selectFrom("teamMessages")
@@ -132,18 +129,12 @@ export function createTeamMachineAdapters(
           input.part,
           input.requestId,
           input.signal,
+          input,
         );
         return { file: teamFileView(blob), source, bytes: opened.body };
       },
-      async upload(input: {
-        actor: TeamActor;
-        linkId: TeamLinkId;
-        requestId: TeamAgentRequestId;
-        metadata: z.infer<typeof TeamBinaryUploadMetadataSchema>;
-        signal: AbortSignal;
-        parts: AsyncIterable<UploadPart>;
-      }) {
-        const request = await authorize(input.actor, input.linkId, input.requestId, "post");
+      async upload(input: Parameters<TeamMachineFilesPort["upload"]>[0]) {
+        const { channelId: _, ...metadata } = input.metadata;
         const iterator = input.parts[Symbol.asyncIterator]();
         const first = await iterator.next();
         requireTeam(
@@ -163,26 +154,19 @@ export function createTeamMachineAdapters(
         }
         const file = await files.upload(
           input.actor,
-          request.channelId,
-          input.metadata,
+          input.metadata.channelId,
+          metadata,
           {
             original: original(),
             ...(input.metadata.previewSizeBytes ? { preview: preview() } : {}),
           },
           input.requestId,
           input.signal,
+          input,
         );
         const source = await access.database
           .transaction()
-          .execute((t) =>
-            chat.source(
-              t,
-              input.actor,
-              request.channelId,
-              request.threadRootId,
-              request.triggerMessageId,
-            ),
-          );
+          .execute((t) => chat.source(t, input.actor, input.metadata.channelId, null));
         return TeamFileResultSchema.parse({ file, source });
       },
     },

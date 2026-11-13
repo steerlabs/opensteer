@@ -3277,6 +3277,33 @@ a.team-row__main:hover {
   color: var(--amber);
 }
 
+.team-input-source,
+.team-run-delivery,
+.team-composer__recipient {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.team-input-source {
+  text-decoration: none;
+}
+a.team-input-source:hover {
+  text-decoration: underline;
+}
+.team-run-delivery {
+  display: block;
+  margin-top: 4px;
+}
+.turn > .team-run-delivery {
+  margin-top: calc(4px - var(--space-6));
+}
+.team-composer__recipient {
+  align-self: flex-start;
+  background: none;
+  border: 0;
+  padding: 4px 0;
+  cursor: pointer;
+}
+
 /* ---- Browse channels ----
    The Knowledge page's column: a title, one line saying what the page is for,
    the search, then one compact row per channel. */

@@ -1,5 +1,5 @@
 import type { AesGcmCredentialVault } from "@opensteer/access/host";
-import type { DeploymentId, RunId, ThreadId, UserId } from "@opensteer/core";
+import type { AgentEvent, DeploymentId, RunId, ThreadId, UserId } from "@opensteer/core";
 import type { DatabaseSchema } from "@opensteer/database";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
@@ -23,10 +23,15 @@ export function createPersonalTeamLinkServices(options: {
   readonly admission: TaskAdmissionPort;
   readonly runs: PersonalTeamRunPort;
   readonly attachments: PersonalTeamAttachmentPort;
+  readonly onDeliveryEvent: (event: AgentEvent) => void;
   readonly onPublished: (taskId: ThreadId) => Promise<void>;
 }) {
   const linksStore = new PersonalTeamLinksStore(options.database);
-  const requestsStore = new PersonalTeamRequestsStore(options.database, options.onPublished);
+  const requestsStore = new PersonalTeamRequestsStore(
+    options.database,
+    options.onPublished,
+    options.onDeliveryEvent,
+  );
   const vault = new PersonalTeamVault(options.credentialVault, options.database, options.ownerId);
   const network = new TeamLinkNetwork();
   const requests = new PersonalTeamRequests({
@@ -46,27 +51,17 @@ export function createPersonalTeamLinkServices(options: {
   });
   const files = new TeamRunFileTransfers({
     links: linksStore,
-    requests: requestsStore,
     vault,
     network,
     attachments: options.attachments,
   });
-  const tools = new TeamRunTools(requestsStore, requests, (teamId) => links.rpc(teamId), files);
+  const tools = new TeamRunTools(linksStore, requestsStore, (teamId) => links.rpc(teamId));
   const teamTools = new PersonalTeamToolAdapter(tools, files);
   const knowledge = new PersonalTeamKnowledge(
     () => links.list(),
     (teamId) => links.rpc(teamId),
   );
-  const teamContext = async (runId: RunId) => {
-    const context = await tools.context(runId);
-    const owner = await options.database
-      .selectFrom("users")
-      .select("displayName")
-      .where("id", "=", options.ownerId)
-      .where("disabledAt", "is", null)
-      .executeTakeFirstOrThrow();
-    return { ...context, ownerDisplayName: owner.displayName };
-  };
+  const teamContext = (runId: RunId) => tools.context(runId);
   return { links, requests, files, tools, teamTools, knowledge, teamContext };
 }
 

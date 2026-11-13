@@ -286,6 +286,7 @@ describe.skipIf(!qualify).each([
         signal: lifetime.signal,
         context: {
           assignment: null,
+          teamTurnContext: null,
           requesterTimeZone: null,
           threadState: { previousAssignment: null, previousRun: null },
         },

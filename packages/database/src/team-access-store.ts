@@ -120,6 +120,26 @@ export class TeamAccessStore {
       this.#closers.delete(close);
     };
   }
+  async link(transaction: Transaction<DatabaseSchema>, actor: TeamActor, linkId: TeamLinkId) {
+    await transaction
+      .selectFrom("teamAccessState")
+      .select("revision")
+      .where("singletonKey", "=", "team")
+      .forShare()
+      .executeTakeFirstOrThrow();
+    requireTeam(actor.kind === "agent");
+    const link = await transaction
+      .selectFrom("teamLinks as l")
+      .innerJoin("teamMembers as m", "m.userId", "l.ownerUserId")
+      .selectAll("l")
+      .where("l.id", "=", linkId)
+      .where("l.ownerUserId", "=", actor.userId)
+      .where("l.state", "=", "active")
+      .where("m.state", "=", "active")
+      .executeTakeFirst();
+    requireTeam(link, "Active owner link required");
+    return link;
+  }
   async member(transaction: Transaction<DatabaseSchema>, userId: UserId) {
     const member = await transaction
       .selectFrom("teamMembers")

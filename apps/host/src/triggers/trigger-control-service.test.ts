@@ -438,7 +438,7 @@ function run(value: Thread): Run {
     accessMode: value.accessMode,
     activationInputId: seedInputId,
     assignmentId: null,
-    teamRequestId: null,
+    delivery: null,
     causalChainId: createId("causalChain"),
     completedAt: null,
     createdAt: now,

@@ -1,9 +1,11 @@
+import { createId } from "@opensteer/core";
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { expect, it } from "vitest";
 import { teamUploadParts } from "./multipart.js";
 
 const metadata = {
+  channelId: createId("teamChannel"),
   clientUploadId: "00000000-0000-4000-8000-000000000001",
   filename: "public.txt",
   mediaType: "text/plain",

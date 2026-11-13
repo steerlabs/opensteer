@@ -1,10 +1,11 @@
 import {
   type ArtifactContentPart,
   type RunId,
+  type DeploymentId,
+  type TeamChannelId,
   type TeamBlobId,
   type TeamSource,
 } from "@opensteer/core";
-import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
 import {
@@ -20,13 +21,15 @@ import { pipeline } from "node:stream/promises";
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { basename, join, win32 } from "node:path";
 import sharp from "sharp";
 import type { z } from "zod";
 import { boundedTeamStream } from "../team-link-endpoint/binary.js";
 import { linkError } from "../team-link-endpoint/contracts.js";
 import { PersonalTeamVault } from "./vault.js";
+import type { TeamToolRun } from "../mcp/team-tool-port.js";
+import { teamOperationId } from "./operation-id.js";
 import { TeamLinkNetwork } from "./network.js";
 
 export interface PersonalTeamAttachmentPort {
@@ -45,47 +48,47 @@ export interface PersonalTeamAttachmentPort {
   ): Promise<{ readonly bytes: Readable; readonly sha256: string }>;
 }
 export class TeamRunFileTransfers {
-  readonly #requests: PersonalTeamRequestsStore;
   readonly #links: PersonalTeamLinksStore;
   readonly #vault: PersonalTeamVault;
   readonly #network: TeamLinkNetwork;
   readonly #attachments: PersonalTeamAttachmentPort;
   constructor(options: {
-    readonly requests: PersonalTeamRequestsStore;
     readonly links: PersonalTeamLinksStore;
     readonly vault: PersonalTeamVault;
     readonly network: TeamLinkNetwork;
     readonly attachments: PersonalTeamAttachmentPort;
   }) {
-    this.#requests = options.requests;
     this.#links = options.links;
     this.#vault = options.vault;
     this.#network = options.network;
     this.#attachments = options.attachments;
   }
 
-  async #authority(runId: RunId) {
-    const request = await this.#requests.forRun(runId);
-    if (!request) throw new Error("no team request in this turn");
-    const link = await this.#links.get(request.teamId);
+  async #authority(run: TeamToolRun, teamId: DeploymentId) {
+    const link = await this.#links.get(teamId);
     if (link?.state === "needs_update" || link?.state === "joining")
       throw linkError("runner_offline");
     if (!link?.credentialReference || !["active", "unreachable"].includes(link.state))
       throw linkError();
-    const { secret } = await this.#vault.open(link.credentialReference, request.teamId);
+    const { secret } = await this.#vault.open(link.credentialReference, teamId);
     return {
-      request,
       link,
       headers: {
         authorization: `Bearer ${secret}`,
         [teamApiVersionHeader]: String(teamApiVersion),
-        "x-opensteer-team-request-id": request.requestId,
+        "x-opensteer-team-run-id": run.runId,
+        "x-opensteer-team-operation-id": teamOperationId("file", run.runId, run.operationId),
       },
     };
   }
 
-  async fetch(runId: RunId, blobId: TeamBlobId, signal: AbortSignal = AbortSignal.timeout(60_000)) {
-    const { request, link, headers } = await this.#authority(runId);
+  async fetch(
+    run: TeamToolRun,
+    teamId: DeploymentId,
+    blobId: TeamBlobId,
+    signal: AbortSignal = AbortSignal.timeout(60_000),
+  ) {
+    const { link, headers } = await this.#authority(run, teamId);
     const response = await this.#network.request(link.approvedOrigin, teamBinaryRoutes.download, {
       signal,
       headers: {
@@ -103,14 +106,19 @@ export class TeamRunFileTransfers {
       if (
         metadata.file.id !== blobId ||
         metadata.file.channelId !== metadata.source.channelId ||
-        metadata.source.teamId !== request.teamId
+        metadata.source.teamId !== teamId
       )
         throw linkError();
       const bytes = boundedTeamStream(response, metadata.file.sizeBytes, signal, {
         size: metadata.file.sizeBytes,
         sha256: metadata.file.sha256,
       });
-      const local = await this.#attachments.import({ runId, ...metadata, bytes, signal });
+      const local = await this.#attachments.import({
+        runId: run.runId,
+        ...metadata,
+        bytes,
+        signal,
+      });
       return { ...metadata, ...local };
     } finally {
       response.destroy();
@@ -118,13 +126,15 @@ export class TeamRunFileTransfers {
   }
 
   async upload(
-    runId: RunId,
+    run: TeamToolRun,
+    teamId: DeploymentId,
+    channelId: TeamChannelId,
     attachment: ArtifactContentPart,
     signal: AbortSignal = AbortSignal.timeout(60_000),
   ) {
-    const { request, link, headers } = await this.#authority(runId);
+    const { link, headers } = await this.#authority(run, teamId);
     const sizeBytes = TeamBinaryUploadMetadataSchema.shape.sizeBytes.parse(attachment.sizeBytes);
-    const exported = await this.#attachments.export(runId, attachment);
+    const exported = await this.#attachments.export(run.runId, attachment);
     let body: Readable | undefined;
     let original = exported.bytes;
     let directory: string | undefined;
@@ -150,23 +160,17 @@ export class TeamRunFileTransfers {
         if (preview.length > teamPreviewMaxBytes) throw linkError("resource_exhausted");
         original = createReadStream(path);
       }
-      const identity = createHash("sha256")
-        .update(
-          JSON.stringify([
-            request.teamId,
-            request.requestId,
-            basename(win32.basename(attachment.name)),
-            attachment.mediaType,
-            sizeBytes,
-            exported.sha256,
-          ]),
-        )
-        .digest();
-      identity[6] = (identity[6]! & 0x0f) | 0x50;
-      identity[8] = (identity[8]! & 0x3f) | 0x80;
-      const hex = identity.subarray(0, 16).toString("hex");
       const metadata = TeamBinaryUploadMetadataSchema.parse({
-        clientUploadId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+        channelId,
+        clientUploadId: teamOperationId(
+          "upload",
+          teamId,
+          run.runId,
+          run.operationId,
+          channelId,
+          attachment.name,
+          exported.sha256,
+        ),
         filename: basename(win32.basename(attachment.name)),
         mediaType: attachment.mediaType,
         sizeBytes,
@@ -212,9 +216,9 @@ export class TeamRunFileTransfers {
         chunks.push(Buffer.from(chunk));
       const result = TeamFileResultSchema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
       if (
-        result.source.teamId !== request.teamId ||
-        result.file.channelId !== request.source.channelId ||
-        result.source.threadRootId !== request.source.threadRootId
+        result.source.teamId !== teamId ||
+        result.file.channelId !== channelId ||
+        result.source.channelId !== channelId
       )
         throw linkError();
       return result;
@@ -226,10 +230,16 @@ export class TeamRunFileTransfers {
     }
   }
 
-  async uploadPath(runId: RunId, path: string, signal: AbortSignal = AbortSignal.timeout(60_000)) {
-    await this.#authority(runId);
+  async uploadPath(
+    run: TeamToolRun,
+    teamId: DeploymentId,
+    channelId: TeamChannelId,
+    path: string,
+    signal: AbortSignal = AbortSignal.timeout(60_000),
+  ) {
+    await this.#authority(run, teamId);
     signal.throwIfAborted();
-    const attachment = await this.#attachments.admitPath(runId, path, signal);
-    return this.upload(runId, attachment, signal);
+    const attachment = await this.#attachments.admitPath(run.runId, path, signal);
+    return this.upload(run, teamId, channelId, attachment, signal);
   }
 }

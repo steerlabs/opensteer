@@ -1,3 +1,4 @@
+import { runDeliverySelection } from "./thread-row-mappers.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { lockDeploymentEvents, withPersonalTransaction } from "./personal-transaction.js";
 import { failNodeStop } from "./node-control.js";
@@ -1529,6 +1530,7 @@ export async function loadSteerDispatchInput(
   const runRow = await database
     .selectFrom("runs")
     .selectAll()
+    .select(runDeliverySelection)
     .where("id", "=", row.targetRunId)
     .executeTakeFirstOrThrow();
   return {

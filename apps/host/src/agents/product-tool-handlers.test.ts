@@ -1606,7 +1606,7 @@ function run(value: Thread): Run {
   const seedInputId = createId("message");
   return {
     accessMode: value.accessMode,
-    teamRequestId: null,
+    delivery: null,
     activationInputId: seedInputId,
     assignmentId: null,
     completedAt: null,
