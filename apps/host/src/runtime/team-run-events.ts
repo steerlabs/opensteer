@@ -92,7 +92,7 @@ function stepKind(event: AgentEvent): StepKind | null {
   if (/^browser(?:_|$)/u.test(name)) return "browsed";
   if (name === "team_read" || name === "team_search") return "searched_team";
   if (/^(?:computer|integration_call)$/u.test(name)) return "used_integration";
-  if (/^(?:Bash|exec_command|shell|shell_run|run_command|execute)$/u.test(name))
+  if (/^(?:Bash|PowerShell|exec_command|shell|shell_run|run_command|execute)$/u.test(name))
     return "ran_commands";
   if (/^(?:Read|read_file|read|Glob|Grep|glob|grep)$/u.test(name)) return "read_files";
   if (/^(?:Write|Edit|MultiEdit|write_file|edit_file|apply_patch)$/u.test(name))

@@ -2328,7 +2328,15 @@ const toolKinds = new Map<string, StepKind>(
     [
       [
         "command",
-        ["codex/shell", "claude/Bash", "cursor/shell", "pi/bash", "pi/powershell", "opencode/bash"],
+        [
+          "codex/shell",
+          "claude/Bash",
+          "claude/PowerShell",
+          "cursor/shell",
+          "pi/bash",
+          "pi/powershell",
+          "opencode/bash",
+        ],
       ],
       ["read", ["claude/Read", "cursor/read", "pi/read", "opencode/read"]],
       ["search", ["claude/Grep", "cursor/grep", "pi/grep", "opencode/grep"]],
