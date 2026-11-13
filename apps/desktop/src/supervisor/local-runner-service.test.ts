@@ -1,5 +1,19 @@
 import { DesktopBrowserProfileErasure } from "./browser-profile-erasure.js";
 import { desktopDeploymentPaths } from "../app/application-paths.js";
+import {
+  verifyDeviceLeaveSignature,
+  verifyDeviceSessionBindingSignature,
+} from "@opensteer/runner-auth";
+import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { readMemberships, writeMemberships } from "./device-membership.js";
+import type { DeploymentConnectionSource } from "@opensteer/client/connections";
+import { generateKeyPairSync } from "node:crypto";
+import {
+  signTestDiscoveryEnvelope,
+  signTestPersonalAccessRoute,
+  testHostAuthorityKeys,
+} from "@opensteer/client/test-support";
 import { EventEmitter } from "node:events";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import {
@@ -18,6 +32,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  AuthSessionIdSchema,
   createId,
   DeploymentIdSchema,
   harnessCatalog,
@@ -53,6 +68,1251 @@ afterEach(async () => {
 });
 
 describe("LocalRunnerService", () => {
+  it("cleans up a prepared Account setup locally when issuance never began, including after restart", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://never-issued.opensteer.test");
+    targets.source(target.deploymentId, {
+      kind: "account",
+      issuer: "https://accounts.opensteer.test",
+      subject: ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`),
+    });
+    const refusal = vi.fn<typeof fetch>(async () =>
+      Response.json({ error: "Device leave refused" }, { status: 403 }),
+    );
+    const first = fixture(config, targets, undefined, undefined, { leaveFetch: refusal });
+    const input = {
+      deploymentId: target.deploymentId,
+      runnerName: "Prepared Mac",
+      runAgents: false,
+    };
+    const original = await first.service.prepareDeviceSetup(input);
+    await first.service.shutdown();
+    first.service.dispose();
+    const restarted = fixture(config, targets, undefined, undefined, { leaveFetch: refusal });
+    try {
+      await restarted.service.leaveAccountMemberships();
+      expect(refusal).not.toHaveBeenCalled();
+      expect((await restarted.service.status(target.deploymentId)).membership).toMatchObject({
+        state: "removed",
+        leaveUnconfirmed: false,
+      });
+      await restarted.service.setUpDevice(input);
+      const next = await restarted.service.prepareDeviceSetup(input);
+      expect(next.runnerId).not.toBe(original.runnerId);
+    } finally {
+      await restarted.service.shutdown();
+      restarted.service.dispose();
+    }
+  });
+
+  it("keeps confirmation retryable and leaveable after runner retries are exhausted and after restart", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://offline-home.opensteer.test");
+    const delivered = vi.fn<typeof fetch>(async () => Response.json({ outcome: "removed" }));
+    const running = fixture(config, targets, () => 0, undefined, { leaveFetch: delivered });
+    const starting = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const first = childAt(running.children, 0);
+    connect(first);
+    const original = (await starting).runner.runnerId;
+    const ending = running.service.sessionLost(target.deploymentId);
+    await eventually(() => hasStopMessage(first));
+    first.emit("exit", 0);
+    await ending;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      await eventually(() => running.children.length === attempt + 2);
+      childAt(running.children, attempt + 1).emit("message", {
+        type: "runner.worker.failed",
+        message: "Home is offline: runner route is unavailable.",
+      });
+    }
+    await eventually(async () =>
+      (await running.service.status(target.deploymentId)).runner.detail.includes(
+        "restarted 5 times",
+      ),
+    );
+    expect((await running.service.status(target.deploymentId)).membership).toMatchObject({
+      state: "active",
+      runnerId: original,
+      sessionState: "confirming",
+    });
+    await expect(running.service.assertSessionAllowed(target.deploymentId)).rejects.toThrow(
+      "confirm",
+    );
+    await running.service.retryDeviceConnection({ deploymentId: target.deploymentId });
+    await eventually(() => running.children.length === 8);
+    childAt(running.children, 7).emit("message", {
+      type: "runner.worker.failed",
+      message: "Runner route is still unavailable.",
+    });
+    await running.service.shutdown();
+    running.service.dispose();
+    const restarted = fixture(config, targets, () => 60_000, undefined, { leaveFetch: delivered });
+    const resuming = restarted.service.startIfEnabled();
+    await eventually(() => restarted.children.length === 1);
+    childAt(restarted.children, 0).emit("message", {
+      type: "runner.worker.failed",
+      message: "Home is still offline.",
+    });
+    await resuming;
+    expect((await restarted.service.status(target.deploymentId)).runner.detail).toContain(
+      "Home is still offline",
+    );
+    await expect(restarted.service.assertSessionAllowed(target.deploymentId)).rejects.toThrow(
+      "confirm",
+    );
+    await restarted.service.leaveDeployment({ deploymentId: target.deploymentId });
+    expect(delivered).toHaveBeenCalledOnce();
+    expect((await restarted.service.status(target.deploymentId)).membership).toMatchObject({
+      state: "removed",
+      leaveUnconfirmed: false,
+    });
+    await restarted.service.shutdown();
+    restarted.service.dispose();
+  });
+
+  it("confirms membership independently of a browser helper that cannot start", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://helper-failure.opensteer.test");
+    const identityDirectory = path.join(directory, "runner", "deployments", target.deploymentId);
+    await mkdir(identityDirectory, { recursive: true });
+    writeTestIdentity(identityDirectory, true);
+    const browser = vi.fn<NonNullable<LocalRunnerServiceDependencies["browser"]>>(async () => {
+      throw new Error("Browser helper startup failed");
+    });
+    const running = fixture(config, targets, () => 60_000, browser);
+    await running.service.startIfEnabled();
+    expect((await running.service.status(target.deploymentId)).runner.detail).toBe(
+      "Browser helper startup failed",
+    );
+    await running.service.sessionLost(target.deploymentId);
+    await eventually(() => running.children.length === 1);
+    connect(childAt(running.children, 0));
+    await eventually(
+      async () =>
+        (await running.service.status(target.deploymentId)).membership?.sessionState ===
+        "sign-in-again",
+    );
+    expect(browser).toHaveBeenCalledOnce();
+    await expect(running.service.assertSessionAllowed(target.deploymentId)).rejects.toThrow(
+      "Sign in again",
+    );
+    const stopping = running.service.shutdown();
+    running.children.forEach((child) => child.kill());
+    await stopping;
+    running.service.dispose();
+  });
+
+  it("uses authenticated legacy removal before discarding the session and can rejoin after Account sign-out", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://legacy.opensteer.test");
+    targets.restore({
+      ...target,
+      devicesAvailable: false,
+      source: {
+        kind: "account",
+        issuer: "https://accounts.opensteer.test",
+        subject: ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`),
+      },
+    });
+    let sessionExists = true;
+    const revoke = vi.fn(async () => {
+      if (!sessionExists) throw new Error("Host requires authentication");
+    });
+    const leaveFetch = vi.fn<typeof fetch>(async () => new Response(null, { status: 404 }));
+    const running = fixture(config, targets, undefined, undefined, {
+      leaveFetch,
+      revokeLegacyRunner: revoke,
+      clearDeploymentSession: async () => {
+        sessionExists = false;
+      },
+    });
+    const joining = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    connect(child);
+    const original = (await joining).runner.runnerId;
+    const leaving = running.service.leaveAccountMemberships();
+    await eventually(() => hasStopMessage(child));
+    child.emit("exit", 0);
+    await leaving;
+    expect(revoke).toHaveBeenCalledWith(target.deploymentId, target.hostUrl, original);
+    expect(leaveFetch).not.toHaveBeenCalled();
+    expect((await running.service.status(target.deploymentId)).membership).toMatchObject({
+      state: "removed",
+      leaveUnconfirmed: false,
+    });
+    sessionExists = true;
+    await running.service.setUpDevice({
+      deploymentId: target.deploymentId,
+      runnerName: "Mac",
+      runAgents: false,
+    });
+    const joiningAgain = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 2);
+    connect(childAt(running.children, 1));
+    expect((await joiningAgain).runner.runnerId).not.toBe(original);
+    const stopped = running.service.shutdown();
+    running.children.forEach((child) => child.kill());
+    await stopped;
+    running.service.dispose();
+  });
+
+  it("retains unresolved legacy removal across restart, then finishes it after sign-in without blocking rejoin", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const initial = targets.add("https://legacy-offline.opensteer.test");
+    const target = { ...initial, devicesAvailable: false };
+    targets.restore(target);
+    let signedIn = false;
+    const removed: string[] = [];
+    const revokeLegacyRunner = vi.fn(async (_id: string, _origin: string, runnerId: string) => {
+      if (!signedIn) throw new Error("No authenticated session");
+      removed.push(runnerId);
+    });
+    const first = fixture(config, targets, undefined, undefined, { revokeLegacyRunner });
+    const starting = first.service.start(startInput(target.deploymentId));
+    await eventually(() => first.children.length === 1);
+    const child = childAt(first.children, 0);
+    connect(child);
+    const oldId = (await starting).runner.runnerId!;
+    const leaving = first.service.leaveDeployment({ deploymentId: target.deploymentId });
+    await eventually(() => hasStopMessage(child));
+    child.emit("exit", 0);
+    await leaving;
+    expect((await first.service.status(target.deploymentId)).membership).toMatchObject({
+      state: "removed",
+      leaveUnconfirmed: true,
+    });
+    await first.service.shutdown();
+    first.service.dispose();
+    const restarted = fixture(config, targets, undefined, undefined, { revokeLegacyRunner });
+    await restarted.service.startIfEnabled();
+    expect((await restarted.service.status(target.deploymentId)).membership?.leaveUnconfirmed).toBe(
+      true,
+    );
+    expect((await restarted.service.status(target.deploymentId)).runner.detail).toContain(
+      "older Host",
+    );
+    await restarted.service.setUpDevice({
+      deploymentId: target.deploymentId,
+      runnerName: "Mac",
+      runAgents: false,
+    });
+    expect((await restarted.service.status(target.deploymentId)).membership?.leaveUnconfirmed).toBe(
+      true,
+    );
+    signedIn = true;
+    const rejoining = restarted.service.start(startInput(target.deploymentId));
+    await eventually(() => restarted.children.length === 1);
+    connect(childAt(restarted.children, 0));
+    expect((await rejoining).membership).toMatchObject({
+      state: "active",
+      leaveUnconfirmed: false,
+    });
+    expect(removed).toEqual([oldId]);
+    const stopping = restarted.service.shutdown();
+    restarted.children.forEach((child) => child.kill());
+    await stopping;
+    restarted.service.dispose();
+  });
+
+  it.each(["retired", "consumed"] as const)(
+    "reconciles legacy pending setup before discarding the session when retirement reports %s",
+    async (state) => {
+      const directory = await temporaryDirectory();
+      const config = await configuration(directory);
+      const targets = mutableTargetAuthority();
+      const target = targets.add("https://legacy-pending.opensteer.test");
+      targets.restore({ ...target, devicesAvailable: false });
+      let sessionExists = true;
+      const retireEnrollment = vi.fn(async () => {
+        expect(sessionExists).toBe(true);
+        return state;
+      });
+      const revokeLegacyRunner = vi.fn(async () => {
+        expect(sessionExists).toBe(true);
+      });
+      const running = fixture(config, targets, undefined, undefined, {
+        retireEnrollment,
+        revokeLegacyRunner,
+        clearDeploymentSession: async () => {
+          sessionExists = false;
+        },
+      });
+      const receipt = {
+        type: "runner.enrollment.createLocal" as const,
+        enrollmentId: "legacy-pending",
+        token: "l".repeat(64),
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      };
+      await running.service.observeHostCommand(
+        target.deploymentId,
+        { type: receipt.type, name: "Mac", allowedModules: ["shell"], idempotencyKey: "pending" },
+        receipt,
+      );
+      const starting = running.service
+        .start({ ...startInput(target.deploymentId), enrollmentToken: receipt.token })
+        .catch((error: unknown) => error);
+      await eventually(() => running.children.length === 1);
+      const child = childAt(running.children, 0);
+      const id = readTestIdentity(child.dataDirectory)!.runnerId;
+      const leaving = running.service.leaveDeployment({ deploymentId: target.deploymentId });
+      await eventually(() => hasStopMessage(child));
+      child.emit("exit", 0);
+      expect(await starting).toBeInstanceOf(Error);
+      await leaving;
+      expect(retireEnrollment).toHaveBeenCalledWith(
+        target.deploymentId,
+        target.hostUrl,
+        receipt.enrollmentId,
+      );
+      expect(revokeLegacyRunner).toHaveBeenCalledTimes(state === "consumed" ? 1 : 0);
+      if (state === "consumed")
+        expect(revokeLegacyRunner).toHaveBeenCalledWith(target.deploymentId, target.hostUrl, id);
+      expect((await running.service.status(target.deploymentId)).membership).toMatchObject({
+        state: "removed",
+        leaveUnconfirmed: false,
+      });
+      await running.service.shutdown();
+      running.service.dispose();
+    },
+  );
+
+  it("migrates a v4 membership beside an empty catalog, waits, and resumes the same key", async () => {
+    const directory = await temporaryDirectory();
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://waiting.opensteer.test");
+    const config = await configuration(directory);
+    const identityDirectory = path.join(directory, "runner", "deployments", target.deploymentId);
+    await mkdir(identityDirectory, { recursive: true });
+    writeTestIdentity(identityDirectory, true);
+    const identity = readTestIdentity(identityDirectory)!;
+    await writeFile(
+      path.join(directory, "runner", "desktop-runner.json"),
+      JSON.stringify({
+        version: 4,
+        runners: {
+          [target.deploymentId]: { enrolled: true, runAgents: false, runnerName: "Saved Mac" },
+        },
+      }),
+      { mode: 0o600 },
+    );
+    targets.remove(target.deploymentId);
+    const running = fixture(config, targets);
+    await running.service.startIfEnabled();
+    expect(running.fork).not.toHaveBeenCalled();
+    expect(
+      (await readMemberships(path.join(directory, "runner", "desktop-runner.json"))).runners[
+        target.deploymentId
+      ]?.state,
+    ).toBe("active");
+    await expect(running.service.status(target.deploymentId)).resolves.toMatchObject({
+      membership: { state: "waiting" },
+      runner: { enrolled: true, runnerId: identity.runnerId },
+    });
+    targets.restore(target);
+    await eventually(() => running.children.length === 1);
+    connect(childAt(running.children, 0));
+    await eventually(
+      async () => (await running.service.status(target.deploymentId)).runner.state === "running",
+    );
+    expect(readTestIdentity(identityDirectory)?.runnerId).toBe(identity.runnerId);
+  });
+
+  it.each(["unknown", "corrupt"])(
+    "fails closed on %s membership storage instead of healing its identity",
+    async (kind) => {
+      const directory = await temporaryDirectory();
+      const targets = mutableTargetAuthority();
+      const target = targets.add("https://corrupt.opensteer.test");
+      const config = await configuration(directory);
+      const identityDirectory = path.join(directory, "runner", "deployments", target.deploymentId);
+      await mkdir(identityDirectory, { recursive: true });
+      writeTestIdentity(identityDirectory, true);
+      const contents = kind === "unknown" ? '{"version":99,"runners":{}}' : "{broken";
+      const file = path.join(directory, "runner", "desktop-runner.json");
+      await writeFile(file, contents, { mode: 0o600 });
+      const running = fixture(config, targets);
+      await expect(running.service.startIfEnabled()).rejects.toThrow("incompatible or corrupt");
+      expect(running.fork).not.toHaveBeenCalled();
+      expect(await readFile(file, "utf8")).toBe(contents);
+    },
+  );
+
+  it.each(["connected", "revoked"])(
+    "heals an enrolled identity with an empty preference: %s",
+    async (outcome) => {
+      const directory = await temporaryDirectory();
+      const targets = mutableTargetAuthority();
+      const target = targets.add("https://heal.opensteer.test");
+      const config = await configuration(directory);
+      const identityDirectory = path.join(directory, "runner", "deployments", target.deploymentId);
+      await mkdir(identityDirectory, { recursive: true });
+      writeTestIdentity(identityDirectory, true);
+      const identity = readTestIdentity(identityDirectory)!;
+      await writeFile(
+        path.join(directory, "runner", "desktop-runner.json"),
+        '{"version":4,"runners":{}}',
+        { mode: 0o600 },
+      );
+      const running = fixture(config, targets);
+      const restoring = running.service.startIfEnabled();
+      await eventually(() => running.children.length === 1);
+      const child = childAt(running.children, 0);
+      expect(postedSecrets(child).OPENSTEER_RUNNER_ENROLLMENT_TOKEN).toBeUndefined();
+      if (outcome === "connected") connect(child);
+      else {
+        child.emit("message", { type: "runner.worker.revoked" });
+        await eventually(() => hasStopMessage(child));
+        child.emit("exit", 0);
+      }
+      await restoring;
+      await eventually(
+        async () =>
+          (await running.service.status(target.deploymentId)).membership?.state ===
+          (outcome === "connected" ? "active" : "removed"),
+      );
+      if (outcome === "connected")
+        expect(readTestIdentity(identityDirectory)?.runnerId).toBe(identity.runnerId);
+      else {
+        await eventually(() => !existsSync(identityPath(identityDirectory)));
+        await running.service.reconcile();
+        expect(running.fork).toHaveBeenCalledOnce();
+        await expect(running.service.start(startInput(target.deploymentId))).rejects.toThrow(
+          "Set up again",
+        );
+      }
+    },
+  );
+
+  it("persists signed leave before erasure, resumes both obligations after a crash, and confirms once without runtimes", async () => {
+    const directory = await temporaryDirectory();
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://leave.opensteer.test");
+    const config = await configuration(directory);
+    const erasure = new DesktopBrowserProfileErasure(directory);
+    const failedErase = vi
+      .spyOn(erasure, "erase")
+      .mockRejectedValueOnce(new Error("Simulated crash before erasure"));
+    const offline = vi.fn<typeof fetch>(async () => {
+      throw new Error("offline");
+    });
+    const running = fixture(config, targets, undefined, undefined, {
+      profileErasure: erasure,
+      leaveFetch: offline,
+    });
+    const start = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    connect(child);
+    await start;
+    const publicKey = JSON.parse(await readFile(identityPath(child.dataDirectory), "utf8"))
+      .publicKeyPem as string;
+    const leaving = running.service.leaveDeployment({ deploymentId: target.deploymentId });
+    await eventually(() => hasStopMessage(child));
+    child.emit("exit", 0);
+    await expect(leaving).rejects.toThrow("Simulated crash");
+    const file = path.join(directory, "runner", "desktop-runner.json");
+    const record = (await readMemberships(file)).runners[target.deploymentId]!;
+    expect(record).toMatchObject({ state: "leaving", erasePending: true });
+    expect(verifyDeviceLeaveSignature(publicKey, record.leaveProof!)).toBe(true);
+    expect(failedErase).toHaveBeenCalledOnce();
+    expect(existsSync(identityPath(child.dataDirectory))).toBe(true);
+    await running.service.shutdown();
+    running.service.dispose();
+    targets.remove(target.deploymentId);
+    const delivered = vi.fn<typeof fetch>(async () => Response.json({ outcome: "removed" }));
+    const browser = vi.fn<NonNullable<LocalRunnerServiceDependencies["browser"]>>();
+    const computerUse = fakeComputerUse();
+    const restarted = fixture(config, targets, undefined, browser, {
+      leaveFetch: delivered,
+      computerUse,
+    });
+    await restarted.service.startIfEnabled();
+    expect(restarted.fork).not.toHaveBeenCalled();
+    expect(browser).not.toHaveBeenCalled();
+    expect(computerUse.startForSlot).not.toHaveBeenCalled();
+    expect(delivered).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(delivered.mock.calls[0]?.[1]?.body))).toEqual(record.leaveProof);
+    expect(existsSync(identityPath(child.dataDirectory))).toBe(false);
+    await expect(restarted.service.status(target.deploymentId)).resolves.toMatchObject({
+      membership: { state: "removed", leaveUnconfirmed: false },
+    });
+    await restarted.service.reconcile();
+    expect(delivered).toHaveBeenCalledOnce();
+    await restarted.service.shutdown();
+    restarted.service.dispose();
+  });
+
+  it("keeps pending leave unconfirmed across restarts and rejects malformed confirmation", async () => {
+    const directory = await temporaryDirectory();
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://unconfirmed.opensteer.test");
+    const config = await configuration(directory);
+    const delivered = vi.fn<typeof fetch>(async () => Response.json({ wrong: true }));
+    const running = fixture(config, targets, undefined, undefined, { leaveFetch: delivered });
+    const start = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    connect(child);
+    await start;
+    const leaving = running.service.leaveDeployment({ deploymentId: target.deploymentId });
+    await eventually(() => hasStopMessage(child));
+    child.emit("exit", 0);
+    await leaving;
+    await expect(running.service.status(target.deploymentId)).resolves.toMatchObject({
+      membership: { state: "leaving", leaveUnconfirmed: true },
+    });
+    await running.service.shutdown();
+    running.service.dispose();
+    delivered.mockResolvedValue(Response.json({ outcome: "removed" }));
+    const restarted = fixture(config, targets, undefined, undefined, { leaveFetch: delivered });
+    await restarted.service.startIfEnabled();
+    expect(restarted.fork).not.toHaveBeenCalled();
+    expect(delivered).toHaveBeenCalledTimes(2);
+    await expect(restarted.service.status(target.deploymentId)).resolves.toMatchObject({
+      membership: { state: "removed", leaveUnconfirmed: false },
+    });
+    await restarted.service.shutdown();
+    restarted.service.dispose();
+  });
+
+  it("leaves only outgoing Account memberships even after their catalog entries disappear", async () => {
+    const directory = await temporaryDirectory();
+    const targets = mutableTargetAuthority();
+    const oldAccount = {
+      kind: "account" as const,
+      issuer: "https://accounts.opensteer.test",
+      subject: ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`),
+    };
+    const nextAccount = {
+      ...oldAccount,
+      subject: ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`),
+    };
+    const outgoing = targets.add("https://outgoing.opensteer.test");
+    const incoming = targets.add("https://incoming.opensteer.test");
+    const manual = targets.add("https://manual.opensteer.test");
+    targets.source(outgoing.deploymentId, oldAccount);
+    targets.source(incoming.deploymentId, nextAccount);
+    const config = await configuration(directory);
+    const delivered = vi.fn<typeof fetch>(async () => Response.json({ outcome: "removed" }));
+    const running = fixture(config, targets, undefined, undefined, { leaveFetch: delivered });
+    const starts = [outgoing, incoming, manual].map((target) =>
+      running.service.start(startInput(target.deploymentId)),
+    );
+    await eventually(() => running.children.length === 3);
+    running.children.forEach((child) => connect(child));
+    await Promise.all(starts);
+    targets.remove(outgoing.deploymentId);
+    expect(
+      (await running.service.accountSignOutPreview()).map(({ deploymentId }) => deploymentId),
+    ).toContain(outgoing.deploymentId);
+    await eventually(() => hasStopMessage(childFor(running.children, outgoing.hostUrl)));
+    childFor(running.children, outgoing.hostUrl).emit("exit", 0);
+    await running.service.leaveAccountMemberships(nextAccount);
+    expect(delivered).toHaveBeenCalledOnce();
+    await expect(running.service.status(outgoing.deploymentId)).resolves.toMatchObject({
+      membership: { state: "removed" },
+    });
+    for (const target of [incoming, manual])
+      await expect(running.service.status(target.deploymentId)).resolves.toMatchObject({
+        membership: { state: "active" },
+        runner: { state: "running" },
+      });
+    const signingOut = running.service.leaveAccountMemberships();
+    await eventually(() => hasStopMessage(childFor(running.children, incoming.hostUrl)));
+    childFor(running.children, incoming.hostUrl).emit("exit", 0);
+    await signingOut;
+    expect(delivered).toHaveBeenCalledTimes(2);
+    expect(hasStopMessage(childFor(running.children, manual.hostUrl))).toBe(false);
+  });
+
+  it("signs binding with only this Deployment's key and keeps removed attempts fenced until explicit setup", async () => {
+    const directory = await temporaryDirectory();
+    const targets = mutableTargetAuthority();
+    const first = targets.add("https://binding.opensteer.test");
+    const second = targets.add("https://other-binding.opensteer.test");
+    const config = await configuration(directory);
+    const fence = vi.fn();
+    const clear = vi.fn(async () => undefined);
+    const running = fixture(config, targets, undefined, undefined, {
+      fenceDeployment: fence,
+      clearDeploymentSession: clear,
+    });
+    const starts = [first, second].map((target) =>
+      running.service.start(startInput(target.deploymentId)),
+    );
+    await eventually(() => running.children.length === 2);
+    running.children.forEach((child) => connect(child));
+    await Promise.all(starts);
+    const firstChild = childFor(running.children, first.hostUrl);
+    const identity = JSON.parse(await readFile(identityPath(firstChild.dataDirectory), "utf8")) as {
+      runnerId: string;
+      publicKeyPem: string;
+    };
+    const sessionId = createId("authSession");
+    const proof = await running.service.signDeviceSessionBinding({
+      deploymentId: first.deploymentId,
+      sessionId,
+    });
+    expect(Object.keys(proof).sort()).toEqual(["issuedAt", "signature"]);
+    expect(
+      verifyDeviceSessionBindingSignature(identity.publicKeyPem, {
+        ...proof,
+        deploymentId: first.deploymentId,
+        runnerId: identity.runnerId,
+        sessionId,
+      }),
+    ).toBe(true);
+    const removing = running.service.markRemoved(first.deploymentId);
+    expect(fence).toHaveBeenCalledWith(first.deploymentId);
+    await eventually(() => hasStopMessage(firstChild));
+    firstChild.emit("exit", 0);
+    await removing;
+    expect(clear).toHaveBeenCalledWith(first.deploymentId);
+    await expect(running.service.assertSessionAllowed(first.deploymentId)).rejects.toThrow(
+      "Set up again",
+    );
+    await expect(
+      running.service.signDeviceSessionBinding({ deploymentId: first.deploymentId, sessionId }),
+    ).rejects.toThrow("not an active device");
+    await expect(
+      running.service.assertSessionAllowed(second.deploymentId),
+    ).resolves.toBeUndefined();
+    const removed = await running.service.status(first.deploymentId);
+    await running.service.setUpDevice({
+      deploymentId: first.deploymentId,
+      runnerName: "Rejoined",
+      runAgents: false,
+    });
+    await expect(running.service.assertSessionAllowed(first.deploymentId)).resolves.toBeUndefined();
+    expect(
+      (await running.service.status(first.deploymentId)).membership?.generation,
+    ).toBeGreaterThan(removed.membership!.generation);
+  });
+
+  it("retires only the setup token handed to main before clearing its session, even while the worker connects", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://pending-setup.opensteer.test");
+    const order: string[] = [];
+    const retiring = vi.fn(async () => {
+      order.push("retire");
+    });
+    const clearing = vi.fn(async () => {
+      order.push("clear");
+    });
+    const delivered = vi.fn<typeof fetch>(async () => Response.json({ outcome: "removed" }));
+    const running = fixture(config, targets, undefined, undefined, {
+      retireEnrollment: retiring,
+      clearDeploymentSession: clearing,
+      leaveFetch: delivered,
+    });
+    const issuance = {
+      type: "runner.enrollment.createLocal" as const,
+      token: "e".repeat(64),
+      enrollmentId: "own-setup",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+    };
+    const mint = {
+      type: "runner.enrollment.createLocal" as const,
+      name: "Mac",
+      allowedModules: ["shell" as const],
+      idempotencyKey: "self-setup",
+    };
+    await running.service.observeHostCommand(target.deploymentId, mint, issuance);
+    await running.service.observeHostCommand(target.deploymentId, mint, {
+      ...issuance,
+      enrollmentId: "for-another-computer",
+      token: "x".repeat(64),
+    });
+    const start = running.service
+      .start(startInput(target.deploymentId))
+      .catch((error: unknown) => error);
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    const leaving = running.service.leaveDeployment({ deploymentId: target.deploymentId });
+    await eventually(() => hasStopMessage(child));
+    child.emit("exit", 0);
+    await leaving;
+    await start;
+    expect(retiring).toHaveBeenCalledExactlyOnceWith(
+      target.deploymentId,
+      target.hostUrl,
+      "own-setup",
+    );
+    expect(order[0]).toBe("retire");
+    expect(order).toContain("clear");
+    expect(delivered).toHaveBeenCalledOnce();
+    expect((await running.service.status(target.deploymentId)).membership?.state).toBe("removed");
+    await running.service.shutdown();
+    running.service.dispose();
+  });
+
+  it("keeps leave unconfirmed until a pending enrollment expires when retirement cannot reach the Host", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://pending-expiry.opensteer.test");
+    const delivered = vi.fn<typeof fetch>(async () => Response.json({ outcome: "removed" }));
+    const retiring = vi.fn(async () => {
+      throw new Error("offline");
+    });
+    const running = fixture(config, targets, undefined, undefined, {
+      retireEnrollment: retiring,
+      leaveFetch: delivered,
+    });
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    await running.service.observeHostCommand(
+      target.deploymentId,
+      {
+        type: "runner.enrollment.createLocal",
+        name: "Mac",
+        allowedModules: ["shell"],
+        idempotencyKey: "self-setup",
+      },
+      {
+        type: "runner.enrollment.createLocal",
+        token: "e".repeat(64),
+        enrollmentId: "own-setup",
+        expiresAt,
+      },
+    );
+    const start = running.service
+      .start(startInput(target.deploymentId))
+      .catch((error: unknown) => error);
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    const leaving = running.service.leaveDeployment({ deploymentId: target.deploymentId });
+    await eventually(() => hasStopMessage(child));
+    child.emit("exit", 0);
+    await leaving;
+    await start;
+    expect(delivered).not.toHaveBeenCalled();
+    expect((await running.service.status(target.deploymentId)).membership).toMatchObject({
+      state: "leaving",
+      leaveUnconfirmed: true,
+    });
+    await running.service.shutdown();
+    running.service.dispose();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.parse(expiresAt) + 1);
+      const restarted = fixture(config, targets, undefined, undefined, {
+        leaveFetch: delivered,
+        retireEnrollment: retiring,
+      });
+      await restarted.service.startIfEnabled();
+      expect(restarted.fork).not.toHaveBeenCalled();
+      expect(delivered).toHaveBeenCalledOnce();
+      expect((await restarted.service.status(target.deploymentId)).membership?.state).toBe(
+        "removed",
+      );
+      await restarted.service.shutdown();
+      restarted.service.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([false, true])(
+    "confirms session loss with the Runner, never a cached deadline: expired %s",
+    async (expired) => {
+      const directory = await temporaryDirectory();
+      const config = await configuration(directory);
+      const targets = mutableTargetAuthority();
+      const target = targets.add("https://session-ended.opensteer.test");
+      const running = fixture(config, targets);
+      const start = running.service.start(startInput(target.deploymentId));
+      await eventually(() => running.children.length === 1);
+      const child = childAt(running.children, 0);
+      connect(child);
+      await start;
+      const before = await readFile(identityPath(child.dataDirectory), "utf8");
+      const profiles = desktopDeploymentPaths(
+        directory,
+        target.deploymentId,
+      ).browserProfilesDirectory;
+      await mkdir(profiles, { recursive: true });
+      await writeFile(path.join(profiles, "saved-profile"), "keep");
+      const sessionId = createId("authSession");
+      const proof = await running.service.signDeviceSessionBinding({
+        deploymentId: target.deploymentId,
+        sessionId,
+      });
+      const runnerId = readTestIdentity(child.dataDirectory)!.runnerId;
+      await running.service.observeHostCommand(
+        target.deploymentId,
+        {
+          type: "machine.session.bind",
+          machineId: runnerId,
+          proof,
+          idempotencyKey: "bind-session",
+        },
+        { type: "machine.session.bind" },
+      );
+      if (expired) vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        if (expired) vi.setSystemTime(new Date("2099-01-02T00:00:00.000Z"));
+        const ending = running.service.sessionLost(target.deploymentId);
+        await eventually(() => hasStopMessage(child));
+        child.emit("exit", 0);
+        await ending;
+        expect((await running.service.status(target.deploymentId)).membership).toMatchObject({
+          state: "active",
+          sessionState: "confirming",
+        });
+        await expect(running.service.assertSessionAllowed(target.deploymentId)).rejects.toThrow(
+          "confirm",
+        );
+        expect(await readFile(identityPath(child.dataDirectory), "utf8")).toBe(before);
+        expect(await readFile(path.join(profiles, "saved-profile"), "utf8")).toBe("keep");
+        await eventually(() => running.children.length === 2);
+        connect(childAt(running.children, 1));
+        await eventually(
+          async () =>
+            (await running.service.status(target.deploymentId)).runner.state === "running",
+        );
+        if (expired) {
+          expect((await running.service.status(target.deploymentId)).membership?.sessionState).toBe(
+            "sign-in-again",
+          );
+          await expect(running.service.assertSessionAllowed(target.deploymentId)).rejects.toThrow();
+        } else {
+          await expect(
+            running.service.assertSessionAllowed(target.deploymentId),
+          ).resolves.toBeUndefined();
+        }
+        expect(await readFile(path.join(profiles, "saved-profile"), "utf8")).toBe("keep");
+        const resumed = await running.service.setUpDevice({
+          deploymentId: target.deploymentId,
+          runnerName: "Same Mac",
+          runAgents: false,
+        });
+        expect(resumed.membership?.runnerId).toBe(runnerId);
+      } finally {
+        vi.useRealTimers();
+        const stopped = running.service.shutdown();
+        running.children.forEach((child) => child.kill());
+        await stopped;
+        running.service.dispose();
+      }
+    },
+  );
+
+  it("reconciles a Host-bound session after restart even if the binding receipt was never saved", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://restart-bound.opensteer.test");
+    const identityDirectory = path.join(directory, "runner", "deployments", target.deploymentId);
+    await mkdir(identityDirectory, { recursive: true });
+    writeTestIdentity(identityDirectory, true);
+    const sessionId = createId("authSession");
+    const runnerId = readTestIdentity(identityDirectory)!.runnerId;
+    const running = fixture(config, targets, undefined, undefined, {
+      readSession: async () => ({
+        id: sessionId,
+        deviceId: runnerId,
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        absoluteExpiresAt: "2099-01-01T00:00:00.000Z",
+      }),
+    });
+    const restoring = running.service.startIfEnabled();
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    connect(child);
+    await restoring;
+    expect(
+      (await readMemberships(path.join(directory, "runner", "desktop-runner.json"))).runners[
+        target.deploymentId
+      ]?.boundSession?.id,
+    ).toBe(sessionId);
+    const ending = running.service.sessionLost(target.deploymentId);
+    await eventually(() => hasStopMessage(child));
+    child.emit("exit", 0);
+    await ending;
+    await expect(running.service.assertSessionAllowed(target.deploymentId)).rejects.toThrow(
+      "confirm",
+    );
+    await eventually(() => running.children.length === 2);
+    const reconnecting = childAt(running.children, 1);
+    reconnecting.emit("message", { type: "runner.worker.revoked" });
+    await eventually(() => hasStopMessage(reconnecting));
+    reconnecting.emit("exit", 0);
+    await eventually(
+      async () =>
+        (await running.service.status(target.deploymentId)).membership?.state === "removed",
+    );
+    await expect(running.service.assertSessionAllowed(target.deploymentId)).rejects.toThrow(
+      "Set up again",
+    );
+    await running.service.shutdown();
+    running.service.dispose();
+  });
+
+  it.each(["removed", "expired"] as const)(
+    "resumes renderer authorization using main's real predicate: %s",
+    async (state) => {
+      const { resumeDeviceSignIn } =
+        await import("../../../web/src/components/devices/device-setup.js");
+      const directory = await temporaryDirectory();
+      const config = await configuration(directory);
+      const targets = mutableTargetAuthority();
+      const target = targets.add("https://resume-auth.opensteer.test");
+      const running = fixture(config, targets);
+      const input = {
+        deploymentId: target.deploymentId,
+        runnerName: "Prepared Mac",
+        runAgents: false,
+      };
+      const original = await running.service.prepareDeviceSetup(input);
+      if (state === "removed") await running.service.markRemoved(target.deploymentId);
+      else {
+        const file = path.join(directory, "runner", "desktop-runner.json");
+        const preference = await readMemberships(file);
+        await writeMemberships(file, {
+          ...preference,
+          runners: {
+            ...preference.runners,
+            [target.deploymentId]: {
+              ...preference.runners[target.deploymentId]!,
+              needsSignIn: true,
+            },
+          },
+        });
+      }
+      await expect(running.service.assertSessionAllowed(target.deploymentId)).rejects.toThrow();
+      let selected = false;
+      await resumeDeviceSignIn(
+        {
+          setUpDevice: (request) => running.service.setUpDevice(request),
+          select: async ({ deploymentId }) => {
+            await running.service.assertSessionAllowed(deploymentId);
+            selected = true;
+          },
+        },
+        target.deploymentId,
+      );
+      expect(selected).toBe(true);
+      const next = await running.service.prepareDeviceSetup(input);
+      expect(next.runnerId === original.runnerId).toBe(state === "expired");
+      expect(next.publicKeyPem === original.publicKeyPem).toBe(state === "expired");
+      await running.service.shutdown();
+      running.service.dispose();
+    },
+  );
+
+  it.each(["hand-off", "active-write"] as const)(
+    "owns prepared Account setup when sign-out wins before %s",
+    async (boundary) => {
+      const directory = await temporaryDirectory();
+      const config = await configuration(directory);
+      const targets = mutableTargetAuthority();
+      const target = targets.add("https://prepared.opensteer.test");
+      const source = {
+        kind: "account" as const,
+        issuer: "https://accounts.opensteer.test",
+        subject: ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`),
+      };
+      targets.source(target.deploymentId, source);
+      const gate = Promise.withResolvers<void>();
+      const reached = Promise.withResolvers<void>();
+      let hold = false;
+      const authority = {
+        ...targets,
+        resolve: async (id: DeploymentId) => {
+          if (hold) {
+            reached.resolve();
+            await withTimeout(gate.promise, 1500, {
+              timeoutError: () => new Error("active write barrier was not released"),
+            });
+          }
+          return targets.resolve(id);
+        },
+      };
+      const delivered = vi.fn<typeof fetch>(async () => Response.json({ outcome: "removed" }));
+      const running = fixture(config, authority, undefined, undefined, { leaveFetch: delivered });
+      const prepared = await running.service.prepareDeviceSetup({
+        deploymentId: target.deploymentId,
+        runnerName: "Prepared Mac",
+        runAgents: false,
+      });
+      expect(Object.keys(prepared).sort()).toEqual(["publicKeyPem", "runnerId"]);
+      const file = path.join(directory, "runner", "desktop-runner.json");
+      expect((await readMemberships(file)).runners[target.deploymentId]).toMatchObject({
+        state: "active",
+        runnerId: prepared.runnerId,
+        provenance: source,
+        prepared: true,
+      });
+      const mint = {
+        type: "runner.enrollment.createLocal" as const,
+        allowedModules: ["shell" as const],
+        name: "Prepared Mac",
+        idempotencyKey: "self",
+        preparedIdentity: prepared,
+      };
+      const receipt = {
+        type: mint.type,
+        token: "p".repeat(64),
+        enrollmentId: "own-attempt",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      };
+      await running.service.observeHostCommand(target.deploymentId, mint, receipt);
+      expect(
+        (await readMemberships(file)).runners[target.deploymentId]?.pendingEnrollment?.id,
+      ).toBe("own-attempt");
+      const preview = await running.service.accountSignOutPreview();
+      expect(preview).toEqual([{ deploymentId: target.deploymentId, name: "an Opensteer" }]);
+      let starting: Promise<unknown> | undefined;
+      if (boundary === "active-write") {
+        hold = true;
+        starting = running.service
+          .start({ ...startInput(target.deploymentId), enrollmentToken: receipt.token })
+          .catch((error: unknown) => error);
+        await withTimeout(reached.promise, 1500, {
+          timeoutError: () => new Error("setup never reached active write barrier"),
+        });
+        hold = false;
+      }
+      await running.service.leaveAccountMemberships();
+      gate.resolve();
+      if (starting) expect(await starting).toBeInstanceOf(Error);
+      else
+        await expect(
+          running.service.setUpDevice({
+            ...startInput(target.deploymentId),
+            enrollmentToken: receipt.token,
+          }),
+        ).rejects.toThrow();
+      expect(running.fork).not.toHaveBeenCalled();
+      expect(delivered).toHaveBeenCalledOnce();
+      expect(JSON.parse(String(delivered.mock.calls[0]?.[1]?.body)).runnerId).toBe(
+        prepared.runnerId,
+      );
+      expect((await readMemberships(file)).runners[target.deploymentId]?.state).toBe("removed");
+      await running.service.shutdown();
+      running.service.dispose();
+    },
+  );
+
+  it("waits for in-flight prepared issuance before Account sign-out owns its signed leave", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://issuance-race.opensteer.test");
+    const source = {
+      kind: "account" as const,
+      issuer: "https://accounts.opensteer.test",
+      subject: ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`),
+    };
+    targets.source(target.deploymentId, source);
+    let accountActive = true;
+    const delivered = vi.fn<typeof fetch>(async () => Response.json({ outcome: "removed" }));
+    const running = fixture(config, targets, undefined, undefined, {
+      leaveFetch: delivered,
+      assertAccountSource: () => {
+        if (!accountActive) throw new Error("Account signed out");
+      },
+    });
+    const input = {
+      deploymentId: target.deploymentId,
+      runnerName: "Prepared Mac",
+      runAgents: false,
+    };
+    const prepared = await running.service.prepareDeviceSetup(input);
+    const command = {
+      type: "runner.enrollment.createLocal" as const,
+      name: input.runnerName,
+      allowedModules: ["shell" as const],
+      idempotencyKey: "in-flight",
+      preparedIdentity: prepared,
+    };
+    const gate = Promise.withResolvers<void>();
+    const reached = Promise.withResolvers<void>();
+    const issuance = running.service.withPreparedEnrollment(
+      target.deploymentId,
+      command,
+      async () => {
+        reached.resolve();
+        await withTimeout(gate.promise, 1500, {
+          timeoutError: () => new Error("issuance hand-off barrier was not released"),
+        });
+        await running.service.observeHostCommand(target.deploymentId, command, {
+          type: command.type,
+          token: "i".repeat(64),
+          enrollmentId: "in-flight",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+        });
+      },
+    );
+    await withTimeout(reached.promise, 1500, {
+      timeoutError: () => new Error("prepared enrollment issuance never began"),
+    });
+    accountActive = false;
+    const signOut = running.service.leaveAccountMemberships();
+    expect(delivered).not.toHaveBeenCalled();
+    await expect(running.service.prepareDeviceSetup(input)).rejects.toThrow("Account signed out");
+    gate.resolve();
+    await issuance;
+    await signOut;
+    expect(delivered).toHaveBeenCalledOnce();
+    expect((await running.service.status(target.deploymentId)).membership?.state).toBe("removed");
+    await expect(
+      running.service.withPreparedEnrollment(target.deploymentId, command, async () => undefined),
+    ).rejects.toThrow("cancelled");
+    expect(running.fork).not.toHaveBeenCalled();
+    await running.service.shutdown();
+    running.service.dispose();
+  });
+
+  it.each([false, true])(
+    "recovers a prepared attempt after restart before redemption, expired %s",
+    async (expired) => {
+      const directory = await temporaryDirectory();
+      const config = await configuration(directory);
+      const targets = mutableTargetAuthority();
+      const target = targets.add("https://resume-setup.opensteer.test");
+      const first = fixture(config, targets);
+      const input = {
+        deploymentId: target.deploymentId,
+        runnerName: "Prepared Mac",
+        runAgents: false,
+      };
+      const prepared = await first.service.prepareDeviceSetup(input);
+      await first.service.observeHostCommand(
+        target.deploymentId,
+        {
+          type: "runner.enrollment.createLocal",
+          name: input.runnerName,
+          allowedModules: ["shell"],
+          idempotencyKey: "pre-crash",
+          preparedIdentity: prepared,
+        },
+        {
+          type: "runner.enrollment.createLocal",
+          token: "p".repeat(64),
+          enrollmentId: "pre-crash",
+          expiresAt: expired ? "2000-01-01T00:00:00.000Z" : "2099-01-01T00:00:00.000Z",
+        },
+      );
+      await first.service.shutdown();
+      first.service.dispose();
+      const restarted = fixture(config, targets);
+      await restarted.service.startIfEnabled();
+      expect(restarted.fork).not.toHaveBeenCalled();
+      expect((await restarted.service.status(target.deploymentId)).membership).toMatchObject({
+        state: "active",
+        enrolled: false,
+      });
+      expect(await restarted.service.prepareDeviceSetup(input)).toEqual(prepared);
+      const receipt = {
+        type: "runner.enrollment.createLocal" as const,
+        token: "n".repeat(64),
+        enrollmentId: "replacement",
+        expiresAt: "2099-01-01T00:00:00.000Z",
+      };
+      await restarted.service.observeHostCommand(
+        target.deploymentId,
+        {
+          type: receipt.type,
+          name: input.runnerName,
+          allowedModules: ["shell"],
+          idempotencyKey: "replacement",
+          preparedIdentity: prepared,
+        },
+        receipt,
+      );
+      const joining = restarted.service.start({ ...input, enrollmentToken: receipt.token });
+      await eventually(() => restarted.children.length === 1);
+      connect(childAt(restarted.children, 0));
+      expect((await joining).membership).toMatchObject({
+        runnerId: prepared.runnerId,
+        enrolled: true,
+      });
+      const stopped = restarted.service.shutdown();
+      restarted.children.forEach((child) => child.kill());
+      await stopped;
+      restarted.service.dispose();
+    },
+  );
+
+  it("honors a legacy profile-erasure marker instead of healing its orphaned key", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://old-removal.opensteer.test");
+    const identityDirectory = path.join(directory, "runner", "deployments", target.deploymentId);
+    await mkdir(identityDirectory, { recursive: true });
+    writeTestIdentity(identityDirectory, true);
+    const markers = path.join(directory, "session", "browser-profile-removals");
+    await mkdir(markers, { recursive: true });
+    await writeFile(path.join(markers, `${target.deploymentId}.json`), '{"version":1}\n', {
+      mode: 0o600,
+    });
+    const running = fixture(config, targets);
+    await running.service.startIfEnabled();
+    expect(running.fork).not.toHaveBeenCalled();
+    expect((await running.service.status(target.deploymentId)).membership?.state).toBe("removed");
+    expect(existsSync(identityPath(identityDirectory))).toBe(false);
+  });
+
+  it("rejects a binding proof whose session verification finishes after removal", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://late-bind.opensteer.test");
+    const gate = Promise.withResolvers<void>();
+    const begun = Promise.withResolvers<void>();
+    const running = fixture(config, targets, undefined, undefined, {
+      readSession: async (_id, _origin, sessionId) => {
+        begun.resolve();
+        await gate.promise;
+        return {
+          id: AuthSessionIdSchema.parse(sessionId),
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          absoluteExpiresAt: "2099-01-01T00:00:00.000Z",
+        };
+      },
+    });
+    const start = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    connect(child);
+    await start;
+    const binding = running.service.signDeviceSessionBinding({
+      deploymentId: target.deploymentId,
+      sessionId: createId("authSession"),
+    });
+    const deadline = setTimeout(
+      () => begun.reject(new Error("Session verification did not start")),
+      1000,
+    );
+    try {
+      await begun.promise;
+    } finally {
+      clearTimeout(deadline);
+    }
+    const removing = running.service.markRemoved(target.deploymentId);
+    await eventually(() => hasStopMessage(child));
+    child.emit("exit", 0);
+    await removing;
+    gate.resolve();
+    await expect(binding).rejects.toThrow("left before session binding");
+  });
+
   it("runs two enabled Deployments at once and restores both after relaunch", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
@@ -77,12 +1337,12 @@ describe("LocalRunnerService", () => {
     const preference = JSON.parse(
       await readFile(path.join(directory, "runner", "desktop-runner.json"), "utf8"),
     ) as unknown;
-    expect(preference).toEqual({
+    expect(preference).toMatchObject({
       runners: {
-        [first.deploymentId]: { enrolled: true, runAgents: true, runnerName: "Office Mac" },
-        [second.deploymentId]: { enrolled: true, runAgents: true, runnerName: "Office Mac" },
+        [first.deploymentId]: { state: "active", runAgents: true, runnerName: "Office Mac" },
+        [second.deploymentId]: { state: "active", runAgents: true, runnerName: "Office Mac" },
       },
-      version: 4,
+      version: 5,
     });
 
     const stopping = firstRun.service.shutdown();
@@ -126,8 +1386,8 @@ describe("LocalRunnerService", () => {
       readFile(path.join(directory, "runner", "desktop-runner.json"), "utf8").then(JSON.parse),
     ).resolves.toMatchObject({
       runners: {
-        [first.deploymentId]: { enrolled: true },
-        [second.deploymentId]: { enrolled: true },
+        [first.deploymentId]: { state: "active" },
+        [second.deploymentId]: { state: "active" },
       },
     });
 
@@ -193,7 +1453,7 @@ describe("LocalRunnerService", () => {
 
     const firstChild = childFor(running.children, first.hostUrl);
     const secondChild = childFor(running.children, second.hostUrl);
-    const removing = running.service.remove(first.deploymentId);
+    const removing = removeDevice(running.service, first.deploymentId);
     await eventually(() => hasStopMessage(firstChild));
     expect(hasStopMessage(secondChild)).toBe(false);
     firstChild.emit("exit", 0);
@@ -201,18 +1461,19 @@ describe("LocalRunnerService", () => {
 
     await expect(
       readFile(path.join(directory, "runner", "desktop-runner.json"), "utf8").then(JSON.parse),
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       runners: {
-        [second.deploymentId]: { enrolled: true, runAgents: true, runnerName: "Studio Mac" },
+        [first.deploymentId]: { state: "removed", erasePending: false },
+        [second.deploymentId]: { state: "active", runAgents: true, runnerName: "Studio Mac" },
       },
-      version: 4,
+      version: 5,
     });
     await expect(running.service.status(second.deploymentId)).resolves.toMatchObject({
       runner: { state: "running" },
     });
   });
 
-  it("stops and forgets a Runner when its Deployment leaves the catalog", async () => {
+  it("parks membership when its Deployment leaves the catalog", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
     const target = targets.add("https://removed.opensteer.test");
@@ -229,12 +1490,12 @@ describe("LocalRunnerService", () => {
     // preference alone would read the status mid-reconcile.
     await eventually(async () => {
       const status = await running.service.status(target.deploymentId);
-      return status.runner.detail === "The Deployment was removed from this computer.";
+      return status.runner.detail === "Waiting for this Deployment's verified route.";
     });
 
-    await expect(running.service.hasEnrolledRunners()).resolves.toBe(false);
+    await expect(running.service.hasEnrolledRunners()).resolves.toBe(true);
     await expect(running.service.status(target.deploymentId)).resolves.toMatchObject({
-      runner: { detail: "The Deployment was removed from this computer.", state: "disabled" },
+      runner: { detail: "Waiting for this Deployment's verified route.", state: "disabled" },
     });
   });
 
@@ -420,11 +1681,11 @@ describe("LocalRunnerService", () => {
     const preference = JSON.parse(
       await readFile(path.join(directory, "runner", "desktop-runner.json"), "utf8"),
     ) as unknown;
-    expect(preference).toEqual({
+    expect(preference).toMatchObject({
       runners: {
-        [personal.deploymentId]: { enrolled: true, runAgents: false, runnerName: "Studio Mac" },
+        [personal.deploymentId]: { state: "active", runAgents: false, runnerName: "Studio Mac" },
       },
-      version: 4,
+      version: 5,
     });
     const stopping = running.service.shutdown();
     await eventually(() => hasStopMessage(child));
@@ -486,7 +1747,7 @@ describe("LocalRunnerService", () => {
       "agents,browser,integrations,shell",
     );
     const identity = await readFile(
-      path.join(directory, "runner", "deployments", target.deploymentId, "runner-identity.json"),
+      path.join(directory, "runner", "deployments", target.deploymentId, "identity.json"),
       "utf8",
     );
 
@@ -518,7 +1779,7 @@ describe("LocalRunnerService", () => {
     );
     await expect(
       readFile(
-        path.join(directory, "runner", "deployments", target.deploymentId, "runner-identity.json"),
+        path.join(directory, "runner", "deployments", target.deploymentId, "identity.json"),
         "utf8",
       ),
     ).resolves.toBe(identity);
@@ -543,11 +1804,16 @@ describe("LocalRunnerService", () => {
     const child = childAt(firstRun.children, 0);
 
     // The row is on disk while the worker is still connecting.
-    await expect(readFile(preferencePath, "utf8").then(JSON.parse)).resolves.toEqual({
+    await expect(readFile(preferencePath, "utf8").then(JSON.parse)).resolves.toMatchObject({
       runners: {
-        [target.deploymentId]: { enrolled: true, runAgents: true, runnerName: "Office Mac" },
+        [target.deploymentId]: {
+          state: "active",
+          runnerId: readTestIdentity(child.dataDirectory)?.runnerId,
+          runAgents: true,
+          runnerName: "Office Mac",
+        },
       },
-      version: 4,
+      version: 5,
     });
 
     // The Runner finished enrolling; the app died before it heard about it.
@@ -599,15 +1865,16 @@ describe("LocalRunnerService", () => {
     expect(relaunched.fork).not.toHaveBeenCalled();
     await expect(relaunched.service.status(target.deploymentId)).resolves.toMatchObject({
       runner: {
-        detail: "This Mac never finished joining; remove it and add it again.",
+        detail: "Finish setting up this Mac to join this Opensteer.",
         state: "failed",
       },
     });
     await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 100));
     expect(relaunched.fork).not.toHaveBeenCalled();
 
-    await expect(relaunched.service.remove(target.deploymentId)).resolves.toMatchObject({
-      runner: { detail: "This Mac is not in this Deployment.", state: "disabled" },
+    await expect(removeDevice(relaunched.service, target.deploymentId)).resolves.toMatchObject({
+      membership: { state: "removed" },
+      runner: { detail: "This Mac was removed from this Deployment.", state: "disabled" },
     });
     await expect(relaunched.service.hasEnrolledRunners()).resolves.toBe(false);
     await expect(
@@ -648,7 +1915,7 @@ describe("LocalRunnerService", () => {
     connect(child);
     await start;
 
-    const removing = running.service.remove(target.deploymentId);
+    const removing = removeDevice(running.service, target.deploymentId);
     await eventually(() => stop.mock.calls.length === 1);
     expect(existsSync(profileRoot)).toBe(true);
     stopped.resolve();
@@ -695,7 +1962,7 @@ describe("LocalRunnerService", () => {
     await eventually(() => running.children.length === 1);
     const child = childAt(running.children, 0);
 
-    const removing = running.service.remove(target.deploymentId);
+    const removing = removeDevice(running.service, target.deploymentId);
     await eventually(() => hasStopMessage(child));
     child.emit("exit", 0);
 
@@ -723,7 +1990,7 @@ describe("LocalRunnerService", () => {
     const child = childAt(running.children, 0);
     const dataDirectory = path.join(directory, "runner", "deployments", target.deploymentId);
 
-    const removing = running.service.remove(target.deploymentId);
+    const removing = removeDevice(running.service, target.deploymentId);
     const removalOutcome = removing.then(
       () => "removed",
       (error: unknown) => error,
@@ -760,7 +2027,7 @@ describe("LocalRunnerService", () => {
     // Nothing is in flight but the worker itself: the graceful stop and the
     // kill both go unanswered, and the slot's record of the process is all
     // that stands between its files and a delete.
-    const removing = running.service.remove(target.deploymentId);
+    const removing = removeDevice(running.service, target.deploymentId);
     const removalOutcome = removing.then(
       () => "removed",
       (error: unknown) => error,
@@ -788,13 +2055,13 @@ describe("LocalRunnerService", () => {
     await eventually(() => running.children.length === 1);
     const dataDirectory = path.join(directory, "runner", "deployments", target.deploymentId);
 
-    await expect(running.service.remove(target.deploymentId)).rejects.toThrow(
+    await expect(removeDevice(running.service, target.deploymentId)).rejects.toThrow(
       "The Runner on this Mac is still running, so nothing was deleted.",
     );
 
     // Nothing was deleted, and the computer is still a member until it is.
     await expect(lstat(dataDirectory)).resolves.toBeDefined();
-    await expect(running.service.hasEnrolledRunners()).resolves.toBe(true);
+    await expect(running.service.hasEnrolledRunners()).resolves.toBe(false);
   });
 
   it.each([false, true])(
@@ -870,6 +2137,41 @@ describe("LocalRunnerService", () => {
     },
   );
 
+  it("waits for an in-flight profile erasure before shutdown resolves", async () => {
+    const directory = await temporaryDirectory();
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://shutdown-erasure.opensteer.test");
+    const erasure = new DesktopBrowserProfileErasure(directory);
+    const released = Promise.withResolvers<void>();
+    const order: string[] = [];
+    const erase = erasure.erase.bind(erasure);
+    const erasing = vi.spyOn(erasure, "erase").mockImplementation(async (...input) => {
+      await released.promise;
+      await erase(...input);
+      order.push("erased");
+    });
+    const running = fixture(await configuration(directory), targets, undefined, undefined, {
+      profileErasure: erasure,
+    });
+    const start = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    connect(child);
+    await start;
+    child.emit("message", { type: "runner.worker.revoked" });
+    await eventually(() => hasStopMessage(child));
+    child.emit("exit", 0);
+    await vi.waitFor(() => expect(erasing, "erasure never started").toHaveBeenCalled(), {
+      timeout: 1_000,
+    });
+    const shutting = running.service.shutdown().then(() => order.push("shut down"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    released.resolve();
+    await shutting;
+    expect(order).toEqual(["erased", "shut down"]);
+    running.service.dispose();
+  });
+
   it("removes this Mac when its browser engine cannot stop, and erases its profiles at the next start", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
@@ -899,7 +2201,7 @@ describe("LocalRunnerService", () => {
     const child = childAt(running.children, 0);
     connect(child);
     await starting;
-    const removing = running.service.remove(target.deploymentId);
+    const removing = removeDevice(running.service, target.deploymentId);
     await eventually(() => hasStopMessage(child));
     child.emit("exit", 0);
     await removing;
@@ -958,16 +2260,16 @@ describe("LocalRunnerService", () => {
     connect(child);
     await start;
     const dataDirectory = path.join(directory, "runner", "deployments", target.deploymentId);
-    await expect(lstat(path.join(dataDirectory, "runner-identity.json"))).resolves.toBeDefined();
+    await expect(lstat(path.join(dataDirectory, "identity.json"))).resolves.toBeDefined();
 
-    const removing = running.service.remove(target.deploymentId);
+    const removing = removeDevice(running.service, target.deploymentId);
     await eventually(() => hasStopMessage(child));
     child.emit("exit", 0);
 
     await expect(removing).resolves.toMatchObject({
       runAgents: false,
       runner: {
-        detail: "This Mac is not in this Deployment.",
+        detail: "This Mac was removed from this Deployment.",
         enrolled: false,
         environmentId: null,
         runnerId: null,
@@ -994,7 +2296,7 @@ describe("LocalRunnerService", () => {
     );
     await eventually(() => running.children.length === 1);
     const child = childAt(running.children, 0);
-    const removing = running.service.remove(target.deploymentId);
+    const removing = removeDevice(running.service, target.deploymentId);
     await eventually(() => hasStopMessage(child));
     connect(child);
 
@@ -1190,7 +2492,7 @@ describe("LocalRunnerService", () => {
     await eventually(
       async () => (await running.service.status(target.deploymentId)).runner.state === "failed",
     );
-    await running.service.remove(target.deploymentId);
+    await removeDevice(running.service, target.deploymentId);
     await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 200));
 
     expect(running.fork).toHaveBeenCalledTimes(1);
@@ -1240,7 +2542,7 @@ describe("LocalRunnerService", () => {
 
     // Removing this Mac gives the listener back: nothing keeps a loopback
     // listener for a slot that no longer exists.
-    const removing = running.service.remove(personal.deploymentId);
+    const removing = removeDevice(running.service, personal.deploymentId);
     await eventually(() => hasStopMessage(child));
     child.emit("exit", 0);
     await removing;
@@ -1266,6 +2568,13 @@ function fixture(
   restartDelayMs?: (attempt: number) => number,
   browser?: LocalRunnerServiceDependencies["browser"],
   options: {
+    readonly assertAccountSource?: LocalRunnerServiceDependencies["assertAccountSource"];
+    readonly revokeLegacyRunner?: LocalRunnerServiceDependencies["revokeLegacyRunner"];
+    readonly retireEnrollment?: LocalRunnerServiceDependencies["retireEnrollment"];
+    readonly readSession?: LocalRunnerServiceDependencies["readSession"];
+    readonly leaveFetch?: typeof fetch;
+    readonly fenceDeployment?: LocalRunnerServiceDependencies["fenceDeployment"];
+    readonly clearDeploymentSession?: LocalRunnerServiceDependencies["clearDeploymentSession"];
     readonly computerUse?: LocalRunnerServiceDependencies["computerUse"];
     readonly profileErasure?: DesktopBrowserProfileErasure;
     /** A worker that answers neither the stop message nor the kill. */
@@ -1278,7 +2587,11 @@ function fixture(
     // The real worker mints its identity and SSH host key in this directory
     // on first start and keeps them afterwards, which is what a restart must
     // leave alone and a removal must delete.
-    if (!existsSync(identityPath(forkOptions.cwd))) writeTestIdentity(forkOptions.cwd, false);
+    if (
+      !existsSync(identityPath(forkOptions.cwd)) ||
+      !readTestIdentity(forkOptions.cwd)?.environmentId
+    )
+      writeTestIdentity(forkOptions.cwd, false);
     const child = new FakeUtilityProcess(
       forkOptions.env,
       forkOptions.cwd,
@@ -1291,6 +2604,21 @@ function fixture(
     children,
     fork,
     service: new LocalRunnerService(config, {
+      ...(options.assertAccountSource ? { assertAccountSource: options.assertAccountSource } : {}),
+      ...(options.retireEnrollment ? { retireEnrollment: options.retireEnrollment } : {}),
+      ...(options.revokeLegacyRunner ? { revokeLegacyRunner: options.revokeLegacyRunner } : {}),
+      readSession:
+        options.readSession ??
+        (async (_id, _origin, sessionId) => ({
+          id: AuthSessionIdSchema.parse(sessionId),
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          absoluteExpiresAt: "2099-01-01T00:00:00.000Z",
+        })),
+      ...(options.leaveFetch ? { leaveFetch: options.leaveFetch } : {}),
+      ...(options.fenceDeployment ? { fenceDeployment: options.fenceDeployment } : {}),
+      ...(options.clearDeploymentSession
+        ? { clearDeploymentSession: options.clearDeploymentSession }
+        : {}),
       ...(browser ? { browser } : {}),
       computerName: async () => "Studio Mac",
       ...(options.profileErasure ? { profileErasure: options.profileErasure } : {}),
@@ -1315,6 +2643,8 @@ function mutableTargetAuthority(): DesktopLocalRunnerTargetAuthority & {
   ): DesktopLocalRunnerTarget;
   changeRoute(deploymentId: DeploymentId, hostUrl: string): void;
   notify(): void;
+  restore(target: DesktopLocalRunnerTarget): void;
+  source(deploymentId: DeploymentId, source: DeploymentConnectionSource): void;
   remove(deploymentId: DeploymentId): void;
 } {
   const targets = new Map<DeploymentId, DesktopLocalRunnerTarget>();
@@ -1322,7 +2652,34 @@ function mutableTargetAuthority(): DesktopLocalRunnerTargetAuthority & {
   return {
     add: (hostUrl, kind = "personal", mayRunAgents = true) => {
       const deploymentId = createId("deployment");
+      const keys = testHostAuthorityKeys();
+      const authority = signTestDiscoveryEnvelope(
+        {
+          deploymentId,
+          hostInstanceId: createId("hostInstance"),
+          canonicalOrigin: "http://127.0.0.1:4310",
+          hostKey: { algorithm: "Ed25519" },
+          deploymentShape: { kind },
+        },
+        keys,
+      );
+      const accessRoute =
+        kind === "personal"
+          ? signTestPersonalAccessRoute(
+              {
+                authority: { ...authority.document, deploymentShape: { kind: "personal" } },
+                documentVersion: 2,
+                purpose: "opensteer-personal-access-route",
+                route: { generation: 1, kind: "private", origin: hostUrl },
+              },
+              keys,
+            )
+          : null;
       const target: DesktopLocalRunnerTarget = {
+        devicesAvailable: true,
+        authority,
+        accessRoute,
+        source: { kind: "manual" },
         deploymentId,
         deploymentShape: { kind },
         hostUrl,
@@ -1341,6 +2698,15 @@ function mutableTargetAuthority(): DesktopLocalRunnerTargetAuthority & {
     isCurrent: async (candidate) => targets.get(candidate.deploymentId)?.key === candidate.key,
     notify: () => {
       for (const listener of listeners) listener();
+    },
+    restore: (target) => {
+      targets.set(target.deploymentId, target);
+      for (const listener of listeners) listener();
+    },
+    source: (deploymentId, source) => {
+      const target = targets.get(deploymentId);
+      if (!target) throw new Error("Missing target");
+      targets.set(deploymentId, { ...target, source });
     },
     remove: (deploymentId) => {
       targets.delete(deploymentId);
@@ -1376,7 +2742,7 @@ function connect(child: FakeUtilityProcess, environmentId?: null): void {
 }
 
 function identityPath(dataDirectory: string): string {
-  return path.join(dataDirectory, "runner-identity.json");
+  return path.join(dataDirectory, "identity.json");
 }
 
 function writeTestIdentity(
@@ -1384,12 +2750,23 @@ function writeTestIdentity(
   enrolled: boolean,
   identity?: { readonly environmentId: string; readonly runnerId: string },
 ): void {
+  const existing = existsSync(identityPath(dataDirectory))
+    ? JSON.parse(readFileSync(identityPath(dataDirectory), "utf8"))
+    : null;
+  const pair = generateKeyPairSync("ed25519");
   writeFileSync(
     identityPath(dataDirectory),
     JSON.stringify({
-      enrolled,
-      environmentId: identity?.environmentId ?? createId("environment"),
-      runnerId: identity?.runnerId ?? createId("runner"),
+      createdAt: existing?.createdAt ?? new Date().toISOString(),
+      version: 3,
+      lastConnectionGeneration: enrolled ? Math.max(1, existing?.lastConnectionGeneration ?? 0) : 0,
+      privateKeyPem:
+        existing?.privateKeyPem ??
+        pair.privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
+      publicKeyPem:
+        existing?.publicKeyPem ?? pair.publicKey.export({ format: "pem", type: "spki" }).toString(),
+      environmentId: identity?.environmentId ?? existing?.environmentId ?? createId("environment"),
+      runnerId: identity?.runnerId ?? existing?.runnerId ?? createId("runner"),
     }),
     { mode: 0o600 },
   );
@@ -1397,10 +2774,15 @@ function writeTestIdentity(
 
 function readTestIdentity(dataDirectory: string) {
   if (!existsSync(identityPath(dataDirectory))) return null;
-  return JSON.parse(readFileSync(identityPath(dataDirectory), "utf8")) as {
-    readonly enrolled: boolean;
-    readonly environmentId: EnvironmentId;
-    readonly runnerId: RunnerId;
+  const stored = JSON.parse(readFileSync(identityPath(dataDirectory), "utf8")) as {
+    lastConnectionGeneration: number;
+    environmentId: EnvironmentId;
+    runnerId: RunnerId;
+  };
+  return {
+    enrolled: stored.lastConnectionGeneration > 0,
+    environmentId: stored.environmentId,
+    runnerId: stored.runnerId,
   };
 }
 
@@ -1409,6 +2791,11 @@ function postedSecrets(child: FakeUtilityProcess): Readonly<Record<string, strin
   const posted = RunnerWorkerSecretsMessageSchema.safeParse(child.messages[0]);
   if (!posted.success) throw new Error("The worker was not sent its secrets first.");
   return posted.data.secrets;
+}
+
+async function removeDevice(service: LocalRunnerService, deploymentId: string) {
+  await service.markRemoved(deploymentId);
+  return service.status(deploymentId);
 }
 
 function hasStopMessage(child: FakeUtilityProcess): boolean {

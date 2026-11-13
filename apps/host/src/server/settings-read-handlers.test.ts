@@ -72,7 +72,12 @@ describe("Settings read projections", () => {
       allowedModules: ["shell"],
       revocable: false,
       apps: [{ name: "Private app" }],
-      access: { private: true },
+      access: {
+        activeSessions: [],
+        ownerReachAvailable: false,
+        policy: { reach: "nobody", commands: false, forwarding: false, shares: [] },
+        revision: 1,
+      },
       computerUse: { private: true },
     };
     f.machines.mockResolvedValue(rpcSuccess({ machines: [machine as unknown as MachineSummary] }));
@@ -89,6 +94,7 @@ describe("Settings read projections", () => {
             status: "offline",
             allowedModules: ["shell"],
             revocable: false,
+            access: { policy: machine.access.policy, revision: 1 },
           },
         ],
       }),

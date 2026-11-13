@@ -113,6 +113,8 @@ class Socket extends EventEmitter {
             error: {
               code: this.errorCode,
               message: "Refused",
+              machineId: "rnr_11111111-1111-4111-8111-111111111111",
+              capability: "browser",
               ...(this.errorCode === "dialog-open"
                 ? {
                     dialog: {
@@ -198,7 +200,11 @@ describe("actions Harness conformance", () => {
       socket.errorCode = code;
       socket.errorOnce = true;
       const start = socket.requests.length;
-      await expect(harness.page.locator("input").press("Enter")).rejects.toMatchObject({ code });
+      await expect(harness.page.locator("input").press("Enter")).rejects.toMatchObject({
+        code,
+        machineId: "rnr_11111111-1111-4111-8111-111111111111",
+        capability: "browser",
+      });
       expect(
         socket.requests.slice(start).filter((request) => request.action.type === "dom.act"),
       ).toHaveLength(1);
@@ -280,7 +286,11 @@ describe("actions Harness conformance", () => {
       const { socket, harness } = fixture();
       await harness.ensureRealTab();
       socket.errorCode = code;
-      await expect(harness.page.getByText("Pay").click()).rejects.toMatchObject({ code });
+      await expect(harness.page.getByText("Pay").click()).rejects.toMatchObject({
+        code,
+        machineId: "rnr_11111111-1111-4111-8111-111111111111",
+        capability: "browser",
+      });
       expect(socket.requests.filter((request) => request.action.type === "dom.act")).toHaveLength(
         1,
       );

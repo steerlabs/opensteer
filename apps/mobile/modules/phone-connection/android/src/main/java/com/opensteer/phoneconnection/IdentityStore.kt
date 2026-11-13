@@ -8,7 +8,6 @@ import android.system.OsConstants
 import com.opensteer.phoneconnection.core.*
 import kotlinx.serialization.json.*
 import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
-import org.bouncycastle.crypto.signers.Ed25519Signer
 import org.bouncycastle.util.encoders.Base64
 import java.io.File
 import java.security.KeyStore
@@ -23,6 +22,8 @@ class IdentityStore(context: Context) {
     private val directory = File(context.noBackupFilesDir, "phone-connection").apply { mkdirs() }
     private val file = AtomicBytes(File(directory, "identity.v1.sealed"), ::syncDirectory)
     private val denial = AtomicBytes(File(directory, "retiring.v1.json"), ::syncDirectory)
+    private val leaves = DeviceLeaves(AtomicBytes(File(directory, "leave.v1.json"), ::syncDirectory))
+    private val removed = AtomicBytes(File(directory, "removed.v1.json"), ::syncDirectory)
     private val alias = "opensteer-mobile-phone-connection-v1"
 
     @Synchronized fun load(): JsonObject? {
@@ -50,8 +51,12 @@ class IdentityStore(context: Context) {
     @Synchronized fun prepare(deploymentId: String): JsonObject {
         val current = load()
         if (current != null) {
-            Wire.requireThat(current.text("state") != "retiring", "erasure-pending")
-            Wire.requireThat(current.text("deploymentId") == deploymentId, "enrolled-elsewhere")
+            Wire.requireThat(current.text("state") != "retiring" && current["leaveRequested"] != JsonPrimitive(true), "erasure-pending")
+            if (current.text("deploymentId") != deploymentId) {
+                Wire.requireThat(current.text("state") == "prepared" && current["issuanceStarted"] != JsonPrimitive(true), "enrolled-elsewhere")
+                forget()
+                return prepare(deploymentId)
+            }
             return current
         }
         val key = Ed25519PrivateKeyParameters(SecureRandom())
@@ -86,14 +91,20 @@ class IdentityStore(context: Context) {
         return Wire.digest(Base64.decode(pem.substringAfter("-----BEGIN PUBLIC KEY-----\n").substringBefore('\n')))
     }
     fun sign(identity: JsonObject, value: JsonArray): String {
-        val bytes = Wire.canonical(value).toByteArray(Charsets.UTF_8)
         val seed = Wire.decode64(identity.text("seed"))
-        try {
-            return Wire.encode64(Ed25519Signer().run {
-                init(true, Ed25519PrivateKeyParameters(seed, 0)); update(bytes, 0, bytes.size); generateSignature()
-            })
-        } finally { seed.fill(0) }
+        try { return Proofs.sign(seed, value) } finally { seed.fill(0) }
     }
+    fun leaveObligation(identity: JsonObject, issuedAt: String): JsonObject = DeviceLeaves.obligation(identity, publicKey(identity), issuedAt,
+        sign(identity, Proofs.deviceLeave(identity.text("deploymentId"), identity.text("runnerId"), issuedAt)))
+    fun <T> leave(fence: () -> Unit, sign: () -> JsonObject?, erase: () -> T) = leaves.leave(fence, sign, erase)
+    fun pendingLeaves(): List<JsonObject> = leaves.pending()
+    fun completeLeave(runnerId: String) = leaves.complete(runnerId)
+    fun markRemoved(identity: JsonObject) {
+        removed.write(Wire.fields("deploymentId" to identity.getValue("deploymentId"),
+            "deploymentName" to (identity["deploymentName"] ?: JsonPrimitive("Opensteer"))).toString().toByteArray(Charsets.UTF_8))
+    }
+    fun removedFrom(): JsonObject? = removed.read()?.takeIf { it.isNotEmpty() }?.let { Wire.parse(Wire.decode(it), 4096) }
+    fun clearRemoved() { removed.write(ByteArray(0)) }
     private fun key(create: Boolean): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (store.getKey(alias, null) as? SecretKey)?.let { return it }

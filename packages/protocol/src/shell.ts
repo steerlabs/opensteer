@@ -1,3 +1,4 @@
+import { DeviceRefusalContextSchema } from "./devices.js";
 import {
   IsoDateTimeSchema,
   RunIdSchema,
@@ -218,6 +219,8 @@ export function machineAccessShareIssues(shares: readonly MachineAccessShare[]):
  */
 export const MachineAccessPolicySchema = z
   .strictObject({
+    browser: z.boolean().optional(),
+    apps: z.boolean().optional(),
     reach: MachineAccessReachSchema,
     commands: z.boolean(),
     forwarding: z.boolean(),
@@ -240,6 +243,18 @@ export const MachineAccessPolicyViewSchema = z
     }
   });
 export type MachineAccessPolicy = z.infer<typeof MachineAccessPolicySchema>;
+
+export function deviceAccess(policy: Pick<MachineAccessPolicy, "browser" | "apps" | "reach">): {
+  browser: boolean;
+  apps: boolean;
+  files: boolean;
+} {
+  return {
+    browser: policy.browser ?? true,
+    apps: policy.apps ?? true,
+    files: policy.reach !== "nobody",
+  };
+}
 
 export const machineAccessPolicyDefault: MachineAccessPolicy = Object.freeze({
   reach: "nobody",
@@ -456,6 +471,8 @@ export type ShellDataTicketClaims = z.infer<typeof ShellDataTicketClaimsSchema>;
  * it.
  */
 export const ShellConnectErrorCodeSchema = z.enum([
+  "device-access-off",
+  "device-offline",
   "run_invalid",
   "target_unknown",
   "target_offline",
@@ -469,6 +486,8 @@ export type ShellConnectErrorCode = z.infer<typeof ShellConnectErrorCodeSchema>;
 export const ShellConnectErrorSchema = z.strictObject({
   error: z.strictObject({
     code: ShellConnectErrorCodeSchema,
+    machineId: DeviceRefusalContextSchema.shape.machineId.optional(),
+    capability: DeviceRefusalContextSchema.shape.capability.optional(),
     message: z.string().min(1).max(512),
   }),
 });

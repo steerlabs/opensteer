@@ -356,6 +356,7 @@ export class IntegrationPlatformService {
     | "attached"
     | "openMcpSession"
     | "send"
+    | "requireAgentAccess"
     | "withRunnerAdmission"
     | "removePluginData"
   >;
@@ -404,6 +405,7 @@ export class IntegrationPlatformService {
       | "machinesFor"
       | "openMcpSession"
       | "send"
+      | "requireAgentAccess"
       | "withRunnerAdmission"
       | "removePluginData"
     >;
@@ -2587,6 +2589,7 @@ export class IntegrationPlatformService {
       ) => Promise<Result>,
     ) =>
       this.#computerApps.withRunnerAdmission(placement.runnerId, async () => {
+        await this.#computerApps.requireAgentAccess(placement.runnerId);
         const [connection, authority] = await Promise.all([
           this.#store.getComputerConnectionForCall({ connectionId, ownerUserId }),
           this.#store.listCallableTools({

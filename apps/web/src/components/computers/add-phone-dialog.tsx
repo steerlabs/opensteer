@@ -385,7 +385,7 @@ export function AddPhoneDialog({
             <Link
               className="btn btn--primary"
               onClick={closeSetup}
-              to={`/settings/devices/computers/${encodeURIComponent(phase.runnerId)}`}
+              to={`/settings/devices/${encodeURIComponent(phase.runnerId)}`}
             >
               Open the phone’s page
             </Link>

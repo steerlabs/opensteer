@@ -71,7 +71,21 @@ export type MachineDevice = z.infer<typeof MachineDeviceSchema>;
  * rather than enrollments of their own, so this row is a direct projection of
  * the Runner and needs no merging.
  */
+export const MachineKindSchema = z.enum([
+  "home",
+  "computer",
+  "phone",
+  "agent-phone",
+  "server",
+  "unknown",
+]);
+export type MachineKind = z.infer<typeof MachineKindSchema>;
+
 export const MachineSummarySchema = z.object({
+  kind: z
+    .string()
+    .transform((kind) => MachineKindSchema.safeParse(kind).data ?? "unknown")
+    .optional(),
   apps: z.array(MachineAppStatusSchema).max(computerAppMaxStatusEntries).nullable().default(null),
   /**
    * What this computer permits callers on other computers, and who is using it

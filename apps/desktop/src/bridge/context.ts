@@ -206,7 +206,15 @@ export interface DesktopBridgeOptions {
   };
   readonly runner: Pick<
     LocalRunnerService,
-    "recheckEngines" | "remove" | "start" | "status" | "subscribe"
+    | "recheckEngines"
+    | "status"
+    | "subscribe"
+    | "setUpDevice"
+    | "prepareDeviceSetup"
+    | "accountSignOutPreview"
+    | "signDeviceSessionBinding"
+    | "leaveDeployment"
+    | "retryDeviceConnection"
   >;
 }
 

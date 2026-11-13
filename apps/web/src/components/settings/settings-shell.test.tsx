@@ -71,12 +71,12 @@ describe("Device settings placement", () => {
     }
   });
 
-  it("keeps Use from anywhere and signed-in devices on the Account page", () => {
+  it("keeps Use from anywhere on Account and where you're signed in on Devices", () => {
     const context = placementFixtures()["personal-remote"];
     const landing = renderSettings(context, "/settings/account");
     expect(landing).toContain("Use from anywhere");
-    expect(landing).toContain("Signed-in devices");
-    expect(landing).toContain("Loading devices");
+    expect(landing).not.toContain("Signed-in devices");
+    expect(renderSettings(context, "/settings/devices")).toContain("Loading devices");
     expect(landing).not.toContain('href="/settings/account/');
     // External agents have their own page and load only when it opens.
     expect(landing).not.toContain("external agents");
@@ -95,7 +95,6 @@ describe("Device settings placement", () => {
         "/settings/account",
       );
       expect(html).toContain("Use from anywhere");
-      expect(html).toContain("Signed-in devices");
       expect(html).not.toContain("turn on remote access in the Opensteer app");
     }
   });
@@ -190,8 +189,6 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
     desktopDeployment: null,
     executionPreferences: emptyExecutionPreferences,
     hostClient,
-    localExecutionAction: null,
-    localExecutionError: null,
     localExecutionStatus: null,
     addHarnessAccount: null,
     openHarnessAuthentication: null,
@@ -199,7 +196,6 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
     leaveSettings: noOp,
     openMobileNavigation: noOp,
     placements: [],
-    performLocalExecutionAction: async () => undefined,
     rememberExecution: noOp,
     reportActionError: noOp,
     setTaskDone: noOp,

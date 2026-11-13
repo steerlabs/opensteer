@@ -27,6 +27,7 @@ export function hostServerTestDependencies(
     browserTabs: inert(),
     browserSources: inert(),
     signBrowserSourceInvitation: inert(),
+    deviceAccess: inert(),
     machineFullDiskAccess: inert(),
     browserAttachPublicKeys: [],
     browserRelay: inert(),

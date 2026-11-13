@@ -8117,6 +8117,18 @@
           "items": {
             "type": "object",
             "properties": {
+              "deviceId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "absoluteExpiresAt": {
                 "type": "string",
                 "format": "date-time",

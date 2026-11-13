@@ -11,6 +11,8 @@ import {
  * something about the request rather than about this Host.
  */
 const shellConnectStatuses: Readonly<Record<ShellConnectErrorCode, number>> = {
+  "device-access-off": 403,
+  "device-offline": 409,
   module_unavailable: 409,
   reach_denied: 403,
   run_invalid: 401,
@@ -29,16 +31,24 @@ const shellConnectStatuses: Readonly<Record<ShellConnectErrorCode, number>> = {
 export class ShellConnectRejection extends Error {
   readonly code: ShellConnectErrorCode;
   readonly status: number;
+  readonly context: import("@opensteer/protocol").DeviceRefusalContext | undefined;
 
-  constructor(code: ShellConnectErrorCode, message: string) {
+  constructor(
+    code: ShellConnectErrorCode,
+    message: string,
+    context?: import("@opensteer/protocol").DeviceRefusalContext,
+  ) {
     super(message);
+    this.context = context;
     this.name = "ShellConnectRejection";
     this.code = code;
     this.status = shellConnectStatuses[code];
   }
 
   body(): ShellConnectError {
-    return ShellConnectErrorSchema.parse({ error: { code: this.code, message: this.message } });
+    return ShellConnectErrorSchema.parse({
+      error: { code: this.code, message: this.message, ...this.context },
+    });
   }
 }
 

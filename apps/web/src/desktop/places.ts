@@ -104,6 +104,8 @@ function placeDetail(deployment: DeploymentAccessDeployment, context: PlaceRowCo
   if (deployment.onThisComputer) return context.thisComputer;
   if (deployment.accountAccess === "member") return "Shared with you";
   if (deployment.kind === "personal") {
+    const homeName = context.facts?.get(deployment.id)?.homeName;
+    if (homeName && homeName !== deployment.name) return `Home: ${homeName}`;
     return deployment.source === "account" ? "Your computer" : "Computer · added here";
   }
   return originHost(deployment.canonicalOrigin);

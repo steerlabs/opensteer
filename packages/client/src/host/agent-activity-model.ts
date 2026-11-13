@@ -2254,6 +2254,10 @@ const opensteerSteps = new Map<string, OpensteerStep>([
     "machine_full_disk_access_request",
     said(["Asking for full access to a Mac", "Asked for full access to a Mac"], "laptop"),
   ],
+  [
+    "device_access_request",
+    said(["Asking for device access", "Asked for device access"], "laptop"),
+  ],
   ["pending_request", said(["Checking its requests", "Checked its requests"], "list")],
   ["request_withdraw", said(["Withdrawing a request", "Withdrew a request"], "stop")],
   ["sign_in", signInPresentation],

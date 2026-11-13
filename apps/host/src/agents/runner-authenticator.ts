@@ -13,6 +13,8 @@ import type { UserId } from "@opensteer/core";
 import { OpensteerError, RunnerIdSchema } from "@opensteer/core";
 import {
   phoneRunnerGrant,
+  personalReachableGrant,
+  personalReachableGrantRefusal,
   runnerAdvertisesItsEnvironmentBinding,
   runnerIdentityRevokedReason,
   type OpensteerStore,
@@ -136,6 +138,8 @@ export class RunnerAuthenticator {
 
   async createEnrollment(input: {
     readonly allowedModules: readonly RunnerModuleName[];
+    readonly access?: import("@opensteer/protocol").DeviceInitialAccess;
+    readonly preparedIdentity?: import("@opensteer/protocol").DevicePreparedIdentity;
     readonly createdBy: UserId;
     readonly idempotencyKey: string;
     readonly lifetimeSeconds: number;
@@ -146,6 +150,8 @@ export class RunnerAuthenticator {
     readonly expiresAt: string;
     readonly token: string;
   }> {
+    if (input.runnerKind === "local" && input.allowedModules.includes("agents"))
+      throw new OpensteerError({ code: "forbidden", message: personalReachableGrantRefusal });
     return this.#createEnrollment({
       ...input,
       purpose: "standard",
@@ -159,6 +165,8 @@ export class RunnerAuthenticator {
    * iPhone mint retries from Android's existing transcript.
    */
   async createPhoneEnrollment(input: {
+    readonly access?: import("@opensteer/protocol").DeviceInitialAccess;
+    readonly preparedIdentity?: import("@opensteer/protocol").DevicePreparedIdentity;
     readonly createdBy: UserId;
     readonly idempotencyKey: string;
     readonly lifetimeSeconds: number;
@@ -248,6 +256,8 @@ export class RunnerAuthenticator {
 
   async #createEnrollment(input: {
     readonly allowedModules: readonly RunnerModuleName[];
+    readonly access?: import("@opensteer/protocol").DeviceInitialAccess;
+    readonly preparedIdentity?: import("@opensteer/protocol").DevicePreparedIdentity;
     readonly createdBy: UserId | null;
     readonly idempotencyKey: string;
     readonly lifetimeSeconds: number;
@@ -316,7 +326,11 @@ export class RunnerAuthenticator {
       allowedModules:
         input.purpose === "phone" || input.purpose === "iphone"
           ? phoneRunnerGrant
-          : computerRunnerGrant(input.allowedModules),
+          : input.runnerKind === "local"
+            ? personalReachableGrant
+            : computerRunnerGrant(input.allowedModules),
+      ...(input.access ? { initialAccess: input.access } : {}),
+      ...(input.preparedIdentity ? { preparedIdentity: input.preparedIdentity } : {}),
       createdBy: input.createdBy,
       ...(input.purpose === "iphone" ? { deviceProfile: "iphone" as const } : {}),
       expiresAt,

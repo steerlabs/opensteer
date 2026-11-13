@@ -1,3 +1,4 @@
+import { DeviceAccessRefusal } from "../administration/device-access.js";
 import type {} from "@fastify/websocket";
 import { OpensteerError } from "@opensteer/core";
 import {
@@ -326,6 +327,10 @@ function attachCdpSocket<Scope>(
         error instanceof OpensteerError
           ? BrowserActionErrorCodeSchema.safeParse(error.reason).data
           : undefined;
+      const context =
+        error instanceof DeviceAccessRefusal
+          ? { machineId: error.machineId, capability: error.capability }
+          : {};
       const message = safeMessage(error, safeMessageOptions);
       if (options.backend === "actions") {
         const dialog =
@@ -334,10 +339,18 @@ function attachCdpSocket<Scope>(
             : undefined;
         sendJson(socket, {
           id,
-          error: { code: reason ?? "forbidden", message, ...(dialog ? { dialog } : {}) },
+          error: {
+            ...context,
+            code: reason ?? "forbidden",
+            message,
+            ...(dialog ? { dialog } : {}),
+          },
         });
       } else
-        sendJson(socket, { id, error: { code: -32_000, message, ...(reason ? { reason } : {}) } });
+        sendJson(socket, {
+          id,
+          error: { ...context, code: -32_000, message, ...(reason ? { reason } : {}) },
+        });
     };
     // Commands are admitted and dispatched one at a time, in the order they
     // arrived; each is answered whenever the browser answers it. A command

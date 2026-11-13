@@ -1,3 +1,6 @@
+import { isDeviceAccessRequestEvent } from "@opensteer/protocol";
+import { deviceAccess } from "@opensteer/protocol";
+import { hostsDeployment } from "../computers/computers.js";
 import { listedRowThreadId } from "../host/task-list.js";
 import { familyAutomations } from "../host/task-family.js";
 import {
@@ -28,6 +31,7 @@ import {
 } from "@opensteer/protocol";
 import { browserProfileHomeCommand } from "../host/browser-access.js";
 import {
+  mockDeviceAccessRequest,
   mockDevicePlugins,
   mockDeviceTasks,
   mockLightsServerSetup,
@@ -1492,6 +1496,7 @@ const mockMachines: readonly MachineSummary[] = [
       state: "ready",
     },
     fullDiskAccess: true,
+    kind: "home",
     id: "rnr_11111111-1111-4111-8111-111111111111",
     lastSeenAt: null,
 
@@ -1550,6 +1555,7 @@ const mockMachines: readonly MachineSummary[] = [
       activeSessions: [],
       ownerReachAvailable: true,
       policy: {
+        apps: false,
         commands: false,
         forwarding: false,
         reach: "owner",
@@ -1575,6 +1581,7 @@ const mockMachines: readonly MachineSummary[] = [
       state: "permission-required",
     },
     fullDiskAccess: false,
+    kind: "computer",
     id: "rnr_33333333-3333-4333-8333-333333333333",
     lastSeenAt: "2026-09-13T08:12:00.000Z",
 
@@ -1609,6 +1616,7 @@ const mockMachines: readonly MachineSummary[] = [
     expiresAt: null,
     computerUse: null,
     fullDiskAccess: true,
+    kind: "computer",
     id: "rnr_44444444-4444-4444-8444-444444444444",
     lastSeenAt: "2026-09-16T21:40:00.000Z",
 
@@ -1639,7 +1647,7 @@ const mockMachines: readonly MachineSummary[] = [
       },
     ],
     access: null,
-    allowedModules: ["integrations"],
+    allowedModules: ["browser", "integrations"],
     detail: null,
     device: { form: "phone", platform: "android" },
     enrollmentId: "ren_runner_phone",
@@ -1654,6 +1662,7 @@ const mockMachines: readonly MachineSummary[] = [
       state: "ready",
     },
     fullDiskAccess: null,
+    kind: "agent-phone",
     id: mockAgentPhoneRunnerId,
     lastSeenAt: null,
 
@@ -1834,8 +1843,10 @@ function mockNeedsYou(
   >,
   before?: string,
   limit = 50,
+  deviceAccessRequests: "include" | "omit" = "include",
 ) {
   const rows = snapshot.waitingRequests.flatMap(({ request }) => {
+    if (request.kind === "device.access" && deviceAccessRequests !== "include") return [];
     const thread = snapshot.threads.find(({ id }) => id === request.originatingThreadId);
     return thread
       ? [
@@ -1868,12 +1879,28 @@ function mockNeedsYou(
   };
 }
 
+function mockReaderThread<Thread extends { readonly id: string; readonly pendingRequests: number }>(
+  snapshot: Pick<PublicHostSnapshot, "requests">,
+  thread: Thread,
+  deviceAccessRequests?: "include" | "omit",
+): Thread {
+  if (deviceAccessRequests === "include") return thread;
+  const hidden = (snapshot.requests[thread.id] ?? []).filter(
+    (request) => request.kind === "device.access",
+  ).length;
+  return { ...thread, pendingRequests: Math.max(0, thread.pendingRequests - hidden) };
+}
+
 function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
   const handlers: Partial<HostApiHandlers> = {
-    "attention.get": async () => {
+    "attention.get": async (input) => {
       const snapshot = client.getSnapshot();
       return rpcSuccess({
-        needsYou: snapshot.waitingRequests.length,
+        homeName: snapshot.machines.find(hostsDeployment)?.name ?? null,
+        needsYou: snapshot.waitingRequests.filter(
+          ({ request }) =>
+            input.deviceAccessRequests === "include" || request.kind !== "device.access",
+        ).length,
         unread: snapshot.threads.some(
           (thread) =>
             thread.listed &&
@@ -1884,7 +1911,14 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       });
     },
     "needsYou.get": async (input) =>
-      rpcSuccess(mockNeedsYou(client.getSnapshot(), input.before, input.limit)),
+      rpcSuccess(
+        mockNeedsYou(
+          client.getSnapshot(),
+          input.before,
+          input.limit,
+          input.deviceAccessRequests ?? "omit",
+        ),
+      ),
     "teams.links.list": async () => rpcSuccess({ links: [...client.teamLinks.values()] }),
     "teams.replyTask.get": async () => rpcSuccess({ taskId: null, completedAt: null }),
     "teams.threadTask.get": async ({ teamId, channelId, threadRootId }) =>
@@ -2204,7 +2238,12 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       return rpcSuccess(
         hostApi["tasks.list"].success.parse({
           asOfSequence: SequenceSchema.parse(String(client.getSnapshot().revision)),
-          tasks: page.map((entry) => ({ ...entry, thread: mockThread(entry.thread) })),
+          tasks: page.map((entry) => ({
+            ...entry,
+            thread: mockThread(
+              mockReaderThread(snapshot, entry.thread, input.deviceAccessRequests),
+            ),
+          })),
           window: {
             byteCount: 2,
             hasMore: end < entries.length,
@@ -2215,8 +2254,13 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         }),
       );
     },
-    "requests.list": async () => {
-      const { waitingRequests } = client.getSnapshot();
+    "requests.list": async (input) => {
+      const waitingRequests = client
+        .getSnapshot()
+        .waitingRequests.filter(
+          ({ request }) =>
+            input.deviceAccessRequests === "include" || request.kind !== "device.access",
+        );
       return rpcSuccess(
         hostApi["requests.list"].success.parse({
           requests: waitingRequests,
@@ -2324,20 +2368,28 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       if (!output) throw new Error("Tool output not found");
       return rpcSuccess({ output });
     },
-    "thread.events.list": async ({ threadId }) => {
+    "thread.events.list": async ({ threadId, deviceAccessRequests }) => {
       const thread = client.getSnapshot().threads.find((item) => item.id === threadId);
       if (!thread) throw new Error("Thread not found.");
       return rpcSuccess(
         hostApi["thread.events.list"].success.parse({
           asOfSequence: SequenceSchema.parse(String(client.getSnapshot().revision)),
-          thread: mockThread(thread),
+          thread: mockThread(mockReaderThread(client.getSnapshot(), thread, deviceAccessRequests)),
           events: [],
           threadId,
           window: { ...mockWindow(0), threadId },
         }),
       );
     },
-    "node.events.list": async ({ threadId, nodeId, through, before, toolOutputs, limit = 100 }) => {
+    "node.events.list": async ({
+      threadId,
+      nodeId,
+      through,
+      before,
+      toolOutputs,
+      deviceAccessRequests,
+      limit = 100,
+    }) => {
       const own = (client.getSnapshot().transcripts[threadId] ?? []).find(
         (entry) => entry.kind === "node" && entry.nodeId === nodeId,
       );
@@ -2353,6 +2405,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         (event) =>
           event.threadId === threadId &&
           nodeDetailEventNodeId(event) === nodeId &&
+          (deviceAccessRequests === "include" || !isDeviceAccessRequestEvent(event)) &&
           (!through || compareSequence(event.sequence, through) <= 0) &&
           (!before || compareSequence(event.sequence, SequenceSchema.parse(before)) < 0),
       );
@@ -2391,10 +2444,18 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         }),
       );
     },
-    "thread.assignments.list": async ({ open, threadId }) => {
+    "thread.assignments.list": async ({ open, threadId, deviceAccessRequests }) => {
       const assignments = client
         .listThreadAssignments(threadId)
-        .filter(({ status }) => !open || status === "open");
+        .filter(({ status }) => !open || status === "open")
+        .map((assignment) => ({
+          ...assignment,
+          workerThread: mockReaderThread(
+            client.getSnapshot(),
+            assignment.workerThread,
+            deviceAccessRequests,
+          ),
+        }));
       return rpcSuccess(
         hostApi["thread.assignments.list"].success.parse({
           assignments,
@@ -2458,7 +2519,9 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess(client.loadThreadInputQueue(input.threadId)),
     "thread.live.get": async (input) => rpcSuccess(client.liveStreams(input.threadId)),
     "thread.requests.list": async (input) => {
-      const requests = client.getSnapshot().requests[input.threadId] ?? [];
+      const requests = (client.getSnapshot().requests[input.threadId] ?? []).filter(
+        (request) => input.deviceAccessRequests === "include" || request.kind !== "device.access",
+      );
       return rpcSuccess(
         hostApi["thread.requests.list"].success.parse({
           requests,
@@ -2837,6 +2900,9 @@ async function executeMockCommand(
     case "machine.rename":
       await client.renameMachine(command.machineId, command.name);
       return rpcSuccess({ type: command.type });
+    case "machine.session.bind":
+      await client.bindDeviceSession(command.machineId);
+      return rpcSuccess({ type: command.type });
     case "machine.access.update": {
       const revision = await client.updateMachineAccess(
         command.runnerId,
@@ -2912,7 +2978,11 @@ async function executeMockCommand(
       return rpcSuccess({ type: command.type });
     case "runner.enrollment.createLocal":
       return rpcSuccess({
-        ...(await client.createLocalRunnerEnrollment(command.name)),
+        ...(await client.createLocalRunnerEnrollment(
+          command.name,
+          command.access,
+          command.preparedIdentity,
+        )),
         type: command.type,
       });
 
@@ -2922,6 +2992,7 @@ async function executeMockCommand(
           command.name,
           command.profile,
           command.idempotencyKey,
+          command.access,
         )),
         type: command.type,
       });
@@ -3606,13 +3677,17 @@ const MockMacAnswerSchema = z.discriminatedUnion("kind", [
 type MockMacAnswer = z.output<typeof MockMacAnswerSchema>;
 
 export class MockHostClient implements HostClient {
-  deploymentSnapshot(sequence = String(this.getSnapshot().revision)) {
+  deploymentSnapshot(
+    sequence = String(this.getSnapshot().revision),
+    deviceAccessRequests: "include" | "omit" = "include",
+  ) {
     const snapshot = this.getSnapshot(),
       page = (entries: readonly TaskEntry[]) => ({
         asOfSequence: SequenceSchema.parse(sequence),
-        tasks: entries
-          .slice(0, 100)
-          .map((entry) => ({ ...entry, thread: mockThread(entry.thread) })),
+        tasks: entries.slice(0, 100).map((entry) => ({
+          ...entry,
+          thread: mockThread(mockReaderThread(snapshot, entry.thread, deviceAccessRequests)),
+        })),
         window: {
           ...mockWindow(Math.min(100, entries.length)),
           hasMore: entries.length > 100,
@@ -3625,20 +3700,29 @@ export class MockHostClient implements HostClient {
       deploymentId: snapshot.deploymentId,
       sequence,
       serializedBytes: 1,
-      threads: snapshot.threads.slice(0, 100).map(mockThread),
+      threads: snapshot.threads
+        .slice(0, 100)
+        .map((thread) => mockThread(mockReaderThread(snapshot, thread, deviceAccessRequests))),
       threadWindow: mockWindow(Math.min(100, snapshot.threads.length)),
       messages: [],
       messageWindows: [],
       messagesOmitted: true,
-      pendingRequests: snapshot.waitingRequests.map(({ request }) => request).slice(0, 100),
-      pendingRequestWindow: mockWindow(snapshot.waitingRequests.length),
+      pendingRequests: snapshot.waitingRequests
+        .map(({ request }) => request)
+        .filter((request) => deviceAccessRequests === "include" || request.kind !== "device.access")
+        .slice(0, 32),
+      pendingRequestWindow: mockWindow(
+        snapshot.waitingRequests.filter(
+          ({ request }) => deviceAccessRequests === "include" || request.kind !== "device.access",
+        ).length,
+      ),
       runQueue: [],
       tasks: {
         recent: page(recent),
         active: page(snapshot.activeTasks),
         done: page(recent.filter(({ thread }) => thread.doneAt !== null)),
       },
-      needsYou: mockNeedsYou(snapshot),
+      needsYou: mockNeedsYou(snapshot, undefined, undefined, deviceAccessRequests),
       resources: { appTabs: snapshot.appTabs ?? [], browser: this.#state.bootstrap().browser },
     });
     const serializedBytes = new TextEncoder().encode(JSON.stringify(cut)).byteLength;
@@ -3846,6 +3930,7 @@ export class MockHostClient implements HostClient {
           await this.rpc["node.events.list"]({
             ...input,
             nodeId: ExecutionNodeIdSchema.parse(input.nodeId),
+            deviceAccessRequests: "include",
           }),
         ),
       sendWatch: (deploymentId, nodeId) => {
@@ -4780,6 +4865,23 @@ export class MockHostClient implements HostClient {
     }
     await this.refresh();
     return result.ended;
+  }
+
+  /** Preview-only: the Runner a local enrollment token names connects. */
+  connectLocalRunner(token: string): string {
+    return this.#state.connectLocalRunner(token);
+  }
+
+  async bindDeviceSession(input: {
+    readonly machineId: string;
+    readonly proof: import("@opensteer/protocol").DeviceSessionBindingProof;
+  }): Promise<void> {
+    const result = await this.dispatch({
+      ...input,
+      idempotencyKey: globalThis.crypto.randomUUID(),
+      type: "machine.session.bind",
+    });
+    if (result.type !== "machine.session.bind") throw new Error("Device binding command mismatch.");
   }
 
   async updateMachineAccess(input: {
@@ -5822,6 +5924,7 @@ class MockHostState {
     {
       readonly name: string;
       readonly profile: "iphone" | null;
+      readonly access: import("@opensteer/protocol").DeviceInitialAccess | undefined;
       readonly result: {
         readonly enrollmentId: string;
         readonly expiresAt: string;
@@ -5959,12 +6062,30 @@ class MockHostState {
           absoluteExpiresAt: "2026-10-14T00:00:00.000Z",
           createdAt: "2026-09-14T00:00:00.000Z",
           current: true,
-          deviceLabel: "Chrome on Mac",
+          deviceId: "rnr_33333333-3333-4333-8333-333333333333",
+          deviceLabel: "Opensteer for Mac",
           expiresAt: "2026-09-21T00:00:00.000Z",
           form: "computer",
           id: createId("authSession"),
           lastSeenAt: "2026-09-14T00:00:00.000Z",
         },
+        // A web tab, and an older iPhone app that signed in before devices bound sessions.
+        ...(
+          [
+            ["Chrome on Mac", "computer"],
+            ["Opensteer for iPhone", "mobile"],
+          ] as const
+        ).map(([deviceLabel, form]) => ({
+          absoluteExpiresAt: "2026-10-14T00:00:00.000Z",
+          createdAt: "2026-09-14T00:00:00.000Z",
+          current: false,
+          deviceLabel,
+          deviceId: null,
+          expiresAt: "2026-09-21T00:00:00.000Z",
+          form,
+          id: createId("authSession"),
+          lastSeenAt: "2026-09-14T00:00:00.000Z",
+        })),
       ]),
     ];
     this.latencyMs = options.latencyMs ?? 420;
@@ -6936,6 +7057,7 @@ class MockHostState {
   async resetPasswordWithRecovery(_token: string, _newPassword: string): Promise<void> {}
 
   async signOut(): Promise<void> {
+    await this.revokeSession(this.sessions.find((session) => session.current)?.id);
     this.update({
       ...this.snapshot,
       machines: this.snapshot.machines.map((machine) =>
@@ -7666,18 +7788,61 @@ class MockHostState {
   }
 
   async revokeMachine(machineId: string): Promise<void> {
+    if (this.snapshot.machines.find((machine) => machine.id === machineId)?.kind === "home")
+      throw new Error("Home cannot be removed");
+    this.sessions = this.sessions.filter((session) => session.deviceId !== machineId);
+    let snapshot = this.snapshot;
+    for (const request of Object.values(snapshot.requests).flat()) {
+      if (
+        request.status !== "pending" ||
+        request.payload.kind !== "device.access" ||
+        request.payload.machineId !== machineId
+      )
+        continue;
+      snapshot = this.settledRequestSnapshot(
+        {
+          ...request,
+          status: "cancelled",
+          cancellationReason: "resource-deleted",
+          resolvedAt: this.now().toISOString(),
+          resolvedBy: null,
+          response: null,
+        },
+        snapshot,
+      );
+    }
     // The profiles that live on it go with it, as the Host deletes them.
     this.update({
-      ...this.snapshot,
-      browserProfileHomes: this.snapshot.browserProfileHomes?.filter((id) => id !== machineId),
-      browserProfiles: this.snapshot.browserProfiles.filter(
+      ...snapshot,
+      browserProfileHomes: snapshot.browserProfileHomes?.filter((id) => id !== machineId),
+      browserProfiles: snapshot.browserProfiles.filter(
         (profile) => profile.homeRunnerId !== machineId,
       ),
-      machines: this.snapshot.machines.filter((machine) => machine.id !== machineId),
+      machines: snapshot.machines.filter((machine) => machine.id !== machineId),
     });
   }
 
+  async bindDeviceSession(machineId: string): Promise<void> {
+    if (
+      !this.snapshot.machines.some(
+        (machine) =>
+          machine.id === machineId && (machine.ownership === "mine" || machine.kind === "home"),
+      )
+    )
+      throw new Error("Device not found");
+    const session = this.sessions.find((entry) => entry.current);
+    if (!session) throw new Error("Sign in first");
+    if (session.deviceId && session.deviceId !== machineId)
+      throw new Error("Session is already bound to another device");
+    this.sessions = this.sessions.map((entry) =>
+      entry.current ? { ...entry, deviceId: machineId } : entry,
+    );
+  }
+
   async revokeSession(sessionId?: string): Promise<void> {
+    const bound = this.sessions.find((session) => session.id === sessionId)?.deviceId;
+    const machine = this.snapshot.machines.find((entry) => entry.id === bound);
+    if (machine?.revocable) await this.revokeMachine(machine.id);
     this.sessions = this.sessions.filter((session) => session.id !== sessionId);
   }
 
@@ -7896,7 +8061,7 @@ class MockHostState {
     }
     const setup = mockLightsServerSetup(mockUserId, this.now());
     this.computerAppSetupRequests.set(setup.id, setup);
-    return [mockTvPairingRequest(mockUserId)];
+    return [mockTvPairingRequest(mockUserId), mockDeviceAccessRequest(mockUserId)];
   }
 
   listComputerAppSetupRequests(): ComputerAppSetupRequest[] {
@@ -8483,7 +8648,6 @@ class MockHostState {
     status: "declined" | "fulfilled",
     value: Readonly<Record<string, string | null>>,
   ): void {
-    const threadId = request.originatingThreadId;
     const timestamp = this.now().toISOString();
     const resolved = ResolvedRequestSchema.parse({
       ...request,
@@ -8492,24 +8656,33 @@ class MockHostState {
       response: { kind: "external", value },
       status,
     });
-    this.update({
-      ...this.snapshot,
+    this.update(this.settledRequestSnapshot(resolved));
+  }
+
+  private settledRequestSnapshot(
+    resolved: Exclude<Request, { status: "pending" }>,
+    snapshot = this.snapshot,
+  ): HostSnapshot {
+    const threadId = resolved.originatingThreadId;
+    const request = resolved;
+    return {
+      ...snapshot,
       requests: {
-        ...this.snapshot.requests,
-        [threadId]: (this.snapshot.requests[threadId] ?? []).filter(
+        ...snapshot.requests,
+        [threadId]: (snapshot.requests[threadId] ?? []).filter(
           (candidate) => candidate.id !== request.id,
         ),
       },
-      threads: this.snapshot.threads.map((thread) =>
+      threads: snapshot.threads.map((thread) =>
         thread.id === threadId
           ? { ...thread, pendingRequests: Math.max(0, thread.pendingRequests - 1) }
           : thread,
       ),
       transcripts: {
-        ...this.snapshot.transcripts,
-        [threadId]: [...(this.snapshot.transcripts[threadId] ?? []), requestReceipt(resolved)],
+        ...snapshot.transcripts,
+        [threadId]: [...(snapshot.transcripts[threadId] ?? []), requestReceipt(resolved)],
       },
-    });
+    };
   }
 
   private settleComputerAppAccess(request: Request, decision: "declined" | "fulfilled"): void {
@@ -8661,19 +8834,40 @@ class MockHostState {
     return grant;
   }
 
-  async createLocalRunnerEnrollment(name: string) {
+  private readonly preparedLocalRunners = new Map<string, string>();
+
+  async createLocalRunnerEnrollment(
+    name: string,
+    access?: import("@opensteer/protocol").DeviceInitialAccess,
+    preparedIdentity?: import("@opensteer/protocol").DevicePreparedIdentity,
+  ) {
     const expiresAt = new Date(this.now().getTime() + 10 * 60_000).toISOString();
     const enrollmentId = `ren_${crypto.randomUUID()}`;
+    if (preparedIdentity) this.preparedLocalRunners.set(enrollmentId, preparedIdentity.runnerId);
     this.update({
       ...this.snapshot,
       machines: [
         ...this.snapshot.machines,
         {
           tabOpenedAt: null,
-          access: null,
+          access: access
+            ? {
+                activeSessions: [],
+                ownerReachAvailable: true,
+                revision: 1,
+                policy: {
+                  browser: access.browser,
+                  apps: access.apps,
+                  reach: access.files ? "owner" : "nobody",
+                  commands: true,
+                  forwarding: true,
+                  shares: [],
+                },
+              }
+            : null,
           // A row still waiting to connect has reported no apps either.
           apps: null,
-          allowedModules: ["agents", "shell"],
+          allowedModules: ["browser", "integrations", "messaging", "shell"],
           detail: null,
           device: null,
           enrollmentId,
@@ -8681,10 +8875,16 @@ class MockHostState {
           // A row that is still waiting to connect has reported nothing yet.
           computerUse: null,
           fullDiskAccess: null,
+          kind: "computer",
           id: enrollmentId,
           lastSeenAt: null,
 
-          modules: { agents: { checkedAt: null, detail: null, readiness: "unavailable" } },
+          modules: {
+            browser: { checkedAt: null, detail: null, readiness: "unavailable" },
+            integrations: { checkedAt: null, detail: null, readiness: "unavailable" },
+            messaging: { checkedAt: null, detail: null, readiness: "unavailable" },
+            shell: { checkedAt: null, detail: null, readiness: "unavailable" },
+          },
           name,
           ownership: "mine",
 
@@ -8698,8 +8898,35 @@ class MockHostState {
     return {
       enrollmentId,
       expiresAt,
-      token: "mock-local-runner-enrollment-token-with-sufficient-length",
+      token: `mock-local-runner-enrollment-token-${enrollmentId}`,
     };
+  }
+
+  /** The Runner a local enrollment token names connects, as a desktop's would. */
+  connectLocalRunner(token: string): string {
+    const enrollmentId = /ren_[0-9a-f-]{36}$/u.exec(token)?.[0];
+    const pending = this.snapshot.machines.find((entry) => entry.id === enrollmentId);
+    if (!pending) throw new Error("That enrollment is not waiting to connect.");
+    const id = this.preparedLocalRunners.get(pending.id) ?? `rnr_${crypto.randomUUID()}`;
+    this.preparedLocalRunners.delete(pending.id);
+    this.update({
+      ...this.snapshot,
+      machines: this.snapshot.machines.map((entry) =>
+        entry === pending
+          ? {
+              ...entry,
+              device: { form: "laptop", platform: "macos" },
+              expiresAt: null,
+              fullDiskAccess: false,
+              id,
+              lastSeenAt: this.now().toISOString(),
+              revocable: true,
+              status: "online",
+            }
+          : entry,
+      ),
+    });
+    return id;
   }
 
   /** Null when the editor named a revision the preview has already moved past. */
@@ -8710,15 +8937,47 @@ class MockHostState {
   ): Promise<number | null> {
     const machine = this.snapshot.machines.find((entry) => entry.id === machineId);
     if (!machine?.access || machine.access.revision !== expectedRevision) return null;
+    if (machine.kind === "home" && !deviceAccess(policy).browser)
+      throw new Error("Home's browser is always available to your agent.");
     const revision = machine.access.revision + 1;
     this.update({
       ...this.snapshot,
       machines: this.snapshot.machines.map((entry) =>
         entry.id === machineId && entry.access
-          ? { ...entry, access: { ...entry.access, policy, revision } }
+          ? {
+              ...entry,
+              access: {
+                ...entry.access,
+                policy: {
+                  ...entry.access.policy,
+                  ...policy,
+                  browser: policy.browser ?? deviceAccess(entry.access.policy).browser,
+                  apps: policy.apps ?? deviceAccess(entry.access.policy).apps,
+                },
+                revision,
+              },
+            }
           : entry,
       ),
     });
+    const enabled = deviceAccess(
+      this.snapshot.machines.find((entry) => entry.id === machineId)!.access!.policy,
+    );
+    for (const request of Object.values(this.snapshot.requests).flat()) {
+      if (
+        request.status === "pending" &&
+        request.payload.kind === "device.access" &&
+        request.payload.machineId === machineId &&
+        enabled[request.payload.access]
+      )
+        await this.resolveRequest(
+          {
+            requestId: request.id,
+            response: { kind: "external", value: { decision: "fulfilled" } },
+          },
+          true,
+        );
+    }
     return revision;
   }
 
@@ -8766,10 +9025,15 @@ class MockHostState {
     name: string,
     profile: "iphone" | undefined,
     idempotencyKey: string,
+    access?: import("@opensteer/protocol").DeviceInitialAccess,
   ) {
     const existing = this.phoneEnrollments.get(idempotencyKey);
     if (existing) {
-      if (existing.name !== name || existing.profile !== (profile ?? null))
+      if (
+        existing.name !== name ||
+        existing.profile !== (profile ?? null) ||
+        JSON.stringify(existing.access) !== JSON.stringify(access)
+      )
         throw mockConflict(
           "Idempotency key is already bound to a different Runner enrollment request",
         );
@@ -8783,19 +9047,37 @@ class MockHostState {
         ...this.snapshot.machines,
         {
           tabOpenedAt: null,
-          access: null,
+          access: access
+            ? {
+                activeSessions: [],
+                ownerReachAvailable: true,
+                revision: 1,
+                policy: {
+                  browser: access.browser,
+                  apps: access.apps,
+                  reach: access.files ? "owner" : "nobody",
+                  commands: true,
+                  forwarding: true,
+                  shares: [],
+                },
+              }
+            : null,
           apps: null,
-          allowedModules: ["integrations"],
+          allowedModules: ["browser", "integrations"],
           detail: null,
           device: profile === "iphone" ? { form: "phone", platform: "ios" } : null,
           enrollmentId,
           expiresAt,
           computerUse: null,
           fullDiskAccess: null,
+          kind: "phone",
           id: enrollmentId,
           lastSeenAt: null,
 
-          modules: { integrations: { checkedAt: null, detail: null, readiness: "unavailable" } },
+          modules: {
+            browser: { checkedAt: null, detail: null, readiness: "unavailable" },
+            integrations: { checkedAt: null, detail: null, readiness: "unavailable" },
+          },
           name,
           ownership: "mine",
 
@@ -8812,7 +9094,7 @@ class MockHostState {
       pairing: mockAgentPhonePairingTarget,
       token: `mock-phone-runner-enrollment-token-${enrollmentId}`,
     };
-    this.phoneEnrollments.set(idempotencyKey, { name, profile: profile ?? null, result });
+    this.phoneEnrollments.set(idempotencyKey, { name, profile: profile ?? null, result, access });
     return result;
   }
 
@@ -10735,7 +11017,7 @@ class MockHostState {
     });
   }
 
-  async resolveRequest(input: ResolveRequestInput): Promise<void> {
+  async resolveRequest(input: ResolveRequestInput, deviceAccessUpdated = false): Promise<void> {
     const request = Object.values(this.snapshot.requests)
       .flat()
       .find((candidate) => candidate.id === input.requestId);
@@ -10750,6 +11032,23 @@ class MockHostState {
     }
     if (request.kind === "browser.password-sign-in") {
       throw mockConflict("Approve this sign-in on that Mac, or choose Don’t allow.");
+    }
+    if (request.payload.kind === "device.access") {
+      this.ownedComputer(request.payload.machineId);
+      const value = input.response.kind === "external" ? input.response.value : undefined;
+      if (request.requestedBy !== this.snapshot.user?.id)
+        throw mockConflict("Only the device's owner can answer.");
+      if (value?.decision !== "declined") {
+        const payload = request.payload;
+        const machine = this.snapshot.machines.find((entry) => entry.id === payload.machineId);
+        if (
+          !deviceAccessUpdated ||
+          value?.decision !== "fulfilled" ||
+          !machine?.access ||
+          !deviceAccess(machine.access.policy)[request.payload.access]
+        )
+          throw mockConflict("Turn device access on through its access settings.");
+      }
     }
     if (request.kind === "computer.app.access") {
       // Only that Mac can approve; anywhere else the one answer is no.
@@ -12690,6 +12989,7 @@ function createInitialSnapshot(): HostSnapshot {
     browserProfileManageAvailable: true,
     searchSuggestionsAvailable: true,
     iphoneAppsAvailable: true,
+    devicesAvailable: true,
     ownerViewWindowsAvailable: true,
     voiceAvailable: true,
 

@@ -6,6 +6,7 @@ const hosts = new WeakMap<
   {
     readonly deploymentId: string;
     readonly origin: string;
+    readonly hostInstanceId: string;
     readonly authorization: HostAuthorization;
   }
 >();
@@ -15,6 +16,7 @@ export function registerPhoneEnrollmentHost(
   host: {
     readonly deploymentId: string;
     readonly origin: string;
+    readonly hostInstanceId: string;
     readonly authorization: HostAuthorization;
   },
 ): void {
@@ -27,5 +29,5 @@ export async function phoneEnrollmentHost(client: HostClient, deploymentId: stri
     throw new Error("Open the Opensteer this phone is being added to.");
   const authorization = await host.authorization.current();
   if (authorization === null) throw new Error("Sign in to add this phone.");
-  return { origin: host.origin, authorization };
+  return { origin: host.origin, hostInstanceId: host.hostInstanceId, authorization };
 }

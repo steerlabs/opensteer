@@ -205,6 +205,27 @@ describe("fresh personal/team lineage", () => {
       "created_by, created_at DESC, id DESC",
     );
   });
+  it("migrates existing device policies without widening shell access or binding sessions", async () => {
+    await migrateToLatest(database, migrationsBefore("0008_devices"));
+    const fixture = await seedPersonalFixture(database, "/tmp/pre-devices-home");
+    const original = { reach: "nobody", commands: false, forwarding: true, shares: [] };
+    await sql`update runners set access_policy = ${JSON.stringify(original)}::jsonb`.execute(
+      database,
+    );
+    await migrateToLatest(database);
+    const runner = await database
+      .selectFrom("runners")
+      .select("accessPolicy")
+      .where("id", "=", fixture.runnerId)
+      .executeTakeFirstOrThrow();
+    expect(runner.accessPolicy).toEqual({ ...original, browser: true, apps: true });
+    const columns = await sql<{
+      name: string;
+    }>`select column_name as name from information_schema.columns where table_name='auth_sessions' and column_name='device_id'`.execute(
+      database,
+    );
+    expect(columns.rows).toEqual([{ name: "device_id" }]);
+  });
   it("applies both kinds' tables once and survives restart", async () => {
     await migrateToLatest(database);
     const before = await catalog();

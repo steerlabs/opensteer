@@ -38,6 +38,7 @@ export function callerListScope(_caller: AgentCaller): AgentThreadListScope {
   return { kind: "personal" };
 }
 const actions = {
+  device_access_request: "device.access.request",
   delegate_task: "thread.delegate",
   thread_send: "thread.message",
   person_message: "person.message",

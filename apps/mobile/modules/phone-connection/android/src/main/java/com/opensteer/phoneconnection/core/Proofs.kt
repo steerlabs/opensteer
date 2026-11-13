@@ -1,9 +1,18 @@
 package com.opensteer.phoneconnection.core
 
 import kotlinx.serialization.json.*
+import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
+import org.bouncycastle.crypto.signers.Ed25519Signer
 import java.net.URI
 
 object Proofs {
+    fun phoneEnrollment(mintKey: String, name: String, runnerId: String, publicKeyPem: String, devicesV1: Boolean, access: JsonObject?): JsonObject {
+        val command = Wire.fields("type" to JsonPrimitive("runner.enrollment.createPhone"), "name" to JsonPrimitive(name), "idempotencyKey" to JsonPrimitive(mintKey))
+        if (!devicesV1) return command
+        val prepared = JsonObject(command + ("preparedIdentity" to Wire.fields("runnerId" to JsonPrimitive(runnerId), "publicKeyPem" to JsonPrimitive(publicKeyPem))))
+        return if (access == null) prepared else JsonObject(prepared + ("access" to access))
+    }
+
     fun origin(raw: String): String {
         val uri = try { URI(raw) } catch (_: Exception) { throw Refused("invalid-target") }
         Wire.requireThat(uri.scheme == "https" && uri.host != null && uri.rawUserInfo == null &&
@@ -33,4 +42,14 @@ object Proofs {
     fun auxiliary(challenge: JsonObject, runnerId: String, bootId: String, ticket: String): JsonArray =
         JsonArray(listOf(JsonPrimitive("opensteer-runner-auxiliary-v1")) + this.challenge(challenge, true) +
             listOf("challengeModule", "browser", "runnerId", runnerId, "bootId", bootId, "module", "browser", "ticketDigest", Wire.digest(ticket.toByteArray(Charsets.UTF_8))).map(::JsonPrimitive))
+    fun deviceSessionBind(deploymentId: String, runnerId: String, sessionId: String, issuedAt: String): JsonArray =
+        JsonArray(listOf("opensteer-device-session-bind-v1", deploymentId, runnerId, sessionId, issuedAt).map(::JsonPrimitive))
+    fun deviceLeave(deploymentId: String, runnerId: String, issuedAt: String): JsonArray =
+        JsonArray(listOf("opensteer-device-leave-v1", deploymentId, runnerId, issuedAt).map(::JsonPrimitive))
+    fun sign(seed: ByteArray, transcript: JsonArray): String {
+        val bytes = Wire.canonical(transcript).toByteArray(Charsets.UTF_8)
+        return Wire.encode64(Ed25519Signer().run {
+            init(true, Ed25519PrivateKeyParameters(seed, 0)); update(bytes, 0, bytes.size); generateSignature()
+        })
+    }
 }

@@ -2,6 +2,7 @@ import { requireOptionalNativeModule } from "expo";
 import { Platform } from "react-native";
 import type { HostClient } from "@opensteer/client/host";
 import { hostApiVersion } from "@opensteer/deployment-authority";
+import type { DeviceInitialAccess } from "@opensteer/protocol";
 import type {
   PhoneBrowserNativeEvent,
   PhoneBrowserNativePort,
@@ -29,12 +30,19 @@ interface NativePhoneConnection extends Omit<PhoneConnectionPort, "onEvent" | "s
   discardPendingEnrollment: IphoneAppsBridge["discardPendingEnrollment"];
   retarget: IphoneAppsBridge["retarget"];
   disconnect: IphoneAppsBridge["disconnect"];
+  leave?: IphoneAppsBridge["leave"];
+  clearRemoved?: IphoneAppsBridge["clearRemoved"];
+  completeLeave?: IphoneAppsBridge["completeLeave"];
+  signSessionBinding?: IphoneAppsBridge["signSessionBinding"];
   enrollFromHost(input: {
+    readonly devicesV1: boolean;
     readonly apiVersion: number;
     readonly origin: string;
+    readonly hostInstanceId: string;
     readonly authorization: string;
     readonly deploymentId: string;
     readonly name: string;
+    readonly access?: DeviceInitialAccess;
   }): Promise<{ readonly enrollmentId: string }>;
   completeRetirement(): Promise<void>;
   addListener(
@@ -121,13 +129,16 @@ export async function enrollAndroidPhone(input: {
   readonly hostClient: HostClient;
   readonly deploymentId: string;
   readonly name: string;
+  readonly access?: DeviceInitialAccess;
 }): Promise<{ readonly enrollmentId: string }> {
   const host = await phoneEnrollmentHost(input.hostClient, input.deploymentId);
   return connection().enrollFromHost({
     ...host,
     apiVersion: hostApiVersion,
+    devicesV1: input.hostClient.getSnapshot().devicesAvailable === true,
     deploymentId: input.deploymentId,
     name: input.name,
+    ...(input.access === undefined ? {} : { access: input.access }),
   });
 }
 
@@ -152,11 +163,21 @@ export const androidPhoneBridge: IphoneAppsBridge | null =
           );
           return () => subscription.remove();
         },
+        clearRemoved: () => connection().clearRemoved?.() ?? Promise.resolve(),
         prepare: (input) => connection().prepare(input),
         enroll: unsupported,
         discardPendingEnrollment: () => connection().discardPendingEnrollment(),
         retarget: (input) => connection().retarget(input),
         disconnect: () => connection().disconnect(),
+        leave: () => (connection().leave ?? connection().disconnect)(),
+        completeLeave: async (input) => {
+          await connection().completeLeave?.(input);
+        },
+        signSessionBinding: async (input) => {
+          const sign = connection().signSessionBinding;
+          if (sign === undefined) throw new Error("This build cannot bind its session.");
+          return sign(input);
+        },
         requestPermission: unsupported,
         chooseContacts: unsupported,
         choosePhotos: unsupported,

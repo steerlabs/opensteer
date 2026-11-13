@@ -135,7 +135,7 @@ describe("RunnerAuthenticator enrollment issuance", () => {
       store: { createRunnerEnrollment } as never,
     });
     const request = {
-      allowedModules: ["agents"] as const,
+      allowedModules: ["shell"] as const,
       createdBy: createId("user"),
       idempotencyKey: "install-example-mac-1",
       lifetimeSeconds: 600,
@@ -148,6 +148,10 @@ describe("RunnerAuthenticator enrollment issuance", () => {
     const replay = await authenticator.createEnrollment(request);
 
     expect(replay).toEqual(first);
+    expect(createRunnerEnrollment.mock.calls[0]?.[0]).toMatchObject({
+      allowedModules: ["browser", "integrations", "messaging", "shell"],
+      issuanceModules: ["shell"],
+    });
     expect(first.enrollmentId).toBe(durable?.id);
     expect(first.token).toHaveLength(86);
     expect(durable?.tokenHash).toBe(hashRunnerEnrollmentToken(first.token));
@@ -158,7 +162,7 @@ describe("RunnerAuthenticator enrollment issuance", () => {
     // The grant is part of what a token means, so the same key asking for a
     // different set of modules is a different request, not a replay.
     await expect(
-      authenticator.createEnrollment({ ...request, allowedModules: ["agents", "browser"] }),
+      authenticator.createEnrollment({ ...request, allowedModules: ["shell", "browser"] }),
     ).rejects.toMatchObject({ code: "conflict" });
   });
 

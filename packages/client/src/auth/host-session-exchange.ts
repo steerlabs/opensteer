@@ -143,8 +143,9 @@ export class HostSessionExchange {
    */
   async establish(
     resolved: ResolvedConnection,
-    options: { readonly pairingCode?: string } = {},
+    options: { readonly pairingCode?: string; readonly signal?: AbortSignal } = {},
   ): Promise<SessionExchangeResponse> {
+    options.signal?.throwIfAborted();
     const kind = this.#requireKind(resolved);
     const delivery = sessionExchangeDeliveryForClientSurface(this.#clientSurface);
     if (resolved.route === null) {
@@ -224,7 +225,9 @@ export class HostSessionExchange {
           // because only the application knows where a credential may be stored.
           return established;
         },
-        accountSignal,
+        options.signal && accountSignal
+          ? AbortSignal.any([options.signal, accountSignal])
+          : (options.signal ?? accountSignal),
       );
     } catch (error) {
       if (error instanceof HostSessionExchangeError) throw error;

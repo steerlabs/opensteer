@@ -1,5 +1,7 @@
 /** A refused or failed call, as its caller should read it. */
 export interface AgentToolFailure {
+  readonly machineId?: string | undefined;
+  readonly capability?: "browser" | "apps" | "files" | undefined;
   readonly code: string;
   readonly message: string;
   /** What to do about it, naming the tool and parameter. */
@@ -14,13 +16,23 @@ export interface AgentToolFailure {
  * model must read goes in both.
  */
 export function agentToolFailureResult(failure: AgentToolFailure) {
-  const text = [failure.message, failure.next ?? (failure.retryable ? "Try again." : undefined)]
+  const device =
+    failure.machineId && failure.capability
+      ? `${failure.reason ?? failure.code}: machineId=${failure.machineId}, capability=${failure.capability}.`
+      : undefined;
+  const text = [
+    device,
+    failure.message,
+    failure.next ?? (failure.retryable ? "Try again." : undefined),
+  ]
     .filter(Boolean)
     .join(" ");
   return {
     content: [{ type: "text" as const, text }],
     structuredContent: {
       error: {
+        ...(failure.machineId === undefined ? {} : { machineId: failure.machineId }),
+        ...(failure.capability === undefined ? {} : { capability: failure.capability }),
         code: failure.code,
         message: text,
         ...(failure.reason === undefined ? {} : { reason: failure.reason }),

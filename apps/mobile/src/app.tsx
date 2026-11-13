@@ -55,6 +55,7 @@ import { forgetDraftFiles } from "./thread/draft-attachments.js";
 import {
   mockDeploymentConnections,
   mockDeploymentId,
+  mockSignedOutDeploymentId,
   mockTeamId,
   mockTeamOrigin,
   mockFamilyTeamId,
@@ -102,6 +103,9 @@ import { color, space } from "./theme.js";
 import { IphoneApprovalPrompt } from "./iphone-apps/approval-prompt.js";
 import { IphoneAppsProvider, useIphoneAppsState } from "./iphone-apps/context.js";
 import { IphoneAppsController } from "./iphone-apps/controller.js";
+import { createPhoneSetupFile } from "./phone-setup/setup-file.js";
+import { createRemovedFile } from "./iphone-apps/removed-file.js";
+import { networkLeaveDelivery } from "./platform/phone-leave.js";
 import { startPhoneBrowserRuntime } from "./phone-browser/runtime.js";
 import { createIphoneBrowserPlatform } from "./phone-browser/iphone-platform.js";
 import { createAndroidBrowserPlatform } from "./phone-browser/android-platform.js";
@@ -206,11 +210,41 @@ function mobileClient(): MobileRoot {
           : null,
     });
     // The mock world's own iPhone, which lends a browser there, is this phone.
-    if (!android && configuration.mockPhone === null)
+    const scene = configuration.mockPhone;
+    if (!android && (scene === null || scene === "removed"))
       fakeIphone.device.enrolledTo({ deploymentId: mockDeploymentId, name: "Alex's iPhone" });
+    if (!android && scene === "elsewhere")
+      fakeIphone.device.enrolledTo({
+        deploymentId: mockSignedOutDeploymentId,
+        name: "Alex's iPhone",
+      });
+    if (scene === "removed") {
+      const removed = fakeIphone;
+      setTimeout(() => removed.device.removedByHost(), 4_000);
+    }
   }
   const iphone = new IphoneAppsController({
     bridge: fakeIphone?.bridge ?? androidPhoneBridge ?? iphoneApps,
+    deliverLeave: configuration.mock
+      ? async (leave) => {
+          const host = mockHosts.get(leave.deploymentId);
+          if (host === undefined) return "unreachable";
+          await host.dispatch({
+            idempotencyKey: `leave:${leave.runnerId}`,
+            machineId: leave.runnerId,
+            type: "machine.revoke",
+          });
+          return "removed";
+        }
+      : networkLeaveDelivery((input, init) => mobileHostFetch(input, init)),
+    setupFile: createPhoneSetupFile({
+      filePath: `${root}${storeName}/phone-setup.json`,
+      privateFiles,
+    }),
+    removedFile: createRemovedFile({
+      filePath: `${root}${storeName}/device-removed.json`,
+      privateFiles,
+    }),
     ...(Platform.OS === "android" && !configuration.mock && androidPhoneBridge !== null
       ? { enrollNative: enrollAndroidPhone }
       : {}),
@@ -322,7 +356,9 @@ function mobileClient(): MobileRoot {
       keyPrefix: `${storeName}.auth`,
       secureStore: SecureStore,
     }),
-    ...(configuration.mock ? { seed: mockDeploymentConnections() } : {}),
+    ...(configuration.mock && configuration.mockPhone !== "first-run"
+      ? { seed: mockDeploymentConnections() }
+      : {}),
     selectionFilePath: `${root}${storeName}/selection.json`,
     signedOutFilePath: `${root}${storeName}/signed-out.json`,
   });

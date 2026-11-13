@@ -37,6 +37,7 @@ final class FailureCasesTests: XCTestCase {
   func testF3AnotherDeploymentCannotClaimSlot() throws {
     let store = IdentityStore(vault: MemoryIdentityVault(), record: MemoryRecordStore())
     _ = try store.prepare(deploymentId: "one")
+    try store.beginIssuance(deploymentId: "one", deploymentName: "Home", hostInstanceId: "host", hostUrl: "https://home.example", devicesV1: true)
     XCTAssertThrowsError(try store.prepare(deploymentId: "two"))
   }
 

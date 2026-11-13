@@ -19,7 +19,11 @@ import {
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import { requirePersonalOwner } from "@opensteer/database/personal-settings-store";
-import { type HostToClientMessage } from "@opensteer/protocol";
+import {
+  isDeviceAccessRequestEvent,
+  projectDeviceAccessRequestEvent,
+  type HostToClientMessage,
+} from "@opensteer/protocol";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import type { LiveFrame, LiveRunRegistry } from "./live-run-registry.js";
 export interface RealtimeSink {
@@ -104,6 +108,7 @@ export interface RealtimeFillWindow {
   readonly scannedThrough: Sequence;
 }
 interface SubscriberOptions {
+  readonly deviceAccessRequests: boolean;
   readonly personShow: boolean;
   readonly placeEvents: boolean;
   readonly toolOutputs: boolean;
@@ -182,13 +187,18 @@ class Subscriber {
   #send(message: HostToClientMessage): Promise<void> {
     switch (message.type) {
       case "host.events": {
-        const events = message.events.filter((event) => {
-          const nodeId = nodeDetailEventNodeId(event);
-          return (
-            (this.#options.placeEvents || event.type !== "place.entered") &&
-            (nodeId === undefined || nodeId === this.#watchedNodeId)
+        const events = message.events
+          .filter((event) => {
+            const nodeId = nodeDetailEventNodeId(event);
+            return (
+              (this.#options.deviceAccessRequests || !isDeviceAccessRequestEvent(event)) &&
+              (this.#options.placeEvents || event.type !== "place.entered") &&
+              (nodeId === undefined || nodeId === this.#watchedNodeId)
+            );
+          })
+          .map((event) =>
+            projectDeviceAccessRequestEvent(event, this.#options.deviceAccessRequests),
           );
-        });
         const last = message.events.at(-1);
         const visible = events.at(-1);
         if (last) this.#handedThrough = last.sequence;
@@ -304,6 +314,10 @@ class Subscriber {
       return false;
     }
   }
+  get acceptsDeviceAccessRequests(): boolean {
+    return this.#options.deviceAccessRequests;
+  }
+
   get acceptsPersonShow(): boolean {
     return this.#state === "live" && this.#options.personShow;
   }
@@ -699,6 +713,7 @@ export class RealtimeHub {
     readonly afterSequence: Sequence;
     readonly deploymentId: DeploymentId;
     readonly snapshotMessages?: "omit";
+    readonly deviceAccessRequests?: "include";
     readonly placeEvents?: "include";
     readonly toolOutputs?: "preview";
     readonly personShow?: "accept";
@@ -729,6 +744,7 @@ export class RealtimeHub {
       placeEvents: input.placeEvents === "include",
       toolOutputs: input.toolOutputs === "preview",
       personShow: input.personShow === "accept",
+      deviceAccessRequests: input.deviceAccessRequests === "include",
       userId: input.userId,
     });
     this.#subscribers.add(subscriber);
@@ -747,6 +763,9 @@ export class RealtimeHub {
       if (compareSequence(input.afterSequence, zeroSequence) === 0) {
         const snapshot = await this.#store.deploymentSnapshot({
           listedOnly: true,
+          ...(input.deviceAccessRequests
+            ? { deviceAccessRequests: input.deviceAccessRequests }
+            : {}),
           ...(input.placeEvents === "include"
             ? {
                 placeEvents: "include",
@@ -901,11 +920,19 @@ export class RealtimeHub {
     userIds: Iterable<UserId>,
     message: HostToClientMessage,
     source: BootstrapNoticeSource = "unspecified",
+    readers?: { readonly deviceAccessRequests: "include" },
   ): void {
     for (const observer of this.#observers) observer(message);
     this.bootstrapDiagnostics.record(message.type, source);
     for (const userId of userIds) {
       for (const sink of this.#connections.get(userId) ?? []) {
+        if (
+          readers?.deviceAccessRequests === "include" &&
+          ![...this.#subscribers].some(
+            (subscriber) => subscriber.sink === sink && subscriber.acceptsDeviceAccessRequests,
+          )
+        )
+          continue;
         void sink.send(message).catch(() => undefined);
       }
     }

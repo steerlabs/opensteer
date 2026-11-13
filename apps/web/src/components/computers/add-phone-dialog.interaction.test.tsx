@@ -299,7 +299,7 @@ describe("AddPhoneDialog setup lifecycle", () => {
     expect(page.refresh).toHaveBeenCalledOnce();
     expect(page.container.textContent).toContain("The phone is ready");
     expect(page.container.querySelector("a[href]")?.getAttribute("href")).toBe(
-      `/settings/devices/computers/${done.runnerId}`,
+      `/settings/devices/${done.runnerId}`,
     );
   });
 

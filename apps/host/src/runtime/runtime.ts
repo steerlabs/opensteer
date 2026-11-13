@@ -1,3 +1,5 @@
+import { DeviceAccessService } from "../administration/device-access-service.js";
+import { requireDeviceAccess } from "../administration/device-access.js";
 import { digestSecret } from "@opensteer/shared/secretDigest";
 import { PersonalTabStore, runAllowsPersonalContext } from "@opensteer/database";
 import { resolveTeamTaskExecution } from "./team-task-execution.js";
@@ -670,6 +672,8 @@ export async function createHostRuntime(
     let displayStreams: DisplayStreamHub | undefined;
     let pluginPackages: PluginPackageService | undefined;
     const computerApps = new ComputerAppHub({
+      requireAgentAccess: (runnerId) =>
+        requireDeviceAccess(database, runnerId, "apps", runners.isRunnerConnected(runnerId)),
       packageSource: (serverId, runnerId, launch) =>
         pluginPackages?.computerSource(serverId, runnerId, launch),
       knownDefinitionIds: () => computerAppDefinitionIds,
@@ -794,6 +798,25 @@ export async function createHostRuntime(
     const browserTabGroups = new BrowserTabGroupStore(database);
     let logMissingBrowserActor: (sessionId: string, bindingId: string) => void = () => undefined;
     const browser = new BrowserService({
+      requireAgentAccess: (runnerId) =>
+        requireDeviceAccess(database, runnerId, "browser", runners.isRunnerConnected(runnerId)),
+      detachRunnerAgents: async (runnerId) => {
+        const sessions = await database
+          .selectFrom("browserSessions")
+          .select("id")
+          .where("runnerId", "=", runnerId)
+          .execute();
+        if (!sessions.length) return [];
+        await database
+          .deleteFrom("browserSessionAttachments")
+          .where(
+            "sessionId",
+            "in",
+            sessions.map((row) => row.id),
+          )
+          .execute();
+        return sessions.map((row) => row.id);
+      },
       deploymentId: deployment.id,
       onMissingActor: (sessionId, bindingId) => logMissingBrowserActor(sessionId, bindingId),
       hostOrigin: config.canonicalOrigin,
@@ -1202,8 +1225,13 @@ export async function createHostRuntime(
             }),
           }
         : {}),
-      onLive: ({ userId, view }) =>
-        realtime.sendToUsers([userId], { notification: view, type: "host.notification" }),
+      onLive: ({ userId, view, deviceAccessRequests }) =>
+        realtime.sendToUsers(
+          [userId],
+          { notification: view, type: "host.notification" },
+          "unspecified",
+          deviceAccessRequests ? { deviceAccessRequests } : undefined,
+        ),
       onError: (failure) => reportNotification("error", failure),
       onWarning: (failure) => reportNotification("warn", failure),
       ready: notificationAuthorityReady,
@@ -2090,6 +2118,12 @@ export async function createHostRuntime(
       store,
     });
     channelService = channels;
+    const deviceAccessService = new DeviceAccessService({
+      store,
+      runners,
+      onDeploymentEvent: publishDeploymentEvent,
+      continuations,
+    });
     const machineFullDiskAccess = new MachineFullDiskAccessService({
       store,
       onDeploymentEvent: publishDeploymentEvent,
@@ -2173,6 +2207,7 @@ export async function createHostRuntime(
       placeContext,
       onBrowserUsage: (credits) => browser.announceUsage(credits),
       browserSources,
+      deviceAccess: deviceAccessService,
       machineFullDiskAccess,
       browser,
       canRunHarness: (environmentId, driverKind) =>
@@ -2271,6 +2306,7 @@ export async function createHostRuntime(
     const administration = new AdministrationToolHandlers(
       new AdministrationService(
         {
+          authenticator,
           store,
           commands,
           apps,
@@ -2455,6 +2491,7 @@ export async function createHostRuntime(
           .digest(),
         appRealOrigins: hostAppRealOrigins(config.deploymentShape),
         liveRuns,
+        deviceAccess: deviceAccessService,
         machineFullDiskAccess,
         requestResponseVault: integrationVault,
         runToolTokens,

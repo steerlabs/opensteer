@@ -200,14 +200,6 @@
   text-underline-offset: 3px;
 }
 
-/* An aside the card has to say but nobody has to act on. */
-.onboarding__note {
-  color: var(--muted);
-  font-size: var(--text-md);
-  text-align: center;
-  text-wrap: pretty;
-}
-
 /* Development-only failure detail. Never shown in a packaged build, so it is
    allowed to be as wide and as literal as the stack it carries. */
 .onboarding__trace {

@@ -18,6 +18,11 @@ const state = vi.hoisted(() => ({
 vi.mock("react-native", () => ({
   Alert: { alert: vi.fn() },
   Linking: { openURL: state.openURL },
+  Platform: { OS: "ios" },
+}));
+vi.mock("../iphone-apps/context.js", () => ({
+  useIphoneApps: () => null,
+  useIphoneAppsState: () => ({ snapshot: { enrollment: null } }),
 }));
 vi.mock("@react-navigation/native", () => ({
   useNavigation: () => ({ navigate: state.navigate, goBack: vi.fn() }),
@@ -44,6 +49,7 @@ vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileClient: () => mobile,
   useMobileState: () => ({
     account: { account: state.account },
+    rows: [],
     selection: { hostClient: state.host, deploymentId: "deployment" },
   }),
 }));

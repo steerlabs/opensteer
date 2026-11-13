@@ -17,7 +17,7 @@ import { Link } from "react-router";
 import { Icon } from "../icon.js";
 import { OptionRow } from "../option-row.js";
 import { SegmentedControl } from "../segmented-control.js";
-import { computerAppRoute } from "../computers-page.js";
+import { deviceAppRoute } from "../devices/device-routes.js";
 import { computerIcon } from "../computers/device-art.js";
 import { ComputerAppPermissionNotice } from "./computer-app-permission-notice.js";
 
@@ -67,13 +67,13 @@ export function ComputerAppPicker({
         {computerAppRunsOnPhone(presentation) ? (
           <p className="card__empty">
             No phone is offering {definition.name} yet. Plug an Android phone into a computer and
-            choose Add a phone under <Link to="/settings/devices/computers">Computers</Link>.
+            choose Add a device under <Link to="/settings/devices">Devices</Link>.
           </p>
         ) : (
           <p className="card__empty">
             No computer is offering {definition.name} yet. Open Opensteer on{" "}
             {computerAppPlatformTargetLabel(presentation?.platforms ?? [])} and add it under{" "}
-            <Link to="/settings/devices/computers">Computers</Link>.
+            <Link to="/settings/devices">Devices</Link>.
           </p>
         )}
       </div>
@@ -110,7 +110,7 @@ export function ComputerAppPicker({
               trailing={
                 <Link
                   className="btn btn--small"
-                  to={computerAppRoute({ definitionId: definition.id, runnerId: machine.id })}
+                  to={deviceAppRoute({ definitionId: definition.id, runnerId: machine.id })}
                 >
                   Open settings
                 </Link>
@@ -138,7 +138,7 @@ export function ComputerAppPicker({
         // own page, not on this picker.
         <p className="computer-apps__summary">
           {definition.name} is on for every computer that offers it. Manage each under{" "}
-          <Link to="/settings/devices/computers">Computers</Link>.
+          <Link to="/settings/devices">Devices</Link>.
         </p>
       ) : null}
       {chosen && presentation ? (
@@ -163,7 +163,7 @@ export function ComputerAppPicker({
           <ComputerAppPermissionNotice
             appName={definition.name}
             machine={chosen.machine}
-            managePath={computerAppRoute({
+            managePath={deviceAppRoute({
               definitionId: definition.id,
               runnerId: chosen.machine.id,
             })}

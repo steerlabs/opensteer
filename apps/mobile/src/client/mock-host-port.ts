@@ -34,7 +34,10 @@ export function createMockHostPort(
     const deploymentId = connection.authority.document.deploymentId;
     let host = hosts.get(deploymentId);
     if (host === undefined) {
-      const created = new MockHostClient(options.subagents ? { subagents: options.subagents } : {});
+      const created = new MockHostClient({
+        devices: "seeded",
+        ...(options.subagents ? { subagents: options.subagents } : {}),
+      });
       const dispatch = created.dispatch.bind(created);
       created.dispatch = async (command) => {
         const result = await dispatch(command);

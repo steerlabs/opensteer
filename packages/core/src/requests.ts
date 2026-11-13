@@ -33,6 +33,7 @@ export const RequestKindSchema = z.enum([
   "integration.access",
   "integration.install",
   "machine.full-disk-access",
+  "device.access",
   "computer.app.access",
   "integration.input",
 ]);
@@ -394,6 +395,13 @@ const requestPayloadVariants = [
     kind: z.literal("integration.input"),
     serverId: IntegrationIdentifierSchema,
   }),
+  z.strictObject({
+    kind: z.literal("device.access"),
+    machineId: RunnerIdSchema,
+    machineName: z.string().trim().min(1).max(160),
+    access: z.enum(["browser", "apps", "files"]),
+    reason: RequestReasonSchema,
+  }),
 ] as const;
 export const RequestPayloadSchema = z.discriminatedUnion("kind", requestPayloadVariants);
 const RequestPayloadViewSchema = z.discriminatedUnion("kind", [
@@ -413,6 +421,7 @@ const RequestPayloadViewSchema = z.discriminatedUnion("kind", [
     app: z.object(computerAppIdentityShape).nullable(),
   }),
   z.object(requestPayloadVariants[9].shape),
+  z.object(requestPayloadVariants[10].shape),
 ]);
 export type RequestPayload = z.infer<typeof RequestPayloadSchema>;
 
@@ -734,6 +743,7 @@ export function requestIsAgentAnswerable(
     "integration.access": false,
     "integration.install": false,
     "machine.full-disk-access": false,
+    "device.access": false,
     "computer.app.access": false,
     "integration.input": false,
   };

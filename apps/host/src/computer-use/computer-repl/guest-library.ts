@@ -11,7 +11,7 @@ export const computerGuestLibrary = String.raw`
   }
   async function call(operation, target = null, args = {}) {
     const result = JSON.parse(await bridge(JSON.stringify({operation,target,args})));
-    if (result.error) throw new ComputerError(result.error.code,result.error.message,result.error.performed);
+    if (result.error) throw Object.assign(new ComputerError(result.error.code,result.error.message,result.error.performed), result.error);
     return result.value;
   }
   globalThis.ComputerError = ComputerError;

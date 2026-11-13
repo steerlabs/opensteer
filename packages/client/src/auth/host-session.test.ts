@@ -27,6 +27,54 @@ import {
 } from "./native-oauth.js";
 
 describe("HostSession", () => {
+  it("fences a late unauthorized recovery, clears its credential, and drains it before explicit setup", async () => {
+    const connection = remotePersonalConnection("connect", 7);
+    const fixture = hostSessionFixture(connection);
+    const gate = deferred<SessionExchangeResponse>();
+    fixture.exchange.establish.mockImplementation(() => gate.promise);
+    const recovery = fixture.sessions.recoverUnauthorized(fixture.attachment);
+    await vi.waitFor(() => expect(fixture.exchange.establish).toHaveBeenCalledOnce(), {
+      timeout: 1000,
+    });
+    const id = connection.authority.document.deploymentId;
+    fixture.sessions.blockDeployment(id);
+    const signal = fixture.exchange.establish.mock.calls[0]?.[1]?.signal;
+    expect(signal?.aborted).toBe(true);
+    await expect(fixture.sessions.establish(id)).rejects.toMatchObject({ code: "blocked" });
+    let allowed = false;
+    const settingUp = fixture.sessions.allowDeployment(id).then(() => {
+      allowed = true;
+    });
+    expect(allowed).toBe(false);
+    gate.resolve(establishedCookieSession());
+    await expect(recovery).resolves.toBe("blocked");
+    expect(fixture.clearDeploymentSession).toHaveBeenCalledWith(id);
+    await settingUp;
+    await expect(fixture.sessions.establish(id)).resolves.toMatchObject({ outcome: "ready" });
+  });
+
+  it("waits for session-ended removal before any new recovery and isolates other Deployments", async () => {
+    const connection = remotePersonalConnection("connect", 7);
+    const gate = deferred<void>();
+    const fixture = hostSessionFixture(connection, null, {
+      onSessionEnded: async (attachment) => {
+        await gate.promise;
+        fixture.sessions.blockDeployment(attachment.resolved.deploymentId);
+      },
+    });
+    fixture.sessions.sessionEnded(fixture.attachment);
+    const recovery = fixture.sessions.recoverUnauthorized(fixture.attachment);
+    expect(fixture.exchange.establish).not.toHaveBeenCalled();
+    gate.resolve();
+    await expect(recovery).resolves.toBe("blocked");
+    expect(fixture.exchange.establish).not.toHaveBeenCalled();
+    const other = remotePersonalConnection("connect", 8);
+    fixture.selection.current = attachmentFor(other);
+    await expect(
+      fixture.sessions.establish(other.authority.document.deploymentId),
+    ).resolves.toMatchObject({ outcome: "ready" });
+  });
+
   it("trusts only the exact ready local-owner generation and coalesces 401 recovery", async () => {
     const connection = localPersonalConnection();
     const fixture = hostSessionFixture(connection, localHostRuntime(connection));
@@ -155,6 +203,7 @@ describe("HostSession", () => {
     ).resolves.toMatchObject({ outcome: "ready" });
     expect(connectFixture.exchange.establish).toHaveBeenCalledWith(
       connectFixture.attachment.resolved,
+      { signal: expect.any(AbortSignal) },
     );
 
     // A Private route carries a proof only the operator holds, so an unattended
@@ -245,7 +294,7 @@ describe("HostSession", () => {
       key: keyOf(connection),
       status: "authorizing",
     });
-    await expect(abandoned).resolves.toMatchObject({ outcome: "authorizing" });
+    await expect(abandoned).rejects.toMatchObject({ code: "blocked" });
     expect(fixture.oauth.beginHostSignIn).toHaveBeenCalledTimes(2);
     expect(fixture.oauth.abandonHostSignIn).toHaveBeenCalledWith(
       connection.authority.document.deploymentId,
@@ -345,6 +394,7 @@ describe("HostSession", () => {
 function hostSessionFixture(
   selected: DeploymentConnection,
   localRuntime: LocalHostRuntime | null = null,
+  options: { readonly onSessionEnded?: (attachment: SelectedAttachment) => Promise<void> } = {},
 ) {
   const selection = { current: attachmentFor(selected, localRuntime) };
   // `supports` is the real arm selection so the fixture cannot claim an
@@ -353,7 +403,7 @@ function hostSessionFixture(
     establish: vi.fn<
       (
         _resolved: ResolvedConnection,
-        _options?: { readonly pairingCode?: string },
+        _options?: { readonly pairingCode?: string; readonly signal?: AbortSignal },
       ) => Promise<SessionExchangeResponse>
     >(async () => establishedCookieSession()),
     probe: vi.fn<
@@ -421,6 +471,7 @@ function hostSessionFixture(
   const accountCredentialRejected = vi.fn(async () => undefined);
   const clearDeploymentSession = vi.fn(async (_deploymentId: string) => undefined);
   const sessions = new HostSession({
+    ...options,
     accountCredentialRejected,
     attachment: {
       current: async () => selection.current,

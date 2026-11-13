@@ -62,6 +62,8 @@ export interface MachineAccessSectionProps {
   /** Bumped by the Host when this computer's sessions change. */
   readonly machineRevision: number;
   readonly ownership: MachineSummary["ownership"];
+  /** Under a device's Files and commands switch, which owns reach, so no second switch. */
+  readonly embedded?: boolean;
 }
 
 /**
@@ -83,6 +85,7 @@ export function MachineAccessSection({
   client,
   deploymentName,
   desktopBridge,
+  embedded = false,
   machineId,
   machineName,
   machineRevision,
@@ -244,35 +247,41 @@ export function MachineAccessSection({
           not a heading and a row underneath repeating it. */}
       <header className="machine-access__header">
         <h3 id={headingId} ref={heading} tabIndex={-1}>
-          Reachable by agents
+          {embedded ? "Folders, commands and local services" : "Reachable by agents"}
         </h3>
         <span className="machine-access__status">
-          <SavedReachChip deploymentName={deploymentName} reach={access.policy.reach} />
+          {embedded ? null : (
+            <SavedReachChip deploymentName={deploymentName} reach={access.policy.reach} />
+          )}
           {liveCount > 0 ? (
             <span className="chip chip--accent">{liveCount} connected now</span>
           ) : null}
-          <input
-            aria-label={`Reachable by agents on ${machineName}`}
-            checked={reachable}
-            className="switch"
-            // Nothing is accepted while a save is in flight: the answer would
-            // overwrite it. Nothing is offered where no audience exists.
-            disabled={saving || admitted === null}
-            onChange={(event) =>
-              edit({
-                reach: event.target.checked ? (admitted ?? "nobody") : "nobody",
-                type: "reach-edited",
-              })
-            }
-            role="switch"
-            type="checkbox"
-          />
+          {embedded ? null : (
+            <input
+              aria-label={`Reachable by agents on ${machineName}`}
+              checked={reachable}
+              className="switch"
+              // Nothing is accepted while a save is in flight: the answer would
+              // overwrite it. Nothing is offered where no audience exists.
+              disabled={saving || admitted === null}
+              onChange={(event) =>
+                edit({
+                  reach: event.target.checked ? (admitted ?? "nobody") : "nobody",
+                  type: "reach-edited",
+                })
+              }
+              role="switch"
+              type="checkbox"
+            />
+          )}
         </span>
       </header>
-      <p className="machine-access__lead">
-        Lets agents running on your other computers, or in the cloud, use {machineName} over SSH:
-        open the folders you share, and optionally run commands or reach local services.
-      </p>
+      {embedded ? null : (
+        <p className="machine-access__lead">
+          Lets agents running on your other computers, or in the cloud, use {machineName} over SSH:
+          open the folders you share, and optionally run commands or reach local services.
+        </p>
+      )}
       {!reachable && draftGrantsAnything(editor.draft) ? (
         <p className="machine-access__lead machine-access__lead--note">
           Everything below is kept but has no effect.

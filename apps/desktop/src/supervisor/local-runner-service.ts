@@ -3,8 +3,8 @@ import { logShutdownError, type ShutdownLog } from "../app/desktop-shutdown.js";
 import { RestartPolicy } from "@opensteer/shared/restartPolicy";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { assertRegularFile } from "@opensteer/shared/privateFiles";
-import { setPrivateDirectoryMode, setPrivateFileMode } from "@opensteer/shared/privateFiles";
-import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
+import { lstat, mkdir, readdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { desktopDeploymentPaths } from "../app/application-paths.js";
@@ -13,6 +13,7 @@ import {
   DeploymentIdSchema,
   EnvironmentIdSchema,
   RunnerIdSchema,
+  AuthSessionIdSchema,
   harnessCatalog,
   harnessExecutableEnvironmentVariable,
   shipsHarnessRuntimeBytes,
@@ -29,7 +30,42 @@ import {
   type ComputerAppSetupRequest,
 } from "@opensteer/integration-core";
 import { inspectRunnerIdentity, type RunnerIdentityDescriptor } from "@opensteer/runner";
+import {
+  hostKeyFingerprint,
+  isSameHost,
+  verifyHostDiscoveryEnvelope,
+  verifyPersonalHostAccessRouteEnvelope,
+  apiVersionHeaders,
+} from "@opensteer/deployment-authority";
 import { z } from "zod";
+import { FileRunnerIdentityStore } from "@opensteer/runner-client";
+import {
+  createDeviceLeaveSignature,
+  createDeviceSessionBindingSignature,
+} from "@opensteer/runner-auth";
+import {
+  RunnerLeaveResponseSchema,
+  DevicePreparedIdentitySchema,
+  type HostApiCommandInput,
+  type HostApiCommandOutput,
+  type DeviceSessionBindingProof,
+  type DevicePreparedIdentity,
+} from "@opensteer/protocol";
+import { assertDeviceSessionAllowed } from "@opensteer/client/computers";
+import { type AccountDeploymentConnectionSource } from "@opensteer/client/connections";
+import { readPrivateFileText } from "@opensteer/shared/atomicPrivateFile";
+import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
+import { readBoundedJson } from "@opensteer/shared/boundedJson";
+import { nodeErrorCode } from "@opensteer/shared/nodeError";
+import { syncDirectory } from "@opensteer/shared/privateFiles";
+import {
+  DeviceMembershipsSchema,
+  membershipIntent,
+  readMemberships,
+  writeMemberships,
+  type DeviceMembership,
+  type DeviceMemberships,
+} from "./device-membership.js";
 import type { DesktopConfiguration } from "../config.js";
 import { computerName } from "./computer-name.js";
 import type { PersonalLocalBrowserHandle } from "./personal-local-runtime.js";
@@ -62,7 +98,7 @@ const forcedStopTimeoutMs = 2_000;
 const removalExitTimeoutMs = 30_000;
 const maxLogTailBytes = 64 * 1_024;
 const maxLogTailDetailChars = 240;
-const maxPreferenceBytes = 64 * 1_024;
+
 /**
  * A crashed worker with the window closed has nobody to press a switch again,
  * so an enrolled computer would stay stopped until the person reopened
@@ -72,7 +108,7 @@ const maxPreferenceBytes = 64 * 1_024;
 const maxRestartAttempts = 5;
 
 const notEnrolledDetail = "This Mac is not in this Deployment.";
-const neverEnrolledDetail = "This Mac never finished joining; remove it and add it again.";
+const neverEnrolledDetail = "Finish setting up this Mac to join this Opensteer.";
 const revokedDetail = "This Mac was removed from this Deployment.";
 const stoppedDetail = "The Runner is stopped on this Mac.";
 const removedBeforeConnectedMessage = "This Mac left the Deployment before its Runner connected.";
@@ -80,8 +116,7 @@ const stillRunningMessage =
   "The Runner on this Mac is still running, so nothing was deleted. Try again in a moment.";
 
 /**
- * A slot whose Runner never completed enrollment. Terminal on purpose: the
- * token is gone, so only Remove (and adding this Mac again) can fix it.
+ * A slot that needs a fresh enrollment hand-off to finish setup.
  */
 export class LocalRunnerNeverEnrolledError extends Error {}
 
@@ -105,38 +140,7 @@ const WorkerMessageSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-/**
- * One Deployment's slot on this Mac. `enrolled` is membership — while it is
- * true the Runner runs whenever the app runs — and `runAgents` is which module
- * set it runs with. Removing the computer deletes the row entirely, because
- * the identity it names is deleted with it.
- */
-const RunnerPreferenceSchema = z.strictObject({
-  enrolled: z.boolean(),
-  runAgents: z.boolean(),
-  runnerName: z.string().trim().min(1).max(120),
-});
-
-const PreferenceSchema = z
-  .strictObject({
-    runners: z.record(DeploymentIdSchema, RunnerPreferenceSchema),
-    version: z.literal(4),
-  })
-  .refine((preference) => Object.keys(preference.runners).length <= 100, {
-    message: "A Mac can belong to at most 100 Deployments.",
-    path: ["runners"],
-  });
-
-type Preference = z.infer<typeof PreferenceSchema>;
-
-/** The lending switch this slot state replaced, kept only to be migrated. */
-const LegacyPreferenceSchema = z.strictObject({
-  runners: z.record(
-    DeploymentIdSchema,
-    z.strictObject({ enabled: z.boolean(), runnerName: z.string().trim().min(1).max(120) }),
-  ),
-  version: z.literal(3),
-});
+type Preference = DeviceMemberships;
 
 export interface UtilityProcessLike {
   readonly stderr: NodeJS.ReadableStream | null;
@@ -150,6 +154,32 @@ export interface UtilityProcessLike {
 
 export interface LocalRunnerServiceDependencies {
   readonly log?: ShutdownLog;
+  readonly assertAccountSource?: (source: AccountDeploymentConnectionSource) => void;
+  readonly leaveFetch?: typeof fetch;
+  readonly now?: () => number;
+  readonly revokeLegacyRunner?: (
+    deploymentId: DeploymentId,
+    origin: string,
+    runnerId: string,
+  ) => Promise<void>;
+  readonly retireEnrollment?: (
+    deploymentId: DeploymentId,
+    origin: string,
+    enrollmentId: string,
+  ) => Promise<"consumed" | "expired" | "retired" | void>;
+  readonly readSession?: (
+    deploymentId: DeploymentId,
+    origin: string,
+    sessionId: string,
+  ) => Promise<
+    NonNullable<DeviceMembership["boundSession"]> & {
+      readonly deviceId?: string | null | undefined;
+    }
+  >;
+  /** Fences authentication and client traffic synchronously, before disk or teardown awaits. */
+  readonly fenceDeployment?: (deploymentId: DeploymentId) => void;
+  readonly clearDeploymentSession?: (deploymentId: DeploymentId) => Promise<void>;
+  readonly allowDeployment?: (deploymentId: DeploymentId) => Promise<void>;
   readonly profileErasure?: DesktopBrowserProfileErasure;
   /**
    * Starts this computer's browser for one enrolled Deployment. It
@@ -210,6 +240,7 @@ export interface LocalRunnerServiceDependencies {
 interface RunnerSlot {
   /** The module set of the running worker, which a changed `runAgents` restarts. */
   activeRunAgents: boolean | undefined;
+  confirmationOnly: boolean;
   activeTarget: DesktopLocalRunnerTarget | undefined;
   /** The browser this slot's Runner relays, stopped with it. */
   browser: PersonalLocalBrowserHandle | undefined;
@@ -246,11 +277,44 @@ interface RunnerSlot {
   runAgents: boolean;
   startPromise: Promise<DesktopLocalExecutionStatus> | undefined;
   state: DesktopLocalExecutionStatus["runner"]["state"];
+  waiting: boolean;
   stopPromise: Promise<void> | undefined;
 }
 
 export class LocalRunnerService {
   readonly #log: ShutdownLog;
+  readonly #assertAccountSource: NonNullable<LocalRunnerServiceDependencies["assertAccountSource"]>;
+  #accountGeneration = 0;
+  readonly #leaveFetch: typeof fetch;
+  readonly #now: () => number;
+  readonly #pendingEnrollments = new Map<
+    string,
+    { deploymentId: DeploymentId; id: string; expiresAt: string }
+  >();
+  readonly #pendingBindings = new Map<
+    DeploymentId,
+    {
+      generation: number;
+      signature: string;
+      session: NonNullable<DeviceMembership["boundSession"]>;
+    }
+  >();
+  readonly #revokeLegacyRunner: LocalRunnerServiceDependencies["revokeLegacyRunner"];
+  readonly #retireEnrollment: LocalRunnerServiceDependencies["retireEnrollment"];
+  readonly #readSession: LocalRunnerServiceDependencies["readSession"];
+  readonly #fenceDeployment: NonNullable<LocalRunnerServiceDependencies["fenceDeployment"]>;
+  readonly #clearDeploymentSession: NonNullable<
+    LocalRunnerServiceDependencies["clearDeploymentSession"]
+  >;
+  readonly #allowDeployment: NonNullable<LocalRunnerServiceDependencies["allowDeployment"]>;
+  readonly #starts = new Map<
+    DeploymentId,
+    { input: DesktopStartLocalRunnerInput; promise: Promise<DesktopLocalExecutionStatus> }
+  >();
+  readonly #sessionCleanups = new Map<DeploymentId, Promise<void>>();
+  readonly #obligations = new Map<DeploymentId, Promise<void>>();
+  readonly #leaveTimers = new Map<DeploymentId, ReturnType<typeof setTimeout>>();
+  readonly #fenced = new Set<DeploymentId>();
   readonly #profileErasure: DesktopBrowserProfileErasure;
   readonly #config: DesktopConfiguration;
   readonly #browser: LocalRunnerServiceDependencies["browser"];
@@ -261,6 +325,7 @@ export class LocalRunnerService {
   readonly #inspectIdentity: NonNullable<LocalRunnerServiceDependencies["inspectIdentity"]>;
   readonly #listeners = new Set<() => void>();
   readonly #preferenceMutations = new MutationQueue();
+  readonly #setupIssuances = new MutationQueue();
   readonly #preferencePath: string;
   /** Failed starts since this Deployment's Runner last connected healthily. */
   readonly #restartPolicies = new Map<DeploymentId, RestartPolicy>();
@@ -279,6 +344,15 @@ export class LocalRunnerService {
     this.#log =
       dependencies.log ?? ((event, fields) => console.info(JSON.stringify({ event, ...fields })));
     this.#config = config;
+    this.#assertAccountSource = dependencies.assertAccountSource ?? (() => undefined);
+    this.#leaveFetch = dependencies.leaveFetch ?? fetch;
+    this.#now = dependencies.now ?? (() => Date.now());
+    this.#retireEnrollment = dependencies.retireEnrollment;
+    this.#revokeLegacyRunner = dependencies.revokeLegacyRunner;
+    this.#readSession = dependencies.readSession;
+    this.#fenceDeployment = dependencies.fenceDeployment ?? (() => undefined);
+    this.#clearDeploymentSession = dependencies.clearDeploymentSession ?? (async () => undefined);
+    this.#allowDeployment = dependencies.allowDeployment ?? (async () => undefined);
     this.#browser = dependencies.browser;
     this.#profileErasure =
       dependencies.profileErasure ?? new DesktopBrowserProfileErasure(config.dataDirectory);
@@ -329,6 +403,9 @@ export class LocalRunnerService {
     runnerId: string,
   ): Promise<ComputerUseRunnerTargetResult> {
     const parsedDeploymentId = DeploymentIdSchema.parse(deploymentId);
+    const membership = (await readMemberships(this.#preferencePath)).runners[parsedDeploymentId];
+    if (this.#fenced.has(parsedDeploymentId) || membership?.state !== "active")
+      return { local: false, reason: "not-local" };
     let target: DesktopLocalRunnerTarget;
     try {
       target = await this.#targets.resolve(parsedDeploymentId);
@@ -350,24 +427,26 @@ export class LocalRunnerService {
   async status(deploymentIdInput: DeploymentId | string): Promise<DesktopLocalExecutionStatus> {
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
     const slot = this.#slot(deploymentId);
+    const stored = (await readMemberships(this.#preferencePath)).runners[deploymentId];
     if (!slot.child && !slot.stopPromise && slot.state !== "failed") {
       let target: DesktopLocalRunnerTarget | null = null;
       try {
         target = await this.#targets.resolve(deploymentId);
-      } catch {
+        slot.waiting = false;
+      } catch (error) {
         target = null;
+        slot.waiting = error instanceof LocalRunnerDeploymentUnavailableError;
       }
       slot.mayRunAgents = target?.mayRunAgents ?? false;
       // With no worker running, the durable slot is what this Deployment will
       // get when one starts, so the status reads it rather than the last
       // in-memory guess.
-      const preference = await readPreference(this.#preferencePath);
-      const stored = preference.runners[deploymentId];
-      slot.runAgents = (stored?.enrolled ?? false) && stored?.runAgents === true;
-      const identity = target
-        ? await this.#inspectIdentity(this.#deploymentDataDirectory(deploymentId))
-        : null;
-      if (target && (await this.#targets.isCurrent(target)) && identity) {
+      slot.runAgents = stored?.state === "active" && stored.runAgents;
+      const identity =
+        stored?.state === "active"
+          ? await this.#inspectIdentity(this.#deploymentDataDirectory(deploymentId))
+          : null;
+      if (identity && (!target || (await this.#targets.isCurrent(target)))) {
         slot.enrolled = identity.enrolled;
         slot.environmentId = identity.environmentId;
         slot.runnerId = identity.runnerId;
@@ -378,12 +457,35 @@ export class LocalRunnerService {
         throw new Error("The deployment route changed while this computer's status was read.");
       }
     }
+    if (stored?.state === "active" && !slot.child) {
+      const identity = await this.#inspectIdentity(this.#deploymentDataDirectory(deploymentId));
+      if (identity) {
+        slot.enrolled = identity.enrolled;
+        slot.runnerId = identity.runnerId;
+        slot.environmentId = identity.environmentId;
+      }
+    }
     const computer = await this.#computerName();
-    return localExecutionStatus(deploymentId, this.#runnerSnapshot(slot), {
+    const status = localExecutionStatus(deploymentId, this.#runnerSnapshot(slot), {
       computerName: computer,
       mayRunAgents: slot.mayRunAgents,
       runAgents: slot.runAgents,
     });
+    return {
+      ...status,
+      membership: {
+        state: stored?.state === "active" && slot.waiting ? "waiting" : (stored?.state ?? "none"),
+        runnerId: stored?.runnerId ?? slot.runnerId,
+        generation: stored?.generation ?? 0,
+        leaveUnconfirmed: stored?.state === "leaving" || (stored?.legacyLeaves.length ?? 0) > 0,
+        enrolled: slot.enrolled,
+        sessionState: stored?.confirmingSession
+          ? "confirming"
+          : stored?.needsSignIn
+            ? "sign-in-again"
+            : "ready",
+      },
+    };
   }
 
   /**
@@ -392,8 +494,176 @@ export class LocalRunnerService {
    * restarts the Runner, leaving the identity, data directory and host key
    * exactly where they are.
    */
-  async start(input: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus> {
+  start(input: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus> {
     const parsed = DesktopStartLocalRunnerInputSchema.parse(input);
+    const current = this.#starts.get(parsed.deploymentId);
+    if (current) {
+      if (JSON.stringify(current.input) === JSON.stringify(parsed)) return current.promise;
+      return Promise.reject(
+        new Error("This Mac's setup is already connecting. Wait for it to finish."),
+      );
+    }
+    const promise = this.#startNow(parsed);
+    this.#starts.set(parsed.deploymentId, { input: parsed, promise });
+    const done = () => {
+      if (this.#starts.get(parsed.deploymentId)?.promise === promise)
+        this.#starts.delete(parsed.deploymentId);
+    };
+    void promise.then(done, done);
+    return promise;
+  }
+
+  async prepareDeviceSetup(input: DesktopStartLocalRunnerInput): Promise<DevicePreparedIdentity> {
+    const parsed = DesktopStartLocalRunnerInputSchema.parse(input);
+    if (parsed.enrollmentToken)
+      throw new Error("Prepare this Mac before requesting its enrollment.");
+    const accountGeneration = this.#accountGeneration;
+    const slot = this.#slot(parsed.deploymentId);
+    const generation = slot.intentGeneration;
+    const target = await this.#targets.resolve(parsed.deploymentId);
+    const assertCurrent = () => {
+      if (
+        this.#shuttingDown ||
+        accountGeneration !== this.#accountGeneration ||
+        generation !== slot.intentGeneration ||
+        this.#fenced.has(parsed.deploymentId)
+      )
+        throw new Error("Device setup was cancelled by sign-out or removal.");
+      if (target.source.kind === "account") this.#assertAccountSource(target.source);
+    };
+    assertCurrent();
+    let prepared: DevicePreparedIdentity | undefined;
+    await this.#mutatePreference(async (preference) => {
+      assertCurrent();
+      const current = preference.runners[parsed.deploymentId];
+      if (
+        current &&
+        (current.state !== "active" || current.confirmingSession || current.needsSignIn)
+      )
+        throw new Error("Resume this Mac's sign-in before setting it up.");
+      if (current?.hostAuthority && !isSameHost(current.hostAuthority, target.authority))
+        throw new Error("This Deployment's Host identity changed.");
+      const identity = await new FileRunnerIdentityStore({
+        dataDirectory: this.#deploymentDataDirectory(parsed.deploymentId),
+        environmentless: true,
+      }).loadOrCreate();
+      assertCurrent();
+      prepared = { runnerId: identity.runnerId, publicKeyPem: identity.publicKeyPem };
+      return {
+        ...preference,
+        runners: {
+          ...preference.runners,
+          [parsed.deploymentId]: {
+            ...(current ?? membershipIntent(parsed.runnerName, parsed.runAgents)),
+            runnerId: identity.runnerId,
+            deploymentName: target.name ?? current?.deploymentName ?? null,
+            runnerName: parsed.runnerName,
+            runAgents: parsed.runAgents,
+            prepared: true,
+            provenance: current?.provenance ?? target.source,
+            hostAuthority: target.authority,
+            devicesAvailable: target.devicesAvailable === true,
+            lastVerifiedRoute: { origin: target.hostUrl, accessRoute: target.accessRoute },
+          },
+        },
+      };
+    });
+    assertCurrent();
+    if (!prepared) throw new Error("Device setup was not prepared.");
+    return prepared;
+  }
+
+  withPreparedEnrollment<T>(
+    deploymentId: DeploymentId,
+    command: HostApiCommandInput,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (command.type !== "runner.enrollment.createLocal" || !command.preparedIdentity)
+      return operation();
+    const prepared = DevicePreparedIdentitySchema.parse(command.preparedIdentity);
+    const accountGeneration = this.#accountGeneration;
+    return this.#setupIssuances.run(async () => {
+      const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
+      if (
+        accountGeneration !== this.#accountGeneration ||
+        row?.state !== "active" ||
+        !row.prepared ||
+        row.runnerId !== prepared.runnerId ||
+        this.#fenced.has(deploymentId)
+      )
+        throw new Error("Device setup was cancelled before enrollment issuance.");
+      if (row.provenance?.kind === "account") this.#assertAccountSource(row.provenance);
+      const identity = await this.#signingIdentity(
+        deploymentId,
+        RunnerIdSchema.parse(prepared.runnerId),
+      );
+      if (
+        createPublicKey(identity.privateKey).export({ format: "pem", type: "spki" }).toString() !==
+        prepared.publicKeyPem
+      )
+        throw new Error("Enrollment does not match this Mac's prepared key.");
+      await this.#mutatePreference((preference) => {
+        const current = preference.runners[deploymentId];
+        if (current?.state !== "active" || this.#fenced.has(deploymentId))
+          throw new Error("Device setup was cancelled before enrollment issuance.");
+        return {
+          ...preference,
+          runners: { ...preference.runners, [deploymentId]: { ...current, issuanceStarted: true } },
+        };
+      });
+      return operation();
+    });
+  }
+
+  async #accountMembershipInventory(): Promise<DeviceMemberships> {
+    await this.#discoverMemberships();
+    const preference = await readMemberships(this.#preferencePath);
+    for (const [idValue, row] of Object.entries(preference.runners)) {
+      const id = DeploymentIdSchema.parse(idValue);
+      if (row.state !== "active" || row.provenance) continue;
+      let target: DesktopLocalRunnerTarget;
+      try {
+        target = await this.#targets.resolve(id);
+      } catch (error) {
+        if (error instanceof LocalRunnerDeploymentUnavailableError) continue;
+        throw error;
+      }
+      await this.#mutatePreference((current) => {
+        const stored = current.runners[id];
+        if (stored?.state !== "active" || stored.provenance) return current;
+        return {
+          ...current,
+          runners: {
+            ...current.runners,
+            [id]: {
+              ...stored,
+              provenance: target.source,
+              deploymentName: target.name ?? stored.deploymentName,
+              hostAuthority: target.authority,
+              devicesAvailable: target.devicesAvailable === true,
+              lastVerifiedRoute: { origin: target.hostUrl, accessRoute: target.accessRoute },
+            },
+          },
+        };
+      });
+    }
+    return readMemberships(this.#preferencePath);
+  }
+
+  async accountSignOutPreview(): Promise<readonly { deploymentId: string; name: string }[]> {
+    const preference = await this.#accountMembershipInventory();
+    if (Object.values(preference.runners).some((row) => row.state === "active" && !row.provenance))
+      throw new Error("Reconnect the waiting Opensteers to identify this Mac's memberships.");
+    return Object.entries(preference.runners)
+      .filter(([, row]) => row.state === "active" && row.provenance?.kind === "account")
+      .map(([deploymentId, row]) => ({ deploymentId, name: row.deploymentName ?? "an Opensteer" }));
+  }
+
+  async #startNow(parsed: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus> {
+    await this.#finishLegacyLeaves(parsed.deploymentId);
+    const membership = (await readMemberships(this.#preferencePath)).runners[parsed.deploymentId];
+    if (this.#fenced.has(parsed.deploymentId) || (membership && membership.state !== "active"))
+      throw new Error("This Mac was removed. Choose Set up again before joining this Deployment.");
     this.#cancelRestart(parsed.deploymentId);
     const slot = this.#slot(parsed.deploymentId);
     const intentGeneration = this.#enableIntent(slot);
@@ -401,6 +671,17 @@ export class LocalRunnerService {
       await this.#reconcileTail;
       this.#assertCurrentIntent(slot, intentGeneration);
       const target = await this.#targets.resolve(parsed.deploymentId);
+      if (target.source.kind === "account") this.#assertAccountSource(target.source);
+      if (
+        membership?.prepared &&
+        parsed.enrollmentToken &&
+        membership.pendingEnrollment?.tokenHash !==
+          createHash("sha256").update(parsed.enrollmentToken).digest("hex")
+      )
+        throw new Error("This enrollment does not belong to the prepared setup attempt.");
+      if (membership?.hostAuthority && !isSameHost(membership.hostAuthority, target.authority))
+        throw new Error("This Deployment's Host identity changed. Set up this Mac again.");
+      slot.waiting = false;
       this.#assertCurrentIntent(slot, intentGeneration);
       if (parsed.runAgents && !target.mayRunAgents) {
         throw new Error("A Personal Deployment runs agents only on the Mac that hosts it.");
@@ -411,17 +692,40 @@ export class LocalRunnerService {
       // Runner saving its enrolled identity and this app hearing about it
       // would otherwise leave a computer the Deployment lists and this Mac
       // never starts again — and, on Personal, with no switch to press.
-      await this.#mutatePreference((preference) => ({
-        ...preference,
-        runners: {
-          ...preference.runners,
-          [parsed.deploymentId]: {
-            enrolled: true,
-            runAgents: parsed.runAgents,
-            runnerName: parsed.runnerName,
+      const identity = await new FileRunnerIdentityStore({
+        dataDirectory: this.#deploymentDataDirectory(parsed.deploymentId),
+        environmentless: true,
+      }).loadOrCreate();
+      this.#assertCurrentIntent(slot, intentGeneration);
+      await this.#mutatePreference((preference) => {
+        this.#assertCurrentIntent(slot, intentGeneration);
+        const current = preference.runners[parsed.deploymentId];
+        if (current && current.state !== "active")
+          throw new Error("Device setup was cancelled by removal.");
+        if (target.source.kind === "account") this.#assertAccountSource(target.source);
+        return {
+          ...preference,
+          runners: {
+            ...preference.runners,
+            [parsed.deploymentId]: {
+              ...(current ?? membershipIntent(parsed.runnerName, parsed.runAgents)),
+              runnerId: identity.runnerId,
+              pendingEnrollment: current?.prepared
+                ? current.pendingEnrollment
+                : parsed.enrollmentToken
+                  ? this.#enrollmentForToken(parsed.deploymentId, parsed.enrollmentToken)
+                  : (current?.pendingEnrollment ?? null),
+              runnerName: parsed.runnerName,
+              deploymentName: target.name ?? current?.deploymentName ?? null,
+              runAgents: parsed.runAgents,
+              provenance: current?.provenance ?? target.source,
+              hostAuthority: target.authority,
+              devicesAvailable: target.devicesAvailable === true,
+              lastVerifiedRoute: { origin: target.hostUrl, accessRoute: target.accessRoute },
+            },
           },
-        },
-      }));
+        };
+      });
       this.#assertCurrentIntent(slot, intentGeneration);
       return await this.#start(
         target,
@@ -447,29 +751,459 @@ export class LocalRunnerService {
     }
   }
 
-  async startIfEnabled(): Promise<void> {
-    await this.#profileErasure.finishPending();
-    await this.reconcile();
+  async reconcileBoundSession(deploymentIdInput: string): Promise<void> {
+    const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
+    if (!this.#readSession) return;
+    const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
+    if (
+      row?.state !== "active" ||
+      !row.runnerId ||
+      row.confirmingSession ||
+      this.#fenced.has(deploymentId)
+    )
+      return;
+    const target = await this.#targets.resolve(deploymentId);
+    const session = await this.#readSession(deploymentId, target.hostUrl, "");
+    if (session.deviceId !== row.runnerId) return;
+    await this.#mutatePreference((preference) => {
+      const current = preference.runners[deploymentId];
+      if (
+        current?.state !== "active" ||
+        current.generation !== row.generation ||
+        current.confirmingSession ||
+        this.#fenced.has(deploymentId)
+      )
+        return preference;
+      return {
+        ...preference,
+        runners: {
+          ...preference.runners,
+          [deploymentId]: {
+            ...current,
+            boundSession: {
+              id: session.id,
+              expiresAt: session.expiresAt,
+              absoluteExpiresAt: session.absoluteExpiresAt,
+            },
+          },
+        },
+      };
+    });
   }
 
-  /**
-   * The removal path, called when a person takes this Mac out of a Deployment:
-   * the Runner stops and the slot is forgotten, identity and SSH host key
-   * included, so re-adding it later is a new computer rather than a revived
-   * one.
-   */
-  async remove(deploymentIdInput: DeploymentId | string): Promise<DesktopLocalExecutionStatus> {
-    const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
+  async startIfEnabled(): Promise<void> {
+    await this.#preferenceMutations.run(async () => {
+      await writeMemberships(this.#preferencePath, await readMemberships(this.#preferencePath));
+    });
+    await this.reconcile();
+    const rows = await readMemberships(this.#preferencePath);
+    await Promise.all(
+      Object.keys(rows.runners).map((id) => this.reconcileBoundSession(id).catch(() => undefined)),
+    );
+    await this.#profileErasure.finishPending();
+  }
+
+  async setUpDevice(input: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus> {
+    const parsed = DesktopStartLocalRunnerInputSchema.parse(input);
+    const existing = (await readMemberships(this.#preferencePath)).runners[parsed.deploymentId];
+    const slot = this.#slot(parsed.deploymentId);
+    const generation = slot.intentGeneration;
+    const assertSetupCurrent = () => {
+      if (slot.intentGeneration !== generation)
+        throw new Error("Device setup was cancelled before authorization resumed.");
+    };
+    if (parsed.enrollmentToken && existing && existing.state !== "active")
+      throw new Error("Resume device setup before handing off an enrollment.");
+    if (existing?.confirmingSession)
+      throw new Error("Waiting for the Runner to confirm this Mac is still a device.");
+    if (existing?.state === "leaving") throw new Error("This Mac's leave is still unconfirmed.");
+    if (existing?.state === "removed") {
+      await this.#finishObligation(parsed.deploymentId);
+      await this.#profileErasure.prepare(parsed.deploymentId);
+      await this.#mutatePreference((preference) => {
+        assertSetupCurrent();
+        const current = preference.runners[parsed.deploymentId];
+        if (current?.state !== "removed" || current.generation !== existing.generation)
+          throw new Error("Device membership changed during setup.");
+        return {
+          ...preference,
+          runners: {
+            ...preference.runners,
+            [parsed.deploymentId]: {
+              ...membershipIntent(parsed.runnerName, parsed.runAgents),
+              generation: existing.generation + 1,
+              legacyLeaves: current.legacyLeaves,
+            },
+          },
+        };
+      });
+    }
+    assertSetupCurrent();
+    await this.#sessionCleanups.get(parsed.deploymentId);
+    assertSetupCurrent();
+    await this.#allowDeployment(parsed.deploymentId);
+    assertSetupCurrent();
+    await this.#mutatePreference((preference) => {
+      assertSetupCurrent();
+      const row = preference.runners[parsed.deploymentId];
+      if (!row?.needsSignIn) return preference;
+      return {
+        ...preference,
+        runners: { ...preference.runners, [parsed.deploymentId]: { ...row, needsSignIn: false } },
+      };
+    });
+    assertSetupCurrent();
+    this.#fenced.delete(parsed.deploymentId);
+    if (existing?.needsSignIn && slot.confirmationOnly) void this.reconcile();
+    return parsed.enrollmentToken ? this.start(parsed) : this.status(parsed.deploymentId);
+  }
+
+  async signDeviceSessionBinding(input: {
+    deploymentId: string;
+    sessionId: string;
+  }): Promise<DeviceSessionBindingProof> {
+    const deploymentId = DeploymentIdSchema.parse(input.deploymentId);
+    const sessionId = AuthSessionIdSchema.parse(input.sessionId);
+    const membership = (await readMemberships(this.#preferencePath)).runners[deploymentId];
     const slot = this.#slot(deploymentId);
-    this.#disableIntent(slot);
-    this.#cancelRestart(deploymentId);
-    await this.#reconcileTail;
-    await this.#forgetSlot(deploymentId, slot, notEnrolledDetail);
-    return this.status(deploymentId);
+    const generation = slot.intentGeneration;
+    if (this.#fenced.has(deploymentId) || membership?.state !== "active" || !membership.runnerId)
+      throw new Error("This Mac is not an active device in this Deployment.");
+    await this.assertSessionAllowed(deploymentId);
+    const identity = await this.#signingIdentity(deploymentId, membership.runnerId);
+    const target = await this.#targets.resolve(deploymentId);
+    if (membership.hostAuthority && !isSameHost(membership.hostAuthority, target.authority))
+      throw new Error("This Deployment's Host identity changed. Set up this Mac again.");
+    if (!this.#readSession) throw new Error("This Mac cannot verify the session being bound.");
+    const session = await this.#readSession(deploymentId, target.hostUrl, sessionId);
+    if (
+      session.id !== sessionId ||
+      Date.parse(session.expiresAt) <= Date.now() ||
+      Date.parse(session.absoluteExpiresAt) <= Date.now()
+    )
+      throw new Error("The session being bound has ended.");
+    const issuedAt = new Date().toISOString();
+    if (this.#fenced.has(deploymentId) || slot.intentGeneration !== generation)
+      throw new Error("This Mac left before session binding completed.");
+    const signature = createDeviceSessionBindingSignature(identity.privateKey, {
+      deploymentId,
+      runnerId: identity.runnerId,
+      sessionId,
+      issuedAt,
+    });
+    this.#pendingBindings.set(deploymentId, {
+      generation: membership.generation,
+      signature,
+      session: {
+        id: session.id,
+        expiresAt: session.expiresAt,
+        absoluteExpiresAt: session.absoluteExpiresAt,
+      },
+    });
+    return { issuedAt, signature };
+  }
+
+  async observeHostCommand(
+    deploymentId: DeploymentId,
+    command: HostApiCommandInput,
+    result: HostApiCommandOutput,
+  ): Promise<void> {
+    if (command.type === "runner.enrollment.createLocal" && result.type === command.type) {
+      if (command.preparedIdentity) {
+        const prepared = command.preparedIdentity;
+        let accepted = false;
+        await this.#mutatePreference((preference) => {
+          const row = preference.runners[deploymentId];
+          if (!row?.prepared || row.runnerId !== prepared.runnerId) return preference;
+          accepted = row.state === "active" && !this.#fenced.has(deploymentId);
+          return {
+            ...preference,
+            runners: {
+              ...preference.runners,
+              [deploymentId]: {
+                ...row,
+                issuanceStarted: true,
+                pendingEnrollment: {
+                  id: result.enrollmentId,
+                  expiresAt: result.expiresAt,
+                  tokenHash: createHash("sha256").update(result.token).digest("hex"),
+                },
+              },
+            },
+          };
+        });
+        if (!accepted) {
+          await this.#finishObligation(deploymentId);
+          throw new Error("Device setup was cancelled before token hand-off.");
+        }
+        return;
+      }
+      for (const [key, pending] of this.#pendingEnrollments)
+        if (Date.parse(pending.expiresAt) <= Date.now()) this.#pendingEnrollments.delete(key);
+      if (this.#pendingEnrollments.size >= 100)
+        this.#pendingEnrollments.delete(this.#pendingEnrollments.keys().next().value ?? "");
+      this.#pendingEnrollments.set(createHash("sha256").update(result.token).digest("hex"), {
+        deploymentId,
+        id: result.enrollmentId,
+        expiresAt: result.expiresAt,
+      });
+    }
+    if (command.type !== "machine.session.bind" || result.type !== command.type) return;
+    const pending = this.#pendingBindings.get(deploymentId);
+    if (!pending || pending.signature !== command.proof.signature || this.#fenced.has(deploymentId))
+      return;
+    await this.#mutatePreference((preference) => {
+      const row = preference.runners[deploymentId];
+      if (
+        row?.state !== "active" ||
+        row.runnerId !== command.machineId ||
+        row.generation !== pending.generation ||
+        this.#fenced.has(deploymentId)
+      )
+        return preference;
+      return {
+        ...preference,
+        runners: {
+          ...preference.runners,
+          [deploymentId]: { ...row, boundSession: pending.session },
+        },
+      };
+    });
+    if (this.#pendingBindings.get(deploymentId) === pending)
+      this.#pendingBindings.delete(deploymentId);
+  }
+
+  #enrollmentForToken(
+    deploymentId: DeploymentId,
+    token: string,
+  ): DeviceMembership["pendingEnrollment"] {
+    const key = createHash("sha256").update(token).digest("hex");
+    const pending = this.#pendingEnrollments.get(key);
+    if (!pending || pending.deploymentId !== deploymentId) return null;
+    this.#pendingEnrollments.delete(key);
+    return { id: pending.id, expiresAt: pending.expiresAt };
+  }
+
+  async leaveDeployment(input: { deploymentId: string }): Promise<void> {
+    const deploymentId = DeploymentIdSchema.parse(input.deploymentId);
+    const slot = this.#slot(deploymentId);
+    if (this.#fenced.has(deploymentId)) this.#disableIntent(slot);
+    this.#fence(deploymentId);
+    await this.#setupIssuances.run(() => this.#prepareLeave(deploymentId));
+    await this.#refreshLeaveRoute(deploymentId);
+    await this.#finishObligation(deploymentId);
+    const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
+    if (row?.state === "removed")
+      slot.detail = row.legacyLeaves.length
+        ? "Signed out here. This older Host still needs removal confirmed after you sign in again."
+        : "This Mac has left this Deployment.";
+  }
+
+  async #prepareLeave(deploymentId: DeploymentId): Promise<void> {
+    await this.#mutatePreference(async (preference) => {
+      const stored = preference.runners[deploymentId];
+      if (stored && stored.state !== "active") return preference;
+      let target: DesktopLocalRunnerTarget | null = null;
+      try {
+        target = await this.#targets.resolve(deploymentId);
+      } catch {
+        /* The saved authority still owns offline leave. */
+      }
+      if (stored?.hostAuthority && target && !isSameHost(stored.hostAuthority, target.authority))
+        throw new Error("This Deployment's Host identity changed.");
+      const current = target
+        ? {
+            ...(stored ?? membershipIntent(await this.#computerName(), false)),
+            hostAuthority: target.authority,
+            devicesAvailable: target.devicesAvailable === true,
+            lastVerifiedRoute: { origin: target.hostUrl, accessRoute: target.accessRoute },
+            provenance: stored?.provenance ?? target.source,
+          }
+        : stored;
+      const descriptor = await this.#inspectIdentity(this.#deploymentDataDirectory(deploymentId));
+      const runnerId = current?.runnerId ?? descriptor?.runnerId ?? null;
+      let leaveProof = null;
+      const localOnly =
+        !descriptor?.enrolled &&
+        !current?.pendingEnrollment &&
+        (current?.prepared ? !current.issuanceStarted : !stored);
+      const modern = current?.devicesAvailable === true;
+      if (runnerId && !localOnly && modern) {
+        const identity = await this.#signingIdentity(deploymentId, runnerId);
+        const context = { deploymentId, runnerId, issuedAt: new Date().toISOString() };
+        leaveProof = {
+          ...context,
+          signature: createDeviceLeaveSignature(identity.privateKey, context),
+          ...(current?.prepared
+            ? {
+                preparedIdentity: {
+                  runnerId,
+                  publicKeyPem: createPublicKey(identity.privateKey)
+                    .export({ format: "pem", type: "spki" })
+                    .toString(),
+                },
+              }
+            : {}),
+        };
+      }
+      if (
+        !modern &&
+        !localOnly &&
+        (descriptor?.enrolled || current?.pendingEnrollment) &&
+        (!current?.hostAuthority || !current.lastVerifiedRoute)
+      )
+        throw new Error(
+          "Reconnect this Opensteer to pin its Host before leaving this older membership.",
+        );
+      const legacyLeaves = [...(current?.legacyLeaves ?? [])];
+      if (
+        !modern &&
+        !localOnly &&
+        current?.lastVerifiedRoute &&
+        current.hostAuthority &&
+        (descriptor?.enrolled || current.pendingEnrollment)
+      ) {
+        legacyLeaves.push({
+          runnerId,
+          enrollmentId: current.pendingEnrollment?.id ?? null,
+          authority: current.hostAuthority,
+        });
+      }
+      return {
+        ...preference,
+        runners: {
+          ...preference.runners,
+          [deploymentId]: {
+            ...(current ?? membershipIntent(await this.#computerName(), false)),
+            state: leaveProof ? "leaving" : "removed",
+            generation: (current?.generation ?? 0) + 1,
+            runnerId,
+            leaveProof,
+            legacyLeaves,
+            erasePending: true,
+          },
+        },
+      };
+    });
+  }
+
+  async leaveAccountMemberships(next?: AccountDeploymentConnectionSource): Promise<void> {
+    ++this.#accountGeneration;
+    await this.#setupIssuances.run(async () => undefined);
+    const preference = await this.#accountMembershipInventory();
+    if (
+      !next &&
+      Object.values(preference.runners).some(
+        (row) => row.state === "active" && row.provenance === null,
+      )
+    )
+      throw new Error(
+        "Reconnect the waiting Deployments before signing out so this Mac can identify their Account memberships.",
+      );
+    await Promise.all(
+      Object.entries(preference.runners)
+        .filter(
+          ([, row]) =>
+            row.state === "active" &&
+            row.provenance?.kind === "account" &&
+            (!next ||
+              row.provenance.issuer !== next.issuer ||
+              row.provenance.subject !== next.subject),
+        )
+        .map(([deploymentId]) => this.leaveDeployment({ deploymentId })),
+    );
+  }
+
+  async sessionLost(deploymentIdInput: string): Promise<void> {
+    const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
+    const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
+    if (row?.state !== "active" || !row.runnerId || row.confirmingSession) return;
+    this.#fenceDeployment(deploymentId);
+    await this.#mutatePreference((preference) => {
+      const current = preference.runners[deploymentId];
+      if (current?.state !== "active" || current.generation !== row.generation) return preference;
+      return {
+        ...preference,
+        runners: {
+          ...preference.runners,
+          [deploymentId]: {
+            ...current,
+            needsSignIn:
+              !current.boundSession ||
+              Math.min(
+                Date.parse(current.boundSession.expiresAt),
+                Date.parse(current.boundSession.absoluteExpiresAt),
+              ) <= this.#now(),
+            confirmingSession: true,
+          },
+        },
+      };
+    });
+    await this.#clearSession(deploymentId);
+    this.#slot(deploymentId).detail = "Confirming this Mac’s membership with the Runner…";
+    await this.#stop(this.#slot(deploymentId));
+    void this.reconcile();
+    this.#emit();
+  }
+
+  async retryDeviceConnection(input: { deploymentId: string }): Promise<void> {
+    const id = DeploymentIdSchema.parse(input.deploymentId);
+    const row = (await readMemberships(this.#preferencePath)).runners[id];
+    if (row?.state !== "active" || !row.confirmingSession)
+      throw new Error("This Mac is not awaiting membership confirmation.");
+    this.#cancelRestart(id);
+    await this.#stop(this.#slot(id));
+    void this.reconcile();
+  }
+
+  async markRemoved(deploymentIdInput: string): Promise<void> {
+    const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
+    if (this.#fenced.has(deploymentId)) this.#disableIntent(this.#slot(deploymentId));
+    this.#fence(deploymentId);
+    await this.#mutatePreference((preference) => {
+      const current = preference.runners[deploymentId];
+      if (current?.state === "removed") return preference;
+      return {
+        ...preference,
+        runners: {
+          ...preference.runners,
+          [deploymentId]: {
+            ...(current ?? membershipIntent("This Mac", false)),
+            state: "removed",
+            generation: (current?.generation ?? 0) + 1,
+            erasePending: true,
+          },
+        },
+      };
+    });
+    await this.#finishObligation(deploymentId);
+  }
+
+  async assertSessionAllowed(deploymentIdInput: string): Promise<void> {
+    const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
+    const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
+    if (this.#fenced.has(deploymentId) || (row && row.state !== "active"))
+      throw new Error("This Mac was removed. Choose Set up again to reconnect.");
+    assertDeviceSessionAllowed(
+      row
+        ? {
+            state: row.state,
+            runnerId: row.runnerId,
+            generation: row.generation,
+            sessionState: row.confirmingSession
+              ? "confirming"
+              : row.needsSignIn
+                ? "sign-in-again"
+                : "ready",
+          }
+        : null,
+    );
   }
 
   async shutdown(signal?: AbortSignal): Promise<void> {
     this.#shuttingDown = true;
+    for (const timer of this.#leaveTimers.values()) clearTimeout(timer);
+    this.#leaveTimers.clear();
     for (const deploymentId of this.#restartPolicies.keys()) this.#cancelRestart(deploymentId);
     for (const slot of this.#runners.values()) this.#disableIntent(slot);
     const force = () => {
@@ -480,6 +1214,10 @@ export class LocalRunnerService {
     try {
       await this.#reconcileTail;
       await Promise.all([...this.#runners.values()].map((slot) => this.#stop(slot)));
+      await exitedWithin(
+        Promise.allSettled([...this.#obligations.values(), ...this.#sessionCleanups.values()]),
+        this.#stopTimeouts.removalMs,
+      );
     } finally {
       signal?.removeEventListener("abort", force);
     }
@@ -488,9 +1226,12 @@ export class LocalRunnerService {
   async reconcile(): Promise<void> {
     if (this.#shuttingDown) return;
     const operation = this.#reconcileTail.then(() => this.#reconcileEnabled());
-    this.#reconcileTail = operation.catch((error: unknown) => {
-      for (const slot of this.#runners.values()) {
+    this.#reconcileTail = operation.catch(async (error: unknown) => {
+      this.#log("desktop.device.reconcile-failed", { message: safeDetail(error) });
+      for (const [id, slot] of this.#runners) {
         if (!slot.child && !slot.startPromise) continue;
+        this.#fence(id);
+        await this.#stop(slot);
         slot.state = "failed";
         slot.detail = safeDetail(error);
       }
@@ -500,8 +1241,10 @@ export class LocalRunnerService {
   }
 
   async hasEnrolledRunners(): Promise<boolean> {
-    const preference = await readPreference(this.#preferencePath);
-    return Object.values(preference.runners).some(({ enrolled }) => enrolled);
+    const preference = await readMemberships(this.#preferencePath);
+    return Object.values(preference.runners).some(
+      ({ state }) => state === "active" || state === "leaving",
+    );
   }
 
   subscribe(listener: () => void): () => void {
@@ -511,17 +1254,36 @@ export class LocalRunnerService {
 
   dispose(): void {
     this.#shuttingDown = true;
+    for (const timer of this.#leaveTimers.values()) clearTimeout(timer);
+    this.#leaveTimers.clear();
     this.#unsubscribeTargets();
     for (const deploymentId of this.#restartPolicies.keys()) this.#cancelRestart(deploymentId);
     this.#listeners.clear();
   }
 
   async #reconcileEnabled(): Promise<void> {
-    const preference = await readPreference(this.#preferencePath);
+    await this.#discoverMemberships();
+    const preference = await readMemberships(this.#preferencePath);
     await Promise.all(
       Object.entries(preference.runners).map(async ([deploymentIdValue, runner]) => {
-        if (!runner.enrolled || this.#shuttingDown) return;
+        if (this.#shuttingDown) return;
         const deploymentId = DeploymentIdSchema.parse(deploymentIdValue);
+        if (runner.state === "active" && runner.legacyLeaves.length)
+          await this.#finishLegacyLeaves(deploymentId);
+        if (runner.state !== "active") {
+          let current = false;
+          await this.#mutatePreference((preference) => {
+            const row = preference.runners[deploymentId];
+            if (row?.generation !== runner.generation || row.state !== runner.state)
+              return preference;
+            this.#fence(deploymentId);
+            current = true;
+            return preference;
+          });
+          if (current) await this.#finishObligation(deploymentId);
+          return;
+        }
+        if (this.#fenced.has(deploymentId)) return;
         const slot = this.#slot(deploymentId);
         const intentGeneration = this.#enableIntent(slot);
         let target: DesktopLocalRunnerTarget;
@@ -530,10 +1292,9 @@ export class LocalRunnerService {
         } catch (error) {
           await this.#stop(slot);
           if (error instanceof LocalRunnerDeploymentUnavailableError) {
-            await this.#removePreference(deploymentId);
-            this.#disableIntent(slot);
             this.#cancelRestart(deploymentId);
-            slot.detail = "The Deployment was removed from this computer.";
+            slot.waiting = true;
+            slot.detail = "Waiting for this Deployment's verified route.";
             slot.state = "disabled";
           } else {
             slot.detail = safeDetail(error);
@@ -542,6 +1303,35 @@ export class LocalRunnerService {
           this.#emit();
           return;
         }
+        slot.waiting = false;
+        if (runner.hostAuthority && !isSameHost(runner.hostAuthority, target.authority)) {
+          this.#disableIntent(slot);
+          await this.#stop(slot);
+          slot.state = "failed";
+          slot.detail = "This Deployment's Host identity changed. Set up this Mac again.";
+          this.#emit();
+          return;
+        }
+        await this.#mutatePreference((current) => {
+          const row = current.runners[deploymentId];
+          if (row?.state !== "active" || !this.#intentIsCurrent(slot, intentGeneration))
+            return current;
+          return {
+            ...current,
+            runners: {
+              ...current.runners,
+              [deploymentId]: {
+                ...row,
+                provenance: row.provenance ?? target.source,
+                deploymentName: target.name ?? row.deploymentName,
+                hostAuthority: target.authority,
+                devicesAvailable: target.devicesAvailable === true,
+                lastVerifiedRoute: { origin: target.hostUrl, accessRoute: target.accessRoute },
+              },
+            },
+          };
+        });
+        if (!this.#intentIsCurrent(slot, intentGeneration)) return;
         slot.mayRunAgents = target.mayRunAgents;
         // A grant that no longer allows agents wins over the stored intent:
         // the Runner still runs, reach-only, rather than being refused.
@@ -550,6 +1340,10 @@ export class LocalRunnerService {
         if (
           slot.activeTarget?.key === target.key &&
           slot.activeRunAgents === runAgents &&
+          (!slot.confirmationOnly ||
+            runner.confirmingSession ||
+            runner.needsSignIn ||
+            (!this.#browser && !this.#computerUse)) &&
           (slot.child || slot.startPromise) &&
           slot.state !== "failed"
         ) {
@@ -566,9 +1360,7 @@ export class LocalRunnerService {
           slot.detail = safeDetail(error);
           slot.state = "failed";
           this.#emit();
-          // A slot that never finished joining holds no identity and no token
-          // — the token is never written down — so retrying is a loop with a
-          // dead credential. It waits for Remove instead.
+          // Unredeemed identities need an explicit fresh enrollment, not a worker restart.
           if (error instanceof LocalRunnerNeverEnrolledError) {
             this.#disableIntent(slot);
             this.#cancelRestart(deploymentId);
@@ -682,7 +1474,11 @@ export class LocalRunnerService {
     // The enrollment token is handed over once and never written down, so a
     // slot with no enrolled identity and no token in hand cannot become a
     // computer by being started again.
-    if (!enrollmentToken && !(await this.#inspectIdentity(runnerDataDirectory))?.enrolled) {
+    const descriptor = await this.#inspectIdentity(runnerDataDirectory);
+    const membership = (await readMemberships(this.#preferencePath)).runners[target.deploymentId];
+    if (membership?.runnerId && descriptor && membership.runnerId !== descriptor.runnerId)
+      throw new Error("This Mac's stored device identity changed.");
+    if (!enrollmentToken && !descriptor?.enrolled) {
       slot.state = "failed";
       slot.detail = neverEnrolledDetail;
       this.#emit();
@@ -698,20 +1494,33 @@ export class LocalRunnerService {
     // The browser starts before the Runner that relays it, and belongs to the
     // same machine identity: one computer, two modules.
     await this.#profileErasure.prepare(target.deploymentId);
-    const browser = this.#browser
-      ? await this.#browser({
-          logPath: path.join(runnerDataDirectory, "browser.log"),
-          profileRoot: desktopDeploymentPaths(this.#config.dataDirectory, target.deploymentId)
-            .browserProfilesDirectory,
-          runtimeId: `desktop-browser:${target.deploymentId}`,
-        })
-      : undefined;
+    this.#assertCurrentIntent(slot, intentGeneration);
+    const browser =
+      this.#browser && !membership?.confirmingSession
+        ? await this.#browser({
+            logPath: path.join(runnerDataDirectory, "browser.log"),
+            profileRoot: desktopDeploymentPaths(this.#config.dataDirectory, target.deploymentId)
+              .browserProfilesDirectory,
+            runtimeId: `desktop-browser:${target.deploymentId}`,
+          })
+        : undefined;
     slot.browser = browser;
+    if (!this.#intentIsCurrent(slot, intentGeneration)) {
+      await stopSlotBrowser(slot, this.#log);
+      this.#assertCurrentIntent(slot, intentGeneration);
+    }
     // Computer use is started for this slot whether or not it runs agents:
     // the `integrations` module a reach-only Runner already has is what
     // carries the computer-use frame.
-    const computerUse = (await this.#computerUse?.startForSlot(target.deploymentId)) ?? undefined;
+    const computerUse = membership?.confirmingSession
+      ? undefined
+      : ((await this.#computerUse?.startForSlot(target.deploymentId)) ?? undefined);
     slot.computerUseSlotId = computerUse ? target.deploymentId : undefined;
+    if (!this.#intentIsCurrent(slot, intentGeneration)) {
+      await stopSlotBrowser(slot, this.#log);
+      await this.#stopSlotComputerUse(slot);
+      this.#assertCurrentIntent(slot, intentGeneration);
+    }
     const environment = runnerEnvironment({
       ...(browser ? { browser } : {}),
       ...(computerUse ? { computerUse } : {}),
@@ -748,6 +1557,7 @@ export class LocalRunnerService {
     slot.child = child;
     slot.childExit = exited;
     slot.activeRunAgents = runAgents;
+    slot.confirmationOnly = membership?.confirmingSession === true;
     slot.activeTarget = target;
 
     /**
@@ -844,6 +1654,54 @@ export class LocalRunnerService {
                     return;
                   }
                   if (slot.child !== child) return;
+                  await this.#mutatePreference((preference) => {
+                    const row = preference.runners[target.deploymentId];
+                    if (row?.state !== "active" || !this.#intentIsCurrent(slot, intentGeneration))
+                      return preference;
+                    return {
+                      ...preference,
+                      runners: {
+                        ...preference.runners,
+                        [target.deploymentId]: {
+                          ...row,
+                          pendingEnrollment: null,
+                          runnerId:
+                            parsed.data.type === "runner.worker.connected"
+                              ? parsed.data.runnerId
+                              : row.runnerId,
+                        },
+                      },
+                    };
+                  });
+                  if (!this.#intentIsCurrent(slot, intentGeneration)) {
+                    cancel();
+                    return;
+                  }
+                  await this.#sessionCleanups.get(target.deploymentId);
+                  await this.#mutatePreference((preference) => {
+                    const row = preference.runners[target.deploymentId];
+                    if (row?.state !== "active" || !this.#intentIsCurrent(slot, intentGeneration))
+                      return preference;
+                    return {
+                      ...preference,
+                      runners: {
+                        ...preference.runners,
+                        [target.deploymentId]: {
+                          ...row,
+                          confirmingSession: false,
+                        },
+                      },
+                    };
+                  });
+                  if (
+                    !(await readMemberships(this.#preferencePath)).runners[target.deploymentId]
+                      ?.needsSignIn
+                  )
+                    await this.#allowDeployment(target.deploymentId);
+                  if (!this.#intentIsCurrent(slot, intentGeneration)) {
+                    cancel();
+                    return;
+                  }
                   slot.enrolled = true;
                   slot.state = "running";
                   slot.detail = runAgents
@@ -864,6 +1722,12 @@ export class LocalRunnerService {
                   const status = await this.status(target.deploymentId);
                   if (messageGeneration !== statusGeneration || slot.child !== child) return;
                   if (settleStartup()) resolvePromise(status);
+                  if (
+                    membership?.confirmingSession &&
+                    status.membership?.sessionState === "ready" &&
+                    (this.#browser || this.#computerUse)
+                  )
+                    void this.reconcile();
                   break;
                 }
                 case "runner.worker.reconnecting":
@@ -888,7 +1752,7 @@ export class LocalRunnerService {
                   // The waiting caller is answered before the slot is torn down,
                   // so the teardown's wait for this launch cannot wait on itself.
                   if (settleStartup()) rejectPromise(new Error(revokedDetail));
-                  await this.#forgetSlot(target.deploymentId, slot, revokedDetail);
+                  await this.markRemoved(target.deploymentId);
                   break;
                 }
                 case "runner.worker.failed":
@@ -1071,8 +1935,8 @@ export class LocalRunnerService {
     await slot.browserShutdown;
     await slot.computerUseShutdown;
     await this.#profileErasure.erase(deploymentId, slot.browserHeld ? "held" : "stopped");
-    await this.#removePreference(deploymentId);
     await rm(this.#deploymentDataDirectory(deploymentId), { force: true, recursive: true });
+    await syncDirectory(path.dirname(this.#deploymentDataDirectory(deploymentId)));
     this.#resetIdentity(slot);
     slot.runAgents = false;
     slot.detail = detail;
@@ -1085,6 +1949,7 @@ export class LocalRunnerService {
     if (existing) return existing;
     const created: RunnerSlot = {
       activeRunAgents: undefined,
+      confirmationOnly: false,
       activeTarget: undefined,
       browser: undefined,
       browserShutdown: undefined,
@@ -1104,6 +1969,7 @@ export class LocalRunnerService {
       runAgents: false,
       startPromise: undefined,
       state: "disabled",
+      waiting: false,
       stopPromise: undefined,
     };
     this.#runners.set(deploymentId, created);
@@ -1202,21 +2068,324 @@ export class LocalRunnerService {
     }
   }
 
-  async #removePreference(deploymentId: DeploymentId): Promise<void> {
+  #fence(deploymentId: DeploymentId): void {
+    if (this.#fenced.has(deploymentId)) return;
+    this.#fenced.add(deploymentId);
+    this.#pendingBindings.delete(deploymentId);
+    this.#disableIntent(this.#slot(deploymentId));
+    this.#cancelRestart(deploymentId);
+    this.#fenceDeployment(deploymentId);
+  }
+
+  async #signingIdentity(deploymentId: DeploymentId, runnerId: string) {
+    const directory = this.#deploymentDataDirectory(deploymentId);
+    const descriptor = await this.#inspectIdentity(directory);
+    if (!descriptor || descriptor.runnerId !== runnerId)
+      throw new Error("This Mac's device key is missing.");
+    const identity = await readDeviceSigningIdentity(directory);
+    if (identity.runnerId !== runnerId) throw new Error("This Mac's device identity changed.");
+    return identity;
+  }
+
+  async #discoverMemberships(): Promise<void> {
+    // Read first: a corrupt intent file must never turn into permission to heal identities.
+    await readMemberships(this.#preferencePath);
+    const directory = path.join(this.#config.localExecution.dataDirectory, "deployments");
+    const entries = await readdir(directory, { withFileTypes: true }).catch((error: unknown) => {
+      if (nodeErrorCode(error) === "ENOENT") return [];
+      throw error;
+    });
+    for (const entry of entries) {
+      const id = DeploymentIdSchema.safeParse(entry.name);
+      if (!id.success || !entry.isDirectory() || entry.isSymbolicLink()) continue;
+      await this.#mutatePreference(async (preference) => {
+        const stored = preference.runners[id.data];
+        if (stored && stored.state !== "active") return preference;
+        const removing = await this.#profileErasure.hasPending(id.data);
+        if (stored?.runnerId && !removing) return preference;
+        const identity = await this.#inspectIdentity(this.#deploymentDataDirectory(id.data));
+        if (!identity?.enrolled && !removing) return preference;
+        let target: DesktopLocalRunnerTarget | null = null;
+        try {
+          target = await this.#targets.resolve(id.data);
+        } catch (error) {
+          if (!(error instanceof LocalRunnerDeploymentUnavailableError)) throw error;
+        }
+        return {
+          ...preference,
+          runners: {
+            ...preference.runners,
+            [id.data]: {
+              ...(stored ?? membershipIntent(await this.#computerName(), false)),
+              runnerId: identity?.runnerId ?? stored?.runnerId ?? null,
+              state: removing ? "removed" : "active",
+              erasePending: removing,
+              provenance: stored?.provenance ?? target?.source ?? null,
+              deploymentName: stored?.deploymentName ?? target?.name ?? null,
+              hostAuthority: stored?.hostAuthority ?? target?.authority ?? null,
+              devicesAvailable: stored?.devicesAvailable ?? target?.devicesAvailable ?? null,
+              lastVerifiedRoute:
+                stored?.lastVerifiedRoute ??
+                (target ? { origin: target.hostUrl, accessRoute: target.accessRoute } : null),
+            },
+          },
+        };
+      });
+    }
+  }
+
+  #clearSession(deploymentId: DeploymentId): Promise<void> {
+    const existing = this.#sessionCleanups.get(deploymentId);
+    if (existing) return existing;
+    const operation = this.#clearDeploymentSession(deploymentId);
+    this.#sessionCleanups.set(deploymentId, operation);
+    const done = () => {
+      if (this.#sessionCleanups.get(deploymentId) === operation)
+        this.#sessionCleanups.delete(deploymentId);
+    };
+    void operation.then(done, done);
+    return operation;
+  }
+
+  #finishObligation(deploymentId: DeploymentId): Promise<void> {
+    const existing = this.#obligations.get(deploymentId);
+    if (existing) return existing;
+    const operation = this.#finishObligationNow(deploymentId);
+    this.#obligations.set(deploymentId, operation);
+    const done = () => {
+      if (this.#obligations.get(deploymentId) === operation) this.#obligations.delete(deploymentId);
+    };
+    void operation.then(done, done);
+    return operation;
+  }
+
+  async #refreshLeaveRoute(deploymentId: DeploymentId): Promise<void> {
+    const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
+    if (row?.state !== "leaving") return;
+    let target: DesktopLocalRunnerTarget;
+    try {
+      target = await this.#targets.resolve(deploymentId);
+    } catch {
+      return;
+    }
+    if (row.hostAuthority && !isSameHost(row.hostAuthority, target.authority)) return;
     await this.#mutatePreference((preference) => {
-      if (!preference.runners[deploymentId]) return preference;
-      const runners = { ...preference.runners };
-      delete runners[deploymentId];
-      return { ...preference, runners };
+      const current = preference.runners[deploymentId];
+      if (current?.state !== "leaving" || current.generation !== row.generation) return preference;
+      return {
+        ...preference,
+        runners: {
+          ...preference.runners,
+          [deploymentId]: {
+            ...current,
+            hostAuthority: target.authority,
+            devicesAvailable: target.devicesAvailable === true,
+            provenance: current.provenance ?? target.source,
+            lastVerifiedRoute: { origin: target.hostUrl, accessRoute: target.accessRoute },
+          },
+        },
+      };
     });
   }
 
-  async #mutatePreference(mutate: (preference: Preference) => Preference): Promise<void> {
+  async #retirePendingEnrollment(deploymentId: DeploymentId): Promise<void> {
+    const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
+    if (!row?.pendingEnrollment || row.prepared || row.devicesAvailable !== true) return;
+    let retired = Date.parse(row.pendingEnrollment.expiresAt) <= Date.now();
+    if (!retired && row.lastVerifiedRoute && this.#retireEnrollment) {
+      try {
+        await this.#retireEnrollment(
+          deploymentId,
+          row.lastVerifiedRoute.origin,
+          row.pendingEnrollment.id,
+        );
+        retired = true;
+      } catch {
+        /* The expiry and signed leave remain durable when the session cannot retire issuance. */
+      }
+    }
+    if (!retired) return;
+    await this.#mutatePreference((preference) => {
+      const current = preference.runners[deploymentId];
+      if (current?.generation !== row.generation) return preference;
+      return {
+        ...preference,
+        runners: { ...preference.runners, [deploymentId]: { ...current, pendingEnrollment: null } },
+      };
+    });
+  }
+
+  async #finishLegacyLeaves(deploymentId: DeploymentId): Promise<void> {
+    const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
+    for (const leave of row?.legacyLeaves ?? []) {
+      try {
+        const target = await this.#targets.resolve(deploymentId);
+        if (!isSameHost(leave.authority, target.authority))
+          throw new Error("The legacy removal belongs to another Host.");
+        let consumed = leave.enrollmentId === null;
+        if (leave.enrollmentId) {
+          if (!this.#retireEnrollment) throw new Error("Enrollment retirement unavailable");
+          const state = await this.#retireEnrollment(
+            deploymentId,
+            target.hostUrl,
+            leave.enrollmentId,
+          );
+          if (!state) throw new Error("Enrollment retirement was not confirmed.");
+          consumed = state === "consumed";
+        }
+        if (leave.runnerId && consumed) {
+          if (!this.#revokeLegacyRunner) throw new Error("Legacy removal unavailable");
+          await this.#revokeLegacyRunner(deploymentId, target.hostUrl, leave.runnerId);
+        }
+        await this.#mutatePreference((preference) => {
+          const current = preference.runners[deploymentId];
+          if (!current) return preference;
+          return {
+            ...preference,
+            runners: {
+              ...preference.runners,
+              [deploymentId]: {
+                ...current,
+                pendingEnrollment:
+                  current.pendingEnrollment?.id === leave.enrollmentId
+                    ? null
+                    : current.pendingEnrollment,
+                legacyLeaves: current.legacyLeaves.filter(
+                  (item) => JSON.stringify(item) !== JSON.stringify(leave),
+                ),
+              },
+            },
+          };
+        });
+      } catch {
+        this.#slot(deploymentId).detail =
+          "Signed out here. This older Host still needs removal confirmed after you sign in again.";
+        this.#scheduleLeave(deploymentId);
+      }
+    }
+  }
+
+  async #finishObligationNow(deploymentId: DeploymentId): Promise<void> {
+    await this.#finishLegacyLeaves(deploymentId);
+    await this.#refreshLeaveRoute(deploymentId);
+    await this.#retirePendingEnrollment(deploymentId);
+    const row = (await readMemberships(this.#preferencePath)).runners[deploymentId];
+    if (!row || row.state === "active") return;
+    let sessionError: unknown;
+    const clearing = this.#clearSession(deploymentId).catch((error: unknown) => {
+      sessionError = error;
+    });
+    let erasureError: unknown;
+    try {
+      if (row.erasePending) {
+        await this.#forgetSlot(deploymentId, this.#slot(deploymentId), revokedDetail);
+        await this.#mutatePreference((preference) => {
+          const current = preference.runners[deploymentId];
+          if (!current || current.generation !== row.generation) return preference;
+          return {
+            ...preference,
+            runners: { ...preference.runners, [deploymentId]: { ...current, erasePending: false } },
+          };
+        });
+      }
+    } catch (error) {
+      erasureError = error;
+    }
+    if (row.state === "leaving") {
+      try {
+        await this.#deliverLeave(deploymentId, row);
+        await this.#mutatePreference((preference) => {
+          const current = preference.runners[deploymentId];
+          if (current?.generation !== row.generation || current.state !== "leaving")
+            return preference;
+          return {
+            ...preference,
+            runners: {
+              ...preference.runners,
+              [deploymentId]: {
+                ...current,
+                state: "removed",
+                leaveProof: null,
+                pendingEnrollment: null,
+              },
+            },
+          };
+        });
+      } catch {
+        this.#scheduleLeave(deploymentId);
+        this.#slot(deploymentId).detail =
+          "Signed out on this Mac. Removal from the Host is unconfirmed.";
+        this.#emit();
+      }
+    }
+    await clearing;
+    if (erasureError) throw erasureError;
+    if (sessionError) throw sessionError;
+  }
+
+  async #deliverLeave(deploymentId: DeploymentId, row: DeviceMembership): Promise<void> {
+    if (row.pendingEnrollment && !row.prepared)
+      throw new Error("Waiting for this Mac's pending setup enrollment to retire or expire.");
+    if (!row.leaveProof || !row.hostAuthority || !row.lastVerifiedRoute)
+      throw new Error("Waiting for the pinned Host route to confirm removal.");
+    if (row.leaveProof.deploymentId !== deploymentId || row.leaveProof.runnerId !== row.runnerId)
+      throw new Error("This Mac's leave obligation has inconsistent identity.");
+    const authority = verifyHostDiscoveryEnvelope(row.hostAuthority);
+    if (authority.deploymentId !== deploymentId)
+      throw new Error("The leave proof belongs to another Host.");
+    const route = row.lastVerifiedRoute;
+    if (!route.accessRoute)
+      throw new Error("Device leave requires a verified Personal Host route.");
+    verifyPersonalHostAccessRouteEnvelope(route.accessRoute);
+    if (
+      !isSameHost(row.hostAuthority, {
+        deploymentId: route.accessRoute.document.authority.deploymentId,
+        hostInstanceId: route.accessRoute.document.authority.hostInstanceId,
+        hostKeyFingerprint: hostKeyFingerprint(route.accessRoute.publicKey.spki),
+      })
+    )
+      throw new Error("The leave route belongs to another Host.");
+    if (route.accessRoute.document.route.origin !== route.origin)
+      throw new Error("The leave route changed.");
+    const endpoint = new URL("/v1/runner/leave", route.origin).toString();
+    const response = await this.#leaveFetch(endpoint, {
+      method: "POST",
+      body: JSON.stringify(row.leaveProof),
+      credentials: "omit",
+      redirect: "error",
+      headers: { "content-type": "application/json", ...apiVersionHeaders("personal") },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok || response.redirected || (response.url !== "" && response.url !== endpoint)) {
+      await response.body?.cancel();
+      throw new Error("This Mac's leave has not been confirmed.");
+    }
+    RunnerLeaveResponseSchema.parse(
+      await readBoundedJson(response, {
+        maximumBytes: 4096,
+        sizeError: () => new Error("Invalid leave confirmation."),
+      }),
+    );
+  }
+
+  #scheduleLeave(deploymentId: DeploymentId): void {
+    if (this.#shuttingDown || this.#leaveTimers.has(deploymentId)) return;
+    const timer = setTimeout(() => {
+      this.#leaveTimers.delete(deploymentId);
+      void this.reconcile();
+    }, 30_000);
+    timer.unref();
+    this.#leaveTimers.set(deploymentId, timer);
+  }
+
+  async #mutatePreference(
+    mutate: (preference: Preference) => Preference | Promise<Preference>,
+  ): Promise<void> {
     await this.#preferenceMutations.run(async () => {
-      const current = await readPreference(this.#preferencePath);
-      const next = PreferenceSchema.parse(mutate(current));
+      const current = await readMemberships(this.#preferencePath);
+      const next = DeviceMembershipsSchema.parse(await mutate(current));
       if (JSON.stringify(next) === JSON.stringify(current)) return;
-      await writePreference(this.#preferencePath, next);
+      await writeMemberships(this.#preferencePath, next);
       this.#emit();
     });
   }
@@ -1385,64 +2554,6 @@ async function exitedWithin(settled: Promise<unknown>, timeoutMs: number): Promi
   }
 }
 
-function emptyPreference(): Preference {
-  return { runners: {}, version: 4 };
-}
-
-/**
- * Membership, not a view preference: a file this release cannot read leaves a
- * computer the Deployment still lists with no Runner, so the one shape that
- * came before is migrated rather than discarded. Anything else — absent,
- * corrupt, from a later release — reads as no computers here.
- */
-async function readPreference(filePath: string): Promise<Preference> {
-  try {
-    const metadata = await lstat(filePath);
-    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > maxPreferenceBytes) {
-      return emptyPreference();
-    }
-    const decoded: unknown = JSON.parse(await readFile(filePath, "utf8"));
-    const legacy = LegacyPreferenceSchema.safeParse(decoded);
-    if (legacy.success) return migrateLegacyPreference(legacy.data);
-    return PreferenceSchema.parse(decoded);
-  } catch {
-    return emptyPreference();
-  }
-}
-
-/** Every computer lent by an earlier release was a server one, running agents. */
-function migrateLegacyPreference(legacy: z.infer<typeof LegacyPreferenceSchema>): Preference {
-  return PreferenceSchema.parse({
-    runners: Object.fromEntries(
-      Object.entries(legacy.runners).map(([deploymentId, runner]) => [
-        deploymentId,
-        { enrolled: runner.enabled, runAgents: true, runnerName: runner.runnerName },
-      ]),
-    ),
-    version: 4,
-  });
-}
-
-async function writePreference(filePath: string, preference: Preference): Promise<void> {
-  await mkdir(path.dirname(filePath), { mode: 0o700, recursive: true });
-  await setPrivateDirectoryMode(path.dirname(filePath));
-  const temporary = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  const handle = await open(temporary, "wx", 0o600);
-  try {
-    await handle.writeFile(`${JSON.stringify(PreferenceSchema.parse(preference))}\n`, "utf8");
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  try {
-    await rename(temporary, filePath);
-    await setPrivateFileMode(filePath);
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
-  }
-}
-
 async function assertRegularDirectory(directoryPath: string, label: string): Promise<void> {
   const metadata = await lstat(directoryPath);
   if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
@@ -1493,4 +2604,27 @@ function redactSecrets(message: string): string {
 function safeDetail(error: unknown): string {
   const message = error instanceof Error ? error.message : "The Runner failed on this Mac.";
   return redactSecrets(message).slice(0, 2_000);
+}
+
+async function readDeviceSigningIdentity(directory: string) {
+  const invalid = () => new Error("This Mac's device signing identity is unavailable.");
+  const contents = await readPrivateFileText(path.join(directory, "identity.json"), 48 * 1024, {
+    invalid,
+    exposed: invalid,
+  });
+  if (!contents) throw invalid();
+  const file = z
+    .object({
+      runnerId: RunnerIdSchema,
+      privateKeyPem: z.string().max(16384),
+      publicKeyPem: z.string().max(16384),
+    })
+    .parse(JSON.parse(contents));
+  const privateKey = createPrivateKey(file.privateKeyPem);
+  if (
+    privateKey.asymmetricKeyType !== "ed25519" ||
+    createPublicKey(privateKey).export({ type: "spki", format: "pem" }) !== file.publicKeyPem
+  )
+    throw invalid();
+  return { runnerId: file.runnerId, privateKey };
 }

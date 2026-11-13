@@ -1,3 +1,4 @@
+import { DeviceRefusalContextSchema } from "./devices.js";
 import { BrowserSessionIdSchema, BrowserSurfaceIdSchema } from "@opensteer/core";
 import { browserFrameFits, browserFrameLimits } from "@opensteer/browser-core/frame-limits";
 import { utf8Size } from "@opensteer/browser-core/bytes";
@@ -32,6 +33,8 @@ const url = z
   }, "Navigation requires HTTP(S) without credentials.");
 
 export const BrowserActionErrorCodeSchema = z.enum([
+  "device-access-off",
+  "device-offline",
   "unsupported-operation",
   "target-suspended",
   "target-closed",
@@ -57,6 +60,8 @@ export const BrowserActionDialogSchema = z.strictObject({
 export const BrowserActionErrorSchema = z
   .strictObject({
     code: BrowserActionErrorCodeSchema,
+    machineId: DeviceRefusalContextSchema.shape.machineId.optional(),
+    capability: DeviceRefusalContextSchema.shape.capability.optional(),
     message: z.string().max(1_000),
     dialog: BrowserActionDialogSchema.optional(),
   })

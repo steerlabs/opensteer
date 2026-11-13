@@ -6,9 +6,12 @@ import { useNavigation } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Alert, Linking } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
+import { thisPhoneNoun } from "../computers/phone-noun.js";
+import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import { mobileRemoteAccessPort } from "../client/remote-access-port.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { useMobileNotifications } from "../ui/notifications-context.js";
+import { phoneLeaves } from "./device-page-model.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
 import { accountSettingsModel, signOutAccountInOrder } from "./settings-model.js";
@@ -35,7 +38,11 @@ function AccountSettingsContent(props: {
   const navigation = useNavigation();
   const client = useMobileClient();
   const notifications = useMobileNotifications();
-  const { account, selection } = useMobileState();
+  const { account, rows, selection } = useMobileState();
+  const enrolledIn = useIphoneAppsState(useIphoneApps()).snapshot.enrollment?.deploymentId;
+  // Only an Account-listed Opensteer leaves with the Account.
+  const enrolledVia =
+    rows.find((row) => row.deploymentId === enrolledIn && row.accountManaged) ?? null;
   const host = selection.hostClient;
   const snapshot = useSettingsHost(host);
   const isCurrent = useSettingsLease(host);
@@ -90,7 +97,12 @@ function AccountSettingsContent(props: {
   const signOutAccount = () =>
     Alert.alert(
       "Sign out of your Opensteer Account?",
-      "Computers your Account lists leave this phone. Computers you added yourself stay.",
+      [
+        enrolledVia === null ? null : phoneLeaves(thisPhoneNoun, enrolledVia.name),
+        `Opensteers your Account lists leave this ${thisPhoneNoun}. Ones you added yourself stay.`,
+      ]
+        .filter((part): part is string => part !== null)
+        .join(" "),
       [
         { style: "cancel", text: "Cancel" },
         {

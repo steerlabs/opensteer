@@ -573,6 +573,17 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const requesterTimeZone = await this.#store.notificationState.timeZoneFor(
       context.run.requestedBy,
     );
+    const toolsPlan = agentToolsPlanForRun({
+      voiceCall: Boolean(context.voiceCall),
+      token: toolsToken,
+      url: this.#agentToolsUrl,
+      purpose: context.thread.purpose,
+      teamBound: context.thread.teamOrigin !== null,
+      personalContext: context.personalContext,
+      knowledge,
+      ...(teamContext ? { teamContext } : {}),
+      accessMode: context.thread.accessMode,
+    });
     const runnerCommandFor = (machineAccess: MachineAccessRunContext): RunnerCommand => ({
       commandId: command.id,
       context: {
@@ -598,17 +609,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
               attachments: attachmentPlan,
             }
           : {}),
-        agentTools: agentToolsPlanForRun({
-          voiceCall: Boolean(context.voiceCall),
-          token: toolsToken,
-          url: this.#agentToolsUrl,
-          purpose: context.thread.purpose,
-          teamBound: context.thread.teamOrigin !== null,
-          personalContext: context.personalContext,
-          knowledge,
-          ...(teamContext ? { teamContext } : {}),
-          accessMode: context.thread.accessMode,
-        }),
+        agentTools: toolsPlan,
         browserCdp: {
           url: this.#agentBrowserCdpUrl,
         },

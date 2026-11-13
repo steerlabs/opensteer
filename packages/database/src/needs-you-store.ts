@@ -26,6 +26,7 @@ export function needsYouPage(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly userId: UserId;
+    readonly deviceAccessRequests?: "include";
     readonly before?: string;
     readonly limit?: number;
     readonly maxBytes?: number;
@@ -38,7 +39,9 @@ export function needsYouPage(
     database,
     async (transaction) => {
       await requirePersonalOwner(transaction, input.userId);
-      const pending = transaction.selectFrom("requests").where("status", "=", "pending");
+      let pending = transaction.selectFrom("requests").where("status", "=", "pending");
+      if (input.deviceAccessRequests !== "include")
+        pending = pending.where("kind", "!=", "device.access");
       let query = pending
         .selectAll()
         .orderBy("createdAt", "desc")

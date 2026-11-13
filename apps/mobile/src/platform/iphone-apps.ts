@@ -1,110 +1,24 @@
 import { requireOptionalNativeModule } from "expo";
 import { Platform } from "react-native";
 
-/** Apps every iPhone build shares. */
-export type IphoneBaseAppId = "apple-calendar" | "apple-contacts" | "apple-reminders";
-/**
- * Apps added after the first iPhone builds. An installed build that predates
- * one omits it from `permissions`; that absence is the only local sign that
- * this build does not offer it.
- */
-export type IphoneAddedAppId = "iphone-location" | "iphone-photos";
-export type IphoneAppId = IphoneAddedAppId | IphoneBaseAppId;
-export type IphonePermission =
-  "not-determined" | "granted" | "limited" | "write-only" | "denied" | "restricted";
-export interface IphonePairingTarget {
-  readonly deploymentId: string;
-  readonly deploymentName: string;
-  readonly hostInstanceId: string;
-  readonly hostUrl: string;
-}
-export type IphoneAppsConnection =
-  "none" | "connecting" | "online" | "retrying" | "background" | "stopped";
-export type IphoneAppsIssue =
-  | "enrollment-expired"
-  | "enrollment-refused"
-  | "host-unreachable"
-  | "host-mismatch"
-  | "remote-access-off"
-  | "removed"
-  | "needs-update"
-  | "profile-mismatch"
-  | "protocol-error"
-  | "failed";
-export interface IphoneAppsEnrollment {
-  readonly deploymentId: string;
-  readonly deploymentName: string;
-  readonly runnerId: string;
-  readonly name: string;
-  readonly state: "pending" | "enrolled";
-  readonly enrollmentId: string | null;
-  readonly hostUrl: string;
-}
-export interface IphoneAppsApproval {
-  readonly setupRequestId: string;
-  readonly definitionId: IphoneAppId;
-  readonly access: "read" | "read-write";
-  readonly reason: string | null;
-  readonly threadTitle: string | null;
-  readonly createdAt: string;
-  readonly expiresAt: string;
-}
-export interface IphoneAppsSnapshot {
-  readonly pendingErasure?: boolean;
-  readonly revision: number;
-  readonly supported: boolean;
-  readonly unsupportedReason: "not-ios" | "not-iphone" | "ios-version" | null;
-  readonly deviceName: string;
-  readonly enrollment: IphoneAppsEnrollment | null;
-  readonly connection: IphoneAppsConnection;
-  readonly retryAt: string | null;
-  readonly issue: IphoneAppsIssue | null;
-  readonly issueMessage: string | null;
-  /** The apps this device can share, each as iOS answers for it; a phone with none has none. */
-  readonly permissions: Readonly<Partial<Record<IphoneAppId, IphonePermission>>>;
-  /** Whether iPhone Settings gives Location precisely; null unless it is granted. Older builds omit it. */
-  readonly locationAccuracy?: "approximate" | "precise" | null;
-  readonly working: number;
-}
-export type IphoneApprovalOutcome =
-  | { readonly kind: "allowed" }
-  | { readonly kind: "declined" }
-  | { readonly kind: "refused"; readonly message: string }
-  | { readonly kind: "unavailable"; readonly message: string };
-export type IphoneAppsErrorCode =
-  | "unsupported"
-  | "enrolled-elsewhere"
-  | "not-prepared"
-  | "wrong-deployment"
-  | "invalid-target"
-  | "not-foreground"
-  | "busy";
-export interface IphoneAppsBridge {
-  getSnapshot(): IphoneAppsSnapshot;
-  subscribe(listener: (snapshot: IphoneAppsSnapshot) => void): () => void;
-  prepare(input: { readonly deploymentId: string }): Promise<{
-    readonly runnerId: string;
-    readonly mintKey: string;
-  }>;
-  enroll(input: {
-    readonly pairing: IphonePairingTarget;
-    readonly enrollmentId: string;
-    readonly enrollmentToken: string;
-    readonly expiresAt: string;
-    readonly name: string;
-  }): Promise<void>;
-  discardPendingEnrollment(): Promise<{ readonly mintKey: string }>;
-  retarget(pairing: IphonePairingTarget): Promise<void>;
-  disconnect(): { readonly deploymentId: string | null; readonly runnerId: string | null };
-  requestPermission(app: IphoneAppId): Promise<IphonePermission>;
-  chooseContacts(): Promise<IphonePermission>;
-  /** Apple's limited-library picker, from a tap; what comes back is iOS's answer read afresh. */
-  choosePhotos(): Promise<IphonePermission>;
-}
+export type * from "./iphone-apps-types.js";
+import type {
+  IphoneAppsBridge,
+  IphoneAppsErrorCode,
+  IphoneAppsSnapshot,
+  IphonePermission,
+} from "./iphone-apps-types.js";
 
-interface NativeIphoneApps extends Omit<IphoneAppsBridge, "choosePhotos" | "subscribe"> {
+interface NativeIphoneApps extends Omit<
+  IphoneAppsBridge,
+  "choosePhotos" | "completeLeave" | "leave" | "signSessionBinding" | "subscribe"
+> {
   /** Absent from builds that predate Photos. */
   readonly choosePhotos?: () => Promise<IphonePermission>;
+  /** Absent from builds that predate device sessions. */
+  readonly leave?: IphoneAppsBridge["leave"];
+  readonly completeLeave?: IphoneAppsBridge["completeLeave"];
+  readonly signSessionBinding?: IphoneAppsBridge["signSessionBinding"];
   addListener(
     event: "onChange",
     listener: (snapshot: IphoneAppsSnapshot) => void,
@@ -154,6 +68,11 @@ const unsupported: IphoneAppsBridge = {
     throw unsupportedError();
   },
   disconnect: () => ({ deploymentId: null, runnerId: null }),
+  leave: () => ({ deploymentId: null, runnerId: null }),
+  completeLeave: async () => undefined,
+  signSessionBinding: async () => {
+    throw unsupportedError();
+  },
   requestPermission: async () => {
     throw unsupportedError();
   },
@@ -178,10 +97,23 @@ export const iphoneApps: IphoneAppsBridge =
           return () => subscription.remove();
         },
         prepare: (input) => native.prepare(input),
+        beginIssuance: async (input) => {
+          if (!native.beginIssuance) throw unsupportedError();
+          await native.beginIssuance(input);
+        },
+        clearRemoved: () => native.clearRemoved?.() ?? Promise.resolve(),
         enroll: (input) => native.enroll(input),
         discardPendingEnrollment: () => native.discardPendingEnrollment(),
         retarget: (pairing) => native.retarget(pairing),
         disconnect: () => native.disconnect(),
+        leave: () => (native.leave ?? native.disconnect)(),
+        completeLeave: async (input) => {
+          await native.completeLeave?.(input);
+        },
+        signSessionBinding: async (input) => {
+          if (native.signSessionBinding === undefined) throw unsupportedError();
+          return native.signSessionBinding(input);
+        },
         requestPermission: (app) => native.requestPermission(app),
         chooseContacts: () => native.chooseContacts(),
         choosePhotos: async () => {

@@ -8,22 +8,15 @@ import { actionErrorMessage } from "../../../ui-utils.js";
 import { useShell } from "../../app-shell.js";
 import { deploymentMutationsBlockedReason } from "../../deployment-operation.js";
 import { SignOutDialog } from "../../places/place-account.js";
-import {
-  SectionHeader,
-  SettingsError,
-  SettingsGroup,
-  SettingsRow,
-  type SettingsView,
-} from "../primitives.js";
-import { SignedInDevicesSection } from "./devices.js";
+import { SectionHeader, SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
 import { RemoteAccessCard } from "./remote-access-card.js";
 
 /**
  * The Opensteer Account: the one thing in the product anybody signs in to,
- * then whether this Opensteer can be used from anywhere, then every device
- * signed in to it.
+ * then whether this Opensteer can be used from anywhere. Where you're signed
+ * in lives in Devices.
  */
-export function AccountSection({ view }: { readonly view: SettingsView }) {
+export function AccountSection() {
   const { deploymentAccess, desktopBridge, snapshot } = useShell();
   const portalOrigin = snapshot.identityConfig?.portalOrigin ?? null;
   const signedIn = deploymentAccess?.account.status === "signed-in";
@@ -43,7 +36,6 @@ export function AccountSection({ view }: { readonly view: SettingsView }) {
         )}
       </SettingsGroup>
       <RemoteAccessCard />
-      <SignedInDevicesSection view={view} />
       {desktopBridge && signedIn && portalOrigin ? (
         <p className="settings-footer-link">
           <a
@@ -118,8 +110,10 @@ function AccountSessionRow({
       <SettingsError message={error} />
       {signingOut && desktopBridge ? (
         <SignOutDialog
+          bridge={desktopBridge}
           onClose={() => setSigningOut(false)}
           onConfirm={() => desktopBridge.signOut()}
+          snapshot={deploymentAccess}
         />
       ) : null}
     </>

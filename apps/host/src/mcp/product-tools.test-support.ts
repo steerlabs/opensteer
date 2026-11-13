@@ -390,6 +390,7 @@ export class ProductToolsTestClient {
       realtime: { observe: () => () => {}, sendToUsers: () => {} },
       browser: unavailableDefaults as never,
       browserSources: unavailableDefaults as never,
+      deviceAccess: unavailableDefaults as never,
       machineFullDiskAccess: unavailableDefaults as never,
       canRunHarness: () => true,
       harnessAccessModes: () => ThreadAccessModeSchema.options,

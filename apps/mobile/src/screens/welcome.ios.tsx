@@ -29,12 +29,14 @@ import {
   tint,
 } from "@expo/ui/swift-ui/modifiers";
 import type { ReactNode } from "react";
+import { thisPhoneNoun } from "../computers/phone-noun.js";
 import { color } from "../theme.js";
-import { Chevron, ErrorText, Footer } from "./settings-form-primitives.ios.js";
+import { Chevron, ErrorText, Footer, Lines } from "./settings-form-primitives.ios.js";
 import {
   shareMacLink,
   welcomeCopy,
   welcomePresentation,
+  welcomeSentence,
   type WelcomeProps,
 } from "./welcome-model.js";
 
@@ -47,9 +49,9 @@ const bare = (top: number, bottom: number) => [
   listRowInsets({ bottom, leading: 0, top, trailing: 0 }),
 ];
 
-/** The first run on iOS: a system form, like Settings, with the scan as its one action. */
 export function Welcome(props: WelcomeProps): ReactNode {
   const view = welcomePresentation(props);
+  const link = view.macLink;
   return (
     <Host style={{ flex: 1 }} useViewportSizeMeasurement>
       <Form modifiers={[listStyle("insetGrouped")]}>
@@ -62,37 +64,28 @@ export function Welcome(props: WelcomeProps): ReactNode {
               systemName="laptopcomputer.and.iphone"
             />
             <Text
-              modifiers={[font({ size: 28, weight: "bold" }), foregroundStyle(color.text), centred]}
+              modifiers={[
+                font({ textStyle: "title", weight: "bold" }),
+                foregroundStyle(color.text),
+                centred,
+              ]}
             >
               {welcomeCopy.title}
             </Text>
             <Text modifiers={[font({ textStyle: "body" }), secondary, centred]}>
-              {welcomeCopy.sentence}
+              {welcomeSentence(thisPhoneNoun)}
             </Text>
           </VStack>
-          <Button
-            modifiers={[
-              ...bare(12, 0),
-              buttonStyle("borderedProminent"),
-              buttonBorderShape("capsule"),
-              controlSize("large"),
-              tint(color.ember),
-            ]}
-            onPress={props.onScan}
-          >
-            <Text
-              modifiers={[
-                font({ textStyle: "headline" }),
-                foregroundStyle(color.inkOnEmber),
-                frame({ maxWidth: Infinity }),
-              ]}
-            >
-              {welcomeCopy.scan}
-            </Text>
-          </Button>
+          {link === null ? null : (
+            <Wide onPress={() => shareMacLink(link)} prominent label={welcomeCopy.mac} />
+          )}
+          <Wide onPress={props.onScan} prominent={link === null} label={welcomeCopy.scan} />
         </Section>
         <Section footer={<Footer text={view.footer} />} title={welcomeCopy.otherWays}>
           <ErrorText detail={view.failure} />
+          {view.signedInAs === null ? null : (
+            <Lines detail="Opensteer Account" title={view.signedInAs} />
+          )}
           {view.account === null ? null : (
             <Button modifiers={[disabled(view.account.disabled)]} onPress={props.onAccount}>
               <Row busy={props.signingIn} label={view.account.label} />
@@ -102,23 +95,37 @@ export function Welcome(props: WelcomeProps): ReactNode {
             <Row busy={false} label={welcomeCopy.address} />
           </Button>
         </Section>
-        {view.macLink === null ? null : (
-          <Section>
-            <Button modifiers={bare(0, 0)} onPress={() => shareMacLink(view.macLink!)}>
-              <Text
-                modifiers={[
-                  font({ textStyle: "footnote" }),
-                  foregroundStyle(color.ember),
-                  frame({ maxWidth: Infinity }),
-                ]}
-              >
-                {welcomeCopy.mac}
-              </Text>
-            </Button>
-          </Section>
-        )}
       </Form>
     </Host>
+  );
+}
+
+function Wide(props: {
+  readonly label: string;
+  readonly onPress: () => void;
+  readonly prominent: boolean;
+}): ReactNode {
+  return (
+    <Button
+      modifiers={[
+        ...bare(12, 0),
+        buttonStyle(props.prominent ? "borderedProminent" : "bordered"),
+        buttonBorderShape("capsule"),
+        controlSize("large"),
+        tint(color.ember),
+      ]}
+      onPress={props.onPress}
+    >
+      <Text
+        modifiers={[
+          font({ textStyle: "headline" }),
+          foregroundStyle(props.prominent ? color.inkOnEmber : color.ember),
+          frame({ maxWidth: Infinity }),
+        ]}
+      >
+        {props.label}
+      </Text>
+    </Button>
   );
 }
 

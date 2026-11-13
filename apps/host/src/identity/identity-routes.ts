@@ -34,7 +34,14 @@ export type IdentityRpcHandlers = Pick<
   | "auth.signOut"
   | "sessions.list"
 >;
-export function createIdentityRpcHandlers(authenticator: HostAuthenticator): IdentityRpcHandlers {
+export function createIdentityRpcHandlers(
+  authenticator: HostAuthenticator,
+  revokeSession?: (
+    session: import("@opensteer/core").AuthenticatedSession,
+    sessionId: import("@opensteer/core").AuthSessionId,
+    afterResponse?: (effect: () => void) => void,
+  ) => Promise<void>,
+): IdentityRpcHandlers {
   const identity = authenticator.identity;
   return {
     "auth.config": async () =>
@@ -111,7 +118,7 @@ export function createIdentityRpcHandlers(authenticator: HostAuthenticator): Ide
       return rpcSuccess({});
     },
     "auth.signOut": async (_input, context) => {
-      await identity.revokeSession(
+      await (revokeSession ?? identity.revokeSession.bind(identity))(
         requireRpcSession(context),
         requireRpcSession(context).id,
         context.afterResponse,

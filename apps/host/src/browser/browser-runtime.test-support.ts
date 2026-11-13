@@ -126,6 +126,20 @@ export async function startBrowserRuntime(
     options.primary ?? (await connectPrimary(hostPort, descriptor, { token: enrollmentToken }));
   const primary = connection.socket;
   const connectionFence = connection.fence;
+  primary.send(
+    JSON.stringify({
+      ...connectionFence,
+      type: "runner.modules.report",
+      modules: [
+        {
+          module: "browser",
+          readiness: "ready",
+          detail: null,
+          checkedAt: new Date().toISOString(),
+        },
+      ],
+    }),
+  );
   const ticketed = nextJson(primary, "host.auxiliary.ticket");
   primary.send(
     JSON.stringify({

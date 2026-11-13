@@ -115,7 +115,7 @@ export const settingsItems: Readonly<Record<SettingsSectionId, SettingsRailItem>
   devices: {
     id: "devices",
     label: "Devices",
-    description: "The browsers and apps you are signed in to this Opensteer from",
+    description: "Everywhere you’re signed in, and what your agent can use on each",
   },
   "external-agents": {
     id: "external-agents",

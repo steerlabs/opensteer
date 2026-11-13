@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { attentionReads, computerBadge } from "./computer-signals.js";
+import { attentionReads, computerBadge, homeLine, sameAttention } from "./computer-signals.js";
 
 it("reads every other computer that can answer once, never the one on screen", () => {
   const rows = [
@@ -30,4 +30,15 @@ it("shows each computer's own signals, and nothing for a computer that didn't an
   expect(
     computerBadge({ current: false, shown: null, read: { needsYou: 0, unread: false } }),
   ).toBeNull();
+});
+
+it("names Home when it adds to the row, republishes a rename, and does without it on an older Host", () => {
+  const studio = { homeName: "Mac mini", needsYou: 0, unread: false };
+  expect(homeLine(studio, "Studio")).toBe("Home: Mac mini");
+  expect(homeLine(studio, "Mac mini")).toBeNull();
+  expect(sameAttention(studio, { ...studio, homeName: "Mac Studio" })).toBe(false);
+  const older = { needsYou: 0, unread: false };
+  expect(homeLine(older, "Studio")).toBeNull();
+  expect(homeLine(null, "Studio")).toBeNull();
+  expect(sameAttention(older, { ...older, homeName: null })).toBe(true);
 });

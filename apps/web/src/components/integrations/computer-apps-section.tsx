@@ -11,7 +11,7 @@ import {
   computerConnectionState,
 } from "@opensteer/client/integrations";
 import { Link } from "react-router";
-import { computerAppRoute } from "../computers-page.js";
+import { deviceAppRoute } from "../devices/device-routes.js";
 import type { DefinedIntegration } from "./helpers.js";
 import { IntegrationIcon } from "./integration-icon.js";
 
@@ -95,7 +95,7 @@ export function ComputerAppConnectionsSection({
               <div className="card__row-actions">
                 <Link
                   className="btn btn--small"
-                  to={computerAppRoute({
+                  to={deviceAppRoute({
                     definitionId: definition.id,
                     runnerId: computer.runnerId,
                   })}

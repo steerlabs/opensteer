@@ -9,12 +9,13 @@ const onConnectedHome = { connected: true, onHome: true };
 function intro(
   privateFiles: MemoryPrivateFilesystem,
   status: Exclude<PushRegistrationStatus, "unavailable"> = "permission-undetermined",
+  wanted = true,
 ) {
   return new NotificationsIntro({
     file: createNotificationsIntroFile({ filePath, privateFiles }),
     registration: {
       getSnapshot: () => ({
-        preferences: { approvalsEnabled: true, runOutcomesEnabled: true },
+        preferences: { approvalsEnabled: wanted, runOutcomesEnabled: wanted },
         status,
       }),
     },
@@ -42,6 +43,12 @@ describe("the notifications intro", () => {
     await expect(intro(new MemoryPrivateFilesystem(), status).due(onConnectedHome)).resolves.toBe(
       false,
     );
+  });
+
+  it("is not offered once the person turned alerts off, as setup's Off does", async () => {
+    await expect(
+      intro(new MemoryPrivateFilesystem(), "permission-undetermined", false).due(onConnectedHome),
+    ).resolves.toBe(false);
   });
 
   it("is offered once, including after the app restarts", async () => {

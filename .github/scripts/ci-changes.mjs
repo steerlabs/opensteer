@@ -216,6 +216,7 @@ export function decide(files, graph, baseGraph = graph, full = false, { fullMac 
     // The Android tests read these too; their packages still own them.
     if (
       file === "packages/core/src/fixtures/notification-preview-v1.json" ||
+      file === "packages/runner-auth/fixtures/device-proofs.v1.json" ||
       file.startsWith("packages/browser-core/test-vectors/") ||
       file === "apps/mobile/modules/phone-browser/index.ts" ||
       file === "apps/mobile/modules/phone-browser/types.ts"

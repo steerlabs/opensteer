@@ -18,6 +18,20 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 it("issues only after a tap and discards the enrollment command on dismissal", async () => {
   const host = new MockHostClient({ latencyMs: 0 });
   await host.load();
+  const target = vi.fn(async () => ({
+    ok: true,
+    data: {
+      deploymentId: "dep_0192f4a1-1111-4111-8111-111111111111",
+      deploymentName: "Home",
+      hostInstanceId: "hst_test",
+      hostUrl: "https://reachable.example",
+    },
+  }));
+  Object.defineProperty(host, "rpc", {
+    value: new Proxy(host.rpc, {
+      get: (rpc, key) => (key === "agentPhone.target.get" ? target : Reflect.get(rpc, key)),
+    }),
+  });
   const dispatch = vi.spyOn(host, "dispatch");
   const container = document.createElement("div");
   const root = createRoot(container);
@@ -33,6 +47,9 @@ it("issues only after a tap and discards the enrollment command on dismissal", a
         allowedModules: ["agents", "shell"],
       }),
     );
+    expect(target).toHaveBeenCalledOnce();
+    expect(container.textContent).toContain("https://reachable.example");
+    expect(container.textContent).not.toContain("localhost");
     expect(container.textContent).toContain("OPENSTEER_RUNNER_ENROLLMENT_TOKEN");
     await act(async () => root.render(<SettingsComputerEnrollment key="new-sheet" host={host} />));
     expect(container.textContent).not.toContain("OPENSTEER_RUNNER_ENROLLMENT_TOKEN");

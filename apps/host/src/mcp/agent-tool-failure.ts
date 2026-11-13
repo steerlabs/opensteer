@@ -1,3 +1,4 @@
+import { DeviceRefusalContextSchema } from "@opensteer/protocol";
 import type { AgentToolAccess, AgentToolFailure } from "@opensteer/agent-tools";
 import { OpensteerError } from "@opensteer/core";
 import { formatIssues } from "@opensteer/shared/validationIssues";
@@ -22,7 +23,12 @@ export function agentToolFailure(error: unknown, access: AgentToolAccess): Agent
     };
   }
   if (error instanceof OpensteerError && error.code !== "internal") {
+    const device =
+      error.reason === "device-access-off" || error.reason === "device-offline"
+        ? DeviceRefusalContextSchema.safeParse(error.details).data
+        : undefined;
     return {
+      ...device,
       code: error.code,
       message: error.message,
       next: error.next,

@@ -1,6 +1,6 @@
 import type { PrivateFilesystem } from "@opensteer/client/connections";
 import { z } from "zod";
-import type { PushRegistration } from "./push-registration.js";
+import { wantsAlerts, type PushRegistration } from "./push-registration.js";
 
 const maxIntroFileBytes = 1_024;
 
@@ -44,8 +44,9 @@ export function createNotificationsIntroFile(options: {
  * The one-time ask for notifications, the first time this phone is on a
  * computer's Home with a live connection. Only a phone the Account can still
  * reach and the system can still ask is offered it: a privately paired phone
- * has no Account to send through, and a phone that already answered has
- * nothing to ask. Sending a first message still asks if this never did.
+ * has no Account to send through, a phone that already answered has
+ * nothing to ask, and a person who turned alerts off is not asked. Sending a
+ * first message still asks if this never did.
  */
 export class NotificationsIntro {
   readonly #file: NotificationsIntroFile;
@@ -74,6 +75,7 @@ export class NotificationsIntro {
   }
 
   #askable(): boolean {
-    return this.#registration.getSnapshot().status === "permission-undetermined";
+    const { preferences, status } = this.#registration.getSnapshot();
+    return status === "permission-undetermined" && wantsAlerts(preferences);
   }
 }

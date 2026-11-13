@@ -1684,7 +1684,24 @@ describeStore("PostgreSQL store", (it) => {
     expect(
       inventory.runners.find((runner) => runner.id === localRunnerId)?.revokedAt,
     ).toBeInstanceOf(Date);
-    await expect(store.revokeRunner(localRunnerId, ownerId)).rejects.toMatchObject({
+    const tombstone = await database
+      .selectFrom("runners")
+      .select(["connectionGeneration", "revokedAt"])
+      .where("id", "=", localRunnerId)
+      .executeTakeFirstOrThrow();
+    await expect(store.revokeRunner(localRunnerId, ownerId)).resolves.toMatchObject({
+      endedSessionIds: [],
+      closedBrowserSessions: [],
+      events: [],
+    });
+    expect(
+      await database
+        .selectFrom("runners")
+        .select(["connectionGeneration", "revokedAt"])
+        .where("id", "=", localRunnerId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual(tombstone);
+    await expect(store.revokeRunner(localRunnerId, foreignOwnerId)).rejects.toMatchObject({
       code: "not_found",
     });
   });

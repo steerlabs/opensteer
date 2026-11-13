@@ -26,6 +26,49 @@ type InventoryEntry = Awaited<
   ReturnType<IntegrationInventorySource["listDiscoveryInventory"]>
 >[number];
 describe("ContinuationService", () => {
+  it("continues device fulfillment with fresh routes and preserves a task decline", async () => {
+    const base = fulfilledRequest("machine.full-disk-access");
+    const fulfilled = RequestSchema.parse({
+      ...base,
+      kind: "device.access",
+      payload: {
+        kind: "device.access",
+        machineId: createId("runner"),
+        machineName: "Phone",
+        access: "browser",
+        reason: "Read the task's page",
+      },
+    });
+    const fixture = makeService([fulfilled]);
+    fixture.service.notify();
+    await fixture.service.close();
+    expect(fixture.enqueueThreadInput).toHaveBeenCalledOnce();
+    expect(fixture.enqueueThreadInput.mock.calls[0]![0].content[0].text).toContain(
+      "rebuilds device routes",
+    );
+    expect(
+      await continuationMessage(fulfilled, {
+        listDiscoveryInventory: async () => [],
+        listCallableTools: async () => [],
+        computerUseMachines: async () => [],
+        computerUsePhones: async () => [],
+      }),
+    ).toContain("Per-app, profile or OS authorization");
+    const declined = RequestSchema.parse({
+      ...fulfilled,
+      status: "declined",
+      response: { kind: "external", value: { decision: "declined" } },
+    });
+    expect(
+      await continuationMessage(declined, {
+        listDiscoveryInventory: async () => [],
+        listCallableTools: async () => [],
+        computerUseMachines: async () => [],
+        computerUsePhones: async () => [],
+      }),
+    ).toContain("do not request it again in this task");
+  });
+
   it("uses a human-settled reference and a different key when later outcomes from the same Run arrive", async () => {
     const answered = RequestSchema.parse({
       ...fulfilledRequest("browser.access"),

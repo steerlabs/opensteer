@@ -1461,6 +1461,8 @@ describeStore("PostgreSQL store", (it) => {
       ).resolves.toEqual({
         outcome: "updated",
         replayed: false,
+        changed: { shell: true, browser: false, apps: false },
+        requestEvents: [],
         revision: 2,
       });
       // A second editor still holding revision 1 changes nothing at all.
@@ -1495,6 +1497,8 @@ describeStore("PostgreSQL store", (it) => {
       ).resolves.toEqual({
         outcome: "updated",
         replayed: false,
+        changed: { shell: false, browser: false, apps: false },
+        requestEvents: [],
         revision: 3,
       });
     });
@@ -1522,6 +1526,8 @@ describeStore("PostgreSQL store", (it) => {
       await expect(store.updateMachineAccessPolicy(write)).resolves.toEqual({
         outcome: "updated",
         replayed: false,
+        changed: { shell: true, browser: false, apps: false },
+        requestEvents: [],
         revision: 2,
       });
       // The retried click: the same answer, the revision does not move, and it
@@ -1530,6 +1536,8 @@ describeStore("PostgreSQL store", (it) => {
       await expect(store.updateMachineAccessPolicy(write)).resolves.toEqual({
         outcome: "updated",
         replayed: true,
+        changed: { shell: false, browser: false, apps: false },
+        requestEvents: [],
         revision: 2,
       });
       await expect(store.getMachineAccessTarget(runnerId)).resolves.toMatchObject({

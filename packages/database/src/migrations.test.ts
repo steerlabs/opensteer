@@ -14,6 +14,9 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0005_thread_input_fresh_context",
     teamKnowledgeNotesMigrationName,
     "0007_team_reusable_invites",
+    "0008_devices",
+    "0009_device_access_requests",
+    "0010_device_setup_retirement",
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());

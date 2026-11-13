@@ -372,6 +372,8 @@ export function seedMockPlaces(
         ...mac,
         id: "rnr_88888888-8888-4888-8888-888888888888",
         name: "Studio Mac",
+        kind: "computer",
+        allowedModules: mac.allowedModules.filter((module) => module !== "agents"),
         ownership: "mine",
         computerUse: {
           ...mac.computerUse,
@@ -443,11 +445,24 @@ export function seedMockPlaces(
   // Every device can hold browsers: the person's iPhone too, while Opensteer is open on it.
   machines.push({
     tabOpenedAt: null,
-    access: null,
+    access: {
+      activeSessions: [],
+      ownerReachAvailable: false,
+      revision: 1,
+      policy: {
+        apps: true,
+        browser: true,
+        commands: false,
+        forwarding: false,
+        reach: "nobody",
+        shares: [],
+      },
+    },
     apps: null,
     allowedModules: ["browser", "integrations"],
     detail: null,
-    device: { form: "phone", platform: "ios" },
+    device: { form: "phone", platform: "ios", app: "opensteer" },
+    kind: "phone",
     enrollmentId: "ren_runner_iphone",
     expiresAt: null,
     computerUse: null,
@@ -472,7 +487,8 @@ export function seedMockPlaces(
   const profileHomes = machines
     .filter(
       (machine) =>
-        machine.allowedModules.includes("browser") || machine.device?.platform === "macos",
+        machine.kind !== "agent-phone" &&
+        (machine.allowedModules.includes("browser") || machine.device?.platform === "macos"),
     )
     .map((machine) => machine.id);
   const profile = (id: number, name: string, homeRunnerId: string | null) =>

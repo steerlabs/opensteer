@@ -236,6 +236,12 @@ import {
   ComputerViewRenewResultSchema,
 } from "./computer-view.js";
 
+import {
+  DeviceInitialAccessSchema,
+  DevicePreparedIdentitySchema,
+  DeviceRefusalContextSchema,
+  DeviceSessionBindingProofSchema,
+} from "./devices.js";
 import { MachineSummarySchema } from "./machines.js";
 import { defineRpc, type RpcClient, type RpcHandlers } from "./rpc.js";
 import { RunnerModuleNameSchema } from "./runner-identity.js";
@@ -305,6 +311,8 @@ export {
 } from "@opensteer/deployment-authority";
 
 export const HostApiErrorSchema = z.object({
+  machineId: DeviceRefusalContextSchema.shape.machineId.optional(),
+  capability: DeviceRefusalContextSchema.shape.capability.optional(),
   code: OpensteerErrorCodeSchema,
   message: z.string().min(1),
   reason: z.string().min(1).optional(),
@@ -637,9 +645,16 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("machine.rename"),
   }),
   z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    machineId: RunnerIdSchema,
+    proof: DeviceSessionBindingProofSchema,
+    type: z.literal("machine.session.bind"),
+  }),
+  z.strictObject({
     /** The revision the editor last read; a stale one conflicts and ends nothing. */
     expectedRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     idempotencyKey: idempotencyKeySchema,
+    // Omitted fields keep the stored values.
     policy: MachineAccessPolicySchema,
     runnerId: RunnerIdSchema,
     type: z.literal("machine.access.update"),
@@ -701,6 +716,8 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     allowedModules: z.array(RunnerModuleNameSchema).min(1).max(5),
     idempotencyKey: idempotencyKeySchema,
     name: z.string().trim().min(1).max(120),
+    access: DeviceInitialAccessSchema.optional(),
+    preparedIdentity: DevicePreparedIdentitySchema.optional(),
     type: z.literal("runner.enrollment.createLocal"),
   }),
 
@@ -713,6 +730,8 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     name: z.string().trim().min(1).max(120),
     profile: z.literal("iphone").optional(),
+    access: DeviceInitialAccessSchema.optional(),
+    preparedIdentity: DevicePreparedIdentitySchema.optional(),
     type: z.literal("runner.enrollment.createPhone"),
   }),
   /**
@@ -1194,6 +1213,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   harnessAuthenticationEnvelopeSchema.extend({ type: z.literal("harness.authentication.cancel") }),
   z.object({ type: z.literal("machine.revoke") }),
   z.object({ type: z.literal("machine.rename") }),
+  z.object({ type: z.literal("machine.session.bind") }),
   z.discriminatedUnion("outcome", [
     z.object({
       outcome: z.literal("updated"),
@@ -1432,12 +1452,18 @@ const declaration = <Payload extends z.ZodType, Success extends z.ZodType>(
 export const hostApi = defineRpc({
   "attention.get": declaration(
     "POST",
-    z.strictObject({}),
-    z.object({ needsYou: z.number().int().nonnegative(), unread: z.boolean() }),
+    z.strictObject({ deviceAccessRequests: z.literal("include").optional() }),
+    z.object({
+      /** The Mac a personal Opensteer lives on, for a chooser naming it; older Hosts omit it. */
+      homeName: z.string().trim().min(1).max(120).nullable().optional(),
+      needsYou: z.number().int().nonnegative(),
+      unread: z.boolean(),
+    }),
   ),
   "needsYou.get": declaration(
     "POST",
     z.strictObject({
+      deviceAccessRequests: z.literal("include").optional(),
       before: z.string().min(1).max(4096).optional(),
       limit: z.number().int().min(1).max(50).optional(),
     }),
@@ -1939,7 +1965,7 @@ export const hostApi = defineRpc({
 
   "requests.list": declaration(
     "GET",
-    durablePageInputSchema,
+    durablePageInputSchema.extend({ deviceAccessRequests: z.literal("include").optional() }),
     z.object({
       requests: readableRequestList(WaitingRequestViewSchema, 100),
       window: DurableWindowSchema,
@@ -1952,6 +1978,7 @@ export const hostApi = defineRpc({
       .strictObject({
         active: z.boolean().optional(),
         done: z.boolean().optional(),
+        deviceAccessRequests: z.literal("include").optional(),
       })
       .extend(durablePageInputSchema.shape)
       .refine((input) => !(input.active && input.done), "Active work is never Done"),
@@ -1991,6 +2018,7 @@ export const hostApi = defineRpc({
       .strictObject({
         threadId: ThreadIdSchema,
         aroundMessageId: MessageIdSchema.optional(),
+        deviceAccessRequests: z.literal("include").optional(),
         placeEvents: z.literal("include").optional(),
         toolOutputs: z.literal("preview").optional(),
         /** Whole turns, newest first, up to this many. Needs `history-turns-v1`. */
@@ -2017,6 +2045,7 @@ export const hostApi = defineRpc({
       .strictObject({
         nodeId: ExecutionNodeIdSchema,
         threadId: ThreadIdSchema,
+        deviceAccessRequests: z.literal("include").optional(),
         toolOutputs: z.literal("preview").optional(),
         through: SequenceSchema.optional(),
       })
@@ -2029,6 +2058,7 @@ export const hostApi = defineRpc({
       .strictObject({
         /** Only work still under way, however far back it was handed out. Needs `task-family-v1`. */
         open: z.boolean().optional(),
+        deviceAccessRequests: z.literal("include").optional(),
         threadId: ThreadIdSchema,
       })
       .extend(durablePageInputSchema.shape),
@@ -2084,7 +2114,12 @@ export const hostApi = defineRpc({
   ),
   "thread.requests.list": declaration(
     "GET",
-    z.strictObject({ threadId: ThreadIdSchema }).extend(durablePageInputSchema.shape),
+    z
+      .strictObject({
+        threadId: ThreadIdSchema,
+        deviceAccessRequests: z.literal("include").optional(),
+      })
+      .extend(durablePageInputSchema.shape),
     z.object({
       requests: readableRequestList(RequestViewSchema, 100),
       threadId: ThreadIdSchema,

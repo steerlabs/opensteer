@@ -13,7 +13,7 @@ import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { actionErrorMessage } from "../ui-utils.js";
 import { useShell } from "./app-shell.js";
 import { Icon } from "./icon.js";
-import { useHomeComputer } from "./settings/sections/devices.js";
+import { useHomeComputer } from "./devices/use-home-computer.js";
 import { useDesktopPasswordsStatus } from "./use-desktop-passwords-status.js";
 import { browserNoticeDismissals } from "./usage-notice.js";
 

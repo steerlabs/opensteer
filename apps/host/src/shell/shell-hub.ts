@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+import { deviceAccess } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import { OpensteerError, type RunId, type RunnerId, type UserId } from "@opensteer/core";
 import type { OpensteerStore, RevokedRunGrant } from "@opensteer/database";
@@ -87,6 +89,7 @@ interface ShellSession {
   /** When the open stops being allowed to finish, whatever is still awaited. */
   readonly openDeadlineAt: number;
   readonly policyRevision: number;
+  readonly shellPolicy: Pick<MachineAccessPolicy, "reach" | "commands" | "forwarding" | "shares">;
   /**
    * Whether the durable reservation row exists, or never will.
    *
@@ -403,6 +406,21 @@ export class ShellHub implements ShellControlStreamHandler {
         `${target.name} cannot accept connections from other computers yet; update Opensteer on it.`,
       );
     }
+    const ownership = await this.#options.store.effectiveMachineOwner(input.target);
+    if (ownership?.effectiveOwner === scope.requestedBy && input.target !== scope.runnerId) {
+      if (!this.#liveStream(input.target))
+        throw new ShellConnectRejection(
+          "device-offline",
+          `${target.name} is offline (${describeMachineLastSeen(target.lastSeenAt, this.#now())}).`,
+          { machineId: input.target, capability: "files" },
+        );
+      if (!deviceAccess(target.policy).files)
+        throw new ShellConnectRejection(
+          "device-access-off",
+          `Files and commands are off on ${target.name}.`,
+          { machineId: input.target, capability: "files" },
+        );
+    }
     if (!(await this.#reachAdmits(input.target, target.policy, scope))) {
       throw rejection("reach_denied", `${target.name} does not allow access from other computers.`);
     }
@@ -489,6 +507,7 @@ export class ShellHub implements ShellControlStreamHandler {
         opened: false,
         openTimer: undefined,
         policyRevision: target.revision,
+        shellPolicy: shellPolicy(target.policy),
         pumps: [],
         reserved: reservation,
         runId: scope.runId,
@@ -549,7 +568,7 @@ export class ShellHub implements ShellControlStreamHandler {
           authority: reserved.session.authority,
           dataTicket: reserved.ticket,
           machineName: target.name,
-          policy: target.policy,
+          policy: shellPolicy(target.policy),
           sessionId: reserved.session.sessionId,
           type: "host.shell.session.open",
         }),
@@ -1112,7 +1131,8 @@ export class ShellHub implements ShellControlStreamHandler {
     if (scope.runId !== session.runId) return "run-ended";
     const target = await this.#options.store.getMachineAccessTarget(session.runnerId);
     if (!target?.shell) return "machine-revoked";
-    if (target.revision !== session.policyRevision) return "policy-changed";
+    if (!isDeepStrictEqual(shellPolicy(target.policy), session.shellPolicy))
+      return "policy-changed";
     if (!(await this.#reachAdmits(session.runnerId, target.policy, scope))) return "policy-changed";
     // The stream is read again after the awaited checks: a detach is
     // synchronous and can land between any two of them.
@@ -1304,7 +1324,7 @@ export class ShellHub implements ShellControlStreamHandler {
     // A Run never reaches the computer it is already running on: reach is about
     // other computers, and the Run's ssh config has no alias for its own.
     if (runnerId === scope.runnerId) return false;
-    if (policy.reach === "nobody") return false;
+    if (!deviceAccess(policy).files) return false;
     if (policy.reach === "deployment") return true;
     const ownership = await this.#options.store.effectiveMachineOwner(runnerId);
     return ownership?.effectiveOwner === scope.requestedBy;
@@ -1431,4 +1451,13 @@ function closeFrameReason(reason: unknown): ShellCloseReason | null {
   if (text === null || text === "") return null;
   const parsed = ShellCloseReasonSchema.safeParse(text);
   return parsed.success ? parsed.data : null;
+}
+
+function shellPolicy(policy: MachineAccessPolicy) {
+  return {
+    reach: policy.reach,
+    commands: policy.commands,
+    forwarding: policy.forwarding,
+    shares: policy.shares,
+  };
 }
