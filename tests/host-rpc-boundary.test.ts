@@ -8,8 +8,8 @@ const repositoryRoot = path.resolve(import.meta.dirname, "..");
  * Production code calls a Host's typed API only through `createHttpHostApiClient`,
  * which derives the route, method, input encoding and response schemas from
  * `hostApi`. A hand-built request compiles and passes mocked tests while the
- * Host answers 404, so every other file that spells the RPC prefix is named
- * here with the reason it does not build a request of its own.
+ * Host answers 404. This is a tripwire on the RPC prefix, not a proof: each
+ * file that must spell it is named with why it builds no request of its own.
  */
 const allowed: Readonly<Record<string, string>> = {
   "packages/client/src/host/host-api-client.ts": "the one encoder",

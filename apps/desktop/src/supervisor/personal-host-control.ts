@@ -812,10 +812,6 @@ async function personalHostRefusal(response: Response): Promise<Error> {
  * names itself retryable can still become success on a later poll; every other
  * answer is the Host's final word and would repeat for as long as anyone waits.
  */
-/**
- * A fault the Host may outgrow while it starts keeps the poll waiting; any
- * other answer, including a body this Desktop cannot read, has settled it.
- */
 function bootstrapRefusal(error: {
   readonly code: string;
   readonly message: string;

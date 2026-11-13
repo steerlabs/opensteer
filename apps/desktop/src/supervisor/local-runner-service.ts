@@ -21,6 +21,7 @@ import {
 } from "@opensteer/core";
 import {
   DesktopStartLocalRunnerInputSchema,
+  type DesktopDeviceSessionBinding,
   type DesktopLocalExecutionStatus,
   type DesktopStartLocalRunnerInput,
 } from "@opensteer/protocol/desktop";
@@ -152,8 +153,6 @@ export interface UtilityProcessLike {
   postMessage(message: unknown): void;
 }
 
-export type DeviceSessionBindingOutcome = "bound" | "already-bound";
-
 export interface LocalRunnerServiceDependencies {
   readonly log?: ShutdownLog;
   readonly assertAccountSource?: (source: AccountDeploymentConnectionSource) => void;
@@ -276,7 +275,11 @@ export class LocalRunnerService {
     string,
     { deploymentId: DeploymentId; id: string; expiresAt: string }
   >();
-  readonly #bindings = new Map<DeploymentId, Promise<DeviceSessionBindingOutcome>>();
+  /** One in-flight bind per Deployment, valid only for the setup generation it started in. */
+  readonly #bindings = new Map<
+    DeploymentId,
+    { generation: number; attempt: Promise<DesktopDeviceSessionBinding> }
+  >();
   readonly #hostApiFor: LocalRunnerServiceDependencies["hostApi"];
   readonly #fenceDeployment: NonNullable<LocalRunnerServiceDependencies["fenceDeployment"]>;
   readonly #clearDeploymentSession: NonNullable<
@@ -730,6 +733,22 @@ export class LocalRunnerService {
       await writeMemberships(this.#preferencePath, await readMemberships(this.#preferencePath));
     });
     await this.reconcile();
+    // A binding the Host committed whose receipt was lost is recorded here, so
+    // session-loss fencing never depends on a window loading this Deployment.
+    const rows = await readMemberships(this.#preferencePath);
+    await Promise.all(
+      Object.entries(rows.runners)
+        .filter(([, row]) => row.state === "active" && row.runnerId)
+        .map(([id]) =>
+          this.#bindDeviceSession(DeploymentIdSchema.parse(id), { submit: false }).catch(
+            (error: unknown) =>
+              this.#log("desktop.device.bound-session-unconfirmed", {
+                deploymentId: id,
+                message: safeDetail(error),
+              }),
+          ),
+        ),
+    );
     await this.#profileErasure.finishPending();
   }
 
@@ -794,11 +813,16 @@ export class LocalRunnerService {
    * current, signs that one and submits it itself: no other process can ask it
    * to sign a session it does not hold. Concurrent calls share one attempt.
    */
-  bindDeviceSession(deploymentIdInput: string): Promise<DeviceSessionBindingOutcome> {
+  bindDeviceSession(deploymentIdInput: string): Promise<DesktopDeviceSessionBinding> {
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
+    const generation = this.#slot(deploymentId).intentGeneration;
     const inFlight = this.#bindings.get(deploymentId);
-    if (inFlight) return inFlight;
-    const attempt = this.#bindDeviceSession(deploymentId)
+    if (inFlight?.generation === generation) return inFlight.attempt;
+    const attempt = this.#bindDeviceSession(deploymentId, { submit: true })
+      .then((outcome) => {
+        if (outcome === "unbound") throw new Error("This Mac's sign-in was not bound.");
+        return outcome;
+      })
       .catch((error: unknown) => {
         this.#log("desktop.device.bind-failed", {
           deploymentId,
@@ -810,13 +834,22 @@ export class LocalRunnerService {
         throw error;
       })
       .finally(() => {
-        if (this.#bindings.get(deploymentId) === attempt) this.#bindings.delete(deploymentId);
+        if (this.#bindings.get(deploymentId)?.attempt === attempt)
+          this.#bindings.delete(deploymentId);
       });
-    this.#bindings.set(deploymentId, attempt);
+    this.#bindings.set(deploymentId, { generation, attempt });
     return attempt;
   }
 
-  async #bindDeviceSession(deploymentId: DeploymentId): Promise<DeviceSessionBindingOutcome> {
+  /**
+   * Reads this Mac's current session; with `submit`, signs and binds it when
+   * the Host has not. Either way a binding the Host holds is recorded, and a
+   * result that outlived this membership is an error, never a success.
+   */
+  async #bindDeviceSession(
+    deploymentId: DeploymentId,
+    options: { readonly submit: boolean },
+  ): Promise<DesktopDeviceSessionBinding | "unbound"> {
     const membership = (await readMemberships(this.#preferencePath)).runners[deploymentId];
     const slot = this.#slot(deploymentId);
     const generation = slot.intentGeneration;
@@ -839,6 +872,7 @@ export class LocalRunnerService {
         throw new Error("This Mac left before session binding completed.");
     };
     assertCurrent();
+    if (session.deviceId !== runnerId && !options.submit) return "unbound";
     const outcome = session.deviceId === runnerId ? "already-bound" : "bound";
     if (outcome === "bound") {
       const identity = await this.#signingIdentity(deploymentId, runnerId);
@@ -864,15 +898,18 @@ export class LocalRunnerService {
       if (result.type !== "machine.session.bind")
         throw new Error("The Host answered session binding with another command.");
     }
+    let recorded = false;
     await this.#mutatePreference((preference) => {
       const current = preference.runners[deploymentId];
       if (
         current?.state !== "active" ||
         current.runnerId !== runnerId ||
         current.generation !== membership.generation ||
-        this.#fenced.has(deploymentId)
+        this.#fenced.has(deploymentId) ||
+        slot.intentGeneration !== generation
       )
         return preference;
+      recorded = true;
       return {
         ...preference,
         runners: {
@@ -888,6 +925,7 @@ export class LocalRunnerService {
         },
       };
     });
+    if (!recorded) throw new Error("This Mac left before session binding completed.");
     return outcome;
   }
 
@@ -2074,6 +2112,7 @@ export class LocalRunnerService {
   #fence(deploymentId: DeploymentId): void {
     if (this.#fenced.has(deploymentId)) return;
     this.#fenced.add(deploymentId);
+    this.#bindings.delete(deploymentId);
     this.#disableIntent(this.#slot(deploymentId));
     this.#cancelRestart(deploymentId);
     this.#fenceDeployment(deploymentId);

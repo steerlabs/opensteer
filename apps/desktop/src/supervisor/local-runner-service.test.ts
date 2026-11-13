@@ -912,7 +912,7 @@ describe("LocalRunnerService", () => {
     },
   );
 
-  it("records a session the Host already bound without binding it again, as after a lost receipt", async () => {
+  it("records at startup a session the Host already bound, without a window and without binding again", async () => {
     const directory = await temporaryDirectory();
     const config = await configuration(directory);
     const targets = mutableTargetAuthority();
@@ -935,9 +935,6 @@ describe("LocalRunnerService", () => {
     const child = childAt(running.children, 0);
     connect(child);
     await restoring;
-    await expect(running.service.bindDeviceSession(target.deploymentId)).resolves.toBe(
-      "already-bound",
-    );
     expect(running.host.binds).toEqual([]);
     expect(
       (await readMemberships(path.join(directory, "runner", "desktop-runner.json"))).runners[
@@ -1351,6 +1348,55 @@ describe("LocalRunnerService", () => {
     const stopped = running.service.shutdown();
     running.children.forEach((child) => child.kill());
     await stopped;
+    running.service.dispose();
+  });
+
+  it("never reports a bind whose reply outlived this membership, nor lets a new setup join it", async () => {
+    const directory = await temporaryDirectory();
+    const config = await configuration(directory);
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://slow-bind.opensteer.test");
+    const reply = Promise.withResolvers<void>();
+    const committed = Promise.withResolvers<void>();
+    const running = fixture(config, targets, undefined, undefined, {
+      bindReply: async () => {
+        committed.resolve();
+        await reply.promise;
+      },
+    });
+    const start = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    connect(child);
+    await start;
+    const stale = running.service.bindDeviceSession(target.deploymentId);
+    const settled = stale.then(
+      () => "bound",
+      (error: unknown) => error,
+    );
+    await withTimeout(committed.promise, 1000, {
+      timeoutError: () => new Error("The bind never reached the Host"),
+    });
+    const removing = running.service.markRemoved(target.deploymentId);
+    await eventually(() => hasStopMessage(child));
+    child.emit("exit", 0);
+    await removing;
+    await running.service.setUpDevice({
+      deploymentId: target.deploymentId,
+      runnerName: "Again",
+      runAgents: false,
+    });
+    const fresh = running.service.bindDeviceSession(target.deploymentId);
+    expect(fresh).not.toBe(stale);
+    await expect(fresh).rejects.toThrow("not an active device");
+    reply.resolve();
+    expect(await settled).toBeInstanceOf(Error);
+    expect(
+      (await readMemberships(path.join(directory, "runner", "desktop-runner.json"))).runners[
+        target.deploymentId
+      ]?.boundSession,
+    ).toBeNull();
+    await running.service.shutdown();
     running.service.dispose();
   });
 
@@ -2623,6 +2669,8 @@ interface FakeHostHandlers {
   ) => Promise<"consumed" | "expired" | "retired">;
   /** The session this Mac's partition is signed in with; one live session per Deployment by default. */
   readonly currentSession?: (deploymentId: DeploymentId) => Promise<FakeSession | null>;
+  /** Holds a bind's reply after the Host committed it. */
+  readonly bindReply?: () => Promise<void>;
 }
 
 /**
@@ -2691,6 +2739,7 @@ function fakeHost(handlers: FakeHostHandlers) {
               proof: command.proof,
             });
             current.deviceId = machineId;
+            await handlers.bindReply?.();
             return { ok: true, data: { type: command.type } };
           }
           if (command.type === "runner.enrollment.retire") {
@@ -2724,6 +2773,7 @@ function fixture(
     readonly revokeLegacyRunner?: FakeHostHandlers["revokeLegacyRunner"];
     readonly retireEnrollment?: FakeHostHandlers["retireEnrollment"];
     readonly currentSession?: FakeHostHandlers["currentSession"];
+    readonly bindReply?: FakeHostHandlers["bindReply"];
     readonly leaveFetch?: typeof fetch;
     readonly fenceDeployment?: LocalRunnerServiceDependencies["fenceDeployment"];
     readonly clearDeploymentSession?: LocalRunnerServiceDependencies["clearDeploymentSession"];
@@ -2756,6 +2806,7 @@ function fixture(
     ...(options.retireEnrollment ? { retireEnrollment: options.retireEnrollment } : {}),
     ...(options.revokeLegacyRunner ? { revokeLegacyRunner: options.revokeLegacyRunner } : {}),
     ...(options.currentSession ? { currentSession: options.currentSession } : {}),
+    ...(options.bindReply ? { bindReply: options.bindReply } : {}),
   });
   return {
     children,
