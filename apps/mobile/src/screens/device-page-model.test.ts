@@ -16,6 +16,11 @@ const machine = (overrides: Partial<MachineSummary>) =>
     access: { activeSessions: [], ownerReachAvailable: true, policy, revision: 3 },
     allowedModules: ["browser", "integrations", "shell"],
     computerUse: null,
+    modules: {
+      browser: { checkedAt: null, detail: null, readiness: "ready" },
+      integrations: { checkedAt: null, detail: null, readiness: "ready" },
+      shell: { checkedAt: null, detail: null, readiness: "ready" },
+    },
     name: "MacBook Pro (2)",
     ownership: "mine",
     revocable: true,

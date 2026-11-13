@@ -1,5 +1,10 @@
 import type { AuthSessionSummary } from "@opensteer/core";
-import type { DesktopDeviceMembership, MachineSummary, OtherDevice } from "@opensteer/protocol";
+import {
+  deviceAccess,
+  type DesktopDeviceMembership,
+  type MachineSummary,
+  type OtherDevice,
+} from "@opensteer/protocol";
 import { hostsDeployment, isServiceMachine } from "./computers.js";
 
 export type DeviceMembership =
@@ -70,9 +75,8 @@ export function devicesView(input: {
 }): DevicesView {
   const machines = input.machines.filter((machine) => !isServiceMachine(machine));
   const ids = new Set(machines.map((machine) => machine.id));
-  const home = (machine: MachineSummary) => machine.kind === "home" || hostsDeployment(machine);
   const rank = (machine: MachineSummary) =>
-    machine.id === input.hereId ? 0 : home(machine) ? 1 : 2;
+    machine.id === input.hereId ? 0 : isHomeDevice(machine) ? 1 : 2;
   return {
     devices: [...machines]
       .sort((a, b) => rank(a) - rank(b))
@@ -80,7 +84,7 @@ export function devicesView(input: {
         machine,
         sessions: input.sessions.filter((session) => session.deviceId === machine.id),
         label: machine.name,
-        status: home(machine)
+        status: isHomeDevice(machine)
           ? "Home · your agent runs here"
           : machine.status === "online"
             ? "Online"
@@ -105,6 +109,54 @@ export function devicesView(input: {
     alsoSignedInCaption: "These run nothing. Your agent can't use them.",
     otherDevices: input.otherDevices ?? [],
   };
+}
+
+export function isHomeDevice(machine: MachineSummary): boolean {
+  return machine.kind === "home" || hostsDeployment(machine);
+}
+
+export type DeviceCapability = "browser" | "apps" | "files";
+
+const deviceCapabilities: readonly DeviceCapability[] = ["browser", "apps", "files"];
+
+export type DeviceAccessRow =
+  | {
+      readonly capability: DeviceCapability;
+      readonly kind: "fixed";
+      readonly reason: "home" | "older-host";
+    }
+  /** `on` is null while the Host has no stored policy for the device. */
+  | { readonly capability: DeviceCapability; readonly kind: "switch"; readonly on: boolean | null };
+
+/**
+ * The "Your agent can use" rows for a device page, in order.
+ *
+ * Apps needs integrations both granted and advertised, as the Host's gates do:
+ * an ordinary Android phone is granted integrations but lends only its browser.
+ * The Host keeps a device's last advertised modules while it is offline.
+ */
+export function deviceAccessRows(
+  machine: MachineSummary,
+  devicesAvailable: boolean,
+): readonly DeviceAccessRow[] {
+  const home = isHomeDevice(machine);
+  const granted = (module: MachineSummary["allowedModules"][number]) =>
+    machine.allowedModules.includes(module);
+  const offered: Readonly<Record<DeviceCapability, boolean>> = {
+    browser: home || granted("browser"),
+    apps: granted("integrations") && machine.modules.integrations !== undefined,
+    files: home || (granted("shell") && machine.device?.form !== "phone"),
+  };
+  const policy = machine.access?.policy;
+  const on = policy ? deviceAccess(policy) : null;
+  return deviceCapabilities
+    .filter((capability) => offered[capability])
+    .map((capability): DeviceAccessRow => {
+      if (home && capability !== "apps") return { capability, kind: "fixed", reason: "home" };
+      if (!devicesAvailable && capability !== "files")
+        return { capability, kind: "fixed", reason: "older-host" };
+      return { capability, kind: "switch", on: on?.[capability] ?? null };
+    });
 }
 
 export function assertDeviceSessionAllowed(
