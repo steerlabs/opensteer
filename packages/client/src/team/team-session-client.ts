@@ -77,7 +77,7 @@ export interface TeamSessionOptions {
     signal?: AbortSignal,
   ) => Promise<Blob>;
   readonly uploadFile?: (input: TeamFileUpload) => Promise<z.infer<typeof TeamFileSchema>>;
-  readonly notify?: (entry: TeamSidebar["channels"][number]) => void;
+  readonly notify?: (entry: TeamSidebar["channels"][number], current: () => boolean) => void;
   /** Spreads reconnects; tests pin it. */
   readonly random?: () => number;
 }
@@ -672,6 +672,7 @@ export class TeamSessionClient {
     if (notify && previous) this.#notifySidebar(previous, next);
   }
   #notifySidebar(previous: TeamSidebar, next: TeamSidebar): void {
+    const lifetime = this.#lifetime;
     for (const entry of next.channels) {
       const held = previous.channels.find((row) => row.channel.id === entry.channel.id);
       const notify =
@@ -686,7 +687,10 @@ export class TeamSessionClient {
             ? 1
             : -1) > 0)
       )
-        this.#options.notify?.(entry);
+        this.#options.notify?.(
+          entry,
+          () => !this.#disposed && !this.#removed && lifetime === this.#lifetime,
+        );
     }
   }
   async #refreshSidebarRows(channelIds: readonly TeamChannelId[]): Promise<void> {
@@ -1021,7 +1025,8 @@ export class TeamSessionClient {
     if (
       lifetime !== this.#lifetime ||
       contentGeneration !== this.#contentGeneration ||
-      this.#removed
+      this.#removed ||
+      this.#disposed
     )
       return null;
     if (blob.size <= 32 * 1024 * 1024) {

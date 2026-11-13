@@ -101,6 +101,7 @@ interface BinaryTransfer {
   readonly transport: HostTransport;
   readonly ownerId: number;
   readonly attachmentKey: string;
+  readonly assertCurrent: () => void;
   readonly directory: string;
   readonly path: string;
   readonly input: DesktopHostBinaryOpenInput;
@@ -419,17 +420,20 @@ export class DesktopHostTransport extends HostTransport {
         throw new HostTransportError("deployment-changed");
       const attachmentKey = transport.currentKey();
       if (!attachmentKey) throw new Error("No deployment is attached.");
+      const assertCurrent = transport.retainAuthorization(selected);
       directory = await fs.mkdtemp(join(tmpdir(), "opensteer-attachment-"));
       await ensurePrivateDirectory(directory);
       const filePath = join(directory, "bytes");
       await fs.writeFile(filePath, new Uint8Array(), { mode: 0o600 });
       await setPrivateFileMode(filePath);
+      assertCurrent();
       const transferId = globalThis.crypto.randomUUID();
       const controller = new AbortController();
       const result = DesktopHostBinaryOpenResultSchema.parse({ transferId });
       const transfer: BinaryTransfer = {
         transport,
         attachmentKey,
+        assertCurrent,
         controller,
         directory,
         input: parsed,
@@ -463,6 +467,7 @@ export class DesktopHostTransport extends HostTransport {
     }
     this.#assertBinaryAttachment(transfer);
     await fs.appendFile(transfer.path, parsed.bytes);
+    this.#assertBinaryAttachment(transfer);
     transfer.size += parsed.bytes.byteLength;
   }
 
@@ -472,9 +477,11 @@ export class DesktopHostTransport extends HostTransport {
     this.#touchBinary(parsed.transferId, transfer);
     if (transfer.input.method !== "POST") throw new Error("This transfer cannot be finished.");
     this.#assertBinaryAttachment(transfer);
+    let result: DesktopHostHttpResponse;
     try {
       const body = await openAsBlob(transfer.path);
-      return await transfer.transport.exchange(
+      this.#assertBinaryAttachment(transfer);
+      result = await transfer.transport.exchange(
         {
           body,
           expectedAttachmentKey: transfer.attachmentKey,
@@ -499,9 +506,12 @@ export class DesktopHostTransport extends HostTransport {
             status: response.status,
           }),
       );
+      this.#assertBinaryAttachment(transfer);
     } finally {
-      await this.closeBinary(ownerId, parsed);
+      if (this.#binary.has(parsed.transferId)) await this.closeBinary(ownerId, parsed);
     }
+    transfer.assertCurrent();
+    return result;
   }
 
   async readBinary(
@@ -516,11 +526,14 @@ export class DesktopHostTransport extends HostTransport {
     transfer.size = outcome.sizeBytes;
     this.#assertBinaryAttachment(transfer);
     const handle = await fs.open(transfer.path, "r");
+    let result: import("@opensteer/protocol/desktop").DesktopHostBinaryReadResult;
     try {
+      this.#assertBinaryAttachment(transfer);
       const bytes = new Uint8Array(Math.min(binaryChunkBytes, transfer.size - transfer.offset));
       const { bytesRead } = await handle.read(bytes, 0, bytes.length, transfer.offset);
+      this.#assertBinaryAttachment(transfer);
       transfer.offset += bytesRead;
-      return DesktopHostBinaryReadResultSchema.parse({
+      result = DesktopHostBinaryReadResultSchema.parse({
         bytes: bytes.subarray(0, bytesRead),
         contentType: outcome.contentType,
         done: transfer.offset >= transfer.size,
@@ -534,6 +547,8 @@ export class DesktopHostTransport extends HostTransport {
     } finally {
       await handle.close();
     }
+    this.#assertBinaryAttachment(transfer);
+    return result;
   }
 
   async closeBinary(ownerId: number, input: unknown): Promise<void> {
@@ -631,6 +646,8 @@ export class DesktopHostTransport extends HostTransport {
   }
 
   #assertBinaryAttachment(transfer: BinaryTransfer): void {
+    transfer.assertCurrent();
+    transfer.controller.signal.throwIfAborted();
     if (transfer.transport.currentKey() !== transfer.attachmentKey)
       throw new HostTransportError("deployment-changed");
   }

@@ -55,7 +55,8 @@ are stored separately from the previous credential format so Stable/Beta downgra
 authorization; missing or mismatched binding metadata requires silent reauthorization.
 Credential reads and refreshes enforce the binding even if deletion or revocation fails.
 Every native team transport retains the credential read’s team/Account lease, checks it before
-sending and after consuming a response, and refuses stale socket sends and events. This includes
+sending and at delivery, including after RPC decoding and desktop binary disk reads and handle
+close, and refuses stale socket sends and events. This includes
 the first resolution before the selected attachment is known. Real
 identity changes synchronously invalidate active native team transports, including teams with no
 stored credential: sockets close and late events and outstanding responses cannot be delivered.

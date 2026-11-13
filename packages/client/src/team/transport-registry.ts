@@ -26,13 +26,15 @@ export function pinnedTeamTransport(
   baseUrl: URL,
 ): PinnedTeamTransport {
   const transport = new HostTransport({ ...options, expectedKind: "team" });
+  const leases = new WeakMap<Response, () => void>();
   const fetch: typeof globalThis.fetch = async (input, init) => {
     const url = new URL(
       typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
     );
     if (url.origin !== baseUrl.origin) throw new Error("Team request left its pinned origin.");
     const headers = new Headers(init?.headers);
-    return transport.exchange(
+    const assertCurrent = transport.retainAuthorization(await transport.current());
+    const response = await transport.exchange(
       {
         path: url.pathname + url.search,
         method: init?.method ?? "GET",
@@ -56,11 +58,15 @@ export function pinnedTeamTransport(
         });
       },
     );
+    assertCurrent();
+    leases.set(response, assertCurrent);
+    return response;
   };
   const rpc = createHttpHostApiClient({
     baseUrl,
     fetch,
     kind: "team",
+    assertResponseCurrent: (response) => leases.get(response)?.(),
     onAuthenticationRequired: () => transport.closeAllSockets(),
   });
   const connect = (): WebSocketClient => {

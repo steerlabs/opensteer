@@ -131,13 +131,15 @@ export function useTeamAttachment(teamId: string | undefined): TeamAttachment | 
 }
 
 /** A desktop notification for a team message, from the team's own sidebar socket. */
-function notifyTeam(
+export function notifyTeam(
   name: string,
   entry: TeamSidebar["channels"][number],
   open: (channelId: string) => void,
+  current: () => boolean,
 ): void {
   if (typeof Notification === "undefined" || Notification.permission === "denied") return;
   const show = () => {
+    if (!current()) return;
     const notification = new Notification(name, {
       body:
         entry.mentionCount > 0
@@ -146,6 +148,10 @@ function notifyTeam(
       tag: `${name}:${entry.channel.id}`,
     });
     notification.onclick = () => {
+      if (!current()) {
+        notification.close();
+        return;
+      }
       window.focus();
       open(entry.channel.id);
       notification.close();
@@ -190,6 +196,8 @@ export function TeamsProvider({
   const [entered, setEntered] = useState(0);
   const world = surface.kind === "preview" ? (surface.world ?? null) : null;
   const accountSubject = account?.subject ?? null;
+  const currentAccount = useRef(accountSubject);
+  currentAccount.current = accountSubject;
   // Made in the effect so React's double effects never resume a disposed coordinator.
   const [coordination, setCoordination] = useState<WebTeamCoordination | null>(null);
   useEffect(() => {
@@ -244,9 +252,13 @@ export function TeamsProvider({
               bridge,
               origin: team.origin,
               scope,
-              notify: (entry) =>
-                notifyTeam(team.name, entry, (channelId) =>
-                  navigator.current?.(channelPath(scope.teamDeploymentId, channelId)),
+              notify: (entry, current) =>
+                notifyTeam(
+                  team.name,
+                  entry,
+                  (channelId) =>
+                    navigator.current?.(channelPath(scope.teamDeploymentId, channelId)),
+                  () => current() && currentAccount.current === accountSubject,
                 ),
             });
           })

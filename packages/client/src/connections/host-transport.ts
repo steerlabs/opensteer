@@ -162,6 +162,15 @@ export class HostTransport {
     return this.#fence.subscribe(listener);
   }
 
+  retainAuthorization(selected: SelectedAttachment): () => void {
+    const generation = this.#sessionGeneration;
+    return () => {
+      if (generation !== this.#sessionGeneration || selected.resolved.key !== this.currentKey())
+        throw new HostTransportError("deployment-changed");
+      selected.resolved.assertAuthorizationCurrent?.();
+    };
+  }
+
   /** Only a real attachment change; `subscribe` also hears ordinary catalog notices. */
   onAttachmentInvalidated(release: (reason: string) => void): () => void {
     return this.#fence.onInvalidated(release);
@@ -199,6 +208,7 @@ export class HostTransport {
       const selected = await this.current();
       if (sessionGeneration !== this.#sessionGeneration)
         throw new HostTransportError("deployment-changed");
+      const assertCurrent = this.retainAuthorization(selected);
       const { resolved, connection } = selected;
       const deploymentKind = connection.authority.document.deploymentShape.kind;
       const negotiatesVersion =
@@ -271,11 +281,11 @@ export class HostTransport {
             deadline,
           );
         }
-        resolved.assertAuthorizationCurrent?.();
+        assertCurrent();
         const result = await deadline.wait(
           read(response, { signal: controller.signal, onProgress }),
         );
-        resolved.assertAuthorizationCurrent?.();
+        assertCurrent();
         return result;
       } catch (error) {
         if (request.signal?.aborted) throw request.signal.reason ?? error;
@@ -313,7 +323,9 @@ export class HostTransport {
       throw new Error("The Host WebSocket limit is full.");
     }
     const sessionGeneration = this.#sessionGeneration;
-    const { connection, resolved } = await this.current();
+    const selected = await this.current();
+    const { connection, resolved } = selected;
+    const assertCurrent = this.retainAuthorization(selected);
     if (sessionGeneration !== this.#sessionGeneration)
       throw new HostTransportError("deployment-changed");
     const selectionGeneration = this.#fence.generation;
@@ -348,10 +360,10 @@ export class HostTransport {
       apiVersionQueryParameter,
       String(apiNegotiation(connection.authority.document.deploymentShape.kind).apiVersion),
     );
-    resolved.assertAuthorizationCurrent?.();
+    assertCurrent();
     const authorizationCurrent = () => {
       try {
-        resolved.assertAuthorizationCurrent?.();
+        assertCurrent();
         return true;
       } catch {
         socket.close(deploymentChangedCloseCode, "Deployment changed");
@@ -373,11 +385,20 @@ export class HostTransport {
       },
       {
         close: (code, reason) => {
-          if (!released && code === 4003 && reason === "Session ended")
+          let current = true;
+          try {
+            assertCurrent();
+          } catch {
+            current = false;
+          }
+          if (current && !released && code === 4003 && reason === "Session ended")
             this.#sessions?.sessionEnded?.({ connection, resolved });
           released = true;
           this.#sockets.delete(socket);
-          bound.close(code, reason);
+          bound.close(
+            current ? code : deploymentChangedCloseCode,
+            current ? reason : "Deployment changed",
+          );
         },
         error: (message) => {
           if (authorizationCurrent() && !released && sessionGeneration === this.#sessionGeneration)

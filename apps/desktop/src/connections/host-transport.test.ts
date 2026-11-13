@@ -1,3 +1,5 @@
+import * as privateFiles from "@opensteer/shared/privateFiles";
+import { promises as fs } from "node:fs";
 import { HostTransport as SharedHostTransport } from "@opensteer/client/connections";
 import { createDesktopHostFetch } from "../../../web/src/desktop/desktop-host-transport.js";
 import { readComputerFacts } from "../../../web/src/desktop/computer-facts.js";
@@ -33,6 +35,111 @@ import { testPersonalHostRuntime } from "../supervisor/personal-host-runtime-tes
 import { DesktopLocalRunnerTargetResolver } from "../supervisor/local-runner-authority.js";
 
 describe("DesktopHostTransport", () => {
+  it.each(["open", "read", "close", "cancel-close", "write", "finish-close"] as const)(
+    "withholds binary IPC delivery after Account invalidation during %s",
+    async (stage) => {
+      const team = deployment("Team", "https://team.example");
+      const catalog = catalogStore([team], team.authority.document.deploymentId);
+      let current = true;
+      const transport = desktopHostTransport({
+        catalog,
+        credentials: {
+          teamEntryLease: () => ({
+            assertCurrent: () => {
+              if (!current) throw new Error("Account changed");
+            },
+          }),
+          authorizationHeader: async () => "Bearer team",
+        },
+        network: {
+          request: async () => new Response("private bytes"),
+          openWebSocket: () => socket(),
+        },
+      });
+      const upload = stage === "write" || stage === "finish-close";
+      if (stage === "open") {
+        const mode = privateFiles.setPrivateFileMode;
+        const spy = vi
+          .spyOn(privateFiles, "setPrivateFileMode")
+          .mockImplementation(async (...args) => {
+            await mode(...args);
+            current = false;
+          });
+        try {
+          await expect(
+            transport.openBinary(1, {
+              expectedDeploymentId: team.authority.document.deploymentId,
+              method: "GET",
+              path: "/v1/team/files/test/original",
+              headers: {},
+            }),
+          ).rejects.toMatchObject({ code: "deployment-changed" });
+        } finally {
+          spy.mockRestore();
+          transport.dispose();
+        }
+        return;
+      }
+      const transfer = await transport.openBinary(1, {
+        expectedDeploymentId: team.authority.document.deploymentId,
+        method: upload ? "POST" : "GET",
+        path: upload ? "/v1/team/files/upload/tch_test" : "/v1/team/files/test/original",
+        headers: upload ? { contentType: "application/octet-stream" } : {},
+      });
+      try {
+        if (stage === "write") {
+          const append = fs.appendFile.bind(fs);
+          vi.spyOn(fs, "appendFile").mockImplementation(async (...args) => {
+            await append(...args);
+            current = false;
+          });
+        } else if (stage === "finish-close") {
+          const rm = fs.rm.bind(fs);
+          vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+            await rm(...args);
+            current = false;
+          });
+        } else {
+          const open = fs.open.bind(fs);
+          vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+            const handle = await open(...args);
+            if (stage === "read") {
+              const read = handle.read.bind(handle);
+              vi.spyOn(handle, "read").mockImplementation(
+                async (...input: Parameters<typeof read>) => {
+                  const result = await read(...input);
+                  current = false;
+                  return result;
+                },
+              );
+            } else {
+              const close = handle.close.bind(handle);
+              vi.spyOn(handle, "close").mockImplementation(async () => {
+                await close();
+                if (stage === "cancel-close") await transport.closeBinary(1, transfer);
+                else current = false;
+              });
+            }
+            return handle;
+          });
+        }
+        const pending =
+          stage === "write"
+            ? transport.writeBinary(1, { ...transfer, bytes: new Uint8Array([1]) })
+            : upload
+              ? transport.finishBinary(1, transfer)
+              : transport.readBinary(1, transfer);
+        await expect(pending).rejects.toMatchObject({
+          code: stage === "cancel-close" ? "cancelled" : "deployment-changed",
+        });
+      } finally {
+        vi.restoreAllMocks();
+        await transport.closeBinaryForOwner(1);
+        transport.dispose();
+      }
+    },
+  );
+
   it.each([
     ["desktop", "credential"],
     ["shared", "credential"],

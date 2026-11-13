@@ -302,8 +302,13 @@ describe("team synchronization", () => {
             channel: expect.objectContaining({ id: target }),
             unread: true,
           }),
+          expect.any(Function),
         ),
       );
+      const current = notify.mock.calls[0]![1] as () => boolean;
+      expect(current()).toBe(true);
+      client.dispose();
+      expect(current()).toBe(false);
       expect(host.calls.slice(before)).toEqual(["team.sidebar.get"]);
       expect(client.getSnapshot().sidebar?.nextCursor).toBe(cursor);
     } finally {

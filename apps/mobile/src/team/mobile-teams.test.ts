@@ -45,6 +45,7 @@ const connections: readonly DeploymentConnection[] = mockDeploymentConnections()
  */
 function fixture(
   options: {
+    readonly bootstrapFailures?: number;
     readonly previews?: Pick<NotificationPreviews, "attach" | "clear">;
     /** Answers a team command in place of the mock team Host. */
     readonly dispatch?: (command: { readonly type: string }) => unknown;
@@ -52,6 +53,8 @@ function fixture(
     readonly catalog?: readonly { connection: DeploymentConnection; signedIn: boolean }[];
   } = {},
 ) {
+  let bootstrapFailures = options.bootstrapFailures ?? 0;
+  let bootstrapCalls = 0;
   const hosts = new Map<string, MockTeamHost>();
   const mock = mockTeamTransport(hosts);
   let releaseAcme!: () => void;
@@ -68,10 +71,18 @@ function fixture(
               await acmeAnswers;
               return target["team.bootstrap.get"](input);
             }
-          : name === "commands.dispatch" && options.dispatch !== undefined
-            ? async (input: { readonly type: string }) =>
-                options.dispatch!(input) ?? target["commands.dispatch"](input as never)
-            : Reflect.get(target, name, receiver),
+          : name === "team.bootstrap.get" && !acme && options.bootstrapFailures !== undefined
+            ? async (input: never) => {
+                if (bootstrapCalls++ > 0 && bootstrapFailures > 0) {
+                  bootstrapFailures--;
+                  throw new Error("Team offline");
+                }
+                return target["team.bootstrap.get"](input);
+              }
+            : name === "commands.dispatch" && options.dispatch !== undefined
+              ? async (input: { readonly type: string }) =>
+                  options.dispatch!(input) ?? target["commands.dispatch"](input as never)
+              : Reflect.get(target, name, receiver),
     }) as HostApiClient;
     return { ...inner, rpc };
   };
@@ -145,6 +156,22 @@ function fixture(
 }
 
 describe("the one team socket a phone keeps", () => {
+  it("retries an unloaded remembered viewer and starts its realtime connection", async () => {
+    const f = fixture({ bootstrapFailures: 1 });
+    try {
+      const session = await f.teams.session(mockFamilyTeamId);
+      await f.teams.select(mockFamilyTeamId);
+      expect(f.teams.team(mockFamilyTeamId)?.state).toBe("offline");
+      expect(session.getSnapshot().bootstrap).toBeNull();
+      await f.teams.select(mockFamilyTeamId);
+      expect(session.getSnapshot().bootstrap).not.toBeNull();
+      expect(f.teams.team(mockFamilyTeamId)?.state).toBe("live");
+      expect(f.sockets()[mockFamilyTeamId]).toBe(1);
+    } finally {
+      f.teams.dispose();
+    }
+  });
+
   it("shows sign-in immediately when a live team is explicitly suppressed", async () => {
     const f = fixture();
     f.teams.start();
@@ -477,5 +504,41 @@ it.each([...TeamEntryRefusalReasonSchema.options, "removed", undefined])(
     expect(teamFailure(error)).toBe(
       reason === "not-a-member" ? "join" : reason === "removed" ? "removed" : "offline",
     );
+  },
+);
+
+it.each(["load", "save-directory", "save-write"] as const)(
+  "fences team cache handoff after Account invalidation during %s",
+  async (stage) => {
+    const { teamFilePersistence } = await import("./mobile-teams.js");
+    const files = new MemoryPrivateFilesystem();
+    let current = true;
+    const scope = { teamDeploymentId: mockTeamId, userId: mockTeamReaderId };
+    const persistence = teamFilePersistence(files, "/cache", () => {
+      if (!current) throw new Error("Account changed");
+    });
+    await persistence.save(scope, { drafts: {}, pending: [] });
+    const method =
+      stage === "load"
+        ? "readFile"
+        : stage === "save-directory"
+          ? "ensureDirectory"
+          : "writeFileAtomic";
+    const original = files[method].bind(files);
+    const spy = vi.spyOn(files, method);
+    spy.mockImplementation(async (...args: unknown[]) => {
+      const result = await Reflect.apply(original, files, args);
+      current = false;
+      return result;
+    });
+    try {
+      await expect(
+        stage === "load"
+          ? persistence.load(scope)
+          : persistence.save(scope, { drafts: { test: "private" }, pending: [] }),
+      ).rejects.toThrow("Account changed");
+    } finally {
+      spy.mockRestore();
+    }
   },
 );

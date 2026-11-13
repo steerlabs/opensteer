@@ -188,3 +188,35 @@ it("publishes an authorized team while another team's silent entry is pending", 
     ready.dispose();
   }
 });
+
+it("discards a team notification invalidated while permission was pending", async () => {
+  const { notifyTeam } = await import("./team-attachments.js");
+  const permission = Promise.withResolvers<NotificationPermission>();
+  const shown = vi.fn();
+  class TestNotification {
+    static permission = "default";
+    static requestPermission = () => permission.promise;
+    constructor(...args: unknown[]) {
+      shown(...args);
+    }
+  }
+  vi.stubGlobal("Notification", TestNotification);
+  let current = true;
+  try {
+    notifyTeam(
+      "Acme",
+      {
+        mentionCount: 1,
+        channel: { id: "channel", kind: "public", name: "private-channel" },
+      } as never,
+      () => {},
+      () => current,
+    );
+    current = false;
+    permission.resolve("granted");
+    await permission.promise;
+    expect(shown).not.toHaveBeenCalled();
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});

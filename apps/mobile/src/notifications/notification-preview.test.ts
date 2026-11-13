@@ -13,16 +13,15 @@ function fixture() {
   const push = {
     registeredAccountSubject,
     getSnapshot: () => ({ status: "registered" }),
-    installationId: async () => "install",
+    installationId: vi.fn(async () => "install"),
   } as unknown as PushRegistration;
-  const controller = new NotificationPreviews(
-    native,
-    push,
-    async () => "acct_00000000-0000-4000-8000-000000000001",
-  );
+  const subject = vi.fn(async () => "acct_00000000-0000-4000-8000-000000000001");
+  const controller = new NotificationPreviews(native, push, subject);
   const dispatch = vi.fn(async (_command: unknown) => {});
   return {
     native,
+    push,
+    subject,
     controller,
     dispatch,
     registeredAccountSubject,
@@ -30,6 +29,42 @@ function fixture() {
   };
 }
 describe("private preview lifecycle", () => {
+  it.each(["subject", "push-subject", "installation", "key"] as const)(
+    "discards preview registration invalidated after %s",
+    async (stage) => {
+      const f = fixture();
+      let current = true;
+      const subject = "acct_00000000-0000-4000-8000-000000000001";
+      if (stage === "subject")
+        f.subject.mockImplementationOnce(async () => {
+          current = false;
+          return subject;
+        });
+      if (stage === "push-subject")
+        f.registeredAccountSubject.mockImplementationOnce(async () => {
+          current = false;
+          return subject;
+        });
+      if (stage === "installation")
+        vi.spyOn(f.push, "installationId").mockImplementationOnce(async () => {
+          current = false;
+          return "install";
+        });
+      if (stage === "key")
+        f.native.key.mockImplementationOnce(async () => {
+          current = false;
+          return { keyId: "key-id", key: "key" };
+        });
+      f.controller.attach({
+        deploymentId: f.deploymentId,
+        capabilities: ["notification-preview-v1"],
+        current: () => current,
+        dispatch: f.dispatch,
+      });
+      await f.controller.reconcile();
+      expect(f.dispatch).not.toHaveBeenCalled();
+    },
+  );
   it("does no key or RPC work for old Hosts", async () => {
     const f = fixture();
     f.controller.attach({

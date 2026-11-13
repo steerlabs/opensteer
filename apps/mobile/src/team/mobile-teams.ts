@@ -240,15 +240,19 @@ export class MobileTeams {
     this.#files = options.files;
     this.#previews = options.previews ?? null;
     this.#usersFile = `${options.directory}/teams.json`;
-    const persistence = teamFilePersistence(options.files, `${options.directory}/teams`);
     this.registry = new TeamTransportRegistry("mobile", (scope) => {
       const connection = this.#connection(scope.teamDeploymentId);
       if (connection === null) throw new TeamAccessError("This team is no longer on this phone.");
       const transport = this.#transport(connection, scope);
+      const lease = options.client.oauth.teamEntryLease(
+        DeploymentIdSchema.parse(scope.teamDeploymentId),
+      );
       return {
         scope,
         rpc: transport.rpc,
-        persistence,
+        persistence: teamFilePersistence(options.files, `${options.directory}/teams`, () =>
+          lease.assertCurrent(),
+        ),
         connect: transport.connect,
         readFile: transport.readFile,
         uploadFile: transport.uploadFile,
@@ -499,6 +503,7 @@ export class MobileTeams {
       const session = await this.session(target);
       const userId = this.#memo?.users[target];
       if (userId === undefined || !current()) return;
+      this.#setState(target, "loading", null);
       await this.registry.select({ teamDeploymentId: target, userId });
       if (current() && session.getSnapshot().bootstrap !== null)
         this.#setState(target, "live", null);
@@ -968,12 +973,18 @@ export function teamFailure(error: unknown): TeamState {
  * inside — the protected credential. One file per partition, so removing a
  * team or a person removes exactly theirs.
  */
-export function teamFilePersistence(files: PrivateFilesystem, directory: string): TeamPersistence {
+export function teamFilePersistence(
+  files: PrivateFilesystem,
+  directory: string,
+  assertCurrent: () => void = () => {},
+): TeamPersistence {
   const path = (scope: TeamCacheScope): string =>
     `${directory}/${DeploymentIdSchema.parse(scope.teamDeploymentId)}.${UserIdSchema.parse(scope.userId)}.json`;
   return {
     async load(scope) {
+      assertCurrent();
       const stored = await files.readFile(path(scope), 4 * 1024 * 1024);
+      assertCurrent();
       if (stored === null) return null;
       try {
         const parsed = TeamSavedStateSchema.safeParse(JSON.parse(new TextDecoder().decode(stored)));
@@ -983,8 +994,11 @@ export function teamFilePersistence(files: PrivateFilesystem, directory: string)
       }
     },
     async save(scope, state) {
+      assertCurrent();
       await files.ensureDirectory(directory);
+      assertCurrent();
       await files.writeFileAtomic(path(scope), JSON.stringify(TeamSavedStateSchema.parse(state)));
+      assertCurrent();
     },
     async remove(scope) {
       await files.removeFile(path(scope));

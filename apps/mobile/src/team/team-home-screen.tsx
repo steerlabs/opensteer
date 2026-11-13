@@ -119,48 +119,37 @@ export function TeamHomeScreen(props: StaticScreenProps<{ readonly teamId: strin
     });
   }, [canInvite, coordinator, name, navigation, teamId]);
 
-  if (session === null && team?.state === "update-server")
+  const forget = () => void teams.forget(teamId).then(() => navigation.popToTop());
+  if (
+    team?.state === "removed" ||
+    team?.state === "join" ||
+    team?.state === "update-app" ||
+    team?.state === "update-server"
+  ) {
+    const title =
+      team.state === "removed"
+        ? `You're no longer in ${name}`
+        : team.state === "join"
+          ? "Join this team"
+          : team.state === "update-app"
+            ? "Update Opensteer"
+            : "Team server needs an update";
+    const detail =
+      team.detail ??
+      (team.state === "removed" || team.state === "join"
+        ? "Ask a team member for a new invite."
+        : team.state === "update-app"
+          ? "Install the latest Opensteer app to open this team."
+          : "Ask the team administrator to update the server.");
     return (
       <Screen>
         <View style={styles.center}>
-          <Notice
-            title="Team server needs an update"
-            detail={team.detail ?? "Ask the team administrator to update the server."}
-            tone="neutral"
-          />
+          <Notice title={title} detail={detail} tone="neutral" />
+          <PrimaryButton label="Remove from this phone" onPress={forget} />
         </View>
       </Screen>
     );
-  if (session === null && team?.state === "offline")
-    return (
-      <Screen>
-        <View style={styles.center}>
-          <Notice
-            title="Team couldn't be reached"
-            detail={team.detail ?? "Try again when you're connected."}
-            tone="neutral"
-          />
-          <PrimaryButton
-            label="Retry"
-            onPress={() => {
-              void teams.select(teamId);
-            }}
-          />
-        </View>
-      </Screen>
-    );
-  if (team?.state === "join")
-    return (
-      <Screen>
-        <View style={styles.center}>
-          <Notice
-            title="Join this team"
-            detail={team.detail ?? "Ask a team member for an invite."}
-            tone="neutral"
-          />
-        </View>
-      </Screen>
-    );
+  }
   if (team !== null && team.state === "signed-out")
     return (
       <Screen>
@@ -195,10 +184,18 @@ export function TeamHomeScreen(props: StaticScreenProps<{ readonly teamId: strin
     return (
       <Screen>
         <View style={styles.center}>
-          {failure === null ? (
+          {team?.state === "loading" && failure === null ? (
             <ActivityIndicator color={color.muted} />
           ) : (
-            <Notice detail={failure} title={`${name} didn't answer`} tone="neutral" />
+            <>
+              <Notice
+                detail={failure ?? "Try again when you're connected."}
+                title={`${name} didn't answer`}
+                tone="neutral"
+              />
+              <PrimaryButton label="Retry" onPress={() => void teams.select(teamId)} />
+              <PrimaryButton label="Remove from this phone" onPress={forget} />
+            </>
           )}
         </View>
       </Screen>
