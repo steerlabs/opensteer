@@ -1,3 +1,5 @@
+import { BrowserAgentTabSchema } from "../packages/protocol/src/browser-agent.js";
+import { z } from "zod";
 import { browserRows } from "../apps/host/src/browser/browser-rows.test-support.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
@@ -65,7 +67,6 @@ import {
   BrowserServerMessageSchema,
   BrowserSurfaceIdSchema,
   BrowserTabLayoutSchema,
-  BrowserTabReadResultSchema,
   BrowserTabWriteResultSchema,
 } from "../packages/protocol/src/index.js";
 
@@ -309,7 +310,7 @@ integration("personal tab order", () => {
       agent(stack, {
         calls: [
           {
-            name: "browser_tab_write",
+            method: "organizeTabs",
             input: { action: "move", tabIds: [c.tabId], before: a.tabId },
           },
         ],
@@ -761,10 +762,9 @@ async function agent(stack: VerticalStack, plan: Record<string, unknown>) {
   evidence.push({ toolPlan: plan, report, runId: turn.runId, threadId });
   return {
     report: report as {
-      pages: unknown[];
+      tabs: unknown[];
       calls: Array<{ result?: unknown; error?: string }>;
-      immediate?: { tabId: string; first: unknown; replay: unknown };
-      attached?: { sessions: Array<{ id: string; attached: boolean }> };
+      immediate?: { tabId: string; first: unknown };
     },
     turn,
     threadId,
@@ -817,11 +817,11 @@ integration("agent organization and durable ownership", () => {
       const beforeTabs = await inventory();
       const beforeSessions = await sessions();
       const read = await agent(stack, {
-        calls: [{ name: "browser_tab_read", input: {} }],
+        calls: [{ method: "listTabs", input: {} }],
       });
       expect(read.report.calls).toHaveLength(1);
       expect(read.report.calls[0]?.error).toBeUndefined();
-      const result = BrowserTabReadResultSchema.parse(read.report.calls[0]?.result);
+      const result = { tabs: z.array(BrowserAgentTabSchema).parse(read.report.calls[0]?.result) };
       expect(result.tabs).toHaveLength(2);
       for (const [opened, profileId] of [
         [guest, null],
@@ -830,12 +830,11 @@ integration("agent organization and durable ownership", () => {
         expect(result.tabs.find((tab) => tab.tabId === opened.tabId)).toEqual({
           tabId: opened.tabId,
           title: expect.any(String),
-          site: expect.any(String),
+          url: expect.any(String),
+          computer: expect.any(String),
           state,
-          sessionId: state === "open" ? opened.sessionId : null,
-          profileId,
+          profile: profileId ? { id: profileId, name: profile.profile.name } : null,
           groupId: null,
-          position: opened.tabId === guest.tabId ? 0 : 1,
           usedByThisTask: false,
           usedByOtherTask: false,
         });
@@ -872,7 +871,7 @@ integration("agent organization and durable ownership", () => {
     }
   }, 150_000);
 
-  it("reads beyond the bootstrap window, groups a new surface immediately and replays safely", async () => {
+  it("reads beyond the bootstrap window and groups a new surface immediately", async () => {
     const stack = await deployment();
     const opened = await open(stack);
     const db = stack.host.store.database;
@@ -940,41 +939,42 @@ integration("agent organization and durable ownership", () => {
         .execute();
     }
     const main = await agent(stack, { paginate: true, immediate: true });
-    const pages = main.report.pages.map((p) => BrowserTabReadResultSchema.parse(p));
-    expect(pages.length).toBeGreaterThan(1);
-    const allIds = pages.flatMap((p) => p.tabs.map((t) => t.tabId));
-    const positions = pages.flatMap((p) => p.tabs.map((t) => t.position!));
-    expect([...positions].sort((a, b) => a - b)).toEqual(
-      Array.from({ length: allIds.length }, (_, index) => index),
-    );
+    const allTabs = z.array(BrowserAgentTabSchema).parse(main.report.tabs);
+    const allIds = allTabs.map((t) => t.tabId);
+    expect(allTabs.length).toBeGreaterThan(100);
     expect(new Set(allIds).size).toBe(allIds.length);
     expect(allIds).toEqual(expect.arrayContaining(seedIds));
-    expect(JSON.stringify(pages)).not.toContain("token=secret");
-    expect(pages[0]?.groups).toContainEqual(
-      expect.objectContaining({ id: mixed.groupId, createdBy: "person" }),
+    expect(allTabs.find((t) => t.tabId === seedIds[0])?.url).toBe(
+      "https://example.test/private/path?token=secret",
     );
-    expect(main.report.immediate?.first).toEqual(main.report.immediate?.replay);
-    expect(pages[0]?.groups).toContainEqual(
-      expect.objectContaining({ createdBy: "this-task", tabCount: 1 }),
-    );
-    expect(pages[0]?.groups.every((g) => !("tabIds" in g))).toBe(true);
-    expect(pages.flatMap((p) => p.tabs)).toContainEqual(
+    expect(main.report.immediate?.first).toMatchObject({ action: "group" });
+    expect(allTabs.find((t) => t.tabId === opened.tabId)?.groupId).toBe(mixed.groupId);
+    expect(allTabs).toContainEqual(
       expect.objectContaining({ tabId: main.report.immediate?.tabId, usedByThisTask: true }),
     );
     expect(
       new Set((await new BrowserTabGroupStore(db).layout(owner.id)).groups.map((g) => g.id)).size,
     ).toBe(2);
     const otherTask = await agent(stack, { paginate: true });
-    expect(
-      otherTask.report.pages
-        .map((p) => BrowserTabReadResultSchema.parse(p))
-        .flatMap((p) => p.groups),
-    ).toContainEqual(expect.objectContaining({ createdBy: "another-task", tabCount: 1 }));
+    expect(z.array(BrowserAgentTabSchema).parse(otherTask.report.tabs)).toContainEqual(
+      expect.objectContaining({
+        tabId: main.report.immediate?.tabId,
+        usedByOtherTask: false,
+        usedByThisTask: false,
+      }),
+    );
+    expect(await new BrowserTabGroupStore(db).groups(owner.id)).toContainEqual(
+      expect.objectContaining({
+        createdByThreadId: main.threadId,
+        tabIds: [main.report.immediate!.tabId],
+      }),
+    );
+    expect(allIds).toEqual(await resolvedOrder(stack));
     expect(await new PersonalTabStore(db).get(owner.id, outsideTab.tabId)).not.toBeNull();
     const moves = await agent(stack, {
       calls: [
         {
-          name: "browser_tab_write",
+          method: "organizeTabs",
           input: {
             action: "move",
             tabIds: [outsideTab.tabId],
@@ -982,10 +982,10 @@ integration("agent organization and durable ownership", () => {
             before: opened.tabId,
           },
         },
-        { name: "browser_tab_write", input: { action: "move", groupId: mixed.groupId } },
-        { name: "browser_tab_write", input: { action: "move", tabIds: [outsideTab.tabId] } },
+        { method: "organizeTabs", input: { action: "move", groupId: mixed.groupId } },
+        { method: "organizeTabs", input: { action: "move", tabIds: [outsideTab.tabId] } },
         {
-          name: "browser_tab_write",
+          method: "organizeTabs",
           input: { action: "move", tabIds: [outsideTab.tabId], before: mixed.groupId },
         },
       ],
@@ -999,7 +999,7 @@ integration("agent organization and durable ownership", () => {
     const scopedMove = await agent(stack, {
       calls: [
         {
-          name: "browser_tab_write",
+          method: "organizeTabs",
           input: { action: "move", tabIds: [outsideTab.tabId], before: seedIds[0] },
         },
       ],
@@ -1012,9 +1012,9 @@ integration("agent organization and durable ownership", () => {
       assertions: [
         "pagination beyond 100 lineages",
         "no duplicate tabs",
-        "site only",
+        "full addresses",
         "immediate newTab grouping",
-        "idempotent tool replay",
+        "person order across paginated reads",
       ],
     });
   }, 180_000);
@@ -1280,15 +1280,18 @@ integration("agent organization and durable ownership", () => {
       });
     });
     const restored = await agent(stack, {
-      calls: [{ name: "browser_tab_write", input: { action: "restore", tabIds: [first.tabId] } }],
+      calls: [{ method: "switchTab", input: { tabId: first.tabId } }],
       paginate: true,
     });
-    const write = BrowserTabWriteResultSchema.parse(restored.report.calls[0]?.result);
-    expect(write.restored).toHaveLength(1);
-    const sessionId = write.restored![0]!.sessionId;
-    expect(restored.report.attached?.sessions).toContainEqual(
-      expect.objectContaining({ id: sessionId, attached: true }),
-    );
+    expect(restored.report.calls[0]?.error).toBeUndefined();
+    expect(restored.report.calls[0]?.result).toMatchObject({ tabId: first.tabId });
+    const sessionId = (
+      await stack.host.store.database
+        .selectFrom("personalTabs")
+        .select("sessionId")
+        .where("id", "=", first.tabId)
+        .executeTakeFirstOrThrow()
+    ).sessionId!;
     const db = stack.host.store.database;
     expect(
       await db
@@ -1539,7 +1542,7 @@ integration("tab group deletion and response bounds", () => {
     });
   }, 120_000);
 
-  it("reads all 200 group summaries inside the tool response budget", async () => {
+  it("bounds tab reads with 200 groups and 10000 members", async () => {
     const stack = await deployment();
     const opened = await open(stack);
     const db = stack.host.store.database;
@@ -1597,10 +1600,12 @@ integration("tab group deletion and response bounds", () => {
         .execute();
     }
     const read = await agent(stack, {
-      calls: [{ name: "browser_tab_read", input: {} }],
+      calls: [{ method: "listTabs", input: {} }],
     });
-    const result = BrowserTabReadResultSchema.parse(read.report.calls[0]?.result);
-    expect(result.groups).toHaveLength(200);
+    const result = { tabs: z.array(BrowserAgentTabSchema).parse(read.report.calls[0]?.result) };
+    const groups = (await new BrowserTabGroupStore(db).layout(owner.id)).groups;
+    expect(groups).toHaveLength(200);
+    expect(result.tabs).toHaveLength(50);
     await expect(
       command(stack, {
         type: "tabs.group",
@@ -1609,17 +1614,17 @@ integration("tab group deletion and response bounds", () => {
         idempotencyKey: randomUUID(),
       }),
     ).rejects.toThrow("200 tab groups");
-    expect(result.groups.every((g) => g.tabCount === 50 && !("tabIds" in g))).toBe(true);
+    expect(groups.every((g) => g.tabIds.length === 50)).toBe(true);
     const bytes = Buffer.byteLength(JSON.stringify(result));
     const { agentToolPayloadMaxSerializedBytes } =
       await import("../packages/protocol/src/index.js");
     expect(bytes).toBeLessThan(agentToolPayloadMaxSerializedBytes);
     evidence.push({
       bytes,
-      groups: result.groups.length,
+      groups: groups.length,
       assertions: [
-        "200 groups with 10000 members fit one tool response",
-        "group members stay paginated",
+        "200 groups retain all 10000 members",
+        "tab inventory stays within the response budget",
       ],
     });
   }, 180_000);
@@ -1720,28 +1725,25 @@ integration("naturally idempotent tab operations", () => {
     await stack.restartRunner();
     const inputs = [
       {
-        requestId: 9005,
-        name: "browser_tab_write",
+        method: "organizeTabs",
         input: { action: "group", tabIds: [third.tabId], title: "Transient" },
       },
       {
-        requestId: 9006,
-        name: "browser_tab_write",
+        method: "organizeTabs",
         input: { action: "ungroup", tabIds: [third.tabId] },
       },
       {
-        requestId: 9007,
-        name: "browser_tab_write",
-        input: { action: "close", tabIds: [third.tabId] },
+        method: "closeTab",
+        input: { tabIds: [third.tabId] },
       },
     ];
     const agentClose = vi.spyOn(stack.host.browser, "closePersonalTab");
     const throughTools = await agent(stack, {
-      calls: inputs.flatMap((input) => [input, input]),
+      calls: [inputs[0], ...inputs.slice(1).flatMap((input) => [input, input])],
     });
-    expect(throughTools.report.calls).toHaveLength(6);
+    expect(throughTools.report.calls).toHaveLength(5);
     expect(throughTools.report.calls.every((c) => c.error === undefined)).toBe(true);
-    for (let i = 0; i < 6; i += 2)
+    for (let i = 1; i < 5; i += 2)
       expect(throughTools.report.calls[i + 1]).toEqual(throughTools.report.calls[i]);
     expect(agentClose).toHaveBeenCalledTimes(2);
     agentClose.mockRestore();
@@ -1753,7 +1755,7 @@ integration("naturally idempotent tab operations", () => {
         "repeated close redisposes the same explicit tabs",
         "unlisted tab stays open",
         "repeated close after Host restart",
-        "real MCP duplicate calls are naturally idempotent",
+        "repeated Harness ungroup and close calls are naturally idempotent",
       ],
     });
   }, 150_000);

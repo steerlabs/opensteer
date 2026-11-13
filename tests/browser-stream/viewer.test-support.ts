@@ -1,3 +1,7 @@
+import {
+  apiVersionQueryParameter,
+  hostApiVersion,
+} from "../../packages/deployment-authority/src/index.js";
 import { BrowserWatchStore } from "../../packages/client/src/host/browser-watch.js";
 import {
   BrowserSurfaceIdSchema,
@@ -76,7 +80,7 @@ window.browserStreamBench = {
     surfaceId = BrowserSurfaceIdSchema.parse(options.surfaceId);
     const connect = (mode: "watch" | "control") => () => {
       const socket = new WebSocket(
-        `${options.origin.replace("http", "ws")}/v1/browser-sessions/${sessionId}/connect?mode=${mode}&editing=1`,
+        `${options.origin.replace("http", "ws")}/v1/browser-sessions/${sessionId}/connect?mode=${mode}&editing=1&${apiVersionQueryParameter}=${hostApiVersion}`,
       );
       socket.addEventListener("error", () => errors.push(`${mode} socket error`));
       socket.addEventListener("close", (event) => {

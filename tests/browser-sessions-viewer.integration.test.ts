@@ -460,7 +460,7 @@ run("Browser Sessions through a whole deployment", () => {
       inventoryRevision: current.inventoryRevision!,
       idempotencyKey: randomUUID(),
     });
-    expect(closed.ok).toBe(true);
+    expect(closed).toMatchObject({ ok: true });
     expect((await catalog()).tabs.some((tab) => tab.loading)).toBe(false);
 
     const directory =
