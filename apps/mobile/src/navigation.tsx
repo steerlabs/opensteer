@@ -79,7 +79,6 @@ import {
 } from "./team/team-shelf-screens.js";
 import {
   TeamAuditScreen,
-  TeamChannelsScreen,
   TeamGroupScreen,
   TeamGroupsScreen,
   TeamPeopleScreen,
@@ -94,7 +93,12 @@ import {
   TransferTeamScreen,
 } from "./team/team-entry-screens.js";
 import { ConnectOpensteerScreen, JoinTeamScreen } from "./team/team-join-screens.js";
-import { TeamNewChannelScreen, TeamNewMessageScreen } from "./team/team-create-screens.js";
+import {
+  TeamChannelsScreen,
+  TeamNewChannelScreen,
+  TeamNewMessageScreen,
+} from "./team/team-directory-screens.js";
+import { TeamNewGroupScreen, TeamRenameChannelScreen } from "./team/team-name-forms.js";
 import {
   TeamKnowledgeScreen,
   TeamNoteHistoryScreen,
@@ -378,6 +382,7 @@ const RootStack = createNativeStackNavigator({
     // On a phone a channel's tabs are rows in its Details.
     TeamDetails: { screen: TeamDetailsScreen, options: { title: "Details" } },
     TeamMembers: { screen: TeamMembersScreen, options: { title: "Members" } },
+    TeamRenameChannel: { screen: TeamRenameChannelScreen, options: { title: "Rename channel" } },
     TeamInstructions: {
       screen: TeamInstructionsScreen,
       options: { title: "Instructions for agents" },
@@ -399,6 +404,7 @@ const RootStack = createNativeStackNavigator({
     TeamPeople: { screen: TeamPeopleScreen, options: { title: "People" } },
     TeamGroups: { screen: TeamGroupsScreen, options: { title: "Groups" } },
     TeamGroup: { screen: TeamGroupScreen, options: { title: "Group" } },
+    TeamNewGroup: { screen: TeamNewGroupScreen, options: { title: "New group" } },
     TeamInvites: { screen: TeamInvitesScreen, options: { title: "Invite people" } },
     // Create a team or join with an invite, from the drawer and Settings.
     Teams: { screen: TeamsScreen, options: { headerLargeTitle: true, title: "Teams" } },
@@ -444,8 +450,27 @@ const RootStack = createNativeStackNavigator({
       },
     },
     TeamChannels: { screen: TeamChannelsScreen, options: { title: "Channels" } },
-    TeamNewChannel: { screen: TeamNewChannelScreen, options: { title: "New channel" } },
-    TeamNewMessage: { screen: TeamNewMessageScreen, options: { title: "New message" } },
+    // Making a channel or starting a message: sheets over the team, their action in the bar.
+    TeamNewChannel: {
+      screen: TeamNewChannelScreen,
+      options: {
+        headerShown: false,
+        presentation: screenPresentations.TeamNewChannel,
+        sheetAllowedDetents: [0.95],
+        sheetGrabberVisible: true,
+        title: "New channel",
+      },
+    },
+    TeamNewMessage: {
+      screen: TeamNewMessageScreen,
+      options: {
+        headerShown: false,
+        presentation: screenPresentations.TeamNewMessage,
+        sheetAllowedDetents: [0.95],
+        sheetGrabberVisible: true,
+        title: "New message",
+      },
+    },
     TeamAudit: { screen: TeamAuditScreen, options: { title: "Audit log" } },
     // Joining from a link, a pasted link or a notification: a sheet over Home.
     JoinTeam: {
@@ -663,6 +688,7 @@ type OpensteerRootParamList = {
   readonly TeamThread: TeamThreadRoute;
   readonly TeamDetails: { readonly teamId: string; readonly channelId: string };
   readonly TeamMembers: { readonly teamId: string; readonly channelId: string };
+  readonly TeamRenameChannel: { readonly teamId: string; readonly channelId: string };
   readonly TeamInstructions: { readonly teamId: string; readonly channelId: string };
   readonly TeamFiles: { readonly teamId: string; readonly channelId: string };
   readonly TeamPinned: { readonly teamId: string; readonly channelId: string };
@@ -689,6 +715,7 @@ type OpensteerRootParamList = {
   readonly TeamPeople: { readonly teamId: string };
   readonly TeamGroups: { readonly teamId: string };
   readonly TeamGroup: { readonly teamId: string; readonly groupId: string };
+  readonly TeamNewGroup: { readonly teamId: string };
   readonly TeamInvites: { readonly teamId: string };
   readonly Teams: undefined;
   readonly CreateTeam: undefined;
@@ -696,7 +723,8 @@ type OpensteerRootParamList = {
   readonly DeleteTeam: { readonly teamId: string };
   readonly TransferTeam: { readonly teamId: string };
   readonly TeamChannels: { readonly teamId: string };
-  readonly TeamNewChannel: { readonly teamId: string };
+  /** `name` is what the person searched Browse for and didn't find. */
+  readonly TeamNewChannel: { readonly teamId: string; readonly name?: string | undefined };
   readonly TeamNewMessage: { readonly teamId: string };
   readonly TeamAudit: { readonly teamId: string };
   /** A team page link the person opened or pasted, or none for the paste field. */

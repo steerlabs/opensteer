@@ -247,6 +247,7 @@ function ChannelScreenFor({
   const channel = channelView(view, timeline?.channel ?? null, channelId);
   const entry = snapshot.sidebar?.channels.find((row) => row.channel.id === channelId);
   const can = timeline?.channel?.can ?? entry?.channel.can ?? null;
+  const archived = Boolean(timeline?.channel?.archivedAt ?? entry?.channel.archivedAt);
   const go = (path: string, keepPlace = true) =>
     void navigate({ pathname: path, search: keepPlace ? search : "" });
   const searchChannel = () =>
@@ -558,7 +559,9 @@ function ChannelScreenFor({
       .map((userId) => person(words, userId));
   const composer = (rootId: string | null) =>
     can?.post !== true ? (
-      <p className="team-composer__closed">You can read this channel but not post here.</p>
+      <p className="team-composer__closed">
+        {archived ? "This channel is archived." : "You can read this channel but not post here."}
+      </p>
     ) : (
       <TeamComposer
         agent={agent}
@@ -946,7 +949,9 @@ function ChannelDetailsPane({
                   name: live.name,
                   peopleOnly,
                 }),
-              onArchive: () => void dispatch({ type: "team.channel.archive", channelId }),
+              ...(live.archivedAt
+                ? { onRestore: () => void dispatch({ type: "team.channel.restore", channelId }) }
+                : { onArchive: () => void dispatch({ type: "team.channel.archive", channelId }) }),
             }
           : {}),
       }}

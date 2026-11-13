@@ -67,6 +67,15 @@ import {
 } from "./team-link.js";
 
 const name = z.string().trim().min(1).max(160);
+
+/** The key a team keeps live channel names unique by, so `General` and `general` are one name. */
+export function teamChannelNameKey(value: string): string {
+  return value.trim().normalize("NFKC").toLowerCase();
+}
+/** The `reason` of the conflict a name another live channel holds is refused with. */
+export const teamChannelNameTakenReason = "channel-name-taken";
+/** The most people a direct message can add to the one who opens it. */
+export const teamDmMaxParticipants = 31;
 export const TeamCommandSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("team.agent.recipient.set"),
@@ -102,12 +111,12 @@ export const TeamCommandSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     type: z.literal("team.dm.open"),
-    participants: z.array(UserIdSchema).min(1).max(31),
+    participants: z.array(UserIdSchema).min(1).max(teamDmMaxParticipants),
   }),
   z.strictObject({
     type: z.literal("team.dm.people.add"),
     channelId: TeamChannelIdSchema,
-    userIds: z.array(UserIdSchema).min(1).max(31),
+    userIds: z.array(UserIdSchema).min(1).max(teamDmMaxParticipants),
     historyVisibleConfirmed: z.literal(true),
   }),
   z.strictObject({

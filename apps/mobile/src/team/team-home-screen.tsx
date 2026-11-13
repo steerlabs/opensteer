@@ -8,7 +8,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { Alert, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Alert, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootParamList } from "../navigation.js";
 import { color, headerFontScaleLimit, space } from "../theme.js";
@@ -16,6 +16,7 @@ import { NativeMenu } from "../thread/composer-menu.js";
 import { AppText, Notice, PrimaryButton } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
+import { ConnectionBanner, useConnectionBanner } from "./connection-banner.js";
 import { TeamPageList } from "./team-page-list.js";
 import { useMobileTeams, useTeamEntry, useTeamSession } from "./team-context.js";
 import { DeploymentIdSchema } from "@opensteer/core";
@@ -33,8 +34,10 @@ export function TeamHomeScreen(props: StaticScreenProps<{ readonly teamId: strin
   const navigation = useNavigation<Navigation>();
   const teams = useMobileTeams();
   const { coordinator } = useTeamEntry();
-  const { team, session, failure } = useTeamSession(teamId);
+  const { team, session, snapshot, failure } = useTeamSession(teamId);
   const sidebar = useSidebar(session);
+  const canInvite = snapshot.bootstrap?.can.manageInvites === true;
+  const banner = useConnectionBanner(team, snapshot.connection, () => session?.connect());
   const padding = useSafeAreaInsets().bottom + space[24];
   const [signingIn, setSigningIn] = useState(false);
   const name = team?.name ?? "Team";
@@ -43,22 +46,30 @@ export function TeamHomeScreen(props: StaticScreenProps<{ readonly teamId: strin
     navigation.setOptions({
       headerTitle: () => (
         <NativeMenu
-          accessibilityHint="Knowledge, invite people, team settings and leaving"
+          accessibilityHint={
+            canInvite
+              ? "Knowledge, invite people, team settings and leaving"
+              : "Knowledge, team settings and leaving"
+          }
           accessibilityLabel={`${name} menu`}
           options={[
             [
               {
-                icon: "magnifyingglass",
+                icon: "lightbulb",
                 id: "knowledge",
                 label: "Knowledge",
                 onPress: () => navigation.navigate("TeamKnowledge", { teamId }),
               },
-              {
-                icon: "link",
-                id: "invite",
-                label: "Invite people",
-                onPress: () => navigation.navigate("TeamInvites", { teamId }),
-              },
+              ...(canInvite
+                ? [
+                    {
+                      icon: "link" as const,
+                      id: "invite",
+                      label: "Invite people",
+                      onPress: () => navigation.navigate("TeamInvites", { teamId }),
+                    },
+                  ]
+                : []),
               {
                 icon: "gearshape",
                 id: "settings",
@@ -106,7 +117,7 @@ export function TeamHomeScreen(props: StaticScreenProps<{ readonly teamId: strin
         </NativeMenu>
       ),
     });
-  }, [coordinator, name, navigation, teamId]);
+  }, [canInvite, coordinator, name, navigation, teamId]);
 
   if (team !== null && team.state === "signed-out")
     return (
@@ -139,7 +150,9 @@ export function TeamHomeScreen(props: StaticScreenProps<{ readonly teamId: strin
     return (
       <Screen>
         <View style={styles.center}>
-          {failure === null ? null : (
+          {failure === null ? (
+            <ActivityIndicator color={color.muted} />
+          ) : (
             <Notice detail={failure} title={`${name} didn't answer`} tone="neutral" />
           )}
         </View>
@@ -147,6 +160,7 @@ export function TeamHomeScreen(props: StaticScreenProps<{ readonly teamId: strin
     );
   return (
     <Screen edgeToEdge>
+      {banner === null ? null : <ConnectionBanner banner={banner} />}
       <TeamPageList
         canCreateChannel={session.getSnapshot().bootstrap?.can.createChannel === true}
         onBrowseChannels={() => navigation.navigate("TeamChannels", { teamId })}

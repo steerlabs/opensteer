@@ -10,6 +10,8 @@ import {
   TeamInviteSchema,
   TeamCurrentInviteSchema,
   TeamLinkViewSchema,
+  teamChannelNameKey,
+  teamChannelNameTakenReason,
   type TeamCurrentInvite,
   type TeamInvitePreviewResponse,
 } from "@opensteer/protocol";
@@ -273,6 +275,23 @@ export class MockTeamHost {
       ),
     };
   }
+  /** A live channel's name is the team's alone, as the real team keeps it. */
+  #requireFreeName(name: string, except: string | null): void {
+    const key = teamChannelNameKey(name);
+    for (const channel of this.channels.values())
+      if (
+        channel.id !== except &&
+        (channel.kind === "public" || channel.kind === "private") &&
+        channel.archivedAt === null &&
+        teamChannelNameKey(channel.name) === key
+      )
+        throw new OpensteerError({
+          code: "conflict",
+          reason: teamChannelNameTakenReason,
+          message: `There’s already a channel called #${name.trim()}.`,
+        });
+  }
+
   #sidebarPage(after?: string, channelIds?: readonly TeamChannelId[]): TeamSidebar {
     const sidebar = this.sidebar(),
       rows = sidebar.channels
@@ -719,6 +738,7 @@ export class MockTeamHost {
         return { type: command.type };
       }
       if (command.type === "team.channel.create") {
+        this.#requireFreeName(command.name, null);
         const channel = TeamChannelSchema.parse({
           ...this.channels.get(mockTeamChannelId),
           id: command.id,
@@ -732,9 +752,15 @@ export class MockTeamHost {
           changeSeq: String(++this.#seq),
         });
         this.channels.set(channel.id, channel);
+        // As the team does: its maker manages it, whatever the list says about them.
         this.#access.set(channel.id, {
           revision: channel.changeSeq,
-          entries: command.access,
+          entries: [
+            ...command.access.filter(
+              (entry) => entry.subject.kind !== "person" || entry.subject.userId !== this.userId,
+            ),
+            { subject: { kind: "person", userId: this.userId }, level: "post", manage: true },
+          ],
           can: channel.can,
         });
         this.publish();
@@ -743,6 +769,7 @@ export class MockTeamHost {
       if (command.type === "team.channel.update") {
         const channel = this.channels.get(command.channelId);
         if (!channel) throw new Error("Unknown channel.");
+        if (channel.archivedAt === null) this.#requireFreeName(command.name, channel.id);
         this.channels.set(channel.id, {
           ...channel,
           name: command.name,
@@ -777,6 +804,8 @@ export class MockTeamHost {
       ) {
         const channel = this.channels.get(command.channelId);
         if (!channel) throw new Error("Unknown channel.");
+        if (command.type === "team.channel.restore" && channel.archivedAt !== null)
+          this.#requireFreeName(channel.name, channel.id);
         this.channels.set(channel.id, {
           ...channel,
           archivedAt:

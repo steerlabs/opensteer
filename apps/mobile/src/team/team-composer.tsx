@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Pressable, StyleSheet, TextInput, View, type TextInputInstance } from "react-native";
 import { ComposerBar, ComposerGlyph, composerLaneHeight } from "../thread/composer-bar.js";
 import {
@@ -45,6 +45,11 @@ export interface TeamComposerProps {
   readonly onSend: () => void;
   /** A one-time line above the composer, such as the hint after joining. */
   readonly hint?: ReactNode;
+  /**
+   * The words are one of the reader's messages, and sending saves them in its
+   * place. Cancel puts back whatever was being written before.
+   */
+  readonly editing?: { readonly onCancel: () => void; readonly saving: boolean } | null;
 }
 
 /**
@@ -66,8 +71,14 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
     (file) => file.progress !== null && file.refused === null,
   );
   const hasContent = props.text.trim() !== "" || props.attachments.length > 0;
-  const toMyAgent = props.toMyAgent;
-  const open = focused || hasContent || toMyAgent;
+  const editing = props.editing ?? null;
+  // An edit changes words only: it carries no files and asks no agent.
+  const toMyAgent = props.toMyAgent && editing === null;
+  const isEditing = editing !== null;
+  const open = focused || hasContent || toMyAgent || isEditing;
+  useEffect(() => {
+    if (isEditing) input.current?.focus();
+  }, [isEditing]);
   const askPill =
     props.agent === "people-only" ? (
       <View style={styles.badgeSlot}>
@@ -89,13 +100,14 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
         <MentionList onPick={props.onPickMention} options={props.mentions} />
       )}
       {props.hint ?? null}
-      {props.sticky && (toMyAgent || props.agent === "available") ? (
+      {props.sticky && editing === null && (toMyAgent || props.agent === "available") ? (
         <Pressable accessibilityRole="button" onPress={() => props.onToMyAgentChange(!toMyAgent)}>
           <AppText role="caption" tone="muted">
             {toMyAgent ? "→ your agent ✕" : "+ your agent"}
           </AppText>
         </Pressable>
       ) : null}
+      {editing === null ? null : <EditingBar onCancel={editing.onCancel} />}
       <View style={[styles.rim, toMyAgent && !props.sticky && styles.rimOn]}>
         <ComposerBar
           {...(props.attachments.length === 0 && !uploading
@@ -166,13 +178,15 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
           }
           leading={
             <View style={styles.row}>
-              <Pressable
-                accessibilityLabel="Attach files"
-                accessibilityRole="button"
-                onPress={props.onAttach}
-              >
-                <ComposerGlyph icon="paperclip" />
-              </Pressable>
+              {editing === null ? (
+                <Pressable
+                  accessibilityLabel="Attach files"
+                  accessibilityRole="button"
+                  onPress={props.onAttach}
+                >
+                  <ComposerGlyph icon="paperclip" />
+                </Pressable>
+              ) : null}
               {open ? (
                 <Pressable
                   accessibilityLabel="Mention someone"
@@ -184,14 +198,14 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
               ) : null}
             </View>
           }
-          {...(open && !props.sticky ? { accessory: askPill } : {})}
+          {...(open && !props.sticky && editing === null ? { accessory: askPill } : {})}
           action={
             open ? (
               <ComposerAction
-                busy={false}
+                busy={editing?.saving === true}
                 disabled={!hasContent || refused}
                 kind="send"
-                label={toMyAgent ? "Send to my agent" : "Send"}
+                label={editing !== null ? "Save edit" : toMyAgent ? "Send to my agent" : "Send"}
                 onPress={props.onSend}
               />
             ) : (
@@ -201,6 +215,32 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
           shape={open ? "rounded" : "capsule"}
         />
       </View>
+    </View>
+  );
+}
+
+/** Over the composer while it holds one of the reader's messages: what sending does, and the way out. */
+function EditingBar(props: { readonly onCancel: () => void }): ReactNode {
+  return (
+    <View accessibilityLiveRegion="polite" style={styles.editing}>
+      <Symbol name="pencil" size={13} tint={color.ember} weight="semibold" />
+      <AppText
+        maxFontSizeMultiplier={controlFontScaleLimit}
+        numberOfLines={1}
+        role="caption"
+        style={styles.editingLabel}
+      >
+        Editing message
+      </AppText>
+      <Pressable
+        accessibilityLabel="Cancel editing"
+        accessibilityRole="button"
+        hitSlop={8}
+        onPress={props.onCancel}
+        style={({ pressed }) => [styles.editingCancel, pressed && styles.pillPressed]}
+      >
+        <Symbol name="xmark" size={12} tint={color.muted} weight="bold" />
+      </Pressable>
     </View>
   );
 }
@@ -256,6 +296,24 @@ const styles = StyleSheet.create({
   agentChipText: { color: color.ember, fontWeight: "600" },
   badgeSlot: { justifyContent: "center", minHeight: touchTarget, paddingHorizontal: space[6] },
   caption: { gap: space[6], marginHorizontal: -space[14] },
+  editing: {
+    ...material.control,
+    alignItems: "center",
+    alignSelf: "flex-start",
+    borderRadius: radius.full,
+    flexDirection: "row",
+    gap: space[6],
+    marginLeft: space[6],
+    minHeight: pillHeight,
+    paddingLeft: space[10],
+  },
+  editingCancel: {
+    alignItems: "center",
+    height: pillHeight,
+    justifyContent: "center",
+    width: pillHeight,
+  },
+  editingLabel: { color: color.textSoft, fontWeight: "600" },
   captionLine: { paddingHorizontal: space[14] },
   input: {
     color: color.text,

@@ -36,8 +36,8 @@ export const emptyTeamAccessEffects: TeamStoreAccessEffects = {
 export function requireTeam(condition: unknown, message = "Team access denied"): asserts condition {
   if (!condition) throw new OpensteerError({ code: "forbidden", message });
 }
-export function teamConflict(message: string): never {
-  throw new OpensteerError({ code: "conflict", message });
+export function teamConflict(message: string, reason?: string): never {
+  throw new OpensteerError({ code: "conflict", message, ...(reason ? { reason } : {}) });
 }
 
 export function teamGroupPaths(userId: UserId | RawBuilder<unknown>) {

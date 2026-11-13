@@ -41,6 +41,7 @@ export type NativeMenuIcon =
   | "exclamationmark.bubble"
   | "gearshape"
   | "laptopcomputer"
+  | "lightbulb"
   | "link"
   | "lock"
   | "macmini"

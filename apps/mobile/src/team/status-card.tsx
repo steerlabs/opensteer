@@ -16,7 +16,7 @@ export const cardRedrawInterval = 1000;
  *
  * It redraws on a change of state or step, at most once a second, and its
  * elapsed time counts whole minutes. Only its owner gets a control (Stop,
- * Cancel, Answer or Try again) and a card that opens their private task.
+ * Cancel or Answer) and a card that opens their private task.
  */
 export const AgentStatusCard = memo(
   function AgentStatusCard(props: {

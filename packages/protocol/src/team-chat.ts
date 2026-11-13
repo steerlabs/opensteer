@@ -76,6 +76,7 @@ export const TeamChannelSummarySchema = z.strictObject({
   latestMessageId: TeamMessageIdSchema.nullable(),
   can: TeamChannelCanSchema,
 });
+export type TeamChannelSummary = z.infer<typeof TeamChannelSummarySchema>;
 export const TeamChannelSchema = TeamChannelSummarySchema.extend({
   instructionsMarkdown: TeamMarkdownSchema,
   instructionsRevision: SequenceSchema,

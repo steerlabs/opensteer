@@ -194,7 +194,7 @@ function TeamMenu({
 
 /**
  * The team's side: its channels, then its direct messages, each under a
- * label with its own +. Unread is weight; only mentions of the reader count.
+ * label whose + makes one. Unread is weight; only mentions of the reader count.
  */
 export function TeamSide({
   actions,
@@ -273,11 +273,12 @@ export function TeamSide({
         </p>
       ) : null}
       <SideLabel
+        action={
+          actions.onNewChannel
+            ? ["New channel", actions.onNewChannel]
+            : ["Browse channels", actions.onBrowseChannels]
+        }
         label="Channels"
-        menu={[
-          ["Browse channels", actions.onBrowseChannels],
-          ["New channel", actions.onNewChannel],
-        ]}
       />
       <ChannelRows
         label={`${name} channels`}
@@ -287,13 +288,19 @@ export function TeamSide({
         onOpen={actions.onOpenChannel}
         openChannelId={openChannelId}
       />
+      {actions.onBrowseChannels ? (
+        <button className="team-side__action" onClick={actions.onBrowseChannels} type="button">
+          <Icon name="search" />
+          Browse channels
+        </button>
+      ) : null}
       {actions.onInvite ? (
         <button className="team-side__invite" onClick={actions.onInvite} type="button">
           <Icon name="plus" />
           Invite people
         </button>
       ) : null}
-      <SideLabel label="Direct messages" menu={[["New message", actions.onNewMessage]]} />
+      <SideLabel action={["New message", actions.onNewMessage]} label="Direct messages" />
       <ChannelRows
         label={`${name} direct messages`}
         rows={team.dms}
@@ -302,6 +309,12 @@ export function TeamSide({
         onOpen={actions.onOpenChannel}
         openChannelId={openChannelId}
       />
+      {team.dms.length === 0 && !hasMore && actions.onNewMessage ? (
+        <button className="team-side__action" onClick={actions.onNewMessage} type="button">
+          <Icon name="plus" />
+          Message someone
+        </button>
+      ) : null}
       {hasMore && onLoadMore ? (
         <button
           className="team-rows__more"
@@ -360,49 +373,25 @@ function ChannelRows({
 }
 
 function SideLabel({
+  action: [name, run],
   label,
-  menu,
 }: {
+  readonly action: readonly [string, (() => void) | undefined];
   readonly label: string;
-  readonly menu: readonly (readonly [string, (() => void) | undefined])[];
 }) {
-  const [open, setOpen] = useState(false);
-  const anchor = useRef<HTMLButtonElement | null>(null);
-  const items = menu.filter((entry): entry is readonly [string, () => void] => !!entry[1]);
   return (
     <div className="side-head">
       <h3 className="side-head__title">{label}</h3>
-      {items.length > 0 ? (
+      {run ? (
         <button
-          aria-expanded={items.length > 1 ? open : undefined}
-          aria-haspopup={items.length > 1 ? "menu" : undefined}
-          aria-label={items.length > 1 ? `Add to ${label}` : items[0]![0]}
+          aria-label={name}
           className="icon-btn icon-btn--small side-head__action"
-          onClick={() => (items.length > 1 ? setOpen((value) => !value) : items[0]![1]())}
-          ref={anchor}
-          title={items.map(([name]) => name).join(" · ")}
+          onClick={run}
+          title={name}
           type="button"
         >
           <Icon name="plus" />
         </button>
-      ) : null}
-      {open && anchor.current ? (
-        <Popover anchor={anchor.current} below label={label} onClose={() => setOpen(false)}>
-          {items.map(([name, run]) => (
-            <button
-              className="picker__row"
-              key={name}
-              onClick={() => {
-                setOpen(false);
-                run();
-              }}
-              role="menuitem"
-              type="button"
-            >
-              {name}
-            </button>
-          ))}
-        </Popover>
       ) : null}
     </div>
   );

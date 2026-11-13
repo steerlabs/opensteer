@@ -14,7 +14,11 @@ import { PersonalTeamRequestsStore } from "../packages/database/src/personal-tea
 import { HttpHostClient } from "../packages/client/src/host/host-session-client.js";
 import type { WebSocketClient } from "../packages/client/src/host/host-session-client.js";
 import { teamAgentIdentity } from "../packages/client/src/team/presentation.js";
-import { TeamLinkViewSchema, type HostApiCommandInput } from "../packages/protocol/src/index.js";
+import {
+  TeamLinkViewSchema,
+  teamChannelNameTakenReason,
+  type HostApiCommandInput,
+} from "../packages/protocol/src/index.js";
 import {
   teamApiVersion,
   teamApiVersionHeader,
@@ -154,6 +158,29 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
         })
       ).ok,
     ).toBe(true);
+    // A live name is the team's, whatever its case, even when the channel holding it is hidden.
+    const taken = await devSession.rpc["commands.dispatch"]({
+      type: "team.channel.create",
+      id: createId("teamChannel"),
+      name: "Private",
+      kind: "public",
+      peopleOnly: false,
+      access: [],
+    });
+    expect(taken.ok ? null : taken.error).toMatchObject({
+      code: "conflict",
+      reason: teamChannelNameTakenReason,
+    });
+    const renamed = await session.rpc["commands.dispatch"]({
+      type: "team.channel.update",
+      channelId: groupChannel,
+      name: "PRIVATE",
+      peopleOnly: false,
+    });
+    expect(renamed.ok ? null : renamed.error).toMatchObject({
+      code: "conflict",
+      reason: teamChannelNameTakenReason,
+    });
 
     const routes = new Map([[team.canonicalOrigin, team]]);
     const mismatched = new Set<string>();

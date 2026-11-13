@@ -1,15 +1,18 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams, useSearchParams } from "react-router";
-import { createId, TeamChannelIdSchema, UserIdSchema } from "@opensteer/core";
-import { usePagedList } from "@opensteer/client/react";
+import { TeamChannelIdSchema, UserIdSchema } from "@opensteer/core";
+import type { TeamChannelSummary } from "@opensteer/protocol";
+import { browsableChannels, channelNameFromInput } from "@opensteer/client/team";
+import { useChannelDirectory, usePagedList } from "@opensteer/client/react";
 import { useWindowedRows } from "../components/workspace/windowed-rows.js";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import { AreaHeader } from "../components/workspace/conversation-header.js";
 import { useOptionalShell } from "../components/app-shell.js";
-import { PeopleOnlyBadge, PersonAvatar } from "../components/team/team-marks.js";
+import { Icon } from "../components/icon.js";
+import { LoadingRows } from "../components/loading-rows.js";
+import { ChannelGlyph, PeopleOnlyBadge } from "../components/team/team-marks.js";
 import { TeamSearch, noSearchFilters } from "../components/team/team-search.js";
 import type { SearchFilters } from "../components/team/team-models.js";
-import { SettingsSegmented, SettingsSwitch } from "../components/settings/primitives.js";
 import { useToast } from "../components/toast.js";
 import { actionErrorMessage } from "../ui-utils.js";
 import { ChannelRoute, TeamUnavailable } from "./channel-route.js";
@@ -17,6 +20,7 @@ import { useTeamAttachment, useTeamSession } from "./team-attachments.js";
 import { TeamKnowledge } from "./team-knowledge.js";
 import { channelPath, teamPath } from "./team-paths.js";
 import { useTeamView, type TeamView } from "./team-view.js";
+import { useTeamDialogs } from "./hosted-teams.js";
 import { channelKind, messageView, person } from "./team-view-models.js";
 
 const noPreviews: ReadonlyMap<string, string> = new Map();
@@ -70,8 +74,6 @@ function TeamPage({
       <TeamSearchPage view={view} />
     ) : section === "browse" ? (
       <BrowseChannels view={view} />
-    ) : section === "people" ? (
-      <NewMessage view={view} />
     ) : (
       <p className="team-empty">Nothing here.</p>
     );
@@ -79,7 +81,6 @@ function TeamPage({
     knowledge: "Knowledge",
     search: "Search",
     browse: "Channels",
-    people: "New message",
   };
   return (
     <div className="thread team-page">
@@ -189,59 +190,52 @@ function TeamSearchPage({ view }: { readonly view: TeamView }) {
   );
 }
 
-/** Every channel the reader may see or join, and a new one. Any member creates channels. */
+/**
+ * Every channel the reader may find, to open or to join, and a new one where the team lets
+ * them make it. The whole directory is read so it can be searched and kept in name order.
+ */
 function BrowseChannels({ view }: { readonly view: TeamView }) {
-  const [params] = useSearchParams();
   const navigate = useNavigate();
   const toast = useToast();
-  const report = (error: unknown) => toast.error(actionErrorMessage(error));
-  const list = usePagedList(
-    (cursor) =>
-      view.client.rpc["team.channels.list"](
-        cursor ? { after: TeamChannelIdSchema.parse(cursor) } : {},
-      )
-        .then(unwrapRpcResult)
-        .then((page) => ({
-          items: page.channels,
-          nextCursor: page.hasMore ? (page.channels.at(-1)?.id ?? null) : null,
-        })),
-    `channels:${view.team.teamId}:${view.snapshot.sidebar?.accessRevision ?? ""}`,
+  const { openNewChannel } = useTeamDialogs();
+  const [query, setQuery] = useState("");
+  const [joining, setJoining] = useState<string | null>(null);
+  const teamId = view.team.teamId;
+  const teamName = view.snapshot.bootstrap?.teamName ?? view.team.name;
+  const canCreate = view.snapshot.bootstrap?.can.createChannel === true;
+  const directory = useChannelDirectory(
+    view.client,
+    `channels:${teamId}:${view.snapshot.sidebar?.accessRevision ?? ""}`,
   );
+  const channels = useMemo(
+    () => browsableChannels(directory.items, query),
+    [directory.items, query],
+  );
+  const words = channelNameFromInput(query);
   const scroll = useRef<HTMLElement | null>(null),
-    rowsRef = useRef<HTMLUListElement | null>(null);
-  const channels = list.items.filter(
-    (channel) => channel.kind === "public" || channel.kind === "private",
-  );
+    rows = useRef<HTMLUListElement | null>(null);
   const plan = useWindowedRows({
     list: scroll,
-    rows: rowsRef,
+    rows,
     keys: channels.map((channel) => channel.id),
-    estimate: () => 44,
+    estimate: () => 48,
     pinned: [],
     all: false,
   });
-  const [name, setName] = useState("");
-  const [kind, setKind] = useState<"public" | "private">("public");
-  const [peopleOnly, setPeopleOnly] = useState(false);
-  const create = (event: FormEvent) => {
-    event.preventDefault();
-    if (!name.trim() || !view.me) return;
-    const id = TeamChannelIdSchema.parse(createId("teamChannel"));
-    void view.client.rpc["commands.dispatch"]({
-      type: "team.channel.create",
-      id,
-      kind,
-      name: name.trim().replace(/^#/u, ""),
-      peopleOnly,
-      access:
-        kind === "private"
-          ? [{ subject: { kind: "person", userId: view.me.userId }, level: "post", manage: true }]
-          : [],
-    })
+  const open = (channel: TeamChannelSummary) => {
+    if (channel.can.read) {
+      void navigate(channelPath(teamId, channel.id));
+      return;
+    }
+    if (!channel.can.join || joining) return;
+    setJoining(channel.id);
+    void view.client.rpc["commands.dispatch"]({ type: "team.channel.join", channelId: channel.id })
       .then(unwrapRpcResult)
-      .then(() => void navigate(channelPath(view.team.teamId, id)))
-      .catch(report);
+      .then(() => void navigate(channelPath(teamId, channel.id)))
+      .catch((error: unknown) => toast.error(actionErrorMessage(error)))
+      .finally(() => setJoining(null));
   };
+  const first = channels[0];
   return (
     <div
       className="team-browse"
@@ -249,133 +243,165 @@ function BrowseChannels({ view }: { readonly view: TeamView }) {
         scroll.current = node?.parentElement ?? null;
       }}
     >
-      {view.snapshot.bootstrap?.can.createChannel ? (
-        <form className="team-inline-form" onSubmit={create}>
-          <input
-            aria-label="Channel name"
-            autoFocus={params.has("new")}
-            className="text-input"
-            onChange={(event) => setName(event.currentTarget.value)}
-            placeholder="New channel name"
-            value={name}
-          />
-          <SettingsSegmented
-            label="Who can find it"
-            onChange={setKind}
-            options={[
-              { value: "public", label: "Public" },
-              { value: "private", label: "Private" },
-            ]}
-            value={kind}
-          />
-          <SettingsSwitch checked={peopleOnly} label="People only" onChange={setPeopleOnly} />
-          <button className="btn btn--primary" disabled={!name.trim()} type="submit">
-            Create channel
+      <header className="team-browse__head">
+        <div className="team-browse__titles">
+          <h1 className="team-browse__title">Channels</h1>
+          <p className="team-browse__lead">
+            {canCreate
+              ? `Join a conversation in ${teamName}, or start one.`
+              : `Join a conversation in ${teamName}.`}
+          </p>
+        </div>
+        {canCreate ? (
+          <button
+            className="btn btn--small btn--primary"
+            onClick={() => openNewChannel(teamId)}
+            type="button"
+          >
+            <Icon name="plus" />
+            New channel
           </button>
-        </form>
+        ) : null}
+      </header>
+      <label className="team-search-field team-browse__search">
+        <Icon name="search" />
+        <input
+          aria-label="Find a channel"
+          onChange={(event) => setQuery(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape" && query) {
+              event.stopPropagation();
+              setQuery("");
+            } else if (event.key === "Enter") {
+              if (first) open(first);
+              else if (canCreate && words && directory.complete) openNewChannel(teamId, words);
+            }
+          }}
+          placeholder="Find a channel"
+          type="search"
+          value={query}
+        />
+      </label>
+      {directory.loading ? (
+        <LoadingRows label="Loading channels" />
+      ) : directory.error !== null && directory.items.length === 0 ? (
+        <div className="team-browse__empty" role="alert">
+          <p>{actionErrorMessage(directory.error)}</p>
+          <button className="btn btn--small" onClick={directory.retry} type="button">
+            Try again
+          </button>
+        </div>
+      ) : channels.length === 0 && !directory.complete ? (
+        directory.error === null ? (
+          <LoadingRows label="Searching every channel" />
+        ) : null
+      ) : channels.length === 0 ? (
+        <div className="team-browse__empty">
+          <p>
+            {!words
+              ? `${teamName} has no channels yet.`
+              : directory.capped
+                ? `No channel called “${words}” among the first 1,000.`
+                : `No channel called “${words}”.`}
+          </p>
+          {canCreate ? (
+            <button
+              className="btn btn--small"
+              onClick={() => openNewChannel(teamId, words)}
+              type="button"
+            >
+              <Icon name="plus" />
+              {words ? `Create #${words}` : "New channel"}
+            </button>
+          ) : null}
+        </div>
+      ) : (
+        <ul aria-label={`${teamName} channels`} className="team-browse__list" ref={rows}>
+          {plan.map((entry, index) => {
+            if ("spacer" in entry)
+              return <li aria-hidden key={`spacer:${index}`} style={{ height: entry.spacer }} />;
+            const channel = channels[entry.index]!;
+            return (
+              <li data-motion-key={channel.id} key={channel.id}>
+                <BrowseRow
+                  channel={channel}
+                  joining={joining === channel.id}
+                  onOpen={open}
+                  top={entry.index === 0 && words !== ""}
+                />
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {directory.error !== null && directory.items.length > 0 ? (
+        <p className="team-browse__hint" role="alert">
+          Some channels didn’t load.{" "}
+          <button className="link-button" onClick={directory.retry} type="button">
+            Try again
+          </button>
+        </p>
+      ) : directory.capped ? (
+        <p className="team-browse__hint">Only the first 1,000 channels are listed here.</p>
       ) : null}
-      <ul className="team-browse__list" ref={rowsRef}>
-        {plan.map((entry, index) => {
-          if ("spacer" in entry)
-            return <li aria-hidden key={`spacer:${index}`} style={{ height: entry.spacer }} />;
-          const channel = channels[entry.index]!;
-          return (
-            <li className="team-browse__row" data-motion-key={channel.id} key={channel.id}>
-              <span className="team-browse__name">
-                {channel.kind === "private" ? "🔒" : "#"} {channel.name}
-              </span>
-              {channel.peopleOnly ? <PeopleOnlyBadge compact /> : null}
-              {channel.can.join ? (
-                <button
-                  className="btn btn--small"
-                  onClick={() =>
-                    void view.client.rpc["commands.dispatch"]({
-                      type: "team.channel.join",
-                      channelId: channel.id,
-                    })
-                      .then(unwrapRpcResult)
-                      .then(() => void navigate(channelPath(view.team.teamId, channel.id)))
-                      .catch(report)
-                  }
-                  type="button"
-                >
-                  Join
-                </button>
-              ) : (
-                <button
-                  className="btn btn--small btn--ghost"
-                  onClick={() => void navigate(channelPath(view.team.teamId, channel.id))}
-                  type="button"
-                >
-                  Open
-                </button>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-      {list.nextCursor ? (
-        <button className="btn" disabled={list.loadingMore} onClick={list.more} type="button">
-          {list.loadingMore ? "Loading…" : "More channels"}
-        </button>
+      {!words && channels.length === 1 && canCreate && directory.complete ? (
+        <p className="team-browse__hint">
+          It’s just #{channels[0]!.name} so far. Start a channel for a project, a topic or a group
+          of people.
+        </p>
       ) : null}
-      {list.error ? <p role="alert">{actionErrorMessage(list.error)}</p> : null}
     </div>
   );
 }
 
-/** A direct message with one person, or a few. */
-function NewMessage({ view }: { readonly view: TeamView }) {
-  const navigate = useNavigate();
-  const toast = useToast();
-  const [query, setQuery] = useState("");
-  const words = query.trim().toLocaleLowerCase();
-  const people = [...view.members.values()].filter(
-    (member) =>
-      member.state === "active" &&
-      member.userId !== view.words.viewerUserId &&
-      (!words ||
-        member.displayName.toLocaleLowerCase().includes(words) ||
-        member.handle.includes(words)),
-  );
+function BrowseRow({
+  channel,
+  joining,
+  onOpen,
+  top,
+}: {
+  readonly channel: TeamChannelSummary;
+  readonly joining: boolean;
+  readonly onOpen: (channel: TeamChannelSummary) => void;
+  /** The match Enter opens. */
+  readonly top: boolean;
+}) {
+  const state = channel.archivedAt
+    ? "Archived"
+    : channel.can.read
+      ? "Joined"
+      : channel.can.join
+        ? null
+        : "Members only";
   return (
-    <div className="team-browse">
-      <input
-        aria-label="Find a person"
-        autoFocus
-        className="text-input"
-        onChange={(event) => setQuery(event.currentTarget.value)}
-        placeholder="Find a person"
-        value={query}
-      />
-      <ul className="team-browse__list">
-        {people.map((member) => (
-          <li className="team-browse__row" key={member.userId}>
-            <PersonAvatar person={person(view.words, member.userId)} size={24} />
-            <span className="team-browse__name">
-              {member.displayName} <span className="team-browse__handle">@{member.handle}</span>
-            </span>
-            <button
-              className="btn btn--small"
-              onClick={() =>
-                void view.client.rpc["commands.dispatch"]({
-                  type: "team.dm.open",
-                  participants: [member.userId],
-                })
-                  .then(unwrapRpcResult)
-                  .then((result) => {
-                    if (result.type === "team.dm.open")
-                      void navigate(channelPath(view.team.teamId, result.channel.id));
-                  })
-                  .catch((error: unknown) => toast.error(actionErrorMessage(error)))
-              }
-              type="button"
-            >
-              Message
-            </button>
-          </li>
-        ))}
-      </ul>
-    </div>
+    <button
+      aria-label={[
+        `${channel.kind === "private" ? "Private channel" : "Channel"} ${channel.name}`,
+        channel.peopleOnly ? "people only" : null,
+        state ?? "join",
+      ]
+        .filter(Boolean)
+        .join(", ")}
+      className={top ? "team-browse__row is-top" : "team-browse__row"}
+      disabled={!channel.can.read && !channel.can.join}
+      onClick={() => onOpen(channel)}
+      type="button"
+    >
+      <span aria-hidden className="team-browse__glyph">
+        <ChannelGlyph kind={channelKind(channel.kind)} />
+      </span>
+      <span className="team-browse__name">{channel.name}</span>
+      {channel.peopleOnly ? <PeopleOnlyBadge /> : null}
+      {state ? (
+        <span aria-hidden className="team-browse__state">
+          {state === "Joined" ? <Icon name="check" /> : null}
+          {state}
+        </span>
+      ) : (
+        <span aria-hidden className="team-browse__join">
+          {joining ? "Joining…" : "Join"}
+        </span>
+      )}
+    </button>
   );
 }
