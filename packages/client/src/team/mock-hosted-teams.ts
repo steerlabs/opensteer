@@ -23,12 +23,13 @@ import { TeamEntryRefusedError } from "../auth/native-oauth.js";
 import { unwrapRpcResult } from "../host/host-session-client.js";
 import type { AccountTeamsClient } from "./account-teams.js";
 import { MockTeamHost } from "./mock-team-host.js";
-import type {
-  PersonalTeamLinksPort,
-  TeamConnectionIntent,
-  TeamConnectionIntentStore,
-  TeamSessionPort,
-  VerifiedTeam,
+import {
+  revokeOwnAgentLinks,
+  type PersonalTeamLinksPort,
+  type TeamConnectionIntent,
+  type TeamConnectionIntentStore,
+  type TeamSessionPort,
+  type VerifiedTeam,
 } from "./team-coordinator.js";
 
 export const mockAccountSubject = ControlPlaneAccountIdSchema.parse(
@@ -326,6 +327,8 @@ export class MockTeamWorld {
       if (result.type !== "team.link.code.create") throw new Error("The team made no code.");
       return result.offer;
     },
+    revokeAgentLinks: (teamDeploymentId) =>
+      revokeOwnAgentLinks(this.#record(teamDeploymentId).host!.rpc),
     leave: async (teamDeploymentId) => {
       const host = this.#record(teamDeploymentId).host!;
       unwrapRpcResult(
@@ -366,7 +369,9 @@ export class MockTeamWorld {
         },
       };
     },
-    leave: async () => undefined,
+    leave: async () => {
+      if (!this.personalOnline) throw new Error("Your computer isn’t reachable right now.");
+    },
   };
 
   readonly intents: TeamConnectionIntentStore = {

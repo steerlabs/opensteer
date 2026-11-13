@@ -19,6 +19,8 @@ link code establishes a revocable credential; the personal secret stays in the l
 Machine calls name a request over that link. The run ticket is the request row itself, scoped
 to team, channel, thread and owner, expiring seven days after first acceptance. Every call
 rechecks it. No link means no request; an offline computer leaves accepted work durably queued.
+Disconnecting an agent revokes the person's links at the team Host (`team.link.revoke`), not only
+on their computer, so it holds while that computer is off and for links made from any device.
 
 Each ask is its own queued input and Run, not a steer. Asking again in the same team thread
 continues the same local task. A private follow-up has no team

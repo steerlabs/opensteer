@@ -14,6 +14,7 @@ import {
 } from "@opensteer/client/host";
 import {
   createTeamCoordinator,
+  revokeOwnAgentLinks,
   TeamConnectionIntentSchema,
   type AccountTeamsClient,
   type MockTeamWorld,
@@ -137,6 +138,7 @@ export function desktopTeamSessions(
         { call: "preview-invite", origin: team.authority.canonicalOrigin, invite },
         TeamInvitePreviewResponseSchema,
       ),
+    revokeAgentLinks: (teamDeploymentId) => revokeOwnAgentLinks(rpc(teamDeploymentId)),
     createLinkCode: async (teamDeploymentId) => {
       const result = unwrapRpcResult(
         await rpc(teamDeploymentId)["commands.dispatch"]({ type: "team.link.code.create" }),

@@ -20,6 +20,7 @@ import {
 } from "@opensteer/core";
 import type { HostCapability } from "@opensteer/deployment-authority";
 import type {
+  HostApiClient,
   PersonalTeamLink,
   TeamInvitePreviewResponse,
   TeamSessionExchangeResponse,
@@ -28,6 +29,7 @@ import { TeamEntryRefusedError, TeamIdentityGrantUnsupportedError } from "../aut
 import { delay } from "@opensteer/shared/delay";
 import { z } from "zod";
 import type { AccountTeamsClient } from "./account-teams.js";
+import { unwrapRpcResult } from "../host/host-session-client.js";
 
 /**
  * Where getting a person's agent into a team stands. An offline personal computer is
@@ -113,12 +115,28 @@ export interface TeamSessionPort {
    */
   signIn(team: VerifiedTeam, invite: TeamInviteSecret | null): Promise<TeamSessionEstablished>;
   previewInvite(team: VerifiedTeam, invite: TeamInviteSecret): Promise<TeamInvitePreviewResponse>;
+  /**
+   * Revokes every agent link of the person's on the team, as the team itself lists them
+   * (`revokeOwnAgentLinks`). The team stops honoring them at once, wherever they were made.
+   */
+  revokeAgentLinks(teamDeploymentId: DeploymentId): Promise<void>;
   /** `team.link.code.create` with the held session; answers the offer text. */
   createLinkCode(teamDeploymentId: DeploymentId): Promise<string>;
   /** `team.member.remove` of the session's own user; the team refuses its last owner. */
   leave(teamDeploymentId: DeploymentId): Promise<void>;
   /** Drops this device's credential and cached state for the team. */
   forget(teamDeploymentId: DeploymentId): Promise<void>;
+}
+
+/** `TeamSessionPort.revokeAgentLinks` over a team session's API. */
+export async function revokeOwnAgentLinks(rpc: HostApiClient): Promise<void> {
+  const me = unwrapRpcResult(await rpc["team.bootstrap.get"]({})).member.userId;
+  const { links } = unwrapRpcResult(await rpc["team.links.list"]({}));
+  for (const link of links)
+    if (link.ownerUserId === me && link.state !== "revoked")
+      unwrapRpcResult(
+        await rpc["commands.dispatch"]({ type: "team.link.revoke", linkId: link.id }),
+      );
 }
 
 /** The person's own Opensteer that runs their agent (`teams.link.*` on that personal Host). */
@@ -617,10 +635,17 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
 
     async disconnectAgent(teamDeploymentId) {
       await load();
-      const intent = intentFor((held) => held.teamDeploymentId === teamDeploymentId);
+      const held = intentFor((intent) => intent.teamDeploymentId === teamDeploymentId);
+      if (held) await connecting.get(keyOf(held))?.catch(() => undefined);
+      // Revoked by the team itself, so it holds with the computer off and for links made elsewhere.
+      await ports.sessions.revokeAgentLinks(teamDeploymentId);
+      const intent = intentFor((current) => current.teamDeploymentId === teamDeploymentId);
       if (!intent) return;
+      // A computer that answers forgets the link now; one that's off, when the team refuses it.
       if (intent.personalDeploymentId)
-        await ports.personal.leave(intent.personalDeploymentId, teamDeploymentId);
+        await ports.personal
+          .leave(intent.personalDeploymentId, teamDeploymentId)
+          .catch(() => undefined);
       await keepWithoutAgent(intent.teamOrigin, teamDeploymentId);
     },
 

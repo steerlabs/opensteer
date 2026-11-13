@@ -63,4 +63,11 @@ describe("phone team ports", () => {
     );
     await expect(refused.join(personal, "offer")).rejects.toThrow("That code expired.");
   });
+
+  it("never reports leaving a team on a computer it couldn't ask", async () => {
+    const team = DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-0000000000dd");
+    await expect(mobilePersonalTeamLinks(() => null).leave(personal, team)).rejects.toThrow(
+      /isn’t reachable/u,
+    );
+  });
 });

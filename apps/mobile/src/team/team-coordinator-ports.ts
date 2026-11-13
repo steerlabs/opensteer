@@ -1,4 +1,5 @@
 import {
+  ClientOperationError,
   classifyClientFailure,
   type PrivateFilesystem,
   type VerifiedHostEndpoint,
@@ -11,6 +12,7 @@ import {
 } from "@opensteer/client/host";
 import {
   previewTeamInvite,
+  revokeOwnAgentLinks,
   TeamConnectionIntentSchema,
   verifiedTeam,
   type PersonalTeamLinksPort,
@@ -117,7 +119,11 @@ export function mobilePersonalTeamLinks(
     },
     async leave(personalDeploymentId, teamDeploymentId) {
       const host = personal(personalDeploymentId);
-      if (host === null) return;
+      if (host === null)
+        throw new ClientOperationError(
+          "That computer isn’t reachable from this phone.",
+          "transient",
+        );
       await new PersonalTeamLinks(host.rpc).leave(teamDeploymentId);
     },
   };
@@ -150,6 +156,8 @@ export function mobileTeamSessions(options: {
     },
     previewInvite: (team, invite) =>
       previewTeamInvite(team.authority.canonicalOrigin, invite, options.fetch),
+    revokeAgentLinks: async (teamDeploymentId) =>
+      revokeOwnAgentLinks((await teams.session(teamDeploymentId)).rpc),
     async createLinkCode(teamDeploymentId) {
       const session = await teams.session(teamDeploymentId);
       const minted = unwrapRpcResult(

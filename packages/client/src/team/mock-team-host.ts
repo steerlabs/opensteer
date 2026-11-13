@@ -9,6 +9,7 @@ import {
   TeamGroupSchema,
   TeamInviteSchema,
   TeamCurrentInviteSchema,
+  TeamLinkViewSchema,
   type TeamCurrentInvite,
   type TeamInvitePreviewResponse,
 } from "@opensteer/protocol";
@@ -90,6 +91,8 @@ export class MockTeamHost {
   readonly linkPresence: TeamConsistentCut["linkPresence"] = [];
   readonly groups = new Map<string, z.infer<typeof TeamGroupSchema>>();
   readonly invites = new Map<string, z.infer<typeof TeamInviteSchema>>();
+  /** Agent links, made by each `team.link.code.create` as the real Host makes them. */
+  readonly links = new Map<string, z.infer<typeof TeamLinkViewSchema>>();
   readonly #uploads = new Map<string, z.infer<typeof TeamFileSchema>>();
   readonly #directParticipants = new Map<string, string[]>();
   readonly #access = new Map<string, z.infer<typeof TeamChannelAccessSchema>>();
@@ -462,7 +465,10 @@ export class MockTeamHost {
         (current.invite.maxUses === null || current.invite.usedCount < current.invite.maxUses);
       return { invite: live ? current.invite : null };
     }
-    if (name === "team.links.list") return { links: [] };
+    if (name === "team.links.list")
+      return {
+        links: [...this.links.values()].filter((link) => link.state !== "revoked").slice(0, 50),
+      };
     if (name === "team.audit.page") return { audit: [], hasMore: false };
     if (name === "team.notices.page") return { notices: [], hasMore: false };
     if (name === "team.knowledge.topics.list") return { topics: [], hasMore: false };
@@ -802,7 +808,22 @@ export class MockTeamHost {
         this.publish();
         return { type: command.type };
       }
-      if (command.type === "team.link.code.create")
+      if (command.type === "team.link.revoke") {
+        const link = this.links.get(command.linkId);
+        if (link) this.links.set(link.id, { ...link, state: "revoked" });
+        return { type: command.type };
+      }
+      if (command.type === "team.link.code.create") {
+        const id = createId("teamLink");
+        this.links.set(id, {
+          teamName: this.bootstrap.teamName,
+          id,
+          ownerUserId: this.userId,
+          personalDeploymentId: null,
+          installationLabel: null,
+          state: "pending",
+          lastSeenAt: null,
+        });
         return {
           type: command.type,
           replacing: null,
@@ -813,6 +834,7 @@ export class MockTeamHost {
             code: (crypto.randomUUID() + crypto.randomUUID()).replaceAll("-", "").slice(0, 43),
           }),
         };
+      }
       if (
         command.type === "team.upload.complete" ||
         command.type === "team.upload.cancel" ||

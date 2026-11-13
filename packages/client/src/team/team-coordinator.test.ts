@@ -27,6 +27,14 @@ async function until(done: () => boolean, what: string) {
   if (!done()) throw new Error(`Never happened: ${what}`);
 }
 
+/** The links a team still honors, as the team Host itself lists them. */
+async function activeLinks(world: MockTeamWorld, teamDeploymentId: DeploymentId) {
+  const host = world.joined().find((joined) => joined.teamId === teamDeploymentId)!;
+  const listed = await host.rpc["team.links.list"]({});
+  if (!listed.ok) throw new Error(listed.error.message);
+  return listed.data.links.filter((link) => link.state !== "revoked");
+}
+
 const create = (coordinator: TeamCoordinator, slug = "acme") =>
   coordinator.createHostedTeam({
     name: "Acme",
@@ -248,11 +256,27 @@ describe("TeamCoordinator", () => {
     const linkLeave = vi.spyOn(world.personal, "leave");
     await coordinator.disconnectAgent(opened[0]!);
     expect(linkLeave).toHaveBeenCalledOnce();
+    expect(await activeLinks(world, opened[0]!)).toEqual([]);
     // The team itself stays on the device until Account's directory lists it.
     expect(coordinator.getSnapshot().intents).toMatchObject([
       { teamDeploymentId: opened[0], personalDeploymentId: null, state: "no-agent" },
     ]);
     expect(world.joined()).toHaveLength(1);
+  });
+
+  it("disconnects the agent link the team holds, wherever it was made, even with the computer off", async () => {
+    const { coordinator, world } = track(start());
+    const entered = await coordinator.joinWithInvite({
+      inviteUrl: world.sampleInviteUrl,
+      personalDeploymentId: null,
+    });
+    // A link this device never asked for: made on another device, or before it kept intents.
+    const host = world.joined().find((joined) => joined.teamId === entered.teamDeploymentId)!;
+    await host.rpc["commands.dispatch"]({ type: "team.link.code.create" });
+    expect(await activeLinks(world, entered.teamDeploymentId)).toHaveLength(1);
+    world.personalOnline = false;
+    await coordinator.disconnectAgent(entered.teamDeploymentId);
+    expect(await activeLinks(world, entered.teamDeploymentId)).toEqual([]);
   });
 
   it("joins in the browser with the invite when Account can't vouch yet, never when the team refuses", async () => {
