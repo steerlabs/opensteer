@@ -80,3 +80,15 @@ export function antigravityPlatform(
   const key = `${platform}-${architecture}`;
   return key in antigravityReleaseManifest.platforms ? (key as AntigravityPlatform) : undefined;
 }
+
+/** Why this computer cannot run Antigravity, when Google publishes no release for it. */
+export function antigravityUnavailableReason(
+  platform: NodeJS.Platform = process.platform,
+  architecture: string = process.arch,
+): string | undefined {
+  if (antigravityPlatform(platform, architecture)) return undefined;
+  if (platform === "win32") {
+    return "Google publishes no Windows release of Antigravity's agent server, so Antigravity is not available on this computer";
+  }
+  return `Google does not publish Antigravity ${antigravityReleaseManifest.version} for ${platform}-${architecture}`;
+}

@@ -17,6 +17,7 @@ import {
   readdir,
   readlink,
   rm,
+  stat,
   symlink,
   unlink,
 } from "node:fs/promises";
@@ -118,6 +119,8 @@ import {
   type HarnessRunInput,
   type ResolvedAttachment,
   type SupervisedProcess,
+  linkDirectory,
+  linkNames,
 } from "@opensteer/harness";
 import { z } from "zod";
 import { CodexHarnessConfigSchema, type CodexHarnessConfig } from "./config.js";
@@ -3750,8 +3753,8 @@ async function linkCodexStoreEntry(linkPath: string, target: string): Promise<vo
     throw error;
   });
   if (existing?.isSymbolicLink()) {
+    if (await linkNames(linkPath, target)) return;
     const previousTarget = resolve(dirname(linkPath), await readlink(linkPath));
-    if (previousTarget === target) return;
     const previous = await lstat(previousTarget).catch((error: unknown) => {
       if (nodeErrorCode(error) === "ENOENT") return undefined;
       throw error;
@@ -3775,16 +3778,13 @@ async function linkCodexStoreEntry(linkPath: string, target: string): Promise<vo
     });
   }
   try {
-    await symlink(target, linkPath);
+    await linkDirectory(target, linkPath);
   } catch (error) {
     if (nodeErrorCode(error) !== "EEXIST") throw error;
     // Another process may have won the race, but only its exact store link is
     // safe to accept as the completed materialization.
     const winner = await lstat(linkPath);
-    if (
-      !winner.isSymbolicLink() ||
-      resolve(dirname(linkPath), await readlink(linkPath)) !== target
-    ) {
+    if (!winner.isSymbolicLink() || !(await linkNames(linkPath, target))) {
       throw codexStoreConflict(linkPath, target);
     }
   }
@@ -3815,16 +3815,7 @@ async function mergeDirectoryInto(source: string, destination: string): Promise<
       continue;
     }
     if (entry.isSymbolicLink()) {
-      const value = await readlink(from);
-      try {
-        await symlink(value, to);
-      } catch (error) {
-        if (nodeErrorCode(error) !== "EEXIST") throw error;
-        const existing = await lstat(to);
-        if (!existing.isSymbolicLink() || (await readlink(to)) !== value) {
-          throw codexStoreConflict(from, to);
-        }
-      }
+      await copyStoreLink(from, to);
       continue;
     }
     if (!entry.isFile()) throw codexStoreConflict(from, to);
@@ -3844,6 +3835,31 @@ async function mergeDirectoryInto(source: string, destination: string): Promise<
         if (!(await filesEqual(from, to))) throw codexStoreConflict(from, to);
       }
     }
+  }
+}
+
+/**
+ * Recreates the link at `from` as `to`, never replacing an existing entry:
+ * only the same link already there counts as its counterpart. POSIX keeps the
+ * link's own text. Windows recreates a directory link as a junction to where
+ * it led, since a standard user cannot create a symbolic link.
+ */
+async function copyStoreLink(from: string, to: string): Promise<void> {
+  const value = await readlink(from);
+  const junctionTarget =
+    process.platform === "win32" && (await stat(from).catch(() => undefined))?.isDirectory()
+      ? resolve(dirname(from), value)
+      : undefined;
+  try {
+    if (junctionTarget) await linkDirectory(junctionTarget, to);
+    else await symlink(value, to);
+  } catch (error) {
+    if (nodeErrorCode(error) !== "EEXIST") throw error;
+    const existing = await lstat(to);
+    const same =
+      existing.isSymbolicLink() &&
+      (junctionTarget ? await linkNames(to, junctionTarget) : (await readlink(to)) === value);
+    if (!same) throw codexStoreConflict(from, to);
   }
 }
 

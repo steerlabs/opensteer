@@ -1,7 +1,5 @@
-import { execFile } from "node:child_process";
 import { posix, win32 } from "node:path";
-import { promisify } from "node:util";
-import { meetsMinimumVersion } from "@opensteer/harness";
+import { collectStreamText, meetsMinimumVersion, spawnSupervised } from "@opensteer/harness";
 import {
   hostCommandPlatform,
   nodeCommandProbes,
@@ -67,10 +65,10 @@ export async function inspectClaudeExecutable(
   try {
     // The SDK also runs legacy cli.js through Node; auth uses the same target.
     const script = resolved.endsWith(".js");
-    const { stdout } = await promisify(execFile)(
+    const stdout = await claudeVersionOutput(
       script ? nodeExecutable : resolved,
       script ? [resolved, "--version"] : ["--version"],
-      { env: environment, timeout: 10_000 },
+      environment,
     );
     const version = /^(\d+\.\d+\.\d+)(?:\s|$)/u.exec(stdout.trim())?.[1];
     if (!version || !meetsMinimumVersion(version, MINIMUM_CLAUDE_CODE_VERSION)) {
@@ -88,4 +86,39 @@ export async function inspectClaudeExecutable(
       detail: `Claude Code could not start: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
+}
+
+const versionTimeoutMs = 10_000;
+
+/** `--version` under the process supervisor, which ends the whole tree on timeout. */
+async function claudeVersionOutput(
+  executable: string,
+  args: readonly string[],
+  environment: NodeJS.ProcessEnv,
+): Promise<string> {
+  const timeout = AbortSignal.timeout(versionTimeoutMs);
+  const child = spawnSupervised({
+    args,
+    cwd: process.cwd(),
+    environment: Object.fromEntries(
+      Object.entries(environment).filter((entry): entry is [string, string] => !!entry[1]),
+    ),
+    executable,
+    maxOutputBytes: 64 * 1_024,
+    signal: timeout,
+    stdin: "closed",
+  });
+  const [stdout, stderr, exit] = await Promise.all([
+    collectStreamText(child.stdout),
+    collectStreamText(child.stderr),
+    child.exited,
+  ]);
+  if (timeout.aborted) throw new Error(`--version did not finish within ${versionTimeoutMs} ms`);
+  if (exit.code !== 0) {
+    const detail = stderr.trim().slice(-1_024);
+    throw new Error(
+      `--version exited with ${exit.signal ?? `code ${exit.code}`}${detail ? `: ${detail}` : ""}`,
+    );
+  }
+  return stdout;
 }
