@@ -167,3 +167,8 @@ when local deletion or remote revocation fails.
 Native token refresh never exchanges an Account assertion or publishes logout on refusal. The shared
 team entry operation owns fallback; passive recovery cannot open a browser or clear team sign-out.
 Obsolete entry cleanup can remove only the catalog revision that attempt created.
+
+Account identity changes invalidate all native team transports independently of credential storage;
+late socket events and outstanding responses cannot cross that boundary. Authorization refusals
+do not establish membership removal: only membership reasons permit erasing a viewer partition
+([team entry](teams.md)).

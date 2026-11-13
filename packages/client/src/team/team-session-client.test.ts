@@ -5,7 +5,11 @@ import {
   TeamMessageIdSchema,
   createId,
 } from "@opensteer/core";
-import { TeamConsistentCutSchema, type TeamConsistentCut } from "@opensteer/protocol";
+import {
+  TeamEntryRefusalReasonSchema,
+  TeamConsistentCutSchema,
+  type TeamConsistentCut,
+} from "@opensteer/protocol";
 import {
   MockTeamHost,
   mockTeamId,
@@ -36,6 +40,57 @@ function fixture() {
   return { host, persistence, client };
 }
 describe("team synchronization", () => {
+  it.each([...TeamEntryRefusalReasonSchema.options, "removed"])(
+    "preserves the partition unless %s is membership refusal",
+    async (reason) => {
+      const host = new MockTeamHost(),
+        persistence = createMemoryTeamPersistence();
+      let refuse = false;
+      const client = new TeamSessionClient({
+        scope,
+        persistence,
+        connect: host.connect,
+        rpc: new Proxy(host.rpc, {
+          get(target, key, receiver) {
+            if (key === "team.bootstrap.get" && refuse)
+              return async () => ({
+                ok: false,
+                error: {
+                  code:
+                    reason === "removed" || reason.startsWith("assertion-")
+                      ? "unauthorized"
+                      : "forbidden",
+                  reason,
+                  message: reason,
+                  retryable: false,
+                },
+              });
+            return Reflect.get(target, key, receiver);
+          },
+        }),
+      });
+      try {
+        await client.setDraft(channelScope, "Draft");
+        await client.send({
+          channelId: mockTeamChannelId,
+          threadRootId: null,
+          bodyMarkdown: "Pending",
+          mentions: [],
+          attachmentIds: [],
+        });
+        const before = await persistence.load(scope);
+        refuse = true;
+        await expect(client.load(false)).rejects.toMatchObject({ reason });
+        if (reason === "not-a-member" || reason === "removed")
+          expect(await persistence.load(scope)).toBeNull();
+        else expect(await persistence.load(scope)).toEqual(before);
+      } finally {
+        client.dispose();
+        host.dispose();
+      }
+    },
+  );
+
   it("preserves not-a-member through live session teardown", async () => {
     const host = new MockTeamHost();
     let removed = false;

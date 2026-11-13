@@ -1,3 +1,4 @@
+import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { DeploymentIdSchema } from "@opensteer/core";
 import type { HostBootstrapMethod } from "@opensteer/deployment-authority";
 import { AccountRequestError } from "../connections/account-deployment-directory.js";
@@ -490,8 +491,11 @@ export class HostSession implements HostSessionRecovery {
       try {
         return oauthObservation(await this.#oauth.signInTeam(connection, undefined, interactive));
       } catch (error) {
-        if (error instanceof TeamEntryRefusedError)
-          return observation(resolved, "blocked", error.message);
+        if (error instanceof TeamEntryRefusedError) {
+          if (teamEntryRefusalOutcome(error.reason) === "membership")
+            return observation(resolved, "blocked", error.message);
+          throw new HostSessionError("unavailable", error.message, { cause: error });
+        }
         throw error;
       }
     }
@@ -638,8 +642,11 @@ function observationFromRecovery(
   resolved: ResolvedConnection,
   outcome: HostSessionRecoveryOutcome,
 ): HostSessionObservation {
-  if (outcome instanceof TeamEntryRefusedError)
-    return observation(resolved, "blocked", outcome.message);
+  if (outcome instanceof TeamEntryRefusedError) {
+    if (teamEntryRefusalOutcome(outcome.reason) === "membership")
+      return observation(resolved, "blocked", outcome.message);
+    throw new HostSessionError("unavailable", outcome.message, { cause: outcome });
+  }
   if (outcome === "recovered") return observation(resolved, "ready");
   if (outcome === "blocked") {
     return observation(resolved, "blocked", "This connection was refused.");

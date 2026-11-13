@@ -1,3 +1,4 @@
+import { HostTransport, type HostNetworkSocketEvents } from "../connections/host-transport.js";
 import { TeamMemberSchema } from "@opensteer/protocol";
 import * as teamEntryModule from "../team/native-team-entry.js";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -102,22 +103,73 @@ describe("NativeOAuthManager", () => {
     f.manager.dispose();
   });
 
-  it("invalidates team readers synchronously before failed identity cleanup", async () => {
-    const f = await managerFixture();
-    await f.manager.initialize();
-    await f.signInAccount();
-    await f.manager.beginHostSignIn(f.connection);
-    await f.manager.handleCallback(
-      callbackUrl("host", new URL(f.opened.at(-1)!).searchParams.get("state")!, "code"),
-    );
-    const retired = vi.fn();
-    f.manager.subscribeAccountIdentityChanges(retired);
-    vi.spyOn(f.store, "clearHosts").mockRejectedValue(new Error("storage unavailable"));
-    const signingOut = f.manager.signOutAccount();
-    expect(retired).toHaveBeenCalledWith([f.connection.authority.document.deploymentId]);
-    await signingOut;
-    f.manager.dispose();
-  });
+  it.each(["held", "dropped", "never", "in-flight"])(
+    "invalidates every team reader with %s credentials before cleanup",
+    async (starting) => {
+      const f = await managerFixture();
+      await f.manager.initialize();
+      await f.signInAccount();
+      if (starting !== "never") {
+        await f.manager.beginHostSignIn(f.connection);
+        if (starting !== "in-flight")
+          await f.manager.handleCallback(
+            callbackUrl("host", new URL(f.opened.at(-1)!).searchParams.get("state")!, "code"),
+          );
+        if (starting === "dropped") await f.manager.signOutHost(f.connection);
+      }
+      const closed = vi.fn();
+      const messages = vi.fn();
+      const requested = vi.fn();
+      const response = Promise.withResolvers<Response>();
+      let events: HostNetworkSocketEvents | undefined;
+      const transport = new HostTransport({
+        deploymentId: f.connection.authority.document.deploymentId,
+        expectedKind: "team",
+        catalog: { load: f.catalog.load, subscribe: () => () => {} },
+        localRuntime: { current: async () => null },
+        credentials: f.manager,
+        network: {
+          request: () => {
+            requested();
+            return response.promise;
+          },
+          openWebSocket: (_input, handlers) => {
+            events = handlers;
+            handlers.open();
+            return { close: closed, send() {} };
+          },
+        },
+      });
+      await transport.openSocket({ path: "/v1/realtime" }, () => ({
+        open() {},
+        close() {},
+        error() {},
+        message: messages,
+      }));
+      const pending = transport.exchange(
+        { path: "/pending", method: "GET", headers: {} },
+        (result) => result.text(),
+      );
+      const rejected = expect(pending).rejects.toMatchObject({ code: "deployment-changed" });
+      await vi.waitFor(() => expect(requested).toHaveBeenCalledOnce(), { timeout: 1000 });
+      const retired = vi.fn((ids?: readonly string[]) => {
+        if (!ids || ids.includes(f.connection.authority.document.deploymentId))
+          transport.invalidateSession();
+      });
+      f.manager.subscribeAccountIdentityChanges(retired);
+      vi.spyOn(f.store, "clearHosts").mockRejectedValue(new Error("storage unavailable"));
+      const signingOut = f.manager.signOutAccount();
+      expect(retired).toHaveBeenCalledOnce();
+      expect(closed).toHaveBeenCalled();
+      events!.message("late Account data");
+      expect(messages).not.toHaveBeenCalled();
+      response.resolve(new Response("late response"));
+      await rejected;
+      await signingOut;
+      transport.closeAllSockets();
+      f.manager.dispose();
+    },
+  );
 
   it("keeps passive establishment suppressed without opening the browser", async () => {
     const f = await managerFixture();
@@ -1176,6 +1228,60 @@ describe("NativeOAuthManager team session exchange", () => {
     generation: "1",
     joinedAt: "2026-08-11T19:00:00.000Z",
   };
+
+  it.each([false, true])(
+    "renews an expired assertion only once (persistent refusal: %s)",
+    async (persistent) => {
+      let grants = 0,
+        exchanges = 0;
+      const f = await managerFixture({
+        capabilities: exchangeCapability,
+        route: (url) => {
+          if (url.includes("/team-identity-grants")) {
+            grants++;
+            return Response.json({ assertion, expiresAt: "2026-08-11T19:11:00.000Z" });
+          }
+          if (!url.endsWith("/v1/team/session/exchange")) return undefined;
+          exchanges++;
+          if (exchanges === 1 || persistent)
+            return Response.json(
+              {
+                error: {
+                  code: "unauthorized",
+                  reason: "assertion-expired",
+                  message: "Expired",
+                  retryable: true,
+                },
+              },
+              { status: 401 },
+            );
+          return Response.json({
+            admitted: false,
+            member,
+            tokens: {
+              access_token: "a".repeat(32),
+              refresh_token: "r".repeat(32),
+              expires_in: 600,
+              scope: "openid profile email offline_access host:access",
+              token_type: "Bearer",
+            },
+          });
+        },
+      });
+      try {
+        await f.manager.initialize();
+        await f.signInAccount();
+        const exchange = f.manager.exchangeTeamSession(f.connection);
+        if (persistent)
+          await expect(exchange).rejects.toMatchObject({ reason: "assertion-expired" });
+        else await expect(exchange).resolves.toMatchObject({ admitted: false });
+        expect(grants).toBe(2);
+        expect(exchanges).toBe(2);
+      } finally {
+        f.manager.dispose();
+      }
+    },
+  );
 
   it("retains a fresh invite when refused refresh recovers through Account exchange", async () => {
     const invite = { selector: "s".repeat(32), verifier: "v".repeat(43) };

@@ -1,3 +1,4 @@
+import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { useCallback, useRef, useState, useSyncExternalStore } from "react";
 import { useLocation, useNavigate } from "react-router";
 import type { TeamSessionClient, TeamSessionSnapshot } from "@opensteer/client/team";
@@ -280,7 +281,7 @@ export function TeamSideFor({
   });
   const hrefFor = useCallback((channelId: string) => channelPath(teamId, channelId), [teamId]);
   if (!team) return null;
-  if (!team.client || refusal === "not-a-member")
+  if (!team.client || teamEntryRefusalOutcome(refusal) === "membership")
     return (
       <div className="team-left">
         <TeamTile tile={teamTile(team.teamId, team.name)} />
@@ -291,7 +292,7 @@ export function TeamSideFor({
               ? "Opening team…"
               : team.failure === "unavailable"
                 ? "Team temporarily unavailable. Try again."
-                : team.failure === "join" || refusal === "not-a-member"
+                : team.failure === "join" || teamEntryRefusalOutcome(refusal) === "membership"
                   ? "Ask a team member for an invite."
                   : enter
                     ? "Not signed in on this computer"
@@ -314,7 +315,7 @@ export function TeamSideFor({
               ? "Opening…"
               : team.failure === "unavailable"
                 ? "Retry"
-                : team.failure === "join" || refusal === "not-a-member"
+                : team.failure === "join" || teamEntryRefusalOutcome(refusal) === "membership"
                   ? "Join"
                   : "Sign in"}
           </button>

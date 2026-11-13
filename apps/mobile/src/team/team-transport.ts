@@ -58,8 +58,8 @@ export function networkTeamTransport(options: {
       );
       transports.set(deploymentId, pinned);
       const transport = pinned.transport;
-      options.oauth.subscribeAccountIdentityChanges((ids) => {
-        if (ids.includes(deploymentId)) transport.invalidateSession();
+      options.oauth.subscribeAccountIdentityChanges(() => {
+        transport.invalidateSession();
       });
     }
     const held = pinned;

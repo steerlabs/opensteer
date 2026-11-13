@@ -1,3 +1,5 @@
+import { HostClientRequestError } from "@opensteer/client/host";
+import { TeamEntryRefusalReasonSchema } from "@opensteer/protocol";
 import { TeamEntryRefusedError } from "@opensteer/client/auth";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import {
@@ -22,7 +24,7 @@ import {
   mockTeamOrigin,
 } from "../client/mock-mode.js";
 import type { NotificationPreviews } from "../notifications/notification-preview.js";
-import { MobileTeams, type TeamTransport } from "./mobile-teams.js";
+import { MobileTeams, teamFailure, type TeamTransport } from "./mobile-teams.js";
 import { mockTeamReaderId, mockTeamTransport } from "./team-transport.js";
 
 const connections: readonly DeploymentConnection[] = mockDeploymentConnections()
@@ -87,7 +89,11 @@ function fixture(
     oauth: {
       subscribeAccountIdentityChanges: () => () => undefined,
       accountIdentity: () => null,
-      teamEntryLease: () => ({ generation: 0, assertCurrent: () => {} }),
+      teamEntryLease: () => ({
+        generation: 0,
+        signal: new AbortController().signal,
+        assertCurrent: () => {},
+      }),
       hostCredentialState: () => ({ detail: null }),
       isTeamSignInSuppressed: () => suppressed,
     },
@@ -251,7 +257,11 @@ describe("the one team socket a phone keeps", () => {
     const read = host.read.bind(host);
     vi.spyOn(host, "read").mockImplementation((name, input) => {
       if (name === "team.bootstrap.get")
-        throw new OpensteerError({ code: "forbidden", message: "Membership removed" });
+        throw new OpensteerError({
+          code: "forbidden",
+          reason: "removed",
+          message: "Membership removed",
+        });
       return read(name, input);
     });
     // The team closes the removed member's socket.
@@ -377,6 +387,7 @@ describe("adding a computer's team to the phone", () => {
           const captured = entryCurrent;
           return {
             generation: 0,
+            signal: new AbortController().signal,
             assertCurrent: () => {
               if (captured !== entryCurrent) throw new Error("Entry changed");
             },
@@ -445,3 +456,18 @@ describe("adding a computer's team to the phone", () => {
     }
   });
 });
+
+it.each([...TeamEntryRefusalReasonSchema.options, "removed", undefined])(
+  "presents authorization refusal %s without implying an unconfirmed removal",
+  (reason) => {
+    const error = new HostClientRequestError({
+      code: "forbidden",
+      status: 403,
+      message: "Refused",
+      ...(reason ? { reason } : {}),
+    });
+    expect(teamFailure(error)).toBe(
+      reason === "not-a-member" ? "join" : reason === "removed" ? "removed" : "offline",
+    );
+  },
+);

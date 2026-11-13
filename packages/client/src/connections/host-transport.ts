@@ -1,3 +1,4 @@
+import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { TeamEntryRefusedError } from "../auth/native-oauth.js";
 import {
   apiNegotiation,
@@ -475,7 +476,7 @@ export class HostTransport {
               code: "forbidden",
               message: outcome.message,
               reason: outcome.reason,
-              retryable: false,
+              retryable: teamEntryRefusalOutcome(outcome.reason) !== "membership",
             },
           },
           { status: 403 },

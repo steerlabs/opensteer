@@ -1,3 +1,4 @@
+import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import type { TeamFileUpload } from "./files.js";
 import {
   OpensteerError,
@@ -278,11 +279,12 @@ export class TeamSessionClient {
   }
   async #authorizationFailure(error: unknown): Promise<void> {
     if (!(error instanceof OpensteerError)) return;
-    if (error.code === "unauthorized") await this.remove("sign-in");
-    else if (error.code === "forbidden" || error.code === "not_found") {
+    const refusal = teamEntryRefusalOutcome(error.reason);
+    if (refusal === "retryable") return;
+    if (refusal === "membership") {
       this.#update({ refusalReason: error.reason });
       await this.remove("removed");
-    }
+    } else if (error.code === "unauthorized") await this.remove("sign-in");
   }
   /** Whether the viewer still belongs here; a failed check settles false. */
   async #revalidate(): Promise<boolean> {

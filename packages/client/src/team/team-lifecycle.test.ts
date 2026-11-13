@@ -209,7 +209,11 @@ describe("team session lifecycle", () => {
       const read = f.host.read.bind(f.host);
       vi.spyOn(f.host, "read").mockImplementation((name, input) => {
         if (name === "team.bootstrap.get")
-          throw new OpensteerError({ code: "forbidden", message: "Membership removed" });
+          throw new OpensteerError({
+            code: "forbidden",
+            reason: "removed",
+            message: "Membership removed",
+          });
         return read(name, input);
       });
       f.host.dispose();

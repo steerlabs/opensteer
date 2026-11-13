@@ -1,3 +1,4 @@
+import { TeamEntryRefusalReasonSchema, type TeamEntryRefusalReason } from "@opensteer/protocol";
 import { expect, it, vi } from "vitest";
 import {
   hostApiVersion,
@@ -93,14 +94,14 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
     >[0][] = [];
   let token = "Bearer mock-session";
   let rejectCredentials = false;
-  let recoveryOutcome: "recovered" | "unavailable" | "account-required" | "not-a-member" =
+  let recoveryOutcome: "recovered" | "unavailable" | "account-required" | TeamEntryRefusalReason =
     "recovered";
   const { TeamEntryRefusedError } = await import("../auth/native-oauth.js");
   const { HostSession } = await import("../auth/host-session.js");
   const sessions: InstanceType<typeof HostSession>[] = [];
   const refresh = vi.fn(async () => {
-    if (recoveryOutcome === "not-a-member")
-      throw new TeamEntryRefusedError("not-a-member", "Ask for an invite");
+    const reason = TeamEntryRefusalReasonSchema.safeParse(recoveryOutcome);
+    if (reason.success) throw new TeamEntryRefusedError(reason.data, "Ask for an invite");
     if (recoveryOutcome === "unavailable") throw new Error("Offline");
     if (recoveryOutcome === "account-required") return false;
     token = "Bearer refreshed";
@@ -301,6 +302,19 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
       expect(await persistence.load(scope)).toEqual(saved);
     } finally {
       client.dispose();
+    }
+    for (const reason of TeamEntryRefusalReasonSchema.options) {
+      recoveryOutcome = reason;
+      const classified = pinnedTeamTransport(options, new URL("https://team.example"));
+      const result = await classified.rpc["team.bootstrap.get"]({});
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          reason,
+          retryable: reason !== "not-a-member",
+        },
+      });
+      classified.transport.closeAllSockets();
     }
     // A separate attachment has no cooldown from the unavailable attempt.
     recoveryOutcome = "account-required";

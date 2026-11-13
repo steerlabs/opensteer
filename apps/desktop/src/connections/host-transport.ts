@@ -947,6 +947,12 @@ export class DesktopHostTransport extends HostTransport {
     return selected;
   }
 
+  invalidateTeamSessions(): void {
+    for (const id of this.#teams.keys()) this.closeDeploymentConnections(id);
+    for (const id of this.#summaries.keys()) this.closeDeploymentConnections(id);
+    this.invalidateSession();
+  }
+
   closeDeploymentConnections(deploymentId: DeploymentId): void {
     // The selected transport caches its identity; do not resolve a different route during fencing.
     if (this.#selectedDeploymentId === null || this.#selectedDeploymentId === deploymentId)

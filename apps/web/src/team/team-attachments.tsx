@@ -1,3 +1,4 @@
+import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import {
   createContext,
   useCallback,
@@ -306,7 +307,8 @@ export function TeamsProvider({
         } catch (error) {
           if (!live) return;
           const failure =
-            error instanceof HostClientRequestError && error.reason === "not-a-member"
+            error instanceof HostClientRequestError &&
+            teamEntryRefusalOutcome(error.reason) === "membership"
               ? "join"
               : error instanceof HostClientRequestError && error.code === "unauthorized"
                 ? "sign-in"

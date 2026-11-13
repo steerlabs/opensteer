@@ -64,3 +64,21 @@ export const TeamEntryRefusalReasonSchema = z.enum([
   "invite-used-up",
 ]);
 export type TeamEntryRefusalReason = z.infer<typeof TeamEntryRefusalReasonSchema>;
+
+/** Only a membership refusal authorizes deleting a viewer's local partition. */
+export const teamEntryRefusalOutcomes = {
+  "assertion-invalid": "retryable",
+  "assertion-expired": "retryable",
+  "authority-changed": "retryable",
+  "not-a-member": "membership",
+  "invite-invalid": "retryable",
+  "invite-expired": "retryable",
+  "invite-used-up": "retryable",
+  removed: "membership",
+} as const satisfies Record<TeamEntryRefusalReason | "removed", "membership" | "retryable">;
+
+export function teamEntryRefusalOutcome(reason: string | null | undefined) {
+  return reason && Object.hasOwn(teamEntryRefusalOutcomes, reason)
+    ? teamEntryRefusalOutcomes[reason as keyof typeof teamEntryRefusalOutcomes]
+    : undefined;
+}

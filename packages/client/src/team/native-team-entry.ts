@@ -1,3 +1,4 @@
+import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import type { DeploymentId, TeamInviteSecret } from "@opensteer/core";
 import {
   hostKeyFingerprint,
@@ -160,11 +161,20 @@ export class NativeTeamEntry {
     if (!attempts) entryAttempts.set(this.#oauth, (attempts = new Map()));
     const held = attempts.get(input.deploymentId);
     if (held) {
+      if (input.mode === "passive" && held.mode === "interactive")
+        return this.#passiveDuringBrowser(input, held.promise);
       if (
         input.mode === "passive" ||
         (held.mode === "interactive" && sameInvite(held.invite, input.invite))
       )
-        return held.promise;
+        return held.promise.then(async (outcome) => {
+          if (!input.recover || outcome.status !== "authorized") return outcome;
+          const connection = await this.#held(input.deploymentId);
+          if (!connection) return { status: "retryable" };
+          const authorization = await this.#oauth.authorizationHeader(connection);
+          if (authorization && authorization !== input.recover.authorization) return outcome;
+          return this.authorize(input);
+        });
       return held.promise.then((outcome) =>
         outcome.status === "authorized" && !input.invite ? outcome : this.authorize(input),
       );
@@ -175,6 +185,28 @@ export class NativeTeamEntry {
     });
     attempts.set(input.deploymentId, { mode: input.mode, invite: input.invite ?? null, promise });
     return promise;
+  }
+
+  async #passiveDuringBrowser(
+    input: Parameters<NativeTeamEntry["authorize"]>[0],
+    pending: Promise<TeamEntryOutcome>,
+  ): Promise<TeamEntryOutcome> {
+    const entry = this.#oauth.teamEntryLease(input.deploymentId);
+    try {
+      const connection = await this.#held(input.deploymentId);
+      entry.assertCurrent();
+      if (connection && !this.#oauth.isTeamSignInSuppressed(connection)) {
+        const authorization = input.recover
+          ? await this.#oauth.refreshTeamAuthorization(connection, input.recover.authorization)
+          : await this.#oauth.authorizationHeader(connection);
+        entry.assertCurrent();
+        if (authorization && (!input.recover || authorization !== input.recover.authorization))
+          return { status: "authorized", admitted: false };
+      }
+    } catch (error) {
+      return { status: "retryable", error };
+    }
+    return pending.then(() => this.authorize(input));
   }
 
   async #authorize(input: Parameters<NativeTeamEntry["authorize"]>[0]): Promise<TeamEntryOutcome> {
@@ -191,7 +223,8 @@ export class NativeTeamEntry {
             input.recover.authorization,
           );
           entry.assertCurrent();
-          if (refreshed && !input.invite) return { status: "authorized", admitted: false };
+          if (refreshed && refreshed !== input.recover.authorization && !input.invite)
+            return { status: "authorized", admitted: false };
         }
       }
       const verified = await this.#verify(input.origin);
@@ -225,7 +258,8 @@ export class NativeTeamEntry {
       entry.assertCurrent();
       const existing = await this.#oauth.authorizationHeader(connection);
       entry.assertCurrent();
-      if (existing && !input.invite) return { status: "authorized", admitted: false };
+      if (existing && (!input.recover || existing !== input.recover.authorization) && !input.invite)
+        return { status: "authorized", admitted: false };
       if (
         verified.capabilities.includes("team-session-exchange-v1") &&
         (await this.#oauth.accountAuthorizationLease())
@@ -256,7 +290,12 @@ export class NativeTeamEntry {
       }
       if (createdRevision !== undefined)
         await this.#catalog.remove(input.deploymentId, createdRevision).catch(() => undefined);
-      if (error instanceof TeamEntryRefusedError) return { status: "join-required", error };
+      if (error instanceof TeamEntryRefusedError)
+        return {
+          status:
+            teamEntryRefusalOutcome(error.reason) === "membership" ? "join-required" : "retryable",
+          error,
+        };
       return {
         status: error instanceof HostVersionMismatchError ? "update-required" : "retryable",
         error,
@@ -329,6 +368,7 @@ export class NativeTeamEntry {
     entry.assertCurrent();
     const deploymentId = connection.authority.document.deploymentId;
     let stop = () => {};
+    let stopAbort = () => {};
     const ended = new Promise<HostOAuthState>((resolve) => {
       let authorizing = false;
       stop = this.#oauth.subscribeHostCredentials((state) => {
@@ -338,8 +378,19 @@ export class NativeTeamEntry {
       });
     });
     try {
-      const begun = await this.#oauth.beginHostSignIn(connection, invite ?? undefined, entry);
-      const final = begun.status === "authorizing" ? await ended : begun;
+      const browser = this.#oauth
+        .beginHostSignIn(connection, invite ?? undefined, entry)
+        .then((begun) => (begun.status === "authorizing" ? ended : begun));
+      const final = await Promise.race([
+        browser,
+        ended,
+        new Promise<never>((_resolve, reject) => {
+          const abort = () => reject(entry.signal.reason);
+          stopAbort = () => entry.signal.removeEventListener("abort", abort);
+          if (entry.signal.aborted) abort();
+          else entry.signal.addEventListener("abort", abort, { once: true });
+        }),
+      ]);
       if (final.status !== "signed-in")
         throw new ClientOperationError(
           final.detail ?? "The team’s sign-in didn’t finish. Try again.",
@@ -347,6 +398,7 @@ export class NativeTeamEntry {
         );
     } finally {
       stop();
+      stopAbort();
     }
   }
 }

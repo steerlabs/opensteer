@@ -46,10 +46,15 @@ after an identity change. Legacy credentials without a binding never authorize a
 are stored separately from the previous credential format so Stable/Beta downgrades preserve Account
 authorization; missing or mismatched binding metadata requires silent reauthorization.
 Credential reads and refreshes enforce the binding even if deletion or revocation fails. Real
-identity changes synchronously fence transports and retire viewer clients before best-effort
-cleanup; loading the same saved Account is hydration and preserves its credentials. Explicit team
+identity changes synchronously invalidate every native team transport, including teams with no
+stored credential: sockets close and late events and outstanding responses cannot be delivered.
+Mobile also retires active team viewer clients at that boundary. Credential cleanup is best-effort;
+loading the same saved Account is hydration and preserves its credentials. Explicit team
 sign-out suppresses silent entry until an explicit sign-in. Account or JWKS outages remain
-retryable; membership refusals ask for an invite without a browser loop. Silent entry sends no
+retryable; membership refusals ask for an invite without a browser loop. Among entry refusals, only membership
+refusals (not-a-member or removed) erase the viewer partition. Assertion, authority and invite
+refusals preserve drafts and pending sends. An expired assertion is renewed once; another
+assertion expiry remains retryable. Silent entry sends no
 invite unless the person explicitly joins with one. Older teams keep the browser sign-in; the
 app carries an invite
 through it only when the team advertises `team-invite-native-continuation-v1`, because older invite

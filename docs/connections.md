@@ -211,14 +211,21 @@ and a failed refresh never renews stale evidence. Only the Account refusing the 
 its session; network failure, rate limiting and outage stay retryable
 ([`deployment-access-service.ts`](../apps/desktop/src/connections/deployment-access-service.ts)).
 
-Native team entry owns startup, explicit entry and pinned 401 recovery. Passive callers join any
-entry in flight; interactive callers join interactive work or await passive work before proceeding
+Native team entry owns startup, explicit entry and pinned 401 recovery. Passive callers join entry in flight, but can use or refresh a valid credential while a browser
+entry is pending; interactive callers join interactive work or await passive work before proceeding
 if needed. Attempts capture the current fence; Account identity changes, explicit team sign-out and
 a new interactive attempt advance it. Recovery refreshes the rejected credential before discovery
-and skips discovery when refresh succeeds. Definitively refused credentials are dropped without
+and skips discovery when refresh succeeds. A joined attempt only recovers a request when its
+authorization differs from the rejected authorization. Definitively refused credentials are dropped without
 erasing drafts or suppressing entry. Other entry verifies fresh discovery before catalog updates
-and credential reuse, permits one Account identity exchange, then
+and credential reuse, permits Account identity exchange, then
 falls back to browser sign-in only when interactive authorization is needed. An Account outage
 leaves entry retryable. Explicit team sign-out survives restart and suppresses silent entry
 until explicit sign-in. Passive attachment never opens a browser. Real Account identity changes
-fence team sockets and in-flight responses before asynchronous credential cleanup.
+synchronously invalidate every native team transport, regardless of whether
+a credential remains stored, before asynchronous credential cleanup. This closes sockets and
+suppresses their late events and outstanding responses. Browser entry releases its shared slot
+on committed callback, flow expiry or fence invalidation, even if the platform browser never returns.
+
+Team entry refusal handling preserves drafts and pending sends except for confirmed membership
+refusals ([team entry](teams.md)). Explicit sign-out and viewer replacement retain their own cleanup rules.

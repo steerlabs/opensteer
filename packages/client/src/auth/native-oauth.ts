@@ -181,6 +181,7 @@ export interface HostOAuthState {
 
 export interface TeamEntryLease {
   readonly generation: number;
+  readonly signal: AbortSignal;
   assertCurrent(): void;
 }
 
@@ -226,8 +227,8 @@ export class NativeOAuthManager implements HostCredentialProvider {
   ) => Promise<void>;
   readonly #beforeAccountChange: () => Promise<void>;
   readonly #accountChangedTeams = new Set<string>();
-  readonly #identityListeners = new Set<(ids: readonly DeploymentId[]) => void>();
-  readonly #onAccountIdentityChange: (deploymentIds: readonly DeploymentId[]) => void;
+  readonly #identityListeners = new Set<() => void>();
+  readonly #onAccountIdentityChange: () => void;
   readonly #beforeHostChange: (connection: DeploymentConnection) => Promise<void>;
   readonly #accountOrigin: string | null;
   readonly #accountSessions: {
@@ -260,6 +261,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
   #hostCredentials: readonly HostCredential[] = [];
   #hostDetails = new Map<string, string>();
   #disposed = false;
+  readonly #hostControllers = new Map<DeploymentId, AbortController>();
   #hostGenerations = new Map<DeploymentId, number>();
   #initialized = false;
   readonly #credentialMutations = new MutationQueue();
@@ -270,7 +272,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
       next: AccountDeploymentConnectionSource | null,
     ) => Promise<void>;
     readonly beforeAccountChange?: () => Promise<void>;
-    readonly onAccountIdentityChange?: (deploymentIds: readonly DeploymentId[]) => void;
+    readonly onAccountIdentityChange?: () => void;
     readonly beforeHostChange?: (connection: DeploymentConnection) => Promise<void>;
     readonly accountOrigin: URL | string | null;
     readonly accountSessions: {
@@ -569,7 +571,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     return this.hostCredentialState(connection);
   }
 
-  subscribeAccountIdentityChanges(listener: (ids: readonly DeploymentId[]) => void): () => void {
+  subscribeAccountIdentityChanges(listener: () => void): () => void {
     this.#identityListeners.add(listener);
     return () => {
       this.#identityListeners.delete(listener);
@@ -581,9 +583,14 @@ export class NativeOAuthManager implements HostCredentialProvider {
       ? this.#advanceHostGeneration(deploymentId)
       : this.#hostGeneration(deploymentId);
     this.#hostGenerations.set(deploymentId, generation);
+    let controller = this.#hostControllers.get(deploymentId);
+    if (!controller) this.#hostControllers.set(deploymentId, (controller = new AbortController()));
     const accountSignal = this.#accountSession?.controller.signal;
     return {
       generation,
+      signal: accountSignal
+        ? AbortSignal.any([controller.signal, accountSignal])
+        : controller.signal,
       assertCurrent: () => {
         if (
           this.#disposed ||
@@ -661,18 +668,28 @@ export class NativeOAuthManager implements HostCredentialProvider {
     if (this.isTeamSignInSuppressed(connection))
       throw new ClientOperationError("Signing in to this team was interrupted.", "transient");
     const generation = entry.generation;
-    const { assertion } = await this.issueTeamIdentityGrant(
-      connection.authority.document.deploymentId,
-      this.#teamIdentityRequest(connection),
-    );
-    entry.assertCurrent();
-    if (lease.signal.aborted)
-      throw new ClientOperationError("Account authorization changed.", "transient");
-    return this.#exchangeTeamAssertion(
-      connection,
-      { assertion, ...(invite ? { invite } : {}) },
-      { lease, generation },
-    );
+    const exchange = async () => {
+      const { assertion } = await this.issueTeamIdentityGrant(
+        connection.authority.document.deploymentId,
+        this.#teamIdentityRequest(connection),
+      );
+      entry.assertCurrent();
+      if (lease.signal.aborted)
+        throw new ClientOperationError("Account authorization changed.", "transient");
+      return this.#exchangeTeamAssertion(
+        connection,
+        { assertion, ...(invite ? { invite } : {}) },
+        { lease, generation },
+      );
+    };
+    try {
+      return await exchange();
+    } catch (error) {
+      if (!(error instanceof TeamEntryRefusedError) || error.reason !== "assertion-expired")
+        throw error;
+      entry.assertCurrent();
+      return exchange();
+    }
   }
 
   #teamIdentityRequest(connection: DeploymentConnection): IssueTeamIdentityGrantRequest {
@@ -912,7 +929,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
             previousCredential.subject !== credential.subject
           ) {
             this.#accountSession?.controller.abort(new Error("The Account identity changed."));
-            this.#notifyIdentityChange(this.#hostCredentials.map((host) => host.deploymentId));
+            this.#notifyIdentityChange();
             void this.#emitAccount();
             await this.#beforeAccountIdentityChange(accountSource(credential));
             if (!this.#isFlowCurrent(flow)) return false;
@@ -1048,7 +1065,10 @@ export class NativeOAuthManager implements HostCredentialProvider {
     });
     if (outcome.status === "suppressed" || outcome.status === "sign-in-required") return false;
     assertTeamEntryOutcome(outcome);
-    return outcome.status === "authorized";
+    const authorization = await this.authorizationHeader(connection);
+    return (
+      outcome.status === "authorized" && !!authorization && authorization !== rejectedAuthorization
+    );
   }
 
   async refreshTeamAuthorization(
@@ -1434,9 +1454,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
   dispose(): void {
     this.#disposed = true;
     this.#replaceAccountSession(null);
-    for (const credential of this.#hostCredentials) {
-      this.#advanceHostGeneration(credential.deploymentId);
-    }
+    for (const id of this.#hostGenerations.keys()) this.#advanceHostGeneration(id);
     for (const cancel of this.#flowExpiries.values()) cancel();
     this.#flowExpiries.clear();
     this.#pending.clear();
@@ -1767,13 +1785,9 @@ export class NativeOAuthManager implements HostCredentialProvider {
       const affected = this.#hostCredentials.filter(
         (host) => !this.#bindingMatches(host.accountIdentity),
       );
-      const ids = affected.map((host) => host.deploymentId);
-      for (const id of ids) this.#accountChangedTeams.add(id);
-      this.#notifyIdentityChange(ids);
-      for (const host of affected) {
-        this.#advanceHostGeneration(host.deploymentId);
-        this.#pendingHostWrites.delete(host.deploymentId);
-      }
+      for (const host of affected) this.#accountChangedTeams.add(host.deploymentId);
+      this.#notifyIdentityChange();
+      for (const host of affected) this.#pendingHostWrites.delete(host.deploymentId);
       void this.#mutateCredentials(async () => {
         this.#adoptHostCredentials(
           (await this.#store.clearHosts(affected.map((host) => host.deploymentId))).hosts,
@@ -1823,9 +1837,9 @@ export class NativeOAuthManager implements HostCredentialProvider {
     return this.#accountFlowGeneration;
   }
 
-  #notifyIdentityChange(ids: readonly DeploymentId[]): void {
-    this.#onAccountIdentityChange(ids);
-    for (const listener of this.#identityListeners) listener(ids);
+  #notifyIdentityChange(): void {
+    this.#onAccountIdentityChange();
+    for (const listener of this.#identityListeners) listener();
   }
 
   #currentAccountIdentity(): Exclude<HostCredential["accountIdentity"], undefined> {
@@ -1859,6 +1873,8 @@ export class NativeOAuthManager implements HostCredentialProvider {
   }
 
   #advanceHostGeneration(deploymentId: DeploymentId): number {
+    this.#hostControllers.get(deploymentId)?.abort(new Error("Team authorization changed."));
+    this.#hostControllers.delete(deploymentId);
     const next = nextAuthGeneration(this.#hostGeneration(deploymentId));
     this.#hostGenerations.set(deploymentId, next);
     return next;

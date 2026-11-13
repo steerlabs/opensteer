@@ -451,8 +451,17 @@ export class MobileClient {
       },
     });
     this.oauth = new NativeOAuthManager({
-      onAccountIdentityChange: (ids) => {
-        for (const id of ids) void this.#invalidateSavedView(id);
+      onAccountIdentityChange: () => {
+        const teams = this.#state.catalog.deployments.filter(({ kind }) => kind === "team");
+        for (const { authority } of teams)
+          void this.#invalidateSavedView(authority.document.deploymentId);
+        if (
+          teams.some(
+            ({ authority }) =>
+              authority.document.deploymentId === this.#state.selection.deploymentId,
+          )
+        )
+          this.#releaseAttachment();
       },
       // Previews end with the login itself (sign-out, removal, a replaced session),
       // not when a sign-in flow starts: a cancelled flow keeps the live login.

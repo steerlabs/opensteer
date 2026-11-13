@@ -1,3 +1,4 @@
+import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import {
   ControlPlaneAccountIdSchema,
   type ControlPlaneAccountId,
@@ -527,7 +528,10 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
       await ports.sessions.restore({ origin: intent.teamOrigin, teamDeploymentId });
     } catch (error) {
       // Removed meanwhile: nothing of this team is left to resume.
-      if (error instanceof TeamEntryRefusedError && error.reason === "not-a-member")
+      if (
+        error instanceof TeamEntryRefusedError &&
+        teamEntryRefusalOutcome(error.reason) === "membership"
+      )
         await remove(intent).catch(() => undefined);
       if (error instanceof TeamEntryRefusedError) return;
     }

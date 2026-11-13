@@ -1,3 +1,4 @@
+import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { TeamEntryRefusedError } from "@opensteer/client/auth";
 import {
   HostVersionMismatchError,
@@ -256,8 +257,8 @@ export class MobileTeams {
 
   start(): void {
     if (this.#detachClient !== null) return;
-    this.#detachIdentity = this.#client.oauth.subscribeAccountIdentityChanges((ids) => {
-      for (const id of ids) {
+    this.#detachIdentity = this.#client.oauth.subscribeAccountIdentityChanges(() => {
+      for (const id of this.#sessions.keys()) {
         const session = this.#sessions.get(id);
         if (session) {
           void session.remove("sign-in");
@@ -748,7 +749,8 @@ export class MobileTeams {
     }
     this.#setState(
       teamId,
-      session.getSnapshot().refusalReason === "not-a-member"
+      teamEntryRefusalOutcome(session.getSnapshot().refusalReason) === "membership" &&
+        session.getSnapshot().refusalReason !== "removed"
         ? "join"
         : ended === "removed"
           ? "removed"
@@ -936,13 +938,19 @@ const placeholderUser = UserIdSchema.parse("usr_00000000-0000-4000-8000-00000000
 
 /** What a failed team call says about the team, for the drawer and its banner. */
 export function teamFailure(error: unknown): TeamState {
-  if (error instanceof TeamEntryRefusedError && error.reason === "not-a-member") return "join";
+  if (
+    error instanceof TeamEntryRefusedError &&
+    teamEntryRefusalOutcome(error.reason) === "membership"
+  )
+    return "join";
   if (error instanceof HostVersionMismatchError)
     return error.code === "client-too-old" ? "update-app" : "update-server";
   if (error instanceof HostClientRequestError) {
-    if (error.reason === "not-a-member") return "join";
+    if (teamEntryRefusalOutcome(error.reason) === "membership")
+      return error.reason === "removed" ? "removed" : "join";
+    if (teamEntryRefusalOutcome(error.reason) === "retryable") return "offline";
     if (error.code === "unauthorized") return "signed-out";
-    if (error.code === "forbidden" || error.code === "not_found") return "removed";
+    if (error.code === "forbidden" || error.code === "not_found") return "offline";
     if (error.code === "version_mismatch" || error.code === "upgrade_required") return "update-app";
   }
   if (error instanceof TeamAccessError) return "removed";

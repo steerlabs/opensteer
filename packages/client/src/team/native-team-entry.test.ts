@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createId, type DeploymentId } from "@opensteer/core";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import { TeamMemberSchema } from "@opensteer/protocol";
@@ -66,7 +67,11 @@ function setup() {
     ({ connection, detail: null, key: "", status }) as HostOAuthState;
   const oauth = {
     refreshTeamAuthorization: vi.fn(async (): Promise<string | null> => null),
-    teamEntryLease: () => ({ generation: 0, assertCurrent: () => {} }),
+    teamEntryLease: () => ({
+      generation: 0,
+      signal: new AbortController().signal,
+      assertCurrent: () => {},
+    }),
     resumeTeamSignIn: vi.fn(async () => {}),
     isTeamSignInSuppressed: vi.fn(() => false),
     authorizationHeader: vi.fn(async (): Promise<string | null> =>
@@ -116,6 +121,124 @@ function setup() {
 }
 
 describe("NativeTeamEntry", () => {
+  it("forces refresh when recovery joins startup using the rejected token", async () => {
+    const { entry, oauth, verify } = setup();
+    const verified = team();
+    const gate = Promise.withResolvers<VerifiedHostEndpoint>();
+    verify.mockReturnValueOnce(gate.promise);
+    oauth.authorizationHeader.mockResolvedValue("Bearer rejected");
+    oauth.refreshTeamAuthorization.mockResolvedValue("Bearer renewed");
+    const input = {
+      deploymentId: verified.discovery.deploymentId,
+      origin: verified.discovery.canonicalOrigin,
+      mode: "passive" as const,
+    };
+    const startup = entry.authorize(input);
+    const recovery = entry.authorize({ ...input, recover: { authorization: "Bearer rejected" } });
+    gate.resolve(verified);
+    await startup;
+    await expect(recovery).resolves.toMatchObject({ status: "authorized" });
+    expect(oauth.refreshTeamAuthorization).toHaveBeenCalledOnce();
+  });
+
+  it.each(["signed-in", "signed-out"] as const)(
+    "releases browser entry on %s while the platform promise is unfinished",
+    async (status) => {
+      const { entry, oauth, callback, catalog } = setup();
+      const verified = { ...team(), capabilities: ["native-oauth"] as const };
+      latestVerified = verified;
+      oauth.beginHostSignIn.mockImplementationOnce(async (connection) => {
+        callback(connection, "authorizing");
+        return new Promise<HostOAuthState>(() => {});
+      });
+      const entering = entry.authorize({
+        deploymentId: verified.discovery.deploymentId,
+        origin: verified.discovery.canonicalOrigin,
+        mode: "interactive",
+      });
+      await vi.waitFor(() => expect(oauth.beginHostSignIn).toHaveBeenCalledOnce(), {
+        timeout: 1000,
+      });
+      callback((await catalog.load()).deployments[0]!, status);
+      await expect(
+        withTimeout(entering, 1000, {
+          timeoutError: () => new Error("Browser entry never settled after its flow ended"),
+        }),
+      ).resolves.toMatchObject({
+        status: status === "signed-in" ? "authorized" : "retryable",
+      });
+    },
+  );
+
+  it("releases unfinished browser work when the entry fence is invalidated", async () => {
+    const { entry, oauth, callback } = setup();
+    const controller = new AbortController();
+    oauth.teamEntryLease = () => ({
+      generation: 0,
+      signal: controller.signal,
+      assertCurrent: () => controller.signal.throwIfAborted(),
+    });
+    const verified = { ...team(), capabilities: ["native-oauth"] as const };
+    latestVerified = verified;
+    oauth.beginHostSignIn.mockImplementationOnce(async (connection) => {
+      callback(connection, "authorizing");
+      return new Promise<HostOAuthState>(() => {});
+    });
+    const input = {
+      deploymentId: verified.discovery.deploymentId,
+      origin: verified.discovery.canonicalOrigin,
+    };
+    const entering = entry.authorize({ ...input, mode: "interactive" });
+    await vi.waitFor(() => expect(oauth.beginHostSignIn).toHaveBeenCalledOnce(), { timeout: 1000 });
+    controller.abort(new Error("signed out"));
+    await expect(
+      withTimeout(entering, 1000, {
+        timeoutError: () => new Error("Browser entry never settled after its flow ended"),
+      }),
+    ).resolves.toMatchObject({ status: "superseded" });
+    oauth.teamEntryLease = () => ({
+      generation: 1,
+      signal: new AbortController().signal,
+      assertCurrent: () => {},
+    });
+    oauth.authorizationHeader.mockResolvedValue("Bearer valid");
+    await expect(entry.authorize({ ...input, mode: "passive" })).resolves.toMatchObject({
+      status: "authorized",
+    });
+  });
+
+  it("recovers a valid credential without waiting for an unfinished interactive browser", async () => {
+    const { entry, oauth, callback, catalog } = setup();
+    const verified = { ...team(), capabilities: ["native-oauth"] as const };
+    latestVerified = verified;
+    oauth.beginHostSignIn.mockImplementationOnce(async (connection) => {
+      callback(connection, "authorizing");
+      return new Promise<HostOAuthState>(() => {});
+    });
+    const input = {
+      deploymentId: verified.discovery.deploymentId,
+      origin: verified.discovery.canonicalOrigin,
+    };
+    const entering = entry.authorize({ ...input, mode: "interactive" });
+    await vi.waitFor(() => expect(oauth.beginHostSignIn).toHaveBeenCalledOnce(), { timeout: 1000 });
+    oauth.refreshTeamAuthorization.mockResolvedValue("Bearer valid");
+    await expect(
+      withTimeout(
+        entry.authorize({
+          ...input,
+          mode: "passive",
+          recover: { authorization: "Bearer rejected" },
+        }),
+        1000,
+        {
+          timeoutError: () => new Error("Passive recovery waited for the unfinished browser"),
+        },
+      ),
+    ).resolves.toMatchObject({ status: "authorized" });
+    callback((await catalog.load()).deployments[0]!, "signed-in");
+    await entering;
+  });
+
   it.each([false, true])(
     "coalesces passive then interactive entry (authorized: %s)",
     async (authorized) => {
@@ -195,6 +318,7 @@ describe("NativeTeamEntry", () => {
     let current = true;
     oauth.teamEntryLease = () => ({
       generation: 0,
+      signal: new AbortController().signal,
       assertCurrent: () => {
         if (!current) throw new Error("superseded");
       },
@@ -218,6 +342,7 @@ describe("NativeTeamEntry", () => {
     let invalidated = false;
     oauth.teamEntryLease = () => ({
       generation: 0,
+      signal: new AbortController().signal,
       assertCurrent: () => {
         if (invalidated) throw new Error("Entry changed");
       },

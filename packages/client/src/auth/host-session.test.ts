@@ -1,5 +1,5 @@
 import { createId } from "@opensteer/core";
-import type { SessionExchangeResponse } from "@opensteer/protocol";
+import { TeamEntryRefusalReasonSchema, type SessionExchangeResponse } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { establishedCookieSession, testDiscoveryEnvelope } from "../test-support/index.js";
 import {
@@ -291,16 +291,26 @@ describe("HostSession", () => {
     expect(fixture.oauth.signInTeam).toHaveBeenCalledWith(connection, undefined, false);
   });
 
-  it("reports a team that turns the person away as blocked, not as a sign-in to retry", async () => {
-    const connection = connectionOfKind("team");
-    const fixture = hostSessionFixture(connection);
-    fixture.oauth.signInTeam.mockRejectedValueOnce(
-      new TeamEntryRefusedError("not-a-member", "Ask for an invite."),
-    );
-    await expect(
-      fixture.sessions.establish(connection.authority.document.deploymentId),
-    ).resolves.toMatchObject({ detail: "Ask for an invite.", outcome: "blocked" });
-  });
+  it.each(TeamEntryRefusalReasonSchema.options)(
+    "reports %s with the shared refusal outcome",
+    async (reason) => {
+      const connection = connectionOfKind("team");
+      const fixture = hostSessionFixture(connection);
+      fixture.oauth.signInTeam.mockRejectedValueOnce(new TeamEntryRefusedError(reason, "Refused"));
+      const establishing = fixture.sessions.establish(connection.authority.document.deploymentId);
+      if (reason === "not-a-member")
+        await expect(establishing).resolves.toMatchObject({
+          outcome: "blocked",
+          detail: "Refused",
+        });
+      else
+        await expect(establishing).rejects.toMatchObject({
+          code: "unavailable",
+          message: "Refused",
+        });
+      fixture.sessions.dispose();
+    },
+  );
 
   it("abandons an in-flight Host sign-in and lets a fresh attempt replace it", async () => {
     const connection = connectionOfKind("team");

@@ -65,6 +65,12 @@ export class DesktopUpdatesService implements DesktopUpdates {
         : {}),
     });
   }
+  invalidateSession(): void {
+    this.#verifiedKey = null;
+    this.#verificationTransport.invalidateSession();
+    this.#transport.invalidateSession();
+  }
+
   async status(
     options: { after?: string; signal?: AbortSignal } = {},
   ): Promise<DesktopUpdateStatus> {
