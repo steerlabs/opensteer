@@ -6,12 +6,12 @@ import { DESKTOP, PAGE, PHONE_ONLY } from "./geometry.js";
 import { desktop, group, macbook } from "./desktop.js";
 import { createPhone, PHONE, type View } from "./phone.js";
 import { createRunner, type Env, type Runner, type Scene } from "./scene.js";
+import { billing } from "./scenes/billing.js";
 import { engineer } from "./scenes/engineer.js";
-import { sales } from "./scenes/sales.js";
-import { support } from "./scenes/support.js";
+import { legal } from "./scenes/legal.js";
 import { createStage, STAGE } from "./stage.js";
 
-const SCENES: Record<AgentId, Scene> = { support, engineer, sales };
+const SCENES: Record<AgentId, Scene> = { billing, engineer, legal };
 
 /** Where a view of `size` starts so it centers on `at` without leaving a page that starts at `start`. */
 const within = (at: number, size: number, start: number, length: number): number =>
@@ -34,7 +34,7 @@ export function mountDemo(root: HTMLElement, rail: HTMLElement): void {
   const narrow = matchMedia(PHONE_ONLY);
 
   /** Whose story is running. */
-  let active: AgentId = ORDER[0] ?? "support";
+  let active: AgentId = ORDER[0] ?? "billing";
   /** Whose windows are on the Mac: the running story's, once a trigger or the person has started it. */
   let onMac: AgentId = active;
   /** Whose thread the phone opens. */

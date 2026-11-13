@@ -86,13 +86,13 @@ export const PHONE = `<div class="iphone">
       <div class="ip-nav" data-part="new">${icon("m-compose")}New task</div>
       ${nav(icon("i-mic"), "Voice")}
       ${nav(icon("i-clock"), "Automations")}
-      ${nav(`<span class="ip-team">A</span>`, `Acme<span class="ip-badge">3</span>`)}
+      ${nav(`<span class="ip-team">L</span>`, `Lumen<span class="ip-badge">3</span>`)}
       <div class="ip-sep"></div>
       <div class="ip-group">Working <span data-part="count"></span></div>
       <div data-part="working"></div>
       <div class="ip-group">Ready</div>
       <div data-part="ready"></div>
-      ${finished("t-doc", "October invoices paid", "Mon")}
+      ${finished("t-doc", "Q3 sales tax return", "Mon")}
       ${finished("t-chart", "Board deck numbers", "Fri")}
     </div>
     <div class="ip-new">
@@ -202,7 +202,7 @@ export function createPhone(el: HTMLElement, events: PhoneEvents): Phone {
     if (answer === "allow" || answer === "deny") events.answer(answer);
   });
   let shown = { id: "", opener: false, steps: 0, message: false, status: "" };
-  let watched: AgentId = ORDER[0] ?? "support";
+  let watched: AgentId = ORDER[0] ?? "billing";
   return {
     mirror: find(el, ".mirror"),
     push,
