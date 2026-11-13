@@ -44,6 +44,7 @@ it("serializes and coalesces Run changes while retaining only safe step kinds an
       arguments: { query: "private query sentinel" },
     }),
   );
+  publisher.observe(event(runId, "run.delivery-updated", { delivery: { state: "sent" } }));
   publisher.observe(event(runId, "request.opened", { prompt: "private question sentinel" }));
   publisher.observe(event(runId, "run.completed", { reply: "private answer sentinel" }));
   gate.resolve();

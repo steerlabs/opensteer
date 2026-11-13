@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { createId } from "@opensteer/core";
+import { createId, TeamSourceSchema, SequenceSchema } from "@opensteer/core";
 import { warmEngineKey } from "./warm-engine-pool.js";
 it("invalidates warm reuse for tool inventory, instructions, roots and discovered skills while preserving per-Run credential rebinding", () => {
   const context = {
@@ -37,6 +37,31 @@ it("invalidates warm reuse for tool inventory, instructions, roots and discovere
     writableRoots: ["/task", "/agent-home"],
   };
   const before = warmEngineKey(input);
+  const teamTurnContext = {
+    kind: "team" as const,
+    source: TeamSourceSchema.parse({
+      teamId: createId("deployment"),
+      channelId: createId("teamChannel"),
+      threadRootId: "1",
+      messageId: "2",
+      audience: {
+        teamName: "Acme",
+        channelName: "Support",
+        channelKind: "public",
+        memberCount: 12,
+        peopleOnly: false,
+      },
+    }),
+    instructionsMarkdown: "Current channel configuration",
+    instructionsRevision: SequenceSchema.parse("1"),
+  };
+  const team = { ...input, context: { ...context, teamTurnContext } };
+  const privateTurn = {
+    ...input,
+    context: { ...context, teamTurnContext: { kind: "private" as const } },
+  };
+  expect(warmEngineKey(team)).toBe(warmEngineKey(privateTurn));
+  expect(warmEngineKey(team)).toBe(before);
   context.agentTools.token = "rotated";
   expect(warmEngineKey(input)).toBe(before);
   for (const change of [

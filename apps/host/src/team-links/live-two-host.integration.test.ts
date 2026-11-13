@@ -16,7 +16,6 @@ import { createDatabase, admitTeamTaskRequest, OpensteerStore } from "@opensteer
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
-import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
 import { teamPreviewMaxBytes } from "@opensteer/protocol";
 import { createLiveTeamFixture } from "../team/live-team.test-support.js";
 import { TeamRunFileTransfers } from "./files.js";
@@ -151,7 +150,6 @@ it("uploads a real image and bounded preview from the personal Host and binds it
       }
     }
     const transfers = new TeamRunFileTransfers({
-      requests: new PersonalTeamRequestsStore(database),
       links,
       vault,
       network: new LoopbackNetwork(),
@@ -170,7 +168,12 @@ it("uploads a real image and bounded preview from the personal Host and binds it
         },
       },
     });
-    const uploaded = await transfers.uploadPath(runId, "/tmp/screenshot.png");
+    const uploaded = await transfers.uploadPath(
+      { runId, operationId: "screenshot" },
+      team.deploymentId,
+      request.channelId,
+      "/tmp/screenshot.png",
+    );
     expect(uploaded.file.preview?.sizeBytes).toBeGreaterThan(0);
     expect(uploaded.file.preview!.sizeBytes).toBeLessThanOrEqual(teamPreviewMaxBytes);
     const replied = await team.machine.endpoint.call(team.linkId, {

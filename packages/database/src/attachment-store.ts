@@ -16,7 +16,6 @@ import {
   AttachmentNameSchema,
   AttachmentMediaTypeSchema,
   OpensteerError,
-  type TeamSource,
   type ContentPart,
   type MessageId,
   type RunId,
@@ -261,37 +260,20 @@ export class AttachmentStore {
   async bindRunImport(
     input: ActiveExecutionBindingInput & {
       readonly attachmentId: string;
-      readonly source?: TeamSource;
     },
   ): Promise<AttachmentRow> {
     return withPersonalTransaction(this.database, async (tx) => {
       const run = await tx
         .selectFrom("runs")
-        .select(["threadId", "seedInputId", "replyTarget"])
+        .select(["threadId", "seedInputId"])
         .where("id", "=", input.runId)
         .forNoKeyUpdate()
         .executeTakeFirst();
       await assertActiveGrant(tx, input);
-      if (run?.replyTarget?.kind !== "team" || !run.seedInputId || run.threadId !== input.threadId)
+      if (!run?.seedInputId || run.threadId !== input.threadId)
         throw new OpensteerError({
           code: "forbidden",
-          message: "No team request owns this file transfer",
-        });
-      const task = await tx
-        .selectFrom("threads")
-        .select(["teamId", "channelId", "threadRootId"])
-        .where("id", "=", input.threadId)
-        .forNoKeyUpdate()
-        .executeTakeFirstOrThrow();
-      if (
-        input.source &&
-        (input.source.teamId !== task.teamId ||
-          input.source.channelId !== task.channelId ||
-          input.source.threadRootId !== task.threadRootId)
-      )
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "File provenance does not match this team task",
+          message: "This execution does not own the file transfer",
         });
       const row = await tx
         .selectFrom("attachments")

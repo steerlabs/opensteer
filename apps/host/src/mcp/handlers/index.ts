@@ -96,7 +96,7 @@ export function agentToolHandlers(options: {
     computer: async (c) => await i.computer(c),
     integration_request: async (c) => await i.integration_request(c),
     integration_propose: async (c) => await i.integration_propose(c),
-    ...teamToolHandlers({ port: options.team, requestForRun: options.teamRequestForRun }),
+    ...teamToolHandlers({ port: options.team, personalContext: options.personalContextForRun }),
     ...knowledgeToolHandlers({
       port: options.knowledge,
       requestForRun: options.teamRequestForRun,

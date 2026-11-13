@@ -1,4 +1,4 @@
-import { MessageContentSchema, OpensteerError, type RunId } from "@opensteer/core";
+import { MessageContentSchema, OpensteerError, type MessageId, type RunId } from "@opensteer/core";
 import type { PersonalTeamRequest } from "@opensteer/protocol";
 import { sql, type Kysely } from "kysely";
 import { runReply } from "./run-reply.js";
@@ -10,6 +10,7 @@ export interface PersonalTeamRunOutcome {
   readonly runId: RunId | null;
   readonly state: "pending" | "working" | "needs_you" | "done" | "failed" | "stopped" | "cancelled";
   readonly finalMessage: string | null;
+  readonly answerMessageId: MessageId | null;
 }
 
 export async function personalTeamRunOutcome(
@@ -58,8 +59,8 @@ export async function personalTeamRunOutcome(
         .executeTakeFirst();
       const runId = run?.id ?? null;
       if (input.state === "cancelled" || receipt.terminalState === "cancelled")
-        return { runId, state: "cancelled", finalMessage: null };
-      if (!run) return { runId, state: "pending", finalMessage: null };
+        return { runId, state: "cancelled", finalMessage: null, answerMessageId: null };
+      if (!run) return { runId, state: "pending", finalMessage: null, answerMessageId: null };
       const state =
         run.status === "completed"
           ? "done"
@@ -73,7 +74,7 @@ export async function personalTeamRunOutcome(
                   ? "pending"
                   : "working";
       if (!["done", "failed", "stopped"].includes(state))
-        return { runId, state, finalMessage: null };
+        return { runId, state, finalMessage: null, answerMessageId: null };
       const terminalRow = await tx
         .selectFrom("deploymentEvents")
         .selectAll()
@@ -104,6 +105,6 @@ export async function personalTeamRunOutcome(
             .join("\n")
             .trim()
         : "";
-      return { runId, state, finalMessage: text || null };
+      return { runId, state, finalMessage: text || null, answerMessageId: messageId ?? null };
     });
 }

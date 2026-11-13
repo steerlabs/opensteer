@@ -139,6 +139,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     knowledge_write: async () => unavailable(),
   };
   const agent = new OpensteerMcpService({
+    teamsAvailable: async () => testCase.teamBound || testCase.knowledge,
     publicUrl: url,
     handlers,
     callers: {

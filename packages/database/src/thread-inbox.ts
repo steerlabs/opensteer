@@ -267,7 +267,7 @@ export async function readThreadInputQueue(
           steerable &&
           own &&
           !row.freshContext &&
-          isDeepStrictEqual(row.replyTarget, active.replyTarget),
+          compatibleSteeringTarget(active.replyTarget, row),
         ),
       };
     }),

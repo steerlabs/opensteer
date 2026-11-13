@@ -10,12 +10,12 @@ import {
 import { expect, it } from "vitest";
 import { z } from "zod";
 import { agentTools, platformGuideForRun, toolsFor, connectionInstructions } from "./index.js";
-it("keeps the permanent team inventory out of ordinary tasks and every non-Run caller", () => {
+it("lists standing team tools when the owner has a link, and never for non-Run callers", () => {
   const names = (
     kind: "run" | "program" | "connection",
-    teamBound: boolean,
-    knowledge = teamBound,
-  ) => toolsFor({ kind, teamBound, knowledge, accessMode: "full-access" }).map((t) => t.name);
+    teamsAvailable: boolean,
+    knowledge = teamsAvailable,
+  ) => toolsFor({ kind, teamsAvailable, knowledge, accessMode: "full-access" }).map((t) => t.name);
   for (const name of ["team_read", "team_search", "team_post"]) {
     expect(names("run", true)).toContain(name);
     expect(names("run", false, true)).not.toContain(name);
@@ -42,7 +42,7 @@ it("keeps the permanent team inventory out of ordinary tasks and every non-Run c
 it("snapshots the personal/team guide and model-facing inventory", () => {
   const guides = {
     ordinary: platformGuideForRun({ purpose: "task" }),
-    team: platformGuideForRun({ purpose: "task", teamBound: true, knowledge: true }),
+    team: platformGuideForRun({ purpose: "task", teamsAvailable: true, knowledge: true }),
     connection: connectionInstructions,
   };
   expect(guides).toMatchSnapshot();
