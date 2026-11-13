@@ -131,76 +131,101 @@ function fixture(epoch = hostApiVersion - 1, scoped = false) {
   };
 }
 
-it("fences team maintenance requests synchronously on Account change", async () => {
-  const origin = "https://team.example";
-  const authority = signTestDiscoveryEnvelope(
-    {
-      deploymentId: createId("deployment"),
-      hostInstanceId: createId("hostInstance"),
-      canonicalOrigin: origin,
-      deploymentShape: { kind: "team" },
-      hostKey: { algorithm: "Ed25519" },
-    },
-    testHostAuthorityKeys(),
-  );
-  const now = new Date().toISOString();
-  const connection = DeploymentConnectionSchema.parse({
-    authority,
-    bootstrapMethods: ["oidc"],
-    kind: "team",
-    reachability: "canonical",
-    endpoints: [{ kind: "canonical", origin, verifiedAt: now }],
-    source: { kind: "manual" },
-    name: "Team",
-    createdAt: now,
-    updatedAt: now,
-    lastUsedAt: null,
-  });
-  const gate = Promise.withResolvers<Response>();
-  const maintenance = vi.fn(async () => gate.promise);
-  const service = new DesktopUpdatesService({
-    catalog: {
-      load: async () =>
-        DeploymentCatalogSchema.parse({
-          deployments: [connection],
-          selectedDeploymentId: authority.document.deploymentId,
-          revision: 1,
-          schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
-          updatedAt: now,
-        }),
-      subscribe: () => () => {},
-    },
-    deploymentId: authority.document.deploymentId,
-    localRuntime: { current: async () => null },
-    network: {
-      request: async (input) =>
-        input.url.endsWith("/.well-known/opensteer")
-          ? Response.json({
-              kind: "team",
-              apiVersion: 1,
-              authority,
-              bootstrapMethods: ["oidc"],
-              capabilities: [],
-            })
-          : maintenance(),
-      openWebSocket: () => {
-        throw new Error("No maintenance socket");
+it.each(["transport", "credential"])(
+  "fences team maintenance requests on Account change via %s",
+  async (stage) => {
+    const origin = "https://team.example";
+    const authority = signTestDiscoveryEnvelope(
+      {
+        deploymentId: createId("deployment"),
+        hostInstanceId: createId("hostInstance"),
+        canonicalOrigin: origin,
+        deploymentShape: { kind: "team" },
+        hostKey: { algorithm: "Ed25519" },
       },
-    },
-  });
-  const pending = service.status();
-  const rejected = expect(pending).rejects.toMatchObject({ code: "deployment-changed" });
-  try {
-    await vi.waitFor(() => expect(maintenance).toHaveBeenCalledOnce(), { timeout: 1000 });
-    service.invalidateTeamSession();
-    gate.resolve(
-      Response.json({ supported: true, state: null, operation: null, revision: "host:0" }),
+      testHostAuthorityKeys(),
     );
-    await rejected;
-  } finally {
-    gate.resolve(Response.json({}));
-  }
-});
+    const now = new Date().toISOString();
+    const connection = DeploymentConnectionSchema.parse({
+      authority,
+      bootstrapMethods: ["oidc"],
+      kind: "team",
+      reachability: "canonical",
+      endpoints: [{ kind: "canonical", origin, verifiedAt: now }],
+      source: { kind: "manual" },
+      name: "Team",
+      createdAt: now,
+      updatedAt: now,
+      lastUsedAt: null,
+    });
+    const gate = Promise.withResolvers<Response>();
+    const maintenance = vi.fn(async () => gate.promise);
+    const credentialGate = Promise.withResolvers<void>();
+    const read = vi.fn();
+    let current = true;
+    const service = new DesktopUpdatesService({
+      catalog: {
+        load: async () =>
+          DeploymentCatalogSchema.parse({
+            deployments: [connection],
+            selectedDeploymentId: authority.document.deploymentId,
+            revision: 1,
+            schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
+            updatedAt: now,
+          }),
+        subscribe: () => () => {},
+      },
+      deploymentId: authority.document.deploymentId,
+      localRuntime: { current: async () => null },
+      credentials: {
+        teamEntryLease: () => ({
+          assertCurrent: () => {
+            if (!current) throw new Error("Account changed");
+          },
+        }),
+        authorizationHeader: async () => {
+          read();
+          if (stage === "credential") await credentialGate.promise;
+          return "Bearer outgoing";
+        },
+      },
+      network: {
+        request: async (input) =>
+          input.url.endsWith("/.well-known/opensteer")
+            ? Response.json({
+                kind: "team",
+                apiVersion: 1,
+                authority,
+                bootstrapMethods: ["oidc"],
+                capabilities: [],
+              })
+            : maintenance(),
+        openWebSocket: () => {
+          throw new Error("No maintenance socket");
+        },
+      },
+    });
+    const pending = service.status();
+    const rejected = expect(pending).rejects.toMatchObject({ code: "deployment-changed" });
+    try {
+      await vi.waitFor(
+        () => expect(stage === "credential" ? read : maintenance).toHaveBeenCalledOnce(),
+        { timeout: 1000 },
+      );
+      current = false;
+      if (stage === "transport") service.invalidateTeamSession();
+      credentialGate.resolve();
+      gate.resolve(
+        Response.json({ supported: true, state: null, operation: null, revision: "host:0" }),
+      );
+      await rejected;
+      if (stage === "credential") expect(maintenance).not.toHaveBeenCalled();
+    } finally {
+      credentialGate.resolve();
+      gate.resolve(Response.json({}));
+    }
+  },
+);
 
 it.each([false, true])(
   "keeps personal update requests during Account changes (scoped: %s)",

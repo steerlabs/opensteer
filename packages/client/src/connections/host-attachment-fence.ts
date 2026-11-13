@@ -1,9 +1,11 @@
+import { HostTransportError } from "./host-transport-error.js";
 import type { DeploymentId } from "@opensteer/core";
 import type { DeploymentCatalogStore, DeploymentConnection } from "./deployment-catalog.js";
 import { resolveConnection, type LocalHostRuntime } from "./connection-resolver.js";
 import type { SelectedAttachment } from "../auth/host-session.js";
 
 export interface HostCredentialProvider {
+  teamEntryLease?(deploymentId: DeploymentId): { assertCurrent(): void };
   authorizationHeader(connection: DeploymentConnection): Promise<string | null>;
 }
 
@@ -128,6 +130,17 @@ export class HostAttachmentFence {
       this.#applySelection(null);
       return null;
     }
+    const lease =
+      connection.kind === "team"
+        ? this.#credentials.teamEntryLease?.(connection.authority.document.deploymentId)
+        : undefined;
+    const assertAuthorizationCurrent = () => {
+      try {
+        lease?.assertCurrent();
+      } catch (cause) {
+        throw new HostTransportError("deployment-changed", { cause });
+      }
+    };
     let selected: SelectedAttachment;
     try {
       selected = {
@@ -146,6 +159,8 @@ export class HostAttachmentFence {
       }
       throw error;
     }
+    assertAuthorizationCurrent();
+    selected = { ...selected, resolved: { ...selected.resolved, assertAuthorizationCurrent } };
     if (this.#superseded(turn)) return this.refresh();
     this.#applySelection(selected.resolved.key);
     return selected;

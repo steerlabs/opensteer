@@ -1,3 +1,4 @@
+import { TeamEntryOutcomeError } from "../team/native-team-entry.js";
 import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { DeploymentIdSchema } from "@opensteer/core";
 import type { HostBootstrapMethod } from "@opensteer/deployment-authority";
@@ -491,6 +492,12 @@ export class HostSession implements HostSessionRecovery {
       try {
         return oauthObservation(await this.#oauth.signInTeam(connection, undefined, interactive));
       } catch (error) {
+        if (error instanceof TeamEntryOutcomeError) {
+          if (error.outcome.status === "sign-in-required" || error.outcome.status === "suppressed")
+            return observation(resolved, "needs-sign-in", error.message);
+          if (error.outcome.status === "update-required")
+            return observation(resolved, "blocked", error.message);
+        }
         if (error instanceof TeamEntryRefusedError) {
           if (teamEntryRefusalOutcome(error.reason) === "membership")
             return observation(resolved, "blocked", error.message);

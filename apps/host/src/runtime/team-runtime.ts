@@ -333,7 +333,9 @@ export async function createTeamHostRuntime(input: {
         authority: envelope,
         bootstrapMethods: ["oidc"],
         capabilities: [
-          ...(config.identity.nativeOAuth ? ["native-oauth", "team-session-exchange-v1"] : []),
+          ...(config.identity.nativeOAuth
+            ? ["native-oauth", "team-session-exchange-v1", "team-native-browser-return-v1"]
+            : []),
           "notification-preview-v1",
           "team-hosted-bootstrap-v1",
           "team-reusable-invites-v1",

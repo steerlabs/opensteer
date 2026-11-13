@@ -355,7 +355,9 @@ describe("adding a computer's team to the phone", () => {
       endpoint: connection.endpoints[0]!,
       bootstrapMethods: ["oidc"],
       capabilities:
-        mode === "old-team" ? ["native-oauth"] : ["native-oauth", "team-session-exchange-v1"],
+        mode === "old-team"
+          ? ["native-oauth", "team-native-browser-return-v1"]
+          : ["native-oauth", "team-session-exchange-v1", "team-native-browser-return-v1"],
     };
     const catalog = new DeploymentCatalogStore({
       filePath: "/private/mobile-entry/catalog.json",
@@ -429,6 +431,12 @@ describe("adding a computer's team to the phone", () => {
     await vi.waitFor(() => expect(teams.team(teamId), "team row never loaded").not.toBeNull(), {
       timeout: 1000,
     });
+    if (mode === "no-account") {
+      verifying.resolve();
+      await teams.addToPhone(teamId, false).catch(() => {});
+      expect(teams.team(teamId)?.state).toBe("signed-out");
+      expect(browser).not.toHaveBeenCalled();
+    }
     const adding = teams.addToPhone(teamId);
     expect(teams.team(teamId)?.state).toBe("loading");
     if (mode.endsWith("during-discovery")) entryCurrent = false;

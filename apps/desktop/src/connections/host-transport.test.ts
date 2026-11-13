@@ -1,3 +1,4 @@
+import { HostTransport as SharedHostTransport } from "@opensteer/client/connections";
 import { createDesktopHostFetch } from "../../../web/src/desktop/desktop-host-transport.js";
 import { readComputerFacts } from "../../../web/src/desktop/computer-facts.js";
 import type { DeploymentAccessDeployment } from "@opensteer/protocol/desktop";
@@ -32,6 +33,66 @@ import { testPersonalHostRuntime } from "../supervisor/personal-host-runtime-tes
 import { DesktopLocalRunnerTargetResolver } from "../supervisor/local-runner-authority.js";
 
 describe("DesktopHostTransport", () => {
+  it.each([
+    ["desktop", "credential"],
+    ["shared", "credential"],
+    ["desktop", "response"],
+    ["shared", "response"],
+  ])("fences initial %s resolution at %s", async (surface, stage) => {
+    const team = deployment("Team", "https://team.example");
+    const catalog = catalogStore([team], team.authority.document.deploymentId);
+    const gate = Promise.withResolvers<void>();
+    const read = vi.fn();
+    let current = true;
+    const credentials = {
+      teamEntryLease: () => ({
+        assertCurrent: () => {
+          if (!current) throw new Error("Account changed");
+        },
+      }),
+      authorizationHeader: async () => {
+        read();
+        if (stage === "credential") await gate.promise;
+        return "Bearer outgoing";
+      },
+    };
+    const request = vi.fn(async () => {
+      if (stage === "response") await gate.promise;
+      return Response.json({});
+    });
+    const network = { request, openWebSocket: () => socket() };
+    const transport =
+      surface === "desktop"
+        ? desktopHostTransport({ catalog, credentials, network })
+        : new SharedHostTransport({
+            catalog,
+            credentials,
+            network,
+            localRuntime: { current: async () => null },
+          });
+    try {
+      const pending = transport.exchange(
+        { headers: {}, method: "GET", path: "/v1/bootstrap" },
+        async (r) => r.text(),
+      );
+      const rejected = expect(pending).rejects.toMatchObject({ code: "deployment-changed" });
+      await vi.waitFor(
+        () => expect(stage === "credential" ? read : request).toHaveBeenCalledOnce(),
+        { timeout: 1000 },
+      );
+      current = false;
+      if (stage === "credential" && transport instanceof DesktopHostTransport)
+        transport.invalidateTeamSessions();
+      gate.resolve();
+      await rejected;
+      expect(request).toHaveBeenCalledTimes(stage === "credential" ? 0 : 1);
+    } finally {
+      gate.resolve();
+      transport.closeAllSockets();
+      if (transport instanceof DesktopHostTransport) transport.dispose();
+    }
+  });
+
   it.each([false, true])(
     "isolates personal transports during team invalidation (team: %s)",
     async (withTeam) => {

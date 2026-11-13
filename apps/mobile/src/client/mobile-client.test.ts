@@ -473,7 +473,7 @@ function open(
             apiVersion: teamApiVersion,
             authority: connection.authority,
             bootstrapMethods: connection.bootstrapMethods,
-            capabilities: connection.capabilities ?? [],
+            capabilities: [...(connection.capabilities ?? []), "team-native-browser-return-v1"],
           });
       }
       return (options.fetch ?? testFetch)(input, init);

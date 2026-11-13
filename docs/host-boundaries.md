@@ -171,8 +171,13 @@ Obsolete entry cleanup can remove only the catalog revision that attempt created
 Each native team entry call retains its arrival fence across queued continuations and retries;
 an invalidated caller cannot start entry under a replacement identity or undo team sign-out.
 Account identity changes synchronously invalidate active native team transports independently of
-credential storage; late socket events and outstanding responses cannot cross that boundary. Team
+credential storage; late socket events and outstanding responses cannot cross that boundary. Every team request also retains its credential read’s lease and checks it before send and response
+delivery, including initial attachment resolution; sockets check sends and events. Team
 invalidation excludes personal Host transports and personal maintenance requests.
+Native browser entry, including invites, requires the descriptor capability
+`team-native-browser-return-v1`; otherwise entry requires a team server update or an Account
+sign-in on this device when exchange is supported. Passive entry never opens a browser and
+presents an explicit Sign in action when browser return is supported.
 Membership reasons permit erasing a viewer partition, as do reasonless forbidden
 refusals at authenticated bootstrap for compatibility with older team servers. Channel permission
 failures do not establish membership removal

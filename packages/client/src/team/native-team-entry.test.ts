@@ -47,7 +47,7 @@ function team(): VerifiedHostEndpoint {
   };
   latestVerified = {
     bootstrapMethods: ["oidc"],
-    capabilities: ["native-oauth", "team-session-exchange-v1"],
+    capabilities: ["native-oauth", "team-session-exchange-v1", "team-native-browser-return-v1"],
     discovery,
     discoveryEnvelope: signTestDiscoveryEnvelope(discovery, keys),
     endpoint: { kind: "canonical", origin, verifiedAt: new Date().toISOString() },
@@ -77,8 +77,8 @@ function setup() {
     authorizationHeader: vi.fn(async (): Promise<string | null> =>
       signedIn ? "Bearer team" : null,
     ),
-    accountIdentity: () => lease,
-    accountAuthorizationLease: async () => lease,
+    accountIdentity: (): typeof lease | null => lease,
+    accountAuthorizationLease: async (): Promise<typeof lease | null> => lease,
     // Like desktop: the browser opens and the call returns; the callback lands later.
     beginHostSignIn: vi.fn(async (connection: DeploymentConnection) => {
       const authorizing = state(connection, "authorizing");
@@ -121,6 +121,45 @@ function setup() {
 }
 
 describe("NativeTeamEntry", () => {
+  it.each([null, { selector: "s".repeat(32), verifier: "v".repeat(43) }])(
+    "requires browser-return capability for entry with invite %s",
+    async (invite) => {
+      const { entry, oauth } = setup();
+      const verified = {
+        ...team(),
+        capabilities: ["native-oauth", "team-session-exchange-v1"] as const,
+      };
+      latestVerified = verified;
+      oauth.accountIdentity = () => null;
+      oauth.accountAuthorizationLease = async () => null;
+      oauth.beginHostSignIn.mockImplementation(
+        async (connection) => ({ connection, status: "signed-in" }) as HostOAuthState,
+      );
+      expect(
+        await entry.authorize({
+          deploymentId: verified.discovery.deploymentId,
+          origin: verified.discovery.canonicalOrigin,
+          mode: "interactive",
+          invite,
+        }),
+      ).toMatchObject({ status: "update-required" });
+      expect(oauth.beginHostSignIn).not.toHaveBeenCalled();
+      latestVerified = {
+        ...verified,
+        capabilities: [...verified.capabilities, "team-native-browser-return-v1"],
+      };
+      expect(
+        await entry.authorize({
+          deploymentId: verified.discovery.deploymentId,
+          origin: verified.discovery.canonicalOrigin,
+          mode: "interactive",
+          invite,
+        }),
+      ).toMatchObject({ status: "authorized" });
+      expect(oauth.beginHostSignIn).toHaveBeenCalledOnce();
+    },
+  );
+
   it.each(["Account change", "team sign-out"])(
     "supersedes an invite queued before %s",
     async (fence) => {
@@ -182,7 +221,10 @@ describe("NativeTeamEntry", () => {
     "releases browser entry on %s while the platform promise is unfinished",
     async (status) => {
       const { entry, oauth, callback, catalog } = setup();
-      const verified = { ...team(), capabilities: ["native-oauth"] as const };
+      const verified = {
+        ...team(),
+        capabilities: ["native-oauth", "team-native-browser-return-v1"] as const,
+      };
       latestVerified = verified;
       oauth.beginHostSignIn.mockImplementationOnce(async (connection) => {
         callback(connection, "authorizing");
@@ -215,7 +257,10 @@ describe("NativeTeamEntry", () => {
       signal: controller.signal,
       assertCurrent: () => controller.signal.throwIfAborted(),
     });
-    const verified = { ...team(), capabilities: ["native-oauth"] as const };
+    const verified = {
+      ...team(),
+      capabilities: ["native-oauth", "team-native-browser-return-v1"] as const,
+    };
     latestVerified = verified;
     oauth.beginHostSignIn.mockImplementationOnce(async (connection) => {
       callback(connection, "authorizing");
@@ -246,7 +291,10 @@ describe("NativeTeamEntry", () => {
 
   it("recovers a valid credential without waiting for an unfinished interactive browser", async () => {
     const { entry, oauth, callback, catalog } = setup();
-    const verified = { ...team(), capabilities: ["native-oauth"] as const };
+    const verified = {
+      ...team(),
+      capabilities: ["native-oauth", "team-native-browser-return-v1"] as const,
+    };
     latestVerified = verified;
     oauth.beginHostSignIn.mockImplementationOnce(async (connection) => {
       callback(connection, "authorizing");
@@ -284,7 +332,8 @@ describe("NativeTeamEntry", () => {
       const gate = Promise.withResolvers<VerifiedHostEndpoint>();
       verify.mockReturnValueOnce(gate.promise);
       oauth.authorizationHeader.mockResolvedValue(authorized ? "Bearer held" : null);
-      oauth.accountAuthorizationLease = async () => null as never;
+      oauth.accountIdentity = () => null;
+      oauth.accountAuthorizationLease = async () => null;
       oauth.beginHostSignIn.mockResolvedValue({ status: "signed-in" } as HostOAuthState);
       const input = {
         deploymentId: verified.discovery.deploymentId,
@@ -401,7 +450,11 @@ describe("NativeTeamEntry", () => {
     await entry.enter(verified, null);
     const older = {
       ...verified,
-      capabilities: ["native-oauth", "team-invite-native-continuation-v1"] as const,
+      capabilities: [
+        "native-oauth",
+        "team-invite-native-continuation-v1",
+        "team-native-browser-return-v1",
+      ] as const,
     };
     const invite = { selector: "s".repeat(32), verifier: "v".repeat(43) };
     latestVerified = older;
@@ -487,7 +540,9 @@ describe("NativeTeamEntry", () => {
     await catalog.upsert(
       deploymentConnectionFromVerifiedEndpoints({
         accountAccess: null,
-        endpoints: [{ ...verified, capabilities: ["native-oauth"] }],
+        endpoints: [
+          { ...verified, capabilities: ["native-oauth", "team-native-browser-return-v1"] },
+        ],
         kind: "team",
         name: "Team",
         source: { kind: "manual" },
@@ -541,7 +596,10 @@ describe("NativeTeamEntry", () => {
 
   it("signs in to an older team in the browser, settling only when the callback lands", async () => {
     const { callback, catalog, entry, ids, listeners, oauth, signOut } = setup();
-    const older = { ...team(), capabilities: ["native-oauth"] as const };
+    const older = {
+      ...team(),
+      capabilities: ["native-oauth", "team-native-browser-return-v1"] as const,
+    };
     const settled = vi.fn();
     const invite = { selector: "s".repeat(32), verifier: "v".repeat(43) };
     latestVerified = older;
@@ -561,7 +619,10 @@ describe("NativeTeamEntry", () => {
 
     // Stopped or expired in the browser: an error, and nothing kept of a team never entered.
     signOut();
-    const stopped = { ...team(), capabilities: ["native-oauth"] as const };
+    const stopped = {
+      ...team(),
+      capabilities: ["native-oauth", "team-native-browser-return-v1"] as const,
+    };
     latestVerified = stopped;
     const failing = entry.ensureAuthorized(stopped, null);
     await vi.waitFor(() => expect(oauth.beginHostSignIn).toHaveBeenCalledTimes(2));

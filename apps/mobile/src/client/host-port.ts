@@ -102,7 +102,10 @@ export function createNetworkHostPort(options: {
       const credentials = createDeploymentCredentials({ now: options.now, oauth, sessions });
       return new DesktopUpdatesService({
         catalog,
-        credentials: { authorizationHeader: (connection) => credentials.authorization(connection) },
+        credentials: {
+          teamEntryLease: (id) => oauth.teamEntryLease(id),
+          authorizationHeader: (connection) => credentials.authorization(connection),
+        },
         deploymentId,
         localRuntime: { current: async () => null },
         network: maintenanceNetwork,

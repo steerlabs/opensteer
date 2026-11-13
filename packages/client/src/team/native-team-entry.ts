@@ -306,6 +306,16 @@ export class NativeTeamEntry {
         }
       }
       entry.assertCurrent();
+      if (!verified.capabilities.includes("team-native-browser-return-v1"))
+        return {
+          status: "update-required",
+          error: new Error(
+            "Update the team server to sign in on this device without an Opensteer Account." +
+              (verified.capabilities.includes("team-session-exchange-v1")
+                ? " Or sign in to your Opensteer Account on this device."
+                : ""),
+          ),
+        };
       if (input.mode === "passive") return { status: "sign-in-required" };
       await this.#browserSignIn(connection, input.invite ?? null, entry);
       entry.assertCurrent();
@@ -431,17 +441,26 @@ export class NativeTeamEntry {
   }
 }
 
+export class TeamEntryOutcomeError extends Error {
+  readonly outcome: Exclude<TeamEntryOutcome, { status: "authorized" }>;
+  constructor(outcome: Exclude<TeamEntryOutcome, { status: "authorized" }>) {
+    super(
+      outcome.error instanceof Error
+        ? outcome.error.message
+        : outcome.status === "sign-in-required"
+          ? "Sign in to this team."
+          : "Team authorization changed. Try again.",
+    );
+    this.outcome = outcome;
+  }
+}
+
 export function assertTeamEntryOutcome(outcome: TeamEntryOutcome): void {
   if (outcome.status === "authorized" || outcome.status === "suppressed") return;
-  throw (
-    ("error" in outcome && outcome.error) ||
-    new ClientOperationError(
-      outcome.status === "sign-in-required"
-        ? "Sign in to this team."
-        : "Team authorization changed. Try again.",
-      outcome.status === "sign-in-required" ? "blocked" : "transient",
-    )
-  );
+  if (outcome.status === "join-required" || outcome.status === "retryable") {
+    if (outcome.error) throw outcome.error;
+  }
+  throw new TeamEntryOutcomeError(outcome);
 }
 
 function sameInvite(a: TeamInviteSecret | null, b: TeamInviteSecret | null | undefined): boolean {

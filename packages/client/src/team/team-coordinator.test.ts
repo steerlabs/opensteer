@@ -431,10 +431,35 @@ describe("TeamCoordinator", () => {
     expect(coordinator.getSnapshot().intents).toEqual([]);
   });
 
-  it("joins an older team in the browser first, then signs in to it in the app", async () => {
+  it("routes an unsupported invite to the entry owner without opening an invite browser", async () => {
     const { coordinator, world } = track(start());
     const verify = world.sessions.verify.bind(world.sessions);
     world.sessions.verify = async (origin) => ({ ...(await verify(origin)), capabilities: [] });
+    const signIn = vi
+      .spyOn(world.sessions, "signIn")
+      .mockRejectedValue(new Error("Update the team server"));
+    const browser = vi.spyOn(world.sessions, "joinInBrowser");
+    const result = coordinator.joinWithInvite({
+      inviteUrl: world.sampleInviteUrl,
+      personalDeploymentId: personal,
+    });
+    const rejected = expect(result).rejects.toThrow("Update the team server");
+    await until(
+      () => signIn.mock.calls.length > 0 || browser.mock.calls.length > 0,
+      "entry decision",
+    );
+    if (browser.mock.calls.length) coordinator.cancelJoinInBrowser();
+    await rejected;
+    expect(browser).not.toHaveBeenCalled();
+  });
+
+  it("joins an older team in the browser first, then signs in to it in the app", async () => {
+    const { coordinator, world } = track(start());
+    const verify = world.sessions.verify.bind(world.sessions);
+    world.sessions.verify = async (origin) => ({
+      ...(await verify(origin)),
+      capabilities: ["team-native-browser-return-v1"],
+    });
     const exchange = world.sessions.exchange.bind(world.sessions);
     // The previous invite page drops the app's `authorize` and never resumes its sign-in; only
     // its own "Join in the browser" admits the person, after which the app's sign-in works.

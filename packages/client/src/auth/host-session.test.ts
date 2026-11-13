@@ -1,3 +1,4 @@
+import { TeamEntryOutcomeError } from "../team/native-team-entry.js";
 import { createId } from "@opensteer/core";
 import { TeamEntryRefusalReasonSchema, type SessionExchangeResponse } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
@@ -27,6 +28,20 @@ import {
 } from "./native-oauth.js";
 
 describe("HostSession", () => {
+  it("offers explicit team sign-in after passive browser-required entry", async () => {
+    const f = hostSessionFixture(connectionOfKind("team"));
+    f.oauth.signInTeam.mockRejectedValueOnce(
+      new TeamEntryOutcomeError({ status: "sign-in-required" }),
+    );
+    try {
+      await expect(
+        f.sessions.establish(f.attachment.resolved.deploymentId, false),
+      ).resolves.toMatchObject({ outcome: "needs-sign-in" });
+    } finally {
+      f.sessions.dispose();
+    }
+  });
+
   it("recovers the rejected authorization without resolving and refreshing the attachment again", async () => {
     const f = hostSessionFixture(connectionOfKind("team"));
     f.oauth.recoverHostAuthorization.mockResolvedValue(true);

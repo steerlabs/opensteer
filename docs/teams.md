@@ -47,7 +47,10 @@ no Account. Browser flows capture that binding when they start and discard and r
 after an identity change. Legacy credentials without a binding never authorize a request. Binding and sign-out metadata
 are stored separately from the previous credential format so Stable/Beta downgrades preserve Account
 authorization; missing or mismatched binding metadata requires silent reauthorization.
-Credential reads and refreshes enforce the binding even if deletion or revocation fails. Real
+Credential reads and refreshes enforce the binding even if deletion or revocation fails.
+Every native team transport retains the credential read’s team/Account lease, checks it before
+sending and after consuming a response, and refuses stale socket sends and events. This includes
+the first resolution before the selected attachment is known. Real
 identity changes synchronously invalidate active native team transports, including teams with no
 stored credential: sockets close and late events and outstanding responses cannot be delivered.
 Team invalidation leaves personal Host transports and personal maintenance requests alone.
@@ -60,11 +63,11 @@ forbidden at authenticated bootstrap also removes it; channel permission failure
 do not. Assertion, authority and invite
 refusals preserve drafts and pending sends. An expired assertion is renewed once; another
 assertion expiry remains retryable. Silent entry sends no
-invite unless the person explicitly joins with one. Older teams keep the browser sign-in; the
-app carries an invite
-through it only when the team advertises `team-invite-native-continuation-v1`, because older invite
-pages drop the app's sign-in. Otherwise the person joins on the invite page in their browser and
-the app signs in once they come back, a member by then. An invite re-admits a
+invite unless the person explicitly joins with one. Native browser entry requires `team-native-browser-return-v1`, including entry through an invite.
+Without it, entry asks for a team server update, or an Opensteer Account sign-in on this device
+when the team supports exchange; it opens no browser. Passive entry that needs a browser offers
+explicit Sign in on desktop and mobile. The app carries an invite through browser entry only when
+the team also advertises `team-invite-native-continuation-v1`. An invite re-admits a
 removed person only if it was created after their removal, on every admission path. The
 assertion is requested and exchanged where the credential lives (desktop main, the phone's secure
 storage); neither it nor the tokens reach a renderer. A team just joined shows from its verified

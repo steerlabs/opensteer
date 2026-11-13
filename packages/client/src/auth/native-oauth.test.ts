@@ -1950,7 +1950,10 @@ async function managerFixture(
     readonly writeFailure?: string;
   } = {},
 ) {
-  const connection = deploymentConnection("team", options.capabilities);
+  const connection = deploymentConnection(
+    "team",
+    options.capabilities ?? ["team-native-browser-return-v1"],
+  );
   vi.spyOn(teamEntryModule, "verifyTeamEndpoint").mockResolvedValue({
     discovery: connection.authority.document,
     discoveryEnvelope: connection.authority,

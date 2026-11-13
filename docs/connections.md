@@ -220,13 +220,16 @@ and skips discovery when refresh succeeds. A joined attempt only recovers a requ
 authorization differs from the rejected authorization. Definitively refused credentials are dropped without
 erasing drafts or suppressing entry. Other entry verifies fresh discovery before catalog updates
 and credential reuse, permits Account identity exchange, then
-falls back to browser sign-in only when interactive authorization is needed. An Account outage
+falls back to browser sign-in only for interactive entry to a team advertising
+`team-native-browser-return-v1`, including invites. Missing support asks for a team server update
+or, when exchange is supported, Account sign-in on this device. Passive browser-required entry
+offers explicit Sign in. An Account outage
 leaves entry retryable. Explicit team sign-out survives restart and suppresses silent entry
 until explicit sign-in. Passive attachment never opens a browser. Real Account identity changes
 synchronously invalidate active native team transports, regardless of whether
 a credential remains stored, before asynchronous credential cleanup. This closes sockets and
-suppresses their late events and outstanding responses. Desktop maintenance services fence team
-requests after resolving their deployment kind. Personal Host transports and maintenance requests
+suppresses their late events and outstanding responses. The shared credential path retains a team/Account lease from credential read through send and
+response delivery, including initial resolution; maintenance transports use the same check. Personal Host transports and maintenance requests
 are excluded from team invalidation. Browser entry releases its shared slot
 on committed callback, flow expiry or fence invalidation, even if the platform browser never returns.
 

@@ -17,6 +17,7 @@ import {
   listedTeams,
   NativeTeamEntry,
   assertTeamEntryOutcome,
+  TeamEntryOutcomeError,
   TeamSavedStateSchema,
   TeamTransportRegistry,
   type TeamCacheScope,
@@ -938,6 +939,11 @@ const placeholderUser = UserIdSchema.parse("usr_00000000-0000-4000-8000-00000000
 
 /** What a failed team call says about the team, for the drawer and its banner. */
 export function teamFailure(error: unknown): TeamState {
+  if (error instanceof TeamEntryOutcomeError) {
+    if (error.outcome.status === "sign-in-required" || error.outcome.status === "suppressed")
+      return "signed-out";
+    if (error.outcome.status === "update-required") return "update-server";
+  }
   if (
     error instanceof TeamEntryRefusedError &&
     teamEntryRefusalOutcome(error.reason) === "membership"

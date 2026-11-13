@@ -46,6 +46,9 @@ export class DesktopUpdatesService implements DesktopUpdates {
       ...(credentials
         ? {
             credentials: {
+              ...(credentials.teamEntryLease
+                ? { teamEntryLease: credentials.teamEntryLease.bind(credentials) }
+                : {}),
               authorizationHeader: async (connection) => {
                 await this.#verify();
                 return credentials.authorizationHeader(connection);

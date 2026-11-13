@@ -47,6 +47,7 @@ export interface ConnectionAccess {
 }
 
 export interface ResolvedConnection {
+  readonly assertAuthorizationCurrent?: () => void;
   readonly access: DesktopAccess;
   readonly authorization: string | null;
   readonly bootstrapMethods: readonly HostBootstrapMethod[];

@@ -271,7 +271,12 @@ export class HostTransport {
             deadline,
           );
         }
-        return await deadline.wait(read(response, { signal: controller.signal, onProgress }));
+        resolved.assertAuthorizationCurrent?.();
+        const result = await deadline.wait(
+          read(response, { signal: controller.signal, onProgress }),
+        );
+        resolved.assertAuthorizationCurrent?.();
+        return result;
       } catch (error) {
         if (request.signal?.aborted) throw request.signal.reason ?? error;
         if (controller.signal.aborted) {
@@ -331,7 +336,8 @@ export class HostTransport {
         }
       },
       send: (data) => {
-        if (released || network === null) throw new Error("This Host WebSocket is not open.");
+        if (!authorizationCurrent() || released || network === null)
+          throw new Error("This Host WebSocket is not open.");
         network.send(data);
       },
     };
@@ -342,6 +348,16 @@ export class HostTransport {
       apiVersionQueryParameter,
       String(apiNegotiation(connection.authority.document.deploymentShape.kind).apiVersion),
     );
+    resolved.assertAuthorizationCurrent?.();
+    const authorizationCurrent = () => {
+      try {
+        resolved.assertAuthorizationCurrent?.();
+        return true;
+      } catch {
+        socket.close(deploymentChangedCloseCode, "Deployment changed");
+        return false;
+      }
+    };
     network = this.#network.openWebSocket(
       {
         authorization: resolved.authorization,
@@ -364,13 +380,16 @@ export class HostTransport {
           bound.close(code, reason);
         },
         error: (message) => {
-          if (!released && sessionGeneration === this.#sessionGeneration) bound.error(message);
+          if (authorizationCurrent() && !released && sessionGeneration === this.#sessionGeneration)
+            bound.error(message);
         },
         message: (data) => {
-          if (!released && sessionGeneration === this.#sessionGeneration) bound.message(data);
+          if (authorizationCurrent() && !released && sessionGeneration === this.#sessionGeneration)
+            bound.message(data);
         },
         open: () => {
-          if (!released && sessionGeneration === this.#sessionGeneration) bound.open();
+          if (authorizationCurrent() && !released && sessionGeneration === this.#sessionGeneration)
+            bound.open();
         },
       },
     );
@@ -407,6 +426,7 @@ export class HostTransport {
     signal: AbortSignal,
   ): Promise<Response> {
     signal.throwIfAborted();
+    resolved.assertAuthorizationCurrent?.();
     let response: Response;
     try {
       response = await this.#network.request({
