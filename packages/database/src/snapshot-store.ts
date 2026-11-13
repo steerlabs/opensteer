@@ -3,6 +3,7 @@ import { needsYouPage } from "./needs-you-store.js";
 import { personalSettings } from "./personal-settings-store.js";
 import { deploymentHead } from "./deployment-events.js";
 export { deploymentHead } from "./deployment-events.js";
+import { personalDeploymentOwner } from "./machine-store.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import type { DeploymentId } from "@opensteer/core";
 import { withPersonalReadTransaction } from "./personal-transaction.js";
@@ -760,6 +761,9 @@ export async function threadEventPageForOwner(
   return withPersonalReadTransaction(
     database,
     async (transaction) => {
+      // Another person's history must look absent, not forbidden.
+      if ((await personalDeploymentOwner(transaction)) !== input.ownerId)
+        throw new OpensteerError({ code: "not_found", message: "Thread not found" });
       const thread = await transaction
         .selectFrom("threads")
         .selectAll("threads")
