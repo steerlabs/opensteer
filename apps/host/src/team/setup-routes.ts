@@ -133,9 +133,7 @@ export function registerTeamSetupRoutes(
     app.post(teamSetupPaths.ownerCheck, { onRequest: gate }, async (request, reply) => {
       const input = HostedTeamOwnerCheckRequestSchema.parse(request.body);
       void reply.header("cache-control", "no-store");
-      return HostedTeamOwnerCheckResponseSchema.parse({
-        owner: await hosted.isOwner(input.assertion),
-      });
+      return HostedTeamOwnerCheckResponseSchema.parse(await hosted.isOwner(input.assertion));
     });
   app.post("/v1/team/setup/sign-in", { onRequest: gate }, async (request, reply) => {
     const result = await options.identity.beginOidcSignIn({

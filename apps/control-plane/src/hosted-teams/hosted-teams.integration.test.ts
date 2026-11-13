@@ -93,7 +93,7 @@ integration("Hosted teams", () => {
     cipher,
     ownerCheck: async ({ accountId }) => {
       ownerChecks.push(accountId);
-      return ownerAnswer;
+      return ownerAnswer === undefined ? undefined : { owner: ownerAnswer, onlyOwner: false };
     },
   });
   const portalSessions = new PortalSessionStore(database);
@@ -598,6 +598,25 @@ integration("Hosted teams", () => {
     expect(rows).toEqual([
       { creatorAccountId: null, state: "deleted", setupTokenDigest: null, sealedSetupToken: null },
     ]);
+  });
+
+  it("keeps the Account, and says which team, when a team's Host can't say who else owns it", async () => {
+    const cookie = await portalCookie(owner);
+    await createTeam("unsettled");
+    await claim("https://unsettled.teams.opensteer.com");
+    ownerAnswer = undefined;
+    const page = await postForm(cookie, "/account/delete");
+    expect(page.statusCode).toBe(503);
+    expect(page.body).toContain(
+      "Your Account wasn’t deleted: unsettled.teams.opensteer.com couldn’t confirm who else owns it.",
+    );
+    expect(page.body).not.toContain("Remote access may already be off");
+    expect(
+      await database.selectFrom("users").select("id").where("id", "=", owner).execute(),
+    ).toEqual([{ id: owner }]);
+    expect(
+      await database.selectFrom("hostedTeams").select("state").where("slug", "=", "unsettled").execute(),
+    ).toEqual([{ state: "active" }]);
   });
 
   it("tombstones an Account's teams even when a release that predates them deletes the Account", async () => {

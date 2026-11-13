@@ -69,6 +69,8 @@ import { ControlPlaneError } from "../server/errors.js";
 import {
   deleteHostedTeams,
   handOverHostedTeams,
+  requireHostedTeamsSettled,
+  type HostedTeamsAccountDeletion,
   promoteReadyHostedTeams,
 } from "../hosted-teams/hosted-team-store.js";
 import {
@@ -1538,15 +1540,14 @@ export class ControlPlaneStore {
    * Removes the Account, the Deployments it owns and the teams Opensteer hosts for it. Their Connect resources must
    * already be revoked: a tunnel left behind would outlive every row that names it.
    * Hosts learn nothing here, so they keep running and find out on their next call.
-   */
-  /**
-   * `successors` (`HostedTeamStore.successors`) names, per hosted team the Account created, the
-   * Host-confirmed owner it passes to; every other team the Account created goes with it.
+   * `hostedTeams` (`HostedTeamStore.accountDeletion`) settles each adopted team the Account
+   * created; one it doesn't settle refuses the deletion.
    */
   async deleteAccount(
     accountId: ControlPlaneAccountId,
-    successors: ReadonlyMap<HostedTeamId, ControlPlaneAccountId> = new Map(),
+    hostedTeams: HostedTeamsAccountDeletion = { successors: new Map(), deletable: new Set() },
   ): Promise<void> {
+    const { successors, deletable } = hostedTeams;
     // Handing a team to an owner its Host confirmed is right even if the deletion then fails, so
     // it commits on its own and each transaction keeps the lock order.
     if (successors.size > 0)
@@ -1588,6 +1589,7 @@ export class ControlPlaneStore {
         // FOR UPDATE: Deleting the Account deletes the Deployments it owns.
         .forUpdate()
         .execute();
+      await requireHostedTeamsSettled(transaction, accountId, deletable);
       if (owned.length > 0) {
         // Locked, because a provision committing after a plain read would lose its row
         // to the cascade and leave its tunnel unrecorded.

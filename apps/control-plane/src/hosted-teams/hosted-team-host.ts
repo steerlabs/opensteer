@@ -8,6 +8,7 @@ import {
   type CompleteTeamSetupAdoptionResponse,
   type HostAccountAdoptionAuthority,
   type HostAccountIdentity,
+  type HostedTeamOwnerCheckResponse,
 } from "@opensteer/control-plane-protocol";
 import {
   HostDescriptorSchema,
@@ -50,7 +51,7 @@ export interface HostedTeamHost {
     origin: string,
     request: CompleteTeamSetupAdoptionRequest,
   ): Promise<CompleteTeamSetupAdoptionResponse>;
-  isOwner(origin: string, assertion: string): Promise<boolean>;
+  isOwner(origin: string, assertion: string): Promise<HostedTeamOwnerCheckResponse>;
 }
 
 export class HttpHostedTeamHost implements HostedTeamHost {
@@ -137,9 +138,9 @@ export class HttpHostedTeamHost implements HostedTeamHost {
     return CompleteTeamSetupAdoptionResponseSchema.parse(await readJson(response));
   }
 
-  async isOwner(origin: string, assertion: string): Promise<boolean> {
+  async isOwner(origin: string, assertion: string): Promise<HostedTeamOwnerCheckResponse> {
     const response = await this.#post(origin, teamSetupPaths.ownerCheck, { assertion });
-    return HostedTeamOwnerCheckResponseSchema.parse(await readJson(response)).owner;
+    return HostedTeamOwnerCheckResponseSchema.parse(await readJson(response));
   }
 
   #post(origin: string, path: string, body: unknown, headers: Record<string, string> = {}) {

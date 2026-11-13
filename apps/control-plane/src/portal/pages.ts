@@ -193,7 +193,8 @@ export function deleteAccountBody(input: {
   readonly action: string;
   readonly computers: readonly string[];
   readonly email: string;
-  readonly failed: boolean;
+  /** Why the last attempt refused; true when it may have turned remote access off first. */
+  readonly failed: boolean | string;
   readonly hostedTeams: readonly string[];
   readonly servers: readonly { readonly name: string; readonly otherMembers: number }[];
 }): string {
@@ -215,7 +216,11 @@ export function deleteAccountBody(input: {
     ? `<p class="lead">These teams Opensteer hosts for you are deleted, with everything in them, for everyone who uses them. A team with another owner passes to them instead.</p>${list(input.hostedTeams)}`
     : "";
   const failed = input.failed
-    ? `<p class="lead" role="alert">Your Account wasn’t deleted. Remote access may already be off on these computers. Try again, or turn it back on from each computer.</p>`
+    ? `<p class="lead" role="alert">${escapeHtml(
+        input.failed === true
+          ? "Your Account wasn’t deleted. Remote access may already be off on these computers. Try again, or turn it back on from each computer."
+          : input.failed,
+      )}</p>`
     : "";
   return card({
     head: `${brandMark()}<h1 class="title">Delete your Opensteer Account?</h1>`,

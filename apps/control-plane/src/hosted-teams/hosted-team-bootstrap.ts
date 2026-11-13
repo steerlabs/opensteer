@@ -201,8 +201,9 @@ export class HostedTeamBootstrapper {
 }
 
 /**
- * Asks a hosted team's own Host whether an Account is one of its owners, with a one-minute
- * Account-signed question. Undefined when that Host can't answer: an older release, or down.
+ * Asks a hosted team's own Host whether an Account is one of its owners, and its only one, with a
+ * one-minute Account-signed question. Undefined when that Host can't answer: an older release, or
+ * down.
  */
 export function hostedTeamOwnerCheck(input: {
   readonly host: HostedTeamHost;

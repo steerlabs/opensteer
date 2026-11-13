@@ -18,9 +18,12 @@ provisioner, or teams wait at `starting`.
 
 Addresses are never reused: a deleted team stays as a tombstone, and the database tombstones a team
 whenever its creator's Account is deleted, whichever release deletes it. Before deleting an Account,
-Account asks each set-up team's Host, by the owner check below, whether someone the directory lists
-is another owner; the first it confirms takes over the team and its Account Deployment. A Host that
-can't answer, or names nobody, means the team is deleted with the Account.
+and before turning off any remote access, Account asks the Host of every adopted team it created,
+by the owner check below: a Host naming the creator its only owner lets the team go with the
+Account; otherwise the first person the directory lists whom the Host confirms as an owner takes
+over the team and its Account Deployment. A Host that can't answer, or confirms nobody, refuses the
+deletion, naming the team, since another owner may exist that the directory hasn't caught up with.
+A team never adopted has no owner but its creator and goes without asking.
 
 ## Setup
 

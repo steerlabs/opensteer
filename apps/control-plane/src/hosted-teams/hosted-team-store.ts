@@ -5,6 +5,7 @@ import {
   type ControlPlaneAccountId,
   type HostAccountAdoptionAuthority,
   type HostedTeamBootstrapReceipt,
+  type HostedTeamOwnerCheckResponse,
   type VerifiedDeploymentOwnerProfile,
 } from "@opensteer/control-plane-protocol";
 import {
@@ -44,8 +45,8 @@ type HostedTeamRow = Selectable<HostedTeamTable>;
 
 /** How long one bootstrap attempt may hold a team before another Account replica may take over. */
 const bootstrapLeaseMilliseconds = 2 * 60_000;
-/** Directory entries asked about, per team, for another owner when its creator's Account goes. */
-const maximumSuccessorChecks = 50;
+/** Directory entries read per page while looking for another owner of a departing creator's team. */
+const successorPageSize = 50;
 const unfinishedMessage = "Setup didn’t finish. Try again.";
 
 /** A team Account is setting up, claimed by one bootstrap attempt. */
@@ -69,7 +70,17 @@ export interface HostedTeamBootstrapClaim {
 export type HostedTeamOwnerCheck = (input: {
   readonly accountId: ControlPlaneAccountId;
   readonly authority: HostAccountAdoptionAuthority;
-}) => Promise<boolean | undefined>;
+}) => Promise<HostedTeamOwnerCheckResponse | undefined>;
+
+/**
+ * What becomes of the adopted teams an Account created when it is deleted: each passes to the
+ * Host-confirmed owner in `successors`, or is in `deletable` because its Host named the creator
+ * its only owner. Teams never adopted go with the Account without asking.
+ */
+export interface HostedTeamsAccountDeletion {
+  readonly successors: ReadonlyMap<HostedTeamId, ControlPlaneAccountId>;
+  readonly deletable: ReadonlySet<HostedTeamId>;
+}
 
 /**
  * Hosted team servers an Account asked Opensteer to run, how far their setup got, and what the
@@ -302,7 +313,7 @@ export class HostedTeamStore {
         "unavailable",
         "Your team’s server didn’t answer. Try again in a minute.",
       );
-    if (answer) return;
+    if (answer.owner) return;
     const settled = await this.#database
       .selectFrom("hostedTeams")
       .select(["bootstrapReceipt", "creatorAccountId", "stage"])
@@ -320,47 +331,64 @@ export class HostedTeamStore {
   }
 
   /**
-   * For each set-up team `accountId` created, another Account that team's own Host confirms is an
-   * active owner, asked before the Account is deleted. Candidates are the people Account's
-   * directory lists for the team; a Host that can't answer names nobody, so its team goes with
-   * the Account.
+   * Asks the Host of every adopted team `accountId` created who keeps it once the Account goes.
+   * Refuses, naming the team, whenever a Host can't settle that: no team another person owns is
+   * ever deleted on a guess.
    */
-  async successors(
-    accountId: ControlPlaneAccountId,
-  ): Promise<ReadonlyMap<HostedTeamId, ControlPlaneAccountId>> {
+  async accountDeletion(accountId: ControlPlaneAccountId): Promise<HostedTeamsAccountDeletion> {
     const teams = await this.#database
       .selectFrom("hostedTeams")
       .selectAll()
       .where("creatorAccountId", "=", accountId)
       .where("state", "!=", "deleted")
-      .where("bootstrapReceipt", "is not", null)
       .orderBy("createdAt", "asc")
       .execute();
-    const found = new Map<HostedTeamId, ControlPlaneAccountId>();
+    const successors = new Map<HostedTeamId, ControlPlaneAccountId>();
+    const deletable = new Set<HostedTeamId>();
     for (const team of teams) {
+      const adopted = await this.#database
+        .selectFrom("deployments")
+        .select("id")
+        .where("canonicalOrigin", "=", hostedTeamOrigin(team.slug as HostedTeamSlug))
+        .executeTakeFirst();
+      if (!adopted) continue;
       const authority = await this.#authority(team);
-      if (!authority) continue;
-      const candidates = await this.#database
+      const creator = authority ? await this.#ownerCheck({ accountId, authority }) : undefined;
+      if (!authority || !creator) throw ownerUnconfirmed(team);
+      if (creator.onlyOwner) {
+        deletable.add(team.id);
+        continue;
+      }
+      const successor = await this.#otherOwner(accountId, authority);
+      if (!successor) throw ownerUnconfirmed(team);
+      successors.set(team.id, successor);
+    }
+    return { successors, deletable };
+  }
+
+  /** The first person the team's directory lists whom its Host confirms as an owner. */
+  async #otherOwner(
+    accountId: ControlPlaneAccountId,
+    authority: HostAccountAdoptionAuthority,
+  ): Promise<ControlPlaneAccountId | undefined> {
+    let after: ControlPlaneAccountId | undefined;
+    for (;;) {
+      let page = this.#database
         .selectFrom("deploymentDirectoryEntries")
         .select("accountId")
         .where("deploymentId", "=", authority.deploymentId)
         .where("present", "=", true)
-        .where("accountId", "!=", accountId)
-        .orderBy("accountId", "asc")
-        .limit(maximumSuccessorChecks)
-        .execute();
+        .where("accountId", "!=", accountId);
+      if (after) page = page.where("accountId", ">", after);
+      const candidates = await page.orderBy("accountId", "asc").limit(successorPageSize).execute();
       for (const { accountId: candidate } of candidates) {
-        const owner = await this.#ownerCheck({ accountId: candidate, authority }).catch(
-          () => undefined,
-        );
-        if (owner === undefined) break;
-        if (owner) {
-          found.set(team.id, candidate);
-          break;
-        }
+        const answer = await this.#ownerCheck({ accountId: candidate, authority });
+        if (!answer) return undefined;
+        if (answer.owner) return candidate;
       }
+      if (candidates.length < successorPageSize) return undefined;
+      after = candidates.at(-1)!.accountId;
     }
-    return found;
   }
 
   /* ---- Provisioner ---- */
@@ -909,6 +937,44 @@ export async function handOverHostedTeams(
 }
 
 /**
+ * Refuses an Account deletion that would take an adopted team `accountId` created which
+ * `deletable` (`HostedTeamStore.accountDeletion`) doesn't name: only its Host may say a team has
+ * no other owner.
+ */
+export async function requireHostedTeamsSettled(
+  transaction: DatabaseTransaction,
+  accountId: ControlPlaneAccountId,
+  deletable: ReadonlySet<HostedTeamId>,
+): Promise<void> {
+  const teams = await transaction
+    .selectFrom("hostedTeams")
+    .select(["id", "slug"])
+    .where("creatorAccountId", "=", accountId)
+    .where("state", "!=", "deleted")
+    .orderBy("slug", "asc")
+    .execute();
+  const unsettled = teams.filter((team) => !deletable.has(team.id));
+  if (unsettled.length === 0) return;
+  const adopted = new Set(
+    (
+      await transaction
+        .selectFrom("deployments")
+        .select("canonicalOrigin")
+        .where(
+          "canonicalOrigin",
+          "in",
+          unsettled.map((team) => hostedTeamOrigin(team.slug as HostedTeamSlug)),
+        )
+        .execute()
+    ).map((deployment) => deployment.canonicalOrigin),
+  );
+  const team = unsettled.find((candidate) =>
+    adopted.has(hostedTeamOrigin(candidate.slug as HostedTeamSlug)),
+  );
+  if (team) throw ownerUnconfirmed(team);
+}
+
+/**
  * Marks matching live teams deleted and removes the Account Deployment adopted at each one's
  * address, since no Host will ever answer there again.
  */
@@ -991,6 +1057,14 @@ function claimed(
     expression("setupGeneration", "=", claim.generation),
     expression("bootstrapAttempt", "=", claim.attempt),
   ]);
+}
+
+function ownerUnconfirmed(team: Pick<HostedTeamRow, "slug">) {
+  return new ControlPlaneError(
+    "unavailable",
+    `Your Account wasn’t deleted: ${new URL(hostedTeamOrigin(team.slug as HostedTeamSlug)).host} couldn’t confirm who else owns it. Try again in a few minutes.`,
+    { reason: "hosted-team-owner-unconfirmed" },
+  );
 }
 
 function ownerRequired() {

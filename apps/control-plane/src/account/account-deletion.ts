@@ -23,7 +23,7 @@ export class AccountDeletionService {
   readonly #auth: ControlPlaneAuth;
   readonly #connectLifecycle: ConnectLifecycleService;
   readonly #fetch: typeof fetch;
-  readonly #hostedTeams: Pick<HostedTeamStore, "successors"> | undefined;
+  readonly #hostedTeams: Pick<HostedTeamStore, "accountDeletion"> | undefined;
   readonly #store: ControlPlaneStore;
 
   constructor(dependencies: {
@@ -31,8 +31,8 @@ export class AccountDeletionService {
     readonly auth: ControlPlaneAuth;
     readonly connectLifecycle: ConnectLifecycleService;
     readonly fetch?: typeof fetch;
-    /** Hands a hosted team another owner runs to them instead of deleting it. */
-    readonly hostedTeams?: Pick<HostedTeamStore, "successors">;
+    /** Settles each hosted team the Account created with its own Host: hand over, delete or refuse. */
+    readonly hostedTeams?: Pick<HostedTeamStore, "accountDeletion">;
     readonly store: ControlPlaneStore;
   }) {
     this.#apple = dependencies.appleSignIn;
@@ -44,6 +44,9 @@ export class AccountDeletionService {
   }
 
   async delete(accountId: ControlPlaneAccountId): Promise<void> {
+    // Asked of each team's own Host first, since ownership lives there and a Host that can't
+    // answer refuses the deletion before anything else is undone.
+    const hostedTeams = await this.#hostedTeams?.accountDeletion(accountId);
     for (const deployment of await this.#store.ownedDeployments(accountId)) {
       if (deployment.connectState === null || deployment.connectState === "revoked") continue;
       try {
@@ -63,10 +66,8 @@ export class AccountDeletionService {
     const appleRefreshToken = this.#apple
       ? await this.#store.oauthRefreshToken(accountId, "apple")
       : null;
-    // Asked of each team's own Host before the transaction: ownership lives there.
-    const successors = (await this.#hostedTeams?.successors(accountId)) ?? new Map();
     try {
-      await this.#store.deleteAccount(accountId, successors);
+      await this.#store.deleteAccount(accountId, hostedTeams);
     } catch (error) {
       if (isNotFound(error)) return;
       throw error;

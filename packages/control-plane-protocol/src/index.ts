@@ -1088,8 +1088,9 @@ export const HostedTeamOwnerCheckIdSchema =
   prefixedIdSchema("hto").brand<"HostedTeamOwnerCheckId">();
 
 /**
- * Account asks a hosted team's Host whether `sub` is an active owner before deleting the team,
- * because only that Host knows team roles. Signed with Account's key; answers nothing else.
+ * Account asks a hosted team's Host whether `sub` is an active owner, and its only one, before
+ * deleting the team or `sub`'s Account, because only that Host knows team roles. Signed with
+ * Account's key.
  */
 export const HostedTeamOwnerCheckClaimsSchema = z
   .strictObject({
@@ -1115,7 +1116,12 @@ export type HostedTeamOwnerCheckClaims = z.infer<typeof HostedTeamOwnerCheckClai
 export const HostedTeamOwnerCheckRequestSchema = z.strictObject({
   assertion: AccountHostSessionGrantSchema,
 });
-export const HostedTeamOwnerCheckResponseSchema = z.object({ owner: z.boolean() });
+/** `onlyOwner`: `sub` is an active owner and nobody else is, so the team has no other owner. */
+export const HostedTeamOwnerCheckResponseSchema = z.object({
+  owner: z.boolean(),
+  onlyOwner: z.boolean(),
+});
+export type HostedTeamOwnerCheckResponse = z.infer<typeof HostedTeamOwnerCheckResponseSchema>;
 
 /**
  * Account's hosted bootstrap: the team Host also commits `owner` as its owner and creates
@@ -1225,6 +1231,7 @@ export const ControlPlaneErrorReasonSchema = z.enum([
   "hosted-team-limit-reached",
   "hosted-team-address-taken",
   "hosted-team-owner-required",
+  "hosted-team-owner-unconfirmed",
 ]);
 export type ControlPlaneErrorReason = z.infer<typeof ControlPlaneErrorReasonSchema>;
 

@@ -245,7 +245,7 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
   async function renderDeleteAccount(
     reply: FastifyReply,
     session: PortalSession,
-    failed: boolean,
+    failed: boolean | string,
   ): Promise<string> {
     const accountId = ControlPlaneAccountIdSchema.parse(session.accountId);
     const [owned, hostedTeams] = await Promise.all([
@@ -569,7 +569,12 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
           );
         } catch (error) {
           if (!(error instanceof ControlPlaneError)) throw error;
-          return renderDeleteAccount(reply.code(error.status), session, true);
+          return renderDeleteAccount(
+            reply.code(error.status),
+            session,
+            // Refused before anything else was undone, so it says only which team to wait for.
+            error.reason === "hosted-team-owner-unconfirmed" ? error.message : true,
+          );
         }
         // Reading the session refreshed its cookie; only the expiry may reach the browser.
         void reply.removeHeader("set-cookie");
