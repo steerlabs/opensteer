@@ -1,8 +1,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { createWriteStream, type WriteStream } from "node:fs";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { createWriteStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
+import { finished } from "node:stream/promises";
+import { pathToFileURL } from "node:url";
 import { CompiledQuery } from "kysely";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -19,6 +21,8 @@ import {
   type SupervisedProcess,
 } from "../packages/harness/src/process-supervisor.js";
 import { testRpcData } from "../apps/host/src/server/test-host-api-request.js";
+import { hostCommandPlatform, resolveCommand } from "@opensteer/shared/command";
+import { generatedShims } from "@opensteer/shared/test-support/commandShims";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { mergeEnvironment } from "@opensteer/shared/userEnvironment";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -30,21 +34,32 @@ const windows = process.platform === "win32";
 const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
 const exe = (name: string) => join(postgresBin!, windows ? `${name}.exe` : name);
 
+interface Exit {
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+}
+
 interface Service {
   readonly name: string;
   readonly process: SupervisedProcess;
   readonly lines: string[];
   waitFor(label: string, match: (line: string) => boolean, timeoutMs?: number): Promise<string>;
+  /** Stops the process and returns its exit once all its output is read and logged. */
+  stop(graceMs: number): Promise<Exit>;
 }
 
 const services = new Set<Service>();
 const temporary: string[] = [];
-const logs: WriteStream[] = [];
 
 afterAll(async () => {
-  await Promise.allSettled([...services].map((service) => service.process.terminate(5_000)));
-  await Promise.allSettled([...services].map((service) => service.process.exited));
-  await Promise.allSettled(logs.map((log) => new Promise((done) => log.end(done))));
+  const stopped = await Promise.allSettled([...services].map((service) => service.stop(5_000)));
+  const failures = stopped.flatMap((result) =>
+    result.status === "rejected" ? [result.reason] : [],
+  );
+  if (failures.length)
+    throw new Error(`Services did not stop cleanly; kept ${temporary.join(", ")}`, {
+      cause: new AggregateError(failures),
+    });
   for (const directory of temporary) await rm(directory, { force: true, recursive: true });
 }, 60_000);
 
@@ -71,7 +86,11 @@ function supervise(
     stdin: "closed",
   });
   const log = createWriteStream(options.log, { flags: "a" });
-  logs.push(log);
+  // Settled at once, so a failed log write is reported by `stop` instead of going unhandled.
+  const logged = finished(log).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
   const lines: string[] = [];
   const waiters = new Set<() => void>();
   const read = async (stream: AsyncIterable<Buffer>) => {
@@ -85,8 +104,32 @@ function supervise(
       for (const waiter of waiters) waiter();
     }
   };
-  void read(child.stdout);
-  void read(child.stderr);
+  // The exit can come before the last output, so the log ends only once both streams have.
+  const closed = Promise.allSettled([child.exited, read(child.stdout), read(child.stderr)]).then(
+    async ([exit, ...output]) => {
+      log.end();
+      const logError = await logged;
+      const failures = [exit, ...output].flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
+      if (logError) failures.push(logError);
+      return { exit: exit.status === "fulfilled" ? exit.value : undefined, failures };
+    },
+  );
+  let stopping: Promise<Exit> | undefined;
+  const stop = async (graceMs: number): Promise<Exit> => {
+    const terminated = await child.terminate(graceMs).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    const { exit, failures } = await withTimeout(closed, graceMs + 10_000, {
+      timeoutError: () => new Error(`${name}'s output never closed after it was stopped`),
+    });
+    if (terminated) failures.unshift(terminated);
+    if (!exit || failures.length)
+      throw new AggregateError(failures, `${name} did not stop cleanly`);
+    return exit;
+  };
   const service: Service = {
     lines,
     name,
@@ -102,12 +145,12 @@ function supervise(
           };
           waiters.add(check);
           check();
-          void child.exited.then(({ code, signal }) => {
+          void closed.then(({ exit }) => {
             check();
             waiters.delete(check);
             failed(
               new Error(
-                `${name} exited (${signal ?? code}) before ${label}:\n${lines.slice(-40).join("\n")}`,
+                `${name} exited (${exit?.signal ?? exit?.code}) before ${label}:\n${lines.slice(-40).join("\n")}`,
               ),
             );
           });
@@ -118,9 +161,9 @@ function supervise(
         },
       );
     },
+    stop: (graceMs) => (stopping ??= stop(graceMs)),
   };
   services.add(service);
-  void child.exited.then(() => services.delete(service));
   return service;
 }
 
@@ -147,24 +190,35 @@ function alive(pid: number): boolean {
 
 async function startPostgres(root: string) {
   const data = join(root, "postgres");
-  const initdb = spawnSupervised({
-    args: ["-D", data, "-U", "opensteer", "-A", "trust", "-E", "UTF8", "--no-locale", "--no-sync"],
-    cwd: root,
-    environment: environment(),
-    executable: exe("initdb"),
-    stdin: "closed",
-  });
-  const output = Promise.all(
-    [initdb.stdout, initdb.stderr].map(async (stream) => {
-      const chunks: Buffer[] = [];
-      for await (const chunk of stream) chunks.push(chunk);
-      return Buffer.concat(chunks).toString("utf8");
-    }),
+  const initdb = supervise(
+    "initdb",
+    [
+      exe("initdb"),
+      "-D",
+      data,
+      "-U",
+      "opensteer",
+      "-A",
+      "trust",
+      "-E",
+      "UTF8",
+      "--no-locale",
+      "--no-sync",
+    ],
+    { cwd: root, environment: environment(), log: join(root, "initdb.log") },
   );
-  const initialized = await withTimeout(initdb.exited, 120_000, {
-    timeoutError: () => new Error("initdb never finished"),
-  });
-  if (initialized.code !== 0) throw new Error(`initdb failed: ${(await output).join("\n")}`);
+  let initialized: Exit;
+  try {
+    initialized = await withTimeout(initdb.process.exited, 120_000, {
+      timeoutError: () => new Error(`initdb never finished:\n${initdb.lines.join("\n")}`),
+    });
+  } finally {
+    await initdb.stop(5_000);
+  }
+  if (initialized.code !== 0)
+    throw new Error(
+      `initdb failed (${initialized.signal ?? initialized.code}):\n${initdb.lines.join("\n")}`,
+    );
   const port = await freePort();
   const postgres = supervise(
     "postgres",
@@ -316,9 +370,8 @@ describe("the personal stack from source", () => {
     const agentHome = join(root, "Agent home ü");
     const appFolder = join(agentHome, "server app");
     const home = join(root, "home");
-    const bin = join(root, "bin");
     const runnerTemporary = join(root, "tmp");
-    for (const directory of [appFolder, home, bin, runnerTemporary])
+    for (const directory of [appFolder, home, runnerTemporary])
       await mkdir(directory, { recursive: true });
     const pids = new Map<string, number>();
     const { postgres, postmaster, url } = await startPostgres(root);
@@ -326,8 +379,8 @@ describe("the personal stack from source", () => {
     pids.set("postgres supervisor", postgres.process.child.pid!);
 
     const codexCapture = join(root, "codex-capture.jsonl");
-    const codexShim = await writeCliShim(
-      bin,
+    const bin = await installCli(
+      join(root, "global"),
       "codex",
       join(repository, "packages/harness-codex/src/test-fixtures/fake-codex-app-server.mjs"),
       ["--scenario=notifications", `--capture=${codexCapture}`],
@@ -350,6 +403,16 @@ describe("the personal stack from source", () => {
       root,
       temporary: runnerTemporary,
     };
+    // Codex's quoted `-c key="value"` arguments pass only through a generated shim.
+    const codex = resolveCommand("codex", {
+      cwd: root,
+      environment: { PATH: stack.path, PATHEXT: process.env.PATHEXT },
+      platform: hostCommandPlatform(),
+    });
+    expect(codex).toEqual({
+      kind: windows ? "batch-shim" : "native",
+      path: join(bin, windows ? "codex.cmd" : "codex"),
+    });
     const origin = `http://127.0.0.1:${stack.port}`;
 
     let host = startHost(stack, join(root, "host.log"));
@@ -394,7 +457,9 @@ describe("the personal stack from source", () => {
       { interval: 250, timeout: 60_000 },
     );
     expect(engines.driver.installation).toMatchObject({ scope: "ambient", update: "manual" });
-    expect(await enginePids(codexCapture), `${codexShim} never served the Runner`).not.toEqual([]);
+    expect(await enginePids(codexCapture), `${codex!.path} never served the Runner`).not.toEqual(
+      [],
+    );
 
     // One task, full access so its agent may serve an app from Agent home.
     const created = await dispatch({
@@ -565,9 +630,8 @@ function hostPid(line: string): number {
 }
 
 async function stopGracefully(service: Service): Promise<void> {
-  await service.process.terminate(30_000);
   expect(
-    await service.process.exited,
+    await service.stop(30_000),
     `${service.name} did not stop cleanly:\n${service.lines.slice(-20).join("\n")}`,
   ).toEqual({
     code: 0,
@@ -608,25 +672,22 @@ const automationSource = `export default function ({ event }: { event: { payload
   return { doubled: event.payload.n * 2, pid: process.pid };
 }`;
 
-/** A person's global CLI as a package manager installs it: a cmd shim on Windows. */
-async function writeCliShim(bin: string, name: string, script: string, args: readonly string[]) {
-  if (windows) {
-    await writeFile(
-      join(bin, `${name}.cmd`),
-      [
-        "@ECHO off",
-        "SETLOCAL",
-        `"${process.execPath}" "${script}" ${args.map((arg) => `"${arg}"`).join(" ")} %*`,
-        "",
-      ].join("\r\n"),
-    );
-    return join(bin, `${name}.cmd`);
-  }
-  const path = join(bin, name);
+/**
+ * A person's global CLI as npm installs it: the shim npm generates on Windows,
+ * a link elsewhere, to a package script that runs `script` with `args`.
+ */
+async function installCli(prefix: string, name: string, script: string, args: readonly string[]) {
+  const bin = join(prefix, "node_modules", ".bin");
+  // The package script the generated shim names.
+  const entry = join(prefix, "node_modules", "echo-argv", "bin", "echo-argv.js");
+  await mkdir(bin, { recursive: true });
+  await mkdir(dirname(entry), { recursive: true });
   await writeFile(
-    path,
-    `#!/bin/sh\nexec '${process.execPath}' '${script}' ${args.map((arg) => `'${arg}'`).join(" ")} "$@"\n`,
+    entry,
+    `#!/usr/bin/env node\nprocess.argv.push(...${JSON.stringify(args)});\nimport(${JSON.stringify(pathToFileURL(script).href)});\n`,
     { mode: 0o755 },
   );
-  return path;
+  if (windows) await writeFile(join(bin, `${name}.cmd`), generatedShims.npm.node);
+  else await symlink(join("..", "echo-argv", "bin", "echo-argv.js"), join(bin, name));
+  return bin;
 }
