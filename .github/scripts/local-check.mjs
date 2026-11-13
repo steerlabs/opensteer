@@ -55,7 +55,7 @@ export function localPlan(files, graph, present, baseGraph = graph) {
   const gui = tests.filter((p) => /\.gui\.test\./.test(p));
   if (ordinary.length) commands.push(["pretest"], ["exec", "vitest", "run", ...ordinary]);
   if (browser.length) commands.push(["test:browser", ...browser]);
-  for (const file of integration) commands.push(["test:integration", "--", file]);
+  if (integration.length) commands.push(["test:integration", "--", ...integration]);
   if (gui.length) commands.push(["test:vm", "--", "pnpm", "test:gui", "--", ...gui]);
   if (files.some((p) => p.startsWith("apps/agent-phone/")))
     commands.push([
