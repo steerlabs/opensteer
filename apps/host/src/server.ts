@@ -1,3 +1,4 @@
+import type { DeviceAccessService } from "./administration/device-access-service.js";
 import { consumeAnonymousRateLimit } from "./identity/anonymous-rate-limit.js";
 import { deviceAccess } from "@opensteer/protocol";
 import {
@@ -367,6 +368,7 @@ export interface HostServerDependencies {
   readonly runToolTokens: import("./agents/run-tool-tokens.js").RunToolTokenService;
   readonly agentTools: OpensteerMcpService;
   readonly authenticator: HostAuthenticator;
+  readonly deviceAccess: DeviceAccessService;
   readonly machineFullDiskAccess: MachineFullDiskAccessService;
   readonly browser: BrowserService;
   readonly browserTabs: BrowserTabGroupService;
@@ -1801,10 +1803,8 @@ export async function createHostServer(
                 return;
               }
               case "device.access":
-                throw new OpensteerError({
-                  code: "forbidden",
-                  message: "Device access Requests are not yet supported",
-                });
+                await dependencies.deviceAccess.decline(input);
+                return;
               case "machine.full-disk-access":
                 await dependencies.machineFullDiskAccess.decline(input);
                 return;
@@ -2132,6 +2132,8 @@ export async function createHostServer(
         );
         if (result.outcome === "conflict")
           return { outcome: "conflict" as const, type: command.type };
+        for (const event of result.requestEvents) dependencies.publishDeploymentEvent?.(event);
+        if (result.requestEvents.length) dependencies.integrations.continuations.notify();
         notifyMachinesChanged(dependencies.realtime, "machine.command");
         return { outcome: "updated" as const, revision: result.revision, type: command.type };
       }

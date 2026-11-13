@@ -1,4 +1,6 @@
-import { deploymentPolicy } from "@opensteer/core";
+import { withPersonalTransaction } from "./personal-transaction.js";
+import { fulfillDeviceAccessRequestsInTransaction } from "./request-store.js";
+import { type AgentEvent, deploymentPolicy } from "@opensteer/core";
 import { withDatabaseTransaction } from "./connection.js";
 import { type CommandRow, type DatabaseSchema } from "./schema.js";
 import {
@@ -265,6 +267,7 @@ export async function updateMachineAccessPolicy(
       readonly outcome: "updated";
       readonly replayed: boolean;
       readonly revision: number;
+      readonly requestEvents: readonly AgentEvent[];
       readonly changed: {
         readonly shell: boolean;
         readonly browser: boolean;
@@ -277,7 +280,7 @@ export async function updateMachineAccessPolicy(
     policy: input.policy,
     runnerId: input.runnerId,
   };
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withPersonalTransaction(database, async (transaction) => {
     if (input.idempotency) {
       const { key, requestedBy } = input.idempotency;
       await lockCommandIdempotency(transaction, requestedBy, key);
@@ -295,7 +298,7 @@ export async function updateMachineAccessPolicy(
           | { readonly outcome: "updated"; readonly revision: number };
         return result.outcome === "conflict"
           ? { ...result, replayed: true }
-          : { ...result, changed: noPolicyChanges, replayed: true };
+          : { ...result, changed: noPolicyChanges, requestEvents: [], replayed: true };
       }
     }
     const stored = await transaction
@@ -366,7 +369,17 @@ export async function updateMachineAccessPolicy(
         type: "machine.access.update",
       });
     }
-    return { ...result, replayed: false };
+    return result.outcome === "updated"
+      ? {
+          ...result,
+          replayed: false,
+          requestEvents: await fulfillDeviceAccessRequestsInTransaction(
+            transaction,
+            input.runnerId,
+            policy,
+          ),
+        }
+      : { ...result, replayed: false };
   });
 }
 

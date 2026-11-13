@@ -62,6 +62,8 @@ import {
   type IntegrationToolMaterial,
 } from "@opensteer/integration-core";
 import {
+  deviceAccess,
+  type MachineAccessPolicy,
   BrowserSessionIdSchema,
   PasswordSignInRequestResponseSchema,
   type DurableWindow,
@@ -98,7 +100,8 @@ import {
   type InstallIntegrationInput,
   type InstallIntegrationMutation,
 } from "./integration-platform-stores.js";
-import { machineOwnershipIn } from "./machine-ownership.js";
+import { deviceAccessStates } from "./device-store.js";
+import { machineOwnershipIn, machineIsManagedBy } from "./machine-ownership.js";
 import { cancelPending } from "./request-cancellation.js";
 import { requestFromRow, requestInsert, requestOriginEnvironment } from "./request-persistence.js";
 import { insertBrowserProfileOnLockedHome } from "./browser-session-store.js";
@@ -297,6 +300,112 @@ export class RequestStore {
           request: requestFromRow(row),
         }
       : null;
+  }
+  async createDeviceAccessRequest(
+    input: {
+      readonly callId: string;
+      readonly machineId: RunnerId;
+      readonly access: "browser" | "apps" | "files";
+      readonly reason: string;
+      readonly originatingRunId: RunId;
+      readonly originatingThreadId: ThreadId;
+      readonly requestedBy: UserId;
+    },
+    isOnline: () => boolean,
+  ): Promise<RequestMutation> {
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const machine = await transaction
+        .selectFrom("runners")
+        .select("name")
+        .where("id", "=", input.machineId)
+        .executeTakeFirst();
+      if (!machine)
+        throw new OpensteerError({ code: "forbidden", message: "Owned device not found" });
+      const label = { browser: "Browser", apps: "Apps", files: "Files and commands" }[input.access];
+      return createRequestInTransaction(
+        this.#links,
+        transaction,
+        {
+          callId: input.callId,
+          kind: "device.access",
+          mode: "durable",
+          requiredActor: "owner",
+          originatingRunId: input.originatingRunId,
+          originatingThreadId: input.originatingThreadId,
+          requestedBy: input.requestedBy,
+          payload: {
+            kind: "device.access",
+            machineId: input.machineId,
+            machineName: machine.name,
+            access: input.access,
+            reason: input.reason,
+          },
+          presentation: {
+            kind: "external",
+            subject: { kind: "machine", id: input.machineId },
+            title: `Let your agent use ${label} on ${machine.name}?`,
+            detail: input.reason,
+          },
+        },
+        isOnline,
+      );
+    });
+  }
+  async declineDeviceAccessRequest(input: {
+    readonly requestId: RequestId;
+    readonly resolvedBy: UserId;
+    readonly settlementSessionId?: string;
+    readonly response: RequestResponse;
+  }): Promise<{ events: readonly AgentEvent[]; request: Request }> {
+    const value = input.response.kind === "external" ? input.response.value : undefined;
+    if (!value || Object.keys(value).length !== 1 || value.decision !== "declined")
+      throw new OpensteerError({
+        code: "bad_request",
+        message:
+          "Turn device access on through machine.access.update; this response can only decline.",
+      });
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const row = await transaction
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", input.requestId)
+        .executeTakeFirst();
+      if (!row || row.kind !== "device.access" || row.payload.kind !== "device.access")
+        throw new OpensteerError({ code: "not_found", message: "Device access Request not found" });
+      const ownership = await machineOwnershipIn(transaction, row.payload.machineId);
+      if (!ownership || !machineIsManagedBy(ownership, input.resolvedBy))
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Only this device's owner can answer its access Request.",
+        });
+      if (row.status !== "pending")
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Device access Request is no longer pending",
+        });
+      await lockActiveDurableRequestAuthority(transaction, requestFromRow(row));
+      const now = new Date();
+      const resolved = await transaction
+        .updateTable("requests")
+        .set({
+          status: "declined",
+          resolvedAt: now,
+          resolvedBy: input.resolvedBy,
+          response: jsonValue(input.response),
+          settlementProvenance: await readRequestSettlementProvenance(
+            transaction,
+            input.resolvedBy,
+            input.settlementSessionId,
+          ),
+        })
+        .where("id", "=", row.id)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      const request = requestFromRow(resolved);
+      await enqueueContinuation(transaction, request, now);
+      await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+      return { events: await terminalEvents(transaction, request), request };
+    });
   }
   async create(input: CreateRequestInput): Promise<RequestMutation> {
     return withPersonalTransaction(this.#database, async (personalTransaction) => {
@@ -3023,6 +3132,7 @@ async function createRequestInTransaction(
   links: ChannelLinks,
   transaction: Transaction<DatabaseSchema>,
   input: CreateRequestInput,
+  deviceOnline?: () => boolean,
 ): Promise<RequestMutation> {
   if (input.callId.length < 1 || input.callId.length > 512 || input.callId.includes("\0")) {
     throw new OpensteerError({
@@ -3089,6 +3199,73 @@ async function createRequestInTransaction(
       code: "conflict",
       message: assignmentClosedToRequestsMessage,
     });
+  }
+  if (input.kind === "device.access") {
+    if (
+      input.payload.kind !== "device.access" ||
+      !deviceOnline ||
+      input.mode !== "durable" ||
+      input.requiredActor !== "owner" ||
+      !input.originatingRunId
+    )
+      throw new OpensteerError({
+        code: "bad_request",
+        message: "Use device_access_request for device access.",
+      });
+    const payload = input.payload;
+    const runner = await transaction
+      .selectFrom("runners")
+      .select(["accessPolicy", "allowedModules", "moduleDescriptors", "revokedAt", "kind"])
+      .where("id", "=", payload.machineId)
+      .forNoKeyUpdate()
+      .executeTakeFirst();
+    const ownership = await machineOwnershipIn(transaction, payload.machineId);
+    if (
+      !runner ||
+      runner.revokedAt ||
+      runner.kind === "managed" ||
+      !ownership ||
+      !machineIsManagedBy(ownership, input.requestedBy)
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Only an owned active device can receive an access Request.",
+      });
+    if (!deviceOnline())
+      throw new OpensteerError({
+        code: "runner_offline",
+        reason: "device-offline",
+        message: "That device is offline. Do not request access while it is offline.",
+        details: { machineId: payload.machineId, capability: payload.access },
+      });
+    const duplicate = await transaction
+      .selectFrom("requests")
+      .selectAll()
+      .where("kind", "=", "device.access")
+      .where("originatingThreadId", "=", input.originatingThreadId)
+      .where("requestedBy", "=", input.requestedBy)
+      .where("status", "in", ["pending", "declined"])
+      .where(sql<string>`payload->>'machineId'`, "=", payload.machineId)
+      .where(sql<string>`payload->>'access'`, "=", payload.access)
+      .orderBy("createdAt")
+      .orderBy("id")
+      .executeTakeFirst();
+    if (duplicate) return { replayed: true, request: requestFromRow(duplicate), events: [] };
+    const state = deviceAccessStates(
+      runner.accessPolicy,
+      runner.allowedModules,
+      runner.moduleDescriptors,
+      runner.kind === "main" && ownership.ownerKind === "deployment",
+    )[payload.access];
+    if (state !== "disabled")
+      throw new OpensteerError({
+        code: "conflict",
+        reason: state === "enabled" ? "device-access-on" : "device-access-unsupported",
+        message:
+          state === "enabled"
+            ? "That device's access is already on."
+            : "That device does not support this capability.",
+      });
   }
   if (input.kind === "browser.sign-in") {
     if (input.payload.kind !== "browser.sign-in") {
@@ -4375,4 +4552,62 @@ function requestPage(
       totalItems,
     },
   };
+}
+
+export async function fulfillDeviceAccessRequestsInTransaction(
+  transaction: Transaction<DatabaseSchema>,
+  machineId: RunnerId,
+  policy: MachineAccessPolicy,
+): Promise<readonly AgentEvent[]> {
+  const access = deviceAccess(policy);
+  const ownership = await machineOwnershipIn(transaction, machineId);
+  const rows = await transaction
+    .selectFrom("requests")
+    .selectAll()
+    .where("kind", "=", "device.access")
+    .where("status", "=", "pending")
+    .where(sql<string>`payload->>'machineId'`, "=", machineId)
+    .orderBy("id")
+    .execute();
+  const events: AgentEvent[] = [];
+  for (const row of rows) {
+    const request = requestFromRow(row);
+    if (request.payload.kind !== "device.access") throw new Error("Device access payload mismatch");
+    let authorized = ownership !== null && machineIsManagedBy(ownership, request.requestedBy);
+    try {
+      await lockActiveDurableRequestAuthority(transaction, request);
+    } catch (error) {
+      if (!(error instanceof OpensteerError)) throw error;
+      authorized = false;
+    }
+    if (!authorized) {
+      events.push(
+        ...(await cancelPending(transaction, {
+          requestIds: [request.id],
+          reason: "authority-revoked",
+          resolvedAt: new Date(),
+        })),
+      );
+      continue;
+    }
+    if (!access[request.payload.access]) continue;
+    const now = new Date();
+    const resolved = await transaction
+      .updateTable("requests")
+      .set({
+        status: "fulfilled",
+        resolvedAt: now,
+        resolvedBy: request.requestedBy,
+        response: jsonValue({ kind: "external", value: { decision: "fulfilled" } }),
+      })
+      .where("id", "=", request.id)
+      .where("status", "=", "pending")
+      .returningAll()
+      .executeTakeFirst();
+    if (!resolved) continue;
+    const fulfilled = requestFromRow(resolved);
+    await enqueueContinuation(transaction, fulfilled, now);
+    events.push(...(await terminalEvents(transaction, fulfilled)));
+  }
+  return events;
 }

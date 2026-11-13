@@ -38,9 +38,19 @@ test("routes integration and GUI siblings through their owned launchers", () => 
   const p = localPlan(
     ["packages/a/value.ts"],
     [{ name: "a", dir: "packages/a", deps: [], coverage: [] }],
-    ["packages/a/value.integration.test.ts", "packages/a/value.gui.test.ts"],
+    [
+      "packages/a/value.integration.test.ts",
+      "packages/a/value.other.integration.test.ts",
+      "packages/a/value.gui.test.ts",
+    ],
   );
-  assert.ok(p.commands.some((c) => c[0] === "test:integration"));
+  assert.deepEqual(
+    p.commands.filter((c) => c[0] === "test:integration"),
+    [
+      ["test:integration", "--", "packages/a/value.integration.test.ts"],
+      ["test:integration", "--", "packages/a/value.other.integration.test.ts"],
+    ],
+  );
   assert.ok(p.commands.some((c) => c[0] === "test:vm"));
   assert.ok(
     !p.commands.some((c) => c.includes("vitest") && c.some((a) => a.includes(".gui.test."))),

@@ -22,6 +22,7 @@ import type { DatabaseSchema } from "./schema.js";
 export const runToolMaxDelegationDepth = agentDelegationMaxDepth;
 export type RunToolAction =
   | "assignment.cancel"
+  | "device.access.request"
   | "machine.full-disk-access.request"
   | "browser.access.request"
   | "browser.sign-in"
@@ -103,6 +104,7 @@ export interface WatchControlAdmissionResult {
 }
 const actionClasses: Readonly<Record<RunToolAction, RunToolActionClass>> = {
   "assignment.cancel": "assignment.cancel",
+  "device.access.request": "device.access.request",
   "machine.full-disk-access.request": "machine.full-disk-access.request",
   "browser.access.request": "browser.access.request",
   "browser.sign-in": "browser.sign-in",

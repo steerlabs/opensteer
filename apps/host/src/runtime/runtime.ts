@@ -1,3 +1,4 @@
+import { DeviceAccessService } from "../administration/device-access-service.js";
 import { requireDeviceAccess } from "../administration/device-access.js";
 import { digestSecret } from "@opensteer/shared/secretDigest";
 import { PersonalTabStore } from "@opensteer/database";
@@ -2104,6 +2105,12 @@ export async function createHostRuntime(
       store,
     });
     channelService = channels;
+    const deviceAccessService = new DeviceAccessService({
+      store,
+      runners,
+      onDeploymentEvent: publishDeploymentEvent,
+      continuations,
+    });
     const machineFullDiskAccess = new MachineFullDiskAccessService({
       store,
       onDeploymentEvent: publishDeploymentEvent,
@@ -2187,6 +2194,7 @@ export async function createHostRuntime(
       placeContext,
       onBrowserUsage: (credits) => browser.announceUsage(credits),
       browserSources,
+      deviceAccess: deviceAccessService,
       machineFullDiskAccess,
       browser,
       canRunHarness: (environmentId, driverKind) =>
@@ -2466,6 +2474,7 @@ export async function createHostRuntime(
           .digest(),
         appRealOrigins: hostAppRealOrigins(config.deploymentShape),
         liveRuns,
+        deviceAccess: deviceAccessService,
         machineFullDiskAccess,
         requestResponseVault: integrationVault,
         runToolTokens,

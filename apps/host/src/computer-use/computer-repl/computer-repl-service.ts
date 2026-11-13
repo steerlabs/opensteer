@@ -257,7 +257,12 @@ export class ComputerReplService {
         ...(error instanceof DeviceAccessRefusal
           ? { machineId: error.machineId, capability: error.capability }
           : {}),
-        message: error instanceof Error ? error.message : "Computer operation failed.",
+        message:
+          error instanceof DeviceAccessRefusal
+            ? `${error.message} ${error.next ?? ""}`
+            : error instanceof Error
+              ? error.message
+              : "Computer operation failed.",
         performed:
           "performed" in record && Array.isArray(record.performed)
             ? record.performed.filter((value): value is string => typeof value === "string")

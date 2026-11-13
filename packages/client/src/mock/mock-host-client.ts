@@ -8829,6 +8829,24 @@ class MockHostState {
           : entry,
       ),
     });
+    const enabled = deviceAccess(
+      this.snapshot.machines.find((entry) => entry.id === machineId)!.access!.policy,
+    );
+    for (const request of Object.values(this.snapshot.requests).flat()) {
+      if (
+        request.status === "pending" &&
+        request.payload.kind === "device.access" &&
+        request.payload.machineId === machineId &&
+        enabled[request.payload.access]
+      )
+        await this.resolveRequest(
+          {
+            requestId: request.id,
+            response: { kind: "external", value: { decision: "fulfilled" } },
+          },
+          true,
+        );
+    }
     return revision;
   }
 
@@ -10849,7 +10867,7 @@ class MockHostState {
     });
   }
 
-  async resolveRequest(input: ResolveRequestInput): Promise<void> {
+  async resolveRequest(input: ResolveRequestInput, deviceAccessUpdated = false): Promise<void> {
     const request = Object.values(this.snapshot.requests)
       .flat()
       .find((candidate) => candidate.id === input.requestId);
@@ -10864,6 +10882,23 @@ class MockHostState {
     }
     if (request.kind === "browser.password-sign-in") {
       throw mockConflict("Approve this sign-in on that Mac, or choose Don’t allow.");
+    }
+    if (request.payload.kind === "device.access") {
+      this.ownedComputer(request.payload.machineId);
+      const value = input.response.kind === "external" ? input.response.value : undefined;
+      if (request.requestedBy !== this.snapshot.user?.id)
+        throw mockConflict("Only the device's owner can answer.");
+      if (value?.decision !== "declined") {
+        const payload = request.payload;
+        const machine = this.snapshot.machines.find((entry) => entry.id === payload.machineId);
+        if (
+          !deviceAccessUpdated ||
+          value?.decision !== "fulfilled" ||
+          !machine?.access ||
+          !deviceAccess(machine.access.policy)[request.payload.access]
+        )
+          throw mockConflict("Turn device access on through its access settings.");
+      }
     }
     if (request.kind === "computer.app.access") {
       // Only that Mac can approve; anywhere else the one answer is no.

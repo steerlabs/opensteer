@@ -925,7 +925,11 @@ export interface CallerRun {
   readonly toolsToken: string;
   /** The attempt the caller is executing now. */
   readonly attempt: CallerAttempt;
-  readonly integrationTools: { readonly token: string; readonly url: string };
+  readonly integrationTools: {
+    readonly token: string;
+    readonly url: string;
+    readonly instructions: string;
+  };
   readonly machineAccess: MachineAccessRunContext;
   readonly runId: RunId;
   readonly threadId: ThreadId;

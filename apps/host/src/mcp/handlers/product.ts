@@ -1,3 +1,4 @@
+import type { DeviceAccessService } from "../../administration/device-access-service.js";
 import { threadWaitMaxMs } from "@opensteer/agent-tools/tools";
 import { ThreadDetailSchema } from "@opensteer/agent-tools/outputs";
 import {
@@ -132,6 +133,7 @@ export class ProductToolHandlers {
     | undefined;
   readonly #supportsLoginFill: (scope: RunToolScope) => boolean;
   readonly #browserSources: Pick<BrowserSourceService, "agentSignIn" | "agentUseCard">;
+  readonly #deviceAccess: Pick<DeviceAccessService, "request">;
   readonly #machineFullDiskAccess: Pick<MachineFullDiskAccessService, "request">;
   readonly #browser: Pick<
     BrowserService,
@@ -172,6 +174,7 @@ export class ProductToolHandlers {
     ) => Promise<number>;
     readonly supportsLoginFill?: (scope: RunToolScope) => boolean;
     readonly browserSources: Pick<BrowserSourceService, "agentSignIn" | "agentUseCard">;
+    readonly deviceAccess: Pick<DeviceAccessService, "request">;
     readonly machineFullDiskAccess: Pick<MachineFullDiskAccessService, "request">;
     readonly browser: Pick<
       BrowserService,
@@ -210,6 +213,7 @@ export class ProductToolHandlers {
     this.#personShow = options.personShow;
     this.#supportsLoginFill = options.supportsLoginFill ?? (() => false);
     this.#browserSources = options.browserSources;
+    this.#deviceAccess = options.deviceAccess;
     this.#machineFullDiskAccess = options.machineFullDiskAccess;
     this.#browser = options.browser;
     this.#browserTabs = options.browserTabs;
@@ -1327,6 +1331,15 @@ export class ProductToolHandlers {
     });
     const guidance = passwordsOfferGuidance(result);
     return guidance === null ? result : { ...result, guidance };
+  }
+
+  async device_access_request({ caller, input, operationKey }: ToolCall<"device_access_request">) {
+    const claims = requireRun(caller).claims;
+    const callId = operationId(caller, operationKey, "device_access_request");
+    await this.#store.admitRunToolCall(
+      runAdmission(caller, "device_access_request", input, callId),
+    );
+    return this.#deviceAccess.request({ ...input, callId, claims });
   }
 
   async machine_full_disk_access_request({

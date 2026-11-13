@@ -2037,6 +2037,50 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "name": "machine_full_disk_access_request",
   },
   {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "access": {
+          "enum": [
+            "browser",
+            "apps",
+            "files",
+          ],
+          "type": "string",
+        },
+        "machineId": {
+          "description": "Stable device id from the refusal or owned-device inventory.",
+          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "description": "Why this task needs that access.",
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "machineId",
+        "access",
+        "reason",
+      ],
+      "type": "object",
+    },
+    "name": "device_access_request",
+  },
+  {
     "access": "read",
     "callers": [
       "run",

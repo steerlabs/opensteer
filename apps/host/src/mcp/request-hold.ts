@@ -52,7 +52,7 @@ export class RequestHold {
     let stopped = false;
     let admitted = false;
     let reported = false;
-    const stopRun = async (reason: "limit" | "queued-input") => {
+    const stopRun = async (reason: "limit" | "queued-input" | "device-access") => {
       const stop = await this.options.store.stopHeldRun(claims, reason);
       if (!stop) throw executionEnded;
       stopped = true;
@@ -90,6 +90,13 @@ export class RequestHold {
               { signal: input.signal, timeoutError: () => pastDeadline },
             );
             if (outcome) {
+              if (
+                outcome.request.kind === "device.access" &&
+                outcome.request.status === "fulfilled"
+              ) {
+                await stopRun("device-access");
+                throw executionEnded;
+              }
               const record = outcomeRecord(input.tool, input.result, outcome);
               input.signal.throwIfAborted();
               const delivery = await this.options.store.requests.markToolDelivered(id.data, claims);

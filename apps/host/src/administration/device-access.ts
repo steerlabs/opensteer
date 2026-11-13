@@ -18,8 +18,8 @@ export class DeviceAccessRefusal extends OpensteerError {
       reason,
       message:
         reason === "device-offline"
-          ? "That device is offline."
-          : `Agent access to ${capability} is off on that device.`,
+          ? `device-offline: ${machineId} is offline (capability=${capability}). Do not request access while it is offline.`
+          : `device-access-off: ${capability} is off on device ${machineId}. Use device_access_request with machineId=${machineId}, access=${capability} if needed; do not re-ask after Not now in this task.`,
       details: { machineId, capability },
     });
     this.reason = reason;
