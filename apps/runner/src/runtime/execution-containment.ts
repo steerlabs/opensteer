@@ -135,12 +135,13 @@ export class ExecutionContainment {
   }
 
   /**
-   * Whether everything `executionId` runs is one process tree: exactly one of
-   * its processes has a parent outside it — what the Runner launched — so
-   * nothing it started lives on detached. A warm engine is kept for the next
-   * Run only on this proof.
+   * How many process trees `executionId` runs: its processes whose parent is
+   * outside it. One is exactly what the Runner launched, so nothing it started
+   * lives on detached; none is an execution whose engine is shared and that
+   * left nothing behind. A warm engine is kept for the next Run only on this
+   * proof.
    */
-  async isSingleTree(executionId: string): Promise<boolean | "unverifiable"> {
+  async liveRoots(executionId: string): Promise<number | "unverifiable"> {
     const list = this.#list;
     if (!list) return "unverifiable";
     const scope = this.scope(executionId);
@@ -150,7 +151,7 @@ export class ExecutionContainment {
       new Set(),
     );
     const pids = new Set(members.map(({ pid }) => pid));
-    return members.filter(({ ppid }) => !pids.has(ppid)).length === 1;
+    return members.filter(({ ppid }) => !pids.has(ppid)).length;
   }
 
   /** Reaps a stopped owner's boot without touching a replacement already running. */

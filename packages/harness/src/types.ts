@@ -330,7 +330,31 @@ export interface HarnessSessionContext {
   readonly workspacePath: string;
   readonly writableRoots: readonly string[];
   readonly signal: AbortSignal;
+  /** The whole environment a Run's own harness process starts with. */
   readonly environment: Readonly<Record<string, string>>;
+  /**
+   * The variables this Run adds for every command its model starts, already
+   * part of `environment`: the Run's browser endpoint, Agent home, a
+   * machine-access `PATH` and its execution scope among them. An engine that
+   * serves several Runs from one process sets them per conversation. The
+   * browser endpoint is a capability: none of these may be logged.
+   */
+  readonly commandEnvironment: Readonly<Record<string, string>>;
+  /**
+   * How to start an engine process that outlives this Run and serves the
+   * profile's other sessions too: nothing in it belongs to a Run. Absent when
+   * every Run's harness process must start inside that Run's own sandbox.
+   */
+  readonly sharedEngine?: HarnessSharedEngineLaunch;
+}
+
+/** The Run-independent start of an engine process several sessions share. */
+export interface HarnessSharedEngineLaunch {
+  readonly environment: Readonly<Record<string, string>>;
+  /** A directory the profile owns; each conversation names its own folder. */
+  readonly workingDirectory: string;
+  /** Marks the process for the Runner, which reaps it after a crash. */
+  readonly wrapProcessLaunch: HarnessProcessLaunchWrapper;
 }
 
 export function assertFreshProviderSessionContext(context: HarnessSessionContext): void {
@@ -429,9 +453,10 @@ export interface HarnessSession {
   steer?(input: HarnessSteerInput): Promise<void>;
   resolveRequest(requestId: RequestId, response: RequestResponse): Promise<void>;
   /**
-   * Ends the session, its provider process and any Run still in it, and frees
-   * its conversation for the adapter's next session. It never waits on a
-   * provider whose process has ended: nothing that provider owed will arrive.
+   * Ends the session and any Run still in it, and frees its conversation for
+   * the adapter's next session: its own provider process ends, and on a
+   * shared one its conversation is unloaded or the process retired. It never
+   * waits on a provider whose process has ended: nothing it owed will arrive.
    */
   stop(): Promise<void>;
   /**
@@ -445,6 +470,17 @@ export interface HarnessSession {
    * session can serve another Run. False keeps nothing: the Runner stops it.
    */
   releaseForReuse?(): Promise<boolean>;
+  /**
+   * False once the session can serve no further Run — its engine failed or was
+   * recycled while it waited. The Runner then stops it instead of rebinding.
+   */
+  readonly usable?: boolean;
+  /**
+   * `shared` when the session runs on an engine process other sessions use:
+   * then no process of its Run's execution scope is the engine, and a Run
+   * leaves none behind. Absent means the session owns its process.
+   */
+  readonly engineProcess?: "own" | "shared";
 }
 
 /**
@@ -493,13 +529,26 @@ export interface HarnessAdapter {
     providerSessionReference: string,
     context: HarnessSessionContext,
   ): Promise<HarnessSession>;
+  /**
+   * The account's sign-in or engine changed: no process started before now
+   * serves a new session. Each such process ends once its sessions have.
+   */
+  recycle?(): void;
   close(): Promise<void>;
 }
+
+/** The Runner's diagnostic log. Fields never carry secrets, prompts or output. */
+export type HarnessLog = (
+  level: "info" | "warn",
+  message: string,
+  fields?: Readonly<Record<string, string | number | boolean | null>>,
+) => void;
 
 export interface HarnessDriverCreateContext {
   readonly instanceId: HarnessInstanceId;
   readonly config: unknown;
   readonly sourceId: string;
+  readonly log?: HarnessLog;
 }
 
 /**

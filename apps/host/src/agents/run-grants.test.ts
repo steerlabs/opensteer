@@ -4,35 +4,37 @@ import { heldRunCapture } from "./run-grants.test-support.js";
 describe("heldRunCapture", () => {
   const marker = "held-run-this";
   const url = (port: number) => `http://127.0.0.1:${port}/prefix-${port}/agent-tools`;
-  const engineProcess = (pid: number, port: number) =>
+  // One shared engine process carries every conversation below.
+  const engine = { captureProcessId: 7, captureRunId: "sticky-last-thread" };
+  const loaded = (threadId: string, port: number) =>
     JSON.stringify({
-      captureProcessId: pid,
-      fakeCodexProcess: { argv: [`-c url="${url(port)}"`] },
+      ...engine,
+      fakeThreadConfig: { threadId, config: { "mcp_servers.opensteer.url": url(port) } },
     });
-  const token = (pid: number, value?: string) =>
+  const token = (threadId: string, value?: string) =>
     JSON.stringify({
-      captureProcessId: pid,
-      fakeOpensteerTokens: value ? { agentTools: value } : {},
+      ...engine,
+      fakeOpensteerTokens: value ? { agentTools: value, threadId } : {},
     });
-  const turn = (pid: number, text: string) =>
-    JSON.stringify({ captureProcessId: pid, method: "turn/start", params: { input: [{ text }] } });
+  const turn = (threadId: string, text: string) =>
+    JSON.stringify({ ...engine, method: "turn/start", params: { threadId, input: [{ text }] } });
   const capture = (...rows: readonly string[]) => rows.join("\n") + "\n";
 
-  it("keeps the marked engine's token after a later title process and an unrelated Run", () => {
+  it("keeps the marked conversation's token beside a naming and an unrelated conversation", () => {
     expect(
       heldRunCapture(
         capture(
-          token(1),
-          token(2),
-          engineProcess(3, 4001),
-          token(3, "engine-token"),
-          turn(3, `Keep working ${marker}`),
-          engineProcess(4, 4001),
-          token(4),
-          turn(4, `Name this: Keep working ${marker}`),
-          engineProcess(5, 4002),
-          token(5, "unrelated"),
-          turn(5, "Keep working held-run-other"),
+          loaded("run", 4001),
+          token("run", "engine-token"),
+          // A thread/start request names no thread; its URL counts for none.
+          JSON.stringify({ ...engine, method: "thread/start", params: { config: url(4009) } }),
+          turn("run", `Keep working ${marker}`),
+          loaded("naming", 4001),
+          token("naming"),
+          turn("naming", `Name this: Keep working ${marker}`),
+          loaded("other", 4002),
+          token("other", "unrelated"),
+          turn("other", "Keep working held-run-other"),
         ),
         marker,
       ),
@@ -41,46 +43,55 @@ describe("heldRunCapture", () => {
 
   it.each([
     {
-      name: "an earlier Run's engine",
-      rows: [engineProcess(3, 4001), token(3, "earlier"), turn(3, "Keep working held-run-earlier")],
+      name: "an earlier Run's conversation",
+      rows: [
+        loaded("run", 4001),
+        token("run", "earlier"),
+        turn("run", "Keep working held-run-earlier"),
+      ],
     },
     {
       name: "an unrelated Run whose rows arrive later",
       rows: [
-        engineProcess(3, 4001),
-        token(3, "this"),
-        engineProcess(5, 4002),
-        token(5, "unrelated"),
-        turn(5, "Keep working held-run-other"),
+        loaded("run", 4001),
+        token("run", "this"),
+        loaded("other", 4002),
+        token("other", "unrelated"),
+        turn("other", "Keep working held-run-other"),
       ],
     },
     {
-      name: "a token and URL on different processes",
-      rows: [engineProcess(3, 4001), turn(3, marker), token(4, "split"), turn(4, marker)],
+      name: "a token and URL on different conversations",
+      rows: [loaded("a", 4001), turn("a", marker), token("b", "split"), turn("b", marker)],
     },
     {
-      name: "two engines claiming the marked Run",
+      name: "two conversations claiming the marked Run",
       rows: [
-        engineProcess(3, 4001),
-        token(3, "first"),
-        turn(3, marker),
-        engineProcess(4, 4002),
-        token(4, "second"),
-        turn(4, marker),
+        loaded("a", 4001),
+        token("a", "first"),
+        turn("a", marker),
+        loaded("b", 4002),
+        token("b", "second"),
+        turn("b", marker),
       ],
     },
-    { name: "no engine at all", rows: [token(1), token(2)] },
+    { name: "no conversation at all", rows: [token("a"), token("b")] },
     {
-      name: "a marked engine without a token",
-      rows: [engineProcess(3, 4001), token(3), turn(3, marker)],
+      name: "a marked conversation without a token",
+      rows: [loaded("run", 4001), token("run"), turn("run", marker)],
     },
     {
-      name: "a marked engine without a URL",
-      rows: [JSON.stringify({ captureProcessId: 3 }), token(3, "no-url"), turn(3, marker)],
+      name: "a marked conversation without a URL",
+      rows: [token("run", "no-url"), turn("run", marker)],
     },
     {
-      name: "a marked engine with two URLs",
-      rows: [engineProcess(3, 4001), engineProcess(3, 4002), token(3, "two-urls"), turn(3, marker)],
+      name: "a marked conversation with two URLs",
+      rows: [
+        loaded("run", 4001),
+        loaded("run", 4002),
+        token("run", "two-urls"),
+        turn("run", marker),
+      ],
     },
   ])("refuses $name", ({ rows }) => {
     expect(heldRunCapture(capture(...rows), marker)).toBeUndefined();

@@ -1784,6 +1784,7 @@ async function setup(options: SetupOptions = {}): Promise<Fixture> {
       token: "os_secret_agent_tools_token",
       url: "https://host.example/internal/v1/mcp",
     },
+    commandEnvironment: {},
     environment,
     environmentId: createId("environment"),
     harnessInstanceId,

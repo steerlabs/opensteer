@@ -2011,6 +2011,7 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
       token: "test-agent-tools-token",
       url: "https://host.example/internal/v1/mcp",
     },
+    commandEnvironment: {},
     environment,
     environmentId: createId("environment"),
     harnessInstanceId,

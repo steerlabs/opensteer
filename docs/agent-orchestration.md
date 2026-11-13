@@ -73,7 +73,8 @@ Native subagents and background work belong to that attempt and cannot outlive i
 native child uses child control, never the parent's interrupt. Acceptance is not proof it stopped.
 
 Warm engines are reusable only after all turns, Requests, grants and terminals end and containment
-proves every process belongs to one tree. Idle engines have no authority; reuse must match the
+proves every process of the Run's scope belongs to one tree, the engine's, or for a session on a
+shared engine process that none is left. Idle engines have no authority; reuse must match the
 session, authority, launch configuration, sandbox and tool plan. Windows does not qualify this
 containment. [The pool](../apps/runner/src/runtime/warm-engine-pool.ts) owns reuse.
 

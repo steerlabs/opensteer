@@ -95,6 +95,20 @@ indexes the store it finds at first start, which can block adding an account. A 
 unindexed session by file search, so linking the store after initialization loses nothing. A Codex release that opens a new state database re-indexes linked
 homes; that is what the `preparing` state is for.
 
+One Codex app-server serves every Run of an account, as T3 Code's does
+([app-server.ts](../packages/harness-codex/src/app-server.ts)); voice calls and Runs a Runner
+sandbox wraps keep one of their own. Nothing of a Run lives on that process. Its conversation
+carries the Run's command variables in `shell_environment_policy.set`, which Codex applies after
+its exclusions, so it must never hold a credential, and the Opensteer MCP token as a literal
+`Authorization` header, because `bearer_token_env_var` is read from the shared process. Codex's
+skill discovery is process-wide, so every conversation disables what it finds and the model reads
+Opensteer's catalog. Opensteer opts out of `turn/diff/updated`, which repeats the whole turn's diff
+on one line. Stopping a session unloads its conversations and waits for `thread/closed`: only then
+are its terminals and code-mode session gone, and only then does the next load take new
+configuration. If Codex never says so, the process ends with every session on it. A subagent's
+frames can arrive before anything names it; the router asks Codex for its parent with `thread/read`
+and holds later frames until it answers. Sign-in recycles the process, which caches credentials.
+
 Antigravity is neither shipped nor taken from `PATH`: its driver downloads Google's pinned archive,
 verifies it and publishes an immutable SHA-256-addressed release
 ([pin and reason](../packages/harness-antigravity/src/release.ts)). Codex enables only approved

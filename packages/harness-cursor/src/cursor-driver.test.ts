@@ -1269,6 +1269,7 @@ async function setup(options: SetupOptions): Promise<Fixture> {
       token: "test-agent-tools-token",
       url: "https://host.example/internal/v1/mcp",
     },
+    commandEnvironment: {},
     environment,
     environmentId: createId("environment"),
     harnessInstanceId,
