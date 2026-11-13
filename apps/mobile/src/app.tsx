@@ -72,6 +72,7 @@ import { Navigation, navigationTheme } from "./navigation.js";
 import { navigationRef } from "./navigation-ref.js";
 import {
   agentAuthorizationRoot,
+  needsYouRoot,
   linkedSelectionFailureIsCurrent,
   selectionMayReconcileLinkedRoot,
   selectionRootTransition,
@@ -649,14 +650,16 @@ export function App(): ReactNode {
       const destination =
         outcome.kind === "authorize-agent"
           ? agentAuthorizationRoot(outcome.deploymentId, outcome.requestId)
-          : threadRoot({
-              deploymentId: outcome.deploymentId,
-              threadId: outcome.threadId,
-              // A link that names the exact update opens at it, rather than at
-              // whatever happens to be newest by the time the app gets there.
-              ...(outcome.messageId === undefined ? {} : { messageId: outcome.messageId }),
-              ...(outcome.requestId === null ? {} : { requestId: outcome.requestId }),
-            });
+          : outcome.kind === "needs-you"
+            ? needsYouRoot(outcome.deploymentId)
+            : threadRoot({
+                deploymentId: outcome.deploymentId,
+                threadId: outcome.threadId,
+                // A link that names the exact update opens at it, rather than at
+                // whatever happens to be newest by the time the app gets there.
+                ...(outcome.messageId === undefined ? {} : { messageId: outcome.messageId }),
+                ...(outcome.requestId === null ? {} : { requestId: outcome.requestId }),
+              });
       linkedDeployment.current = outcome.deploymentId;
       const selectionAttempt = linkedSelectionAttempt.current + 1;
       linkedSelectionAttempt.current = selectionAttempt;

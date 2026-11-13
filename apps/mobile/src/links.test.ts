@@ -8,6 +8,7 @@ import {
 import {
   buildMobilePairingDeepLink,
   buildMobileThreadDeepLink,
+  buildMobileNeedsYouDeepLink,
   DeploymentIdSchema,
   mobileDeepLinkScheme,
   opensteerDesktopClient,
@@ -39,6 +40,17 @@ function link(overrides: { readonly requestId?: typeof requestId } = {}): string
 }
 
 describe("resolveApplicationLink", () => {
+  it("routes consent links to Needs you only on a known deployment", () => {
+    const link = buildMobileNeedsYouDeepLink(deploymentId);
+    expect(resolveApplicationLink(link, [deploymentId])).toEqual({
+      kind: "needs-you",
+      deploymentId,
+    });
+    expect(resolveApplicationLink(link, [otherDeploymentId]).kind).toBe("unknown-deployment");
+    expect(resolveApplicationLink(`${link}?approve=true`, [deploymentId])).toEqual({
+      kind: "ignore",
+    });
+  });
   it("opens a thread on a deployment this phone has", () => {
     expect(resolveApplicationLink(link(), [deploymentId])).toEqual({
       deploymentId,

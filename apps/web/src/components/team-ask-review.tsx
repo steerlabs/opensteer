@@ -1,3 +1,4 @@
+import { teamAskAudienceLabel } from "@opensteer/client/team";
 import { useState } from "react";
 import type { NeedsYouTeamAskEntry } from "@opensteer/protocol";
 import type { HostClient } from "@opensteer/client/host";
@@ -57,6 +58,9 @@ export function TeamAskReview({
           audience: ask.audience,
         }}
       />
+      <p>
+        <small>{teamAskAudienceLabel(ask.audience)}</small>
+      </p>
       <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{ask.bodyMarkdown}</p>
       {ask.attachments.map((file) => (
         <p key={file.id}>

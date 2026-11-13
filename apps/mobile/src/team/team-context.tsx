@@ -82,6 +82,7 @@ export function useTeam(teamId: string): MobileTeam | null {
 }
 
 const emptySnapshot: TeamSessionSnapshot = {
+  sendNotices: {},
   agentRecipients: [],
   bootstrap: null,
   sidebar: null,

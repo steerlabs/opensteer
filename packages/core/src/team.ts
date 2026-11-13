@@ -70,6 +70,12 @@ export function teamAgentHandle(handle: TeamHandle): string {
 }
 export const TeamAgentRequestKindSchema = z.enum(["self", "ask", "return"]);
 export type TeamAgentRequestKind = z.infer<typeof TeamAgentRequestKindSchema>;
+export const TeamAskOutcomeSchema = z.strictObject({
+  ownerUserId: UserIdSchema,
+  outcome: z.enum(["queued", "people-only", "no-access", "no-link", "rate-limited"]),
+});
+export type TeamAskOutcome = z.infer<typeof TeamAskOutcomeSchema>;
+
 export const TeamAskDecisionSchema = z.enum(["approve", "decline"]);
 export type TeamAskDecision = z.infer<typeof TeamAskDecisionSchema>;
 export const TeamAskerSchema = z.strictObject({

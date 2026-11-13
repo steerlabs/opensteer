@@ -1,3 +1,4 @@
+import type { TeamAskOutcome, TeamAudience } from "@opensteer/core";
 import type { TeamAgentRequest } from "@opensteer/protocol";
 
 export function teamAskStatuses(
@@ -39,4 +40,32 @@ export function teamAskStatuses(
         label: status === `Waiting for ${name}` ? status : `${name} · ${status}`,
       };
     });
+}
+
+export function teamAskRefusalNotice(
+  outcomes: readonly TeamAskOutcome[],
+  ownerName: (userId: string) => string,
+): string | null {
+  const reasons = {
+    "people-only": "this channel is people only",
+    "no-access": "their agent cannot post here",
+    "no-link": "their agent is not connected to this team",
+    "rate-limited": "the request limit was reached",
+  };
+  const refused = outcomes.flatMap(({ ownerUserId, outcome }) =>
+    outcome === "queued"
+      ? []
+      : [`Couldn’t ask ${ownerName(ownerUserId)}’s agent: ${reasons[outcome]}.`],
+  );
+  return refused.length ? refused.join(" ") : null;
+}
+
+export function teamAskAudienceLabel(audience: TeamAudience): string {
+  const kind = {
+    public: "Public channel",
+    private: "Private channel",
+    dm: "Direct message",
+    group_dm: "Group message",
+  }[audience.channelKind];
+  return `${audience.teamName} · ${kind} · ${audience.memberCount} ${audience.memberCount === 1 ? "person" : "people"}`;
 }

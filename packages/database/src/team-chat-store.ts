@@ -27,6 +27,7 @@ import {
   type TeamSearchInputSchema,
   type TeamSubscriptionScopeSchema,
 } from "@opensteer/protocol";
+import { TeamAskOutcomeSchema, type TeamAskOutcome } from "@opensteer/core";
 import { teamMentions } from "@opensteer/shared/teamMentions";
 import { createTeamAskReturn, teamAttachmentRefs } from "./team-request-returns.js";
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
@@ -810,6 +811,22 @@ export class TeamChatStore {
       });
     }
   }
+  async askOutcomes(
+    transaction: Transaction<DatabaseSchema>,
+    messageId: TeamMessageId,
+  ): Promise<TeamAskOutcome[]> {
+    const rows = await transaction
+      .selectFrom("teamAudit")
+      .select("metadata")
+      .where("action", "=", "request.create")
+      .where("resourceId", "=", messageId)
+      .orderBy("id")
+      .execute();
+    return rows.flatMap((row) => {
+      const parsed = TeamAskOutcomeSchema.safeParse(row.metadata);
+      return parsed.success ? [parsed.data] : [];
+    });
+  }
   async send(
     actor: TeamActor,
     input: {
@@ -846,14 +863,16 @@ export class TeamChatStore {
           return {
             message: (await teamMessageViews(transaction, [existing]))[0]!,
             wake: "not-requested" as const,
-            askOutcomes: [] as { ownerUserId: UserId; outcome: string }[],
+            askOutcomes: await this.askOutcomes(transaction, existing.id),
+            created: false,
           };
-        return this.insert(transaction, actor, input);
+        return { ...(await this.insert(transaction, actor, input)), created: true };
       },
     );
     this.changed(input.channelId);
-    if (result.askOutcomes.length) await this.notifyRequests(result.message.id);
-    return result;
+    const { created, ...sent } = result;
+    if (created && sent.askOutcomes.length) await this.notifyRequests(sent.message.id);
+    return sent;
   }
   async insert(
     transaction: Transaction<DatabaseSchema>,
@@ -980,7 +999,7 @@ export class TeamChatStore {
     if (actor.kind === "human" && (ownMention || sticky?.enabled)) targets.add(actor.userId);
     if (input.publication) targets.clear();
     const admissions: { ownerUserId: UserId; linkId: TeamLinkId; kind: "self" | "ask" }[] = [];
-    const outcomes: { ownerUserId: UserId; outcome: string }[] = [];
+    const outcomes: TeamAskOutcome[] = [];
     let minute = targets.size
       ? Number(
           (
@@ -1010,7 +1029,7 @@ export class TeamChatStore {
         .where("ownerUserId", "=", ownerUserId)
         .where("state", "in", ["awaiting_approval", "queued"])
         .executeTakeFirstOrThrow();
-      const outcome = authority.peopleOnly
+      const outcome: TeamAskOutcome["outcome"] = authority.peopleOnly
         ? "people-only"
         : !authority.read || !authority.post
           ? "no-access"

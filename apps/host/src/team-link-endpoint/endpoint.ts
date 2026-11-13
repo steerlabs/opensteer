@@ -377,15 +377,18 @@ export class TeamLinkEndpoint {
           await requests.status(linkId, frame.requestId, frame);
           result = { kind: "ok" };
           break;
-        case "post":
+        case "post": {
+          const posted = await requests.post(linkId, {
+            ...frame,
+            publication: frame.publication ?? false,
+          });
           result = {
             kind: "receipt",
-            messageId: await requests.post(linkId, {
-              ...frame,
-              publication: frame.publication ?? false,
-            }),
+            messageId: posted.messageId,
+            ...(posted.askOutcomes.length ? { askOutcomes: [...posted.askOutcomes] } : {}),
           };
           break;
+        }
         case "read":
           result = {
             kind: "read",

@@ -57,13 +57,15 @@ describe("consent-gated team asks", () => {
     channelId: Parameters<TeamRequestsStore["post"]>[1]["channelId"],
     linkId: Parameters<TeamRequestsStore["post"]>[0],
   ) {
-    return requests.post(linkId, {
-      channelId,
-      runId: createId("run"),
-      clientMessageId: randomUUID(),
-      bodyMarkdown: "@alex-agent help from my agent",
-      attachmentIds: [],
-    });
+    return requests
+      .post(linkId, {
+        channelId,
+        runId: createId("run"),
+        clientMessageId: randomUUID(),
+        bodyMarkdown: "@alex-agent help from my agent",
+        attachmentIds: [],
+      })
+      .then((result) => result.messageId);
   }
   it("resolves human text on the Host and never executes before explicit approval", async () => {
     const { channelId, targetLink } = await setup();
@@ -147,6 +149,7 @@ describe("consent-gated team asks", () => {
     expect(returned.returnPayload).toMatchObject({
       originAskId: ask.request.id,
       resumeRunId: trigger.callerRunId,
+      author: { teamUserId: ask.request.ownerUserId, displayName: "Alex", actor: "agent" },
       outcome: "answered",
       bodyMarkdown: "@maya-agent @alex-agent answer",
     });
@@ -280,6 +283,7 @@ describe("consent-gated team asks", () => {
       expect(returns).toHaveLength(1);
       expect(returns[0]?.returnPayload).toMatchObject({
         originAskId: ask.id,
+        author: { teamUserId: ask.ownerUserId, displayName: "Alex", actor: "agent" },
         outcome,
         bodyMarkdown: null,
         attachments: [],
@@ -292,6 +296,18 @@ describe("consent-gated team asks", () => {
     await chat.update(asker, channelId, { peopleOnly: true });
     const refused = await humanSend(channelId);
     expect(refused.askOutcomes).toEqual([{ ownerUserId: target.userId, outcome: "people-only" }]);
+    expect(
+      (
+        await chat.send(asker, {
+          channelId,
+          threadRootId: null,
+          clientMessageId: refused.message.clientMessageId,
+          bodyMarkdown: refused.message.bodyMarkdown,
+          mentions: [],
+          attachmentIds: [],
+        })
+      ).askOutcomes,
+    ).toEqual(refused.askOutcomes);
     expect(await requests.pending(targetLink)).toHaveLength(0);
     await chat.update(asker, channelId, { peopleOnly: false });
     for (let i = 0; i < 10; i++) {
@@ -323,6 +339,16 @@ describe("consent-gated team asks", () => {
     expect((await humanSend(channelId)).askOutcomes).toEqual([
       { ownerUserId: target.userId, outcome: "no-link" },
     ]);
+    const agentInput = {
+      channelId,
+      runId: createId("run"),
+      clientMessageId: randomUUID(),
+      bodyMarkdown: "@alex-agent help",
+      attachmentIds: [],
+    };
+    const agentRefusal = await requests.post(askerLink, agentInput);
+    expect(agentRefusal.askOutcomes).toEqual([{ ownerUserId: target.userId, outcome: "no-link" }]);
+    expect(await requests.post(askerLink, agentInput)).toEqual(agentRefusal);
   });
   it("keeps per-target receipts on reply triggers and leaves answered asks intact on edit", async () => {
     const { channelId, target, targetLink } = await setup();

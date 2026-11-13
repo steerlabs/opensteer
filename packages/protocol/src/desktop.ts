@@ -478,7 +478,7 @@ export const DesktopNotificationTargetSchema = z.strictObject({
   messageId: MessageIdSchema.nullable(),
   notificationId: NotificationIdSchema,
   requestId: RequestIdSchema.nullable(),
-  threadId: ThreadIdSchema,
+  threadId: ThreadIdSchema.nullable(),
   title: NotificationViewSchema.shape.title,
 });
 export type DesktopNotificationTarget = z.infer<typeof DesktopNotificationTargetSchema>;

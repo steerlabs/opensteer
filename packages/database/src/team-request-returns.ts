@@ -57,7 +57,17 @@ export async function createTeamAskReturn(
         .where("id", "=", replyMessageId)
         .executeTakeFirstOrThrow()
     : null;
+  const owner = await transaction
+    .selectFrom("users")
+    .select("displayName")
+    .where("id", "=", ask.ownerUserId)
+    .executeTakeFirstOrThrow();
   const payload = {
+    author: {
+      teamUserId: ask.ownerUserId,
+      displayName: owner.displayName,
+      actor: "agent" as const,
+    },
     originAskId: ask.id,
     resumeRunId: trigger.callerRunId,
     outcome,

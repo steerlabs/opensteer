@@ -3,6 +3,7 @@ import Animated from "react-native-reanimated";
 import { move } from "../ui/motion.js";
 import { SavedTasks } from "./saved-tasks.js";
 import {
+  needsYouEntryKey,
   doneTaskList,
   listedRowThreadId,
   quietlyMoved,
@@ -344,18 +345,18 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
       )
       .finally(() => setLoadingEarlier(false));
   }, [hostClient, loadingEarlier]);
-  const [reviewAskId, setReviewAskId] = useState<string | null>(null);
+  const [reviewAskKey, setReviewAskKey] = useState<string | null>(null);
   const needsPage = useSyncExternalStore(
     useCallback((notify) => hostClient?.subscribe(notify) ?? (() => {}), [hostClient]),
     useCallback(() => hostClient?.getSnapshot().needsYou ?? null, [hostClient]),
   );
   const teamAsks = needsPage?.entries.filter((entry) => entry.kind === "team-ask") ?? [];
-  const reviewAsk = teamAsks.find((entry) => entry.requestId === reviewAskId);
+  const reviewAsk = teamAsks.find((entry) => needsYouEntryKey(entry) === reviewAskKey);
   const openNeedsYou = useCallback(() => {
     if (hostClient === null || deploymentId === null) return;
     const entry = hostClient.getSnapshot().needsYou?.entries[0];
     if (entry?.kind === "team-ask") {
-      setReviewAskId(entry.requestId);
+      setReviewAskKey(needsYouEntryKey(entry));
       return;
     }
     if (model === null) return;
@@ -397,10 +398,10 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
     >
       {reviewAsk && hostClient ? (
         <TeamAskReview
-          key={reviewAsk.requestId}
+          key={needsYouEntryKey(reviewAsk)}
           entry={reviewAsk}
           client={hostClient}
-          onClose={() => setReviewAskId(null)}
+          onClose={() => setReviewAskKey(null)}
         />
       ) : null}
       <View style={styles.head}>
@@ -452,7 +453,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
               <Pressable
                 key={entry.requestId}
                 accessibilityRole="button"
-                onPress={() => setReviewAskId(entry.requestId)}
+                onPress={() => setReviewAskKey(needsYouEntryKey(entry))}
                 style={{ padding: space[16] }}
               >
                 <AppText>

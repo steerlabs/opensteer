@@ -1,5 +1,6 @@
 import type {
   RunId,
+  TeamAskOutcome,
   TeamAgentRequestId,
   TeamAskDecision,
   TeamBlobId,
@@ -60,7 +61,10 @@ export interface TeamRequestStorePort {
       readonly requestId?: TeamAgentRequestId | undefined;
       readonly publication?: boolean | undefined;
     },
-  ): Promise<TeamMessageId>;
+  ): Promise<{
+    readonly messageId: TeamMessageId;
+    readonly askOutcomes: readonly TeamAskOutcome[];
+  }>;
   reply(
     linkId: TeamLinkId,
     requestId: TeamAgentRequestId,

@@ -255,11 +255,16 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
       human = session,
       owner = maya,
     ) => {
+      const member = await team.database
+        .selectFrom("teamMembers")
+        .select("handle")
+        .where("userId", "=", owner)
+        .executeTakeFirstOrThrow();
       const result = await human.rpc["commands.dispatch"]({
         type: "team.message.send",
         channelId,
         threadRootId,
-        bodyMarkdown: text,
+        bodyMarkdown: `@${member.handle}-agent ${text}`,
         clientMessageId: crypto.randomUUID(),
         mentions: [{ kind: "agent", userId: owner }],
         attachmentIds: [],
@@ -311,6 +316,8 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
       AbortSignal.timeout(15000),
       "Offline request never became a local input",
     );
+    const { localInputId, localTaskId } = local;
+    if (!localInputId || !localTaskId) throw new Error("Self request was not admitted to a task");
     const tasks = await personal.host.store.database
       .selectFrom("threads")
       .selectAll()
@@ -323,7 +330,7 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
           const rows = await personal.host.store.database
             .selectFrom("requests")
             .selectAll()
-            .where("originatingThreadId", "=", local.localTaskId)
+            .where("originatingThreadId", "=", localTaskId)
             .where("status", "=", "pending")
             .execute();
           return rows.find(
@@ -378,7 +385,7 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
       ),
     });
     console.info("Z4: waiting completed");
-    const completed = await personal.waitForInput(local.localInputId, AbortSignal.timeout(15000));
+    const completed = await personal.waitForInput(localInputId, AbortSignal.timeout(15000));
     expect(completed.events.some((event) => event.type === "run.completed")).toBe(true);
     await teamCondition(
       session.client,
@@ -419,11 +426,20 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
         dev,
       ).label,
     ).toBe("Maya's agent");
-    const count = await team.database.selectFrom("teamAgentRequests").select("id").execute();
-    await ask("@maya-agent from Dev", queued.id, devSession, maya);
-    expect(await team.database.selectFrom("teamAgentRequests").select("id").execute()).toHaveLength(
-      count.length,
-    );
+    const foreignAsk = await ask("@maya-agent from Dev", queued.id, devSession, maya);
+    const pendingConsent = await team.database
+      .selectFrom("teamAgentRequests")
+      .selectAll()
+      .where("triggerMessageId", "=", foreignAsk.id)
+      .execute();
+    expect(pendingConsent).toHaveLength(1);
+    expect(pendingConsent[0]).toMatchObject({
+      kind: "ask",
+      ownerUserId: maya,
+      state: "awaiting_approval",
+      acceptedAt: null,
+      replyMessageId: null,
+    });
 
     console.info("Z4: reading local task");
     personalClient = new HttpHostClient({
@@ -447,7 +463,7 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
     await teamCondition(
       personalClient,
       () =>
-        personalClient!.getSnapshot().threads.find((thread) => thread.id === local.localTaskId)
+        personalClient!.getSnapshot().threads.find((thread) => thread.id === localTaskId)
           ?.latestRunCompletedAt,
       "Personal completion never arrived before the visible reply visit",
     );
@@ -473,10 +489,8 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
     });
     const completedAt = personalClient
       .getSnapshot()
-      .threads.find((thread) => thread.id === local.localTaskId)!.latestRunCompletedAt!;
-    expect((personalClient.getSnapshot().threadVisits[local.localTaskId] ?? "") < completedAt).toBe(
-      true,
-    );
+      .threads.find((thread) => thread.id === localTaskId)!.latestRunCompletedAt!;
+    expect((personalClient.getSnapshot().threadVisits[localTaskId] ?? "") < completedAt).toBe(true);
     releasePublication.resolve();
     await teamCondition(
       session.client,
@@ -492,13 +506,13 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
     await teamCondition(
       personalClient,
       () => {
-        return (personalClient!.getSnapshot().threadVisits[local.localTaskId] ?? "") >= completedAt
+        return (personalClient!.getSnapshot().threadVisits[localTaskId] ?? "") >= completedAt
           ? true
           : undefined;
       },
       "Durable publication did not retry the visible reply read",
     );
-    expect(personalClient.getSnapshot().threadVisits[local.localTaskId]).toBe(completedAt);
+    expect(personalClient.getSnapshot().threadVisits[localTaskId]).toBe(completedAt);
 
     console.info("Z4: knowledge continuation");
     engineArguments.splice(

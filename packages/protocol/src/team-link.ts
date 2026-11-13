@@ -11,6 +11,7 @@ import {
   TeamAgentRequestStateSchema,
   TeamAskPresentationSchema,
   TeamAskDecisionSchema,
+  TeamAskOutcomeSchema,
   TeamAgentReturnPayloadSchema,
   TeamReturnAdmissionSchema,
   TeamBlobIdSchema,
@@ -247,7 +248,11 @@ export type TeamLinkClientFrame = z.infer<typeof TeamLinkClientFrameSchema>;
 export const TeamLinkResultSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("accepted"), request: TeamAgentRequestSchema }),
   z.strictObject({ kind: z.literal("context"), context: TeamRequestContextSchema }),
-  z.strictObject({ kind: z.literal("receipt"), messageId: TeamMessageIdSchema.nullable() }),
+  z.strictObject({
+    kind: z.literal("receipt"),
+    messageId: TeamMessageIdSchema.nullable(),
+    askOutcomes: z.array(TeamAskOutcomeSchema).max(21).optional(),
+  }),
   z.strictObject({ kind: z.literal("read"), result: TeamReadResultSchema }),
   z.strictObject({ kind: z.literal("search"), result: TeamSearchPageSchema }),
   z.strictObject({ kind: z.literal("knowledge.topics"), result: TeamKnowledgeTopicsResultSchema }),

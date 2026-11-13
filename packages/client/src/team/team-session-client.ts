@@ -4,6 +4,7 @@ import {
   type TeamChannelId,
   type TeamMessageId,
   type UserId,
+  type TeamAskOutcome,
 } from "@opensteer/core";
 import { teamApiVersion } from "@opensteer/deployment-authority";
 import {
@@ -60,6 +61,7 @@ export interface TeamSessionSnapshot {
   readonly typing: Readonly<Record<string, readonly string[]>>;
   readonly presence: Readonly<Record<string, boolean>>;
   readonly search: SearchPage | null;
+  readonly sendNotices: Readonly<Record<string, readonly TeamAskOutcome[]>>;
   readonly error: string | null;
   readonly ended: "removed" | "sign-in" | "viewer-changed" | null;
   readonly contentGeneration: number;
@@ -105,6 +107,7 @@ export class TeamSessionClient {
     typing: {},
     presence: {},
     search: null,
+    sendNotices: {},
     error: null,
     ended: null,
     contentGeneration: 0,
@@ -797,7 +800,18 @@ export class TeamSessionClient {
       createdAt: new Date().toISOString(),
       failure: null,
     };
-    this.#update({ pending: [...this.#snapshot.pending, pending] });
+    const noticeKey = teamScopeKey(
+      pending.command.threadRootId
+        ? {
+            kind: "thread",
+            channelId: pending.command.channelId,
+            rootId: pending.command.threadRootId,
+          }
+        : { kind: "channel", channelId: pending.command.channelId },
+    );
+    const sendNotices = { ...this.#snapshot.sendNotices };
+    delete sendNotices[noticeKey];
+    this.#update({ sendNotices, pending: [...this.#snapshot.pending, pending] });
     try {
       await this.#save();
     } catch (error) {
@@ -851,6 +865,18 @@ export class TeamSessionClient {
     try {
       const result = await this.rpc["commands.dispatch"](pending.command).then(unwrapRpcResult);
       if (lifetime !== this.#lifetime || result.type !== "team.message.send") return;
+      const key = teamScopeKey(
+        pending.command.threadRootId
+          ? {
+              kind: "thread",
+              channelId: pending.command.channelId,
+              rootId: pending.command.threadRootId,
+            }
+          : { kind: "channel", channelId: pending.command.channelId },
+      );
+      const refusals = result.askOutcomes.filter((outcome) => outcome.outcome !== "queued");
+      if (refusals.length)
+        this.#update({ sendNotices: { ...this.#snapshot.sendNotices, [key]: refusals } });
       await this.#confirm([result.message]);
     } catch (error) {
       if (lifetime !== this.#lifetime) return;
@@ -1080,6 +1106,7 @@ export class TeamSessionClient {
       channel: null,
       thread: null,
       pending: [],
+      sendNotices: {},
       drafts: {},
       search: null,
       ended,

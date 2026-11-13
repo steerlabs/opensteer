@@ -42,6 +42,7 @@ const pickerLimit = 7;
  * thread and asks the viewer's agent. Naming another agent asks its owner.
  */
 export function TeamComposer({
+  notice,
   agent,
   agentStartsOn = false,
   onAgentRecipient,
@@ -60,6 +61,7 @@ export function TeamComposer({
   staged = [],
   typing = [],
 }: {
+  readonly notice?: string | null;
   readonly agent: MyAgentHere;
   /** The team Host's current recipient state for this thread. */
   readonly agentStartsOn?: boolean;
@@ -400,6 +402,11 @@ export function TeamComposer({
           </button>
         </div>
       </div>
+      {notice ? (
+        <p className="team-composer__hint" role="status">
+          {notice}
+        </p>
+      ) : null}
       <TypingLine people={typing} />
       {why && pill.current && (agent.kind === "not-linked" || agent.kind === "no-computer") ? (
         <Popover

@@ -170,7 +170,7 @@ function MentionText(props: { readonly finder: MentionFinder; readonly text: str
 
 /**
  * A mention, inline in its sentence. The colour is the meaning: ember woke an
- * agent, grey named one that only its owner can ask, amber is the reader.
+ * agent, grey asks for owner approval, amber is the reader.
  */
 export function MentionChip(props: { readonly mention: MentionView }): ReactNode {
   const tone = chipTone[props.mention.kind];

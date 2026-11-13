@@ -1,3 +1,4 @@
+import { teamAskAudienceLabel } from "@opensteer/client/team";
 import { useNavigation } from "@react-navigation/native";
 import { useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
@@ -81,6 +82,9 @@ export function TeamAskReview({
             {ask.audience.teamName} · #{ask.audience.channelName} ↗
           </AppText>
         </Pressable>
+        <AppText role="caption" tone="muted">
+          {teamAskAudienceLabel(ask.audience)}
+        </AppText>
         <AppText selectable>{ask.bodyMarkdown}</AppText>
         {ask.attachments.map((file) => (
           <AppText key={file.id}>

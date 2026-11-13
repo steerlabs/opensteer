@@ -431,7 +431,8 @@ export class TeamRequestsStore implements TeamRequestStorePort {
             request.threadRootId === input.threadRootId,
           "Reply destination does not match request",
         );
-        if (input.publication && request.replyMessageId) return request.replyMessageId;
+        if (input.publication && request.replyMessageId)
+          return { messageId: request.replyMessageId, askOutcomes: [] };
         if (!request.replyMessageId) await this.#record(t, linkId, request.id);
       }
       const existing = await t
@@ -449,7 +450,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
               existing.agentRequestId === (input.requestId ?? null)),
           "Post identity names another destination",
         );
-        return existing.id;
+        return { messageId: existing.id, askOutcomes: await this.chat.askOutcomes(t, existing.id) };
       }
       const sent = await this.chat.insert(t, actor, {
         channelId: input.channelId,
@@ -517,10 +518,10 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         channelId: input.channelId,
         requestId: input.requestId,
       });
-      return sent.message.id;
+      return { messageId: sent.message.id, askOutcomes: sent.askOutcomes };
     });
     this.chat.changed(input.channelId);
-    await this.chat.notifyRequests(result);
+    await this.chat.notifyRequests(result.messageId);
     if (input.requestId) {
       const request = await this.access.database
         .selectFrom("teamAgentRequests")
@@ -542,14 +543,16 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       .where("id", "=", id)
       .where("linkId", "=", linkId)
       .executeTakeFirstOrThrow();
-    return this.post(linkId, {
-      ...input,
-      requestId: id,
-      channelId: request.channelId,
-      threadRootId: request.threadRootId,
-      clientMessageId: randomUUID(),
-      publication: true,
-    });
+    return (
+      await this.post(linkId, {
+        ...input,
+        requestId: id,
+        channelId: request.channelId,
+        threadRootId: request.threadRootId,
+        clientMessageId: randomUUID(),
+        publication: true,
+      })
+    ).messageId;
   }
   async receipt(linkId: TeamLinkId, id: TeamAgentRequestId): Promise<TeamMessageId | null> {
     const revision = this.access.revision;

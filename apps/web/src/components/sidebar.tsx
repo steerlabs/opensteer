@@ -39,6 +39,7 @@ import {
   describeHostConnection,
   listedRowThreadId,
   doneDays,
+  needsYouEntryKey,
   doneTaskList,
   quietlyMoved,
   quietSeenScope,
@@ -129,6 +130,7 @@ export interface SidebarProps {
   desktopWindowChrome: boolean;
   hostClient: HostClient;
   mobileOpen: boolean;
+  needsYouNotificationId?: string | null;
   mobile?: boolean;
   onCloseMobile: () => void;
   onLoadEarlierTasks: () => Promise<void>;
@@ -143,6 +145,7 @@ export interface SidebarProps {
  * only the middle; a mark on a tab both, as one step.
  */
 export function Sidebar({
+  needsYouNotificationId,
   collapsed,
   deploymentAccess,
   desktopDeployment,
@@ -416,25 +419,34 @@ export function Sidebar({
     },
     [onCloseMobile],
   );
-  const [reviewAskId, setReviewAskId] = useState<string | null>(null);
-  const teamAsks = useHostSelector(
-    hostClient,
-    (current) => current.needsYou?.entries.filter((entry) => entry.kind === "team-ask") ?? [],
-  );
-  const reviewAsk = teamAsks.find((entry) => entry.requestId === reviewAskId);
-  const needsYouCount = useHostSelector(hostClient, (current) => current.needsYou?.count ?? 0);
-  const openNeedsYou = () => {
+  const [reviewAskKey, setReviewAskKey] = useState<string | null>(null);
+  const needsYouPage = useHostSelector(hostClient, (current) => current.needsYou);
+  const teamAsks = needsYouPage?.entries.filter((entry) => entry.kind === "team-ask") ?? [];
+  const reviewAsk = teamAsks.find((entry) => needsYouEntryKey(entry) === reviewAskKey);
+  const needsYouCount = needsYouPage?.count ?? 0;
+  const openNeedsYou = useCallback(() => {
     const first = hostClient.getSnapshot().needsYou?.entries[0];
     if (!first) return;
     if (first.kind === "team-ask") {
-      setReviewAskId(first.requestId);
+      setReviewAskKey(needsYouEntryKey(first));
       return;
     }
     onCloseMobile();
     nav.openConversation(nav.threadPath(first.navigationThreadId), {
       focusRequest: first.request.id,
     });
-  };
+  }, [hostClient, nav, onCloseMobile]);
+  const handledNeedsYouNotification = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      !needsYouNotificationId ||
+      handledNeedsYouNotification.current === needsYouNotificationId ||
+      needsYouPage === null
+    )
+      return;
+    handledNeedsYouNotification.current = needsYouNotificationId;
+    openNeedsYou();
+  }, [needsYouNotificationId, needsYouPage, openNeedsYou]);
   const newTask = () => {
     onCloseMobile();
     nav.openConversation("/");
@@ -672,10 +684,10 @@ export function Sidebar({
     >
       {reviewAsk ? (
         <TeamAskReview
-          key={reviewAsk.requestId}
+          key={needsYouEntryKey(reviewAsk)}
           entry={reviewAsk}
           client={hostClient}
-          onClose={() => setReviewAskId(null)}
+          onClose={() => setReviewAskKey(null)}
         />
       ) : null}
       <div className="sidebar__header">
@@ -760,7 +772,7 @@ export function Sidebar({
                   className="side-task"
                   type="button"
                   key={entry.requestId}
-                  onClick={() => setReviewAskId(entry.requestId)}
+                  onClick={() => setReviewAskKey(needsYouEntryKey(entry))}
                 >
                   {entry.presentation.asker.displayName}
                   {entry.presentation.asker.actor === "agent" ? "'s agent" : ""} · #

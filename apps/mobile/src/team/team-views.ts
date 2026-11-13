@@ -281,7 +281,7 @@ export function mentionView(
     return {
       handle: teamAgentHandle(handle),
       label: mine ? "@My agent" : `@${member?.displayName ?? "Someone"}'s agent`,
-      // Only its owner wakes an agent, and an agent's own words never do.
+      // Another person's agent waits for its owner's approval.
       kind:
         message.authorKind === "human" && message.authorUserId === mention.userId
           ? "agent-live"

@@ -31,6 +31,7 @@ import { ComputerScreen } from "./screens/computer.js";
 import { DevicePageScreen } from "./screens/device-page.js";
 import { ConversationActivityScreen } from "./screens/conversation-activity.js";
 import { DeploymentsScreen } from "./screens/deployments.js";
+import { NeedsYouScreen } from "./screens/needs-you.js";
 import { HomeScreen } from "./screens/home.js";
 import { NotificationsIntroScreen } from "./screens/notifications-intro.js";
 import { OpenAppScreen } from "./screens/open-app.js";
@@ -186,6 +187,7 @@ const RootStack = createNativeStackNavigator({
     // Home: the new-task composer, holding its one unsent draft.
     // The root every other screen of a Deployment is pushed over.
     Home: { screen: HomeScreen, options: { title: "Tasks" } },
+    NeedsYou: { screen: NeedsYouScreen, options: { title: "Needs you" } },
     // Every task in Done, newest Done first, from the last line of the drawer's Tasks.
     DoneTasks: { screen: DoneTasksScreen, options: { headerLargeTitle: true, title: "Done" } },
     // The tasks just moved to Done for the reader, from "+N" on that line.

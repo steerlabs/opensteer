@@ -10,7 +10,7 @@ import {
 import { teamPageUrl } from "@opensteer/core";
 import type { TeamChannel, TeamFileSchema } from "@opensteer/protocol";
 import { watchTeamReplyRead, unwrapRpcResult } from "@opensteer/client/host";
-import { teamScopeKey, type TeamTimeline } from "@opensteer/client/team";
+import { teamAskRefusalNotice, teamScopeKey, type TeamTimeline } from "@opensteer/client/team";
 import { TeamPreviewUrls } from "./preview-urls.js";
 import type { z } from "zod";
 import { useOptionalShell } from "../components/app-shell.js";
@@ -610,6 +610,16 @@ function ChannelScreenFor({
           setStaged(rootId, (current) => current.filter((row) => row.id !== id));
         }}
         onSend={send(rootId)}
+        notice={teamAskRefusalNotice(
+          snapshot.sendNotices[
+            teamScopeKey(
+              rootId
+                ? { kind: "thread", channelId, rootId: TeamMessageIdSchema.parse(rootId) }
+                : { kind: "channel", channelId },
+            )
+          ] ?? [],
+          (id) => view.members.get(id)?.displayName ?? "That person",
+        )}
         onTyping={() =>
           client.typing(channelId, rootId ? TeamMessageIdSchema.parse(rootId) : null, true)
         }

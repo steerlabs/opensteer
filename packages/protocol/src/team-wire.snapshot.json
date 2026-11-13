@@ -9249,6 +9249,33 @@
             "rate-limited",
             "people-only"
           ]
+        },
+        "askOutcomes": {
+          "maxItems": 21,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ownerUserId": {
+                "type": "string",
+                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "people-only",
+                  "no-access",
+                  "no-link",
+                  "rate-limited"
+                ]
+              }
+            },
+            "required": [
+              "ownerUserId",
+              "outcome"
+            ]
+          }
         }
       },
       "required": [
@@ -14693,6 +14720,33 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "askOutcomes": {
+                      "maxItems": 21,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "ownerUserId": {
+                            "type": "string",
+                            "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                          },
+                          "outcome": {
+                            "type": "string",
+                            "enum": [
+                              "queued",
+                              "people-only",
+                              "no-access",
+                              "no-link",
+                              "rate-limited"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "ownerUserId",
+                          "outcome"
+                        ]
+                      }
                     }
                   },
                   "required": [

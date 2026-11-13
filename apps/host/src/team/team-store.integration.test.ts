@@ -572,15 +572,17 @@ describe("team transaction authority", () => {
       const replyId =
         claim === "none"
           ? null
-          : await requests.post(l, { ...post, publication: claim === "publication" });
+          : (await requests.post(l, { ...post, publication: claim === "publication" })).messageId;
       if (claim !== "none") {
         expect(
-          await requests.post(l, {
-            ...post,
-            clientMessageId: randomUUID(),
-            publication: true,
-            bodyMarkdown: "automatic final",
-          }),
+          (
+            await requests.post(l, {
+              ...post,
+              clientMessageId: randomUUID(),
+              publication: true,
+              bodyMarkdown: "automatic final",
+            })
+          ).messageId,
         ).toBe(replyId);
       }
       expect(await requests.receipt(l, request.id)).toBe(replyId);

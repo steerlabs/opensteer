@@ -41,6 +41,7 @@ import {
   SequenceSchema,
   TeamAudienceSchema,
   TeamAskPresentationViewSchema,
+  TeamAskOutcomeSchema,
   TeamAgentReturnPayloadViewSchema,
   TeamBlobIdSchema,
   TeamChannelIdSchema,
@@ -135,6 +136,7 @@ export const TeamCommandResultViewSchema = z.discriminatedUnion("type", [
     type: z.literal("team.message.send"),
     message: TeamMessageViewSchema,
     wake: z.enum(["queued", "no-link", "not-requested", "rate-limited", "people-only"]),
+    askOutcomes: z.array(z.object(TeamAskOutcomeSchema.shape)).max(21).default([]),
   }),
   z.object({ type: z.literal("team.message.edit") }),
   z.object({ type: z.literal("team.channel.read") }),
@@ -464,7 +466,10 @@ const [
 const TeamLinkResultViewSchema = z.discriminatedUnion("kind", [
   z.object({ ...accepted.shape, request: TeamAgentRequestViewSchema }),
   z.object({ ...context.shape, context: TeamRequestContextViewSchema }),
-  receipt.strip(),
+  z.object({
+    ...receipt.shape,
+    askOutcomes: z.array(z.object(TeamAskOutcomeSchema.shape)).max(21).optional(),
+  }),
   z.object({
     ...read.shape,
     result: z.object({ page: TeamMessagePageViewSchema, source: TeamSourceViewSchema }),

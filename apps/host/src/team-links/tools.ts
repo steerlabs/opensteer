@@ -201,6 +201,7 @@ export class TeamRunTools {
     }
     return {
       messageId: result.messageId,
+      ...(result.askOutcomes?.length ? { askOutcomes: result.askOutcomes } : {}),
       source: { ...source, messageId: result.messageId, threadRootId: input.threadRootId ?? null },
     };
   }
