@@ -1964,7 +1964,7 @@ integration("IdentityService", () => {
     });
   });
 
-  it("lets several browsers hold admissions for a shared invite, but only one for a single-use one", async () => {
+  it("lets several browsers start on a shared invite with one use left, but admits only one", async () => {
     const access = new TeamAccessStore(database);
     await access.initialize();
     const invites = new TeamInvitesStore(access, "http://127.0.0.1:4310");
@@ -2019,6 +2019,52 @@ integration("IdentityService", () => {
     await expect(exchange(shared.url)).resolves.toBeDefined();
     await expect(exchange(shared.url)).resolves.toBeDefined();
     await expect(exchange(shared.url)).resolves.toBeDefined();
+
+    // Capped at five with four spent: several people may open it, the use cap decides who gets in.
+    const capped = await invites.create(owner, createId("teamInvite"));
+    await database
+      .updateTable("teamInvites")
+      .set({ maxUses: 5, usedCount: 4 })
+      .where("id", "=", capped.invite.id)
+      .execute();
+    await expect(exchange(capped.url)).resolves.toBeDefined();
+    await expect(exchange(capped.url)).resolves.toBeDefined();
+    await expect(exchange(capped.url)).resolves.toBeDefined();
+    const providerId = "opensteer-account-fixture";
+    await database
+      .insertInto("accountDirectoryProvider")
+      .values({ singletonKey: "opensteer-account", providerId, issuer: "https://accounts.example" })
+      .execute();
+    const admissions = await database
+      .selectFrom("authAdmissions")
+      .select(["id", "purpose", "subjectSelector", "consumedBy"])
+      .where("subjectSelector", "=", capped.invite.selector)
+      .execute();
+    expect(admissions).toHaveLength(3);
+    const outcomes = await Promise.allSettled(
+      admissions.map(async (admission, index) => {
+        const userId = await createUser(`Invitee ${index}`);
+        await database
+          .insertInto("authAccounts")
+          .values({
+            id: createId("authAccount"),
+            userId,
+            accountId: `invitee-${index}`,
+            providerId,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .execute();
+        return team.admit(userId, { ...admission, purpose: "invitation" });
+      }),
+    );
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    expect(
+      outcomes.flatMap((outcome) => (outcome.status === "rejected" ? [outcome.reason] : [])),
+    ).toEqual([
+      expect.objectContaining({ reason: "invite-used-up" }),
+      expect.objectContaining({ reason: "invite-used-up" }),
+    ]);
 
     const single = await invites.create(owner, createId("teamInvite"));
     await expect(exchange(single.url)).resolves.toBeDefined();

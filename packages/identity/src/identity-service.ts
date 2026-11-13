@@ -90,7 +90,10 @@ const nativeOAuthReference = (clientId: string) => `${legacyNativeOAuthReference
 const nativeOAuthScopes = ["openid", "profile", "email", "offline_access", "host:access"] as const;
 const maxPendingAdmissions = 1_024;
 const maxPendingAdmissionsPerSubject = 1;
-/** A shared invite link may be opened by several people at once; one admission per remaining use, bounded. */
+/**
+ * Browsers that may hold an admission for one shared invite at once. Its use cap is enforced when
+ * someone accepts, so a capped invite with one use left still lets several people start.
+ */
 const maxPendingAdmissionsPerInvite = 64;
 const accountAdoptionProofLifetimeMilliseconds = 5 * 60 * 1_000;
 const maxPendingAccountAdoptionProofs = 64;
@@ -2191,14 +2194,12 @@ export class IdentityService {
     if (!team)
       throw new OpensteerError({ code: "not_found", message: "Team invitations are unavailable" });
     const invite = await team.invites.verify(selector, verifier);
-    const remaining =
-      invite.maxUses === null ? maxPendingAdmissionsPerInvite : invite.maxUses - invite.usedCount;
     return this.#createOrReuseAdmission(
       {
         purpose: "invitation",
         reservedEmail: null,
         subjectSelector: invite.selector,
-        maxPending: Math.max(1, Math.min(maxPendingAdmissionsPerInvite, remaining)),
+        maxPending: invite.maxUses === 1 ? 1 : maxPendingAdmissionsPerInvite,
       },
       headers,
     );
