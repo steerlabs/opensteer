@@ -35,7 +35,13 @@ import { MachineAccessSection } from "../machine-access/machine-access-section.j
 import { PageHeader, PageTopbar } from "../page-header.js";
 import { RemoteAccessCard } from "../settings/sections/remote-access-card.js";
 import { SettingsError } from "../settings/primitives.js";
-import { deviceStatusLine, deviceSwitches, type DeviceCapability } from "./device-access.js";
+import {
+  cancelDeviceSetup,
+  deviceStatusLine,
+  deviceSwitches,
+  pendingEnrollmentId,
+  type DeviceCapability,
+} from "./device-access.js";
 import { DeviceAccessSwitches, useAccessSwitch } from "./device-access-switches.js";
 import { deviceNotificationsOn, setDeviceNotifications } from "./device-preferences.js";
 import { computerAppIdFromHash, devicesRoute } from "./device-routes.js";
@@ -58,7 +64,117 @@ export function DevicePage() {
       </div>
     );
   }
+  const enrollmentId = pendingEnrollmentId(machine);
+  if (enrollmentId)
+    return <PendingDeviceDetail enrollmentId={enrollmentId} key={machine.id} machine={machine} />;
   return <DeviceDetail key={machine.id} machine={machine} />;
+}
+
+/**
+ * A device whose setup token nothing has redeemed yet. It has no runner to
+ * rename or switch until it joins; its owner can retire the token.
+ */
+function PendingDeviceDetail({
+  enrollmentId,
+  machine,
+}: {
+  readonly enrollmentId: string;
+  readonly machine: MachineSummary;
+}) {
+  const { hostClient, openMobileNavigation } = useShell();
+  const navigate = useNavigate();
+  const [confirming, setConfirming] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const titleId = useId();
+
+  async function cancel() {
+    setCancelling(true);
+    setError(null);
+    try {
+      const outcome = await cancelDeviceSetup(hostClient, enrollmentId);
+      if (outcome === "joined") {
+        setConfirming(false);
+        setError(`${machine.name} already joined. Remove it from Devices instead.`);
+        return;
+      }
+      void navigate(devicesRoute);
+    } catch (reason) {
+      setConfirming(false);
+      setError(actionErrorMessage(reason));
+    } finally {
+      setCancelling(false);
+    }
+  }
+
+  return (
+    <div className="page device-page">
+      <PageTopbar onOpenNavigation={openMobileNavigation} title={machine.name} />
+      <div className="page__content device-page__content">
+        <DevicesBackLink />
+        <header className="computer-header">
+          <DeviceArt art={computerGlyph(machine)} />
+          <div className="computer-header__body">
+            <h1 className="computer-header__name">
+              <span className="device-page__name">{machine.name}</span>
+            </h1>
+            <p className="computer-header__facts">
+              <span className="computer-status">
+                <span aria-hidden className="computer-status__dot computer-status__dot--waiting" />
+                {deviceStatusLine(machine)}
+              </span>
+            </p>
+          </div>
+        </header>
+        <p className="settings-footnote">
+          It joins once its setup finishes there. You can rename it and choose what your agent can
+          use after that.
+        </p>
+        {machine.ownership === "mine" ? (
+          <section aria-label="Cancel setup" className="device-remove">
+            <button
+              className="btn btn--danger"
+              disabled={cancelling}
+              onClick={() => setConfirming(true)}
+              type="button"
+            >
+              Cancel setup
+            </button>
+          </section>
+        ) : null}
+        <SettingsError message={error} />
+      </div>
+      {confirming ? (
+        <Dialog
+          footer={
+            <>
+              <button
+                className="btn btn--ghost"
+                disabled={cancelling}
+                onClick={() => setConfirming(false)}
+                type="button"
+              >
+                Keep it
+              </button>
+              <button
+                className="btn btn--danger"
+                disabled={cancelling}
+                onClick={() => void cancel()}
+                type="button"
+              >
+                {cancelling ? "Cancelling…" : "Cancel setup"}
+              </button>
+            </>
+          }
+          labelledBy={titleId}
+          onClose={() => setConfirming(false)}
+          title={<span id={titleId}>{`Cancel setting up ${machine.name}?`}</span>}
+        >
+          <p>Its sign-in or connection command stops working. You can add it again any time.</p>
+        </Dialog>
+      ) : null}
+    </div>
+  );
 }
 
 /** The sentence a removal asks, in the words design settled for every device. */

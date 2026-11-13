@@ -7,6 +7,8 @@ import type {
 import { createDesktopHostFetch } from "./desktop-host-transport.js";
 
 export interface ComputerFacts {
+  /** The Mac this Opensteer lives on, as its Host names it; null where the Host doesn't say. */
+  readonly homeName: string | null;
   readonly needsYou: number;
   readonly unread: boolean;
   readonly teams: readonly {
@@ -61,5 +63,10 @@ export async function readComputerFacts(
         }
       }),
   );
-  return { ...attention, teams };
+  return {
+    homeName: attention.homeName ?? null,
+    needsYou: attention.needsYou,
+    teams,
+    unread: attention.unread,
+  };
 }

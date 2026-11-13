@@ -3507,6 +3507,7 @@ describe("MobileClient other computers' attention", () => {
     expect(port.attached).toHaveLength(before);
 
     await expect(client.readAttention(otherId)).resolves.toEqual({
+      homeName: "Mac mini",
       needsYou: expect.any(Number),
       unread: expect.any(Boolean),
     });

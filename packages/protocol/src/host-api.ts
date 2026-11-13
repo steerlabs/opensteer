@@ -1441,7 +1441,12 @@ export const hostApi = defineRpc({
   "attention.get": declaration(
     "POST",
     z.strictObject({ deviceAccessRequests: z.literal("include").optional() }),
-    z.object({ needsYou: z.number().int().nonnegative(), unread: z.boolean() }),
+    z.object({
+      /** The Mac a personal Opensteer lives on, for a chooser naming it; older Hosts omit it. */
+      homeName: z.string().trim().min(1).max(120).nullable().optional(),
+      needsYou: z.number().int().nonnegative(),
+      unread: z.boolean(),
+    }),
   ),
   "needsYou.get": declaration(
     "POST",

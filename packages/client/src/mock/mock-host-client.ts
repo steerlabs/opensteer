@@ -1,5 +1,6 @@
 import { isDeviceAccessRequestEvent } from "@opensteer/protocol";
 import { deviceAccess } from "@opensteer/protocol";
+import { hostsDeployment } from "../computers/computers.js";
 import { listedRowThreadId } from "../host/task-list.js";
 import {
   DeploymentSnapshotSchema,
@@ -1894,6 +1895,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     "attention.get": async (input) => {
       const snapshot = client.getSnapshot();
       return rpcSuccess({
+        homeName: snapshot.machines.find(hostsDeployment)?.name ?? null,
         needsYou: snapshot.waitingRequests.filter(
           ({ request }) =>
             input.deviceAccessRequests === "include" || request.kind !== "device.access",

@@ -1,110 +1,135 @@
 // @vitest-environment happy-dom
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter } from "react-router";
-import { afterEach, expect, it, vi } from "vitest";
-import { MockHostClient } from "@opensteer/client/mock";
-import { useHostSnapshot } from "@opensteer/client/react";
+import { expect, it, vi } from "vitest";
+import type { HostSnapshot, NodeEntry } from "@opensteer/client/host";
+import type { Request } from "@opensteer/core";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
-import { ShellContext } from "./app-shell.js";
-import { RequestStack, useRequestDock } from "./input-surface.js";
+import { client, goTo, mount, settle } from "./workspace/workspace.interaction.test-support.js";
 
 const laptopId = "rnr_33333333-3333-4333-8333-333333333333";
 vi.mock("./computers/here.js", () => ({ useHereId: () => laptopId }));
-Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
-let root: Root | null = null;
-let host: MockHostClient | null = null;
-afterEach(() => {
-  act(() => root?.unmount());
-  root = null;
-  host?.dispose();
-  host = null;
-  document.body.replaceChildren();
-});
+let accessibility: "denied" | "granted" = "denied";
+const bridge = {
+  browserIsLocal: async () => false,
+  browserWindowFocused: async () => true,
+  checkFullDiskAccess: async () => ({ granted: true }),
+  computerUsePermissionsGet: async () => ({ accessibility, screenRecording: "granted" }),
+  getLocalVisibility: async () => true,
+  onLocalVisibilityChanged: () => () => undefined,
+  onPersonalTabCommand: () => () => undefined,
+  setBadgeCount: async () => undefined,
+} as unknown as OpensteerDesktopBridge;
 
-it("keeps the missing macOS grant on screen after Turn it on resolves the Request", async () => {
-  const client = new MockHostClient({ latencyMs: 0, devices: "seeded" });
-  host = client;
-  const request = Object.values(client.getSnapshot().requests)
+/**
+ * The seeded device.access Request, asked by a subagent: the subagent's own
+ * view docks it only while it is pending, so fulfilling it unmounts the dock.
+ */
+function askedBySubagent(source: typeof client) {
+  const snapshot = source.getSnapshot();
+  const thread = snapshot.threads.find(({ title }) => title === "Subagents everywhere")!;
+  const asking = snapshot.requests[thread.id]!.find(
+    (request) => request.status === "pending" && request.originatingNodeId,
+  )!;
+  const node = snapshot.transcripts[thread.id]!.find(
+    (entry): entry is NodeEntry =>
+      entry.kind === "node" && entry.nodeId === asking.originatingNodeId,
+  )!;
+  const device = Object.values(snapshot.requests)
     .flat()
-    .find((entry) => entry.payload.kind === "device.access")!;
-  const threadId = request.originatingThreadId;
-  let accessibility: "denied" | "granted" = "denied";
-  const bridge = {
-    checkFullDiskAccess: async () => ({ granted: true }),
-    computerUsePermissionsGet: async () => ({ accessibility, screenRecording: "granted" }),
-  } as unknown as OpensteerDesktopBridge;
+    .find((request) => request.payload.kind === "device.access")!;
+  if (device.status !== "pending") throw new Error("The seeded device question is not pending");
+  const moved: Extract<Request, { status: "pending" }> = {
+    ...device,
+    originatingNodeId: asking.originatingNodeId,
+    originatingRunId: asking.originatingRunId,
+    originatingThreadId: asking.originatingThreadId,
+  };
+  const real = source.getSnapshot;
+  let copy: { readonly from: HostSnapshot; readonly to: HostSnapshot } | null = null;
+  vi.spyOn(source, "getSnapshot").mockImplementation(() => {
+    const base = real();
+    if (copy?.from === base) return copy.to;
+    const pending = Object.values(base.requests)
+      .flat()
+      .some((request) => request.id === device.id && request.status === "pending");
+    const requests = Object.fromEntries(
+      Object.entries(base.requests).map(([threadId, list]) => [
+        threadId,
+        list.filter((request) => request.id !== device.id && request.id !== asking.id),
+      ]),
+    );
+    requests[thread.id] = [...(requests[thread.id] ?? []), ...(pending ? [moved] : [])];
+    const waitingRequests = base.waitingRequests.flatMap((entry) =>
+      entry.request.id === device.id
+        ? []
+        : entry.request.id === asking.id
+          ? pending
+            ? [{ ...entry, request: moved }]
+            : []
+          : [entry],
+    );
+    const to = { ...base, requests, waitingRequests };
+    copy = { from: base, to };
+    return to;
+  });
+  return { device, nodeId: node.nodeId, threadId: thread.id };
+}
 
-  function Dock() {
-    const { snapshot } = useHostSnapshot(client, () => false);
-    const shell = {
-      desktopBridge: bridge,
-      hostClient: client,
-      reportActionError: () => undefined,
-      snapshot,
-    } as unknown as ShellContext;
-    return (
-      <ShellContext.Provider value={shell}>
-        <Stack threadId={threadId} />
-      </ShellContext.Provider>
-    );
-  }
-  function Stack({ threadId }: { readonly threadId: string }) {
-    const { snapshot } = useHostSnapshot(client, () => false);
-    const dock = useRequestDock(
-      threadId,
-      (snapshot.requests[threadId] ?? []).filter((entry) => entry.id === request.id),
-    );
-    return (
-      <RequestStack
-        disabled={false}
-        items={dock.items}
-        onOpen={dock.setOpenId}
-        openId={dock.openId}
-        threadId={threadId}
-      />
-    );
-  }
-
-  const node = document.createElement("div");
-  document.body.append(node);
-  root = createRoot(node);
-  await act(async () =>
-    root!.render(
-      <MemoryRouter>
-        <Dock />
-      </MemoryRouter>,
-    ),
+it("keeps the macOS grant after Turn it on resolves a subagent's last Request and its pane drops the dock", async () => {
+  let asked: ReturnType<typeof askedBySubagent> | null = null;
+  await mount(
+    (source) => {
+      asked = askedBySubagent(source);
+      return `/tasks/${asked.threadId}?subagent=${asked.nodeId}`;
+    },
+    { mock: { devices: "seeded" }, shell: { desktopBridge: bridge } },
   );
-  const text = () => node.textContent ?? "";
-  const button = (name: string) =>
-    [...node.querySelectorAll("button")].find((entry) => entry.textContent?.trim() === name);
-  expect(button("Turn it on")).toBeDefined();
-  await act(async () => button("Turn it on")!.click());
+  const { device, threadId } = asked!;
+  const pane = () => document.querySelector(".subagent-pane");
+  const button = (scope: Element | null, name: string) =>
+    [...(scope?.querySelectorAll("button") ?? [])].find(
+      (entry) => entry.textContent?.trim() === name,
+    );
+  await vi.waitFor(
+    () => {
+      if (!button(pane(), "Turn it on"))
+        throw new Error(
+          `The subagent never docked its Request: ${pane()?.textContent?.slice(-400)}`,
+        );
+    },
+    { timeout: 3_000 },
+  );
 
+  await act(async () => button(pane(), "Turn it on")!.click());
   await vi.waitFor(
     () => {
       const pending = Object.values(client.getSnapshot().requests)
         .flat()
-        .some((entry) => entry.id === request.id);
+        .some((entry) => entry.id === device.id);
       if (pending) throw new Error("The Request was never resolved");
-      if (!text().includes("Apps is on for")) throw new Error("The macOS follow-up never showed");
+      if (!pane()?.textContent?.includes("Apps is on for"))
+        throw new Error("The macOS follow-up left with the subagent's dock");
     },
     { timeout: 2_000 },
   );
-  expect(button("Turn it on")).toBeUndefined();
-  expect(text()).toContain("macOS still has to allow it here.");
+  expect(button(pane(), "Turn it on")).toBeUndefined();
+  expect(pane()?.textContent).toContain("macOS still has to allow it here.");
 
-  // It turns green when macOS allows it, and stays until the person is done.
+  // The conversation it was asked in still has it, and it turns green when macOS allows it.
+  await act(async () => goTo!(`/tasks/${threadId}`));
+  await settle();
+  expect(pane()).toBeNull();
+  expect(document.body.textContent).toContain("Apps is on for");
   accessibility = "granted";
   await act(async () => window.dispatchEvent(new Event("focus")));
   await vi.waitFor(
     () => {
-      if (!text().includes("macOS allows it now.")) throw new Error("The grant never turned green");
+      if (!document.body.textContent?.includes("macOS allows it now."))
+        throw new Error("The grant never turned green");
     },
     { timeout: 2_000 },
   );
-  await act(async () => button("Done")!.click());
-  expect(text()).not.toContain("Apps is on for");
+  await act(async () => button(document.body, "Done")!.click());
+  expect(document.body.textContent).not.toContain("Apps is on for");
 });

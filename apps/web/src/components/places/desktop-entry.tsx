@@ -4,6 +4,7 @@ import {
   DesktopConnectPrivateDeploymentInputSchema,
   type DesktopConnectPrivateDeploymentInput,
 } from "@opensteer/protocol/desktop";
+import { useComputerFacts } from "../../desktop/use-computer-facts.js";
 import { usePlaceChecks, type DesktopPlaces } from "../../desktop/places-context.js";
 import { placeRows, thisComputerLabel } from "../../desktop/places.js";
 import { actionErrorMessage } from "../../ui-utils.js";
@@ -224,7 +225,11 @@ export function DesktopChooser({
   const [actionError, setActionError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   usePlaceChecks(bridge, true);
-  const rows = placeRows(snapshot, { thisComputer: thisComputerLabel() });
+  const facts = useComputerFacts(
+    bridge,
+    snapshot.deployments.filter((row) => row.kind === "personal"),
+  );
+  const rows = placeRows(snapshot, { thisComputer: thisComputerLabel(), facts });
   const run = (operation: () => Promise<void>) => {
     setPending(true);
     setActionError(null);

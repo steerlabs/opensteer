@@ -12,6 +12,7 @@ import {
 import { useLocation } from "react-router";
 import type { ComputerAppIdentity, DesktopUseComputerViewResult } from "@opensteer/protocol";
 import { useMediaQuery } from "../../ui-utils.js";
+import { DeviceGrantFollowUpProvider } from "./device-grant-follow-ups.js";
 import { placeSelection, type PlaceSelection, type WorkspaceNavigation } from "./navigation.js";
 
 /**
@@ -198,7 +199,11 @@ export function WorkspaceProvider({
       startPage,
     ],
   );
-  return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
+  return (
+    <WorkspaceContext.Provider value={value}>
+      <DeviceGrantFollowUpProvider>{children}</DeviceGrantFollowUpProvider>
+    </WorkspaceContext.Provider>
+  );
 }
 
 /* ---- Hover links between task rows, tab rows and viewfinders ---- */

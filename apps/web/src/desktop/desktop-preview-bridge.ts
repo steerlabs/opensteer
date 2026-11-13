@@ -480,6 +480,25 @@ export function desktopPreviewBridge(
 
     hostRequest: async (input) => {
       const request = DesktopHostHttpRequestSchema.parse(input);
+      // The summaries main lets the chooser read from an Opensteer it hasn't opened.
+      const summaryOf =
+        request.method === "POST" && request.expectedDeploymentId
+          ? selection.deployments.find(({ id }) => id === request.expectedDeploymentId)
+          : undefined;
+      if (summaryOf && accountDeploymentIds.has(summaryOf.id)) {
+        const path = new URL(request.path, previewRequestBase).pathname;
+        if (path === "/v1/rpc/attention.get")
+          return jsonResponse(200, {
+            data: {
+              homeName: previewHomeNames[summaryOf.name] ?? null,
+              needsYou: 0,
+              unread: false,
+            },
+            ok: true,
+          });
+        if (path === "/v1/rpc/teams.links.list")
+          return jsonResponse(200, { data: { links: [] }, ok: true });
+      }
       const selected = selectedDeployment(selection);
       if (!selected || hostAuth.deploymentId !== selected.id || hostAuth.status !== "signed-in") {
         return jsonResponse(401, {
@@ -1271,6 +1290,12 @@ function initialLocalExecutionStatus(
 function inertRunner(detail: string): DesktopLocalExecutionStatus["runner"] {
   return { detail, enrolled: false, environmentId: null, runnerId: null, state: "disabled" };
 }
+
+const previewHomeNames: Readonly<Record<string, string>> = {
+  "Tim’s Opensteer": "Mac mini",
+  Home: "Mac mini",
+  Studio: "Studio",
+};
 
 function previewAccountListing(value: string | null): readonly string[] {
   if (value === "one") return ["Tim’s Opensteer"];

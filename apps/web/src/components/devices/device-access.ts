@@ -1,5 +1,6 @@
 import { deviceAccess, type DeviceInitialAccess, type MachineSummary } from "@opensteer/protocol";
 import { hostsDeployment } from "@opensteer/client/computers";
+import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
 import { isAgentPhone } from "@opensteer/client/integrations";
 
 export type DeviceCapability = "browser" | "apps" | "files";
@@ -121,6 +122,7 @@ export function appliedSetupAccess(input: {
 
 /** A one-line summary for a Devices row: what the agent can use there. */
 export function deviceUsesLine(machine: MachineSummary, devicesAvailable: boolean): string | null {
+  if (pendingEnrollmentId(machine)) return null;
   const items = deviceSwitches(machine, devicesAvailable).filter(
     (item) => item.kind === "fixed" || item.on,
   );
@@ -138,10 +140,42 @@ export function deviceUsesLine(machine: MachineSummary, devicesAvailable: boolea
 export function deviceStatusLine(machine: MachineSummary, now = new Date()): string {
   if (hostsDeployment(machine)) return "Home · your agent runs here";
   if (machine.status === "online") return "Online";
-  if (machine.status === "pending") return "Setting up";
+  if (machine.status === "pending")
+    return machine.expiresAt
+      ? `Setting up · expires ${expiryWords(new Date(machine.expiresAt), now)}`
+      : "Setting up";
   if (machine.status !== "offline") return "Needs an update";
   if (!machine.lastSeenAt) return "Offline";
   return `Offline · last seen ${lastSeenWords(new Date(machine.lastSeenAt), now)}`;
+}
+
+function expiryWords(at: Date, now: Date): string {
+  const time = at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  if (at.toDateString() === now.toDateString()) return `at ${time}`;
+  return `${at.toLocaleDateString(undefined, { weekday: "long" })} at ${time}`;
+}
+
+/** A row the Host lists before any device redeemed its token: only its setup can be cancelled. */
+export function pendingEnrollmentId(machine: MachineSummary): string | null {
+  return machine.status === "pending" ? machine.enrollmentId : null;
+}
+
+/**
+ * Retires a setup token so nothing can join with it. "consumed" means a
+ * device already joined with it, and is now a device to remove instead.
+ */
+export async function cancelDeviceSetup(
+  hostClient: Pick<HostClient, "dispatch" | "refresh">,
+  enrollmentId: string,
+): Promise<"cancelled" | "joined"> {
+  const result = await hostClient.dispatch({
+    enrollmentId,
+    idempotencyKey: mutationIdempotencyKey(`device-setup-cancel:${enrollmentId}`),
+    type: "runner.enrollment.retire",
+  });
+  if (result.type !== "runner.enrollment.retire") throw new Error("Cancelling didn’t finish.");
+  await hostClient.refresh();
+  return result.state === "consumed" ? "joined" : "cancelled";
 }
 
 function lastSeenWords(seen: Date, now: Date): string {

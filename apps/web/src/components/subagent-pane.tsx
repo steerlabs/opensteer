@@ -28,6 +28,7 @@ import { RequestStack, useDockedRequests } from "./input-surface.js";
 import { LoadingRows } from "./loading-rows.js";
 import { MessageFold } from "./message-fold.js";
 import { SubagentStop } from "./subagent-stop.js";
+import { useDeviceGrantFollowUps } from "./thread-device-access-action.js";
 import { AgentEngine, AgentFolds, AgentMark, Elapsed, WorkflowPhases } from "./subagent-rows.js";
 
 const Markdown = lazy(() => import("./markdown.js"));
@@ -258,7 +259,9 @@ export function SubagentPane({
           )}
         </div>
       </div>
-      {view ? <PaneFooter parentTitle={parentTitle} threadId={threadId} view={view} /> : null}
+      {view ? (
+        <PaneFooter nodeId={nodeId} parentTitle={parentTitle} threadId={threadId} view={view} />
+      ) : null}
     </section>
   );
 }
@@ -470,10 +473,12 @@ function Steps({
 
 /** In the composer's place: its question, if it asked one, and who it reports to. */
 function PaneFooter({
+  nodeId,
   parentTitle,
   threadId,
   view,
 }: {
+  nodeId: string;
   parentTitle: string;
   threadId: string;
   view: SubagentDetail;
@@ -485,6 +490,11 @@ function PaneFooter({
   const own = card.requestId
     ? items.filter((item) => item.surface.request.id === card.requestId)
     : [];
+  const followUps = useDeviceGrantFollowUps({
+    liveRequestIds: own.map((item) => item.surface.request.id),
+    nodeId,
+    threadId,
+  });
   const footer = subagentFooter(
     card,
     parentTitle,
@@ -492,7 +502,7 @@ function PaneFooter({
   );
   return (
     <div className="subagent-pane__foot">
-      {own.length > 0 ? (
+      {own.length > 0 || followUps ? (
         <div className="input-surface">
           <RequestStack
             asker={false}
@@ -500,6 +510,7 @@ function PaneFooter({
             items={own}
             onOpen={() => undefined}
             openId={card.requestId}
+            subagentNodeId={nodeId}
             threadId={threadId}
           />
         </div>
