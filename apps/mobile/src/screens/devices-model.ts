@@ -60,9 +60,16 @@ export function deviceListSections(input: {
     hereId,
     otherDevices: input.otherDevices ?? [],
   });
+  // One Home: an explicit kind wins over the older ownership reading.
+  const homeMachine =
+    view.devices.find(({ machine }) => machine.kind === "home")?.machine ??
+    view.devices.find(({ machine }) => hostsDeployment(machine))?.machine ??
+    null;
   const row = (machine: MachineSummary, thisDevice: boolean): DeviceListRow => {
-    const home = machine.kind === "home" || hostsDeployment(machine);
-    const status = home ? "Home · your agent runs here" : computerStatus(machine, input.now).label;
+    const status =
+      machine.id === homeMachine?.id
+        ? "Home · your agent runs here"
+        : computerStatus(machine, input.now).label;
     return {
       key: machine.id,
       title: machine.name,
@@ -95,8 +102,7 @@ export function deviceListSections(input: {
       opens: { kind: "set-up" },
     });
   const home = view.devices.find(
-    (device) =>
-      !device.thisDevice && (device.machine.kind === "home" || hostsDeployment(device.machine)),
+    (device) => !device.thisDevice && device.machine.id === homeMachine?.id,
   );
   if (home !== undefined) first.push(row(home.machine, false));
   const others = view.devices

@@ -687,10 +687,8 @@ function RequestBody(props: {
         />
       ) : request.kind === "device.access" && request.payload.kind === "device.access" ? (
         <DeviceAccessBody
-          access={request.payload.access}
           canRespond={canRespond}
           failure={session.failure}
-          machineName={request.payload.machineName}
           onDecline={() => decline("device-access-decline")}
           onTurnOn={() => {
             const { payload } = request;
@@ -1336,18 +1334,10 @@ function ComputerAppAccessBody(props: {
   );
 }
 
-const deviceAccessNames = {
-  apps: "Apps",
-  browser: "Browser",
-  files: "Files and commands",
-} as const;
-
-/** Needs you: one switch on one device, turned on here or left off for this task. */
+/** Needs you: one switch on one device, turned on here or left off; the Host's words say which. */
 function DeviceAccessBody(props: {
-  readonly access: keyof typeof deviceAccessNames;
   readonly canRespond: boolean;
   readonly failure: string | null;
-  readonly machineName: string;
   readonly onDecline: () => void;
   readonly onTurnOn: () => void;
   readonly pendingId: string | null;
@@ -1356,11 +1346,6 @@ function DeviceAccessBody(props: {
   const locked = !props.canRespond || props.pendingId !== null;
   return (
     <View style={styles.section}>
-      <Notice
-        detail={`Turns on ${deviceAccessNames[props.access]} on ${props.machineName} for your agent. Apps, browser profiles and system permissions may still ask on that device.`}
-        title={`Let your agent use ${deviceAccessNames[props.access]} on ${props.machineName}?`}
-        tone="neutral"
-      />
       <ResponseStatus failure={props.failure} reason={props.reason} />
       <AnswerRow>
         <AnswerPill

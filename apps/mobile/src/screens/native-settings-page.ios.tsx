@@ -189,7 +189,10 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
         <Button
           label={row.label}
           role={row.destructive ? "destructive" : "default"}
-          modifiers={[disabled(row.disabled ?? false), frame({ minHeight: 44 })]}
+          modifiers={[
+            disabled(row.disabled ?? false),
+            ...(row.destructive ? [] : [tint(color.ember)]),
+          ]}
           onPress={row.onPress}
         />
       ) : (

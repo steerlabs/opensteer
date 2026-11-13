@@ -66,7 +66,9 @@ export function deviceSwitches(
   const footer = home
     ? homeFooter
     : policy === null
-      ? "These switches appear once this device has connected."
+      ? machine.status === "pending"
+        ? "These switches appear once this device has connected."
+        : "Update Opensteer on your Mac to change what your agent can use here."
       : !options.devicesAvailable && rows.some(({ key }) => key !== "files")
         ? "Update Opensteer on your Mac to change Browser and Apps."
         : null;

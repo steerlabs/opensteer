@@ -443,11 +443,24 @@ export function seedMockPlaces(
   // Every device can hold browsers: the person's iPhone too, while Opensteer is open on it.
   machines.push({
     tabOpenedAt: null,
-    access: null,
+    access: {
+      activeSessions: [],
+      ownerReachAvailable: false,
+      revision: 1,
+      policy: {
+        apps: true,
+        browser: true,
+        commands: false,
+        forwarding: false,
+        reach: "nobody",
+        shares: [],
+      },
+    },
     apps: null,
     allowedModules: ["browser", "integrations"],
     detail: null,
-    device: { form: "phone", platform: "ios" },
+    device: { form: "phone", platform: "ios", app: "opensteer" },
+    kind: "phone",
     enrollmentId: "ren_runner_iphone",
     expiresAt: null,
     computerUse: null,

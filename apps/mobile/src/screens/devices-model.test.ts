@@ -25,6 +25,13 @@ const machine = (overrides: Partial<MachineSummary>) =>
 
 const machines = [
   machine({
+    allowedModules: ["agents", "browser", "shell"],
+    id: "rnr_44444444-4444-4444-8444-444444444444",
+    kind: "computer",
+    name: "Studio Mac",
+    ownership: "deployment",
+  }),
+  machine({
     id: laptop,
     kind: "computer",
     name: "MacBook Pro (2)",
@@ -87,7 +94,7 @@ describe("Devices on the phone", () => {
         title: "",
         rows: ["Alex's iPhone — This iPhone · Online", "Mac mini — Home · your agent runs here"],
       },
-      { title: "Other devices", rows: ["MacBook Pro (2) — Online"] },
+      { title: "Other devices", rows: ["Studio Mac — Online", "MacBook Pro (2) — Online"] },
       {
         title: "Also signed in",
         rows: ["Chrome on Mac — Signed in", "Opensteer for iPhone — Update to finish setup"],
