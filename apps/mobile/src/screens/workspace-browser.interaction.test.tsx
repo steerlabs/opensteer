@@ -99,15 +99,16 @@ vi.mock("@react-navigation/native", () => ({
     replace: (name: string, params: object) => ({ name, params, type: "REPLACE" }),
   },
   useIsFocused: () => state.focused,
-  // The page's own stack: a screen over it while it is not drawn.
-  useNavigationState: (select: (navigation: object) => unknown) =>
-    select({
-      index: state.drawn ? 0 : 1,
-      routes: [
-        { key: "page", name: "WorkspaceBrowser" },
-        ...(state.drawn ? [] : [{ key: "over", name: "Thread" }]),
-      ],
-    }),
+  // The page's own stack: a screen over it while it is not drawn, and Home
+  // under it when a test opens it top-level, straight from the sidebar.
+  useNavigationState: (select: (navigation: object) => unknown) => {
+    const routes = [
+      ...(state.topLevel ? [{ key: "home", name: "Home" }] : []),
+      { key: "page", name: "WorkspaceBrowser" },
+      ...(state.drawn ? [] : [{ key: "over", name: "Thread" }]),
+    ];
+    return select({ index: routes.length - 1, routes });
+  },
   useRoute: () => ({ key: "page" }),
   useNavigation: () => ({
     dispatch: state.dispatch,
@@ -117,20 +118,6 @@ vi.mock("@react-navigation/native", () => ({
     setOptions: state.setOptions,
     setParams: state.setParams,
   }),
-  // This page, top-level only when a test opens it straight from the sidebar.
-  useNavigationState: (select: (value: object) => unknown) =>
-    select(
-      state.topLevel
-        ? {
-            index: 1,
-            routes: [
-              { key: "home", name: "Home" },
-              { key: "page", name: "WorkspaceBrowser" },
-            ],
-          }
-        : { index: 0, routes: [] },
-    ),
-  useRoute: () => ({ key: "page" }),
 }));
 vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 88 }));
 vi.mock("expo-haptics", () => ({
