@@ -51,7 +51,7 @@ import {
 } from "@opensteer/client/host";
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
 import { useThreadInputQueue } from "@opensteer/client/react";
-import { fromLivePage, useMediaQuery } from "../ui-utils.js";
+import { fromLivePage, useMediaQuery, useWindowInForeground } from "../ui-utils.js";
 import { AgentTranscript, ConversationActivity } from "./agent-activity.js";
 import { useShell } from "./app-shell.js";
 import { ExecutionControls } from "./execution-controls.js";
@@ -617,7 +617,9 @@ function ThreadView({
 
   /* ---- Reading position: exact jumps ---- */
 
-  useThreadVisits(hostClient, thread.id);
+  // A window behind another app shows nothing to anyone; returning to it records what it shows.
+  const foreground = useWindowInForeground();
+  useThreadVisits(hostClient, thread.id, foreground);
 
   // What a notification has to know before it decides to interrupt: one about
   // the conversation on screen, at its tail, in front of the reader, is

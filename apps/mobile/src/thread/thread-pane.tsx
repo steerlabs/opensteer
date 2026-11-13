@@ -80,6 +80,7 @@ import {
 import { operationDetail } from "../client/mobile-client.js";
 import { color, material, radius, space, touchTarget } from "../theme.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
+import { useAppForeground } from "../ui/foreground.js";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import { enter, exit } from "../ui/motion.js";
 import { AppText, Notice } from "../ui/primitives.js";
@@ -1048,7 +1049,8 @@ function ThreadPaneForUser(
     if (pinned.current && !dragging.current) scrollToLatest(false);
   };
 
-  useThreadVisits(hostClient, threadId, focused);
+  const appForeground = useAppForeground();
+  useThreadVisits(hostClient, threadId, focused && appForeground);
 
   const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>): void => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
