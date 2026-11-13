@@ -1617,6 +1617,11 @@ a.team-row__main:hover {
   white-space: nowrap;
 }
 
+.team-composer__hint--notice {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .team-composer__people-only {
   display: inline-flex;
   align-items: center;

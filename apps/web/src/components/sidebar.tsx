@@ -689,14 +689,17 @@ export function Sidebar({
           }}
         />
       ) : null}
-      {reviewAsk ? (
-        <TeamAskReview
-          key={needsYouEntryKey(reviewAsk)}
-          entry={reviewAsk}
-          client={hostClient}
-          onClose={() => setReviewAskKey(null)}
-        />
-      ) : null}
+      {reviewAsk
+        ? createPortal(
+            <TeamAskReview
+              key={needsYouEntryKey(reviewAsk)}
+              entry={reviewAsk}
+              client={hostClient}
+              onClose={() => setReviewAskKey(null)}
+            />,
+            document.body,
+          )
+        : null}
       <div className="sidebar__header">
         <h1 className="sidebar__title">Opensteer</h1>
         <VoiceButton onOpen={openVoice} />

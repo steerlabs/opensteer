@@ -403,7 +403,7 @@ export function TeamComposer({
         </div>
       </div>
       {notice ? (
-        <p className="team-composer__hint" role="status">
+        <p className="team-composer__hint team-composer__hint--notice" role="status">
           {notice}
         </p>
       ) : null}
