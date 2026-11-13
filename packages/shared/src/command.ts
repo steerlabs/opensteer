@@ -1,4 +1,13 @@
-import { accessSync, constants, lstatSync, readlinkSync, statSync } from "node:fs";
+import {
+  accessSync,
+  closeSync,
+  constants,
+  lstatSync,
+  openSync,
+  readlinkSync,
+  readSync,
+  statSync,
+} from "node:fs";
 import path from "node:path";
 
 export type CommandPlatform = "darwin" | "linux" | "win32";
@@ -18,12 +27,15 @@ export interface CommandProbes {
   isExecutable(path: string): boolean;
   /** A Windows app execution alias: an OS-managed link that runs but cannot be opened. */
   isExecutionAlias(path: string): boolean;
+  /** At most `bytes` bytes from the start of a file; undefined when it cannot be read. */
+  readStart(path: string, bytes: number): Uint8Array | undefined;
 }
 
 export interface ResolvedCommand {
   /** Absolute, as found: an execution alias is kept, never canonicalized. */
   readonly path: string;
-  readonly kind: "native" | "batch" | "powershell";
+  /** `batch-shim`: a batch file npm or pnpm generated, which only forwards `%*` to its program. */
+  readonly kind: "native" | "batch" | "batch-shim" | "powershell";
 }
 
 export interface LaunchPlan {
@@ -69,6 +81,18 @@ export const nodeCommandProbes: CommandProbes = {
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       return code !== "ENOENT" && code !== "ENOTDIR" && code !== "ELOOP";
+    }
+  },
+  readStart: (candidate, bytes) => {
+    let descriptor: number | undefined;
+    try {
+      descriptor = openSync(candidate, "r");
+      const buffer = Buffer.alloc(bytes);
+      return buffer.subarray(0, readSync(descriptor, buffer, 0, bytes, 0));
+    } catch {
+      return undefined;
+    } finally {
+      if (descriptor !== undefined) closeSync(descriptor);
     }
   },
 };
@@ -181,9 +205,40 @@ function probeWindows(
   kind: ResolvedCommand["kind"],
   probes: CommandProbes,
 ): ResolvedCommand | undefined {
-  if (probes.isFile(candidate)) return { kind, path: candidate };
+  if (probes.isFile(candidate)) {
+    const shim =
+      kind === "batch" && isForwardingShim(probes.readStart(candidate, shimByteLimit + 1));
+    return { kind: shim ? "batch-shim" : kind, path: candidate };
+  }
   if (kind === "native" && probes.isExecutionAlias(candidate)) return { kind, path: candidate };
   return undefined;
+}
+
+const shimByteLimit = 16 * 1024;
+const shimPreambles = [
+  // npm's cmd-shim 4 through 9.
+  "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n",
+  // pnpm's @zkochan/cmd-shim 5 through 9.
+  "@SETLOCAL\r\n",
+];
+
+/**
+ * A generator's preamble, and the script's parameters reach it only as its
+ * own folder (`%~dp0`) and a trailing `%*` that cmd parses once more before
+ * the program reads its argv.
+ */
+function isForwardingShim(start: Uint8Array | undefined): boolean {
+  if (!start || start.length > shimByteLimit) return false;
+  const text = new TextDecoder().decode(start);
+  if (!shimPreambles.some((preamble) => text.startsWith(preamble))) return false;
+  const parameters = (text.match(/%(?:~[^0-9\s%]*)?[0-9*]/gu) ?? []).map((parameter) =>
+    parameter.toLowerCase(),
+  );
+  return (
+    parameters.includes("%*") &&
+    parameters.every((parameter) => parameter === "%~dp0" || parameter === "%*") &&
+    !/(?<! )%\*|%\*(?!\r\n|$)/u.test(text)
+  );
 }
 
 function isFullyQualifiedWindowsPath(value: string): boolean {
@@ -202,7 +257,9 @@ export function planLaunch(
 ): LaunchPlan {
   if (resolved.kind === "native") return { args: [...args], executable: resolved.path };
   if (options.platform !== "win32")
-    throw new Error(`${resolved.path} is a Windows ${resolved.kind} script.`);
+    throw new Error(
+      `${resolved.path} is a Windows ${resolved.kind === "powershell" ? "PowerShell" : "batch"} script.`,
+    );
   const system32 = path.win32.join(windowsSystemRoot(options.environment), "System32");
   if (resolved.kind === "powershell") {
     return {
@@ -221,7 +278,7 @@ export function planLaunch(
   return {
     args: [],
     executable: path.win32.join(system32, "cmd.exe"),
-    windowsCommandLine: batchCommandLine(resolved.path, args),
+    windowsCommandLine: batchCommandLine(resolved.path, args, resolved.kind === "batch-shim"),
   };
 }
 
@@ -254,19 +311,41 @@ function windowsSystemRoot(environment: Environment): string {
 
 /**
  * `cmd.exe /d /s /v:off /c "<script> <args>"`. `/s` strips just the outer
- * quotes. Each argument is quoted for the program the script finally runs,
- * then every cmd metacharacter is caret-escaped twice: once for this line and
- * once for the script's own line that expands `%*`.
+ * quotes, and every quote inside is caret-escaped so cmd never enters a
+ * quoted run where a caret would stay literal.
  */
-function batchCommandLine(script: string, args: readonly string[]): string {
+function batchCommandLine(script: string, args: readonly string[], shim: boolean): string {
   if (/["%\0\r\n]/u.test(script))
     throw new Error(`cmd.exe cannot run a script whose path contains ", %, or a line break.`);
   const escaped = args.map((argument) => {
     if (/[\0\r\n]/u.test(argument))
       throw new Error("cmd.exe cannot pass an argument that contains NUL or a line break.");
-    return quoteWindowsArgument(argument).replace(/[ \t"%!^&|<>(),;=]/gu, "^^^$&");
+    return shim ? shimArgument(argument) : batchParameter(argument);
   });
   return `cmd.exe /d /s /v:off /c ""${script}"${escaped.map((argument) => ` ${argument}`).join("")}"`;
+}
+
+const cmdMetacharacters = /[ \t"%!^&|<>(),;=]/gu;
+
+/**
+ * Quoted for the program the shim runs, then escaped twice: once for this
+ * line and once for the shim's line that expands `%*`.
+ */
+function shimArgument(argument: string): string {
+  return quoteWindowsArgument(argument).replace(cmdMetacharacters, "^^^$&");
+}
+
+/**
+ * The batch file reads `%~1` back as `argument`. A parameter is quoted when
+ * cmd or the batch's own splitting would act on it; nothing can escape a
+ * quote inside one.
+ */
+function batchParameter(argument: string): string {
+  if (argument.includes('"'))
+    throw new Error("A batch file cannot receive an argument that contains a double quote.");
+  const parameter =
+    argument === "" || /[\s,;=&|<>()^%!]/u.test(argument) ? `"${argument}"` : argument;
+  return parameter.replace(cmdMetacharacters, "^$&");
 }
 
 /** The quoting CommandLineToArgvW and the MSVC runtime read back as `argument`. */
