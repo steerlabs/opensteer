@@ -25,6 +25,7 @@
     "./test-support/captureJsonl": "./src/captureJsonl.test-support.ts",
     "./test-support/observation": "./src/observation.test-support.ts",
     "./test-support/clock": "./src/clock.test-support.ts",
+    "./test-support/commandShims": "./src/commandShims.test-support.ts",
     "./test-support/integrationRunnerBuild": "./src/integrationRunnerBuild.test-support.ts",
     "./delay": "./src/delay.ts",
     "./envParsing": "./src/envParsing.ts",

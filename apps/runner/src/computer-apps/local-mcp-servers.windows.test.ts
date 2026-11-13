@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
+import { generatedShims } from "@opensteer/shared/test-support/commandShims";
 import { echoMcpServerSource, exchangeOverOneMebibyte } from "./local-mcp-servers.test-support.js";
 import { prepareIntegrationsModule } from "./prepare.js";
 
@@ -13,19 +14,11 @@ afterEach(async () => {
 it("runs a package's .cmd shim found on the approved Path, through plugin-data removal", async () => {
   directory = await realpath(await mkdtemp(path.join(tmpdir(), "opensteer local mcp ")));
   const bin = path.join(directory, "node_modules", ".bin");
+  const script = path.join(directory, "node_modules", "echo-argv", "bin");
   await mkdir(bin, { recursive: true });
-  await writeFile(path.join(directory, "echo-mcp.cjs"), echoMcpServerSource);
-  // The shape npm's cmd-shim writes: cmd resolves the script beside the shim.
-  await writeFile(
-    path.join(bin, "echo-mcp.cmd"),
-    [
-      "@ECHO off",
-      "SETLOCAL",
-      'SET "dp0=%~dp0"',
-      `"${process.execPath}" "%dp0%\\..\\..\\echo-mcp.cjs" %*`,
-      "",
-    ].join("\r\n"),
-  );
+  await mkdir(script, { recursive: true });
+  await writeFile(path.join(script, "echo-argv.js"), echoMcpServerSource);
+  await writeFile(path.join(bin, "echo-mcp.cmd"), generatedShims.npm.node);
   const prepared = prepareIntegrationsModule({ dataDirectory: directory, platform: "win32" });
   expect(prepared?.providers).toEqual([]);
   expect(prepared?.descriptor).toMatchObject({ pluginDataRemoval: 1, platform: "win32" });
@@ -38,7 +31,13 @@ it("runs a package's .cmd shim found on the approved Path, through plugin-data r
       args: [],
       command: "echo-mcp",
       cwd: directory,
-      env: { Path: `${bin};${path.join(process.env.SystemRoot ?? "C:\\Windows", "System32")}` },
+      env: {
+        Path: [
+          bin,
+          path.dirname(process.execPath),
+          path.join(process.env.SystemRoot ?? "C:\\Windows", "System32"),
+        ].join(";"),
+      },
       pluginId: "plugin-1",
     });
     expect(() => process.kill(serverPid, 0)).toThrow();
