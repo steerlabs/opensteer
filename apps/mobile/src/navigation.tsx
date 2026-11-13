@@ -773,8 +773,6 @@ type OpensteerRootParamList = {
      */
     readonly messageId?: string | undefined;
     readonly requestId?: string;
-    /** Set when New task just made this task and this screen replaces it. */
-    readonly started?: boolean;
     readonly threadId: string;
   };
   readonly ThreadAround: {

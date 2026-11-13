@@ -63,6 +63,7 @@ import {
   SidebarControlContext,
   SidebarDockedContext,
   SidebarVisibleContext,
+  sidebarRef,
   type SidebarControl,
 } from "./sidebar-context.js";
 import {
@@ -260,7 +261,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   // second close would restart the spring from rest, so the slide would stall.
   const closing = useRef(false);
   const close = useCallback(() => {
-    if (closing.current) return;
+    if (!visibleRef.current || closing.current) return;
     closing.current = true;
     drawer.current?.closeDrawer();
   }, []);
@@ -277,6 +278,12 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
     drawer.current?.openDrawer();
   }, []);
   const control = useMemo<SidebarControl>(() => ({ close, open }), [close, open]);
+  useEffect(() => {
+    sidebarRef.current = control;
+    return () => {
+      if (sidebarRef.current === control) sidebarRef.current = null;
+    };
+  }, [control]);
 
   const onDrawerStateChanged = useCallback((state: DrawerState, willShow: boolean) => {
     if (state === DrawerState.IDLE || willShow) closing.current = false;
@@ -302,7 +309,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   const hostClient = useSelectedHostClient();
   const readerId = useHostUserId(hostClient);
   useEffect(() => {
-    if (visibleRef.current) close();
+    close();
   }, [close, deploymentId, docked, focusedKey, hostClient, readerId]);
   // Another Deployment's list starts at its top.
   useEffect(() => {
@@ -394,7 +401,8 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
             drawerLockMode={
               swipes && !docked ? DrawerLockMode.UNLOCKED : DrawerLockMode.LOCKED_CLOSED
             }
-            drawerPosition={DrawerPosition.LEFT}
+            // The leading edge, where the column docks and iOS's own swipe starts.
+            drawerPosition={rtl ? DrawerPosition.RIGHT : DrawerPosition.LEFT}
             drawerType={sidebarMotion.type}
             drawerWidth={drawerWidth}
             edgeWidth={28}

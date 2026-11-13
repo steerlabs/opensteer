@@ -1,8 +1,14 @@
 import { useNavigation } from "@react-navigation/native";
-import { createContext, useContext, useLayoutEffect, useMemo, type ReactNode } from "react";
-import { Platform } from "react-native";
+import { createContext, useContext, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
+import { Platform, type HostInstance } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { menuHint, menuLabel, useIsTopLevel, useMenuAttention } from "../navigation-header.js";
+import {
+  attentionBadge,
+  menuHint,
+  menuLabel,
+  useIsTopLevel,
+  useMenuAttention,
+} from "../navigation-header.js";
 import { useSidebarControl, useSidebarDocked } from "../sidebar/sidebar-context.js";
 import { ToolbarButton } from "./toolbar.js";
 
@@ -56,12 +62,14 @@ export function useNativeBarAway(away = true): void {
 /**
  * The way out, standing for the leading control the native bar would have had:
  * the Menu where the page is top-level (opened from the sidebar), else Back.
+ * The vertical bar holds it instead, unless the native bar is put away even
+ * there (`ownRow`).
  */
-export function ToolbarLeave(): ReactNode {
+export function ToolbarLeave(props: { readonly ownRow?: boolean }): ReactNode {
   const navigation = useNavigation();
   const verticalBar = useContext(PlaceBarContext).verticalBar;
   const topLevel = useIsTopLevel();
-  if (verticalBar) return null;
+  if (verticalBar && props.ownRow !== true) return null;
   if (topLevel) return <ToolbarMenuButton />;
   return (
     <ToolbarButton
@@ -77,12 +85,15 @@ function ToolbarMenuButton(): ReactNode {
   const sidebar = useSidebarControl();
   const docked = useSidebarDocked();
   const attention = useMenuAttention();
+  const button = useRef<HostInstance>(null);
   if (sidebar === null || docked) return null;
   return (
     <ToolbarButton
       accessibilityHint={menuHint}
+      {...(attention === 0 ? {} : { badge: attentionBadge(attention) })}
       label={menuLabel(attention)}
-      onPress={() => sidebar.open()}
+      onPress={() => sidebar.open(button.current)}
+      ref={button}
       symbol="line.3.horizontal"
     />
   );

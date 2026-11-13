@@ -56,7 +56,13 @@ const harness = vi.hoisted(() => ({
     scroll: { offset: number };
     shelves: { list: unknown };
   }[],
-  drawer: { lock: "", panel: null as ReactNode },
+  drawer: {
+    lock: "",
+    panel: null as ReactNode,
+    position: "",
+    onState: null as null | ((state: string, willShow: boolean) => void),
+  },
+  i18n: { isRTL: false },
   openDrawer: vi.fn(),
   closeDrawer: vi.fn(),
 }));
@@ -64,7 +70,7 @@ const harness = vi.hoisted(() => ({
 vi.mock("react-native", () => ({
   AccessibilityInfo: { sendAccessibilityEvent: harness.sendAccessibilityEvent },
   BackHandler: { addEventListener: () => ({ remove: () => undefined }) },
-  I18nManager: { isRTL: false },
+  I18nManager: harness.i18n,
   Keyboard: { dismiss: harness.dismiss },
   Platform: { OS: "ios" },
   StyleSheet: { create: <T,>(styles: T) => styles, hairlineWidth: 1 },
@@ -134,6 +140,8 @@ vi.mock("react-native-gesture-handler/ReanimatedDrawerLayout", async () => {
       props: {
         children?: ReactNode;
         drawerLockMode: string;
+        drawerPosition: string;
+        onDrawerStateChanged: (state: string, willShow: boolean) => void;
         renderNavigationView: () => ReactNode;
       },
       ref,
@@ -143,6 +151,8 @@ vi.mock("react-native-gesture-handler/ReanimatedDrawerLayout", async () => {
         openDrawer: harness.openDrawer,
       }));
       harness.drawer.lock = props.drawerLockMode;
+      harness.drawer.position = props.drawerPosition;
+      harness.drawer.onState = props.onDrawerStateChanged;
       return (
         <div>
           <aside>{props.renderNavigationView()}</aside>
@@ -152,8 +162,8 @@ vi.mock("react-native-gesture-handler/ReanimatedDrawerLayout", async () => {
     }),
     DrawerKeyboardDismissMode: { ON_DRAG: "on-drag" },
     DrawerLockMode: { LOCKED_CLOSED: "locked-closed", UNLOCKED: "unlocked" },
-    DrawerPosition: { LEFT: "left" },
-    DrawerState: { IDLE: "idle" },
+    DrawerPosition: { LEFT: "left", RIGHT: "right" },
+    DrawerState: { IDLE: "idle", SETTLING: "settling" },
     DrawerType: { FRONT: "front", SLIDE: "slide" },
   };
 });
@@ -178,7 +188,12 @@ vi.mock("./sidebar-panel.js", () => ({
 }));
 
 import { SidebarShell } from "./sidebar-shell.js";
-import { useSidebarControl, useSidebarDocked, useSidebarVisible } from "./sidebar-context.js";
+import {
+  sidebarRef,
+  useSidebarControl,
+  useSidebarDocked,
+  useSidebarVisible,
+} from "./sidebar-context.js";
 
 const tabB = { kind: "browser", sessionId: "session-b", tabId: "tab-b" } as const;
 /** Tab B as a route names it. */
@@ -204,6 +219,7 @@ afterEach(() => {
   harness.dispatch.mockReset();
   harness.openDrawer.mockReset();
   harness.closeDrawer.mockReset();
+  harness.i18n.isRTL = false;
 });
 
 const mounts = { count: 0, unmounts: 0 };
@@ -313,6 +329,34 @@ describe("the sidebar as the window changes shape", () => {
     await render([home]);
     expect(harness.drawer.lock).toBe("unlocked");
     expect(mounts).toEqual({ count: 1, unmounts: 0 });
+  });
+
+  it("closes the drawer once for a choice, though the screen it changes asks again, and only while it shows", async () => {
+    const { container, render } = await mount([home, threadA]);
+    // Closed, there is nothing to close: no spring starts, and nothing flickers as if covered.
+    act(() => sidebarRef.current?.close());
+    expect(harness.closeDrawer).not.toHaveBeenCalled();
+
+    act(() => harness.drawer.onState?.("idle", true));
+    press(container, "Task B");
+    act(() => harness.drawer.onState?.("settling", false));
+    // The task chosen comes to front while the drawer is still sliding away.
+    await render([home, { ...threadA, key: "thread-b-key" }]);
+    expect(harness.closeDrawer).toHaveBeenCalledOnce();
+
+    // Settled, it closes again the next time it is open: a link arriving over it.
+    act(() => harness.drawer.onState?.("idle", false));
+    act(() => harness.drawer.onState?.("idle", true));
+    act(() => sidebarRef.current?.close());
+    expect(harness.closeDrawer).toHaveBeenCalledTimes(2);
+  });
+
+  it("opens the drawer from the leading edge, which is the right in a right-to-left language", async () => {
+    await mount([home, threadA]);
+    expect(harness.drawer.position).toBe("left");
+    harness.i18n.isRTL = true;
+    await mount([home, threadA]);
+    expect(harness.drawer.position).toBe("right");
   });
 
   it("makes a row top-level over the same mounted Home, from wherever the reader is", async () => {

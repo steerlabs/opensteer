@@ -71,6 +71,7 @@ import {
 import { Navigation, navigationTheme } from "./navigation.js";
 import { navigationRef } from "./navigation-ref.js";
 import { openTopLevel } from "./top-level.js";
+import { sidebarRef } from "./sidebar/sidebar-context.js";
 import { isRecord } from "@opensteer/shared/isRecord";
 import {
   agentAuthorizationRoot,
@@ -688,6 +689,7 @@ export function App(): ReactNode {
         waiting.current = destination;
         return;
       }
+      sidebarRef.current?.close();
       // On the computer already shown, the task opens top-level over the same
       // mounted Home, as the sidebar would open it, rather than rebuilding Home.
       const root = navigationRef.getRootState();

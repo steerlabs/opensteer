@@ -8,14 +8,13 @@ import { describe, expect, it, vi } from "vitest";
  * - a drill-in, or a streamed page that owns its edges, gets the sidebar's swipe;
  * - choosing a row piles screens up, rebuilds Home and loses its draft, or
  *   leaves drill-ins behind the new screen;
- * - choosing the task already open remounts it, or a question in it is not
- *   brought forward.
+ * - choosing the task already open remounts it, or a question in it, even
+ *   one shown before, is not brought forward.
  */
 
 vi.mock("@react-navigation/native", () => ({
   CommonActions: {
     reset: (payload: object) => ({ payload, type: "RESET" }),
-    setParams: (params: object) => ({ payload: { params }, type: "SET_PARAMS" }),
   },
   StackActions: {
     pop: (count: number) => ({ payload: { count }, type: "POP" }),
@@ -64,24 +63,22 @@ describe("making a screen top-level", () => {
     expect(action.payload.routes[0]).toBe(home);
   });
 
-  it("returns to the task already open without remounting it, bringing a question forward", () => {
+  it("returns to the task already open without remounting it", () => {
     expect(openTopLevel(stack(home, taskA), taskA)).toBeNull();
-    expect(openTopLevel(stack(home, taskA), asked)).toEqual({
-      payload: { params: { requestId: "r" } },
-      source: "a",
-      type: "SET_PARAMS",
-    });
     expect(openTopLevel(stack(home, taskA, subagent), taskA)).toEqual({
       payload: { count: 1 },
       type: "POP",
     });
-    expect(openTopLevel(stack(home, taskA, subagent), asked)).toEqual({
-      payload: {
-        index: 1,
-        routes: [home, { ...taskA, params: { ...taskA.params, requestId: "r" } }],
-      },
-      type: "RESET",
-    });
+  });
+
+  it("lands on a question in the task already open with a fresh screen, as its landing is spent once shown", () => {
+    // Even the same question again: its first screen spent it, so it would not move.
+    for (const open of [stack(home, taskA), stack(home, taskA, subagent)]) {
+      expect(openTopLevel(open, asked)).toEqual({
+        payload: { index: 1, routes: [home, asked] },
+        type: "RESET",
+      });
+    }
   });
 
   it("goes to Home by closing everything over it", () => {

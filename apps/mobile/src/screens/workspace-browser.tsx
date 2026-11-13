@@ -87,7 +87,7 @@ import {
   useNativeBarAway,
   useVerticalBar,
 } from "../browser/place-bar.js";
-import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "../browser/toolbar.js";
+import { Toolbar, ToolbarCapsule, ToolbarMenu } from "../browser/toolbar.js";
 import {
   paramsDestination,
   routeDestination,
@@ -562,19 +562,17 @@ function Focused(props: {
     navigation.setOptions({ headerShown: false });
     return () => navigation.setOptions({ headerShown: true });
   }, [appPaired, navigation]);
-  const goBack = useCallback(() => navigation.goBack(), [navigation]);
   const appPair = useMemo(
     (): AppPairChrome | null =>
       appPaired && appMenu !== null
         ? {
-            onBack: goBack,
             sections: appMenuSections(
               appMenu,
               askChoices({ asksThread: appThreadId !== null, onAsk: askBeside }),
             ),
           }
         : null,
-    [appMenu, appPaired, appThreadId, askBeside, goBack],
+    [appMenu, appPaired, appThreadId, askBeside],
   );
   const others = agents.agents.some(({ threadId }) => threadId !== besideId);
   const pairMenu: NativeMenuSection[] = [
@@ -1171,9 +1169,8 @@ function CloseBar(props: {
   );
 }
 
-/** Back and an app's menu, in its pane's own top row while a Thread is beside it. */
+/** An app's menu, beside the way out in its pane's own top row while a Thread is beside it. */
 interface AppPairChrome {
-  readonly onBack: () => void;
   readonly sections: readonly NativeMenuSection[];
 }
 
@@ -1341,12 +1338,7 @@ const AppTab = memo(function AppTab(props: {
           ]}
           testID="app-pane-bar"
         >
-          <ToolbarButton
-            accessibilityHint="Returns to the previous screen"
-            label="Back"
-            onPress={pair.onBack}
-            symbol="chevron.left"
-          />
+          <ToolbarLeave ownRow />
           <View pointerEvents="box-none" style={styles.appRowTitle}>
             <AppPill
               floating

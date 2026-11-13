@@ -92,24 +92,19 @@ export const topLevelScreenOptions: NativeStackNavigationOptions = {
   headerBackVisible: false,
 };
 
-/** Params that say where in a screen to land, rather than which screen it is. */
-const landingParams: ReadonlySet<string> = new Set(["messageId", "requestId", "started"]);
-
-function sameScreen(route: StackRoute, target: TopLevelTarget): boolean {
-  if (route.name !== target.name) return false;
-  const current = isRecord(route.params) ? route.params : {};
-  return Object.entries(target.params).every(
-    ([key, value]) => landingParams.has(key) || current[key] === value,
-  );
-}
+/**
+ * Params that say where in a screen to land. A screen spends its landing once
+ * it is shown, so landing again needs a fresh screen.
+ */
+const landingParams: ReadonlySet<string> = new Set(["messageId", "requestId"]);
 
 /**
  * The action that makes `target` top-level, or null when it already is and is in front.
  *
- * The top-level screen in view keeps its screen: drill-ins over it close, and
- * a landing such as a Request moves to it. Any other target replaces it and
- * everything over it, over the same mounted Home, so moving around the sidebar
- * never grows the stack and Home keeps its draft.
+ * The same screen keeps its mount: drill-ins over it close. Anything else,
+ * including a new landing in it, replaces it and everything over it, over the
+ * same mounted Home, so moving around the sidebar never grows the stack and
+ * Home keeps its draft.
  */
 export function openTopLevel(state: StackView, target: TopLevelTarget): NavigationAction | null {
   const index = topLevelIndex(state);
@@ -117,22 +112,19 @@ export function openTopLevel(state: StackView, target: TopLevelTarget): Navigati
   if (index === null || home === undefined) return null;
   if (target.name === "Home") return state.index === 0 ? null : StackActions.popToTop();
   const current = state.routes[index];
-  if (index === 1 && current !== undefined && sameScreen(current, target)) {
-    const landing = Object.fromEntries(
-      Object.entries(target.params).filter(([key]) => landingParams.has(key)),
-    );
-    if (Object.keys(landing).length > 0) {
-      return state.index === 1
-        ? { ...CommonActions.setParams(landing), source: current.key }
-        : reset([home, { ...current, params: { ...current.params, ...landing } }]);
-    }
+  if (index === 1 && current !== undefined && sameScreen(current, target))
     return state.index === 1 ? null : StackActions.pop(state.index - 1);
-  }
-  return reset([home, target]);
+  // Home's own route, key and all, so the router keeps it mounted.
+  const action = CommonActions.reset({ index: 1, routes: [home, target] });
+  return { payload: action.payload ?? {}, type: action.type };
 }
 
-/** A stack of exactly these routes, keeping the key, and so the mounted screen, of any that has one. */
-function reset(routes: readonly [StackRoute, TopLevelTarget]): NavigationAction {
-  const action = CommonActions.reset({ index: 1, routes: [...routes] });
-  return { payload: action.payload ?? {}, type: action.type };
+function sameScreen(route: StackRoute, target: TopLevelTarget): boolean {
+  const current = isRecord(route.params) ? route.params : {};
+  return (
+    route.name === target.name &&
+    Object.entries(target.params).every(
+      ([key, value]) => !landingParams.has(key) && current[key] === value,
+    )
+  );
 }

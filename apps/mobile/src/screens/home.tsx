@@ -30,7 +30,7 @@ export function HomeScreen(props: HomeScreenProps): ReactNode {
     (threadId: string): boolean => {
       if (!navigation.isFocused()) return false;
       Keyboard.dismiss();
-      navigation.dispatch(StackActions.push("Thread", { deploymentId, started: true, threadId }));
+      navigation.dispatch(StackActions.push("Thread", { deploymentId, threadId }));
       return true;
     },
     [deploymentId, navigation],
