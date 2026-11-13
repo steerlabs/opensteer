@@ -348,7 +348,8 @@ const kindHint: Record<PlaceKind, string> = {
 
 /**
  * Under a row's title: the site, or what kind of place it is, who it browses
- * as and where it runs when those tell rows apart, then anything not ordinary.
+ * as when that tells rows apart, then anything not ordinary. Where it runs is
+ * the row's trailing device shape, not words.
  */
 function placeDetail(
   place: PlaceItem,
@@ -371,16 +372,13 @@ function placeDetail(
       : place.loading || place.availability === "starting"
         ? "Opening…"
         : null;
-  return [
-    where,
-    showProfile ? (place.identity?.name ?? null) : null,
-    device?.name ?? null,
-    state,
-  ].filter((part): part is string => part !== null && part !== "");
+  return [where, showProfile ? (place.identity?.name ?? null) : null, state].filter(
+    (part): part is string => part !== null && part !== "",
+  );
 }
 
 interface PlaceRowProps {
-  /** The device it runs on, while the list spans more than one. */
+  /** The device it runs on, when that is not the main computer. */
   readonly device: DeviceElsewhere | null;
   readonly first: boolean;
   readonly hostClient: HostClient;
@@ -429,6 +427,7 @@ const PlaceRow = memo(function PlaceRow(props: PlaceRowProps): ReactNode {
       accessibilityLabel={[
         place.title,
         ...detail,
+        props.device?.name ?? null,
         words?.label ?? null,
         props.needsYou ? "needs you" : null,
       ]
@@ -481,6 +480,9 @@ const PlaceRow = memo(function PlaceRow(props: PlaceRowProps): ReactNode {
           </AppText>
         )}
       </View>
+      {props.device ? (
+        <Symbol name={computerSymbols[props.device.glyph]} size={15} tint={color.muted} />
+      ) : null}
       {props.needsYou ? <NeedsYouTag /> : null}
       {agents.agents.length > 0 ? (
         <AgentMarks agents={agents.agents} />

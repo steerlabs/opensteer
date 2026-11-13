@@ -138,16 +138,15 @@ export function tabFilterEmptyWords(filter: TabFilter, deviceName: string | null
 }
 
 /**
- * The device the reader's rows never name: the one they are at, or, at none
- * (a browser, or a phone that is not one of the devices), the computer that
- * runs the Deployment, where most of its tabs live.
+ * The device rows never name: the computer that runs the Deployment, where
+ * most tabs live, so the list marks the same rows from every device. With no
+ * such computer, the one the reader is at.
  */
 export function tabListHomeId(
   snapshot: Pick<HostSnapshot, "can" | "deploymentShape" | "machines">,
   hereId: string | null,
 ): string | null {
-  if (hereId !== null) return hereId;
-  return snapshot.machines.find((machine) => hostsDeployment(machine))?.id ?? null;
+  return snapshot.machines.find((machine) => hostsDeployment(machine))?.id ?? hereId;
 }
 
 /**
@@ -185,17 +184,15 @@ export function sameDevicesElsewhere(
 }
 
 /**
- * The device each listed row names beside its title, by place key. Rows name
- * one only once the list spans two or more devices, since with one there is
- * nothing to tell apart, and never the reader's home. A phone's row is already
- * the phone's name.
+ * The device each listed row marks beside its title, by place key: every one
+ * but home, so an unmarked row always means home, even in a list of one
+ * device. A phone's row is already the phone's name.
  */
 export function placeDeviceLabels(
   places: readonly Pick<PlaceItem, "device" | "key" | "kind">[],
   elsewhere: ReadonlyMap<string, DeviceElsewhere>,
 ): ReadonlyMap<string, DeviceElsewhere> {
   const labels = new Map<string, DeviceElsewhere>();
-  if (new Set(places.flatMap((place) => place.device?.machineId ?? [])).size < 2) return labels;
   for (const place of places) {
     if (place.kind === "phone" || !place.device) continue;
     const device = elsewhere.get(place.device.machineId);
