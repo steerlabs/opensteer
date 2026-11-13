@@ -184,17 +184,15 @@ export function sameDevicesElsewhere(
 }
 
 /**
- * The device each listed row names beside its title, by place key. Rows name
- * one only once the list spans two or more devices, since with one there is
- * nothing to tell apart, and never the reader's home. A phone's row is already
- * the phone's name.
+ * The device each listed row marks beside its title, by place key: every one
+ * but home, so an unmarked row always means home, even in a list of one
+ * device. A phone's row is already the phone's name.
  */
 export function placeDeviceLabels(
   places: readonly Pick<PlaceItem, "device" | "key" | "kind">[],
   elsewhere: ReadonlyMap<string, DeviceElsewhere>,
 ): ReadonlyMap<string, DeviceElsewhere> {
   const labels = new Map<string, DeviceElsewhere>();
-  if (new Set(places.flatMap((place) => place.device?.machineId ?? [])).size < 2) return labels;
   for (const place of places) {
     if (place.kind === "phone" || !place.device) continue;
     const device = elsewhere.get(place.device.machineId);

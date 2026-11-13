@@ -47,9 +47,12 @@ const places = [
 ];
 
 describe("the device each row names", () => {
-  it("names devices only once the list spans two, never the reader's own, and never a phone's own row", () => {
+  it("names every device but home, even alone in the list, and never a phone's own row", () => {
     const away = devicesElsewhere(machines, null);
-    expect(placeDeviceLabels(places.slice(1, 3), away).size).toBe(0);
+    // An unmarked row means home, so a list of only another computer's rows still marks them.
+    expect([
+      ...placeDeviceLabels(places.slice(1, 3), devicesElsewhere(machines, "mini")).keys(),
+    ]).toEqual(["b", "c"]);
     const labels = placeDeviceLabels(places, devicesElsewhere(machines, "mini"));
     expect([...labels.keys()]).toEqual(["b", "c"]);
     expect(labels.get("b")).toMatchObject({ name: "Studio Mac", online: false });

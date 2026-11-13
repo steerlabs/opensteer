@@ -1441,6 +1441,8 @@ const TabRow = memo(function TabRow({
   const where =
     [
       presentation ? browserWords(presentation, hereId) : elsewhere,
+      // Marked though it is this device (not the main computer): the label overrides the mark's name.
+      device?.id === hereId ? device.name : null,
       !presentation && place.ownerView ? "View only" : null,
       device && !device.online ? "Offline" : null,
     ]
