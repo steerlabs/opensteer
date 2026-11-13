@@ -118,10 +118,10 @@ boundary. Older personal database lineages require Start fresh. Within an epoch:
   feature a peer did not advertise.
 
 Released Needs you readers require known Request kinds. A surface opts into `device.access` only
-when its UI can render and answer it; Host support alone is insufficient. Web and desktop declare
-`deviceAccessRequests: "include"` in their `HttpHostClient` options. The shared client sends the
-reader option only with a Host advertising `devices-v1`; mobile stays opted out until its sheet
-supports the kind. Legacy lists, snapshots, history, counts and live notifications omit it. Event
+when its UI can render and answer it; Host support alone is insufficient. Web, desktop and mobile
+declare `deviceAccessRequests: "include"` in their `HttpHostClient` options, and the shared client
+sends it only to a Host advertising `devices-v1`; raw `attention.get` callers must check that
+capability themselves. Legacy lists, snapshots, history, counts and live notifications omit it. Event
 counts retain their excluded-kind count at the original sequence so replay remains consistent after
 settlement. The durable Request still holds its Run, and filtering advances the event cursor.
 

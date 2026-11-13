@@ -182,8 +182,8 @@ stores are deleted too. Its durable retiring identity survives interruption befo
 startup completes that erasure before any profile can load.
 
 Removing a computer deletes its homed profiles in the same transaction. Their storage erasure is
-terminal `unconfirmed`, not pending work and never a claim that files were erased. The removed device
-clears its own storage when it learns of removal; a phone also clears it at sign-out.
+terminal `unconfirmed`, not pending work and never a claim that files were erased. A device clears
+its own storage when it learns of removal or leaves, including at sign-out.
 
 A profile's home and established storage identity are fixed. Missing directories, sentinels or
 cookie mirrors refuse open while preserving what remains; never create an empty replacement or
