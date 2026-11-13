@@ -138,16 +138,22 @@ export function migrationProvider(): MigrationProvider {
               client_message_id uuid not null,
               local_link_id text not null,
               remote_link_id text not null,
-              run_id text not null,
+              run_id text not null references runs(id) on delete cascade,
               message_id bigint,
               channel_id text not null,
               thread_root_id bigint,
               target_user_ids text[] not null,
+              mentioned_agent_handles text[] not null,
+              body_markdown text not null,
+              attachment_ids jsonb not null,
+              request_id text,
+              created_at timestamptz not null default now(),
               primary key(team_deployment_id, client_message_id)
             );
+            create index personal_team_posts_expiry on personal_team_posts(created_at);
             create unique index personal_team_returns_post_target on personal_team_requests (
-              team_deployment_id, (return_payload->>'triggerClientMessageId'), (return_payload->'author'->>'teamUserId')
-            ) where return_admission is not null and return_payload->>'triggerClientMessageId' is not null`.execute(
+              team_deployment_id, (return_payload->>'triggerClientMessageId'), (return_payload->'author'->>'handle')
+            ) where return_admission = 'admitted' and return_payload->>'triggerClientMessageId' is not null`.execute(
               database,
             );
           },

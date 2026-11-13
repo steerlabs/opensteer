@@ -126,8 +126,10 @@ export class TeamLinkEndpoint {
           .catch(() => undefined)
           .then(async () => {
             if (!hello || !active) return;
+            const capacity = 200 - inFlightReturns.size;
+            if (!capacity) return;
             const revision = access.revision;
-            const pending = await requests.pending(linkId, [...delivered]);
+            const pending = await requests.pending(linkId, [...delivered], capacity);
             const batches: (typeof pending)[number][][] = [];
             let batch: (typeof pending)[number][] = [];
             for (const request of pending) {
@@ -148,7 +150,7 @@ export class TeamLinkEndpoint {
               await access.handoff(
                 revision,
                 async () => {
-                  const current = await requests.pending(linkId, [...delivered]);
+                  const current = await requests.pending(linkId, [...delivered], capacity);
                   return batch.every((item) =>
                     current.some((entry) => entry.request.id === item.request.id),
                   );
@@ -169,7 +171,9 @@ export class TeamLinkEndpoint {
       cancel: (requestId: TeamAgentRequestId) => {
         delivered.delete(requestId);
         inFlightReturns.delete(requestId);
-        void send({ type: "cancel", requestId }).catch(() => close());
+        void send({ type: "cancel", requestId })
+          .then(() => subscriber.deliver())
+          .catch(() => close());
       },
     };
     const sockets = this.#sockets.get(linkId) ?? new Set();
@@ -239,7 +243,7 @@ export class TeamLinkEndpoint {
               if (result.kind === "accepted" && result.request.kind === "return") {
                 delivered.delete(result.request.id);
                 inFlightReturns.delete(result.request.id);
-                if (!inFlightReturns.size) await subscriber.deliver();
+                await subscriber.deliver();
               }
             } catch (error) {
               await send({

@@ -59,13 +59,15 @@ export async function createTeamAskReturn(
     : null;
   const owner = await transaction
     .selectFrom("users")
-    .select("displayName")
-    .where("id", "=", ask.ownerUserId)
+    .innerJoin("teamMembers", "teamMembers.userId", "users.id")
+    .select(["users.displayName", "teamMembers.handle"])
+    .where("users.id", "=", ask.ownerUserId)
     .executeTakeFirstOrThrow();
   const payload = {
     author: {
       teamUserId: ask.ownerUserId,
       displayName: owner.displayName,
+      handle: owner.handle,
       actor: "agent" as const,
     },
     originAskId: ask.id,

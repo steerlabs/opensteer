@@ -472,7 +472,11 @@ const TeamLinkResultViewSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     ...read.shape,
-    result: z.object({ page: TeamMessagePageViewSchema, source: TeamSourceViewSchema }),
+    result: z.object({
+      ...read.shape.result.shape,
+      page: TeamMessagePageViewSchema,
+      source: TeamSourceViewSchema,
+    }),
   }),
   z.object({ ...search.shape, result: TeamSearchPageViewSchema }),
   z.object({

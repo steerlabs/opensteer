@@ -40,6 +40,32 @@ export class PersonalTeamRequestsStore {
     this.#onDeliveryEvent = onDeliveryEvent;
   }
 
+  async prunePosts() {
+    await this.database
+      .deleteFrom("personalTeamPosts")
+      .where("createdAt", "<=", new Date(Date.now() - 14 * 86400000))
+      .execute();
+  }
+
+  async pendingPosts(teamId: DeploymentId) {
+    await this.prunePosts();
+    return this.database
+      .selectFrom("personalTeamPosts")
+      .selectAll()
+      .where("teamDeploymentId", "=", teamId)
+      .where("messageId", "is", null)
+      .execute();
+  }
+
+  async forgetPost(teamId: DeploymentId, clientMessageId: string, localLinkId: string) {
+    await this.database
+      .deleteFrom("personalTeamPosts")
+      .where("teamDeploymentId", "=", teamId)
+      .where("clientMessageId", "=", clientMessageId)
+      .where("localLinkId", "=", localLinkId)
+      .execute();
+  }
+
   post(teamId: DeploymentId, clientMessageId: string) {
     return this.database
       .selectFrom("personalTeamPosts")
@@ -50,31 +76,54 @@ export class PersonalTeamRequestsStore {
   }
 
   async recordPost(input: Insertable<DatabaseSchema["personalTeamPosts"]>) {
-    await this.database
-      .insertInto("personalTeamPosts")
-      .values(input)
-      .onConflict((conflict) =>
-        conflict.columns(["teamDeploymentId", "clientMessageId"]).doNothing(),
-      )
-      .execute();
-    const saved = (await this.post(input.teamDeploymentId, input.clientMessageId))!;
-    if (
-      saved.localLinkId !== input.localLinkId ||
-      saved.remoteLinkId !== input.remoteLinkId ||
-      saved.runId !== input.runId ||
-      saved.channelId !== input.channelId ||
-      saved.threadRootId !== input.threadRootId ||
-      (saved.messageId !== null && input.messageId !== null && saved.messageId !== input.messageId)
-    )
-      throw new OpensteerError({ code: "conflict", message: "Team post identity changed." });
-    if (input.messageId !== null)
-      await this.database
-        .updateTable("personalTeamPosts")
-        .set({ messageId: input.messageId, targetUserIds: input.targetUserIds })
+    await this.prunePosts();
+    await withPersonalTransaction(this.database, async (tx) => {
+      await tx
+        .insertInto("personalTeamPosts")
+        .values({ ...input, attachmentIds: sql`${JSON.stringify(input.attachmentIds)}::jsonb` })
+        .onConflict((conflict) =>
+          conflict.columns(["teamDeploymentId", "clientMessageId"]).doNothing(),
+        )
+        .execute();
+      const saved = await tx
+        .selectFrom("personalTeamPosts")
+        .selectAll()
         .where("teamDeploymentId", "=", input.teamDeploymentId)
         .where("clientMessageId", "=", input.clientMessageId)
-        .where("messageId", "is", null)
-        .execute();
+        .executeTakeFirstOrThrow();
+      if (
+        saved.localLinkId !== input.localLinkId ||
+        saved.remoteLinkId !== input.remoteLinkId ||
+        saved.runId !== input.runId ||
+        saved.channelId !== input.channelId ||
+        saved.threadRootId !== input.threadRootId ||
+        saved.requestId !== input.requestId ||
+        saved.bodyMarkdown !== input.bodyMarkdown ||
+        JSON.stringify(saved.attachmentIds) !== JSON.stringify(input.attachmentIds) ||
+        JSON.stringify(saved.mentionedAgentHandles) !==
+          JSON.stringify(input.mentionedAgentHandles) ||
+        (saved.messageId !== null &&
+          input.messageId !== null &&
+          saved.messageId !== input.messageId)
+      )
+        throw new OpensteerError({ code: "conflict", message: "Team post identity changed." });
+      if (input.messageId !== null) {
+        if (!input.targetUserIds.length) {
+          await tx
+            .deleteFrom("personalTeamPosts")
+            .where("teamDeploymentId", "=", input.teamDeploymentId)
+            .where("clientMessageId", "=", input.clientMessageId)
+            .execute();
+        } else
+          await tx
+            .updateTable("personalTeamPosts")
+            .set({ messageId: input.messageId, targetUserIds: input.targetUserIds })
+            .where("teamDeploymentId", "=", input.teamDeploymentId)
+            .where("clientMessageId", "=", input.clientMessageId)
+            .where("messageId", "is", null)
+            .execute();
+      }
+    });
   }
 
   async mirror(teamId: DeploymentId, requestId: TeamAgentRequestId) {

@@ -2,6 +2,7 @@ import { OpensteerError, type DeploymentId, type RunId, type TeamBlobId } from "
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
 import { TeamSearchInputSchema } from "@opensteer/protocol";
+import { teamMentionHandles } from "@opensteer/shared/teamMentions";
 import type { z } from "zod";
 import {
   linkError,
@@ -167,7 +168,7 @@ export class TeamRunTools {
       request.source.channelId === input.channelId &&
       request.source.threadRootId === (input.threadRootId ?? null);
     const clientMessageId = teamOperationId("tool", run.runId, run.operationId);
-    const { source } = await this.read(run, teamId, {
+    const { source, ownerHandle } = await this.read(run, teamId, {
       channelId: input.channelId,
       ...(input.threadRootId ? { threadRootId: input.threadRootId } : {}),
     });
@@ -179,7 +180,10 @@ export class TeamRunTools {
         answerMessageId: null,
         payload: { bodyMarkdown: input.bodyMarkdown, attachmentIds: [...input.attachmentIds] },
       });
-    await this.requests.recordPost({
+    const mentionedAgentHandles = [...new Set(teamMentionHandles(input.bodyMarkdown))].filter(
+      (handle) => handle.endsWith("-agent") && handle !== `${ownerHandle}-agent`,
+    );
+    const provenance = {
       teamDeploymentId: teamId,
       localLinkId: link.id,
       remoteLinkId: link.remoteLinkId,
@@ -189,7 +193,12 @@ export class TeamRunTools {
       channelId: input.channelId,
       threadRootId: input.threadRootId ?? null,
       targetUserIds: [],
-    });
+      mentionedAgentHandles,
+      bodyMarkdown: input.bodyMarkdown,
+      attachmentIds: [...input.attachmentIds],
+      requestId: claimsReply ? request.requestId : null,
+    };
+    if (mentionedAgentHandles.length) await this.requests.recordPost(provenance);
     const result = await this.rpc(teamId)
       .call({
         type: "post",
@@ -201,7 +210,6 @@ export class TeamRunTools {
       })
       .catch(async (error: unknown) => {
         if (
-          claimsReply &&
           error instanceof OpensteerError &&
           [
             "bad_request",
@@ -211,24 +219,23 @@ export class TeamRunTools {
             "conflict",
             "resource_exhausted",
           ].includes(error.code)
-        )
-          await this.requests.clearFreeze(teamId, request.requestId, clientMessageId);
+        ) {
+          if (mentionedAgentHandles.length)
+            await this.requests.forgetPost(teamId, clientMessageId, link.id);
+          if (claimsReply)
+            await this.requests.clearFreeze(teamId, request.requestId, clientMessageId);
+        }
         throw error;
       });
     if (result.kind !== "receipt" || result.messageId === null) throw linkError("bad_request");
-    await this.requests.recordPost({
-      teamDeploymentId: teamId,
-      localLinkId: link.id,
-      remoteLinkId: link.remoteLinkId,
-      clientMessageId,
-      runId: run.runId,
-      messageId: result.messageId,
-      channelId: input.channelId,
-      threadRootId: input.threadRootId ?? null,
-      targetUserIds: (result.askOutcomes ?? [])
-        .filter((ask) => ask.outcome === "queued")
-        .map((ask) => ask.ownerUserId),
-    });
+    if (mentionedAgentHandles.length)
+      await this.requests.recordPost({
+        ...provenance,
+        messageId: result.messageId,
+        targetUserIds: (result.askOutcomes ?? [])
+          .filter((ask) => ask.outcome === "queued")
+          .map((ask) => ask.ownerUserId),
+      });
     await this.onPost?.(teamId);
     if (claimsReply) {
       const receipt = await this.rpc(teamId).call({

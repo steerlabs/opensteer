@@ -95,7 +95,11 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       () => request,
     );
   }
-  async pending(linkId: TeamLinkId, excludeRequestIds: readonly TeamAgentRequestId[] = []) {
+  async pending(
+    linkId: TeamLinkId,
+    excludeRequestIds: readonly TeamAgentRequestId[] = [],
+    limit = 200,
+  ) {
     await this.expire();
     const revision = this.access.revision;
     const result = await this.access.database.transaction().execute(async (t) => {
@@ -115,7 +119,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         .orderBy(sql`case when state in ('awaiting_approval','queued') then 0 else 1 end`)
         .orderBy("createdAt")
         .orderBy("id")
-        .limit(200);
+        .limit(limit);
       if (excludeRequestIds.length) pending = pending.where("id", "not in", excludeRequestIds);
       const rows = await pending.execute();
       const requests = [];
@@ -196,19 +200,24 @@ export class TeamRequestsStore implements TeamRequestStorePort {
           );
           requireTeam(row.consentExpiresAt && row.consentExpiresAt > new Date(), "Consent expired");
         } else {
-          requireTeam(decision === undefined, "Only asks have decisions");
+          requireTeam(row.kind === "return" || decision === undefined, "Only asks have decisions");
           if (row.kind === "return") {
             if (row.acceptedAt) return teamRequestView(row);
             requireTeam(row.state === "queued", "Return is terminal");
             const delivered = await t
               .updateTable("teamAgentRequests")
-              .set({ state: "done", acceptedAt: sql`now()`, finishedAt: sql`now()` })
+              .set({
+                state: decision === "decline" ? "cancelled" : "done",
+                acceptedAt: sql`now()`,
+                finishedAt: sql`now()`,
+              })
               .where("id", "=", id)
               .returningAll()
               .executeTakeFirstOrThrow();
             await appendTeamAudit(t, {
               actor: { kind: "agent", userId: row.ownerUserId },
-              action: "request.return.deliver",
+              action:
+                decision === "decline" ? "request.return.undeliverable" : "request.return.deliver",
               resourceKind: "request",
               resourceId: id,
               requestId: id,

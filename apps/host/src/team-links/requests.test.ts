@@ -46,6 +46,7 @@ function fixture() {
   const calls: TeamLinkCallInput[] = [];
   const requests = {
     post: vi.fn(async () => undefined),
+    pendingPosts: async () => [],
     recordPost: vi.fn(),
     async forRun() {
       return structuredClone(row);
