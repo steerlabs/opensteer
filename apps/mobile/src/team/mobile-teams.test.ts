@@ -8,7 +8,7 @@ import {
 } from "@opensteer/client/connections";
 import type { MockTeamHost, TeamCacheScope } from "@opensteer/client/team";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
-import { createId, DeploymentIdSchema, OpensteerError } from "@opensteer/core";
+import { createId, DeploymentIdSchema, TeamChannelIdSchema, OpensteerError } from "@opensteer/core";
 import type { HostApiClient } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { MobileClient } from "../client/mobile-client.js";
@@ -83,6 +83,7 @@ function fixture(
     ],
   };
   const client = {
+    oauth: { accountIdentity: () => null, isTeamSignInSuppressed: () => false },
     subscribe: (listener: () => void) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -114,12 +115,36 @@ function fixture(
       snapshot = { ...snapshot, selection: { deploymentId, hostClient: null } } as never;
       for (const listener of listeners) listener();
     },
+    loseAuthorization() {
+      snapshot = {
+        ...snapshot,
+        teams: snapshot.teams.map((team) => ({ ...team, signedIn: false })),
+      };
+      for (const listener of listeners) listener();
+    },
     sockets: () =>
       Object.fromEntries([...hosts].map(([teamId, host]) => [teamId, host.socketCount])),
   };
 }
 
 describe("the one team socket a phone keeps", () => {
+  it("retains an open team's draft when authorization temporarily disappears", async () => {
+    const f = fixture();
+    f.teams.start();
+    const session = await f.teams.session(mockFamilyTeamId);
+    await session.setDraft(
+      {
+        kind: "channel",
+        channelId: TeamChannelIdSchema.parse("tch_00000000-0000-4000-8000-000000000001"),
+      },
+      "Keep this draft",
+    );
+    f.loseAuthorization();
+    expect(Object.values(session.getSnapshot().drafts)).toEqual(["Keep this draft"]);
+    expect(session.getSnapshot().ended).toBeNull();
+    f.teams.dispose();
+  });
+
   it("never lets a slower, older selection replace the team now in view", async () => {
     const f = fixture();
     const acme = f.teams.select(mockTeamId);
@@ -312,6 +337,7 @@ describe("adding a computer's team to the phone", () => {
       const client = {
         catalog,
         oauth: {
+          accountIdentity: () => null,
           accountAuthorizationLease: async () => (mode === "no-account" ? null : lease),
           authorizationHeader: async () => null,
           resumeTeamSignIn: async () => {},

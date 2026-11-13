@@ -150,7 +150,12 @@ export class TeamTransportRegistry {
       if (teamDeploymentId === scope.teamDeploymentId && userId !== scope.userId)
         await this.remove({ teamDeploymentId, userId });
     }
-    if (this.#clients.get(key)?.getSnapshot().ended) await this.remove(scope);
+    const ended = this.#clients.get(key);
+    if (ended?.getSnapshot().ended === "sign-in") {
+      await ended.remove("sign-in");
+      ended.dispose();
+      if (this.#clients.get(key) === ended) this.#clients.delete(key);
+    } else if (ended?.getSnapshot().ended) await this.remove(scope);
     await this.#removing.get(key);
     if (this.#disposed) throw new Error("Team registry disposed.");
     const held = this.#clients.get(key);
@@ -197,7 +202,13 @@ export class TeamTransportRegistry {
     if (pending) return pending;
     const client = this.#clients.get(key);
     this.#clients.delete(key);
-    const operation = client ? client.remove() : this.#create(scope).persistence.remove(scope);
+    const operation =
+      client && client.getSnapshot().ended !== "sign-in"
+        ? client.remove()
+        : Promise.resolve(client?.remove("sign-in")).then(() =>
+            this.#create(scope).persistence.remove(scope),
+          );
+    client?.dispose();
     this.#removing.set(key, operation);
     try {
       await operation;

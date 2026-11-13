@@ -224,6 +224,13 @@ export class MobileTeams {
     this.#entry = new NativeTeamEntry({
       oauth: options.client.oauth,
       catalog: options.client.catalog,
+      bootstrap: async (connection) =>
+        unwrapRpcResult(
+          await this.#transport(connection, {
+            teamDeploymentId: connection.authority.document.deploymentId,
+            userId: placeholderUser,
+          }).rpc["team.bootstrap.get"]({}),
+        ).member,
     });
     this.#files = options.files;
     this.#previews = options.previews ?? null;
@@ -246,11 +253,21 @@ export class MobileTeams {
 
   start(): void {
     if (this.#detachClient !== null) return;
+    let identity = this.#client.oauth.accountIdentity();
     this.#detachClient = this.#client.subscribe(() => {
+      const nextIdentity = this.#client.oauth.accountIdentity();
+      const identityChanged =
+        identity?.issuer !== nextIdentity?.issuer || identity?.subject !== nextIdentity?.subject;
+      identity = nextIdentity;
       const shown = this.#snapshot.computerId;
       // Signed out of a team, here or by its own screen: its session and partition go.
       for (const teamId of this.#sessions.keys())
-        if (!this.#signedIn(teamId)) void this.#signedOut(teamId);
+        if (
+          identityChanged ||
+          !this.#connection(teamId) ||
+          this.#client.oauth.isTeamSignInSuppressed(this.#connection(teamId)!)
+        )
+          void this.#signedOut(teamId);
       this.#publish();
       // Another computer on screen: its team takes the one socket.
       if (this.#snapshot.computerId !== shown) void this.select(this.#selected);
@@ -705,8 +722,8 @@ export class MobileTeams {
 
   /**
    * The team ended this reader's session: they were removed, must sign in
-   * again, or the team's login now names someone else. The session has already
-   * purged its own partition; this phone stops holding it and says why.
+   * again, or the team's login now names someone else. Reauthentication keeps
+   * the partition until bootstrap verifies who returned.
    */
   #ended(teamId: string, session: TeamSessionClient): void {
     if (this.#sessions.get(teamId) !== session) return;
@@ -898,6 +915,7 @@ export function teamFailure(error: unknown): TeamState {
   if (error instanceof HostVersionMismatchError)
     return error.code === "client-too-old" ? "update-app" : "update-server";
   if (error instanceof HostClientRequestError) {
+    if (error.reason === "not-a-member") return "join";
     if (error.code === "unauthorized") return "signed-out";
     if (error.code === "forbidden" || error.code === "not_found") return "removed";
     if (error.code === "version_mismatch" || error.code === "upgrade_required") return "update-app";

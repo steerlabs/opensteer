@@ -11,6 +11,7 @@ import {
   teamInvitePreviewPath,
   type TeamInvitePreviewResponse,
   type TeamSessionExchangeResponse,
+  type TeamMember,
 } from "@opensteer/protocol";
 import { z } from "zod";
 import {
@@ -27,8 +28,6 @@ import {
   type VerifiedHostEndpoint,
 } from "../connections/deployment-catalog.js";
 import { ClientOperationError } from "../connections/operation-error.js";
-import { createHttpHostApiClient } from "../host/host-api-client.js";
-import { unwrapRpcResult } from "../host/host-session-client.js";
 import type { VerifiedTeam } from "./team-coordinator.js";
 
 export function verifiedTeam(verified: VerifiedHostEndpoint): VerifiedTeam {
@@ -137,16 +136,16 @@ export async function authorizeTeamCredential(
 export class NativeTeamEntry {
   readonly #oauth: TeamEntryOAuth;
   readonly #catalog: TeamEntryCatalog;
-  readonly #fetch: typeof globalThis.fetch;
+  readonly #bootstrap: (connection: DeploymentConnection) => Promise<TeamMember>;
 
   constructor(options: {
     readonly oauth: TeamEntryOAuth;
     readonly catalog: TeamEntryCatalog;
-    readonly fetch?: typeof globalThis.fetch;
+    readonly bootstrap: (connection: DeploymentConnection) => Promise<TeamMember>;
   }) {
     this.#oauth = options.oauth;
     this.#catalog = options.catalog;
-    this.#fetch = options.fetch ?? globalThis.fetch;
+    this.#bootstrap = options.bootstrap;
   }
 
   async enter(
@@ -156,23 +155,7 @@ export class NativeTeamEntry {
     const entered = await this.ensureAuthorized(verified, invite);
     if (entered) return entered;
     const connection = (await this.#held(verified.discovery.deploymentId))!;
-    const rpc = createHttpHostApiClient({
-      baseUrl: new URL(verified.discovery.canonicalOrigin),
-      kind: "team",
-      fetch: async (input, init) => {
-        const authorization = await this.#oauth.authorizationHeader(connection);
-        return this.#fetch(input, {
-          ...init,
-          credentials: "omit",
-          headers: {
-            ...Object.fromEntries(new Headers(init?.headers)),
-            ...(authorization ? { authorization } : {}),
-          },
-        });
-      },
-      onAuthenticationRequired: () => {},
-    });
-    return { admitted: false, member: unwrapRpcResult(await rpc["team.bootstrap.get"]({})).member };
+    return { admitted: false, member: await this.#bootstrap(connection) };
   }
 
   /**
@@ -194,16 +177,33 @@ export class NativeTeamEntry {
     const held = await this.#held(deploymentId);
     try {
       if (held) {
-        const authorized = await authorizeTeamCredential(this.#oauth, held, invite, interactive);
+        const catalog = await this.#catalog.upsert(
+          deploymentConnectionFromVerifiedEndpoints({
+            accountAccess: held.accountAccess,
+            endpoints: [verified],
+            kind: "team",
+            name: held.name,
+            source: held.source,
+          }),
+        );
+        const refreshed = catalog.deployments.find(
+          (entry) => entry.authority.document.deploymentId === deploymentId,
+        )!;
+        const authorized = await authorizeTeamCredential(
+          this.#oauth,
+          refreshed,
+          invite,
+          interactive,
+        );
         if (authorized !== false) return authorized;
-        if (interactive) await this.#browserSignIn(held, invite);
+        if (interactive) await this.#browserSignIn(refreshed, invite);
         return null;
       }
       const canExchange =
         verified.capabilities.includes("team-session-exchange-v1") &&
         (await this.#oauth.accountAuthorizationLease());
       const connection = canExchange
-        ? await this.#keep(verified, held)
+        ? await this.#keep(verified)
         : await this.#keepManual(verified);
       const authorized = await authorizeTeamCredential(
         this.#oauth,
@@ -302,12 +302,7 @@ export class NativeTeamEntry {
     }
   }
 
-  async #keep(
-    verified: VerifiedHostEndpoint,
-    held: DeploymentConnection | null,
-  ): Promise<DeploymentConnection> {
-    // A team the person added by hand stays exactly as they added it.
-    if (held?.source.kind === "manual") return held;
+  async #keep(verified: VerifiedHostEndpoint): Promise<DeploymentConnection> {
     const lease = await this.#oauth.accountAuthorizationLease();
     if (!lease)
       throw new ClientOperationError(
@@ -317,10 +312,10 @@ export class NativeTeamEntry {
     const deploymentId = verified.discovery.deploymentId;
     const catalog = await this.#catalog.addPendingAccountDeployment(
       deploymentConnectionFromVerifiedEndpoints({
-        accountAccess: held?.accountAccess ?? null,
+        accountAccess: null,
         endpoints: [verified],
         kind: "team",
-        name: held?.name ?? new URL(verified.discovery.canonicalOrigin).hostname,
+        name: new URL(verified.discovery.canonicalOrigin).hostname,
         source: { kind: "account", issuer: lease.issuer, subject: lease.subject },
       }),
     );

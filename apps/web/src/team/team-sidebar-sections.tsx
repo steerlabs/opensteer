@@ -286,7 +286,13 @@ export function TeamSideFor({
         <div className="team-left__text">
           <p className="team-left__title">{team.name}</p>
           <p className="team-left__detail">
-            {enter ? "Not signed in on this computer" : `Opens at ${new URL(team.origin).host}`}
+            {team.failure === "unavailable"
+              ? "Team temporarily unavailable. Try again."
+              : team.failure === "join"
+                ? "Ask a team member for an invite."
+                : enter
+                  ? "Not signed in on this computer"
+                  : `Opens at ${new URL(team.origin).host}`}
           </p>
         </div>
         {enter ? (
@@ -301,7 +307,13 @@ export function TeamSideFor({
             }}
             type="button"
           >
-            {entering ? "Signing in…" : "Sign in"}
+            {entering
+              ? "Opening…"
+              : team.failure === "unavailable"
+                ? "Retry"
+                : team.failure === "join"
+                  ? "Join"
+                  : "Sign in"}
           </button>
         ) : (
           <a className="btn btn--small" href={team.origin} rel="noreferrer" target="_blank">

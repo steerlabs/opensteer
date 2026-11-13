@@ -91,14 +91,16 @@ function setup() {
   };
   const ids = async () =>
     (await catalog.load()).deployments.map(({ authority }) => authority.document.deploymentId);
+  const bootstrap = vi.fn(async () => member);
   return {
+    bootstrap,
     catalog,
     oauth,
     ids,
     callback,
     listeners,
     signOut: () => (signedIn = false),
-    entry: new NativeTeamEntry({ oauth, catalog }),
+    entry: new NativeTeamEntry({ oauth, catalog, bootstrap }),
   };
 }
 
@@ -148,6 +150,34 @@ describe("NativeTeamEntry", () => {
     verify.mockClear();
     await entry.restore(id, verify);
     expect(verify).not.toHaveBeenCalled();
+  });
+
+  it("bootstraps cached credentials through the supplied pinned transport", async () => {
+    const { entry, oauth, bootstrap } = setup();
+    oauth.authorizationHeader.mockResolvedValue("Bearer rejected-before-expiry");
+    await expect(entry.enter(team(), null)).resolves.toEqual({ admitted: false, member });
+    expect(bootstrap).toHaveBeenCalledOnce();
+  });
+
+  it("updates a saved team's verified capabilities before authorization", async () => {
+    const { catalog, entry, oauth } = setup();
+    const verified = team();
+    const { deploymentConnectionFromVerifiedEndpoints } =
+      await import("../connections/deployment-catalog.js");
+    await catalog.upsert(
+      deploymentConnectionFromVerifiedEndpoints({
+        accountAccess: null,
+        endpoints: [{ ...verified, capabilities: ["native-oauth"] }],
+        kind: "team",
+        name: "Team",
+        source: { kind: "manual" },
+      }),
+    );
+    await entry.ensureAuthorized(verified, null, false);
+    expect(oauth.exchangeTeamSession).toHaveBeenCalledOnce();
+    expect((await catalog.load()).deployments[0]?.capabilities).toContain(
+      "team-session-exchange-v1",
+    );
   });
 
   it("reuses a refreshed credential and leaves an unavailable refresh retryable", async () => {

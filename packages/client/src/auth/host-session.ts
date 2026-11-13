@@ -107,7 +107,13 @@ export interface HostSessionObservation {
 }
 
 export type HostSessionRecoveryOutcome =
-  "account-required" | "blocked" | "pairing-required" | "recovered" | "unavailable" | "unsupported";
+  | "account-required"
+  | "blocked"
+  | "pairing-required"
+  | "recovered"
+  | "unavailable"
+  | "unsupported"
+  | TeamEntryRefusedError;
 
 export interface HostSessionRecovery {
   assertSessionAllowed?(deploymentId: string): Promise<void>;
@@ -639,6 +645,8 @@ function observationFromRecovery(
   resolved: ResolvedConnection,
   outcome: HostSessionRecoveryOutcome,
 ): HostSessionObservation {
+  if (outcome instanceof TeamEntryRefusedError)
+    return observation(resolved, "blocked", outcome.message);
   if (outcome === "recovered") return observation(resolved, "ready");
   if (outcome === "blocked") {
     return observation(resolved, "blocked", "This connection was refused.");
@@ -698,6 +706,7 @@ function recoveryFromObservation(
 }
 
 function recoveryFailure(error: unknown): HostSessionRecoveryOutcome {
+  if (error instanceof TeamEntryRefusedError) return error;
   if (error instanceof HostSessionExchangeError) return error.outcome;
   if (error instanceof AccountRequestError) {
     if (error.status === 401) return "account-required";

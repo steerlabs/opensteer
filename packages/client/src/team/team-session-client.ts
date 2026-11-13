@@ -1024,7 +1024,9 @@ export class TeamSessionClient {
     if (this.#removal) return this.#removal;
     this.#removal = this.#persist
       .catch(() => undefined)
-      .then(() => this.#options.persistence.remove(this.#options.scope));
+      .then(() =>
+        ended === "sign-in" ? undefined : this.#options.persistence.remove(this.#options.scope),
+      );
     this.#removed = true;
     this.#lifetime++;
     this.disconnect();

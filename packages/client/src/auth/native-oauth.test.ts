@@ -688,8 +688,9 @@ describe("NativeOAuthManager", () => {
   it("keeps a rotated Host credential across other writes and retries persistence on a later read", async () => {
     const fixture = await managerFixture({ tokenLifetimeSeconds: 61 });
     await fixture.manager.initialize();
+    await fixture.signInAccount();
     await fixture.manager.beginHostSignIn(fixture.connection);
-    const authorize = new URL(fixture.opened[0]!);
+    const authorize = new URL(fixture.opened.at(-1)!);
     await fixture.manager.handleCallback(
       callbackUrl("host", authorize.searchParams.get("state")!, "host-code"),
     );
@@ -702,7 +703,7 @@ describe("NativeOAuthManager", () => {
       .mockRejectedValueOnce(new Error("Keychain locked"))
       .mockRejectedValueOnce(new Error("Keychain locked"));
     fixture.clock.now = new Date("2026-08-11T19:00:02.000Z");
-    const expected = `Bearer host-access-2-${"a".repeat(20)}`;
+    const expected = `Bearer host-access-3-${"a".repeat(20)}`;
 
     await expect(fixture.manager.authorizationHeader(fixture.connection)).resolves.toBe(expected);
     expect(fixture.manager.hostCredentialState(fixture.connection)).toMatchObject({
@@ -710,13 +711,12 @@ describe("NativeOAuthManager", () => {
       status: "signed-in",
     });
     await expect(fixture.store.load()).resolves.toMatchObject({
-      hosts: [{ refreshToken: `host-refresh-1-${"r".repeat(20)}` }],
+      hosts: [{ refreshToken: `host-refresh-2-${"r".repeat(20)}` }],
     });
-    await fixture.signInAccount();
     await expect(fixture.manager.authorizationHeader(fixture.connection)).resolves.toBe(expected);
     await expect(fixture.manager.authorizationHeader(fixture.connection)).resolves.toBe(expected);
     await expect(fixture.store.load()).resolves.toMatchObject({
-      hosts: [{ refreshToken: `host-refresh-2-${"r".repeat(20)}` }],
+      hosts: [{ refreshToken: `host-refresh-3-${"r".repeat(20)}` }],
     });
     expect((await fixture.store.load()).hosts[0]?.viewLoginId).toBe(loginId);
     expect(write).toHaveBeenCalledTimes(3);
@@ -1018,6 +1018,96 @@ describe("NativeOAuthManager team session exchange", () => {
     generation: "1",
     joinedAt: "2026-08-11T19:00:00.000Z",
   };
+
+  it("drops unbound browser credentials and fences browser flows on Account identity changes", async () => {
+    const f = await managerFixture();
+    await f.manager.initialize();
+    await f.manager.beginHostSignIn(f.connection);
+    await f.manager.handleCallback(
+      callbackUrl("host", new URL(f.opened.at(-1)!).searchParams.get("state")!, "code"),
+    );
+    await f.signInAccount();
+    expect(await f.manager.authorizationHeader(f.connection)).toBeNull();
+    expect((await f.store.load()).hosts).toEqual([]);
+    await f.manager.beginHostSignIn(f.connection);
+    const state = new URL(f.opened.at(-1)!).searchParams.get("state")!;
+    await f.manager.signOutAccount();
+    await f.manager.handleCallback(callbackUrl("host", state, "late"));
+    expect((await f.store.load()).hosts).toEqual([]);
+  });
+
+  it("preserves bound team credentials when the same Account reauthorizes", async () => {
+    const f = await managerFixture({
+      capabilities: exchangeCapability,
+      route: (url) =>
+        url.includes("/team-identity-grants")
+          ? Response.json({ assertion, expiresAt: "2026-08-11T19:01:00.000Z" })
+          : url.endsWith("/v1/team/session/exchange")
+            ? Response.json({
+                admitted: false,
+                member,
+                tokens: {
+                  access_token: "a".repeat(32),
+                  refresh_token: "r".repeat(32),
+                  expires_in: 600,
+                  scope: "openid profile email offline_access host:access",
+                  token_type: "Bearer",
+                },
+              })
+            : undefined,
+    });
+    await f.manager.initialize();
+    await f.signInAccount();
+    await f.manager.exchangeTeamSession(f.connection);
+    const lease = await f.manager.accountAuthorizationLease();
+    await f.signInAccount();
+    expect(lease?.signal.aborted).toBe(true);
+    expect(await f.manager.authorizationHeader(f.connection)).toBe(`Bearer ${"a".repeat(32)}`);
+  });
+
+  it("keeps recovery nonterminal when refused team refresh falls back to an unreachable Account", async () => {
+    const f = await managerFixture({
+      capabilities: exchangeCapability,
+      refreshStatuses: [400],
+      route: (url) =>
+        url.includes("/team-identity-grants") ? Response.json({}, { status: 503 }) : undefined,
+    });
+    await f.manager.initialize();
+    await f.signInAccount();
+    await f.manager.beginHostSignIn(f.connection);
+    await f.manager.handleCallback(
+      callbackUrl("host", new URL(f.opened.at(-1)!).searchParams.get("state")!, "code"),
+    );
+    const listener = vi.fn();
+    f.manager.subscribeHostCredentials(listener);
+    await expect(f.manager.recoverHostAuthorization(f.connection)).rejects.toMatchObject({
+      classification: "transient",
+    });
+    expect(listener).not.toHaveBeenCalled();
+    expect((await f.store.load()).hosts).toHaveLength(1);
+  });
+
+  it("refreshes and replays a rejected Account token before local expiry", async () => {
+    let requests = 0;
+    const f = await managerFixture({
+      route: (url) =>
+        url.includes("/team-identity-grants")
+          ? ++requests === 1
+            ? Response.json({}, { status: 401 })
+            : Response.json({ assertion, expiresAt: "2026-08-11T19:01:00.000Z" })
+          : undefined,
+    });
+    await f.manager.initialize();
+    await f.signInAccount();
+    await expect(
+      f.manager.issueTeamIdentityGrant(f.connection.authority.document.deploymentId, {
+        expectedAuthority: { ...f.connection.authority.document, hostKeyFingerprint: "unused" },
+        surface: "desktop",
+      } as never),
+    ).resolves.toMatchObject({ assertion });
+    expect(f.refreshes).toHaveLength(1);
+    expect(requests).toBe(2);
+  });
 
   it("enters a team with the Account's identity and keeps its tokens like a browser sign-in's", async () => {
     const calls: { url: string; headers: Headers; body: unknown }[] = [];

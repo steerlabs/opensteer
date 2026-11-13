@@ -230,7 +230,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
   readonly #networkTimeoutMs: number;
   readonly #now: () => Date;
   readonly #oauth: NativeOAuthIdentity;
-  readonly #openExternal: (url: string) => Promise<void>;
+  readonly #openExternal: (url: string, callback?: string) => Promise<void>;
   readonly #pending = new Map<string, NativeOAuthFlow>();
   readonly #randomBytes: (size: number) => Uint8Array;
   readonly #refreshes = new Map<string, Promise<string | null>>();
@@ -265,7 +265,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     readonly now?: () => Date;
     readonly networkTimeoutMs?: number;
     readonly oauth: NativeOAuthIdentity;
-    readonly openExternal: (url: string) => Promise<void>;
+    readonly openExternal: (url: string, callback?: string) => Promise<void>;
     readonly randomBytes?: (size: number) => Uint8Array;
     readonly scheduleExpiry?: (callback: () => void, delayMilliseconds: number) => () => void;
     readonly store: ProtectedAuthStore;
@@ -617,12 +617,24 @@ export class NativeOAuthManager implements HostCredentialProvider {
         "blocked",
       );
     }
-    const response = await this.#postJson(
-      new URL(accountTeamIdentityGrantsPath(deploymentId), lease.issuer).toString(),
-      request,
-      { authorization: lease.authorization },
-      lease.signal,
-    );
+    const post = (authorization: string) =>
+      this.#postJson(
+        new URL(accountTeamIdentityGrantsPath(deploymentId), lease.issuer).toString(),
+        request,
+        { authorization },
+        lease.signal,
+      );
+    let response = await post(lease.authorization);
+    if (response.status === 401 && !lease.signal.aborted) {
+      const session = this.#accountSession;
+      if (session?.controller.signal === lease.signal) {
+        const authorization =
+          `Bearer ${session.credential.accessToken}` !== lease.authorization
+            ? `Bearer ${session.credential.accessToken}`
+            : await this.#serializedRefresh("account", () => this.#refreshAccountSession(session));
+        if (authorization && !lease.signal.aborted) response = await post(authorization);
+      }
+    }
     if (!response.ok) {
       if (response.status === 409)
         throw new TeamEntryRefusedError(
@@ -998,7 +1010,21 @@ export class NativeOAuthManager implements HostCredentialProvider {
         );
       } catch (error) {
         // As for the Account: an unanswered refresh keeps the credential.
-        if (error instanceof OAuthGrantRefusedError) return clear();
+        if (error instanceof OAuthGrantRefusedError) {
+          if (
+            supportsTeamSessionExchange(connection) &&
+            !this.isTeamSignInSuppressed(connection) &&
+            (await this.accountAuthorizationLease())
+          ) {
+            try {
+              await this.exchangeTeamSession(connection);
+              return this.authorizationHeader(connection);
+            } catch (failure) {
+              if (!(failure instanceof TeamIdentityGrantUnsupportedError)) throw failure;
+            }
+          }
+          return clear();
+        }
         throw new ClientOperationError(hostUnreachableDetail, "transient", { cause: error });
       }
       let next: HostCredential;
@@ -1350,7 +1376,10 @@ export class NativeOAuthManager implements HostCredentialProvider {
     else this.#emitHost(flow.connection);
     try {
       const authorization = authorizationUrl(endpoints, flow, scopes, this.#oauth.clientId);
-      await this.#openExternal(invite ? teamInviteSignInUrl(authorization, invite) : authorization);
+      await this.#openExternal(
+        invite ? teamInviteSignInUrl(authorization, invite) : authorization,
+        flow.callback,
+      );
     } catch (error) {
       this.#clearFlowExpiry(flow.state);
       this.#pending.delete(flow.state);
@@ -1641,16 +1670,23 @@ export class NativeOAuthManager implements HostCredentialProvider {
     const previous = this.#accountSession;
     this.#accountSession = next;
     if (this.#pendingAccountWrite !== next?.credential) this.#pendingAccountWrite = null;
-    if (previous && previous.controller !== next?.controller) {
+    if (previous && previous.controller !== next?.controller)
       previous.controller.abort(new Error("The Account authorization changed."));
-      const affected = this.#disposed
-        ? []
-        : this.#hostCredentials.filter(
-            (host) =>
-              host.accountIdentity &&
-              host.accountIdentity.issuer === previous.credential.issuerOrigin &&
-              host.accountIdentity.subject === previous.credential.subject,
-          );
+    const identityChanged =
+      previous?.credential.issuerOrigin !== next?.credential.issuerOrigin ||
+      previous?.credential.subject !== next?.credential.subject;
+    if (identityChanged && !this.#disposed) {
+      for (const flow of this.#pending.values())
+        if (flow.kind === "host")
+          this.abandonHostSignIn(flow.connection.authority.document.deploymentId);
+      for (const id of this.#hostGenerations.keys()) this.#advanceHostGeneration(id);
+      const affected = this.#hostCredentials.filter(
+        (host) =>
+          !host.accountIdentity ||
+          !next ||
+          host.accountIdentity.issuer !== next.credential.issuerOrigin ||
+          host.accountIdentity.subject !== next.credential.subject,
+      );
       for (const host of affected) {
         this.#advanceHostGeneration(host.deploymentId);
         this.#pendingHostWrites.delete(host.deploymentId);

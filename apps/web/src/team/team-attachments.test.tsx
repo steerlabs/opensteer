@@ -10,6 +10,7 @@ import {
 } from "@opensteer/client/team";
 import type { HostClient } from "@opensteer/client/host";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
+import type { TeamAttachment } from "./team-attachments.js";
 import { TeamsProvider, useTeams } from "./team-attachments.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -23,9 +24,23 @@ it("scopes desktop team state to the authenticated viewer rather than the person
   const host = new MockTeamHost();
   const persistence = createMemoryTeamPersistence();
   const ownerUserId = createId("user");
+  let unavailable = false;
   transport.create.mockImplementation((options: TeamSessionOptions) => ({
     ...options,
-    rpc: host.rpc,
+    rpc: new Proxy(host.rpc, {
+      get: (target, name, receiver) =>
+        name === "team.bootstrap.get" && unavailable
+          ? async () => ({
+              ok: false,
+              error: {
+                code: "internal",
+                reason: "transport-unreachable",
+                message: "Team unavailable",
+                retryable: true,
+              },
+            })
+          : Reflect.get(target, name, receiver),
+    }),
     connect: host.connect,
     persistence,
   }));
@@ -53,8 +68,10 @@ it("scopes desktop team state to the authenticated viewer rather than the person
   } as unknown as HostClient;
   const bridge = {} as OpensteerDesktopBridge;
   let viewer: string | null = null;
+  let attachment: TeamAttachment | undefined;
   function Read() {
     const { teams } = useTeams();
+    attachment = teams[0];
     viewer = teams[0]?.client?.getSnapshot().bootstrap?.member.userId ?? null;
     return null;
   }
@@ -73,6 +90,22 @@ it("scopes desktop team state to the authenticated viewer rather than the person
       { timeout: 1000 },
     );
     expect(viewer).not.toBe(ownerUserId);
+    const held = attachment?.client;
+    unavailable = true;
+    await act(async () =>
+      root.render(
+        <TeamsProvider
+          surface={{ kind: "desktop", bridge, hostClient: { ...hostClient } as HostClient }}
+        >
+          <Read />
+        </TeamsProvider>,
+      ),
+    );
+    await vi.waitFor(
+      () => expect(attachment?.failure, "bootstrap failure never classified").toBe("unavailable"),
+      { timeout: 1000 },
+    );
+    expect(attachment?.client).toBe(held);
   } finally {
     await act(async () => root.unmount());
     host.dispose();

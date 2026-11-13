@@ -1,3 +1,4 @@
+import { TeamEntryRefusedError } from "../auth/native-oauth.js";
 import {
   apiNegotiation,
   apiVersionHeader,
@@ -452,6 +453,19 @@ export class HostTransport {
       });
       const outcome = await Promise.race([sessions.recoverUnauthorized(selected), abandoned]);
       signal.throwIfAborted();
+      if (outcome instanceof TeamEntryRefusedError)
+        return Response.json(
+          {
+            ok: false,
+            error: {
+              code: "forbidden",
+              message: outcome.message,
+              reason: outcome.reason,
+              retryable: false,
+            },
+          },
+          { status: 403 },
+        );
       if (outcome === "unavailable") throw new HostTransportError("unreachable");
       if (outcome !== "recovered") return refusal;
     } finally {

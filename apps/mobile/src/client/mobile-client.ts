@@ -200,7 +200,7 @@ export interface MobileClientOptions {
   readonly iphoneApps?: IphoneAppsOwner;
   readonly now?: () => Date;
   readonly oauthIdentity: NativeOAuthIdentity;
-  readonly openAuthorization: (url: string) => Promise<void>;
+  readonly openAuthorization: (url: string, callback?: string) => Promise<void>;
   readonly openIntegrationAuthorization: (url: string, signal?: AbortSignal) => Promise<string>;
   readonly privateFiles: PrivateFilesystem;
   readonly randomBytes: (size: number) => Uint8Array;

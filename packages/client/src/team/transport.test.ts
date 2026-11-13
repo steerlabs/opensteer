@@ -93,10 +93,14 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
     >[0][] = [];
   let token = "Bearer mock-session";
   let rejectCredentials = false;
-  let recoveryOutcome: "recovered" | "unavailable" | "account-required" = "recovered";
+  let recoveryOutcome: "recovered" | "unavailable" | "account-required" | "not-a-member" =
+    "recovered";
+  const { TeamEntryRefusedError } = await import("../auth/native-oauth.js");
   const { HostSession } = await import("../auth/host-session.js");
   const sessions: InstanceType<typeof HostSession>[] = [];
   const refresh = vi.fn(async () => {
+    if (recoveryOutcome === "not-a-member")
+      throw new TeamEntryRefusedError("not-a-member", "Ask for an invite");
     if (recoveryOutcome === "unavailable") throw new Error("Offline");
     if (recoveryOutcome === "account-required") return false;
     token = "Bearer refreshed";
@@ -283,11 +287,18 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
     try {
       await expect(ended.load(false)).rejects.toMatchObject({ code: "unauthorized" });
       expect(ended.getSnapshot().ended).toBe("sign-in");
-      expect(await persistence.load(scope)).toBeNull();
+      expect(await persistence.load(scope)).toEqual(saved);
     } finally {
       ended.dispose();
       refused.transport.closeAllSockets();
     }
+    recoveryOutcome = "not-a-member";
+    const notMember = pinnedTeamTransport(options, new URL("https://team.example"));
+    await expect(notMember.rpc["team.bootstrap.get"]({})).resolves.toMatchObject({
+      ok: false,
+      error: { code: "forbidden", reason: "not-a-member", message: "Ask for an invite" },
+    });
+    notMember.transport.closeAllSockets();
     const socket = pinned.connect();
     socket.addEventListener("open", () => socket.send("subscription"));
     await vi.waitFor(() =>

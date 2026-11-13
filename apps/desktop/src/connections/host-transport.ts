@@ -1,3 +1,4 @@
+import { unwrapRpcResult } from "@opensteer/client/host";
 import { BootstrapNoticeDiagnostics } from "@opensteer/shared/bootstrapDiagnostics";
 import { forEachBoundedResponseChunk, readBoundedText } from "@opensteer/shared/boundedJson";
 import { streamBoundedResponse } from "@opensteer/shared/responseStream";
@@ -10,6 +11,7 @@ import { join } from "node:path";
 import type { DeploymentId } from "@opensteer/core";
 import {
   hostApi,
+  HostApiErrorSchema,
   type HostApiCommandInput,
   type HostApiCommandOutput,
   teamPreviewMaxBytes,
@@ -260,6 +262,24 @@ export class DesktopHostTransport extends HostTransport {
     const parsed = DesktopSetDeploymentRouteInputSchema.parse(input);
     await this.#catalog.setPreferredEndpoint(parsed);
     return this.selection();
+  }
+
+  async bootstrapTeam(deploymentId: DeploymentId) {
+    const response = await this.request({
+      expectedDeploymentId: deploymentId,
+      path: "/v1/rpc/team.bootstrap.get",
+      method: "POST",
+      body: "{}",
+      headers: { contentType: "application/json" },
+    });
+    return unwrapRpcResult(
+      z
+        .discriminatedUnion("ok", [
+          z.object({ ok: z.literal(true), data: hostApi["team.bootstrap.get"].success }),
+          z.object({ ok: z.literal(false), error: HostApiErrorSchema }),
+        ])
+        .parse(JSON.parse(response.body)),
+    ).member;
   }
 
   /**

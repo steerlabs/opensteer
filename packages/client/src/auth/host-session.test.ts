@@ -27,6 +27,13 @@ import {
 } from "./native-oauth.js";
 
 describe("HostSession", () => {
+  it("preserves a team's membership refusal through pinned recovery", async () => {
+    const f = hostSessionFixture(connectionOfKind("team"));
+    const refusal = new TeamEntryRefusedError("not-a-member", "Ask for an invite");
+    f.oauth.recoverHostAuthorization.mockRejectedValue(refusal);
+    await expect(f.sessions.recoverUnauthorized(f.attachment)).resolves.toBe(refusal);
+  });
+
   it("fences a late unauthorized recovery, clears its credential, and drains it before explicit setup", async () => {
     const connection = remotePersonalConnection("connect", 7);
     const fixture = hostSessionFixture(connection);

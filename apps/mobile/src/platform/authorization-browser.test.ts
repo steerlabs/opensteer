@@ -1,6 +1,7 @@
 import type { NativeOAuthIdentity } from "@opensteer/client/auth";
 import {
   createId,
+  teamInviteSignInUrl,
   opensteerMobileAccountOAuthCallback,
   opensteerMobileHostOAuthCallback,
   opensteerMobileOAuthClientId,
@@ -136,6 +137,26 @@ describe("createIntegrationAuthorizationBrowser", () => {
 });
 
 describe("createAuthorizationBrowser", () => {
+  it("opens an invite continuation with the callback supplied by the OAuth owner", async () => {
+    const browser = new FakeBrowser();
+    browser.result = { type: "success", url: `${oauth.hostCallback}?code=abc&state=abc` };
+    const open = createAuthorizationBrowser({
+      browser,
+      oauth,
+      broker: { accept: () => true, settled: async () => {} },
+    });
+    const url = teamInviteSignInUrl(
+      authorizeUrl(oauth.hostCallback).replace(
+        "/oauth2/authorize",
+        "/v1/auth/native/oauth2/authorize",
+      ),
+      { selector: "s".repeat(32), verifier: "v".repeat(43) },
+    );
+    await open(url, oauth.hostCallback);
+    expect(browser.opened[0]?.redirect).toBe(oauth.hostCallback);
+    await expect(open(url, "com.attacker.app:/steal")).rejects.toThrow(/does not return/u);
+  });
+
   it("keeps sign-in pending until the callback is processed", async () => {
     const browser = new FakeBrowser();
     browser.result = { type: "success", url: `${oauth.accountCallback}?code=abc&state=abc` };

@@ -40,8 +40,10 @@ that exact team Host and app; it proves identity, never membership. The team Hos
 against Account's published keys and, in one transaction, spends it and either signs in an active
 member or admits a newcomer through the invite sent beside it. It then issues the same native
 tokens a browser sign-in would. Exchanges record the Account issuer and subject; Account
-sign-out or switch fences in-flight exchanges and stops use of those credentials. Legacy
-credentials without provenance are never attributed to the current Account. Explicit team
+identity changes fence pending browser and exchange flows and revoke every team credential
+not bound to the incoming identity. Browser-issued and legacy credentials have unverifiable
+Account provenance and are dropped on any Account identity change, including sign-in from none.
+Reauthorizing the same Account preserves its team credentials. Explicit team
 sign-out suppresses silent entry until an explicit sign-in. Account or JWKS outages remain
 retryable; membership refusals ask for an invite without a browser loop. Silent entry sends no
 invite unless the person explicitly joins with one. Older teams keep the browser sign-in; the

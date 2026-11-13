@@ -12,7 +12,12 @@ import {
 import type { TeamTaskOrigin } from "@opensteer/core";
 import type { PersonalTeamLink, TeamBootstrapSchema } from "@opensteer/protocol";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
-import { PersonalTeamLinks, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
+import {
+  HostClientRequestError,
+  PersonalTeamLinks,
+  unwrapRpcResult,
+  type HostClient,
+} from "@opensteer/client/host";
 import {
   createMemoryTeamPersistence,
   listedTeams,
@@ -50,6 +55,7 @@ export interface TeamAttachment {
   readonly origin: string;
   /** Its live session; null where this surface only links to it (the personal web app). */
   readonly client: TeamSessionClient | null;
+  readonly failure?: "sign-in" | "join" | "unavailable" | undefined;
   /** The personal Host's link to it, where there is a personal Host. */
   readonly link: PersonalTeamLink | null;
 }
@@ -173,6 +179,9 @@ export function TeamsProvider({
     [hostClient],
   );
   const [linked, setLinked] = useState<readonly PersonalTeamLink[]>([]);
+  const [failures, setFailures] = useState<ReadonlyMap<string, "sign-in" | "join" | "unavailable">>(
+    new Map(),
+  );
   const [clients, setClients] = useState<ReadonlyMap<string, TeamSessionClient>>(new Map());
   const navigator = useRef<((path: string) => void) | null>(null);
   const [forgotten, setForgotten] = useState<ReadonlySet<string>>(new Set());
@@ -271,6 +280,7 @@ export function TeamsProvider({
     if (!registry || !bridge) return;
     let live = true;
     const next = new Map<string, TeamSessionClient>();
+    const failed = new Map<string, "sign-in" | "join" | "unavailable">();
     void Promise.all(
       [...members].map(async ([teamId, team]) => {
         try {
@@ -282,12 +292,26 @@ export function TeamsProvider({
             }),
           );
           next.set(teamId, await registry.join({ teamDeploymentId: teamId, userId }));
-        } catch {
-          // Not signed in to that team on this computer yet: it shows as a link.
+        } catch (error) {
+          failed.set(
+            teamId,
+            error instanceof HostClientRequestError && error.code === "unauthorized"
+              ? "sign-in"
+              : error instanceof HostClientRequestError && error.reason === "not-a-member"
+                ? "join"
+                : "unavailable",
+          );
         }
       }),
     ).then(() => {
-      if (live) setClients(next);
+      if (live) {
+        setFailures(failed);
+        setClients((previous) => {
+          for (const [id, client] of previous)
+            if (members.has(id) && failed.get(id) === "unavailable") next.set(id, client);
+          return next;
+        });
+      }
     });
     return () => {
       live = false;
@@ -363,6 +387,7 @@ export function TeamsProvider({
               name: team.name,
               origin: team.origin,
               client: clients.get(teamId) ?? null,
+              failure: failures.get(teamId),
               link: linked.find((link) => link.teamId === teamId) ?? null,
             }));
     return {
@@ -380,6 +405,7 @@ export function TeamsProvider({
   }, [
     account,
     clients,
+    failures,
     coordination,
     leave,
     forget,

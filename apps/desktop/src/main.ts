@@ -1150,7 +1150,8 @@ async function runDesktop(
           entry: new NativeTeamEntry({
             oauth: nativeAuth,
             catalog: deploymentCatalog,
-            fetch: serviceNetwork.fetch.bind(serviceNetwork),
+            bootstrap: (connection) =>
+              hostTransport.bootstrapTeam(connection.authority.document.deploymentId),
           }),
           fetch: serviceNetwork.fetch.bind(serviceNetwork),
         })
