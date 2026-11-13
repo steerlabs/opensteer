@@ -167,7 +167,7 @@ export class TeamChatStore {
     transaction: Transaction<DatabaseSchema>,
     actor: TeamActor,
     channelId: TeamChannelId,
-    rootId: TeamMessageId,
+    rootId: TeamMessageId | null,
     messageId: TeamMessageId | null = null,
   ): Promise<TeamSource> {
     return {
@@ -1307,7 +1307,19 @@ export class TeamChatStore {
   ) {
     return this.read(actor, "read", input.scope.channelId, async (t) => {
       const channel = await this.channelView(t, actor, input.scope.channelId);
+      let recipientQuery = t
+        .selectFrom("teamAgentRecipients")
+        .select(["channelId", "rootId", "enabled"])
+        .where("userId", "=", actor.userId)
+        .where("channelId", "=", channel.id);
+      if (input.scope.kind === "thread")
+        recipientQuery = recipientQuery.where("rootId", "=", input.scope.rootId);
+      const agentRecipients =
+        actor.kind === "human"
+          ? await recipientQuery.orderBy("rootId", "desc").limit(200).execute()
+          : [];
       const base = {
+        agentRecipients,
         subscriptionId: input.subscriptionId,
         generation: input.generation,
         scope: input.scope,
@@ -1482,6 +1494,51 @@ export class TeamChatStore {
         .execute();
     });
     this.changed(channelId);
+  }
+  async agentRecipient(actor: TeamActor, channelId: TeamChannelId, rootId: TeamMessageId) {
+    requireTeam(actor.kind === "human");
+    return this.read(actor, "read", channelId, async (t) => {
+      const row = await t
+        .selectFrom("teamAgentRecipients")
+        .select("enabled")
+        .where("userId", "=", actor.userId)
+        .where("channelId", "=", channelId)
+        .where("rootId", "=", rootId)
+        .executeTakeFirst();
+      return { channelId, rootId, enabled: row?.enabled ?? false };
+    });
+  }
+  async setAgentRecipient(
+    actor: TeamActor,
+    channelId: TeamChannelId,
+    rootId: TeamMessageId,
+    enabled: boolean,
+  ) {
+    await this.access.contentWrite(actor, channelId, async (t, authority) => {
+      requireTeam(
+        actor.kind === "human" &&
+          authority.read &&
+          (!enabled || (authority.post && !authority.peopleOnly)),
+      );
+      const root = await t
+        .selectFrom("teamMessages")
+        .select(["id", "threadRootId", "deletedAt"])
+        .where("channelId", "=", channelId)
+        .where("id", "=", rootId)
+        .executeTakeFirst();
+      requireTeam(root && root.threadRootId === null && root.deletedAt === null);
+      await t
+        .insertInto("teamAgentRecipients")
+        .values({ userId: actor.userId, channelId, rootId, enabled })
+        .onConflict((c) =>
+          c
+            .columns(["userId", "channelId", "rootId"])
+            .doUpdateSet({ enabled, updatedAt: new Date() }),
+        )
+        .execute();
+    });
+    this.changed(channelId);
+    return { channelId, rootId, enabled };
   }
   async preferences(
     actor: TeamActor,

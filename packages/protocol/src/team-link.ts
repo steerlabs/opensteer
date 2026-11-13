@@ -4,6 +4,7 @@ import {
   HostInstanceIdSchema,
   IsoDateTimeSchema,
   RunIdSchema,
+  MessageIdSchema,
   SequenceSchema,
   TeamAgentRequestIdSchema,
   TeamBlobIdSchema,
@@ -18,6 +19,7 @@ import {
 } from "@opensteer/core";
 import {
   TeamAgentRequestSchema,
+  TeamChannelsResultSchema,
   TeamFileSchema,
   TeamMarkdownSchema,
   TeamReadResultSchema,
@@ -73,6 +75,17 @@ export type PersonalTeamLink = z.infer<typeof PersonalTeamLinkSchema>;
 export const PersonalTeamRequestSchema = z.strictObject({
   teamId: DeploymentIdSchema,
   requestId: TeamAgentRequestIdSchema,
+  answerMessageId: MessageIdSchema.nullable().default(null),
+  answerPayload: z
+    .strictObject({
+      bodyMarkdown: TeamMarkdownSchema,
+      attachmentIds: z.array(TeamBlobIdSchema).max(10),
+    })
+    .nullable()
+    .default(null),
+  clientMessageId: z.uuid().nullable().default(null),
+  deliveryVia: z.enum(["final", "tool"]).nullable().default(null),
+  blockedReason: z.string().min(1).max(500).nullable().default(null),
   triggerMessageId: TeamMessageIdSchema,
   taskId: ThreadIdSchema,
   inputId: z.string().min(1).max(255),
@@ -88,13 +101,15 @@ export const TeamLinkWebSocketHeadersSchema = z.strictObject({
   authorization: z.string().regex(/^Bearer ost_link_[A-Za-z0-9_-]{43}$/),
 });
 export const TeamBinaryRouteHeadersSchema = TeamLinkWebSocketHeadersSchema.extend({
-  "x-opensteer-team-request-id": TeamAgentRequestIdSchema,
+  "x-opensteer-team-request-id": TeamAgentRequestIdSchema.optional(),
+  "x-opensteer-team-run-id": RunIdSchema,
+  "x-opensteer-team-operation-id": z.string().min(1).max(128),
 });
 export const teamBinaryRoutes = {
   upload: "/internal/v1/team/files/upload",
   download: "/internal/v1/team/files/download",
 } as const;
-export const TeamBinaryUploadMetadataSchema = z.strictObject({
+export const TeamUploadMetadataSchema = z.strictObject({
   clientUploadId: z.uuid(),
   filename: z.string().min(1).max(255),
   mediaType: z.string().min(1).max(255),
@@ -110,12 +125,16 @@ export const TeamBinaryUploadMetadataSchema = z.strictObject({
     .nonnegative()
     .max(64 * 1024),
 });
+export const TeamBinaryUploadMetadataSchema = TeamUploadMetadataSchema.extend({
+  channelId: TeamChannelIdSchema,
+});
 export const TeamBinaryDownloadHeadersSchema = TeamBinaryRouteHeadersSchema.extend({
   "x-opensteer-team-blob-id": TeamBlobIdSchema,
   "x-opensteer-team-file-part": z.enum(["original", "preview"]),
 });
 const request = { requestId: TeamAgentRequestIdSchema };
 const optionalRequest = { requestId: TeamAgentRequestIdSchema.optional() };
+const attribution = { runId: RunIdSchema };
 const call = { id: z.string().min(1).max(128) };
 export const TeamLinkClientFrameSchema = z.discriminatedUnion("type", [
   z.strictObject({
@@ -142,21 +161,35 @@ export const TeamLinkClientFrameSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     ...call,
-    ...request,
-    type: z.literal("reply"),
+    ...optionalRequest,
+    ...attribution,
+    type: z.literal("post"),
+    clientMessageId: z.uuid(),
+    channelId: TeamChannelIdSchema,
+    threadRootId: TeamMessageIdSchema.optional(),
     bodyMarkdown: TeamMarkdownSchema,
     attachmentIds: z.array(TeamBlobIdSchema).max(10),
   }),
   z.strictObject({ ...call, ...request, type: z.literal("receipt") }),
+  z
+    .strictObject({
+      ...call,
+      ...optionalRequest,
+      ...attribution,
+      type: z.literal("read"),
+      channelId: TeamChannelIdSchema,
+      threadRootId: TeamMessageIdSchema.optional(),
+      before: TeamMessageIdSchema.optional(),
+      after: TeamMessageIdSchema.optional(),
+    })
+    .refine((input) => !(input.before && input.after), "Choose before or after"),
   z.strictObject({
     ...call,
-    ...request,
-    type: z.literal("read"),
-    channelId: TeamChannelIdSchema,
-    threadRootId: TeamMessageIdSchema.optional(),
-    before: TeamMessageIdSchema.optional(),
+    ...optionalRequest,
+    ...attribution,
+    type: z.literal("search"),
+    input: TeamSearchInputSchema,
   }),
-  z.strictObject({ ...call, ...request, type: z.literal("search"), input: TeamSearchInputSchema }),
   // Knowledge acts as the link's owner; a request, when named, only records where the ask came from.
   z.strictObject({ ...call, ...optionalRequest, type: z.literal("knowledge.topics") }),
   z.strictObject({
@@ -170,6 +203,12 @@ export const TeamLinkClientFrameSchema = z.discriminatedUnion("type", [
     ...optionalRequest,
     type: z.literal("knowledge.write"),
     input: TeamKnowledgeWriteSchema,
+  }),
+  z.strictObject({
+    ...call,
+    ...attribution,
+    type: z.literal("channels"),
+    after: TeamChannelIdSchema.optional(),
   }),
   z.strictObject({ ...call, type: z.literal("revoke") }),
   z.strictObject({ type: z.literal("ping") }),
@@ -186,7 +225,15 @@ export const TeamLinkResultSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("knowledge.write"), result: TeamKnowledgeWriteResultSchema }),
   z.strictObject({ kind: z.literal("file"), file: TeamFileSchema, source: TeamSourceSchema }),
   z.strictObject({ kind: z.literal("ok") }),
+  z.strictObject({ kind: z.literal("channels"), result: TeamChannelsResultSchema }),
 ]);
+export const TeamRunRequestSchema = z.strictObject({
+  request: TeamAgentRequestSchema,
+  source: TeamSourceSchema,
+  bodyMarkdown: TeamMarkdownSchema,
+  attachments: z.array(TeamFileSchema).max(10),
+});
+export type TeamRunRequest = z.infer<typeof TeamRunRequestSchema>;
 export const TeamLinkServerFrameSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("ready"),
@@ -196,9 +243,7 @@ export const TeamLinkServerFrameSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     type: z.literal("requests"),
-    requests: z
-      .array(z.strictObject({ request: TeamAgentRequestSchema, source: TeamSourceSchema }))
-      .max(32),
+    requests: z.array(TeamRunRequestSchema).max(32),
   }),
   z.strictObject({ type: z.literal("cancel"), requestId: TeamAgentRequestIdSchema }),
   z.strictObject({ ...call, type: z.literal("result"), result: TeamLinkResultSchema }),

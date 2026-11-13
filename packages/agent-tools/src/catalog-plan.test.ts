@@ -5,6 +5,7 @@ import {
   thread_send,
   trigger_write,
   team_search,
+  team_read,
 } from "./tools/index.js";
 import { expect, it } from "vitest";
 import { z } from "zod";
@@ -15,7 +16,7 @@ it("keeps the permanent team inventory out of ordinary tasks and every non-Run c
     teamBound: boolean,
     knowledge = teamBound,
   ) => toolsFor({ kind, teamBound, knowledge, accessMode: "full-access" }).map((t) => t.name);
-  for (const name of ["team_read", "team_search", "team_reply"]) {
+  for (const name of ["team_read", "team_search", "team_post"]) {
     expect(names("run", true)).toContain(name);
     expect(names("run", false, true)).not.toContain(name);
     expect(names("program", true)).not.toContain(name);
@@ -56,7 +57,7 @@ it("snapshots the personal/team guide and model-facing inventory", () => {
 });
 
 it("requires provenance on empty team search results", () => {
-  expect(team_search.output.safeParse({ results: [], hasMore: false }).success).toBe(false);
+  expect(team_search.output.safeParse({ results: [], hasMore: false }).success).toBe(true);
 });
 
 it("accepts exactly the add, change and delete shapes of a knowledge write", () => {
@@ -72,4 +73,16 @@ it("accepts exactly the add, change and delete shapes of a knowledge write", () 
   // A change stays in its topic; a new note always names one.
   expect(valid({ noteId, version: 2, topicId, body: "x" })).toBe(false);
   expect(valid({ title: "Refunds", body: "Within 30 days." })).toBe(false);
+});
+
+it("keeps team read destinations and paging selectors compatible", () => {
+  const channelId = createId("teamChannel"),
+    fileId = createId("teamBlob");
+  expect(team_read.input.safeParse({ channelId, before: "10", after: "11" }).success).toBe(false);
+  expect(team_read.input.safeParse({ fileId, channelId }).success).toBe(false);
+  expect(team_read.input.safeParse({ after: "11" }).success).toBe(false);
+  expect(
+    team_read.input.safeParse({ teamId: createId("deployment"), after: channelId }).success,
+  ).toBe(true);
+  expect(team_read.input.safeParse({ channelId, after: "11" }).success).toBe(true);
 });

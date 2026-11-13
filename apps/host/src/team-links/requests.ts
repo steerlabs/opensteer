@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   TeamSourceSchema,
   OpensteerError,
@@ -11,9 +12,8 @@ import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-
 import {
   TeamAgentRequestSchema,
   type PersonalTeamRequest,
-  type TeamAgentRequest,
+  type TeamRunRequest,
 } from "@opensteer/protocol";
-import type { TeamSource } from "@opensteer/core";
 import type { TaskAdmissionPort } from "../threads/task-admission.js";
 import { linkError, type TeamLinkRpc } from "../team-link-endpoint/contracts.js";
 import { publicTeamStatus, type PrivateTeamProgress } from "./status.js";
@@ -43,10 +43,7 @@ export class PersonalTeamRequests {
     this.options = options;
   }
 
-  async deliver(
-    teamId: DeploymentId,
-    value: { readonly request: TeamAgentRequest; readonly source: TeamSource },
-  ): Promise<void> {
+  async deliver(teamId: DeploymentId, value: TeamRunRequest): Promise<void> {
     const previous = this.#work.get(teamId) ?? Promise.resolve();
     const next = previous.catch(() => undefined).then(() => this.#admit(teamId, value));
     this.#work.set(teamId, next);
@@ -57,10 +54,7 @@ export class PersonalTeamRequests {
     }
   }
 
-  async #admit(
-    teamId: DeploymentId,
-    value: { readonly request: TeamAgentRequest; readonly source: TeamSource },
-  ): Promise<void> {
+  async #admit(teamId: DeploymentId, value: TeamRunRequest): Promise<void> {
     const { links, requests, admission } = this.options;
     const link = await links.get(teamId);
     if (!link || !["active", "unreachable"].includes(link.state)) throw linkError();
@@ -89,6 +83,7 @@ export class PersonalTeamRequests {
     }
     if (!local) {
       const receipt = await admission.admitTeamRequest({
+        bodyMarkdown: value.bodyMarkdown,
         origin: { teamId, channelId: request.channelId, threadRootId: request.threadRootId },
         requestId: request.id,
         triggerMessageId: request.triggerMessageId,
@@ -105,6 +100,11 @@ export class PersonalTeamRequests {
         terminalState: null,
         publicationState: "pending",
         replyMessageId: null,
+        answerMessageId: null,
+        answerPayload: null,
+        clientMessageId: null,
+        deliveryVia: null,
+        blockedReason: null,
       });
     }
     const current = await links.get(teamId);
@@ -233,7 +233,20 @@ export class PersonalTeamRequests {
     attachmentIds: readonly TeamBlobId[],
   ) {
     const result = await this.options.rpc(request.teamId).call({
-      type: "reply",
+      type: "post",
+      runId:
+        request.runId ??
+        (() => {
+          throw linkError("conflict");
+        })(),
+      clientMessageId: (() => {
+        const hex = createHash("sha256")
+          .update(request.teamId + ":" + request.requestId)
+          .digest("hex");
+        return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+      })(),
+      channelId: request.source.channelId,
+      ...(request.source.threadRootId ? { threadRootId: request.source.threadRootId } : {}),
       requestId: request.requestId,
       bodyMarkdown,
       attachmentIds: [...attachmentIds],

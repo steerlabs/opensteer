@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -166,6 +167,7 @@ async function fixture() {
     return {
       requestId,
       ...(await admitTeamTaskRequest(database, {
+        bodyMarkdown: "Team ask",
         origin,
         requestId,
         triggerMessageId: TeamMessageIdSchema.parse(String(++nextMessage)),
@@ -295,7 +297,9 @@ it("gives two team asks two Runs, while a private follow-up gets no request auth
     .selectAll()
     .where("seedInputId", "=", second.receipt.inputId)
     .executeTakeFirstOrThrow();
-  expect(next.teamRequestId).toBe(second.requestId);
+  expect(next.replyTarget?.kind === "team" ? next.replyTarget.requestId : null).toBe(
+    second.requestId,
+  );
   const startedSecond = await f.start(next.id);
   await f.finish(next.id, startedSecond.bindingGeneration);
   const privateRun = await f.database
@@ -303,12 +307,14 @@ it("gives two team asks two Runs, while a private follow-up gets no request auth
     .selectAll()
     .where("seedInputId", "=", privateInput.message.id)
     .executeTakeFirstOrThrow();
-  expect(privateRun.teamRequestId).toBeNull();
+  expect(
+    privateRun.replyTarget?.kind === "team" ? privateRun.replyTarget.requestId : null,
+  ).toBeNull();
   expect(
     (
       await f.database
         .selectFrom("runs")
-        .select("teamRequestId")
+        .select(sql<string | null>`reply_target->>'requestId'`.as("teamRequestId"))
         .where("threadId", "=", first.receipt.taskId)
         .orderBy("runOrdinal")
         .execute()
@@ -567,7 +573,7 @@ it("removes only the pending team request and keeps another admitted ask", async
   expect(
     await f.database
       .selectFrom("runs")
-      .select("teamRequestId")
+      .select(sql<string | null>`reply_target->>'requestId'`.as("teamRequestId"))
       .where("seedInputId", "=", third.receipt.inputId)
       .executeTakeFirstOrThrow(),
   ).toEqual({ teamRequestId: third.requestId });
@@ -625,7 +631,7 @@ it("stops an active team Run without pausing later queued requests", async () =>
   expect(
     await f.database
       .selectFrom("runs")
-      .select("teamRequestId")
+      .select(sql<string | null>`reply_target->>'requestId'`.as("teamRequestId"))
       .where("seedInputId", "=", second.receipt.inputId)
       .executeTakeFirstOrThrow(),
   ).toEqual({ teamRequestId: second.requestId });
@@ -673,7 +679,7 @@ it("joins an explicit private steer to the active team Run without assigning a r
   expect(
     await f.database
       .selectFrom("runs")
-      .select("teamRequestId")
+      .select(sql<string | null>`reply_target->>'requestId'`.as("teamRequestId"))
       .where("id", "=", first.receipt.runId!)
       .executeTakeFirstOrThrow(),
   ).toEqual({ teamRequestId: first.requestId });
@@ -743,13 +749,15 @@ it("keeps external-agent and Trigger turns on a bound task free of team request 
     .selectAll()
     .where("seedInputId", "=", external.message.id)
     .executeTakeFirstOrThrow();
-  expect(externalRun.teamRequestId).toBeNull();
+  expect(
+    externalRun.replyTarget?.kind === "team" ? externalRun.replyTarget.requestId : null,
+  ).toBeNull();
   const next = await f.start(externalRun.id);
   await f.finish(externalRun.id, next.bindingGeneration);
   expect(
     await f.database
       .selectFrom("runs")
-      .select("teamRequestId")
+      .select(sql<string | null>`reply_target->>'requestId'`.as("teamRequestId"))
       .where("seedInputId", "=", scheduled.message.id)
       .executeTakeFirstOrThrow(),
   ).toEqual({ teamRequestId: null });
@@ -923,6 +931,7 @@ async function twoTeamsWithOneRequestId() {
     .execute();
   const origin = { ...f.origin, teamId: otherTeamId };
   const second = await admitTeamTaskRequest(f.database, {
+    bodyMarkdown: "Team ask",
     origin,
     requestId: first.requestId,
     triggerMessageId: TeamMessageIdSchema.parse("2"),

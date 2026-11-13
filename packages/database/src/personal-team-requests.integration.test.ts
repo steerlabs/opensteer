@@ -43,6 +43,7 @@ describeStore("personal team reply watermark", (it) => {
       };
       const requestId = createId("teamAgentRequest");
       const admitted = await admitTeamTaskRequest(f.database, {
+        bodyMarkdown: "Team ask",
         origin: { teamId, channelId, threadRootId },
         requestId,
         triggerMessageId: threadRootId,

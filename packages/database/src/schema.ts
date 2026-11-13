@@ -828,7 +828,6 @@ export interface RunInitialContext {
 }
 
 export interface RunTable {
-  teamRequestId: TeamAgentRequestId | null;
   personWaited: Generated<boolean>;
   doneWhenFinished: Generated<boolean>;
   assignmentId: Generated<AssignmentId | null>;
@@ -1985,6 +1984,7 @@ export interface DatabaseSchema {
   teamAgentRequests: TeamAgentRequestTable;
   personalTeamLinks: PersonalTeamLinkTable;
   personalTeamRequests: PersonalTeamRequestTable;
+  teamAgentRecipients: TeamAgentRecipientTable;
 
   personalSettings: PersonalSettingsTable;
   deploymentEventState: DeploymentEventStateTable;
@@ -2293,6 +2293,8 @@ export interface TeamInviteUseTable {
   memberGeneration: string;
 }
 export interface TeamAuditTable {
+  callerRunId: Generated<RunId | null>;
+  operationId: Generated<string | null>;
   id: Generated<string>;
   occurredAt: Timestamp;
   actorUserId: UserId | null;
@@ -2350,6 +2352,10 @@ export interface TeamChannelMemberStateTable {
   updatedAt: Timestamp;
 }
 export interface TeamMessageTable {
+  agentLinkId: Generated<TeamLinkId | null>;
+  personalDeploymentId: Generated<DeploymentId | null>;
+  callerRunId: Generated<RunId | null>;
+  operationId: Generated<string | null>;
   id: Generated<TeamMessageId>;
   channelId: TeamChannelId;
   threadRootId: TeamMessageId | null;
@@ -2379,6 +2385,10 @@ export interface TeamMessagePinTable {
   pinnedAt: Timestamp;
 }
 export interface TeamBlobTable {
+  agentLinkId: Generated<TeamLinkId | null>;
+  personalDeploymentId: Generated<DeploymentId | null>;
+  callerRunId: Generated<RunId | null>;
+  operationId: Generated<string | null>;
   id: TeamBlobId;
   channelId: TeamChannelId;
   uploaderUserId: UserId;
@@ -2502,7 +2512,25 @@ export interface PersonalTeamLinkTable {
   createdAt: Timestamp;
   lastContactAt: NullableTimestamp;
 }
+export interface TeamAgentRecipientTable {
+  userId: UserId;
+  channelId: TeamChannelId;
+  rootId: TeamMessageId;
+  enabled: boolean;
+  updatedAt: Generated<Timestamp>;
+}
 export interface PersonalTeamRequestTable {
+  answerMessageId: Generated<MessageId | null>;
+  answerPayload: ColumnType<
+    { readonly bodyMarkdown: string; readonly attachmentIds: readonly TeamBlobId[] } | null,
+    | { readonly bodyMarkdown: string; readonly attachmentIds: readonly TeamBlobId[] }
+    | null
+    | undefined,
+    { readonly bodyMarkdown: string; readonly attachmentIds: readonly TeamBlobId[] } | null
+  >;
+  clientMessageId: Generated<string | null>;
+  deliveryVia: Generated<"final" | "tool" | null>;
+  blockedReason: Generated<string | null>;
   teamDeploymentId: DeploymentId;
   requestId: TeamAgentRequestId;
   triggerMessageId: TeamMessageId;

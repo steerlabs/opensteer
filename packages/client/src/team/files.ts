@@ -2,7 +2,7 @@ import { DeploymentIdSchema } from "@opensteer/core";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
 import {
-  TeamBinaryUploadMetadataSchema,
+  TeamUploadMetadataSchema,
   TeamFileSchema,
   teamPreviewMaxBytes,
   teamUploadMaxBytes,
@@ -16,7 +16,7 @@ export interface TeamFileUpload {
   readonly channelId: TeamFile["channelId"];
   readonly original: Blob;
   readonly preview: Blob | null;
-  readonly metadata: z.infer<typeof TeamBinaryUploadMetadataSchema>;
+  readonly metadata: z.infer<typeof TeamUploadMetadataSchema>;
   readonly signal?: AbortSignal;
 }
 export function teamFileTransport(
@@ -65,7 +65,7 @@ export function teamFileTransport(
       );
     },
     async uploadFile(input: TeamFileUpload): Promise<TeamFile> {
-      const metadata = TeamBinaryUploadMetadataSchema.parse(input.metadata);
+      const metadata = TeamUploadMetadataSchema.parse(input.metadata);
       if (
         input.original.size !== metadata.sizeBytes ||
         (input.preview?.size ?? 0) !== metadata.previewSizeBytes

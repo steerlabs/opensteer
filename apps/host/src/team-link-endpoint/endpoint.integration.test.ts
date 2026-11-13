@@ -52,6 +52,7 @@ it("accepts a queued request over the machine endpoint before granting content a
       resolver: access,
       lifetimes: new TeamLinkLifetimes(),
       data: {
+        channels: unavailable,
         read: unavailable,
         search: unavailable,
         async knowledge(id, ownerUserId, frame) {

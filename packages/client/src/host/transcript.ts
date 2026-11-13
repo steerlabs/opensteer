@@ -108,6 +108,11 @@ function foldTranscriptOwnEvent(
     case "thread.input-queue-updated":
     case "thread.state-changed":
       return [...entries];
+    case "run.delivery-updated": {
+      const prior = entries.find((entry) => entry.kind === "run" && entry.runId === event.runId);
+      if (prior?.kind !== "run") return [...entries];
+      return upsertEntry(entries, { ...prior, delivery: event.data.delivery });
+    }
     case "run.started":
       return upsertRunEntry(entries, event, "running");
     case "run.status":
@@ -1094,6 +1099,7 @@ function upsertRunEntry(
     status,
     // A Stop already asked for holds until the Run ends, whatever it reports meanwhile.
     ...(prior?.stopping === true && !isTerminalRunEntryStatus(status) ? { stopping: true } : {}),
+    ...(prior?.delivery ? { delivery: prior.delivery } : {}),
     ...(prior?.usage ? { usage: prior.usage } : {}),
     ...(prior?.attempt ? { attempt: prior.attempt } : {}),
     ...(startedBy ? { startedBy } : {}),

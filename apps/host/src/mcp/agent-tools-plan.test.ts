@@ -17,7 +17,7 @@ it("keeps team inventory permanent per task and invalidates a warm plan when ins
   expect(RunAgentToolsPlanSchema.parse(ordinary)).toEqual(ordinary);
   for (const name of [...knowledgeTools, "team_read"]) expect(ordinary.tools).not.toContain(name);
   expect(team.tools).toEqual(
-    expect.arrayContaining(["team_read", "team_search", "team_reply", ...knowledgeTools]),
+    expect.arrayContaining(["team_read", "team_search", "team_post", ...knowledgeTools]),
   );
   // An owner linked to a team gets knowledge in a private task too, without the team-thread tools.
   expect(linked.tools).toEqual(expect.arrayContaining(knowledgeTools));

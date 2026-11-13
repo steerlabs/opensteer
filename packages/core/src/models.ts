@@ -1,5 +1,11 @@
-import { TeamTaskOriginSchema, TeamSourceSchema, TeamAudienceSchema } from "./team.js";
-import { TeamAgentRequestIdSchema } from "./ids.js";
+import {
+  TeamTaskOriginSchema,
+  TeamSourceSchema,
+  TeamAudienceSchema,
+  TeamRunDeliverySchema,
+  TeamRunDeliveryViewSchema,
+} from "./team.js";
+import { TeamAgentRequestIdSchema, TeamChannelIdSchema, TeamMessageIdSchema } from "./ids.js";
 import { z } from "zod";
 import { ComputerAppIdentityViewSchema } from "./computer-app.js";
 import { IdentityEmailSchema } from "./identity.js";
@@ -555,8 +561,21 @@ const replyTargetShape = {
   conversationId: z.string().trim().min(1).max(255),
   kind: z.literal("channel"),
 } as const;
-export const ReplyTargetSchema = z.strictObject(replyTargetShape);
-export const ReplyTargetViewSchema = z.object(replyTargetShape);
+const teamReplyTargetShape = {
+  kind: z.literal("team"),
+  teamId: DeploymentIdSchema,
+  channelId: TeamChannelIdSchema,
+  threadRootId: TeamMessageIdSchema,
+  requestId: TeamAgentRequestIdSchema,
+} as const;
+export const ReplyTargetSchema = z.discriminatedUnion("kind", [
+  z.strictObject(replyTargetShape),
+  z.strictObject(teamReplyTargetShape),
+]);
+export const ReplyTargetViewSchema = z.discriminatedUnion("kind", [
+  z.object(replyTargetShape),
+  z.object(teamReplyTargetShape),
+]);
 export type ReplyTarget = z.infer<typeof ReplyTargetSchema>;
 
 const messageShape = {
@@ -777,7 +796,7 @@ export const RunUsageViewSchema = z.object(runUsageShape);
 export type RunUsage = z.infer<typeof RunUsageSchema>;
 
 const runShape = {
-  teamRequestId: TeamAgentRequestIdSchema.nullable(),
+  delivery: TeamRunDeliverySchema.nullable().default(null),
   accessMode: ThreadAccessModeSchema,
   activationInputId: MessageIdSchema,
   assignmentId: AssignmentIdSchema.nullable(),
@@ -802,6 +821,7 @@ const runShape = {
 export const RunSchema = z.strictObject(runShape);
 export const RunViewSchema = z.object({
   ...runShape,
+  delivery: TeamRunDeliveryViewSchema.nullable().default(null),
   failure: RunFailureViewSchema.nullable(),
   modelSelection: ModelSelectionViewSchema,
   usage: RunUsageViewSchema.optional(),

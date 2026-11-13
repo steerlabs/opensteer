@@ -1,3 +1,4 @@
+import type { TeamRunDelivery } from "@opensteer/core";
 import type { PersonShowMessage } from "@opensteer/protocol";
 import type { BrowserSignInPasswords } from "@opensteer/protocol/browser-sources";
 import type { DesktopUpdates } from "../connections/desktop-updates-contract.js";
@@ -487,6 +488,7 @@ export type RunEntryStatus =
   "completed" | "failed" | "interrupted" | "queued" | "running" | "starting" | "waiting";
 
 export interface RunEntry {
+  delivery?: TeamRunDelivery | null;
   /** Absent on an older Host: its waking input is unknown. */
   startedBy?: MessageAuthor;
   startedAt?: string;

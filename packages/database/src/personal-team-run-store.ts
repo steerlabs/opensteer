@@ -1,6 +1,6 @@
 import { MessageContentSchema, OpensteerError, type RunId } from "@opensteer/core";
 import type { PersonalTeamRequest } from "@opensteer/protocol";
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import { runReply } from "./run-reply.js";
 import { eventFromRow } from "./deployment-events.js";
 import { requirePersonalOwner, personalSettings } from "./personal-settings-store.js";
@@ -53,7 +53,8 @@ export async function personalTeamRunOutcome(
         .select(["id", "status"])
         .where("threadId", "=", receipt.localTaskId)
         .where("seedInputId", "=", receipt.localInputId)
-        .where("teamRequestId", "=", request.requestId)
+        .where(sql<string>`reply_target->>'requestId'`, "=", request.requestId)
+        .where(sql<string>`reply_target->>'teamId'`, "=", request.teamId)
         .executeTakeFirst();
       const runId = run?.id ?? null;
       if (input.state === "cancelled" || receipt.terminalState === "cancelled")

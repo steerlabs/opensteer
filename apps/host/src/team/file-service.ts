@@ -4,7 +4,7 @@ import { link, mkdir, open, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { TeamActor, TeamAgentRequestId, TeamBlobId, TeamChannelId } from "@opensteer/core";
-import type { TeamBinaryUploadMetadataSchema } from "@opensteer/protocol";
+import type { TeamUploadMetadataSchema } from "@opensteer/protocol";
 import { teamPreviewMaxBytes, teamUploadMaxBytes } from "@opensteer/protocol";
 import { TeamFilesStore } from "@opensteer/database/team-files";
 import { requireTeam, type TeamAccessStore } from "@opensteer/database/team-access";
@@ -45,7 +45,7 @@ export class TeamFileService {
   async upload(
     actor: TeamActor,
     channelId: TeamChannelId,
-    metadata: z.infer<typeof TeamBinaryUploadMetadataSchema>,
+    metadata: z.infer<typeof TeamUploadMetadataSchema>,
     parts: { original: AsyncIterable<Uint8Array>; preview?: AsyncIterable<Uint8Array> },
     requestId?: TeamAgentRequestId,
     signal?: AbortSignal,

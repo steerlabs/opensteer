@@ -10,7 +10,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { PersonalTeamRequestSchema, type PersonalTeamRequest } from "@opensteer/protocol";
-import type { Kysely, Selectable } from "kysely";
+import { sql, type Kysely, type Selectable } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { eventFromRow } from "./deployment-events.js";
@@ -47,6 +47,11 @@ export class PersonalTeamRequestsStore {
         localInputId: MessageIdSchema.parse(input.inputId),
         runId: input.runId,
         source: input.source,
+        answerMessageId: input.answerMessageId,
+        answerPayload: input.answerPayload,
+        clientMessageId: input.clientMessageId,
+        deliveryVia: input.deliveryVia,
+        blockedReason: input.blockedReason,
         publicationState: input.publicationState,
         terminalState: input.terminalState,
         acceptedMessageId: input.replyMessageId,
@@ -82,14 +87,15 @@ export class PersonalTeamRequestsStore {
   async forRun(runId: RunId): Promise<PersonalTeamRequest | null> {
     const run = await this.database
       .selectFrom("runs")
-      .select(["teamRequestId", "threadId"])
+      .select(["replyTarget", "threadId"])
       .where("id", "=", runId)
       .executeTakeFirst();
-    if (!run?.teamRequestId) return null;
+    if (run?.replyTarget?.kind !== "team") return null;
     const row = await this.database
       .selectFrom("personalTeamRequests")
       .selectAll()
-      .where("requestId", "=", run.teamRequestId)
+      .where("teamDeploymentId", "=", run.replyTarget.teamId)
+      .where("requestId", "=", run.replyTarget.requestId)
       .where("localTaskId", "=", run.threadId)
       .executeTakeFirst();
     return row ? this.#view({ ...row, runId }) : null;
@@ -151,7 +157,9 @@ export class PersonalTeamRequestsStore {
           join
             .onRef("r.threadId", "=", "p.localTaskId")
             .onRef("r.seedInputId", "=", "p.localInputId")
-            .onRef("r.teamRequestId", "=", "p.requestId"),
+            .on(
+              sql<boolean>`r.reply_target->>'requestId' = p.request_id and r.reply_target->>'teamId' = p.team_deployment_id and r.reply_target->>'kind' = 'team'`,
+            ),
         )
         .select(["t.id as taskId", "r.id as runId", "r.completedAt"])
         .where("t.createdBy", "=", ownerId)
@@ -201,6 +209,11 @@ export class PersonalTeamRequestsStore {
       terminalState: row.terminalState,
       replyMessageId: row.acceptedMessageId,
       source: row.source,
+      answerMessageId: row.answerMessageId,
+      answerPayload: row.answerPayload,
+      clientMessageId: row.clientMessageId,
+      deliveryVia: row.deliveryVia,
+      blockedReason: row.blockedReason,
     });
   }
 }

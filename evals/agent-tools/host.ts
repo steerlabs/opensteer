@@ -133,7 +133,7 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     integration_propose: async () => unavailable(),
     team_read: async () => unavailable(),
     team_search: async () => unavailable(),
-    team_reply: async () => unavailable(),
+    team_post: async () => unavailable(),
     knowledge_topics: async () => unavailable(),
     knowledge_read: async () => unavailable(),
     knowledge_write: async () => unavailable(),

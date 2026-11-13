@@ -210,6 +210,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       await session.execute({
         context: {
           assignment: null,
+          teamTurnContext: null,
           requesterTimeZone: null,
           threadState: { previousAssignment: null, previousRun: null },
         },

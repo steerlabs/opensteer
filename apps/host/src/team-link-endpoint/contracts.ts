@@ -5,6 +5,7 @@ import {
   type TeamBlobId,
   type TeamLinkId,
   type TeamSource,
+  type RunId,
 } from "@opensteer/core";
 import {
   acceptsTeamApiVersion,
@@ -18,8 +19,8 @@ import type {
   TeamLinkClientFrame,
   TeamLinkResultSchema,
   TeamReadResultSchema,
-  TeamSearchInputSchema,
   TeamSearchPageSchema,
+  TeamChannelsResultSchema,
 } from "@opensteer/protocol";
 import type { Readable } from "node:stream";
 import type { z } from "zod";
@@ -41,6 +42,11 @@ export interface TeamLinkRpc {
   call(input: TeamLinkCallInput): Promise<TeamLinkResult>;
 }
 export interface TeamMachineDataPort {
+  channels(
+    actor: TeamActor,
+    linkId: TeamLinkId,
+    input: Extract<TeamLinkCall, { type: "channels" }>,
+  ): Promise<z.infer<typeof TeamChannelsResultSchema>>;
   read(
     actor: TeamActor,
     linkId: TeamLinkId,
@@ -49,8 +55,7 @@ export interface TeamMachineDataPort {
   search(
     actor: TeamActor,
     linkId: TeamLinkId,
-    requestId: TeamAgentRequestId,
-    input: z.infer<typeof TeamSearchInputSchema>,
+    input: Extract<TeamLinkCall, { type: "search" }>,
   ): Promise<z.infer<typeof TeamSearchPageSchema>>;
   /** An agent's knowledge call as its link's owner; a buffered read carries its handoff check. */
   knowledge(
@@ -66,7 +71,9 @@ export interface TeamMachineFilesPort {
   open(input: {
     readonly actor: TeamActor;
     readonly linkId: TeamLinkId;
-    readonly requestId: TeamAgentRequestId;
+    readonly requestId?: TeamAgentRequestId;
+    readonly runId: RunId;
+    readonly operationId: string;
     readonly blobId: TeamBlobId;
     readonly part: "original" | "preview";
     readonly signal: AbortSignal;
@@ -78,7 +85,9 @@ export interface TeamMachineFilesPort {
   upload(input: {
     readonly actor: TeamActor;
     readonly linkId: TeamLinkId;
-    readonly requestId: TeamAgentRequestId;
+    readonly requestId?: TeamAgentRequestId;
+    readonly runId: RunId;
+    readonly operationId: string;
     readonly metadata: z.infer<typeof TeamBinaryUploadMetadataSchema>;
     readonly parts: AsyncIterable<TeamUploadPart>;
     readonly signal: AbortSignal;

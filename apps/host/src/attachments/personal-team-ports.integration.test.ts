@@ -64,7 +64,8 @@ async function fixture() {
     })
     .execute();
   const admitted = await admitTeamTaskRequest(f.database, {
-    origin: { teamId, channelId: source.channelId, threadRootId: source.threadRootId },
+    bodyMarkdown: "Team ask",
+    origin: { teamId, channelId: source.channelId, threadRootId: source.threadRootId! },
     requestId: createId("teamAgentRequest"),
     triggerMessageId: source.messageId!,
     source,

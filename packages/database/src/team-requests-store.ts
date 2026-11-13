@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import {
   TeamStatusStepSchema,
   type TeamAgentRequestId,
@@ -104,7 +103,16 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       const requests = [];
       for (const { id } of rows) {
         const row = await this.#record(t, linkId, id, false, true);
+        const triggerRow = await t
+          .selectFrom("teamMessages")
+          .selectAll()
+          .where("id", "=", row.triggerMessageId)
+          .where("channelId", "=", row.channelId)
+          .executeTakeFirstOrThrow();
+        const trigger = (await teamMessageViews(t, [triggerRow]))[0]!;
         requests.push({
+          bodyMarkdown: trigger.bodyMarkdown,
+          attachments: trigger.attachments,
           request: teamRequestView(row),
           source: await this.chat.source(
             t,
@@ -168,13 +176,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
     const actor = { kind: "agent" as const, userId: request.ownerUserId };
     return this.chat.read(actor, "context", request.channelId, async (t) => {
       await this.#record(t, linkId, id);
-      const page = await this.chat.pageIn(
-        t,
-        actor,
-        request.channelId,
-        { direction: "newest" },
-        request.threadRootId,
-      );
+      const channel = await this.chat.channelView(t, actor, request.channelId);
       const source = await this.chat.source(
         t,
         actor,
@@ -182,41 +184,10 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         request.threadRootId,
         request.triggerMessageId,
       );
-      const requiredRows = await t
-        .selectFrom("teamMessages")
-        .selectAll()
-        .where("channelId", "=", request.channelId)
-        .where("id", "in", [request.threadRootId, request.triggerMessageId])
-        .execute();
-      const required = await teamMessageViews(t, requiredRows);
-      const merged = new Map(
-        [...page.messages, ...required].map((m) => [m.id, { ...m, requests: [] }]),
-      );
-      const messages = [...merged.values()].sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
-      const protectedIds = new Set([request.threadRootId, request.triggerMessageId]);
-      while (messages.length > 50 || Buffer.byteLength(JSON.stringify(messages)) > 32768) {
-        const removable = messages.findIndex((m) => !protectedIds.has(m.id));
-        if (removable >= 0) {
-          messages.splice(removable, 1);
-          continue;
-        }
-        const longest = [...messages].sort(
-          (a, b) => b.bodyMarkdown.length - a.bodyMarkdown.length,
-        )[0];
-        requireTeam(
-          longest && longest.bodyMarkdown.length > 128,
-          "Request context metadata exceeds its byte bound",
-        );
-        longest.bodyMarkdown =
-          Array.from(longest.bodyMarkdown)
-            .slice(0, Math.floor(longest.bodyMarkdown.length / 2))
-            .join("") + "\n\n[Excerpt; read the full message with team_read.]";
-        longest.plainText = plainTextExcerpt(longest.bodyMarkdown, 32768) ?? "";
-      }
       return TeamRequestContextSchema.parse({
         request,
-        instructionsMarkdown: page.channel.instructionsMarkdown,
-        messages,
+        instructionsMarkdown: channel.instructionsMarkdown,
+        instructionsRevision: channel.instructionsRevision,
         source,
         audience: source.audience,
       });

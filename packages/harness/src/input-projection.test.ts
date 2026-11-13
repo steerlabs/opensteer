@@ -14,6 +14,7 @@ import type { HarnessRunContext } from "./types.js";
 describe("harnessThreadContextPrompt", () => {
   const noState = { previousAssignment: null, previousRun: null } as const;
   const context = (requesterTimeZone: string | null): HarnessRunContext => ({
+    teamTurnContext: null,
     assignment: null,
     requesterTimeZone,
     threadState: noState,
@@ -71,6 +72,7 @@ describe("harnessThreadContextPrompt", () => {
     const parentThreadId = createId("thread");
     const prompt = harnessThreadContextPrompt(
       {
+        teamTurnContext: null,
         assignment: { id: assignmentId, objective: "Plan", origin: "run", parentThreadId },
         requesterTimeZone: "America/New_York",
         threadState: noState,

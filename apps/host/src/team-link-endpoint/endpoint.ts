@@ -272,11 +272,22 @@ export class TeamLinkEndpoint {
             : [];
     const authorize = async () => {
       await links.assertActive(linkId);
-      if (!isKnowledgeCall(frame) && "requestId" in frame) {
-        if (["reply", "receipt", "status"].includes(frame.type))
+      if (!isKnowledgeCall(frame) && "requestId" in frame && frame.requestId) {
+        if (["post", "receipt", "status"].includes(frame.type))
           await requests.receipt(linkId, frame.requestId);
         else await requests.authorize(linkId, frame.requestId, "read");
       }
+      if (result.kind === "channels")
+        await links.database.transaction().execute(async (tx) => {
+          for (const channel of result.result.channels) {
+            const rights = await this.options.resolver.channel(
+              tx,
+              { kind: "agent", userId: link.ownerUserId },
+              channel.id,
+            );
+            if (!rights.read || rights.peopleOnly) throw linkError();
+          }
+        });
       if (buffered.reauthorize && !(await buffered.reauthorize())) throw linkError();
       for (const source of sources) await this.#source(link.ownerUserId, source);
       return true;
@@ -285,7 +296,7 @@ export class TeamLinkEndpoint {
     try {
       return await access.handoff(revision, authorize, () => (deliver ? deliver(result) : result));
     } catch (error) {
-      if (!isKnowledgeCall(frame) && "requestId" in frame)
+      if (!isKnowledgeCall(frame) && "requestId" in frame && frame.requestId)
         await this.#audit(linkId, frame, "denied");
       throw error;
     }
@@ -317,7 +328,7 @@ export class TeamLinkEndpoint {
       return {
         result: { kind: "accepted", request: await requests.accept(linkId, frame.requestId) },
       };
-    if (frame.type === "reply") {
+    if (frame.type === "post" && frame.requestId) {
       const existing = await requests.receipt(linkId, frame.requestId);
       if (existing !== null) return { result: { kind: "receipt", messageId: existing } };
     }
@@ -333,7 +344,17 @@ export class TeamLinkEndpoint {
     }
     // Knowledge acts as the link's owner and records its own audit.
     if (isKnowledgeCall(frame)) return data.knowledge(linkId, link.ownerUserId, frame);
-    const action = frame.type === "reply" ? "post" : frame.type === "status" ? "status" : "read";
+    if (frame.type === "channels") {
+      const result = await data.channels(
+        { kind: "agent", userId: link.ownerUserId },
+        linkId,
+        frame,
+      );
+      await this.#audit(linkId, frame, "allowed");
+      return { result: { kind: "channels", result } };
+    }
+    if (!frame.requestId) throw linkError();
+    const action = frame.type === "post" ? "post" : frame.type === "status" ? "status" : "read";
     const actor: TeamActor = { kind: "agent", userId: link.ownerUserId };
     try {
       await requests.authorize(linkId, frame.requestId, action);
@@ -346,12 +367,16 @@ export class TeamLinkEndpoint {
           await requests.status(linkId, frame.requestId, frame);
           result = { kind: "ok" };
           break;
-        case "reply":
+        case "post": {
+          const request = await requests.authorize(linkId, frame.requestId, "post");
+          if (frame.channelId !== request.channelId || frame.threadRootId !== request.threadRootId)
+            throw linkError();
           result = {
             kind: "receipt",
             messageId: await requests.reply(linkId, frame.requestId, frame),
           };
           break;
+        }
         case "read": {
           await this.options.links.database.transaction().execute(async (tx) => {
             const rights = await this.options.resolver.channel(tx, actor, frame.channelId);
@@ -366,7 +391,7 @@ export class TeamLinkEndpoint {
         case "search":
           result = {
             kind: "search",
-            result: await data.search(actor, linkId, frame.requestId, frame.input),
+            result: await data.search(actor, linkId, frame),
           };
           break;
       }
@@ -386,7 +411,9 @@ export class TeamLinkEndpoint {
   ): Promise<void> {
     await auditTeamMachineCall(this.options.links.database, {
       linkId,
-      requestId: frame.requestId,
+      requestId: "requestId" in frame ? frame.requestId : undefined,
+      ...("runId" in frame ? { runId: frame.runId } : {}),
+      operationId: frame.id,
       action: `agent.${frame.type}`,
       outcome,
       ...(frame.type === "read" ? { channelId: frame.channelId } : {}),

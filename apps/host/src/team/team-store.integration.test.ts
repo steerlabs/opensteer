@@ -473,7 +473,40 @@ describe("team transaction authority", () => {
     expect((await chat.openDm(owner, [member.userId])).id).toBe(dm.id);
     expect((await chat.page(member, dm.id)).messages[0]?.bodyMarkdown).toBe("Before departure");
   });
-  it("bounds request context while preserving the original ask after a long thread", async () => {
+  it("sets a thread recipient idempotently and returns only the viewer's state on resume", async () => {
+    const c = await channel("public");
+    const root = await send(c.id, "A thread");
+    const member = await person("recipient-viewer");
+    await chat.joinOrLeave(member, c.id, true);
+    await chat.setAgentRecipient(owner, c.id, root.message.id, true);
+    await chat.setAgentRecipient(owner, c.id, root.message.id, true);
+    expect(await chat.agentRecipient(owner, c.id, root.message.id)).toEqual({
+      channelId: c.id,
+      rootId: root.message.id,
+      enabled: true,
+    });
+    expect(await chat.agentRecipient(member, c.id, root.message.id)).toEqual({
+      channelId: c.id,
+      rootId: root.message.id,
+      enabled: false,
+    });
+    const input = {
+      subscriptionId: "recipients",
+      generation: 1,
+      scope: { kind: "thread" as const, channelId: c.id, rootId: root.message.id },
+      sinceSeq: null,
+    };
+    const snapshot = await chat.resume(owner, input);
+    expect(snapshot.agentRecipients).toEqual([
+      { channelId: c.id, rootId: root.message.id, enabled: true },
+    ]);
+    expect((await chat.resume(member, input)).agentRecipients).toEqual([]);
+    await chat.setAgentRecipient(owner, c.id, root.message.id, false);
+    expect(
+      (await chat.resume(owner, { ...input, sinceSeq: snapshot.throughSeq })).agentRecipients,
+    ).toEqual([{ channelId: c.id, rootId: root.message.id, enabled: false }]);
+  });
+  it("keeps history out of context and carries the original ask on request frames", async () => {
     const c = await channel();
     const l = await link();
     const root = await send(c.id, "original ask " + "x".repeat(12000), owner, [
@@ -483,9 +516,9 @@ describe("team transaction authority", () => {
     const request = (await requests.pending(l))[0]!.request;
     await requests.accept(l, request.id);
     const context = await requests.context(l, request.id);
-    expect(context.messages.length).toBeLessThanOrEqual(50);
-    expect(Buffer.byteLength(JSON.stringify(context.messages))).toBeLessThanOrEqual(32768);
-    expect(context.messages.some((m) => m.id === root.message.id)).toBe(true);
+    expect(context).not.toHaveProperty("messages");
+    expect(context.instructionsRevision).toBe(c.instructionsRevision);
+    expect((await requests.pending(l))[0]?.bodyMarkdown).toBe(root.message.bodyMarkdown);
     expect(context.request.triggerMessageId).toBe(root.message.id);
   });
 

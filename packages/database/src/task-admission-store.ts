@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import type { RevokedRunGrant } from "./run-grants.js";
 import {
@@ -26,6 +27,7 @@ import { createThreadInTransaction } from "./thread-store.js";
 import { projectThreadState } from "./thread-status.js";
 
 interface TeamAdmissionInput {
+  readonly bodyMarkdown: string;
   readonly origin: TeamTaskOrigin;
   readonly requestId: TeamAgentRequestId;
   readonly triggerMessageId: TeamMessageId;
@@ -118,7 +120,7 @@ export function admitTeamTaskRequest(
       content: [
         {
           type: "text",
-          text: "Read this team request's current thread and channel instructions, then answer the ask.",
+          text: input.bodyMarkdown,
         },
       ],
       idempotencyKey: `team:${input.origin.teamId}:${input.requestId}`,
@@ -182,7 +184,7 @@ export function cancelTeamTaskRequest(
     const run = await transaction
       .selectFrom("runs")
       .selectAll()
-      .where("teamRequestId", "=", input.requestId)
+      .where(sql<string>`reply_target->>'requestId'`, "=", input.requestId)
       .where("threadId", "=", request.localTaskId)
       .where("seedInputId", "=", request.localInputId)
       .forNoKeyUpdate()
@@ -301,7 +303,8 @@ export function hydrateTeamTaskInput(
       .where("localInputId", "=", run.seedInputId)
       .executeTakeFirst();
     if (
-      run.teamRequestId !== input.requestId ||
+      run.replyTarget?.kind !== "team" ||
+      run.replyTarget.requestId !== input.requestId ||
       run.status !== "starting" ||
       !request ||
       request.terminalState !== null ||

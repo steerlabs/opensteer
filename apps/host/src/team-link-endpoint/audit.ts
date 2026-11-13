@@ -1,4 +1,4 @@
-import type { TeamAgentRequestId, TeamChannelId, TeamLinkId } from "@opensteer/core";
+import type { TeamAgentRequestId, TeamChannelId, TeamLinkId, RunId } from "@opensteer/core";
 import type { DatabaseSchema } from "@opensteer/database";
 import type { Kysely } from "kysely";
 
@@ -6,7 +6,9 @@ export async function auditTeamMachineCall(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly linkId: TeamLinkId;
-    readonly requestId: TeamAgentRequestId;
+    readonly requestId?: TeamAgentRequestId | undefined;
+    readonly runId?: RunId;
+    readonly operationId?: string;
     readonly action: string;
     readonly outcome: "allowed" | "denied";
     readonly channelId?: TeamChannelId;
@@ -17,12 +19,14 @@ export async function auditTeamMachineCall(
     .select("ownerUserId")
     .where("id", "=", input.linkId)
     .executeTakeFirstOrThrow();
-  const request = await database
-    .selectFrom("teamAgentRequests")
-    .select("id")
-    .where("id", "=", input.requestId)
-    .where("linkId", "=", input.linkId)
-    .executeTakeFirst();
+  const request = input.requestId
+    ? await database
+        .selectFrom("teamAgentRequests")
+        .select("id")
+        .where("id", "=", input.requestId)
+        .where("linkId", "=", input.linkId)
+        .executeTakeFirst()
+    : undefined;
   const channel = input.channelId
     ? await database
         .selectFrom("teamChannels")
@@ -33,6 +37,8 @@ export async function auditTeamMachineCall(
   await database
     .insertInto("teamAudit")
     .values({
+      callerRunId: input.runId ?? null,
+      operationId: input.operationId ?? null,
       actorUserId: link.ownerUserId,
       actorKind: "agent",
       linkId: input.linkId,

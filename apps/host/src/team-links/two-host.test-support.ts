@@ -283,7 +283,20 @@ export async function createTwoHostLinkFixture() {
         .where("state", "in", ["queued", "working", "needs_you"])
         .orderBy("createdAt")
         .execute();
-      return rows.map((row) => ({ request: rawView(row), source: sourceFor(rawView(row)) }));
+      return Promise.all(
+        rows.map(async (row) => ({
+          request: rawView(row),
+          source: sourceFor(rawView(row)),
+          bodyMarkdown: (
+            await team.database
+              .selectFrom("teamMessages")
+              .select("bodyMarkdown")
+              .where("id", "=", row.triggerMessageId)
+              .executeTakeFirstOrThrow()
+          ).bodyMarkdown,
+          attachments: [],
+        })),
+      );
     },
     async accept(currentLink, id) {
       await authorize(id, currentLink);
@@ -302,7 +315,7 @@ export async function createTwoHostLinkFixture() {
       return {
         request,
         instructionsMarkdown: channel.instructionsMarkdown,
-        messages: [],
+        instructionsRevision: SequenceSchema.parse(channel.instructionsRevision),
         source: sourceFor(request),
         audience: sourceFor(request).audience,
       };
@@ -370,6 +383,9 @@ export async function createTwoHostLinkFixture() {
     lifetimes,
     resolver,
     data: {
+      async channels() {
+        return { channels: [], hasMore: false, nextAfter: null };
+      },
       async read() {
         throw new Error("Chat paging belongs to T");
       },
@@ -396,7 +412,7 @@ export async function createTwoHostLinkFixture() {
     wire.push(input);
     const result = await endpoint.call(linkId, { ...input, id: randomUUID() });
     wire.push(result);
-    if (input.type === "reply" && loseReply) {
+    if (input.type === "post" && loseReply) {
       loseReply = false;
       throw linkError("runner_offline");
     }
@@ -531,6 +547,7 @@ export async function createTwoHostLinkFixture() {
   let fileSourceChannel = channelId;
   const files: TeamMachineFilesPort = {
     async open(input) {
+      if (!input.requestId) throw linkError();
       const request = await authorize(input.requestId, input.linkId);
       return {
         file: { ...file, channelId: fileSourceChannel },
@@ -539,6 +556,7 @@ export async function createTwoHostLinkFixture() {
       };
     },
     async upload(input) {
+      if (!input.requestId) throw linkError();
       const chunks: Buffer[] = [];
       for await (const part of input.parts) {
         for await (const chunk of part.bytes)
@@ -556,7 +574,12 @@ export async function createTwoHostLinkFixture() {
   const teamAddress = await teamApp.listen({ host: "127.0.0.1", port: 0 });
   personalApp.post("/deliver", async (request) => {
     const input = TeamAgentRequestSchema.parse(request.body);
-    await publisher.deliver(team.deploymentId, { request: input, source: sourceFor(input) });
+    await publisher.deliver(team.deploymentId, {
+      request: input,
+      source: sourceFor(input),
+      bodyMarkdown: "Team ask",
+      attachments: [],
+    });
     return { accepted: true };
   });
   await personalApp.listen({ host: "127.0.0.1", port: 0 });
@@ -674,7 +697,7 @@ export async function createTwoHostLinkFixture() {
       const runId = createId("run");
       runCount++;
       startedContexts.push(await requestStore.context(linkId, request.id));
-      await sql`insert into runs(id,thread_id,environment_id,harness_instance_id,access_mode,activation_input_id,causal_chain_id,model_selection,requested_by,actor_principal_id,authority_source,run_ordinal,seed_input_id,status,team_request_id) values(${runId},${saved.taskId},${personal.environmentId},${harnessId},'full-access',${input.messageId},${input.causalChainId},'{}',${personal.userId},${principalId},'{}',${runCount},${input.messageId},'running',${request.id})`.execute(
+      await sql`insert into runs(id,thread_id,environment_id,harness_instance_id,access_mode,activation_input_id,causal_chain_id,model_selection,requested_by,actor_principal_id,authority_source,run_ordinal,seed_input_id,status,reply_target) values(${runId},${saved.taskId},${personal.environmentId},${harnessId},'full-access',${input.messageId},${input.causalChainId},'{}',${personal.userId},${principalId},'{}',${runCount},${input.messageId},'running',${JSON.stringify({ kind: "team", teamId: team.deploymentId, channelId: request.channelId, threadRootId: request.threadRootId, requestId: request.id })}::jsonb)`.execute(
         database,
       );
       await database
@@ -851,7 +874,7 @@ export async function createTwoHostLinkFixture() {
         .executeTakeFirstOrThrow();
       const runId = input.runId!;
       const privateRun = createId("run");
-      await sql`insert into runs(id,thread_id,environment_id,harness_instance_id,access_mode,activation_input_id,causal_chain_id,model_selection,requested_by,actor_principal_id,authority_source,run_ordinal,seed_input_id,status,team_request_id) select ${privateRun},thread_id,environment_id,harness_instance_id,access_mode,activation_input_id,causal_chain_id,model_selection,requested_by,actor_principal_id,authority_source,99,seed_input_id,'queued',null from runs where id=${runId}`.execute(
+      await sql`insert into runs(id,thread_id,environment_id,harness_instance_id,access_mode,activation_input_id,causal_chain_id,model_selection,requested_by,actor_principal_id,authority_source,run_ordinal,seed_input_id,status,reply_target) select ${privateRun},thread_id,environment_id,harness_instance_id,access_mode,activation_input_id,causal_chain_id,model_selection,requested_by,actor_principal_id,authority_source,99,seed_input_id,'queued',null from runs where id=${runId}`.execute(
         database,
       );
       const tools = new TeamRunTools(requests, publisher, () => ({ call }), {
@@ -1029,6 +1052,8 @@ export async function createTwoHostLinkFixture() {
       const base = {
         [teamApiVersionHeader]: String(teamApiVersion),
         "x-opensteer-team-request-id": request.id,
+        "x-opensteer-team-run-id": createId("run"),
+        "x-opensteer-team-operation-id": "file-operation",
         "x-opensteer-team-blob-id": file.id,
         "x-opensteer-team-file-part": "original",
       };
@@ -1088,8 +1113,11 @@ export async function createTwoHostLinkFixture() {
           authorization: correct.authorization,
           [teamApiVersionHeader]: base[teamApiVersionHeader],
           "x-opensteer-team-request-id": request.id,
+          "x-opensteer-team-run-id": createId("run"),
+          "x-opensteer-team-operation-id": "file-operation",
           "content-type": `multipart/form-data; boundary=${boundary}`,
           "x-opensteer-team-upload": JSON.stringify({
+            channelId: request.channelId,
             clientUploadId: randomUUID(),
             filename: "public.txt",
             mediaType: "text/plain",
@@ -1108,8 +1136,11 @@ export async function createTwoHostLinkFixture() {
           authorization: correct.authorization,
           [teamApiVersionHeader]: base[teamApiVersionHeader],
           "x-opensteer-team-request-id": request.id,
+          "x-opensteer-team-run-id": createId("run"),
+          "x-opensteer-team-operation-id": "file-operation",
           "content-type": "multipart/form-data; boundary=fixture",
           "x-opensteer-team-upload": JSON.stringify({
+            channelId: request.channelId,
             clientUploadId: randomUUID(),
             filename: "x",
             mediaType: "text/plain",

@@ -84,6 +84,7 @@ it("uploads a real image and bounded preview from the personal Host and binds it
       })
       .execute();
     const admitted = await admitTeamTaskRequest(database, {
+      bodyMarkdown: "Team ask",
       origin: {
         teamId: team.deploymentId,
         channelId: team.channel.id,
@@ -173,7 +174,11 @@ it("uploads a real image and bounded preview from the personal Host and binds it
     expect(uploaded.file.preview?.sizeBytes).toBeGreaterThan(0);
     expect(uploaded.file.preview!.sizeBytes).toBeLessThanOrEqual(teamPreviewMaxBytes);
     const replied = await team.machine.endpoint.call(team.linkId, {
-      type: "reply",
+      type: "post",
+      runId,
+      clientMessageId: randomUUID(),
+      channelId: request.channelId,
+      threadRootId: request.threadRootId,
       id: randomUUID(),
       requestId: request.id,
       bodyMarkdown: "Screenshot",

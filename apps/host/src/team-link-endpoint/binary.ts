@@ -10,6 +10,7 @@ import {
   TeamBinaryDownloadHeadersSchema,
   TeamBinaryUploadHeadersSchema,
   TeamBinaryUploadMetadataSchema,
+  TeamBinaryRouteHeadersSchema,
   TeamFileResultSchema,
 } from "@opensteer/protocol";
 import { Transform, type Readable } from "node:stream";
@@ -85,6 +86,12 @@ export class TeamLinkBinary {
       throw linkError("unauthorized");
     const link = await this.endpoint.options.links.authenticate(headers.authorization.slice(7));
     const requestId = TeamAgentRequestIdSchema.parse(headers["x-opensteer-team-request-id"]);
+    const runId = TeamBinaryRouteHeadersSchema.shape["x-opensteer-team-run-id"].parse(
+      headers["x-opensteer-team-run-id"],
+    );
+    const operationId = TeamBinaryRouteHeadersSchema.shape["x-opensteer-team-operation-id"].parse(
+      headers["x-opensteer-team-operation-id"],
+    );
     let request;
     try {
       request = await this.endpoint.options.requests.authorize(link.id, requestId, action);
@@ -92,6 +99,8 @@ export class TeamLinkBinary {
       await auditTeamMachineCall(this.endpoint.options.links.database, {
         linkId: link.id,
         requestId,
+        runId,
+        operationId,
         action: `file.${action}`,
         outcome: "denied",
       });
@@ -101,6 +110,8 @@ export class TeamLinkBinary {
       link,
       request,
       requestId,
+      runId,
+      operationId,
       actor: { kind: "agent" as const, userId: link.ownerUserId },
     };
   }
@@ -121,6 +132,7 @@ export class TeamLinkBinary {
     requestId: TeamAgentRequestId,
     action: string,
     source: TeamSource,
+    attribution: { readonly runId: import("@opensteer/core").RunId; readonly operationId: string },
     outcome: "allowed" | "denied",
   ): Promise<void> {
     await auditTeamMachineCall(this.endpoint.options.links.database, {
@@ -128,13 +140,17 @@ export class TeamLinkBinary {
       requestId,
       action,
       outcome,
+      ...attribution,
       channelId: source.channelId,
     });
   }
 
   async download(raw: Readonly<Record<string, unknown>>, signal: AbortSignal) {
     checkTeamVersion(raw["x-opensteer-team-api-version"]);
-    const { link, request, requestId, actor } = await this.#authority(raw, "read");
+    const { link, request, requestId, actor, runId, operationId } = await this.#authority(
+      raw,
+      "read",
+    );
     const headers = TeamBinaryDownloadHeadersSchema.parse(raw);
     const revision = this.endpoint.options.access.revision;
     const controller = new AbortController();
@@ -151,6 +167,8 @@ export class TeamLinkBinary {
         actor,
         linkId: link.id,
         requestId,
+        runId,
+        operationId,
         blobId: headers["x-opensteer-team-blob-id"],
         part: headers["x-opensteer-team-file-part"],
         signal: combined,
@@ -171,7 +189,14 @@ export class TeamLinkBinary {
         cancel: () => controller.abort(),
       });
       combined.throwIfAborted();
-      await this.#audit(link.id, requestId, "file.read", metadata.source, "allowed");
+      await this.#audit(
+        link.id,
+        requestId,
+        "file.read",
+        metadata.source,
+        { runId, operationId },
+        "allowed",
+      );
       const preview = headers["x-opensteer-team-file-part"] === "preview";
       const size = preview ? metadata.file.preview?.sizeBytes : metadata.file.sizeBytes;
       if (size === undefined) throw linkError("bad_request");
@@ -204,6 +229,8 @@ export class TeamLinkBinary {
       await auditTeamMachineCall(this.endpoint.options.links.database, {
         linkId: link.id,
         requestId,
+        runId,
+        operationId,
         action: "file.read",
         outcome: "denied",
         channelId: request.channelId,
@@ -214,7 +241,10 @@ export class TeamLinkBinary {
 
   async upload(raw: Readonly<Record<string, unknown>>, bytes: Readable, signal: AbortSignal) {
     checkTeamVersion(raw["x-opensteer-team-api-version"]);
-    const { link, request, requestId, actor } = await this.#authority(raw, "post");
+    const { link, request, requestId, actor, runId, operationId } = await this.#authority(
+      raw,
+      "post",
+    );
     const headers = TeamBinaryUploadHeadersSchema.parse(raw);
     const revision = this.endpoint.options.access.revision;
     const controller = new AbortController();
@@ -241,6 +271,8 @@ export class TeamLinkBinary {
           actor,
           linkId: link.id,
           requestId,
+          runId,
+          operationId,
           metadata,
           parts: upload.parts,
           signal: combined,
@@ -256,7 +288,14 @@ export class TeamLinkBinary {
         result.file.sha256 !== metadata.sha256
       )
         throw linkError();
-      await this.#audit(link.id, requestId, "file.upload", result.source, "allowed");
+      await this.#audit(
+        link.id,
+        requestId,
+        "file.upload",
+        result.source,
+        { runId, operationId },
+        "allowed",
+      );
       return await this.endpoint.options.access.handoff(
         revision,
         async () => {
@@ -272,6 +311,8 @@ export class TeamLinkBinary {
       await auditTeamMachineCall(this.endpoint.options.links.database, {
         linkId: link.id,
         requestId,
+        runId,
+        operationId,
         action: "file.upload",
         outcome: "denied",
         channelId: request.channelId,

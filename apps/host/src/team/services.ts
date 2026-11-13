@@ -234,6 +234,16 @@ export async function startTeamServices(options: TeamServiceOptions) {
       case "team.channel.read":
         await chat.readMarker(actor, command.channelId, command.throughMessageId);
         break;
+      case "team.agent.recipient.set": {
+        const recipient = await chat.setAgentRecipient(
+          actor,
+          command.channelId,
+          command.rootId,
+          command.enabled,
+        );
+        realtime.agentRecipient(actor.userId, recipient);
+        break;
+      }
       case "team.channel.preferences.set":
         await chat.preferences(actor, command.channelId, command.notificationLevel);
         break;
@@ -436,6 +446,10 @@ export async function startTeamServices(options: TeamServiceOptions) {
         return chat.read(actor, "files", input.channelId, () =>
           files.page(actor, input.channelId, input.before),
         );
+      }
+      case "team.agent.recipient.get": {
+        const input = teamReadSchemas[name].input.parse(raw);
+        return chat.agentRecipient(actor, input.channelId, input.rootId);
       }
       case "team.agent.requests.get": {
         const input = teamReadSchemas[name].input.parse(raw);

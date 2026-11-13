@@ -267,12 +267,12 @@ export class AttachmentStore {
     return withPersonalTransaction(this.database, async (tx) => {
       const run = await tx
         .selectFrom("runs")
-        .select(["threadId", "seedInputId", "teamRequestId"])
+        .select(["threadId", "seedInputId", "replyTarget"])
         .where("id", "=", input.runId)
         .forNoKeyUpdate()
         .executeTakeFirst();
       await assertActiveGrant(tx, input);
-      if (!run?.teamRequestId || !run.seedInputId || run.threadId !== input.threadId)
+      if (run?.replyTarget?.kind !== "team" || !run.seedInputId || run.threadId !== input.threadId)
         throw new OpensteerError({
           code: "forbidden",
           message: "No team request owns this file transfer",

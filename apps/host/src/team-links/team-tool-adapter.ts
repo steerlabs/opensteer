@@ -1,3 +1,4 @@
+import { TeamMessageIdSchema } from "@opensteer/core";
 import type { TeamToolPort, TeamToolRun } from "../mcp/team-tool-port.js";
 import { boundTeamReadPage } from "../team-link-endpoint/read-page.js";
 import { linkError } from "../team-link-endpoint/contracts.js";
@@ -17,13 +18,12 @@ export class PersonalTeamToolAdapter implements TeamToolPort {
 
   async #authority(run: TeamToolRun, signal?: AbortSignal) {
     signal?.throwIfAborted();
-    const request = await this.tools.authority(run.runId);
-    if (request.teamId !== run.teamId || request.requestId !== run.requestId) throw linkError();
-    return request;
+    return this.tools.authority(run.runId);
   }
 
   async read(run: TeamToolRun, input: Parameters<TeamToolPort["read"]>[1], signal?: AbortSignal) {
     const request = await this.#authority(run, signal);
+    if (input.teamId && input.teamId !== request.teamId) throw linkError();
     if (input.fileId) {
       const result = await this.files.fetch(run.runId, input.fileId, signal);
       signal?.throwIfAborted();
@@ -37,6 +37,7 @@ export class PersonalTeamToolAdapter implements TeamToolPort {
           ? { threadRootId: request.source.threadRootId }
           : {}),
       ...(input.before ? { before: input.before } : {}),
+      ...(input.after ? { after: TeamMessageIdSchema.parse(input.after) } : {}),
     });
     signal?.throwIfAborted();
     return boundTeamReadPage(result);
@@ -48,13 +49,21 @@ export class PersonalTeamToolAdapter implements TeamToolPort {
     signal?: AbortSignal,
   ) {
     const request = await this.#authority(run, signal);
-    const result = await this.tools.search(run.runId, input);
+    if (input.teamId && input.teamId !== request.teamId) throw linkError();
+    const { teamId: _, ...query } = input;
+    const result = await this.tools.search(run.runId, query);
     signal?.throwIfAborted();
-    return { ...result, source: request.source };
+    return result;
   }
 
-  async reply(run: TeamToolRun, input: Parameters<TeamToolPort["reply"]>[1], signal?: AbortSignal) {
-    await this.#authority(run, signal);
+  async post(run: TeamToolRun, input: Parameters<TeamToolPort["post"]>[1], signal?: AbortSignal) {
+    const request = await this.#authority(run, signal);
+    if (
+      (input.teamId && input.teamId !== request.teamId) ||
+      input.channelId !== request.source.channelId ||
+      input.threadRootId !== request.source.threadRootId
+    )
+      throw linkError();
     const existing = await this.tools.receipt(run.runId);
     signal?.throwIfAborted();
     if (existing) return existing;

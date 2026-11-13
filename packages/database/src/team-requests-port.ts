@@ -4,10 +4,13 @@ import type {
   TeamBlobId,
   TeamLinkId,
   TeamMessageId,
-  TeamSource,
   TeamStatusStepSchema,
 } from "@opensteer/core";
-import type { TeamAgentRequest, TeamRequestContextSchema } from "@opensteer/protocol";
+import type {
+  TeamAgentRequest,
+  TeamRequestContextSchema,
+  TeamRunRequest,
+} from "@opensteer/protocol";
 import type { z } from "zod";
 
 export interface TeamRequestStorePort {
@@ -16,9 +19,7 @@ export interface TeamRequestStorePort {
     requestId: TeamAgentRequestId,
     action: "read" | "post" | "knowledge" | "status",
   ): Promise<TeamAgentRequest>;
-  pending(
-    linkId: TeamLinkId,
-  ): Promise<readonly { readonly request: TeamAgentRequest; readonly source: TeamSource }[]>;
+  pending(linkId: TeamLinkId): Promise<readonly TeamRunRequest[]>;
   /** First accept fixes expiry at seven days; repeated accepts never extend it. */
   accept(linkId: TeamLinkId, requestId: TeamAgentRequestId): Promise<TeamAgentRequest>;
   context(

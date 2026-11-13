@@ -259,8 +259,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     if (!command.runId) throw new CommandDispatchError("Run command is missing its run", "failed");
     let context = await this.#store.loadRunDispatchContext(command.id);
     let teamContext: Awaited<ReturnType<TeamRequestContextLoader>> | undefined;
-    if (context.run.teamRequestId) {
-      const input = { runId: context.run.id, requestId: context.run.teamRequestId };
+    if (context.run.replyTarget?.kind === "team") {
+      const input = { runId: context.run.id, requestId: context.run.replyTarget.requestId };
       teamContext = await this.#teamRequestContext(input, signal);
       const hydrated = await hydrateTeamTaskInput(this.#store.database, {
         ...input,
@@ -594,6 +594,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           : {}),
         accessMode: context.run.accessMode,
         taskPurpose: context.thread.purpose,
+        teamTurnContext: null,
         personalContext: context.personalContext,
         threadState,
         assignment: assignment

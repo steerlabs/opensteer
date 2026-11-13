@@ -3,7 +3,7 @@ import { acceptsTeamApiVersion } from "@opensteer/deployment-authority";
 import {
   TeamFileSchema,
   TeamAgentRequestSchema,
-  TeamBinaryUploadMetadataSchema,
+  TeamUploadMetadataSchema,
   serializeTeamLinkOffer,
   TeamChannelAccessSchema,
   TeamGroupSchema,
@@ -80,6 +80,10 @@ export class MockTeamSocket implements WebSocketClient {
   }
 }
 export class MockTeamHost {
+  readonly agentRecipients = new Map<
+    string,
+    { channelId: TeamChannelId; rootId: z.infer<typeof TeamMessageIdSchema>; enabled: boolean }
+  >();
   readonly channels = new Map<string, z.infer<typeof TeamChannelSchema>>();
   readonly messages = new Map<string, TeamMessage>();
   readonly calls: string[] = [];
@@ -279,7 +283,7 @@ export class MockTeamHost {
     };
   }
   uploadFile = async (input: TeamFileUpload) => {
-    const metadata = TeamBinaryUploadMetadataSchema.parse(input.metadata);
+    const metadata = TeamUploadMetadataSchema.parse(input.metadata);
     const key = JSON.stringify([input.channelId, metadata.clientUploadId]);
     const existing = this.#uploads.get(key);
     if (existing) return existing;
@@ -389,6 +393,11 @@ export class MockTeamHost {
       generation,
       scope,
       requests: recent,
+      agentRecipients: [...this.agentRecipients.values()].filter(
+        (recipient) =>
+          recipient.channelId === scope.channelId &&
+          (scope.kind === "channel" || recipient.rootId === scope.rootId),
+      ),
       linkPresence: presence(recent),
     };
     if (since !== null) {
@@ -481,6 +490,12 @@ export class MockTeamHost {
     if (name === "team.audit.page") return { audit: [], hasMore: false };
     if (name === "team.notices.page") return { notices: [], hasMore: false };
     if (name.startsWith("team.knowledge.")) return this.knowledge.read(name, input);
+    if (name === "team.agent.recipient.get") {
+      const { channelId, rootId } = hostApi["team.agent.recipient.get"].payload.parse(input);
+      return (
+        this.agentRecipients.get(`${channelId}:${rootId}`) ?? { channelId, rootId, enabled: false }
+      );
+    }
     if (name === "team.agent.requests.get") {
       const { channelId, rootId } = hostApi[name].payload.parse(input);
       return {
@@ -854,6 +869,19 @@ export class MockTeamHost {
         command.type === "team.notice.read"
       )
         return { type: command.type };
+      if (command.type === "team.agent.recipient.set") {
+        const recipient = {
+          channelId: command.channelId,
+          rootId: command.rootId,
+          enabled: command.enabled,
+        };
+        this.agentRecipients.set(`${command.channelId}:${command.rootId}`, recipient);
+        for (const socket of this.#sockets.keys())
+          socket.emit("message", {
+            data: JSON.stringify({ type: "team.agent.recipient", recipient }),
+          });
+        return { type: command.type };
+      }
       if (command.type === "team.message.send") {
         let message = [...this.messages.values()].find(
           (row) =>

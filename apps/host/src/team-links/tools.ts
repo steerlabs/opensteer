@@ -70,15 +70,17 @@ export class TeamRunTools {
 
   async read(
     runId: RunId,
-    input: Omit<Extract<TeamLinkCallInput, { type: "read" }>, "type" | "requestId">,
+    input: Omit<Extract<TeamLinkCallInput, { type: "read" }>, "type" | "requestId" | "runId">,
   ) {
     const request = await this.#request(runId);
     const result = await this.#rpc(request.teamId).call({
       type: "read",
+      runId,
       requestId: request.requestId,
       channelId: input.channelId,
       ...(input.threadRootId ? { threadRootId: input.threadRootId } : {}),
       ...(input.before ? { before: input.before } : {}),
+      ...(input.after ? { after: input.after } : {}),
     });
     if (result.kind !== "read") throw linkError("bad_request");
     return result.result;
@@ -88,6 +90,7 @@ export class TeamRunTools {
     const request = await this.#request(runId);
     const result = await this.#rpc(request.teamId).call({
       type: "search",
+      runId,
       requestId: request.requestId,
       input: TeamSearchInputSchema.parse(value),
     });

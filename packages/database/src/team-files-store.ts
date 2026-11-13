@@ -7,11 +7,7 @@ import {
   type TeamChannelId,
   type TeamMessageId,
 } from "@opensteer/core";
-import {
-  TeamFileSchema,
-  TeamBinaryUploadMetadataSchema,
-  teamPreviewMaxBytes,
-} from "@opensteer/protocol";
+import { TeamFileSchema, TeamUploadMetadataSchema, teamPreviewMaxBytes } from "@opensteer/protocol";
 import { sql, type ExpressionBuilder, type Selectable, type Transaction } from "kysely";
 import type { z } from "zod";
 import type { DatabaseSchema, TeamBlobTable, TeamMessageTable } from "./schema.js";
@@ -113,10 +109,10 @@ export class TeamFilesStore {
   async begin(
     actor: TeamActor,
     channelId: TeamChannelId,
-    metadata: z.infer<typeof TeamBinaryUploadMetadataSchema>,
+    metadata: z.infer<typeof TeamUploadMetadataSchema>,
     requestId?: TeamAgentRequestId,
   ) {
-    metadata = TeamBinaryUploadMetadataSchema.parse(metadata);
+    metadata = TeamUploadMetadataSchema.parse(metadata);
     const image = metadata.mediaType.startsWith("image/");
     requireTeam(
       image === metadata.previewSizeBytes > 0,

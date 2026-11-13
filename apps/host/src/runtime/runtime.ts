@@ -1,3 +1,4 @@
+import { MessageContentSchema } from "@opensteer/core";
 import { DeviceAccessService } from "../administration/device-access-service.js";
 import { requireDeviceAccess } from "../administration/device-access.js";
 import { digestSecret } from "@opensteer/shared/secretDigest";
@@ -1967,7 +1968,16 @@ export async function createHostRuntime(
           ownerDisplayName: context.ownerDisplayName,
           instructionsMarkdown: context.instructionsMarkdown,
           source: context.source,
-          content: [{ type: "text" as const, text: JSON.stringify(context.messages) }],
+          content: MessageContentSchema.parse(
+            (
+              await database
+                .selectFrom("messages")
+                .select("content")
+                .innerJoin("runs", "runs.seedInputId", "messages.id")
+                .where("runs.id", "=", runId)
+                .executeTakeFirstOrThrow()
+            ).content,
+          ),
         };
       },
       teamKnowledgeAvailable: async () =>
@@ -2352,19 +2362,19 @@ export async function createHostRuntime(
         product: productHandlers,
         integrations: integrationTools,
         triggers: new TriggerToolHandlers(triggers),
-        teamRequestForRun: async (runId, threadId) =>
-          (
-            await database
-              .selectFrom("runs")
-              .select("teamRequestId")
-              .where("id", "=", runId)
-              .where("threadId", "=", threadId)
-              .executeTakeFirst()
-          )?.teamRequestId ?? null,
+        teamRequestForRun: async (runId, threadId) => {
+          const run = await database
+            .selectFrom("runs")
+            .select("replyTarget")
+            .where("id", "=", runId)
+            .where("threadId", "=", threadId)
+            .executeTakeFirst();
+          return run?.replyTarget?.kind === "team" ? run.replyTarget.requestId : null;
+        },
         team: {
           read: async (...args) => (await ensureLinks()).teamTools.read(...args),
           search: async (...args) => (await ensureLinks()).teamTools.search(...args),
-          reply: async (...args) => (await ensureLinks()).teamTools.reply(...args),
+          post: async (...args) => (await ensureLinks()).teamTools.post(...args),
         },
         knowledge: {
           topics: async (...args) => (await ensureLinks()).knowledge.topics(...args),

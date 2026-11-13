@@ -1,4 +1,8 @@
-import { BrowserSessionIdSchema, BrowserSurfaceIdSchema } from "@opensteer/core";
+import {
+  BrowserSessionIdSchema,
+  BrowserSurfaceIdSchema,
+  TeamMessageIdSchema,
+} from "@opensteer/core";
 import {
   RunnerIdSchema,
   SequenceSchema,
@@ -54,6 +58,34 @@ function event<Type extends AgentEvent["type"]>(
 function fold(events: readonly AgentEvent[], initial: TranscriptEntry[] = []): TranscriptEntry[] {
   return events.reduce(foldTranscriptEvent, initial);
 }
+
+it("keeps delivery on the answering Run when later status and history events arrive", () => {
+  const answerMessageId = createId("message");
+  const sending = {
+    state: "sending" as const,
+    via: "tool" as const,
+    answerMessageId,
+    teamMessageId: null,
+    reason: null,
+  };
+  const sent = {
+    ...sending,
+    state: "sent" as const,
+    teamMessageId: TeamMessageIdSchema.parse("42"),
+  };
+  const entries = fold([
+    event("run.started", { status: "running" }),
+    event("run.delivery-updated", { delivery: sending }),
+    event("run.status", { status: "running" }),
+    event("run.delivery-updated", { delivery: sent }),
+    event("run.completed", { replyMessageId: answerMessageId, status: "completed" }),
+  ]);
+  expect(entries.find((entry) => entry.kind === "run")).toMatchObject({
+    delivery: sent,
+    status: "completed",
+    replyMessageId: answerMessageId,
+  });
+});
 
 it("keeps one app card at its latest publication, including across history pages", () => {
   const appId = "app_11111111-1111-4111-8111-111111111111";

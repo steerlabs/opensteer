@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createId, TeamMessageIdSchema, TeamSourceSchema } from "@opensteer/core";
-import { team_read, team_reply, team_search } from "@opensteer/agent-tools/tools";
+import { team_read, team_post, team_search } from "@opensteer/agent-tools/tools";
 import {
   PersonalTeamRequestSchema,
   TeamMessagePageSchema,
@@ -23,6 +23,7 @@ function fixture() {
     },
   });
   const run = {
+    operationId: "operation",
     teamId: source.teamId,
     requestId: createId("teamAgentRequest"),
     runId: createId("run"),
@@ -160,16 +161,13 @@ function fixture() {
 }
 
 describe("Run-bound team tool adapter", () => {
-  it("keeps provenance on empty search without widening Run authority", async () => {
+  it("keeps empty search source-free without widening Run authority", async () => {
     const f = fixture();
     const input = team_search.input.parse({ query: "missing" });
     const found = await f.adapter.search(f.run, input);
-    expect(team_search.output.parse(found)).toMatchObject({ results: [], source: f.source });
+    expect(team_search.output.parse(found)).toEqual({ results: [], hasMore: false });
     await expect(
-      f.adapter.search({ ...f.run, requestId: createId("teamAgentRequest") }, input),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(
-      f.adapter.search({ ...f.run, teamId: createId("deployment") }, input),
+      f.adapter.search(f.run, { ...input, teamId: createId("deployment") }),
     ).rejects.toMatchObject({ code: "forbidden" });
     await expect(f.adapter.search({ ...f.run, runId: createId("run") }, input)).rejects.toThrow(
       "no team request in this turn",
@@ -199,12 +197,14 @@ describe("Run-bound team tool adapter", () => {
   it("uploads only explicit admitted paths and recovers an uncertain reply before any repeated upload", async () => {
     const f = fixture();
     f.loseAck();
-    const input = team_reply.input.parse({
+    const input = team_post.input.parse({
+      channelId: f.source.channelId,
+      threadRootId: f.source.threadRootId,
       bodyMarkdown: "The answer",
       attachmentPaths: ["/private/EXPLICIT_FILE"],
     });
-    await expect(f.adapter.reply(f.run, input)).rejects.toThrow("connection lost after commit");
-    expect(team_reply.output.parse(await f.adapter.reply(f.run, input))).toEqual({
+    await expect(f.adapter.post(f.run, input)).rejects.toThrow("connection lost after commit");
+    expect(team_post.output.parse(await f.adapter.post(f.run, input))).toEqual({
       messageId: "99",
       source: f.source,
     });
@@ -213,7 +213,9 @@ describe("Run-bound team tool adapter", () => {
     expect(JSON.stringify(f.wire)).not.toMatch(/EXPLICIT_FILE|private|attachmentPaths|Bearer/);
     const rejected = fixture();
     await expect(
-      rejected.adapter.reply(rejected.run, {
+      rejected.adapter.post(rejected.run, {
+        channelId: rejected.source.channelId,
+        threadRootId: rejected.source.threadRootId!,
         bodyMarkdown: "answer",
         attachmentPaths: ["/not/admitted"],
       }),
@@ -236,9 +238,13 @@ describe("Run-bound team tool adapter", () => {
       (await f.adapter.search(f.run, team_search.input.parse({ query: "a" }))).results[0]!.source,
     ).toEqual(other);
     await expect(
-      f.adapter.reply(
+      f.adapter.post(
         f.run,
-        team_reply.input.parse({ bodyMarkdown: "answer" }),
+        team_post.input.parse({
+          channelId: f.source.channelId,
+          threadRootId: f.source.threadRootId,
+          bodyMarkdown: "answer",
+        }),
         AbortSignal.abort(),
       ),
     ).rejects.toThrow();

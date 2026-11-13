@@ -7,7 +7,7 @@ import {
 import type { AgentToolHandlers, ToolCall } from "./types.js";
 import type { TeamKnowledgePort, TeamToolPort } from "../team-tool-port.js";
 
-type TeamToolName = "team_read" | "team_search" | "team_reply";
+type TeamToolName = "team_read" | "team_search" | "team_post";
 export function teamToolHandlers(options: {
   readonly port: TeamToolPort | undefined;
   readonly requestForRun: (runId: RunId, threadId: ThreadId) => Promise<TeamAgentRequestId | null>;
@@ -26,7 +26,7 @@ export function teamToolHandlers(options: {
     if (!options.port)
       throw new OpensteerError({ code: "conflict", message: "The team link is unavailable" });
     await call.checkLive?.();
-    const run = { teamId: origin.teamId, requestId, runId: caller.claims.runId };
+    const run = { operationId: call.operationKey, runId: caller.claims.runId };
     switch (name) {
       case "team_read":
         return options.port.read(run, call.input as ToolCall<"team_read">["input"], call.signal);
@@ -36,14 +36,14 @@ export function teamToolHandlers(options: {
           call.input as ToolCall<"team_search">["input"],
           call.signal,
         );
-      case "team_reply":
-        return options.port.reply(run, call.input as ToolCall<"team_reply">["input"], call.signal);
+      case "team_post":
+        return options.port.post(run, call.input as ToolCall<"team_post">["input"], call.signal);
     }
   };
   return {
     team_read: (call) => invoke("team_read", call),
     team_search: (call) => invoke("team_search", call),
-    team_reply: (call) => invoke("team_reply", call),
+    team_post: (call) => invoke("team_post", call),
   };
 }
 
