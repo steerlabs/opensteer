@@ -62,14 +62,15 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
       { managedConnectDomain: config.connectDomain },
     );
     const hostedTeamHost = new HttpHostedTeamHost();
+    const ownerCheck = hostedTeamOwnerCheck({
+      host: hostedTeamHost,
+      issuer: config.publicOrigin,
+      sign: async (claims) => (await auth.api.signJWT({ body: { payload: claims } })).token,
+    });
     const hostedTeams = config.hostedTeams
       ? new HostedTeamStore(database, {
           cipher: new HostedTeamSetupTokenCipher(config.adoptionOperationKey),
-          ownerCheck: hostedTeamOwnerCheck({
-            host: hostedTeamHost,
-            issuer: config.publicOrigin,
-            sign: async (claims) => (await auth.api.signJWT({ body: { payload: claims } })).token,
-          }),
+          ownerCheck,
         })
       : undefined;
     const store = new ControlPlaneStore(database, config.publicOrigin, {
@@ -197,6 +198,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
           teams: hostedTeams,
           accounts: store,
           host: hostedTeamHost,
+          ownerCheck,
           issuer: config.publicOrigin,
           onError: (error) => server.log.error({ err: error }, "Hosted team setup failed"),
         })

@@ -145,12 +145,14 @@ export const TeamCommandSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({ type: z.literal("team.invite.revoke"), inviteId: TeamInviteIdSchema }),
   /**
-   * Creates the team's current reusable invite, or atomically revokes and replaces it. `id`
-   * names the new invite, so a retried reset returns it instead of replacing it again.
+   * Replaces the team's current reusable invite only when it is still `replaces` (null: when
+   * there is none); otherwise answers the one another manager made meanwhile. `id` names the new
+   * invite, so a retried reset returns it instead of replacing it again.
    */
   z.strictObject({
     type: z.literal("team.invite.reset"),
     id: TeamInviteIdSchema,
+    replaces: TeamInviteIdSchema.nullable(),
     expiresInDays: TeamInviteExpiryDaysSchema,
     maxUses: TeamInviteMaxUsesSchema,
   }),

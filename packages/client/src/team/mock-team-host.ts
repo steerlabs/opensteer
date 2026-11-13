@@ -654,7 +654,7 @@ export class MockTeamHost {
             code: "forbidden",
             message: "Only invite managers can do that.",
           });
-        if (this.currentInvite?.invite.id === command.id)
+        if (this.currentInvite && this.currentInvite.invite.id !== command.replaces)
           return { type: command.type, invite: this.currentInvite.invite };
         const selector = mockSecret(32),
           verifier = mockSecret(43),

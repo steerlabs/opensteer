@@ -156,13 +156,15 @@ export class TeamIdentityAdmission {
       .where("m.role", "=", "owner")
       .where("m.state", "=", "active")
       .where("u.disabledAt", "is", null);
-    const [owner, listed] = await Promise.all([
+    const [owner, listed, bootstrap] = await Promise.all([
       owners.where("a.accountId", "=", claims.sub).executeTakeFirst(),
       owners.orderBy("a.accountId").limit(100).execute(),
+      readHostedBootstrap(this.access.database),
     ]);
     return HostedTeamOwnerCheckResponseSchema.parse({
       owner: owner !== undefined,
       owners: listed.map((row) => row.accountId),
+      receipt: bootstrap ? publicReceipt(bootstrap) : null,
     });
   }
   /** Signature, issuer, audience and lifetime, then this exact Host: never a token's own word. */

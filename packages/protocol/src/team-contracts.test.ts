@@ -44,6 +44,7 @@ describe("team boundary contracts", () => {
       TeamCommandSchema.safeParse({
         type: "team.invite.reset",
         id: createId("teamInvite"),
+        replaces: null,
         expiresInDays: 7,
         maxUses: null,
         ...change,

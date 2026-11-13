@@ -134,6 +134,7 @@ export class Reconciler {
     const objects = renderTeam({
       id: team.id,
       slug: team.slug,
+      name: team.name ?? team.slug,
       images: this.#images,
       postgresImage: this.#images.postgres,
       replicas: team.state === "suspended" ? 0 : 1,

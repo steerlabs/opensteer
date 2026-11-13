@@ -21,6 +21,7 @@ import {
   type MockTeamWorld,
   type PersonalTeamLinksPort,
   type TeamConnectionIntent,
+  type TeamConnectionIntentKey,
   type TeamConnectionIntentStore,
   type TeamCoordinator,
   type TeamSessionPort,
@@ -178,31 +179,35 @@ export function personalTeamLinksPort(hostClient: HostClient): PersonalTeamLinks
 
 const intentsKey = "opensteer:team-intents:v1";
 
-/** Connection intents in this browser profile; they name teams, never a credential. */
+function readIntents(): TeamConnectionIntent[] {
+  try {
+    const parsed = z
+      .array(TeamConnectionIntentSchema)
+      .max(100)
+      .safeParse(JSON.parse(localStorage.getItem(intentsKey) ?? "[]"));
+    return parsed.success ? parsed.data : [];
+  } catch {
+    return [];
+  }
+}
+
+function without(intents: readonly TeamConnectionIntent[], key: TeamConnectionIntentKey) {
+  return intents.filter(
+    (row) => row.accountSubject !== key.accountSubject || row.teamOrigin !== key.teamOrigin,
+  );
+}
+
+/**
+ * Connection intents in this browser profile; they name teams, never a credential. Each change
+ * reads and writes with no await between, so concurrent saves never drop each other.
+ */
 export const localIntentStore: TeamConnectionIntentStore = {
-  async load() {
-    try {
-      const parsed = z
-        .array(TeamConnectionIntentSchema)
-        .max(100)
-        .safeParse(JSON.parse(localStorage.getItem(intentsKey) ?? "[]"));
-      return parsed.success ? parsed.data : [];
-    } catch {
-      return [];
-    }
-  },
+  load: async () => readIntents(),
   async save(intent) {
-    const held = (await this.load()).filter(
-      (row) => row.accountSubject !== intent.accountSubject || row.teamOrigin !== intent.teamOrigin,
-    );
-    localStorage.setItem(intentsKey, JSON.stringify([...held, intent]));
+    localStorage.setItem(intentsKey, JSON.stringify([...without(readIntents(), intent), intent]));
   },
   async remove(key) {
-    const held = (await this.load()).filter(
-      (row: TeamConnectionIntent) =>
-        row.accountSubject !== key.accountSubject || row.teamOrigin !== key.teamOrigin,
-    );
-    localStorage.setItem(intentsKey, JSON.stringify(held));
+    localStorage.setItem(intentsKey, JSON.stringify(without(readIntents(), key)));
   },
 };
 

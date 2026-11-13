@@ -310,6 +310,19 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
   /** Teams whose agent is being disconnected; nothing connects them until that finishes. */
   const disconnecting = new Set<string>();
 
+  /** The Account the snapshot shows; `resume` clears it when someone else signs in. */
+  let heldFor = ports.accountSubject();
+  /** Stops following setups and retrying connections; each was begun for one Account. */
+  const settleAccountWork = () => {
+    browserJoin?.settle(false);
+    for (const controller of following.values()) controller.abort();
+    following.clear();
+    for (const [key, timer] of retries) {
+      clearTimeout(timer);
+      generations.set(key, generationOf(key) + 1);
+    }
+    retries.clear();
+  };
   const publish = (next: Partial<TeamCoordinatorSnapshot>) => {
     snapshot = { ...snapshot, ...next };
     for (const listener of listeners) listener();
@@ -769,7 +782,21 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
     },
 
     async resume() {
-      if (disposed || ports.accountSubject() === null) return;
+      if (disposed) return;
+      const current = ports.accountSubject();
+      if (current !== heldFor) {
+        // Another person may hold this device now: nothing of the last Account's stays on screen.
+        heldFor = current;
+        settleAccountWork();
+        publish({
+          hostedTeams: [],
+          intents: mine(),
+          watching: null,
+          ready: [],
+          joiningInBrowser: null,
+        });
+      }
+      if (current === null) return;
       await load();
       publish({ intents: mine() });
       // Teams already entered come back whether or not Account can list hosted teams now.
@@ -777,6 +804,8 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
         if (intent.teamDeploymentId !== null)
           void restoreThenConnect(intent, intent.teamDeploymentId);
       const teams = await ports.account.listHostedTeams();
+      // Signed out or switched meanwhile: that resume owns the snapshot now.
+      if (disposed || ports.accountSubject() !== current) return;
       for (const intent of mine()) {
         if (intent.hostedTeamId !== null || intent.teamDeploymentId !== null) continue;
         // Saved before Account answered: the team it created at that address, or nothing.
@@ -795,11 +824,7 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
 
     dispose() {
       disposed = true;
-      browserJoin?.settle(false);
-      for (const controller of following.values()) controller.abort();
-      following.clear();
-      for (const timer of retries.values()) clearTimeout(timer);
-      retries.clear();
+      settleAccountWork();
       listeners.clear();
     },
   };

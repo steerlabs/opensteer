@@ -70,12 +70,14 @@ export function TeamInvitesScreen(
   const { copied, copy } = useCopy();
   const name = snapshot.bootstrap?.teamName ?? team?.name ?? "your team";
 
+  /** Replaces the link on screen; with none shown, makes one only when the team has none. */
   const reset = async (expiresInDays: TeamInviteExpiryDays): Promise<void> => {
     if (session === null) return;
     const made = unwrapRpcResult(
       await session.rpc["commands.dispatch"]({
         type: "team.invite.reset",
         id: createId("teamInvite"),
+        replaces: state.kind === "current" ? state.invite.id : null,
         expiresInDays,
         maxUses: null,
       }),
@@ -83,28 +85,34 @@ export function TeamInvitesScreen(
     if (made.type === "team.invite.reset") setState({ kind: "current", invite: made.invite });
   };
 
+  const load = async (): Promise<void> => {
+    if (session === null) return;
+    const result = await session.rpc["team.invite.current.get"]({});
+    // A team server older than reusable invites.
+    if (!result.ok && result.error.code === "not_found") {
+      setState({ kind: "single-use", url: null });
+      return;
+    }
+    const current = unwrapRpcResult(result).invite;
+    if (current !== null) setState({ kind: "current", invite: current });
+    else await reset(7);
+  };
+
   useEffect(() => {
     if (session === null) return;
     let current = true;
-    void session.rpc["team.invite.current.get"]({}).then(async (result) => {
-      if (!current) return;
-      if (!result.ok) {
-        setState({ kind: "single-use", url: null });
-        return;
-      }
-      if (result.data.invite !== null) setState({ kind: "current", invite: result.data.invite });
-      else
-        await reset(7).catch((error: unknown) =>
-          setState({
-            kind: "failed",
-            detail: error instanceof Error ? error.message : "The invite wasn't made.",
-          }),
-        );
-    });
+    void load().catch(
+      (error: unknown) =>
+        current &&
+        setState({
+          kind: "failed",
+          detail: error instanceof Error ? error.message : "The invite wasn't made.",
+        }),
+    );
     return () => {
       current = false;
     };
-    // `reset` is made from the session.
+    // `load` is made from the session.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session]);
 
@@ -133,7 +141,7 @@ export function TeamInvitesScreen(
         <ActivityIndicator color={color.muted} style={styles.loading} />
       ) : state.kind === "failed" ? (
         <Notice
-          action={{ label: "Try again", onPress: () => run(() => reset(7)) }}
+          action={{ label: "Try again", onPress: () => run(load) }}
           detail={state.detail}
           title="No invite yet"
         />

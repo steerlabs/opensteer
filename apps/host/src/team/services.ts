@@ -315,7 +315,13 @@ export async function startTeamServices(options: TeamServiceOptions) {
       case "team.invite.reset":
         return {
           type: command.type,
-          invite: await invites.reset(actor, command.id, command.expiresInDays, command.maxUses),
+          invite: await invites.reset(
+            actor,
+            command.id,
+            command.replaces,
+            command.expiresInDays,
+            command.maxUses,
+          ),
         };
       case "team.invite.accept":
         await invites.accept(actor.userId, command.selector, command.verifier);

@@ -92,6 +92,36 @@ describe("TeamCoordinator", () => {
     expect(coordinator.getSnapshot().ready).toEqual([]);
   });
 
+  it("keeps nothing of an Account on screen once it signs out, nor finishes its setup", async () => {
+    const world = new MockTeamWorld();
+    let subject: ReturnType<typeof world.accountSubject> | null = world.accountSubject();
+    const opened: DeploymentId[] = [];
+    const { coordinator } = track({
+      coordinator: createTeamCoordinator({
+        account: world.account,
+        sessions: world.sessions,
+        personal: world.personal,
+        intents: world.intents,
+        accountSubject: () => subject,
+        open: (id) => opened.push(id),
+      }),
+    });
+    const view = await create(coordinator);
+    coordinator.keepWorking(view.id);
+    expect(coordinator.getSnapshot().hostedTeams).toHaveLength(1);
+    subject = null;
+    await coordinator.resume();
+    expect(coordinator.getSnapshot()).toMatchObject({
+      hostedTeams: [],
+      intents: [],
+      watching: null,
+      ready: [],
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(coordinator.getSnapshot()).toMatchObject({ hostedTeams: [], ready: [] });
+    expect(opened).toEqual([]);
+  });
+
   it("resumes a setup after a restart from the persisted intent", async () => {
     const first = start();
     const view = await create(first.coordinator);

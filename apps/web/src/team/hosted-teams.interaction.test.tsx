@@ -131,6 +131,26 @@ describe("hosted teams", () => {
     expect(dialog().textContent).not.toMatch(/Reset link/u);
   });
 
+  it("offers Try again, not one-person links, when the team can't be reached", async () => {
+    const world = new MockTeamWorld({ pace: 0 });
+    await createTeam(world, "Acme");
+    await until(() => document.querySelector(".teams-welcome") !== null, "the welcome card");
+    const host = world.joined()[0]!;
+    const read = host.read.bind(host);
+    let reachable = false;
+    vi.spyOn(host, "read").mockImplementation(async (name, input) => {
+      if (name === "team.invite.current.get" && !reachable)
+        throw new OpensteerError({ code: "timeout", message: "The team isn’t reachable." });
+      return read(name, input);
+    });
+    await click(button("Invite people", document.querySelector(".teams-welcome")!));
+    await until(() => button("Try again", dialog()) !== undefined, "the retry");
+    expect(dialog().textContent).not.toMatch(/Each link lets one person join/u);
+    reachable = true;
+    await click(button("Try again", dialog()));
+    await until(() => field("Invite link").value.startsWith("https://acme."), "the invite link");
+  });
+
   it("disconnects only the agent, and deletes the team once its name is typed", async () => {
     const world = new MockTeamWorld({ pace: 0 });
     await createTeam(world, "Acme");

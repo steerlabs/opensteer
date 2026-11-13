@@ -61,8 +61,20 @@ describe("reusable team invites", () => {
     )?.state;
   }
   const refusal = (reason: string) => ({ code: "forbidden", reason });
-  const reset = (expiresInDays: 1 | 7 | 30 = 7, maxUses: number | null = null, actor = owner) =>
-    invites.reset(actor, createId("teamInvite"), expiresInDays, maxUses);
+  /** A manager pressing Reset on the link they see now. */
+  const reset = async (
+    expiresInDays: 1 | 7 | 30 = 7,
+    maxUses: number | null = null,
+    actor = owner,
+  ) => {
+    const seen = await fixture.database
+      .selectFrom("teamInvites")
+      .select("id")
+      .where("sealedVerifier", "is not", null)
+      .where("revokedAt", "is", null)
+      .executeTakeFirst();
+    return invites.reset(actor, createId("teamInvite"), seen?.id ?? null, expiresInDays, maxUses);
+  };
 
   it("lets only managers reset and redisplay the one current link", async () => {
     const admin: TeamActor = { kind: "human", userId: await person("Ada", "admin") };
@@ -83,10 +95,10 @@ describe("reusable team invites", () => {
     expect(stored.sealedVerifier?.toString("utf8")).not.toContain(secret(first.url).verifier);
 
     // A retried reset returns its own invite; a fresh reset replaces it in one transaction.
-    await expect(invites.reset(owner, first.id, 30, 5)).resolves.toEqual(first);
+    await expect(invites.reset(owner, first.id, null, 30, 5)).resolves.toEqual(first);
     const second = await reset(30, 5);
     expect((await invites.current(owner)).invite).toEqual(second);
-    await expect(invites.reset(owner, first.id, 7, null)).rejects.toMatchObject({
+    await expect(invites.reset(owner, first.id, null, 7, null)).rejects.toMatchObject({
       code: "conflict",
     });
     await expect(join(await person("Late"), first.url)).rejects.toMatchObject(
@@ -99,6 +111,24 @@ describe("reusable team invites", () => {
     expect((await invites.page(owner)).invites).toEqual([]);
   });
 
+  it("never lets two managers revoke each other's link by opening or resetting at once", async () => {
+    const admin: TeamActor = { kind: "human", userId: await person("Ada", "admin") };
+    // Both sheets saw no link and make one together: they get the same one.
+    const [mine, theirs] = await Promise.all([
+      invites.reset(owner, createId("teamInvite"), null, 7, null),
+      invites.reset(admin, createId("teamInvite"), null, 7, null),
+    ]);
+    expect(theirs).toEqual(mine);
+    // Both pressed Reset on that link: one replaces it, the other is shown that replacement.
+    const [one, other] = await Promise.all([
+      invites.reset(owner, createId("teamInvite"), mine.id, 7, null),
+      invites.reset(admin, createId("teamInvite"), mine.id, 7, null),
+    ]);
+    expect(other).toEqual(one);
+    expect(one.id).not.toBe(mine.id);
+    expect((await invites.current(owner)).invite).toEqual(one);
+  });
+
   it("shows no link once the Host's secret changed, and a reset makes a working one", async () => {
     await reset();
     const rotated = new TeamInvitesStore(
@@ -107,7 +137,7 @@ describe("reusable team invites", () => {
       createTeamInviteVerifierVault("r".repeat(40), fixture.deploymentId),
     );
     await expect(rotated.current(owner)).resolves.toEqual({ invite: null });
-    const fresh = await rotated.reset(owner, createId("teamInvite"), 7, null);
+    const fresh = await rotated.reset(owner, createId("teamInvite"), null, 7, null);
     await expect(rotated.current(owner)).resolves.toEqual({ invite: fresh });
   });
 

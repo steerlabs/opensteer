@@ -400,7 +400,7 @@ export class HostedTeamStore {
   async desired(): Promise<readonly DesiredHostedTeam[]> {
     const rows = await this.#database
       .selectFrom("hostedTeams")
-      .select(["id", "slug", "state", "setupTokenDigest", "setupGeneration"])
+      .select(["id", "slug", "name", "state", "setupTokenDigest", "setupGeneration"])
       .where((expression) =>
         expression.or([expression("state", "!=", "deleted"), expression("phase", "!=", "deleted")]),
       )
@@ -409,6 +409,7 @@ export class HostedTeamStore {
     return rows.map((row) => ({
       id: row.id,
       slug: row.slug,
+      name: row.name ?? row.slug,
       state: row.state,
       setupTokenDigest: row.setupTokenDigest,
       setupGeneration: row.setupGeneration,

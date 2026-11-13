@@ -770,14 +770,17 @@ export function InvitePanel({ client }: { readonly client: TeamSessionClient }) 
   const [copied, setCopied] = useState(false);
   const expiryId = useId();
   const linkId = useId();
+  const [attempt, setAttempt] = useState(0);
+  /** Replaces `replaces`, the link on screen; null makes one only when the team has none. */
   const reset = useCallback(
-    async (expiresInDays: TeamInviteExpiryDays) => {
+    async (expiresInDays: TeamInviteExpiryDays, replaces: TeamCurrentInvite["id"] | null) => {
       setBusy(true);
       try {
         const result = unwrapRpcResult(
           await client.rpc["commands.dispatch"]({
             type: "team.invite.reset",
             id: TeamInviteIdSchema.parse(createId("teamInvite")),
+            replaces,
             expiresInDays,
             maxUses: null,
           }),
@@ -813,22 +816,24 @@ export function InvitePanel({ client }: { readonly client: TeamSessionClient }) 
   };
   useEffect(() => {
     let live = true;
+    setError(null);
     void client.rpc["team.invite.current.get"]({})
       .then(async (result) => {
         if (!live) return;
         // The same answer mobile acts on: a team server older than reusable invites.
-        if (!result.ok) {
+        if (!result.ok && result.error.code === "not_found") {
           setSingleUse({ url: null });
           return;
         }
-        if (result.data.invite) setInvite(result.data.invite);
-        else await reset(7);
+        const current = unwrapRpcResult(result).invite;
+        if (current) setInvite(current);
+        else await reset(7, null);
       })
       .catch((failure: unknown) => live && setError(actionErrorMessage(failure)));
     return () => {
       live = false;
     };
-  }, [client, reset]);
+  }, [client, reset, attempt]);
   const lede = (
     <p className="teams-form__lede">
       {singleUse
@@ -838,9 +843,14 @@ export function InvitePanel({ client }: { readonly client: TeamSessionClient }) 
   );
   if (error)
     return (
-      <p className="notice notice--error" role="alert">
-        {error}
-      </p>
+      <div className="teams-invite__controls">
+        <p className="notice notice--error" role="alert">
+          {error}
+        </p>
+        <button className="btn" onClick={() => setAttempt((count) => count + 1)} type="button">
+          Try again
+        </button>
+      </div>
     );
   const url = invite?.url ?? singleUse?.url ?? null;
   if (singleUse && url === null)
@@ -908,7 +918,7 @@ export function InvitePanel({ client }: { readonly client: TeamSessionClient }) 
                 disabled={busy}
                 id={expiryId}
                 onChange={(event) =>
-                  void reset(Number(event.currentTarget.value) as TeamInviteExpiryDays)
+                  void reset(Number(event.currentTarget.value) as TeamInviteExpiryDays, invite.id)
                     .then(() => toast.success("New link made"))
                     .catch((failure: unknown) => toast.error(actionErrorMessage(failure)))
                 }
@@ -926,7 +936,7 @@ export function InvitePanel({ client }: { readonly client: TeamSessionClient }) 
               className="btn btn--ghost btn--small teams-invite__reset"
               disabled={busy}
               onClick={() =>
-                void reset(invite.expiresInDays)
+                void reset(invite.expiresInDays, invite.id)
                   .then(() => toast.success("New invite link made"))
                   .catch((failure: unknown) => toast.error(actionErrorMessage(failure)))
               }

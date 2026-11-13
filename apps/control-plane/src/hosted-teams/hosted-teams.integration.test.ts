@@ -93,7 +93,9 @@ integration("Hosted teams", () => {
     cipher,
     ownerCheck: async ({ accountId }) => {
       ownerChecks.push(accountId);
-      return ownerAnswer === undefined ? undefined : { owner: ownerAnswer, owners: [] };
+      return ownerAnswer === undefined
+        ? undefined
+        : { owner: ownerAnswer, owners: [], receipt: null };
     },
   });
   const portalSessions = new PortalSessionStore(database);

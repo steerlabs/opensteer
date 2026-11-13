@@ -159,14 +159,12 @@ async function startHostedTeam() {
   });
   const host = new HttpHostedTeamHost({ fetch: toHost });
   const cipher = new HostedTeamSetupTokenCipher(operationKey);
-  const teams = new HostedTeamStore(accounts, {
-    cipher,
-    ownerCheck: hostedTeamOwnerCheck({
-      host,
-      issuer,
-      sign: async (claims) => (await auth.api.signJWT({ body: { payload: claims } })).token,
-    }),
+  const ownerCheck = hostedTeamOwnerCheck({
+    host,
+    issuer,
+    sign: async (claims) => (await auth.api.signJWT({ body: { payload: claims } })).token,
   });
+  const teams = new HostedTeamStore(accounts, { cipher, ownerCheck });
   const connectLifecycle = new ConnectLifecycleService(accounts, {
     delete: async () => undefined,
     ensure: async () => Promise.reject(new Error("Connect is not used")),
@@ -191,6 +189,7 @@ async function startHostedTeam() {
     teams,
     accounts: store,
     host,
+    ownerCheck,
     issuer,
     onError: (error) => errors.push(error),
     now: () => clock,
@@ -417,6 +416,19 @@ for (const [step, when] of [
     await expectBootstrapped(system);
   });
 }
+
+it("records a setup whose completion answer was lost, after Account's adoption result expired", async () => {
+  const system = await startHostedTeam();
+  await system.report();
+  system.faults.push({ step: "complete", when: "after" });
+  await system.bootstrapper.runOnce();
+  await system.accounts
+    .updateTable("deploymentAdoptionOperations")
+    .set({ resultExpiresAt: new Date(Date.now() - 1_000) })
+    .execute();
+  await system.pass();
+  await expectBootstrapped(system);
+});
 
 /** The creator makes someone else an owner of the team and leaves it; answers the new owner. */
 async function handOwnershipAway(system: Awaited<ReturnType<typeof startHostedTeam>>) {

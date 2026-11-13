@@ -1116,11 +1116,6 @@ export const HostedTeamOwnerCheckRequestSchema = z.strictObject({
   assertion: AccountHostSessionGrantSchema,
 });
 /** `owner`: `sub` is an active owner. `owners`: the Accounts of every active owner, in order. */
-export const HostedTeamOwnerCheckResponseSchema = z.object({
-  owner: z.boolean(),
-  owners: z.array(ControlPlaneAccountIdSchema).max(100),
-});
-export type HostedTeamOwnerCheckResponse = z.infer<typeof HostedTeamOwnerCheckResponseSchema>;
 
 /**
  * Account's hosted bootstrap: the team Host also commits `owner` as its owner and creates
@@ -1154,6 +1149,17 @@ export const HostedTeamBootstrapReceiptSchema = z.object({
   completedAt: IsoDateTimeSchema,
 });
 export type HostedTeamBootstrapReceipt = z.infer<typeof HostedTeamBootstrapReceiptSchema>;
+
+/**
+ * `receipt` is the Host's committed hosted bootstrap, so Account can still record a setup whose
+ * completion answer it lost after its own adoption result expired.
+ */
+export const HostedTeamOwnerCheckResponseSchema = z.object({
+  owner: z.boolean(),
+  owners: z.array(ControlPlaneAccountIdSchema).max(100),
+  receipt: HostedTeamBootstrapReceiptSchema.nullable(),
+});
+export type HostedTeamOwnerCheckResponse = z.infer<typeof HostedTeamOwnerCheckResponseSchema>;
 
 /** `receipt` is present exactly when the request carried `hostedBootstrap`. */
 export const CompleteTeamSetupAdoptionResponseSchema = z.object({

@@ -76,16 +76,22 @@ export type HostedTeamPhase = z.infer<typeof HostedTeamPhaseSchema>;
 /** Lowercase hex SHA-256 of the first-owner setup token; the plaintext never leaves Account. */
 export const SetupTokenDigestSchema = z.string().regex(/^[0-9a-f]{64}$/u);
 
-export const DesiredHostedTeamSchema = z.strictObject({
+/** Bounded by the Account Deployment name the team becomes. */
+export const HostedTeamNameSchema = z.string().trim().min(1).max(120);
+
+/** Read tolerantly: the provisioner and Account roll out separately. */
+export const DesiredHostedTeamSchema = z.object({
   id: HostedTeamIdSchema,
   slug: HostedTeamSlugSchema,
+  /** The team's name, shown by its Host; an Account from before names were sent leaves it out. */
+  name: HostedTeamNameSchema.optional(),
   state: HostedTeamStateSchema,
   setupTokenDigest: SetupTokenDigestSchema.nullable(),
   setupGeneration: z.number().int().min(1),
 });
 export type DesiredHostedTeam = z.infer<typeof DesiredHostedTeamSchema>;
 
-export const DesiredHostedTeamsResponseSchema = z.strictObject({
+export const DesiredHostedTeamsResponseSchema = z.object({
   teams: z.array(DesiredHostedTeamSchema).max(10_000),
 });
 export type DesiredHostedTeamsResponse = z.infer<typeof DesiredHostedTeamsResponseSchema>;
@@ -128,9 +134,6 @@ export const accountHostedTeamOwnersPath = (id: HostedTeamId) =>
   `${accountHostedTeamPath(id)}/owners`;
 export const accountHostedTeamTransferPath = (id: HostedTeamId) =>
   `${accountHostedTeamPath(id)}/transfer`;
-
-/** Bounded by the Account Deployment name the team becomes. */
-export const HostedTeamNameSchema = z.string().trim().min(1).max(120);
 
 /**
  * What a person waits on. `ready` means the team Host is configured, its creator is committed

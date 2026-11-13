@@ -2,6 +2,7 @@ import {
   HostedTeamOwnerCheckClaimsSchema,
   type AdoptExistingDeploymentResponse,
   type HostAccountAdoptionAuthority,
+  type HostedTeamBootstrapReceipt,
   type HostedTeamOwnerCheckClaims,
 } from "@opensteer/control-plane-protocol";
 import type { ControlPlaneStore } from "../database/store.js";
@@ -30,6 +31,7 @@ export class HostedTeamBootstrapper {
   readonly #teams: HostedTeamStore;
   readonly #accounts: Pick<ControlPlaneStore, "adoptExistingDeployment" | "resumeAdoption">;
   readonly #host: HostedTeamHost;
+  readonly #ownerCheck: HostedTeamOwnerCheck;
   readonly #issuer: string;
   readonly #onError: (error: unknown) => void;
   readonly #now: () => number;
@@ -42,6 +44,7 @@ export class HostedTeamBootstrapper {
     readonly teams: HostedTeamStore;
     readonly accounts: Pick<ControlPlaneStore, "adoptExistingDeployment" | "resumeAdoption">;
     readonly host: HostedTeamHost;
+    readonly ownerCheck: HostedTeamOwnerCheck;
     readonly issuer: URL;
     readonly onError: (error: unknown) => void;
     readonly now?: () => number;
@@ -49,6 +52,7 @@ export class HostedTeamBootstrapper {
     this.#teams = input.teams;
     this.#accounts = input.accounts;
     this.#host = input.host;
+    this.#ownerCheck = input.ownerCheck;
     this.#issuer = input.issuer.origin;
     this.#onError = input.onError;
     this.#now = input.now ?? Date.now;
@@ -148,7 +152,18 @@ export class HostedTeamBootstrapper {
     if (await this.#host.setupComplete(origin)) {
       // The Host committed an owner but Account never heard back: send that completion again.
       const resumed = await this.#accounts.resumeAdoption(claim.creator, discovery.authority);
-      if (!resumed) throw new PermanentSetupFailure("This team was set up another way.");
+      if (!resumed) {
+        // That result expired: the Host's own receipt says whether it was this setup.
+        const answer = await this.#ownerCheck({
+          accountId: claim.creator,
+          authority: discovery.authority,
+        });
+        if (!answer)
+          throw new HostedTeamHostError("The team server didn’t answer", { permanent: false });
+        if (!answer.receipt) throw new PermanentSetupFailure("This team was set up another way.");
+        await this.#record(claim, answer.receipt, discovery.authority);
+        return;
+      }
       adoption = resumed;
     } else {
       const token = this.#teams.openSetupToken(claim);
@@ -181,11 +196,18 @@ export class HostedTeamBootstrapper {
       bundle: adoption.provisioningBundle,
       hostedBootstrap: { hostedTeamId: claim.id, owner: claim.owner },
     });
-    const receipt = completed.receipt;
+    await this.#record(claim, completed.receipt, discovery.authority);
+  }
+
+  async #record(
+    claim: HostedTeamBootstrapClaim,
+    receipt: HostedTeamBootstrapReceipt | undefined,
+    authority: HostAccountAdoptionAuthority,
+  ): Promise<void> {
     if (
       !receipt ||
       receipt.hostedTeamId !== claim.id ||
-      !sameAuthority(receipt.authority, discovery.authority)
+      !sameAuthority(receipt.authority, authority)
     ) {
       throw new HostedTeamHostError("The team server answered for a different team", {
         permanent: true,

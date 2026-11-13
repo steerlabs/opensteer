@@ -120,6 +120,7 @@ export class TeamInvitesStore {
   async reset(
     actor: TeamActor,
     id: TeamInviteId,
+    replaces: TeamInviteId | null,
     expiresInDays: TeamInviteExpiryDays,
     maxUses: number | null,
   ): Promise<TeamCurrentInvite> {
@@ -143,6 +144,17 @@ export class TeamInvitesStore {
         };
       }
       const now = new Date();
+      // Serialized with every other reset by the team mutation lock.
+      const held = await transaction
+        .selectFrom("teamInvites")
+        .selectAll()
+        .where("sealedVerifier", "is not", null)
+        .where("revokedAt", "is", null)
+        .executeTakeFirst();
+      if (held && held.id !== replaces) {
+        const opened = await this.#opened(held, now);
+        if (opened) return { value: opened, effects: emptyTeamAccessEffects };
+      }
       await transaction
         .updateTable("teamInvites")
         .set({ revokedAt: now })
@@ -178,7 +190,7 @@ export class TeamInvitesStore {
    * up, or when its sealed verifier no longer opens (the Host's secret changed), so a manager resets.
    */
   async current(actor: TeamActor): Promise<{ invite: TeamCurrentInvite | null }> {
-    const verifiers = this.#requireVerifiers();
+    this.#requireVerifiers();
     return this.access.database.transaction().execute(async (transaction) => {
       await this.access.admin(transaction, actor);
       const row = await transaction
@@ -187,15 +199,21 @@ export class TeamInvitesStore {
         .where("sealedVerifier", "is not", null)
         .where("revokedAt", "is", null)
         .executeTakeFirst();
-      if (
-        !row?.sealedVerifier ||
-        row.expiresAt <= new Date() ||
-        (row.maxUses !== null && row.usedCount >= row.maxUses)
-      )
-        return { invite: null };
-      const verifier = await verifiers.open(row.id, row.sealedVerifier).catch(() => null);
-      return { invite: verifier === null ? null : this.#current(row, verifier) };
+      return { invite: row ? await this.#opened(row, new Date()) : null };
     });
+  }
+  /** The reusable invite while it admits someone and its sealed verifier still opens. */
+  async #opened(row: TeamInviteRow, now: Date) {
+    if (
+      !row.sealedVerifier ||
+      row.expiresAt <= now ||
+      (row.maxUses !== null && row.usedCount >= row.maxUses)
+    )
+      return null;
+    const verifier = await this.#requireVerifiers()
+      .open(row.id, row.sealedVerifier)
+      .catch(() => null);
+    return verifier === null ? null : this.#current(row, verifier);
   }
   /**
    * The invite the secret names, if it admits someone now. Every wrong secret takes the same
