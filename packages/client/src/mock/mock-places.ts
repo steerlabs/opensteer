@@ -442,6 +442,46 @@ export function seedMockPlaces(
             : session,
         ),
       };
+  // Every device can hold browsers: the person's iPhone too, while Opensteer is open on it.
+  machines.push({
+    tabOpenedAt: null,
+    access: {
+      activeSessions: [],
+      ownerReachAvailable: false,
+      revision: 1,
+      policy: {
+        apps: true,
+        browser: true,
+        commands: false,
+        forwarding: false,
+        reach: "nobody",
+        shares: [],
+      },
+    },
+    apps: null,
+    allowedModules: ["browser", "integrations"],
+    detail: null,
+    device: { form: "phone", platform: "ios", app: "opensteer" },
+    kind: "phone",
+    enrollmentId: "ren_runner_iphone",
+    expiresAt: null,
+    computerUse: null,
+    fullDiskAccess: null,
+    id: mockIphoneRunnerId,
+    lastSeenAt: at,
+
+    modules: {
+      browser: { checkedAt: null, detail: null, readiness: "ready" },
+      integrations: { checkedAt: null, detail: null, readiness: "ready" },
+    },
+    name: "Alex's iPhone",
+    ownership: "mine",
+
+    pinnedThreads: 0,
+    revocable: true,
+    status: "online",
+    runtimeVersion: null,
+  });
   const main = machines[0]!.id;
   const studio = machines.find((machine) => machine.name === "Studio Mac")?.id ?? main;
   const profileHomes = machines

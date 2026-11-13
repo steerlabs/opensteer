@@ -140,7 +140,6 @@ function rowTitled(title: string): HTMLButtonElement | null {
 
 async function render(overrides: Partial<SettingsFormProps>): Promise<void> {
   const props: SettingsFormProps = {
-    computers: [],
     deployment: {
       action: { disabled: false, kind: "switch-deployment", label: "Switch" },
       mark: null,
@@ -155,7 +154,6 @@ async function render(overrides: Partial<SettingsFormProps>): Promise<void> {
       footer: "",
       preferences: null,
     },
-    onComputerAction: vi.fn(),
     onDeploymentAction: vi.fn(),
     onNotificationAction: vi.fn(),
     onPasswordsAction: vi.fn(),

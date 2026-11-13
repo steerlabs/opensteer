@@ -1,4 +1,3 @@
-import { genericAiCompany } from "@opensteer/client/ai-sharing";
 import {
   computerAppAccessLabel,
   type IntegrationAccess,
@@ -190,42 +189,9 @@ export function opensteerOn(deploymentName: string): string {
  * Adding
  * ------------------------------------------------------------------------- */
 
-/** What Add lends: the apps switched on below, or this phone's browser when it has no apps to share. */
-export function addIphoneIntro(opensteer: string, sharesApps = true, noun = "iPhone"): string {
-  return sharesApps
-    ? `Agents in ${opensteer} can use the apps you turn on, while Opensteer is open on this ${noun}.`
-    : `Agents in ${opensteer} can use this ${noun}’s browser while Opensteer is open on it.`;
-}
-
-export const addIphoneNameHint = "This is how it's listed on Computers.";
-
-/**
- * Said under the apps Add will turn on, because the tap on Add is the one
- * review they get: where what agents see goes, who can use it, and that
- * nothing else on the iPhone is reachable.
- */
-export function addIphoneFootnote(opensteer: string, companies: string = genericAiCompany): string {
-  return `What agents see goes to ${opensteer} and may go to ${companies}. Your agents can use these apps. Nothing else on this iPhone is shared: not other apps, files, messages or the screen.`;
-}
-
-/** Add's label says how many apps it turns on, since switching them is only a draft until then. */
-export function addIphoneButton(name: string, apps: number, noun = "iPhone"): string {
-  const iphone = name === "" ? `this ${noun}` : name;
-  if (apps === 0) return `Add ${iphone}`;
-  return `Add & share ${apps} ${apps === 1 ? "app" : "apps"}`;
-}
-
-/** The apps Add turns on unless the person switches them off: all but Photos, at their widest. */
-export function addIphoneDraft(app: IphoneAppId): IntegrationAccess | null {
-  return app === "iphone-photos" ? null : iphoneDefaultAccess(app, null);
-}
-
 export function addIphoneNeedsUpdate(opensteer: string, noun = "iPhone"): string {
   return `Update ${opensteer} to add this ${noun}.`;
 }
-
-/** Said under a disabled Add while the last removal still waits to erase this phone's browser. */
-export const addIphoneAfterRestart = "Restart Opensteer to add it again.";
 
 export function addIphoneFailureText(
   failure: IphoneAddFailure,

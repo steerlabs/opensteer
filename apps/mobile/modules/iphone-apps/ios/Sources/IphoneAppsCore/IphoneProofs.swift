@@ -126,4 +126,19 @@ public enum IphoneProofs {
     ])
   }
 
+  public static func deviceSessionBindTranscript(deploymentId: String, runnerId: String, sessionId: String, issuedAt: String) throws -> Data {
+    try canonicalJSON(["opensteer-device-session-bind-v1", deploymentId, runnerId, sessionId, issuedAt])
+  }
+
+  public static func deviceLeaveTranscript(deploymentId: String, runnerId: String, issuedAt: String) throws -> Data {
+    try canonicalJSON(["opensteer-device-leave-v1", deploymentId, runnerId, issuedAt])
+  }
+
+  public static func deviceSessionBind(_ key: Curve25519.Signing.PrivateKey, deploymentId: String, runnerId: String, sessionId: String, issuedAt: String) throws -> String {
+    base64url(try key.signature(for: deviceSessionBindTranscript(deploymentId: deploymentId, runnerId: runnerId, sessionId: sessionId, issuedAt: issuedAt)))
+  }
+
+  public static func deviceLeave(_ key: Curve25519.Signing.PrivateKey, deploymentId: String, runnerId: String, issuedAt: String) throws -> String {
+    base64url(try key.signature(for: deviceLeaveTranscript(deploymentId: deploymentId, runnerId: runnerId, issuedAt: issuedAt)))
+  }
 }

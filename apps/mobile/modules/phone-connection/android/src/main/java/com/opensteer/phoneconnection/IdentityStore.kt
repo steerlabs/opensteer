@@ -8,7 +8,6 @@ import android.system.OsConstants
 import com.opensteer.phoneconnection.core.*
 import kotlinx.serialization.json.*
 import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
-import org.bouncycastle.crypto.signers.Ed25519Signer
 import org.bouncycastle.util.encoders.Base64
 import java.io.File
 import java.security.KeyStore
@@ -23,6 +22,8 @@ class IdentityStore(context: Context) {
     private val directory = File(context.noBackupFilesDir, "phone-connection").apply { mkdirs() }
     private val file = AtomicBytes(File(directory, "identity.v1.sealed"), ::syncDirectory)
     private val denial = AtomicBytes(File(directory, "retiring.v1.json"), ::syncDirectory)
+    // Outlives the identity: a signed leave is delivered after the seed is gone.
+    private val leave = AtomicBytes(File(directory, "leave.v1.json"), ::syncDirectory)
     private val alias = "opensteer-mobile-phone-connection-v1"
 
     @Synchronized fun load(): JsonObject? {
@@ -86,13 +87,22 @@ class IdentityStore(context: Context) {
         return Wire.digest(Base64.decode(pem.substringAfter("-----BEGIN PUBLIC KEY-----\n").substringBefore('\n')))
     }
     fun sign(identity: JsonObject, value: JsonArray): String {
-        val bytes = Wire.canonical(value).toByteArray(Charsets.UTF_8)
         val seed = Wire.decode64(identity.text("seed"))
-        try {
-            return Wire.encode64(Ed25519Signer().run {
-                init(true, Ed25519PrivateKeyParameters(seed, 0)); update(bytes, 0, bytes.size); generateSignature()
-            })
-        } finally { seed.fill(0) }
+        try { return Proofs.sign(seed, value) } finally { seed.fill(0) }
+    }
+    @Synchronized fun saveLeave(obligation: JsonObject) { leave.write(obligation.toString().toByteArray(Charsets.UTF_8)) }
+    @Synchronized fun pendingLeave(): JsonObject? {
+        val bytes = leave.read()?.takeIf { it.isNotEmpty() } ?: return null
+        return Wire.parse(Wire.decode(bytes), 4096).also {
+            it.only("version", "deploymentId", "runnerId", "hostUrl", "issuedAt", "signature")
+            Wire.requireThat(it.number("version") == 1L, "identity-unavailable")
+        }
+    }
+    @Synchronized fun completeLeave(runnerId: String) {
+        if (pendingLeave()?.text("runnerId") != runnerId) return
+        val file = File(directory, "leave.v1.json")
+        Wire.requireThat(!file.exists() || file.delete(), "identity-unavailable")
+        syncDirectory(directory)
     }
     private fun key(create: Boolean): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }

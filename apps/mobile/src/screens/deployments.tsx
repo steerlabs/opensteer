@@ -1,7 +1,5 @@
-import { useHeaderHeight } from "@react-navigation/elements";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import type { AccountDeploymentDirectoryUnavailable } from "@opensteer/client/connections";
-import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
 import {
   memo,
   useCallback,
@@ -15,6 +13,7 @@ import {
 import {
   AccessibilityInfo,
   Alert,
+  AppState,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -59,10 +58,10 @@ import {
   useMobileState,
   useSelectedHostClient,
 } from "../ui/mobile-client-context.js";
-import { AppText, Notice, RowGroup, SecondaryButton, StatusDot } from "../ui/primitives.js";
+import { AppText, Notice, RowGroup, StatusDot } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
-import { AccountIdentityRow, ManualDeploymentDoors } from "./add-deployment.js";
+import { AccountIdentityRow } from "./add-deployment.js";
 import {
   accountDirectoryUnavailablePresentation,
   accountIdentityLabel,
@@ -363,7 +362,6 @@ export function DeploymentsScreen(): ReactNode {
   const switching = route.name === "DeploymentSwitcher";
   const listInsets = useListContentInsets(space[32]);
   const column = useReadingColumn();
-  const headerHeight = useHeaderHeight();
   const [refreshing, setRefreshing] = useState(false);
   const [startingAccountSignIn, setStartingAccountSignIn] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -586,7 +584,7 @@ export function DeploymentsScreen(): ReactNode {
 
   const identity = account.account.identity;
   const presentation = deploymentsPresentation(rows.length, identity !== null);
-  const welcome = presentation === "welcome" && !switching;
+  const welcome = presentation !== "list" && !switching;
 
   // The first run titles itself; a bar title above it would say it twice.
   useLayoutEffect(() => {
@@ -620,30 +618,24 @@ export function DeploymentsScreen(): ReactNode {
   }
 
   if (presentation === "signed-in-empty") {
+    const listed = signedInDirectoryPresentation({
+      detail: directory.detail,
+      status: directory.status,
+      unavailableCount: directory.unavailable.length,
+    });
     return (
-      <Screen>
-        <ScrollView
-          // The bar's height is stated as padding rather than left to the
-          // automatic inset: the inset would add it to a container that is
-          // already the viewport's height, and centre the column in a box
-          // taller than the screen — visibly low on every phone.
-          contentContainerStyle={[styles.empty, column, { paddingTop: headerHeight }]}
-          contentInsetAdjustmentBehavior="never"
-        >
-          <SignedInEmptyDeployments
-            directoryDetail={directory.detail}
-            directoryStatus={directory.status}
-            failure={failure}
-            identity={identity!}
-            onPersonal={() => navigation.navigate("AddPersonal")}
-            onRefresh={refresh}
-            onScan={scan}
-            onServer={() => navigation.navigate("AddServer")}
-            refreshing={refreshing}
-            unavailable={directory.unavailable}
-          />
-        </ScrollView>
-      </Screen>
+      <SignedInWaiting onRefresh={refresh}>
+        <Welcome
+          account={account.account}
+          failure={directory.status === "error" ? listed.detail : failure}
+          onAccount={signInAccount}
+          onAddress={enterAddress}
+          onScan={scan}
+          portalOrigin={client.portalOrigin}
+          signedInAs={accountIdentityLabel(identity!)}
+          signingIn={false}
+        />
+      </SignedInWaiting>
     );
   }
 
@@ -693,59 +685,27 @@ export function DeploymentsScreen(): ReactNode {
   );
 }
 
-function SignedInEmptyDeployments(props: {
-  readonly directoryDetail: string | null;
-  readonly directoryStatus: "error" | "idle" | "loading" | "ready";
-  readonly failure: string | null;
-  readonly identity: NonNullable<DesktopAccountAuthState["account"]["identity"]>;
-  readonly onPersonal: () => void;
+/**
+ * Signed in, with no Opensteer yet: the Account is read again while this is on
+ * screen and whenever the app returns, so it advances by itself once the Mac
+ * has one.
+ */
+function SignedInWaiting(props: {
+  readonly children: ReactNode;
   readonly onRefresh: () => void;
-  readonly onScan: () => void;
-  readonly onServer: () => void;
-  readonly refreshing: boolean;
-  readonly unavailable: readonly AccountDeploymentDirectoryUnavailable[];
 }): ReactNode {
-  const presentation = signedInDirectoryPresentation({
-    detail: props.directoryDetail,
-    status: props.directoryStatus,
-    unavailableCount: props.unavailable.length,
-  });
-  const refreshing = props.refreshing || presentation.refreshDisabled;
-  return (
-    <>
-      {props.failure === null ? null : (
-        <Notice detail={props.failure} title="Your Account list could not be refreshed" />
-      )}
-      <RowGroup>
-        {[
-          <AccountIdentityRow
-            email={accountIdentityLabel(props.identity)}
-            issuer={props.identity.issuer}
-            key="account"
-          />,
-        ]}
-      </RowGroup>
-      <AppText role="displayLarge">{presentation.title}</AppText>
-      <AppText role="secondary" tone="muted">
-        {presentation.detail}
-      </AppText>
-      <UnavailableAccountDeployments entries={props.unavailable} hasAvailableRows={false} />
-      <View style={styles.refreshAction}>
-        <SecondaryButton
-          disabled={refreshing}
-          label={refreshing ? "Refreshing…" : presentation.refreshLabel}
-          onPress={props.onRefresh}
-        />
-      </View>
-      <View style={styles.emptyActions}>
-        <ManualDeploymentDoors
-          onPersonal={props.onPersonal}
-          onScan={props.onScan}
-          onServer={props.onServer}
-        />
-      </View>
-    </>
-  );
+  const { onRefresh } = props;
+  useEffect(() => {
+    const timer = setInterval(onRefresh, 20_000);
+    const foreground = AppState.addEventListener("change", (state) => {
+      if (state === "active") onRefresh();
+    });
+    return () => {
+      clearInterval(timer);
+      foreground.remove();
+    };
+  }, [onRefresh]);
+  return props.children;
 }
 
 function UnavailableAccountDeployments(props: {
@@ -778,8 +738,6 @@ function UnavailableAccountDeployments(props: {
 
 const styles = StyleSheet.create({
   copy: { flex: 1, gap: space[2], minWidth: 0 },
-  empty: { flexGrow: 1, gap: space[16], justifyContent: "center" },
-  emptyActions: { paddingTop: space[8] },
   indicator: { alignItems: "center", justifyContent: "center", width: space[20] },
   kind: { flexShrink: 1 },
   list: { gap: space[12], paddingTop: space[12] },
@@ -808,7 +766,6 @@ const styles = StyleSheet.create({
     paddingLeft: space[12],
     paddingVertical: space[10],
   },
-  refreshAction: { alignItems: "flex-start", paddingTop: space[4] },
   row: {
     alignItems: "center",
     flexDirection: "row",

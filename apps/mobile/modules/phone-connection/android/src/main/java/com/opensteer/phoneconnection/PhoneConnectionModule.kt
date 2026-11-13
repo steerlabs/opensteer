@@ -28,12 +28,24 @@ class PhoneConnectionModule : Module() {
         Function("now") { runtime().now().toDouble() }
         Function("fence") { reason: String -> admitted { runtime().fence(reason) } }
         Function("disconnect") { runtime().disconnect().native() }
+        Function("leave") { runtime().leave().native() }
+        AsyncFunction("completeLeave") { input: Map<String, Any?> -> admitted { runtime().completeLeave(input.objectValue().text("runnerId")) } }
+        AsyncFunction("signSessionBinding") { input: Map<String, Any?> ->
+          admitted {
+            val value = input.objectValue()
+            runtime().signSessionBinding(value.text("deploymentId"), value.text("sessionId")).native()
+          }
+        }
         AsyncFunction("prepare") { input: Map<String, Any?> -> admitted { runtime().prepare(input.objectValue().text("deploymentId")).native() } }
         AsyncFunction("enrollFromHost") { input: Map<String, Any?>, promise: Promise ->
           admitted {
             val value = input.objectValue()
             finish(promise, runtime().enrollFromHost(value.text("origin", max = 8192), value.text("authorization", max = 16384),
-                value.text("deploymentId"), value.text("name", max = 120), value.number("apiVersion", min = 1, max = Int.MAX_VALUE.toLong()).toInt())) { it.native() }
+                value.text("deploymentId"), value.text("name", max = 120), value.number("apiVersion", min = 1, max = Int.MAX_VALUE.toLong()).toInt(),
+                (value["access"] as? JsonObject)?.also { access ->
+                    access.only("browser", "apps", "files")
+                    for (key in listOf("browser", "apps", "files")) Wire.requireThat((access[key] as? JsonPrimitive)?.booleanOrNull != null)
+                })) { it.native() }
           }
         }
         AsyncFunction("discardPendingEnrollment") { admitted { runtime().discardPendingEnrollment().native() } }

@@ -7,6 +7,7 @@ import { Screen } from "../ui/screen.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { NewTaskPane } from "./new-task.js";
 import { useNotificationsIntro } from "./notifications-intro.js";
+import { usePhoneSetup } from "../phone-setup/use-phone-setup.js";
 
 export type HomeScreenProps = StaticScreenProps<{
   readonly deploymentId: string;
@@ -25,7 +26,8 @@ export function HomeScreen(props: HomeScreenProps): ReactNode {
   const headerHeight = useHeaderHeight();
   const hostClient = useAttachedHost(deploymentId);
   useSidebarMenu(hostClient);
-  useNotificationsIntro(hostClient);
+  const setupDue = usePhoneSetup(hostClient, deploymentId);
+  useNotificationsIntro(setupDue ? null : hostClient);
   const onStarted = useCallback(
     (threadId: string): boolean => {
       if (!navigation.isFocused()) return false;

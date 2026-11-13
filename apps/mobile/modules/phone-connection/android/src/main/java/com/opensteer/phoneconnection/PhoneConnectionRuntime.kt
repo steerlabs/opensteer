@@ -77,7 +77,8 @@ class PhoneConnectionRuntime private constructor(context: Context) {
             "connection" to JsonPrimitive(connection), "retryAt" to (retryAt?.let(::JsonPrimitive) ?: JsonNull),
             "issue" to (issue?.let(::JsonPrimitive) ?: JsonNull), "issueMessage" to JsonNull,
             "permissions" to Wire.fields("apple-calendar" to JsonPrimitive("not-determined"), "apple-contacts" to JsonPrimitive("not-determined"), "apple-reminders" to JsonPrimitive("not-determined")),
-            "working" to JsonPrimitive(0), "pendingErasure" to JsonPrimitive(identity?.get("state") == JsonPrimitive("retiring")))
+            "working" to JsonPrimitive(0), "pendingErasure" to JsonPrimitive(identity?.get("state") == JsonPrimitive("retiring")),
+            "pendingLeave" to (runCatching { storage.pendingLeave() }.getOrNull() ?: JsonNull))
     }
     @Synchronized fun retiringDeployment(): String? {
         Wire.requireThat(!storageUnavailable, "identity-unavailable")
@@ -118,7 +119,7 @@ class PhoneConnectionRuntime private constructor(context: Context) {
         publish()
         return Wire.fields("runnerId" to current.getValue("runnerId"), "mintKey" to current.getValue("mintKey"))
     }
-    fun enrollFromHost(origin: String, authorization: String, deploymentId: String, name: String, apiVersion: Int): CompletableFuture<JsonObject> {
+    fun enrollFromHost(origin: String, authorization: String, deploymentId: String, name: String, apiVersion: Int, access: JsonObject? = null): CompletableFuture<JsonObject> {
         val result = CompletableFuture<JsonObject>()
         val (expected, enrollmentGeneration) = synchronized(this) {
             Wire.requireThat(foreground && identity?.text("deploymentId") == deploymentId, "not-foreground")
@@ -126,7 +127,9 @@ class PhoneConnectionRuntime private constructor(context: Context) {
             identity!! to generation
         }
         val target = Proofs.origin(origin)
-        val command = Wire.fields("type" to JsonPrimitive("runner.enrollment.createPhone"), "name" to JsonPrimitive(name), "idempotencyKey" to expected.getValue("mintKey"))
+        val command = Wire.fields("type" to JsonPrimitive("runner.enrollment.createPhone"), "name" to JsonPrimitive(name), "idempotencyKey" to expected.getValue("mintKey")).let {
+            if (access == null) it else JsonObject(it + ("access" to access))
+        }
         worker.execute {
             try {
                 synchronized(this) { Wire.requireThat(identity == expected && foreground && generation == enrollmentGeneration, "retired-enrollment") }
@@ -173,6 +176,30 @@ class PhoneConnectionRuntime private constructor(context: Context) {
         close("route-changed")
         identity = JsonObject(current + ("hostUrl" to pairing.getValue("hostUrl")))
         storage.save(identity!!); connect(); publish()
+    }
+    /** The person's sign-out or removal: the signed leave is durable before erasure starts. */
+    @Synchronized fun leave(): JsonObject {
+        val current = identity
+        val persisted = try {
+            if (current != null && current.text("state") in setOf("pending", "enrolled") && current["hostUrl"] is JsonPrimitive) {
+                val issuedAt = iso(System.currentTimeMillis())
+                storage.saveLeave(Wire.fields("version" to JsonPrimitive(1), "deploymentId" to current.getValue("deploymentId"),
+                    "runnerId" to current.getValue("runnerId"), "hostUrl" to current.getValue("hostUrl"), "issuedAt" to JsonPrimitive(issuedAt),
+                    "signature" to JsonPrimitive(storage.sign(current, Proofs.deviceLeave(current.text("deploymentId"), current.text("runnerId"), issuedAt)))))
+                true
+            } else false
+        } catch (_: Exception) { false }
+        val ids = disconnect()
+        return if (persisted) JsonObject(ids + ("leave" to JsonPrimitive("persisted"))) else ids
+    }
+    @Synchronized fun completeLeave(runnerId: String) { storage.completeLeave(runnerId); publish() }
+    @Synchronized fun signSessionBinding(deploymentId: String, sessionId: String): JsonObject {
+        val current = identity ?: throw Refused("not-prepared")
+        Wire.requireThat(current.text("state") == "enrolled", "not-prepared")
+        Wire.requireThat(current.text("deploymentId") == deploymentId, "wrong-deployment")
+        val issuedAt = iso(System.currentTimeMillis())
+        return Wire.fields("runnerId" to current.getValue("runnerId"), "issuedAt" to JsonPrimitive(issuedAt),
+            "signature" to JsonPrimitive(storage.sign(current, Proofs.deviceSessionBind(deploymentId, current.text("runnerId"), sessionId, issuedAt))))
     }
     @Synchronized fun disconnect(): JsonObject {
         val current = identity ?: return Wire.fields("deploymentId" to JsonNull, "runnerId" to JsonNull)

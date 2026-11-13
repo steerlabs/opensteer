@@ -1,6 +1,8 @@
 package com.opensteer.phoneconnection.core
 
 import kotlinx.serialization.json.*
+import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
+import org.bouncycastle.crypto.signers.Ed25519Signer
 import java.net.URI
 
 object Proofs {
@@ -33,4 +35,14 @@ object Proofs {
     fun auxiliary(challenge: JsonObject, runnerId: String, bootId: String, ticket: String): JsonArray =
         JsonArray(listOf(JsonPrimitive("opensteer-runner-auxiliary-v1")) + this.challenge(challenge, true) +
             listOf("challengeModule", "browser", "runnerId", runnerId, "bootId", bootId, "module", "browser", "ticketDigest", Wire.digest(ticket.toByteArray(Charsets.UTF_8))).map(::JsonPrimitive))
+    fun deviceSessionBind(deploymentId: String, runnerId: String, sessionId: String, issuedAt: String): JsonArray =
+        JsonArray(listOf("opensteer-device-session-bind-v1", deploymentId, runnerId, sessionId, issuedAt).map(::JsonPrimitive))
+    fun deviceLeave(deploymentId: String, runnerId: String, issuedAt: String): JsonArray =
+        JsonArray(listOf("opensteer-device-leave-v1", deploymentId, runnerId, issuedAt).map(::JsonPrimitive))
+    fun sign(seed: ByteArray, transcript: JsonArray): String {
+        val bytes = Wire.canonical(transcript).toByteArray(Charsets.UTF_8)
+        return Wire.encode64(Ed25519Signer().run {
+            init(true, Ed25519PrivateKeyParameters(seed, 0)); update(bytes, 0, bytes.size); generateSignature()
+        })
+    }
 }

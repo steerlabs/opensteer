@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { HostClientRequestError, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
+import { unwrapRpcResult } from "@opensteer/client/host";
 import type { ComputerUseData } from "@opensteer/client/integrations";
 import { MockHostClient } from "@opensteer/client/mock";
 import type { MachineSummary } from "@opensteer/protocol";
@@ -277,7 +277,7 @@ vi.mock("../thread/composer-menu.js", () => ({
 
 const { IphoneAppsController } = await import("./controller.js");
 const { createFakeIphoneApps } = await import("./fake-bridge.js");
-const { AddIphoneForm } = await import("./add-iphone.js");
+const { phoneMembership } = await import("../phone-setup/phone-setup.js");
 const { IphoneAppsBlock } = await import("./iphone-apps-block.js");
 const { RemoteIphoneAppsBlock } = await import("./remote-iphone-apps-block.js");
 const { IphoneApprovalPrompt } = await import("./approval-prompt.js");
@@ -297,232 +297,6 @@ afterEach(() => {
   harness.appState = "active";
   harness.openSettings.mockClear();
   document.body.replaceChildren();
-});
-
-describe("Add this iPhone", () => {
-  it("lists what Add turns on, then adds the iPhone and asks iOS about each app in turn", async () => {
-    const phone = iphone();
-    const onAdded = vi.fn();
-    await mount(
-      <AddIphoneForm
-        controller={phone.controller}
-        deploymentId={deploymentId}
-        hostClient={phone.host}
-        iphoneAppsAvailable
-        onAdded={onAdded}
-        opensteer={opensteer}
-      />,
-    );
-
-    expect(text()).toContain(
-      "Agents in Opensteer on Mac mini can use the apps you turn on, while Opensteer is open on this iPhone.",
-    );
-    expect(input("Name").value).toBe("Alex's iPhone");
-    expect(text()).toContain(
-      "What agents see goes to Opensteer on Mac mini and may go to the AI services set up on your computer. Your agents can use these apps. Nothing else on this iPhone is shared: not other apps, files, messages or the screen.",
-    );
-    // Everything but Photos starts on, at its widest.
-    expect(switches()).toEqual([
-      "Share Calendar: on",
-      "Share Contacts: on",
-      "Share Reminders: on",
-      "Share Location: on",
-      "Share Photos: off",
-    ]);
-    expect(rowLabels()).toEqual([
-      "Calendar, Can read and change",
-      "Contacts, Find people. Agents can't change contacts.",
-      "Reminders, Can read and change",
-      "Location, Get the current location. No history or tracking.",
-      "Photos, See photo details, never the photos",
-    ]);
-    expect(button("Add & share 4 apps")).toBeDefined();
-
-    // Switching and choosing a level are drafts: nothing is asked or sent.
-    await toggle("Share Location");
-    await choose("Calendar", "Can read");
-    expect(rowLabels()[0]).toBe("Calendar, Can read");
-    expect(phone.fake.device.calls).toEqual([]);
-
-    await type(input("Name"), "Work iPhone");
-    await click(button("Add & share 3 apps"));
-
-    await vi.waitFor(() => expect(onAdded).toHaveBeenCalledOnce());
-    const runnerId = phone.fake.device.runnerId();
-    expect(onAdded).toHaveBeenCalledWith(runnerId);
-    expect(phone.host.getSnapshot().machines.find(({ id }) => id === runnerId)).toMatchObject({
-      device: { form: "phone", platform: "ios" },
-      name: "Work iPhone",
-      status: "online",
-    });
-    // One app at a time, each asked of iOS and signed before the next begins.
-    await vi.waitFor(() => expect(phone.controller.getState().queued).toEqual([]));
-    await vi.waitFor(() =>
-      expect(phone.fake.device.calls.filter(isPermissionOrAnswer)).toEqual([
-        "requestPermission:apple-calendar",
-        expect.stringMatching(/^ownerDecision:.+:allow:apple-calendar:read$/u),
-        "requestPermission:apple-contacts",
-        expect.stringMatching(/^ownerDecision:.+:allow:apple-contacts:read$/u),
-        "requestPermission:apple-reminders",
-        expect.stringMatching(/^ownerDecision:.+:allow:apple-reminders:read-write$/u),
-      ]),
-    );
-  });
-
-  it("shows each app's turn on the iPhone's page, and starts no other app meanwhile", async () => {
-    const phone = await addedIphone();
-    const calendarAnswer = Promise.withResolvers<"granted">();
-    phone.fake.device.answerPermissionWith("apple-calendar", calendarAnswer.promise);
-    await mount(<ThisIphone phone={phone} />);
-
-    const sharing = phone.controller.share({
-      apps: [
-        { access: "read-write", app: "apple-calendar" },
-        { access: "read", app: "apple-contacts" },
-      ],
-      hostClient: phone.host,
-    });
-    await vi.waitFor(() =>
-      expect(rowLabels().slice(0, 2)).toEqual([
-        "Calendar, Waiting for iPhone…",
-        "Contacts, Up next",
-      ]),
-    );
-    expect(switches().slice(0, 2)).toEqual(["Calendar: on", "Contacts: on"]);
-    // Photos can't start a second iOS prompt while Calendar's is open.
-    expect(switchFor("Photos").disabled).toBe(true);
-
-    calendarAnswer.resolve("granted");
-    await sharing;
-    await vi.waitFor(() =>
-      expect(rowLabels().slice(0, 2)).toEqual([
-        "Calendar, Can read and change",
-        "Contacts, Can read",
-      ]),
-    );
-    expect(switchFor("Photos").disabled).toBe(false);
-    expect(phone.fake.device.calls.filter(isPermissionOrAnswer)).toEqual([
-      "requestPermission:apple-calendar",
-      expect.stringMatching(/^ownerDecision:.+:allow:apple-calendar:read-write$/u),
-      "requestPermission:apple-contacts",
-      expect.stringMatching(/^ownerDecision:.+:allow:apple-contacts:read$/u),
-    ]);
-  });
-
-  it("goes on past an app iOS refuses, which stays off and says how to allow it", async () => {
-    const phone = iphone();
-    phone.fake.device.answerPermissionWith("apple-contacts", "denied");
-    const onAdded = vi.fn();
-    await mount(
-      <AddIphoneForm
-        controller={phone.controller}
-        deploymentId={deploymentId}
-        hostClient={phone.host}
-        iphoneAppsAvailable
-        onAdded={onAdded}
-        opensteer={opensteer}
-      />,
-    );
-    await toggle("Share Location");
-    await toggle("Share Reminders");
-    await click(button("Add & share 2 apps"));
-    await vi.waitFor(() => expect(onAdded).toHaveBeenCalledOnce());
-    await vi.waitFor(() =>
-      expect(phone.fake.device.calls.filter(isPermissionOrAnswer)).toEqual([
-        "requestPermission:apple-calendar",
-        expect.stringMatching(/^ownerDecision:.+:allow:apple-calendar:read-write$/u),
-        "requestPermission:apple-contacts",
-      ]),
-    );
-    await vi.waitFor(() => expect(phone.controller.getState().queued).toEqual([]));
-
-    for (const root of roots.splice(0)) act(() => root.unmount());
-    await mount(<ThisIphone phone={phone} />);
-    await vi.waitFor(() =>
-      expect(rowLabels().slice(0, 2)).toEqual([
-        "Calendar, Can read and change",
-        "Contacts, Off in iPhone Settings",
-      ]),
-    );
-    await click(button("Open iPhone Settings for Contacts"));
-    expect(harness.openSettings).toHaveBeenCalledOnce();
-  });
-
-  it("adds the iPhone alone when every app is switched off", async () => {
-    const phone = iphone();
-    const onAdded = vi.fn();
-    await mount(
-      <AddIphoneForm
-        controller={phone.controller}
-        deploymentId={deploymentId}
-        hostClient={phone.host}
-        iphoneAppsAvailable
-        onAdded={onAdded}
-        opensteer={opensteer}
-      />,
-    );
-    for (const app of ["Calendar", "Contacts", "Reminders", "Location"]) {
-      await toggle(`Share ${app}`);
-    }
-    await click(button("Add Alex's iPhone"));
-
-    await vi.waitFor(() => expect(onAdded).toHaveBeenCalledOnce());
-    expect(phone.controller.getState().queued).toEqual([]);
-    expect(phone.fake.device.calls.filter(isPermissionOrAnswer)).toEqual([]);
-  });
-
-  it("offers nothing to add on an Opensteer that cannot take an iPhone yet", async () => {
-    const phone = iphone();
-    await mount(
-      <AddIphoneForm
-        controller={phone.controller}
-        deploymentId={deploymentId}
-        hostClient={phone.host}
-        iphoneAppsAvailable={false}
-        onAdded={vi.fn()}
-        opensteer={opensteer}
-      />,
-    );
-
-    expect(text()).toContain("Update Opensteer on Mac mini to add this iPhone.");
-    expect(maybeButton("Add & share 4 apps")).toBeNull();
-    expect(phone.fake.device.calls).toEqual([]);
-  });
-
-  it("says to turn on remote access when the Host refuses for that reason", async () => {
-    const phone = iphone();
-    const refusing = {
-      ...phone.host,
-      dispatch: async () => {
-        throw new HostClientRequestError({
-          code: "conflict",
-          message: "Remote access is off.",
-          reason: "personal-remote-access-off",
-          status: 409,
-        });
-      },
-    } as unknown as HostClient;
-    await mount(
-      <AddIphoneForm
-        controller={phone.controller}
-        deploymentId={deploymentId}
-        hostClient={refusing}
-        iphoneAppsAvailable
-        onAdded={vi.fn()}
-        opensteer={opensteer}
-      />,
-    );
-
-    await click(button("Add & share 4 apps"));
-
-    await vi.waitFor(() =>
-      expect(text()).toContain(
-        "Turn on remote access on Opensteer on Mac mini first, then try again.",
-      ),
-    );
-    expect(button("Add & share 4 apps").disabled).toBe(false);
-    expect(phone.fake.device.calls.filter(isPermissionOrAnswer)).toEqual([]);
-  });
 });
 
 describe("This iPhone's apps", () => {
@@ -739,19 +513,14 @@ describe("A phone that lends only its browser", () => {
     // The pending erasure is the device list's to show; nothing else interrupts.
     expect(harness.alerts).toHaveLength(1);
 
-    for (const root of roots.splice(0)) act(() => root.unmount());
-    const onAdded = vi.fn();
-    await mount(
-      <AddIphoneForm
-        controller={phone.controller}
-        deploymentId={deploymentId}
-        hostClient={phone.host}
-        iphoneAppsAvailable
-        onAdded={onAdded}
-        opensteer={opensteer}
-      />,
-    );
-    expect(button("Add Alex's iPhone").disabled).toBe(true);
+    // Setup is not offered again until a restart has erased it.
+    expect(
+      phoneMembership({
+        deploymentId,
+        host: { iphoneAppsAvailable: true },
+        iphone: phone.controller.getState(),
+      }).state,
+    ).toBe("not-applicable");
     expect(phone.fake.device.calls.filter((call) => call === "prepare")).toHaveLength(1);
   });
 });
@@ -1355,25 +1124,9 @@ function maybeButton(label: string): HTMLButtonElement | null {
   );
 }
 
-function input(label: string): HTMLInputElement {
-  const found = document.querySelector<HTMLInputElement>(
-    `input[aria-label="${CSS.escape(label)}"]`,
-  );
-  if (found === null) throw new Error(`Missing input: ${label}`);
-  return found;
-}
-
 async function click(element: HTMLElement): Promise<void> {
   await act(async () => element.click());
   await settle();
-}
-
-async function type(element: HTMLInputElement, value: string): Promise<void> {
-  await act(async () => {
-    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-    setValue?.call(element, value);
-    element.dispatchEvent(new Event("input", { bubbles: true }));
-  });
 }
 
 async function settle(): Promise<void> {

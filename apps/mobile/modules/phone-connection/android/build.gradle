@@ -11,6 +11,7 @@ android {
   testOptions {
     unitTests.all {
       systemProperty 'phone.vectors', file('../../../../../packages/browser-core/test-vectors').canonicalPath
+      systemProperty 'device.vectors', file('../../../../../packages/runner-auth/fixtures').canonicalPath
     }
   }
 }

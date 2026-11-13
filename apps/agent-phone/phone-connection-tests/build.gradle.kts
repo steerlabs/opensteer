@@ -19,4 +19,5 @@ dependencies {
 }
 tasks.test {
     systemProperty("phone.vectors", rootDir.resolve("../../packages/browser-core/test-vectors").canonicalPath)
+    systemProperty("device.vectors", rootDir.resolve("../../packages/runner-auth/fixtures").canonicalPath)
 }

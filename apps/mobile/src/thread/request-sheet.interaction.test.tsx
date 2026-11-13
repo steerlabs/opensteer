@@ -654,6 +654,50 @@ describe("RequestSheetContent external requests", () => {
     );
   });
 
+  it("turns a device's switch on in the Host change that fulfils it, or leaves it off", async () => {
+    const request = deviceAccessRequest();
+    const policy = {
+      apps: false,
+      browser: true,
+      commands: false,
+      forwarding: false,
+      reach: "owner" as const,
+      shares: [],
+    };
+    const laptop = {
+      access: { activeSessions: [], ownerReachAvailable: true, policy, revision: 7 },
+      id: "rnr_00000000-0000-4000-8000-000000000001",
+      name: "MacBook Pro (2)",
+    } as unknown as MachineSummary;
+    const dispatch = vi.fn(async (command: { type: string }) => ({
+      outcome: "updated",
+      revision: 8,
+      type: command.type,
+    }));
+    await render(surface(request), dispatch, { machines: [laptop] });
+    expect(text()).toContain("Let your agent use Apps on MacBook Pro (2)?");
+    await click("Turn it on");
+    expect(dispatch).toHaveBeenCalledWith({
+      expectedRevision: 7,
+      idempotencyKey: expect.any(String),
+      policy: { ...policy, apps: true },
+      runnerId: laptop.id,
+      type: "machine.access.update",
+    });
+    expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({ type: "request.respond" }));
+
+    resetRequestSessionsForTests();
+    const declining = vi.fn(async () => ({ type: "request.respond" }));
+    await render(surface(deviceAccessRequest()), declining, { machines: [laptop] });
+    await click("Not now");
+    expect(declining).toHaveBeenCalledWith({
+      idempotencyKey: expect.any(String),
+      requestId: request.id,
+      response: { kind: "external", value: { decision: "declined" } },
+      type: "request.respond",
+    });
+  });
+
   it("keeps requester-only decline unavailable to another viewer", async () => {
     const dispatch = vi.fn(async () => ({ type: "request.respond" }));
     await render(surface(fullDiskAccessRequest(), "requester"), dispatch);
@@ -1034,6 +1078,26 @@ function fullDiskAccessRequest(): Request {
       kind: "external",
       subject: { id: "rnr_00000000-0000-4000-8000-000000000001", kind: "machine" },
       title: "Allow macOS permission on Build Mac",
+    },
+  } as Request;
+}
+
+function deviceAccessRequest(): Request {
+  return {
+    ...requestBase(),
+    kind: "device.access",
+    payload: {
+      access: "apps",
+      kind: "device.access",
+      machineId: "rnr_00000000-0000-4000-8000-000000000001",
+      machineName: "MacBook Pro (2)",
+      reason: "Open Numbers to update the budget",
+    },
+    presentation: {
+      detail: "Open Numbers to update the budget",
+      kind: "external",
+      subject: { id: "rnr_00000000-0000-4000-8000-000000000001", kind: "device.access" },
+      title: "Let your agent use Apps on MacBook Pro (2)?",
     },
   } as Request;
 }

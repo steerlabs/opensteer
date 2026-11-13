@@ -77,6 +77,10 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
       "issueMessage": issueMessage,
       "permissions": Dictionary(uniqueKeysWithValues: InvokeRules.apps.map { ($0, (permissionStates[$0] ?? .notDetermined).rawValue) }),
       "locationAccuracy": locationAccuracy,
+      "pendingLeave": (try? storage?.pendingLeave()).flatMap { $0 }.map { leave in
+        ["deploymentId": leave.deploymentId, "runnerId": leave.runnerId, "hostUrl": leave.hostUrl,
+          "issuedAt": leave.issuedAt, "signature": leave.signature] as [String: Any]
+      },
       "working": gate?.inFlight ?? 0]
   }
 
@@ -102,7 +106,8 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
 
   private func loadIdentity() {
     do {
-      let storage = try IdentityStore(vault: IphoneKeychainVault(), record: IphoneSandboxRecord())
+      let storage = try IdentityStore(vault: IphoneKeychainVault(), record: IphoneSandboxRecord(),
+        leaveRecord: IphoneSandboxRecord(name: "leave.json"))
       let loaded = try storage.load()
       lock.lock()
       self.storage = storage
@@ -291,6 +296,33 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     try storage.retarget(hostInstanceId: identity.hostInstanceId!, hostUrl: hostUrl)
     lock.lock(); self.identity = try storage.load(); lock.unlock()
     reconnect()
+  }
+
+  /// The person's sign-out or removal: the signed leave is durable before
+  /// disconnect starts erasing the key it was signed with.
+  func leave() -> [String: String?] {
+    lock.lock()
+    let issuedAt = ISO8601DateFormatter.leave.string(from: Date())
+    var persisted = false
+    do { persisted = try storage?.persistLeave(issuedAt: issuedAt) != nil } catch { persisted = false }
+    lock.unlock()
+    var ids = disconnect()
+    ids["leave"] = persisted ? "persisted" : nil
+    return ids
+  }
+
+  func completeLeave(runnerId: String) throws {
+    lock.lock(); let storage = self.storage; lock.unlock()
+    try storage?.completeLeave(runnerId: runnerId)
+    publish()
+  }
+
+  func signSessionBinding(deploymentId: String, sessionId: String) throws -> [String: String] {
+    lock.lock(); defer { lock.unlock() }
+    guard let storage else { throw IdentityStoreError.missingIdentity }
+    let issuedAt = ISO8601DateFormatter.leave.string(from: Date())
+    let signed = try storage.signSessionBinding(deploymentId: deploymentId, sessionId: sessionId, issuedAt: issuedAt)
+    return ["runnerId": signed.runnerId, "issuedAt": issuedAt, "signature": signed.signature]
   }
 
   func disconnect() -> [String: String?] {
@@ -972,4 +1004,12 @@ private final class IphoneHostClock {
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return formatter.string(from: date)
   }
+}
+
+private extension ISO8601DateFormatter {
+  static let leave: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+  }()
 }
