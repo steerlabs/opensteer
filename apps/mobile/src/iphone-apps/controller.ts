@@ -24,6 +24,7 @@ import {
   type ShownApprovalsFile,
 } from "./shown-approvals-file.js";
 import type { IphoneAppsOwner, IphoneAppsStopped, IphoneLeaveOutcome } from "./owner.js";
+import type { PhoneSetupFile, PhoneSetupProgress, PhoneSetups } from "../phone-setup/setup-file.js";
 import type { RemovedFrom, RemovedFile } from "./removed-file.js";
 
 export type { IphoneAppsOwner, IphoneAppsStopped, IphoneLeaveOutcome } from "./owner.js";
@@ -102,6 +103,10 @@ export class IphoneAppsController {
   #shownLoaded = false;
   #shownWrite: Promise<void> = Promise.resolve();
   #state: IphoneAppsState;
+  readonly #setupFile: PhoneSetupFile | null;
+  #phoneSetups: PhoneSetups = {};
+  #setupsLoaded: boolean;
+  #setupWrite: Promise<void> = Promise.resolve();
 
   constructor(options: {
     readonly bridge: IphoneAppsBridge;
@@ -110,7 +115,10 @@ export class IphoneAppsController {
     readonly enrollNative?: NativePhoneEnrollment;
     readonly deliverLeave?: DeliverLeave;
     readonly removedFile?: RemovedFile;
+    readonly setupFile?: PhoneSetupFile;
   }) {
+    this.#setupFile = options.setupFile ?? null;
+    this.#setupsLoaded = this.#setupFile === null;
     this.#bridge = options.bridge;
     this.#deliverLeave = options.deliverLeave ?? null;
     this.#removedFile = options.removedFile ?? null;
@@ -161,16 +169,33 @@ export class IphoneAppsController {
 
   /** Reads which requests were already shown on their own; until then none is. */
   async load(): Promise<void> {
-    const [stored, removed] = await Promise.all([
+    const [stored, removed, setups] = await Promise.all([
       this.#shownFile.read(),
       this.#removedFile?.read() ?? Promise.resolve(null),
+      this.#setupFile?.read() ?? Promise.resolve({}),
     ]);
     if (this.#disposed) return;
     for (const { expiresAt, id } of stored) this.#shown.set(id, expiresAt);
     this.#shownLoaded = true;
+    this.#phoneSetups = setups;
+    this.#setupsLoaded = true;
     if (this.#removedFrom === null && removed !== null) this.#removedFrom = removed;
     this.#publish();
     void this.retryLeave();
+  }
+
+  async savePhoneSetup(deploymentId: string, progress: PhoneSetupProgress | null): Promise<void> {
+    if (!this.#setupsLoaded) throw new Error("This phone's setup has not loaded yet.");
+    const write = this.#setupWrite.then(async () => {
+      const next = { ...this.#phoneSetups };
+      if (progress === null) delete next[deploymentId];
+      else next[deploymentId] = progress;
+      await this.#setupFile?.write(next);
+      this.#phoneSetups = next;
+      this.#publish();
+    });
+    this.#setupWrite = write.catch(() => undefined);
+    await write;
   }
 
   /** A leave persisted before a restart or while offline goes out again; it never needs a session. */
@@ -1017,7 +1042,7 @@ export class IphoneAppsController {
         (this.#host?.deploymentId === pending.deploymentId
           ? this.#host.hostClient.getSnapshot().devicesAvailable
           : undefined);
-      if (devicesV1 === true) {
+      if (devicesV1 !== false) {
         outcome =
           this.#deliverLeave === null
             ? "unreachable"
@@ -1051,7 +1076,8 @@ export class IphoneAppsController {
               )) ?? "unreachable";
           }
         }
-      } else if (devicesV1 === false) {
+      }
+      if (devicesV1 === false || (devicesV1 === undefined && outcome !== "removed")) {
         const authenticated =
           dispatch ??
           (this.#host?.deploymentId === pending.deploymentId
@@ -1185,7 +1211,7 @@ export class IphoneAppsController {
 
   /**
    * Never throws, and never undoes the stop. The signed leave goes first and
-   * needs no session; only a Host too old to know it hears the old revoke.
+   * needs no session; older Hosts and unresolved support can use authenticated removal.
    */
   async #tellHost(
     stopped: IphoneAppsStopped,
@@ -1385,6 +1411,7 @@ export class IphoneAppsController {
   #derive(snapshot: IphoneAppsSnapshot): IphoneAppsState {
     return {
       adding: this.#adding?.deploymentId ?? null,
+      phoneSetups: this.#setupsLoaded ? this.#phoneSetups : null,
       answering: [...this.#answering],
       notice: this.#notice,
       // A request for an app being turned on from here is that change's own;
@@ -1433,6 +1460,7 @@ export interface IphoneAppsHost {
 }
 
 export interface IphoneAppsState {
+  readonly phoneSetups: PhoneSetups | null;
   readonly adding: string | null;
   readonly answering: readonly string[];
   /** Something the person must hear about after the fact, wherever they are. */

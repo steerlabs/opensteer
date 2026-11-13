@@ -45,9 +45,12 @@ function SetUpPhone(props: { readonly deploymentId: string; readonly hostClient:
   const { registration } = useMobileNotifications();
   const { rows } = useMobileState();
   const platform = Platform.OS === "android" ? "android" : "ios";
-  const [draft, setDraft] = useState<PhoneSetupDraft>(() => phoneSetupDraft(controller, platform));
+  const progress = controller.getState().phoneSetups?.[props.deploymentId];
+  const [draft, setDraft] = useState<PhoneSetupDraft>(
+    () => progress?.draft ?? phoneSetupDraft(controller, platform),
+  );
   const setup = useRef<PhoneSetup | null>(null);
-  setup.current ??= new PhoneSetup(draft);
+  setup.current ??= new PhoneSetup(draft, progress);
   const state = useSyncExternalStore(
     setup.current.subscribe,
     setup.current.getState,
@@ -65,8 +68,8 @@ function SetUpPhone(props: { readonly deploymentId: string; readonly hostClient:
   );
   const busy = state.phase.kind === "enrolling" || state.phase.kind === "asking";
   const failed = state.phase.kind === "failed";
-  // Setup leaves only forward, or by Not now once it has failed.
-  usePreventRemove(!failed && state.phase.kind !== "ready", () => undefined);
+  const canDefer = !busy && (failed || progress !== undefined);
+  usePreventRemove(!canDefer && state.phase.kind !== "ready", () => undefined);
   const switches = setupSwitches({ busy, devicesAvailable, draft, noun: thisPhoneNoun, state });
   const opensteer = opensteerOn(
     rows.find((row) => row.deploymentId === props.deploymentId)?.name ?? "Opensteer",
@@ -121,10 +124,11 @@ function SetUpPhone(props: { readonly deploymentId: string; readonly hostClient:
         noun: thisPhoneNoun,
         onContinue: run,
         onName: (next) => setDraft((current) => ({ ...current, name: next })),
-        onNotNow: failed
+        onNotNow: canDefer
           ? () => {
-              dismissPhoneSetup(props.deploymentId);
-              navigation.goBack();
+              void dismissPhoneSetup(controller, props.deploymentId)
+                .then(() => navigation.goBack())
+                .catch(() => undefined);
             }
           : null,
         onOpenSettings: () => void Linking.openSettings(),

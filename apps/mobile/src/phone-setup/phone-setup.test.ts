@@ -1,5 +1,9 @@
-import type { HostClient } from "@opensteer/client/host";
-import { describe, expect, it } from "vitest";
+import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
+import { createPhoneSetupFile, type PhoneSetupProgress } from "./setup-file.js";
+import { MockHostClient } from "@opensteer/client/mock";
+import { deviceAccess } from "@opensteer/protocol";
+import { unwrapRpcResult, type HostClient } from "@opensteer/client/host";
+import { describe, expect, it, vi } from "vitest";
 import type { IphoneAppsController, IphoneAppsState } from "../iphone-apps/controller.js";
 import { createFakeIphoneApps } from "../iphone-apps/fake-bridge.js";
 import { IphoneAppsController as Controller } from "../iphone-apps/controller.js";
@@ -16,9 +20,15 @@ const deploymentId = "dep_0192f4a1-1111-4000-8000-000000000001";
 function fakeController(options: {
   readonly add?: Awaited<ReturnType<IphoneAppsController["add"]>>;
   readonly denied?: readonly string[];
+  readonly interrupted?: string;
+  readonly persistence?: Controller;
 }) {
   const calls: string[] = [];
-  let state = { changes: {}, failures: {} } as unknown as IphoneAppsState;
+  let state = {
+    changes: {},
+    failures: {},
+    phoneSetups: {},
+  } as unknown as IphoneAppsState;
   const controller = {
     add: async (input: Parameters<IphoneAppsController["add"]>[0]) => {
       calls.push(`add:${JSON.stringify(input.access ?? null)}`);
@@ -27,6 +37,7 @@ function fakeController(options: {
     share: async (input: Parameters<IphoneAppsController["share"]>[0]) => {
       const app = input.apps[0]!.app;
       calls.push(`share:${app}`);
+      if (options.interrupted === app) throw new Error("App closed during prompt");
       state = {
         ...state,
         failures: options.denied?.includes(app)
@@ -34,14 +45,37 @@ function fakeController(options: {
           : {},
       } as IphoneAppsState;
     },
-    getState: () => state,
+    savePhoneSetup: async (id: string, progress: PhoneSetupProgress | null) => {
+      await options.persistence?.savePhoneSetup(id, progress);
+    },
+    getState: () => ({ ...state, phoneSetups: options.persistence?.getState().phoneSetups ?? {} }),
   } as unknown as IphoneAppsController;
   return { calls, controller };
 }
 
 function host(devices: boolean): HostClient {
+  let access = {
+    revision: 0,
+    policy: {
+      browser: true,
+      apps: true,
+      reach: "nobody",
+      commands: false,
+      forwarding: false,
+      shares: [],
+    },
+  };
   return {
-    getSnapshot: () => ({ devicesAvailable: devices, iphoneAppsAvailable: true }),
+    getSnapshot: () => ({
+      devicesAvailable: devices,
+      iphoneAppsAvailable: true,
+      machines: [{ id: "rnr_phone", access }],
+    }),
+    refresh: async () => undefined,
+    updateMachineAccess: async (input: Parameters<HostClient["updateMachineAccess"]>[0]) => {
+      access = { revision: access.revision + 1, policy: input.policy } as typeof access;
+      return { outcome: "updated", revision: access.revision };
+    },
   } as unknown as HostClient;
 }
 
@@ -130,6 +164,180 @@ describe("Set up this phone", () => {
     });
     expect(calls).toEqual(["add:null"]);
     expect(state.phase).toEqual({ kind: "failed", failure: { kind: "remote-access-off" } });
+  });
+
+  it.each(["late", "pending"] as const)(
+    "applies revised Browser Off after a %s enrollment, using the Host's current revision",
+    async (completion) => {
+      const host = new MockHostClient({ latencyMs: 0 });
+      const fake = createFakeIphoneApps({ autoConnect: false });
+      const controller = new Controller({
+        bridge: fake.bridge,
+        shownApprovals: { read: async () => [], write: async () => undefined },
+        timing: { enrollWaitMs: 50 },
+      });
+      try {
+        const target = unwrapRpcResult(await host.rpc["agentPhone.target.get"]({}));
+        const deploymentId = target.deploymentId;
+        const first = await controller.add({
+          deploymentId,
+          hostClient: host,
+          iphoneAppsAvailable: true,
+          name: draft.name,
+          access: { browser: true, apps: true, files: false },
+        });
+        expect(first.kind).toBe("failed");
+        host.mockConnectIphone({
+          enrollmentId: fake.bridge.getSnapshot().enrollment!.enrollmentId!,
+          runnerId: fake.device.runnerId(),
+          name: draft.name,
+        });
+        if (completion === "late") fake.device.connect();
+        const update = host.updateMachineAccess.bind(host);
+        let conflicted = false;
+        host.updateMachineAccess = async (input) => {
+          if (!conflicted) {
+            conflicted = true;
+            await update({ ...input, policy: { ...input.policy, browser: true } });
+            return { outcome: "conflict" };
+          }
+          return update(input);
+        };
+        const running = new PhoneSetup(draft).run({
+          controller,
+          deploymentId,
+          draft: { ...draft, browser: false, apps: {} },
+          hostClient: host,
+          notifications: { choose: async () => "on" },
+        });
+        if (completion === "pending") {
+          await vi.waitFor(() => expect(controller.getState().adding).toBe(deploymentId), {
+            timeout: 1_000,
+          });
+          fake.device.connect();
+        }
+        const state = await running;
+        const machine = host.getSnapshot().machines.find(({ id }) => id === fake.device.runnerId());
+        expect(deviceAccess(machine!.access!.policy)).toEqual({
+          browser: false,
+          apps: false,
+          files: false,
+        });
+        expect(state.browser).toBe("off");
+        expect(state.phase.kind).toBe("ready");
+        expect(conflicted).toBe(true);
+      } finally {
+        controller.dispose();
+        host.dispose();
+      }
+    },
+  );
+
+  it("durably resumes the unfinished prompt after restart without repeating completed steps", async () => {
+    const privateFiles = new MemoryPrivateFilesystem();
+    const filePath = "/private/phone-setup.json";
+    const setupFile = createPhoneSetupFile({ privateFiles, filePath });
+    const open = () =>
+      new Controller({
+        bridge: createFakeIphoneApps().bridge,
+        setupFile,
+        shownApprovals: { read: async () => [], write: async () => undefined },
+      });
+    const persistence = open();
+    await persistence.load();
+    const first = fakeController({ persistence, interrupted: "iphone-location" });
+    const notifications = { choose: vi.fn(async () => "on" as const) };
+    await expect(
+      new PhoneSetup(draft).run({
+        controller: first.controller,
+        deploymentId,
+        draft,
+        hostClient: host(false),
+        notifications,
+      }),
+    ).rejects.toThrow("App closed");
+    const stored = await createPhoneSetupFile({ privateFiles, filePath }).read();
+    expect(stored[deploymentId]?.draft).toEqual(draft);
+    expect(stored[deploymentId]?.completed).toEqual([
+      "enrollment",
+      "notifications",
+      "apple-calendar",
+    ]);
+    persistence.dispose();
+    const reloaded = open();
+    await reloaded.load();
+    const restarted = fakeController({ persistence: reloaded });
+    const membershipState = {
+      ...restarted.controller.getState(),
+      adding: null,
+      removedFrom: null,
+      snapshot: { supported: true, enrollment: { deploymentId, state: "enrolled" } },
+    } as unknown as IphoneAppsState;
+    expect(
+      phoneMembership({
+        deploymentId,
+        host: { iphoneAppsAvailable: true },
+        iphone: membershipState,
+      }).state,
+    ).toBe("finish-setup");
+    const deferred = { ...stored[deploymentId]!, deferred: true };
+    await reloaded.savePhoneSetup(deploymentId, deferred);
+    const deferredOnDisk = await setupFile.read();
+    expect(
+      phoneMembership({
+        deploymentId,
+        host: { iphoneAppsAvailable: true },
+        iphone: { ...membershipState, phoneSetups: deferredOnDisk },
+      }).state,
+    ).toBe("ready");
+    expect(
+      phoneMembership({
+        deploymentId: "another-deployment",
+        host: { iphoneAppsAvailable: true },
+        iphone: { ...membershipState, snapshot: { ...membershipState.snapshot, enrollment: null } },
+      }).state,
+    ).toBe("needs-setup");
+    const state = await new PhoneSetup(stored[deploymentId]!.draft).run({
+      controller: restarted.controller,
+      deploymentId,
+      draft: stored[deploymentId]!.draft,
+      hostClient: host(false),
+      notifications,
+    });
+    expect(state.phase.kind).toBe("ready");
+    expect(notifications.choose).toHaveBeenCalledOnce();
+    expect(restarted.calls.filter((call) => call.startsWith("share:"))).toEqual([
+      "share:iphone-location",
+    ]);
+    expect(await setupFile.read()).toEqual({});
+    reloaded.dispose();
+  });
+
+  it("asks nothing and keeps setup unfinished if the draft cannot be saved", async () => {
+    const persistence = new Controller({
+      bridge: createFakeIphoneApps().bridge,
+      setupFile: {
+        read: async () => ({}),
+        write: async () => {
+          throw new Error("disk unavailable");
+        },
+      },
+      shownApprovals: { read: async () => [], write: async () => undefined },
+    });
+    await persistence.load();
+    try {
+      const { controller, calls } = fakeController({ persistence });
+      const notifications = { choose: vi.fn(async () => "on" as const) };
+      const setup = new PhoneSetup(draft);
+      await expect(
+        setup.run({ controller, deploymentId, draft, hostClient: host(false), notifications }),
+      ).rejects.toThrow("disk unavailable");
+      expect(calls).toEqual([]);
+      expect(notifications.choose).not.toHaveBeenCalled();
+      expect(setup.getState().phase.kind).toBe("failed");
+    } finally {
+      persistence.dispose();
+    }
   });
 
   it("starts with Photos off and every other offered app on", () => {

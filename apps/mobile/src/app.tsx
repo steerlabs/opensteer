@@ -100,6 +100,7 @@ import { color, space } from "./theme.js";
 import { IphoneApprovalPrompt } from "./iphone-apps/approval-prompt.js";
 import { IphoneAppsProvider, useIphoneAppsState } from "./iphone-apps/context.js";
 import { IphoneAppsController } from "./iphone-apps/controller.js";
+import { createPhoneSetupFile } from "./phone-setup/setup-file.js";
 import { createRemovedFile } from "./iphone-apps/removed-file.js";
 import { networkLeaveDelivery } from "./platform/phone-leave.js";
 import { startPhoneBrowserRuntime } from "./phone-browser/runtime.js";
@@ -232,6 +233,10 @@ function mobileClient(): MobileRoot {
           return "removed";
         }
       : networkLeaveDelivery((input, init) => mobileHostFetch(input, init)),
+    setupFile: createPhoneSetupFile({
+      filePath: `${root}${storeName}/phone-setup.json`,
+      privateFiles,
+    }),
     removedFile: createRemovedFile({
       filePath: `${root}${storeName}/device-removed.json`,
       privateFiles,

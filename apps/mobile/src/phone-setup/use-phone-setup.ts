@@ -1,14 +1,20 @@
 import type { HostClient, HostSnapshot } from "@opensteer/client/host";
 import { useIsFocused, useNavigation } from "@react-navigation/native";
 import { useEffect } from "react";
+import type { IphoneAppsController } from "../iphone-apps/controller.js";
 import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import { phoneMembership } from "./phone-setup.js";
 import { useHostValue } from "../ui/mobile-client-context.js";
 
-/** Not now, after a failed setup, holds for this launch only: setup is never forgotten. */
+/** An unfinished enrollment is offered again next launch, even when its prompts are deferred. */
 const notNow = new Set<string>();
 
-export function dismissPhoneSetup(deploymentId: string): void {
+export async function dismissPhoneSetup(
+  controller: IphoneAppsController,
+  deploymentId: string,
+): Promise<void> {
+  const progress = controller.getState().phoneSetups?.[deploymentId];
+  if (progress) await controller.savePhoneSetup(deploymentId, { ...progress, deferred: true });
   notNow.add(deploymentId);
 }
 
@@ -30,10 +36,11 @@ export function usePhoneSetup(hostClient: HostClient | null, deploymentId: strin
   const due =
     hostClient !== null &&
     connected === true &&
+    iphone.phoneSetups !== null &&
     !notNow.has(deploymentId) &&
     (membership.state === "needs-setup" || membership.state === "finish-setup");
   useEffect(() => {
     if (due && focused) navigation.navigate("SetUpPhone", { deploymentId });
   }, [deploymentId, due, focused, navigation]);
-  return due;
+  return due || (connected === true && iphone.phoneSetups === null);
 }

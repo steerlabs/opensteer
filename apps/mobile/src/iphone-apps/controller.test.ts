@@ -1350,6 +1350,37 @@ describe("the iPhone's owner", () => {
 });
 
 describe("leaving and binding", () => {
+  it.each([
+    { attached: true, delivery: "removed" },
+    { attached: false, delivery: "removed" },
+    { attached: true, delivery: "missing" },
+    { attached: false, delivery: "missing" },
+  ] as const)(
+    "removes an upgraded identity with unknown support ($attached, $delivery)",
+    async ({ attached, delivery }) => {
+      const delivered = vi.fn(async (): Promise<LeaveDelivery> => delivery);
+      const { controller, fake } = open({ deliverLeave: delivered });
+      fake.device.enrolledTo({ deploymentId, name: "Phone" });
+      const host = fakeHost();
+      if (attached) controller.attachHost({ deploymentId, hostClient: host.client });
+      const read = fake.bridge.getSnapshot.bind(fake.bridge);
+      fake.bridge.getSnapshot = () => {
+        const snapshot = read();
+        const pending = (snapshot.pendingLeaves ?? []).map(
+          ({ devicesV1: _support, ...record }) => record,
+        );
+        return { ...snapshot, pendingLeave: pending[0] ?? null, pendingLeaves: pending };
+      };
+      const stopped = controller.owner.stop();
+      await expect(controller.owner.tellHost(stopped!, host.client.dispatch)).resolves.toBe(
+        "removed",
+      );
+      expect(delivered).toHaveBeenCalledOnce();
+      expect(host.commands).toEqual(delivery === "removed" ? [] : ["machine.revoke"]);
+      expect(fake.bridge.getSnapshot().pendingLeaves).toEqual([]);
+    },
+  );
+
   it("delivers a retained leave through a moved route only for the same pinned Host", async () => {
     const delivered: string[] = [];
     const { controller, fake } = open({
