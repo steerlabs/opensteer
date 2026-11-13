@@ -69,8 +69,12 @@ async function message(channel: string, owner: string, clientId = crypto.randomU
 
 describe("fresh personal/team lineage", () => {
   it("upgrades existing queued inputs with fresh context disabled in the table and work view", async () => {
-    const migrations = await migrationProvider().getMigrations();
-    delete migrations["0005_thread_input_fresh_context"];
+    // A database from before 0005 holds exactly the migrations that sort before it.
+    const migrations = Object.fromEntries(
+      Object.entries(await migrationProvider().getMigrations()).filter(
+        ([name]) => name < "0005_thread_input_fresh_context",
+      ),
+    );
     await migrateToLatest(database, { getMigrations: async () => migrations });
     const { userId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
     const store = new OpensteerStore(database);
