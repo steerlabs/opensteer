@@ -128,8 +128,9 @@ export class TeamLinkEndpoint {
           const next = [...batch, request];
           if (
             batch.length &&
-            Buffer.byteLength(JSON.stringify({ type: "requests", requests: next })) >
-              teamLinkMaxFrameBytes
+            (batch.length === 32 ||
+              Buffer.byteLength(JSON.stringify({ type: "requests", requests: next })) >
+                teamLinkMaxFrameBytes)
           ) {
             batches.push(batch);
             batch = [];
@@ -296,7 +297,7 @@ export class TeamLinkEndpoint {
         "requestId" in frame &&
         frame.requestId
       ) {
-        if (["receipt", "status"].includes(frame.type))
+        if (["accept", "receipt", "status"].includes(frame.type))
           await requests.receipt(linkId, frame.requestId);
         else await requests.authorize(linkId, frame.requestId, "read");
       }
@@ -361,7 +362,11 @@ export class TeamLinkEndpoint {
       let result: TeamLinkResult;
       switch (frame.type) {
         case "reconcile":
-          throw linkError();
+          result = {
+            kind: "reconciled",
+            requests: [...(await requests.reconcile(linkId, frame.requestIds))],
+          };
+          break;
         case "channels":
           result = { kind: "channels", result: await data.channels(actor, linkId, frame) };
           break;

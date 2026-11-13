@@ -199,14 +199,14 @@ describe("standing team link authority", () => {
       channelId,
       threadRootId: null,
       clientMessageId: randomUUID(),
-      bodyMarkdown: "trigger words",
+      bodyMarkdown: "@maya-agent trigger words",
       attachmentIds: [],
       mentions: [{ kind: "agent", userId: fixture.userId }],
     });
     const pending = (await requests.pending(linkId)).find(
       (r) => r.request.triggerMessageId === sent.message.id,
     )!;
-    expect(pending).toMatchObject({ bodyMarkdown: "trigger words", attachments: [] });
+    expect(pending).toMatchObject({ bodyMarkdown: "@maya-agent trigger words", attachments: [] });
     await requests.accept(linkId, pending.request.id);
     const context = await requests.context(linkId, pending.request.id);
     expect(context).not.toHaveProperty("messages");
@@ -444,7 +444,7 @@ describe("standing team link authority", () => {
         channelId,
         threadRootId: null,
         clientMessageId: randomUUID(),
-        bodyMarkdown: "x".repeat(16384),
+        bodyMarkdown: "@maya-agent " + "x".repeat(16372),
         attachmentIds: [],
         mentions: [{ kind: "agent", userId: fixture.userId }],
       });

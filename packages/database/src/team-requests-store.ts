@@ -8,6 +8,8 @@ import {
 } from "@opensteer/core";
 import { TeamRequestContextSchema } from "@opensteer/protocol";
 import { sql, type Transaction } from "kysely";
+import { appendTeamAudit } from "./team-audit-store.js";
+import { createTeamAskReturn } from "./team-request-returns.js";
 import type { DatabaseSchema } from "./schema.js";
 import type { TeamRequestStorePort } from "./team-requests-port.js";
 import {
@@ -25,11 +27,10 @@ export class TeamRequestsStore implements TeamRequestStorePort {
     this.access = access;
     this.chat = chat;
   }
-  async #record(
+  async #owned(
     transaction: Transaction<DatabaseSchema>,
     linkId: TeamLinkId,
     id: TeamAgentRequestId,
-    queued = false,
   ) {
     const row = await transaction
       .selectFrom("teamAgentRequests as r")
@@ -42,17 +43,36 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       .where("m.state", "=", "active")
       .executeTakeFirst();
     requireTeam(row, "Request unavailable");
-    requireTeam(
-      (queued && row.state === "queued") || row.state === "working" || row.state === "needs_you",
-      "Request is terminal or has not been accepted",
-    );
-    requireTeam(row.expiresAt === null || row.expiresAt > new Date(), "Request expired");
     const authority = await this.access.channel(
       transaction,
       { kind: "agent", userId: row.ownerUserId },
       row.channelId,
     );
     requireTeam(authority.read && authority.post, "Request access revoked");
+    if (row.presentation) {
+      const asker = row.presentation.asker;
+      const rights = await this.access.channel(
+        transaction,
+        { kind: asker.actor, userId: asker.teamUserId },
+        row.channelId,
+      );
+      requireTeam(rights.read && rights.post, "Asker access revoked");
+    }
+    return row;
+  }
+  async #record(
+    transaction: Transaction<DatabaseSchema>,
+    linkId: TeamLinkId,
+    id: TeamAgentRequestId,
+    queued = false,
+  ) {
+    const row = await this.#owned(transaction, linkId, id);
+    requireTeam(row.kind !== "return", "Returns cannot authorize team work");
+    requireTeam(
+      (queued && row.state === "queued") || row.state === "working" || row.state === "needs_you",
+      "Request is terminal or has not been accepted",
+    );
+    requireTeam(row.expiresAt === null || row.expiresAt > new Date(), "Request expired");
     return row;
   }
   async authorize(
@@ -91,14 +111,15 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         .selectFrom("teamAgentRequests")
         .select("id")
         .where("linkId", "=", linkId)
-        .where("state", "in", ["queued", "working", "needs_you"])
+        .where("state", "in", ["awaiting_approval", "queued", "working", "needs_you"])
+        .orderBy(sql`case when state in ('awaiting_approval','queued') then 0 else 1 end`)
         .orderBy("createdAt")
         .orderBy("id")
-        .limit(32)
+        .limit(200)
         .execute();
       const requests = [];
       for (const { id } of rows) {
-        const row = await this.#record(t, linkId, id, true);
+        const row = await this.#owned(t, linkId, id);
         const triggerRow = await t
           .selectFrom("teamMessages")
           .selectAll()
@@ -106,9 +127,28 @@ export class TeamRequestsStore implements TeamRequestStorePort {
           .where("channelId", "=", row.channelId)
           .executeTakeFirstOrThrow();
         const trigger = (await teamMessageViews(t, [triggerRow]))[0]!;
+        let attachments = trigger.attachments;
+        if (row.returnPayload) {
+          const origin = await t
+            .selectFrom("teamAgentRequests")
+            .select("replyMessageId")
+            .where("id", "=", row.returnPayload.originAskId)
+            .executeTakeFirstOrThrow();
+          const answer = origin.replyMessageId
+            ? await t
+                .selectFrom("teamMessages")
+                .selectAll()
+                .where("id", "=", origin.replyMessageId)
+                .executeTakeFirst()
+            : null;
+          attachments = answer ? (await teamMessageViews(t, [answer]))[0]!.attachments : [];
+        }
         requests.push({
-          bodyMarkdown: trigger.bodyMarkdown,
-          attachments: trigger.attachments,
+          bodyMarkdown:
+            row.kind === "return"
+              ? (row.returnPayload!.bodyMarkdown ?? "")
+              : (row.presentation?.bodyMarkdown ?? trigger.bodyMarkdown),
+          attachments,
           request: teamRequestView(row),
           returnPayload: row.returnPayload,
           presentation: row.presentation,
@@ -127,36 +167,69 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       revision,
       () =>
         this.access.database.transaction().execute(async (t) => {
-          for (const { request } of result) await this.#record(t, linkId, request.id, true);
+          for (const { request } of result) await this.#owned(t, linkId, request.id);
           return true;
         }),
       () => result,
     );
   }
   async accept(linkId: TeamLinkId, id: TeamAgentRequestId, decision?: TeamAskDecision) {
+    await this.expire(id);
     const observed = await this.access.database
       .selectFrom("teamAgentRequests")
       .selectAll()
       .where("id", "=", id)
       .executeTakeFirstOrThrow();
-    requireTeam(
-      observed.kind === "self" && decision === undefined,
-      "Team ask decisions are unavailable",
-    );
+    let changed = false;
     const result = await this.access.contentWrite(
       { kind: "agent", userId: observed.ownerUserId },
       observed.channelId,
       async (t) => {
-        const row = await this.#record(t, linkId, id, true);
-        if (row.acceptedAt) return teamRequestView(row);
-        await lockTeamMessages(t, [row.threadRootId]);
+        const row = await this.#owned(t, linkId, id);
+        if (row.kind === "ask") {
+          if (row.state === "declined" && decision === "decline") return teamRequestView(row);
+          if (row.acceptedAt && decision !== "decline") return teamRequestView(row);
+          requireTeam(
+            row.state === "awaiting_approval" && decision !== undefined,
+            "Explicit ask decision required",
+          );
+          requireTeam(row.consentExpiresAt && row.consentExpiresAt > new Date(), "Consent expired");
+        } else {
+          requireTeam(decision === undefined, "Only asks have decisions");
+          if (row.kind === "return") {
+            if (row.acceptedAt) return teamRequestView(row);
+            requireTeam(row.state === "queued", "Return is terminal");
+            const delivered = await t
+              .updateTable("teamAgentRequests")
+              .set({ state: "done", acceptedAt: sql`now()`, finishedAt: sql`now()` })
+              .where("id", "=", id)
+              .returningAll()
+              .executeTakeFirstOrThrow();
+            await appendTeamAudit(t, {
+              actor: { kind: "agent", userId: row.ownerUserId },
+              action: "request.return.deliver",
+              resourceKind: "request",
+              resourceId: id,
+              requestId: id,
+              linkId,
+              channelId: row.channelId,
+            });
+            return teamRequestView(delivered);
+          }
+          await this.#record(t, linkId, id, true);
+          if (row.acceptedAt) return teamRequestView(row);
+        }
+        await lockTeamMessages(t, [row.threadRootId, row.triggerMessageId]);
         const { changeSeq } = await bumpTeamChannel(t, row.channelId);
+        changed = true;
+        const declined = decision === "decline";
         const updated = await t
           .updateTable("teamAgentRequests")
           .set({
-            state: "working",
-            acceptedAt: sql`now()`,
-            expiresAt: sql`now()+interval '7 days'`,
+            state: declined ? "declined" : "working",
+            acceptedAt: declined ? null : sql`now()`,
+            expiresAt: declined ? null : sql`now()+interval '7 days'`,
+            finishedAt: declined ? new Date() : null,
             changeSeq,
           })
           .where("id", "=", id)
@@ -165,13 +238,56 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         await t
           .updateTable("teamMessages")
           .set({ changeSeq })
-          .where("id", "=", row.threadRootId)
+          .where("id", "in", [row.threadRootId, row.triggerMessageId])
           .execute();
+        if (declined) await createTeamAskReturn(t, row, "declined", changeSeq);
+        await appendTeamAudit(t, {
+          actor: { kind: "agent", userId: row.ownerUserId },
+          action: row.kind === "ask" ? `request.decision.${decision}` : "request.admit",
+          resourceKind: "request",
+          resourceId: id,
+          requestId: id,
+          linkId,
+          channelId: row.channelId,
+        });
+        if (row.kind === "ask" && !declined)
+          await appendTeamAudit(t, {
+            actor: { kind: "agent", userId: row.ownerUserId },
+            action: "request.admit",
+            resourceKind: "request",
+            resourceId: id,
+            requestId: id,
+            linkId,
+            channelId: row.channelId,
+          });
         return teamRequestView(updated);
       },
     );
-    this.chat.changed(observed.channelId);
+    if (changed) this.chat.changed(observed.channelId);
+    if (changed && observed.kind === "ask")
+      await this.chat.notifyRequests(observed.triggerMessageId);
     return result;
+  }
+  async reconcile(linkId: TeamLinkId, ids: readonly TeamAgentRequestId[]) {
+    await this.expire();
+    return this.access.database.transaction().execute(async (t) => {
+      const link = await t
+        .selectFrom("teamLinks")
+        .select("ownerUserId")
+        .where("id", "=", linkId)
+        .executeTakeFirstOrThrow();
+      await this.access.link(t, { kind: "agent", userId: link.ownerUserId }, linkId);
+      const rows = ids.length
+        ? await t
+            .selectFrom("teamAgentRequests")
+            .selectAll()
+            .where("linkId", "=", linkId)
+            .where("id", "in", [...ids])
+            .execute()
+        : [];
+      const byId = new Map(rows.map((row) => [row.id, teamRequestView(row)]));
+      return ids.map((requestId) => ({ requestId, request: byId.get(requestId) ?? null }));
+    });
   }
   async context(linkId: TeamLinkId, id: TeamAgentRequestId) {
     const request = await this.authorize(linkId, id, "read");
@@ -239,8 +355,13 @@ export class TeamRequestsStore implements TeamRequestStorePort {
           );
           return;
         }
-        const row = await this.#record(t, linkId, id, input.state === "cancelled");
-        await lockTeamMessages(t, [row.threadRootId]);
+        const row =
+          current.kind === "ask" &&
+          current.state === "awaiting_approval" &&
+          input.state === "cancelled"
+            ? await this.#owned(t, linkId, id)
+            : await this.#record(t, linkId, id, input.state === "cancelled");
+        await lockTeamMessages(t, [row.threadRootId, row.triggerMessageId]);
         const { changeSeq } = await bumpTeamChannel(t, row.channelId);
         await t
           .updateTable("teamAgentRequests")
@@ -256,8 +377,15 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         await t
           .updateTable("teamMessages")
           .set({ changeSeq })
-          .where("id", "=", row.threadRootId)
+          .where("id", "in", [row.threadRootId, row.triggerMessageId])
           .execute();
+        if (terminal)
+          await createTeamAskReturn(
+            t,
+            row,
+            input.state === "failed" || input.state === "done" ? "failed" : "cancelled",
+            changeSeq,
+          );
         if (input.state === "needs_you" || terminal)
           await t
             .insertInto("teamOutbox")
@@ -272,6 +400,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       },
     );
     this.chat.changed(observed.channelId);
+    await this.chat.notifyRequests(observed.triggerMessageId, true);
     if (["failed", "stopped", "cancelled"].includes(input.state))
       await this.chat.requestChanged({ kind: "cancelled", linkId, requestId: id });
   }
@@ -330,6 +459,9 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         attachmentIds: input.attachmentIds,
         mentions: [],
         linkId,
+        publication: input.publication ?? false,
+        deferAudit: true,
+        statusMessageIds: request ? [request.triggerMessageId] : [],
         ...(input.runId
           ? { agent: { runId: input.runId, operationId: input.clientMessageId } }
           : {}),
@@ -346,9 +478,57 @@ export class TeamRequestsStore implements TeamRequestStorePort {
           .where("replyMessageId", "is", null)
           .execute();
       }
+      if (request && request.replyMessageId === null) {
+        await t
+          .updateTable("teamMessages")
+          .set({ changeSeq: sent.message.changeSeq })
+          .where("id", "=", request.triggerMessageId)
+          .execute();
+        await createTeamAskReturn(t, request, "answered", sent.message.changeSeq, sent.message.id);
+        await appendTeamAudit(t, {
+          actor,
+          action: "request.publish",
+          resourceKind: "request",
+          resourceId: request.id,
+          requestId: request.id,
+          linkId,
+          channelId: input.channelId,
+        });
+      }
+      for (const outcome of sent.askOutcomes)
+        await appendTeamAudit(t, {
+          actor,
+          action: "request.create",
+          resourceKind: "message",
+          resourceId: sent.message.id,
+          channelId: input.channelId,
+          outcome: outcome.outcome === "queued" ? "allowed" : "denied",
+          metadata: outcome,
+        });
+      await appendTeamAudit(t, {
+        actor,
+        runId: input.runId,
+        operationId: input.clientMessageId,
+        action: "agent.post",
+        metadata: { personalDeploymentId: link.personalDeploymentId },
+        resourceKind: "message",
+        resourceId: sent.message.id,
+        linkId,
+        channelId: input.channelId,
+        requestId: input.requestId,
+      });
       return sent.message.id;
     });
     this.chat.changed(input.channelId);
+    await this.chat.notifyRequests(result);
+    if (input.requestId) {
+      const request = await this.access.database
+        .selectFrom("teamAgentRequests")
+        .select("triggerMessageId")
+        .where("id", "=", input.requestId)
+        .executeTakeFirstOrThrow();
+      await this.chat.notifyRequests(request.triggerMessageId, true);
+    }
     return result;
   }
   async reply(
@@ -415,8 +595,12 @@ export class TeamRequestsStore implements TeamRequestStorePort {
     let query = this.access.database
       .selectFrom("teamAgentRequests")
       .selectAll()
-      .where("state", "in", ["working", "needs_you"])
-      .where("expiresAt", "<=", new Date());
+      .where((e) =>
+        e.or([
+          e.and([e("state", "=", "awaiting_approval"), e("consentExpiresAt", "<=", new Date())]),
+          e.and([e("state", "in", ["working", "needs_you"]), e("expiresAt", "<=", new Date())]),
+        ]),
+      );
     if (id) query = query.where("id", "=", id);
     for (const observed of await query.orderBy("channelId").orderBy("id").execute()) {
       await this.access.contentWrite(
@@ -427,11 +611,21 @@ export class TeamRequestsStore implements TeamRequestStorePort {
             .selectFrom("teamAgentRequests")
             .selectAll()
             .where("id", "=", observed.id)
-            .where("state", "in", ["working", "needs_you"])
-            .where("expiresAt", "<=", new Date())
+            .where((e) =>
+              e.or([
+                e.and([
+                  e("state", "=", "awaiting_approval"),
+                  e("consentExpiresAt", "<=", new Date()),
+                ]),
+                e.and([
+                  e("state", "in", ["working", "needs_you"]),
+                  e("expiresAt", "<=", new Date()),
+                ]),
+              ]),
+            )
             .executeTakeFirst();
           if (!row) return;
-          await lockTeamMessages(t, [row.threadRootId]);
+          await lockTeamMessages(t, [row.threadRootId, row.triggerMessageId]);
           const { changeSeq } = await bumpTeamChannel(t, row.channelId);
           await t
             .updateTable("teamAgentRequests")
@@ -441,16 +635,13 @@ export class TeamRequestsStore implements TeamRequestStorePort {
           await t
             .updateTable("teamMessages")
             .set({ changeSeq })
-            .where("id", "=", row.threadRootId)
+            .where("id", "in", [row.threadRootId, row.triggerMessageId])
             .execute();
+          await createTeamAskReturn(t, row, "expired", changeSeq);
         },
       );
       this.chat.changed(observed.channelId);
-      await this.chat.requestChanged({
-        kind: "cancelled",
-        linkId: observed.linkId,
-        requestId: observed.id,
-      });
+      await this.chat.notifyRequests(observed.triggerMessageId);
     }
   }
 }
