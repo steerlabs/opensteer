@@ -64,6 +64,9 @@ function Waiting(props: {
   );
 }
 
+/** Enough groups for any team this app serves, as the people list is bounded. */
+const groupBound = 1000;
+
 function useGroups(session: TeamSessionClient | null): {
   readonly groups: readonly TeamGroup[] | null;
   readonly failure: string | null;
@@ -75,17 +78,28 @@ function useGroups(session: TeamSessionClient | null): {
   useEffect(() => {
     if (session === null) return;
     let current = true;
-    void session.rpc["team.groups.list"]({})
-      .then(unwrapRpcResult)
-      .then(
-        (page) => {
-          if (!current) return;
-          setGroups(page.groups);
-          setFailure(null);
-        },
-        (error: unknown) =>
-          current && setFailure(error instanceof Error ? error.message : "The team didn't answer."),
-      );
+    // Every page: a group just made, or one past the first 50, must be found by its id.
+    const read = async (): Promise<readonly TeamGroup[]> => {
+      const all: TeamGroup[] = [];
+      let after: TeamGroup["id"] | undefined;
+      do {
+        const page = unwrapRpcResult(
+          await session.rpc["team.groups.list"](after === undefined ? {} : { after }),
+        );
+        all.push(...page.groups);
+        after = page.hasMore ? page.groups.at(-1)?.id : undefined;
+      } while (current && after !== undefined && all.length < groupBound);
+      return all;
+    };
+    void read().then(
+      (next) => {
+        if (!current) return;
+        setGroups(next);
+        setFailure(null);
+      },
+      (error: unknown) =>
+        current && setFailure(error instanceof Error ? error.message : "The team didn't answer."),
+    );
     return () => {
       current = false;
     };
@@ -325,7 +339,14 @@ export function TeamGroupScreen(
   const padding = useSafeAreaInsets().bottom + space[24];
   const group = groups?.find((row) => row.id === groupId) ?? null;
   if (session === null || group === null)
-    return <Waiting failure={failure ?? groupsFailure} onRetry={reload} />;
+    return (
+      <Waiting
+        failure={
+          failure ?? groupsFailure ?? (groups === null ? null : "This group no longer exists.")
+        }
+        onRetry={reload}
+      />
+    );
   const id = TeamGroupIdSchema.parse(groupId);
   const rows: GroupMemberRow[] = [
     ...group.people.map((userId) => {
