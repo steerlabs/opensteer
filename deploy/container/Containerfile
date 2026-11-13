@@ -79,6 +79,18 @@ RUN --mount=type=cache,id=opensteer-go-mod,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags='-s -w -buildid=' -o /output/opensteer-native-fs .
 
+# Every engine and program the Runner starts runs under this native owner.
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS process-supervisor-build
+WORKDIR /source
+COPY apps/desktop/process-supervisor/go.mod apps/desktop/process-supervisor/go.sum ./
+RUN --mount=type=cache,id=opensteer-go-mod,target=/go/pkg/mod go mod download
+COPY apps/desktop/process-supervisor/*.go ./
+ARG TARGETARCH
+ARG TARGETOS
+RUN --mount=type=cache,id=opensteer-go-mod,target=/go/pkg/mod \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags='-s -w -buildid=' -o /output/opensteer-process-supervisor .
+
 # Root version is selection metadata, not a dependency input. Give the
 # normalized file fixed metadata so COPY stays identical across release stamps.
 FROM ${NODE_IMAGE} AS dependency-manifests
@@ -430,10 +442,12 @@ COPY --from=bubblewrap-build --chmod=0555 /output/bwrap /usr/local/bin/bwrap
 COPY --from=bubblewrap-build --chmod=0444 /output/COPYING /usr/local/share/licenses/bubblewrap/COPYING
 COPY --from=sandbox-seccomp-profiles --chmod=0444 /runner-oci.json /usr/local/share/opensteer/runner-oci.json
 WORKDIR /app
-ENV OPENSTEER_BROWSER_HARNESS=/app/browser-harness/browser-harness.mjs
+ENV OPENSTEER_BROWSER_HARNESS=/app/browser-harness/browser-harness.mjs \
+    OPENSTEER_PROCESS_SUPERVISOR_EXECUTABLE=/app/process-supervisor/opensteer-process-supervisor
 COPY --from=runner-build --chown=10001:10001 /output/runner ./
 COPY --from=package-stamps --chown=10001:10001 /output/runner/package.json ./package.json
 COPY --from=runner-native-fs-build --chmod=0555 /output/opensteer-native-fs ./native-fs-helper/opensteer-native-fs
+COPY --from=process-supervisor-build --chmod=0555 /output/opensteer-process-supervisor ./process-supervisor/opensteer-process-supervisor
 COPY --chmod=0555 apps/runner/browser-harness/browser-harness.mjs apps/runner/browser-harness/page.mjs apps/runner/browser-harness/page-functions.mjs apps/runner/browser-harness/keyboard-layout.mjs ./browser-harness/
 COPY --chmod=0444 apps/runner/browser-harness/LICENSE /usr/local/share/licenses/opensteer-browser-harness/LICENSE
 COPY --chmod=0444 apps/runner/browser-harness/PLAYWRIGHT-LICENSE /usr/local/share/licenses/opensteer-browser-harness/PLAYWRIGHT-LICENSE
@@ -441,7 +455,8 @@ RUN test "$(bwrap --version)" = "bubblewrap 0.11.2" && \
     test ! -u /usr/local/bin/bwrap && \
     test "$("$OPENSTEER_BROWSER_HARNESS" --version)" = "0.5.0-opensteer" && \
     node dist/verify-harness-runtimes-main.js && \
-    test -x /opt/opensteer/control/opensteer-entrypoint.mjs
+    test -x /opt/opensteer/control/opensteer-entrypoint.mjs && \
+    { "$OPENSTEER_PROCESS_SUPERVISOR_EXECUTABLE"; test $? -eq 64; }
 RUN install --directory --mode 0700 /tmp/opensteer-native-fs-probe
 RUN printf '%s' '{"operation":"probe","root":"/tmp/opensteer-native-fs-probe","version":1}' | \
     ./native-fs-helper/opensteer-native-fs | \

@@ -154,9 +154,12 @@ export class AppServerManager {
             exited(failure);
           },
         );
-        void Promise.all([ended, drain(child.stdout, append), drain(child.stderr, append)]).then(
-          () => finish(),
-        );
+        // A failed read ends the log, never the cleanup that waits on it.
+        const read = (stream: AsyncIterable<Buffer>) =>
+          drain(stream, append).catch((error: unknown) => {
+            append(Buffer.from(error instanceof Error ? error.message : "App output was lost"));
+          });
+        void Promise.all([ended, read(child.stdout), read(child.stderr)]).then(() => finish());
         const readySignal = AbortSignal.any([
           signal,
           server.abort.signal,

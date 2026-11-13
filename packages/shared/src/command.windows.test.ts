@@ -7,7 +7,11 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { nodeCommandProbes, planLaunch, resolveCommand } from "./command.js";
 import { echoArgvScript, generatedShims } from "./commandShims.test-support.js";
-import { processSupervisorExecutableVariable } from "./processControl.js";
+import {
+  processSupervisorExecutableVariable,
+  supervisedExitCode,
+  windowsSupervisorDrained,
+} from "./processControl.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -63,7 +67,8 @@ async function runSupervised(
   child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
   const [code] = (await once(child, "close")) as [number | null];
   return {
-    code,
+    code: supervisedExitCode(code, "win32"),
+    drained: code !== null && windowsSupervisorDrained(code),
     stderr: Buffer.concat(stderr).toString("utf8"),
     stdout: Buffer.concat(stdout).toString("utf8"),
   };
@@ -139,7 +144,7 @@ describe("commands on real Windows", () => {
       environmentWithPath(`${root};${nodeDirectory}`),
       "batch",
     );
-    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(result).toMatchObject({ code: 0, drained: true, stderr: "" });
     // A second command would have printed, redirected or read beside the report.
     expect(JSON.parse(result.stdout)).toEqual({ args, firstExists: "yes", second: args[1] });
     expect((await readdir(root)).sort()).toEqual(["args.cmd", "input file.txt", "report.js"]);
@@ -161,7 +166,7 @@ describe("commands on real Windows", () => {
         environmentWithPath(`${path.join(modules, ".bin")};${nodeDirectory}`),
         "batch-shim",
       );
-      expect(result).toMatchObject({ code: 0, stderr: "" });
+      expect(result).toMatchObject({ code: 0, drained: true, stderr: "" });
       // A second command would have printed, redirected or read beside the argv.
       expect(JSON.parse(result.stdout)).toEqual(trickyArguments);
       expect(await readdir(root)).toEqual(["node_modules"]);

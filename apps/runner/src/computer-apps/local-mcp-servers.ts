@@ -399,10 +399,15 @@ class ProgramTransport implements Transport {
       // The supervisor exits once the program and everything it started have
       // ended, so the session ends with it. What the program wrote before
       // exiting is still read from the pipe.
+      // A failed read is reported as the session's error; the session still closes.
+      const reported = (reading: Promise<void>) =>
+        reading.catch((error: unknown) =>
+          this.onerror?.(error instanceof Error ? error : new Error(String(error))),
+        );
       void Promise.all([
         supervised.exited.catch(() => undefined),
-        this.#read(supervised.stdout),
-        this.#readStderr(supervised.stderr),
+        reported(this.#read(supervised.stdout)),
+        reported(this.#readStderr(supervised.stderr)),
       ]).then(() => {
         this.#running = false;
         void this.close();
