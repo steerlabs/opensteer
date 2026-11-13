@@ -501,17 +501,8 @@
 
 /* Computers stays one quiet inventory: three short sections, with detail only
    expanding when the person is connecting or renaming a computer. */
-.computers-page__content {
-  max-width: 58rem;
-  margin: 0 auto;
-  padding: var(--space-32) var(--space-22) var(--space-64);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-32);
-}
 
-.computers-section,
-.computers-add {
+.computers-section {
   display: flex;
   flex-direction: column;
 }
@@ -531,47 +522,9 @@
   font-size: var(--display-sm);
 }
 
-.section-heading p,
-.computers-readiness__line span,
-.computers-expiry {
+.section-heading p {
   color: var(--muted);
   font-size: var(--text-md);
-}
-
-.computers-inline-field {
-  display: flex;
-  align-items: center;
-  gap: var(--space-8);
-}
-
-.computers-inline-field .text-input {
-  flex: 1;
-}
-
-.computers-readiness-block {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-12);
-  min-width: 0;
-  padding: var(--space-14) var(--space-16);
-  border-top: 1px solid var(--line);
-}
-
-.computers-readiness {
-  display: grid;
-  gap: var(--space-8);
-  padding: calc(var(--space-12) - 1px);
-  border-radius: var(--radius-sm);
-  background: var(--sheen) var(--fill-plate);
-  border: 1px solid var(--rim-plate);
-  box-shadow: var(--edge-plate);
-}
-
-.computers-readiness__line {
-  display: grid;
-  grid-template-columns: auto minmax(9rem, 1fr) auto;
-  align-items: center;
-  gap: var(--space-8);
 }
 
 /* A detail sentence that is a sentence: the row's default clips to one line,
@@ -581,10 +534,6 @@
   overflow: visible;
   text-overflow: clip;
   line-height: 1.45;
-}
-
-.computers-add {
-  gap: var(--space-16);
 }
 
 .computers-copy-block {
@@ -723,11 +672,6 @@
 
 /* On its own page the block is a section among sections, not a postscript to a
    row, so it wears none of the divider that nesting earned it. */
-.computers-page__content > .machine-access {
-  margin-top: 0;
-  padding-top: 0;
-  border-top: 0;
-}
 
 .machine-access__grants {
   display: flex;
@@ -1910,12 +1854,6 @@ label.machine-access__grant-head {
       calc(var(--space-14) + env(safe-area-inset-left, 0px));
   }
 
-  .computers-page__content {
-    padding: var(--space-20) calc(var(--space-14) + env(safe-area-inset-right, 0px))
-      calc(var(--space-48) + env(safe-area-inset-bottom, 0px))
-      calc(var(--space-14) + env(safe-area-inset-left, 0px));
-  }
-
   .section-heading {
     align-items: stretch;
     flex-direction: column;
@@ -1973,12 +1911,6 @@ label.machine-access__grant-head {
 
   /* The offer's button drops under its sentence rather than squeezing it to
      two words; the rows themselves keep their shape. */
-  .computers-offer {
-    flex-wrap: wrap;
-    background: var(--sheen) var(--fill-plate);
-    border-color: var(--rim-attention);
-    box-shadow: var(--edge-attention);
-  }
 
   .machine-access__actions {
     align-items: stretch;
@@ -2053,10 +1985,6 @@ label.machine-access__grant-head {
    other computer is one row: its shape, its name, what it does for agents,
    and whether it is there. A computer that is away fades instead of gaining
    another label, and the one you are at carries the only pin. */
-
-.computers-page__content > .page__back {
-  margin-bottom: calc(var(--space-20) * -1);
-}
 
 .device-art {
   display: grid;
@@ -2191,330 +2119,6 @@ label.machine-access__grant-head {
   box-shadow: var(--ring-amber);
 }
 
-.computers-home {
-  border: 1px solid var(--rim-plate);
-  border-radius: var(--radius-lg);
-  background: var(--sheen) var(--fill-plate);
-  overflow: hidden;
-  box-shadow: var(--edge-plate);
-}
-
-.computers-home__main {
-  display: flex;
-  align-items: center;
-  gap: var(--space-20);
-  padding: var(--space-20) var(--space-22);
-  color: inherit;
-  text-decoration: none;
-}
-
-a.computers-home__main {
-  transition: background-color var(--duration-fast) var(--ease-out);
-}
-
-a.computers-home__main:hover {
-  text-decoration: none;
-  background-color: var(--fill-quiet);
-}
-
-a.computers-home__main:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 2px var(--ember-line);
-}
-
-.computers-home__body {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  flex-direction: column;
-  gap: var(--space-6);
-}
-
-.computers-home__name {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-4) var(--space-12);
-  font-family: var(--font-display);
-  font-size: var(--display-lg);
-  font-weight: 450;
-  letter-spacing: -0.01em;
-  line-height: 1.15;
-  overflow-wrap: anywhere;
-}
-
-.computers-home__line {
-  color: var(--text-soft);
-  font-size: var(--text-xl);
-  line-height: 1.45;
-}
-
-.computers-home__chevron {
-  flex: none;
-  color: var(--muted-dim);
-}
-
-.computers-home__foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-10) var(--space-28);
-  padding: var(--space-12) var(--space-22);
-  border-top: 1px solid var(--line);
-  background: var(--fill-quiet);
-  color: var(--muted);
-  font-size: var(--text-md);
-}
-
-.computers-home__fact {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-8) var(--space-14);
-  min-width: 0;
-}
-
-.computers-home__service {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-6);
-  color: var(--text-soft);
-}
-
-.computers-home__service .icon {
-  width: 14px;
-  height: 14px;
-  color: var(--muted);
-}
-
-.computers-offer {
-  display: flex;
-  align-items: center;
-  gap: var(--space-16);
-  padding: var(--space-16) var(--space-18);
-  border: 1px solid var(--ember-line);
-  border-radius: var(--radius-lg);
-  background: var(--sheen) var(--fill-plate);
-  border-color: var(--rim-attention);
-  box-shadow: var(--edge-attention);
-}
-
-.computers-offer__glyph {
-  display: grid;
-  place-items: center;
-  width: 44px;
-  height: 44px;
-  flex: none;
-  border-radius: var(--radius-md);
-  background: var(--sheen) var(--fill-plate);
-  color: var(--ember-bright);
-  border: 1px solid transparent;
-  border-color: var(--rim-plate);
-  box-shadow: var(--edge-plate);
-}
-
-.computers-offer__glyph .icon {
-  width: 22px;
-  height: 22px;
-}
-
-.computers-offer__body {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-
-.computers-offer__title {
-  margin: 0;
-  font-size: var(--text-2xl);
-  font-weight: var(--weight-bold);
-}
-
-.computers-offer__detail {
-  margin: 0;
-  color: var(--text-soft);
-  font-size: var(--text-md);
-  line-height: 1.45;
-}
-
-.computers-offer > .btn {
-  flex: none;
-}
-
-.computers-group {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-10);
-}
-
-.computers-group__title {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-8);
-  margin: 0 0 0 var(--space-2);
-  color: var(--text-soft);
-  font-size: var(--text-lg);
-  font-weight: var(--weight-bold);
-}
-
-.computers-group__count {
-  color: var(--muted-dim);
-  font-weight: var(--weight-normal);
-  font-variant-numeric: tabular-nums;
-}
-
-.computers-list {
-  border: 1px solid var(--rim-plate);
-  border-radius: var(--radius-md);
-  background: var(--sheen) var(--fill-plate);
-  overflow: hidden;
-  box-shadow: var(--edge-plate);
-}
-
-.computers-list__empty {
-  margin: 0;
-  padding: var(--space-14) var(--space-16);
-  color: var(--muted);
-  font-size: var(--text-md);
-  line-height: 1.45;
-}
-
-.computer-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: var(--space-14);
-  width: 100%;
-  min-width: 0;
-  padding: var(--space-12) var(--space-16);
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  text-decoration: none;
-}
-
-a.computer-row,
-button.computer-row {
-  cursor: pointer;
-  transition: background-color var(--duration-fast) var(--ease-out);
-}
-
-a.computer-row:hover,
-button.computer-row:hover {
-  text-decoration: none;
-  background-color: var(--fill-quiet);
-}
-
-a.computer-row:focus-visible,
-button.computer-row:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 2px var(--ember-line);
-}
-
-.computers-list > .computer-row + .computer-row,
-.computers-list > .computers-list__empty + .computer-row {
-  border-top: 1px solid var(--line);
-}
-
-.computer-row__glyph {
-  display: grid;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  border: 1px solid var(--rim-plate);
-  border-radius: var(--radius-sm);
-  background: var(--sheen) var(--fill-plate);
-  color: var(--text-soft);
-  box-shadow: var(--edge-plate);
-}
-
-.computer-row__glyph .icon {
-  width: 21px;
-  height: 21px;
-}
-
-.computer-row__body {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-
-.computer-row__name {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-10);
-  font-size: var(--text-lg);
-  font-weight: var(--weight-strong);
-  overflow-wrap: anywhere;
-}
-
-.computer-row__line {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-4) var(--space-10);
-  color: var(--muted);
-  font-size: var(--text-md);
-}
-
-.computer-row__owner {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-6);
-  color: var(--text-soft);
-}
-
-.computer-row__avatar {
-  display: grid;
-  place-items: center;
-  width: 18px;
-  height: 18px;
-  border-radius: var(--radius-full);
-  background: var(--surface-hover);
-  color: var(--text-soft);
-  font-size: var(--text-3xs);
-  font-weight: var(--weight-bold);
-}
-
-.computer-row__chevron {
-  color: var(--muted-dim);
-}
-
-.computer-row__actions {
-  display: flex;
-  gap: var(--space-6);
-}
-
-.computer-row--away .computer-row__glyph,
-.computer-row--away .computer-row__name,
-.computer-row--away .computer-uses {
-  opacity: 0.5;
-}
-
-.computer-row--add {
-  grid-template-columns: auto minmax(0, 1fr);
-  color: var(--ember);
-  font-weight: var(--weight-medium);
-}
-
-.computer-row--add .computer-row__glyph {
-  border-style: dashed;
-  border-color: var(--ember-line);
-  background: transparent;
-  color: var(--ember);
-}
-
-.computer-row--add .computer-row__glyph .icon {
-  width: 17px;
-  height: 17px;
-}
-
 .computer-uses {
   display: inline-flex;
   align-items: center;
@@ -2597,66 +2201,7 @@ button.computer-row:focus-visible {
   font-size: var(--text-md);
 }
 
-.computer-lead {
-  max-width: 44rem;
-  margin: calc(var(--space-12) * -1) 0 0;
-  color: var(--text-soft);
-  font-size: var(--text-xl);
-  line-height: 1.5;
-}
-
-.computer-remove {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-8) var(--space-14);
-}
-
-.computer-remove__detail {
-  color: var(--muted);
-  font-size: var(--text-md);
-}
-
 @media (max-width: 640px) {
-  .computers-home__main {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    grid-template-areas:
-      "art body chevron"
-      "art status chevron";
-    gap: var(--space-4) var(--space-14);
-    padding: var(--space-16);
-  }
-
-  .computers-home__main > .device-art {
-    grid-area: art;
-  }
-
-  .computers-home__main > .computers-home__body {
-    grid-area: body;
-  }
-
-  .computers-home__main > .computer-status {
-    grid-area: status;
-  }
-
-  .computers-home__main > .computers-home__chevron {
-    grid-area: chevron;
-  }
-
-  .computers-home__name {
-    font-size: var(--display-md);
-  }
-
-  .computers-home__line {
-    font-size: var(--text-md);
-  }
-
-  .computers-home__foot {
-    padding: var(--space-12) var(--space-16);
-    background: var(--fill-quiet);
-  }
-
   .device-art {
     width: 72px;
     height: 56px;
@@ -2665,60 +2210,6 @@ button.computer-row:focus-visible {
   .device-art svg {
     width: 62px;
     height: 46px;
-  }
-
-  .computer-row {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    grid-template-areas:
-      "glyph body chevron"
-      "glyph status chevron";
-    row-gap: var(--space-4);
-  }
-
-  a.computer-row > .computer-row__glyph {
-    grid-area: glyph;
-  }
-
-  a.computer-row > .computer-row__body {
-    grid-area: body;
-  }
-
-  a.computer-row > .computer-status {
-    grid-area: status;
-  }
-
-  a.computer-row > .computer-row__chevron {
-    grid-area: chevron;
-  }
-
-  .computer-row--add {
-    grid-template-columns: auto minmax(0, 1fr);
-    grid-template-areas: none;
-  }
-
-  .computer-row--static {
-    grid-template-columns: auto minmax(0, 1fr);
-    grid-template-areas: none;
-  }
-
-  .computer-row--static > .computer-status,
-  .computer-row--static > .computer-row__actions {
-    grid-column: 2;
-  }
-
-  .computers-services > summary {
-    flex-wrap: wrap;
-  }
-
-  .computers-offer {
-    flex-wrap: wrap;
-    background: var(--sheen) var(--fill-plate);
-    border-color: var(--rim-attention);
-    box-shadow: var(--edge-attention);
-  }
-
-  .computers-offer > .btn {
-    width: 100%;
   }
 
   .computer-header {
@@ -2733,62 +2224,6 @@ button.computer-row:focus-visible {
 /* Two lists nobody goes looking for: the Runners this deployment provisioned
    for itself, and what one computer shares with agents running elsewhere.
    Both keep every control they had; neither competes with the answer above. */
-.computers-services,
-.computers-files {
-  gap: 0;
-}
-
-.computers-services > summary,
-.computers-files > summary {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-8);
-  padding: var(--space-8) 0;
-  cursor: pointer;
-  list-style: none;
-}
-
-.computers-services > summary::-webkit-details-marker,
-.computers-files > summary::-webkit-details-marker {
-  display: none;
-}
-
-.computers-services > summary::before,
-.computers-files > summary::before {
-  content: "›";
-  color: var(--muted-dim);
-  transition: transform var(--duration-fast) var(--ease-out);
-}
-
-.computers-services[open] > summary::before,
-.computers-files[open] > summary::before {
-  transform: rotate(90deg);
-}
-
-.computers-services > summary h2,
-.computers-files > summary h2 {
-  font-size: var(--display-sm);
-}
-
-.computers-services > summary span,
-.computers-files > summary span {
-  min-width: 0;
-  color: var(--muted);
-  font-size: var(--text-md);
-  overflow-wrap: anywhere;
-}
-
-.computers-services > summary:focus-visible,
-.computers-files > summary:focus-visible {
-  outline: none;
-  box-shadow: var(--ring-ember);
-  border-radius: var(--radius-sm);
-}
-
-.computers-services > .computers-list,
-.computers-files > .machine-access {
-  margin-top: var(--space-12);
-}
 
 /* ---- One app on one computer ----
    Off, or one of the levels the catalog declares. The control carries the
@@ -2842,88 +2277,7 @@ button.computer-row:focus-visible {
    Numbered directions, because that is what a person is doing: step one on
    this screen, the rest on the computer they are adding. */
 
-.add-computer__step + .add-computer__step,
-.add-computer__step + .add-computer__advanced {
-  margin-top: var(--space-20);
-  padding-top: var(--space-20);
-  border-top: 1px solid var(--line);
-}
-
-.add-computer__step h3 {
-  margin: 0 0 var(--space-6);
-  font-size: var(--text-lg);
-}
-
-.add-computer__steps {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-10);
-  margin: var(--space-10) 0 var(--space-12);
-  padding-left: var(--space-20);
-  color: var(--text-soft);
-  line-height: 1.5;
-}
-
-.add-computer__steps li::marker {
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
 /* The computer in front of the reader, offered first and by name. */
-.add-computer__here {
-  display: flex;
-  align-items: center;
-  gap: var(--space-12);
-  margin-bottom: var(--space-20);
-  padding: var(--space-14) var(--space-16);
-  border: 1px solid var(--ember-line);
-  border-radius: var(--radius-md);
-  background: var(--sheen) var(--fill-plate);
-  border-color: var(--rim-attention);
-  box-shadow: var(--edge-attention);
-}
-
-.add-computer__here-glyph {
-  display: grid;
-  place-items: center;
-  width: 36px;
-  height: 36px;
-  flex: none;
-  border-radius: var(--radius-sm);
-  color: var(--ember-bright);
-  background: var(--sheen) var(--fill-plate);
-  border: 1px solid transparent;
-  border-color: var(--rim-plate);
-  box-shadow: var(--edge-plate);
-}
-
-.add-computer__here-glyph .icon {
-  width: 18px;
-  height: 18px;
-}
-
-.add-computer__here-body {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.add-computer__here-body span {
-  color: var(--muted);
-  font-size: var(--text-md);
-}
-
-.add-computer__advanced > summary {
-  cursor: pointer;
-  color: var(--muted);
-  font-size: var(--text-md);
-}
-
-.add-computer__advanced[open] > summary {
-  margin-bottom: var(--space-12);
-}
 
 /* ---- Setting up a phone ----
    One thing at a time: what is happening now, and the one way to answer it

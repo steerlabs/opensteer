@@ -4784,6 +4784,11 @@ export class MockHostClient implements HostClient {
     return result.ended;
   }
 
+  /** Preview-only: the Runner a local enrollment token names connects. */
+  connectLocalRunner(token: string): string {
+    return this.#state.connectLocalRunner(token);
+  }
+
   async bindDeviceSession(input: {
     readonly machineId: string;
     readonly proof: import("@opensteer/protocol").DeviceSessionBindingProof;
@@ -8794,8 +8799,34 @@ class MockHostState {
     return {
       enrollmentId,
       expiresAt,
-      token: "mock-local-runner-enrollment-token-with-sufficient-length",
+      token: `mock-local-runner-enrollment-token-${enrollmentId}`,
     };
+  }
+
+  /** The Runner a local enrollment token names connects, as a desktop's would. */
+  connectLocalRunner(token: string): string {
+    const enrollmentId = /ren_[0-9a-f-]{36}$/u.exec(token)?.[0];
+    const pending = this.snapshot.machines.find((entry) => entry.id === enrollmentId);
+    if (!pending) throw new Error("That enrollment is not waiting to connect.");
+    const id = `rnr_${crypto.randomUUID()}`;
+    this.update({
+      ...this.snapshot,
+      machines: this.snapshot.machines.map((entry) =>
+        entry === pending
+          ? {
+              ...entry,
+              device: { form: "laptop", platform: "macos" },
+              expiresAt: null,
+              fullDiskAccess: false,
+              id,
+              lastSeenAt: this.now().toISOString(),
+              revocable: true,
+              status: "online",
+            }
+          : entry,
+      ),
+    });
+    return id;
   }
 
   /** Null when the editor named a revision the preview has already moved past. */

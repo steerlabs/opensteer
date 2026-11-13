@@ -225,7 +225,7 @@
 
 .settings-content__inner,
 .settings-layout__main .page__inner,
-.settings-layout__main .computers-page__content {
+.settings-layout__main .device-page__content {
   width: 100%;
   max-width: var(--settings-measure);
   padding: var(--settings-top) var(--settings-gutter-end) var(--settings-bottom)
@@ -235,7 +235,7 @@
 @media (min-width: 901px) {
   .settings-content__inner,
   .settings-layout__main .page__inner,
-  .settings-layout__main .computers-page__content {
+  .settings-layout__main .device-page__content {
     max-width: calc(
       var(--settings-measure) + var(--settings-gutter-start) + var(--settings-gutter-end)
     );
@@ -464,78 +464,6 @@
 }
 
 /* Devices → Computers: the same flat groups as every other page. */
-.settings-layout__main .computers-page__content {
-  margin: 0;
-  gap: var(--space-24);
-}
-
-.settings-layout :is(.computers-home, .computers-list) {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  background: var(--fill-sheet);
-  box-shadow: none;
-}
-
-.settings-layout .computers-home__main {
-  gap: var(--space-14);
-  padding: var(--space-14);
-}
-
-.settings-layout .computers-home__name {
-  font-family: var(--font-sans);
-  font-size: var(--text-lg);
-  font-weight: var(--weight-medium);
-}
-
-.settings-layout .computers-home__line {
-  color: var(--muted);
-  font-size: var(--text-sm);
-}
-
-.settings-layout .computers-home .device-art {
-  width: 52px;
-  height: 40px;
-  border: 0;
-  background: none;
-  box-shadow: none;
-}
-
-.settings-layout .computers-home .device-art svg {
-  width: 48px;
-  height: 36px;
-}
-
-.settings-layout .computers-group__title {
-  color: var(--muted);
-  font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
-}
-
-.settings-layout .computer-row {
-  padding: var(--space-12) var(--space-14);
-}
-
-.settings-layout .computer-row__glyph {
-  width: 20px;
-  height: 20px;
-  border: 0;
-  background: none;
-  box-shadow: none;
-  color: var(--muted);
-}
-
-.settings-layout .computer-row__glyph .icon {
-  width: 16px;
-  height: 16px;
-}
-
-.settings-layout .computer-row__name {
-  font-weight: var(--weight-normal);
-}
-
-.settings-layout .computer-row--add {
-  font-weight: var(--weight-normal);
-}
 
 /* ---- Use from anywhere ---- */
 
@@ -1000,10 +928,7 @@ html.electron-shell .settings-navigation__header :is(a, button) {
   flex-wrap: wrap;
   gap: var(--space-8);
 }
-.settings-content__inner .settings-device-list {
-  padding: 0;
-  list-style: none;
-}
+
 button.card__row > .card__row-body {
   text-align: start;
 }
@@ -1038,8 +963,7 @@ button.card__row > .card__row-body {
 .settings-plugin-overview .card__row-body {
   flex: 1;
 }
-.settings-plugin-overview .card__row-title,
-.settings-device-list .card__row-title {
+.settings-plugin-overview .card__row-title {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;

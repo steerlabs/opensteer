@@ -31,7 +31,7 @@ import {
 } from "./copy.js";
 import { SectionHeader, type SettingsView } from "./primitives.js";
 import { MessagingPage } from "../messaging-page.js";
-import { AgentDevicesSection } from "./sections/agent-devices.js";
+import { DevicesSection } from "../devices/devices-page.js";
 import { AccountSection } from "./sections/account.js";
 import { AiEnginesSection } from "./sections/ai-engines.js";
 import { AutomaticModelsSection } from "./sections/automatic-models.js";
@@ -268,7 +268,7 @@ export function SettingsSectionRoute({
       );
       break;
     case "account":
-      content = <AccountSection view={view} />;
+      content = <AccountSection />;
       break;
     case "external-agents":
       content = (
@@ -321,7 +321,7 @@ export function SettingsSectionRoute({
       content = <GeneralSection view={view} />;
       break;
     case "devices":
-      content = <AgentDevicesSection />;
+      content = <DevicesSection />;
       break;
   }
   return <SettingsPage title={settingsItem(section, view.kind).label}>{content}</SettingsPage>;

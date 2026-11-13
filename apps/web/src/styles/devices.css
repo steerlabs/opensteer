@@ -1,0 +1,468 @@
+/* Devices: the one list, each device's page, setting up this Mac, and the
+   notices a device or a browser window shows about itself. Everything here
+   is built from the cards, rows, switches and setup frame used elsewhere;
+   these rules only lay them out. */
+
+/* ---- Settings › Devices ---- */
+
+.devices-list,
+.settings-content__inner > .devices-list {
+  margin: 0;
+  padding: 0;
+  color: inherit;
+  list-style: none;
+}
+
+.devices-list__item + .devices-list__item,
+.devices-list > .card__row + .card__row {
+  border-top: 1px solid var(--line);
+}
+
+.devices-row {
+  gap: var(--space-12);
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+a.devices-row:hover {
+  background: var(--fill-quiet);
+}
+
+a.devices-row:focus-visible {
+  outline: 2px solid var(--ember);
+  outline-offset: -2px;
+}
+
+.devices-row__glyph {
+  flex: none;
+  display: inline-flex;
+  align-self: flex-start;
+  margin-top: var(--space-2);
+  color: var(--muted);
+}
+
+.devices-row__glyph .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.devices-row .card__row-body {
+  min-width: 0;
+}
+
+.devices-row__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-4) var(--space-8);
+  min-width: 0;
+}
+
+.devices-row__name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.devices-row__badge {
+  flex: none;
+}
+
+.devices-row__uses {
+  color: var(--muted);
+}
+
+.devices-row__chevron {
+  flex: none;
+  color: var(--muted);
+}
+
+.devices-row--away .devices-row__glyph,
+.devices-row--away .devices-row__name {
+  opacity: 0.6;
+}
+
+.devices-row--signed-in .card__row-actions {
+  align-self: center;
+}
+
+.settings-group__caption {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+/* ---- Add a device ---- */
+
+.add-device__choices,
+.add-device__panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}
+
+.add-device__panel > p {
+  margin: 0;
+  color: var(--text-soft);
+  line-height: 1.5;
+}
+
+.add-device__qr {
+  display: flex;
+  align-items: center;
+  gap: var(--space-14);
+  flex-wrap: wrap;
+}
+
+.add-device__qr .setup-scan__svg {
+  flex: none;
+  width: 132px;
+  height: 132px;
+  border-radius: var(--radius-sm);
+}
+
+.add-device__qr-text {
+  display: flex;
+  flex: 1 1 12rem;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-8);
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.add-device__pairing {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-6);
+  padding-top: var(--space-12);
+  border-top: 1px solid var(--line);
+}
+
+.add-device__pairing p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.add-device__label {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.add-device__command {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  min-width: 0;
+}
+
+.add-device__command-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8);
+}
+
+.add-device__command pre {
+  margin: 0;
+  max-height: 12rem;
+  overflow: auto;
+  padding: var(--space-10) var(--space-12);
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-sm);
+  background: var(--surface-code);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---- One device ---- */
+
+.device-page__content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-24);
+}
+
+.device-page__name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.device-page__away {
+  color: var(--muted);
+}
+
+.device-page__path {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+.device-rename {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.device-rename .text-input {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.device-uses__card {
+  overflow: hidden;
+}
+
+.device-uses__item + .device-uses__item {
+  border-top: 1px solid var(--line);
+}
+
+.device-uses__row {
+  gap: var(--space-12);
+}
+
+.card__row-detail.device-uses__waiting {
+  color: var(--amber-text);
+}
+
+.device-uses__remedy,
+.device-uses__editor {
+  padding: 0 var(--space-14) var(--space-14);
+}
+
+.device-uses__editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  min-width: 0;
+}
+
+.device-uses__hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.device-uses__link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  padding: var(--space-10) var(--space-12);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  text-decoration: none;
+}
+
+.device-uses__link:hover {
+  background: var(--fill-quiet);
+  color: var(--text);
+}
+
+.device-uses__link > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.device-uses__link .icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+}
+
+.device-uses__notice {
+  font-size: var(--text-md);
+}
+
+.device-remove {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-10);
+  align-items: center;
+}
+
+/* ---- Setting up this Mac ---- */
+
+.device-setup__group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.device-setup__caption {
+  margin: 0;
+  padding: 0 var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.device-setup__group .setup-row__title label {
+  cursor: pointer;
+}
+
+.device-setup__state {
+  flex: none;
+  color: var(--green);
+  font-size: var(--text-sm);
+  text-align: right;
+}
+
+.device-setup__state--waiting {
+  color: var(--amber-text);
+}
+
+.device-setup__state--off {
+  color: var(--muted);
+}
+
+.device-setup__review {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  gap: var(--space-4);
+}
+
+/* Setup that couldn't finish: one line above the workspace, with its fix. */
+.device-finish-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8) var(--space-12);
+  margin: var(--space-8) var(--space-12) 0;
+  padding: var(--space-8) var(--space-12);
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius-md);
+  background: var(--amber-wash);
+  color: var(--amber-text);
+  font-size: var(--text-md);
+}
+
+.device-finish-bar > .icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.device-finish-bar__text {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+
+.device-finish-bar__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  margin-left: auto;
+}
+
+.device-removed__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+}
+
+/* ---- A web browser window ---- */
+
+.web-tab-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6) var(--space-10);
+  padding: var(--space-8) var(--space-8) var(--space-8) var(--space-12);
+  border: 1px solid var(--blue-line);
+  border-radius: var(--radius-md);
+  background: var(--blue-wash);
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+
+.browser-view > .web-tab-notice {
+  margin: var(--space-8) var(--space-12) 0;
+}
+
+.web-tab-notice__icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--blue);
+}
+
+.web-tab-notice__text {
+  flex: 1 1 16rem;
+  min-width: 0;
+  margin: 0;
+}
+
+.web-tab-notice__link {
+  flex: none;
+  color: var(--ember);
+  font-weight: var(--weight-medium);
+}
+
+.web-tab-notice__close {
+  flex: none;
+}
+
+/* ---- Entry: welcome, choosing an Opensteer ---- */
+
+.desktop-entry__rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+}
+
+.desktop-entry__links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-4) var(--space-8);
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.desktop-entry__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-14);
+}
+
+.device-uses__row {
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+/* The finer editors bring their own headings; under a switch they read as its parts. */
+.device-uses__editor :is(h2, h3) {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  color: var(--text-soft);
+  letter-spacing: 0;
+}
+
+.device-page__content .card__row {
+  flex-wrap: nowrap;
+}
+
+.device-page__content .card__row-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.device-page__content .card__row-actions,
+.devices-row--signed-in .card__row-actions {
+  flex: none;
+  width: auto;
+}

@@ -27,6 +27,10 @@ import { ThreadBrowserRequestAction } from "./thread-browser-access-action.js";
 import { ThreadBrowserSignInAction } from "./thread-browser-sign-in-action.js";
 import { ThreadComputerAppAccessAction } from "./thread-computer-app-access-action.js";
 import { ThreadFullDiskAccessAction } from "./thread-full-disk-access-action.js";
+import {
+  ThreadDeviceAccessAction,
+  deviceAccessRequestTitle,
+} from "./thread-device-access-action.js";
 import { ThreadPasswordSignInAction } from "./thread-password-sign-in-action.js";
 import { ThreadIntegrationAction } from "./thread-integration-action.js";
 import {
@@ -500,6 +504,7 @@ function inputSurfaceClass(surface: SurfaceModel | null): string {
 function requestTitle(request: Request): string {
   if (request.payload.kind === "browser.password-sign-in" && request.payload.credential === "card")
     return cardUseTitle(request.payload.site);
+  if (request.payload.kind === "device.access") return deviceAccessRequestTitle(request.payload);
   return request.payload.kind === "browser.sign-in" ||
     request.payload.kind === "browser.password-sign-in"
     ? `Sign in to ${browserSiteLabel(request.payload.site)}`
@@ -527,7 +532,9 @@ function RequestPanel({
   const detail =
     request.payload.kind === "browser.password-sign-in"
       ? undefined
-      : request.payload.kind === "computer.app.access" || request.payload.kind === "browser.sign-in"
+      : request.payload.kind === "computer.app.access" ||
+          request.payload.kind === "browser.sign-in" ||
+          request.payload.kind === "device.access"
         ? request.payload.reason
         : request.presentation.detail;
   const title = requestTitle(request);
@@ -591,6 +598,9 @@ function ActionBody({
   }
   if (request.kind === "machine.full-disk-access") {
     return <ThreadFullDiskAccessAction disabled={disabled} request={request} />;
+  }
+  if (request.kind === "device.access") {
+    return <ThreadDeviceAccessAction disabled={disabled} request={request} />;
   }
   if (request.kind === "computer.app.access") {
     return <ThreadComputerAppAccessAction disabled={disabled} request={request} />;
@@ -684,7 +694,11 @@ function requestIcon(request: Request): IconName {
   )
     return "phone";
   // Both name one enrolled computer, so both read as one.
-  if (request.kind === "machine.full-disk-access" || request.kind === "computer.app.access")
+  if (
+    request.kind === "machine.full-disk-access" ||
+    request.kind === "computer.app.access" ||
+    request.kind === "device.access"
+  )
     return "laptop";
   if (
     request.kind === "browser.sign-in" ||

@@ -32,6 +32,10 @@ it("lets a connecting place go back and shows cancellation failures", async () =
     onHostWebSocketEvent: () => () => undefined,
     onDeploymentAccessSnapshotChanged: () => () => undefined,
     onNotificationActivated: () => () => undefined,
+    getLocalExecutionStatus: async () => {
+      throw new Error("No local execution in this test.");
+    },
+    onLocalExecutionStatusChanged: () => () => undefined,
   } as unknown as OpensteerDesktopBridge;
   const container = document.createElement("div");
   document.body.append(container);
@@ -85,6 +89,10 @@ it("carries setup from creating this computer straight into the app it opens", a
       return () => listeners.delete(listener);
     },
     onNotificationActivated: () => () => undefined,
+    getLocalExecutionStatus: async () => {
+      throw new Error("No local execution in this test.");
+    },
+    onLocalExecutionStatusChanged: () => () => undefined,
   } as unknown as OpensteerDesktopBridge;
   const container = document.createElement("div");
   document.body.append(container);
@@ -93,7 +101,7 @@ it("carries setup from creating this computer straight into the app it opens", a
   await vi.waitFor(() => expect(container.textContent).toContain("Welcome to Opensteer"));
 
   const setUp = [...container.querySelectorAll("button")].find((candidate) =>
-    candidate.textContent?.startsWith("Set up this"),
+    candidate.textContent?.startsWith("Set up Opensteer on this Mac"),
   );
   await act(async () => setUp?.click());
   expect(createPersonalDeployment).toHaveBeenCalledOnce();

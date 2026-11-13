@@ -1,10 +1,11 @@
 # Set up a computer
 
-In the desktop app, open Settings → Devices → Computers → **Add a computer**. Let the owner-session
-Host choose the grant and target. Personal remote access (Settings → Account → Remote access) must
-be on before a remote computer connects, and tasks execute only on the hosting computer; other enrolled computers are tool targets.
-Never remove and re-add a computer to change what it may run or reach: removal deletes its identity
-and SSH host key. Configure Files and commands separately from Apps.
+Open the desktop app on that Mac and sign in: it shows **Set up this Mac** and becomes one of the
+person's devices. A headless computer is added from Settings → Devices → **Add a device** → Server.
+Let the owner-session Host choose the grant and target. Use from anywhere (Settings → Account) must
+be on before a remote computer connects, and tasks execute only on the hosting computer; other
+devices are tool targets. Change what a device offers with its switches on its Devices page; never
+remove and re-add it for that: removal signs it out and deletes its identity and SSH host key.
 
 **App access.** The computer's owner can approve new or broader app access from any signed-in
 device. Missing macOS permissions still require local action on the target Mac

@@ -30,22 +30,23 @@ export const settingsPages = [
 ] as const;
 export const settingsRedirects = [
   ["/settings/account/remote-access", "/settings/account"],
-  ["/settings/account/sessions", "/settings/account"],
+  ["/settings/account/sessions", "/settings/devices"],
   ["/settings/devices/remote-access", "/settings/account"],
-  ["/settings/devices/sessions", "/settings/account"],
+  ["/settings/devices/sessions", "/settings/devices"],
   ["/settings/apps/messaging", "/settings/messaging"],
   ["/settings/apps/tools", "/settings/plugins"],
   ["/settings/ai-engines", "/settings/ai"],
   ["/settings/connections", "/settings/account"],
   ["/settings/integrations", "/settings/plugins"],
-  ["/settings/computers", "/settings/devices/computers"],
+  ["/settings/computers", "/settings/devices"],
+  ["/settings/devices/computers", "/settings/devices"],
   ["/settings/remote-access", "/settings/account"],
   ["/settings/this-device", "/settings/devices"],
   ["/settings/browser-profiles", "/settings/sign-ins/browsers"],
   ["/settings/passwords", "/settings/sign-ins/passwords"],
   ["/settings/chrome", "/settings/sign-ins/chrome"],
   ["/settings/apps", "/settings/plugins"],
-  ["/computers", "/settings/devices/computers"],
+  ["/computers", "/settings/devices"],
   ["/channels", "/settings/messaging"],
 ] as const;
 const pagesWithoutChildren: ReadonlySet<string> = new Set([

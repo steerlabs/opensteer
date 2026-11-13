@@ -1775,8 +1775,10 @@ function SidebarFooter({
       ) : null}
       {signingOut && places ? (
         <SignOutDialog
+          bridge={places.bridge}
           onClose={() => setSigningOut(false)}
           onConfirm={() => places.bridge.signOut()}
+          snapshot={places.snapshot}
         />
       ) : null}
     </div>
