@@ -96,6 +96,8 @@ import {
   handleTestNotification,
 } from "./methods/notifications.js";
 import { handleTailscaleShare, handleTailscaleStatus } from "./methods/tailscale.js";
+import { handleAccountTeams } from "./methods/account-teams.js";
+import { handleTeamSessions } from "./methods/team-sessions.js";
 import {
   handleCheckFullDiskAccess,
   handleCloseFullDiskAccessPanel,
@@ -356,6 +358,8 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   register(desktopBridgeChannels.personalStartFresh, handleStartFresh(context));
   const teamLinkOwner = teamLinkDelivery(context);
   register(desktopBridgeChannels.teamLinkDelivery, teamLinkOwner.handle);
+  register(desktopBridgeChannels.accountTeams, handleAccountTeams(context));
+  register(desktopBridgeChannels.teamSessions, handleTeamSessions(context));
   register(desktopBridgeChannels.webLinkDelivery, (event, envelope) => {
     assertAuthorizedRenderer(context, event, envelope);
     return (

@@ -14,11 +14,73 @@ and makes the cluster match, so Account never holds cluster credentials. Account
 Google-signed ID token for `OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL` with its own public URL as
 audience, and offers no hosted teams without that setting. Turn it on in
 [account.env](../deploy/account/account.env) only after a Stable promotion has deployed the
-provisioner, or teams wait at "starting".
+provisioner, or teams wait at `starting`. Also wait until every Account replica runs a release
+that refuses Account deletion while it holds a hosted team: an older replica deletes a creator's
+hosted teams with their Account, even teams other people now own.
 
-Account shows the first-owner setup token to the creator once and stores only its digest. Addresses
-are never reused: a deleted team stays as a tombstone, and the database tombstones a team whenever
-its creator's Account is deleted, whichever release deletes it.
+Addresses are never reused: a deleted team stays as a tombstone, and the database tombstones a team
+whenever its creator's Account is deleted, whichever release deletes it.
+
+## Account deletion and transfer
+
+Account deletion never deletes or hands over a team whose Host Account adopted (with or without a
+receipt): only that Host knows who else owns it, and ownership can change there at any moment, so
+any automatic decision races it. Such a team blocks the deletion until the person deletes it or
+transfers it, and the refusal lists those teams. The check runs first, in one transaction that
+also sets a deletion fence on the Account and cancels its teams still being set up, holding each
+team's origin lock so no adoption lands after. Only then does deletion turn off remote access, so a
+refusal never leaves the person without it; a failure after that point keeps the remote-access
+warning. A fenced Account can't create or retry a team or be handed one, and the final delete
+rechecks under the Account row lock. Each fence belongs to one deletion attempt: another attempt
+is refused while it lasts, and the attempt renews it before each step, so only an attempt that
+died (a crashed replica) lets it lapse, after ten minutes. An attempt that fails, or finds its fence
+lapsed, clears only its own.
+
+Transfer moves the team, its Account Deployment, that Deployment's Account sign-in client and the
+recipient's hide marker together, under the origin lock. Only the Account holding the team (its
+creator, or whoever it was last handed to) may transfer it, and only to someone its Host confirms
+as an active owner just before; a Host that can't answer moves nothing.
+
+## Setup
+
+Account finishes a hosted team's first-owner setup itself, so nobody handles a setup link. It keeps
+the plaintext setup token sealed to the team and its setup generation; the provisioner gets only
+its digest and no client ever sees it. Once the provisioner reports the Host running the current
+generation, Account exchanges the token at the team's own origin, adopts that Host for the creator,
+and completes with `hostedBootstrap`, which the Host accepts only when it advertises
+`team-hosted-bootstrap-v1`. In that one transaction the Host commits the creator, by the completion
+grant's signed subject, as its only owner and creates #general. The creator then signs in at the
+team through ordinary Account OIDC and arrives as owner.
+
+The Host keeps a receipt keyed by hosted team and exact authority. A replayed completion answers
+that receipt and changes no membership, so it never reinstates a creator who left, never re-applies
+the owner role and never displaces another owner; a Host that already has an owner, or already
+knows the creator as someone it removed, refuses setup. When an answer is lost after the Host
+committed, Account resends its stored adoption result instead of starting over. Recording the
+receipt clears the sealed token and every sealed adoption result for that Host.
+
+A team is `ready` only when Account holds the receipt and the creator's directory entry has
+arrived from the Host, not when its pod is up. Each attempt is fenced by its claim and setup
+generation, so a slower attempt, a retry or a cancel never lets a stale write land. A team still
+starting 15 minutes after it was created or retried, or still configuring 15 minutes after its Host
+came up, is `failed`; this also catches a provisioner whose failure reports name no setup
+generation, which move no stage. A retry before the Host has an owner seals a new token and
+restarts the Host with a fresh setup window. Self-hosted teams keep `/setup`.
+
+Its creator may cancel a team only while its Host can't have an owner: before Account adopts that
+Host. Adoption takes the same origin lock as cancelling, so one of them loses. Once a Deployment or
+receipt exists, whatever stage Account shows, only the team's owners may delete it, and only the
+team's Host knows who they are: Account asks it with a one-minute Account-signed question, which
+also names every owner for transfer. A Host that can't answer, because it predates hosted bootstrap
+or is down, deletes and transfers nothing: ownership may have moved on, so there is no creator
+fallback.
+
+Setup stages move only on provisioner reports judged against the team's current setup generation,
+so a late report about an earlier generation never fails or restarts a retry.
+
+The transition to `ready` queues a generic `team-ready` push to the creator's phones, opening the
+team's #general; Hosts can't publish that kind. Clients find a hosted team by the `hostedTeamId`
+in the team's bootstrap, never by matching its origin.
 
 ## Isolation
 
@@ -32,7 +94,7 @@ writes to `team-*` namespaces. The release deployer can change only the provisio
 
 Hosted teams follow Stable: publishing a Stable deploys the provisioner with that release's team
 image digests, and it moves teams one at a time. A team on the new release that is not ready holds
-the rest and is reported failed after ten minutes; restarts a team asked for (a new setup link,
+the rest and is reported failed after ten minutes; restarts a team asked for (a setup retry,
 suspension) are never held. The provisioner is Ready only after a whole reconcile pass succeeds, so a
 release that cannot reach Account or list teams is rolled back. The GHCR packages must be public,
 because the cluster pulls without credentials.

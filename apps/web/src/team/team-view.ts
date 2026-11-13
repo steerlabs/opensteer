@@ -72,7 +72,8 @@ export function useTeamRead<Value>(
   readonly error: string | null;
   readonly reload: () => void;
 } {
-  const [state, setState] = useState<{ value: Value | null; error: string | null }>({
+  const [state, setState] = useState<{ key: string; value: Value | null; error: string | null }>({
+    key,
     value: null,
     error: null,
   });
@@ -81,16 +82,26 @@ export function useTeamRead<Value>(
     if (!read) return;
     let live = true;
     void read()
-      .then((value) => live && setState({ value, error: null }))
+      .then((value) => live && setState({ key, value, error: null }))
       .catch(
         (error: unknown) =>
           live &&
-          setState({ value: null, error: error instanceof Error ? error.message : "Can’t load." }),
+          setState({
+            key,
+            value: null,
+            error: error instanceof Error ? error.message : "Can’t load.",
+          }),
       );
     return () => {
       live = false;
     };
     // The key names what is read; the reader closure is new every render.
   }, [key, attempt]);
-  return { ...state, reload: () => setAttempt((value) => value + 1) };
+  // Another key's answer is never shown as this one's; a reload keeps the last answer meanwhile.
+  const current = state.key === key;
+  return {
+    value: current ? state.value : null,
+    error: current ? state.error : null,
+    reload: () => setAttempt((value) => value + 1),
+  };
 }

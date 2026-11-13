@@ -76,6 +76,8 @@ export const CaseSchema = z.strictObject({
   assigned: z.boolean().optional(),
   voice: z.boolean().optional(),
   teamBound: z.boolean().default(false),
+  /** The owner is linked to a team, so the Run gets team knowledge. */
+  knowledge: z.boolean().default(false),
   teamContext: z.string().min(1).optional(),
   machineAccessNotice: z.string().min(1).optional(),
   /** The operating system of the computer hosting the Run, as its Runner reports it. */

@@ -30,6 +30,8 @@ import {
   IssuePersonalHostAccountLinkChallengeRequestSchema,
   IssuePersonalHostAccountLinkChallengeResponseSchema,
   IssuePersonalAccountHostSessionGrantRequestSchema,
+  IssueTeamIdentityGrantRequestSchema,
+  IssueTeamIdentityGrantResponseSchema,
   PersonalHostAccountLinkChallengeIdSchema,
   PersonalHostAccountLinkOperationIdSchema,
   UnlinkPersonalHostRequestSchema,
@@ -45,6 +47,7 @@ import type { ConnectLifecycleService } from "../account/connect-lifecycle.js";
 import { ControlPlaneError } from "../server/errors.js";
 import type { ControlPlaneStore } from "../database/store.js";
 import type { PersonalRemoteAccountService } from "../account/personal-remote-account.js";
+import type { TeamIdentityGrantService } from "../account/team-identity-grants.js";
 
 const DeploymentParamsSchema = z.strictObject({ deploymentId: DeploymentIdSchema });
 const AdoptionParamsSchema = z.strictObject({ proofId: HostAccountAdoptionProofIdSchema });
@@ -63,6 +66,7 @@ export function registerControlPlaneRoutes(
     readonly connectLifecycle: ConnectLifecycleService;
     readonly personalRemoteAccount?: PersonalRemoteAccountService;
     readonly store: ControlPlaneStore;
+    readonly teamIdentityGrants?: TeamIdentityGrantService;
   },
 ): void {
   app.get("/v1/account/deployments", async (request, reply) => {
@@ -192,6 +196,24 @@ export function registerControlPlaneRoutes(
       return IssueAccountHostSessionGrantResponseSchema.parse(response);
     },
   );
+
+  app.post("/v1/account/deployments/:deploymentId/team-identity-grants", async (request, reply) => {
+    const { deploymentId } = DeploymentParamsSchema.parse(request.params);
+    const principal = await dependencies.authenticator.authenticate(toWebHeaders(request.headers), {
+      mutation: true,
+      scope: "deployments:read",
+    });
+    if (!dependencies.teamIdentityGrants) {
+      throw new ControlPlaneError("unavailable", "Team identity grants are not configured");
+    }
+    const response = await dependencies.teamIdentityGrants.issue(
+      principal.accountId,
+      deploymentId,
+      IssueTeamIdentityGrantRequestSchema.parse(request.body),
+    );
+    void reply.header("cache-control", "no-store");
+    return IssueTeamIdentityGrantResponseSchema.parse(response);
+  });
 
   app.put("/v1/account/deployments/:deploymentId/connect", async (request, reply) => {
     const { deploymentId } = DeploymentParamsSchema.parse(request.params);

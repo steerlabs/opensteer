@@ -34,6 +34,7 @@
     "./isRecord": "./src/isRecord.ts",
     "./kernelLock": "./src/kernelLock.ts",
     "./lockOrderMode": "./src/lockOrderMode.ts",
+    "./markdownPreview": "./src/markdownPreview.ts",
     "./lengthPrefixedJson": "./src/lengthPrefixedJson.ts",
     "./mutationQueue": "./src/mutationQueue.ts",
     "./plainTextExcerpt": "./src/plainTextExcerpt.ts",

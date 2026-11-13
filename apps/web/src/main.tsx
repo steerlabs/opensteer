@@ -112,7 +112,7 @@ async function renderOpensteer(): Promise<void> {
     return;
   }
 
-  let previewTeams: Parameters<typeof import("./app.js").App>[0]["previewTeams"] = null;
+  let preview: Parameters<typeof import("./app.js").App>[0]["preview"] = null;
   const [{ App }, hostClient] = await Promise.all([
     import("./app.js"),
     import.meta.env.VITE_OPENSTEER_USE_MOCK === "true"
@@ -128,6 +128,7 @@ async function renderOpensteer(): Promise<void> {
             { browserClientLifecycle },
             {
               MockTeamHost,
+              MockTeamWorld,
               TeamSessionClient,
               createMemoryTeamPersistence,
               busyTeamIds,
@@ -152,19 +153,43 @@ async function renderOpensteer(): Promise<void> {
               }),
               link: null,
             });
-            if (search.get("mock-team") === "busy") {
-              const acme = new MockTeamHost({ teamId: busyTeamIds[0] });
-              const family = new MockTeamHost({ teamId: busyTeamIds[1] });
-              seedBusyTeam(acme, { name: "Acme", index: 1 });
-              seedBusyTeam(family, { name: "Family", index: 2 });
-              previewTeams = [
-                attach(acme, "https://chat.acme.example"),
-                attach(family, "https://family.example"),
-              ];
-              return mockClient();
+            const seeded =
+              search.get("mock-team") === "busy"
+                ? [
+                    new MockTeamHost({
+                      teamId: busyTeamIds[0],
+                      origin: "https://chat.acme.example",
+                    }),
+                    new MockTeamHost({ teamId: busyTeamIds[1], origin: "https://family.example" }),
+                  ]
+                : search.has("mock-team")
+                  ? [new MockTeamHost({ origin: "https://chat.acme.example" })]
+                  : [];
+            if (seeded.length > 1) {
+              seedBusyTeam(seeded[0]!, { name: "Acme", index: 1 });
+              seedBusyTeam(seeded[1]!, { name: "Family", index: 2 });
+              // For journeys that play another member's change on the busy teams.
+              Object.assign(window, { opensteerMockTeams: seeded });
             }
-            if (search.has("mock-team"))
-              previewTeams = [attach(new MockTeamHost(), "https://chat.acme.example")];
+            // Every preview can create and join hosted teams in memory; the seeded teams are
+            // part of that world, so connecting an agent or leaving reaches them the same way.
+            preview = {
+              world: new MockTeamWorld({
+                seeded: () => seeded,
+                // `?mock-joined-elsewhere`: a team joined on the phone, with no session here.
+                ...(search.has("mock-joined-elsewhere")
+                  ? {
+                      joinedElsewhere: {
+                        name: "Harbor",
+                        origin: "https://harbor.teams.opensteer.com",
+                      },
+                    }
+                  : {}),
+                // `?mock-older-team`: the sample invite's team joins through the browser.
+                olderInviteTeam: search.has("mock-older-team"),
+              }),
+              teams: seeded.map((team) => attach(team, team.origin)),
+            };
             return mockClient();
             function mockClient() {
               const subagents = mockSubagentScenes.find(
@@ -230,7 +255,7 @@ async function renderOpensteer(): Promise<void> {
   window.addEventListener("pagehide", () => hostClient.dispose(), { once: true });
   reactRoot.render(
     <StrictMode>
-      <App hostClient={hostClient} previewTeams={previewTeams} />
+      <App hostClient={hostClient} preview={preview} />
     </StrictMode>,
   );
 }

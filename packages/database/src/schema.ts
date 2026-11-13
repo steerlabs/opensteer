@@ -1,4 +1,5 @@
 import type {
+  KnowledgeNoteId,
   KnowledgeTopicId,
   TaskPurpose,
   TeamAgentRequestId,
@@ -128,7 +129,6 @@ import type {
 } from "@opensteer/protocol";
 import type { TriggerProgram, TriggerProgramEvent, TriggerSource } from "@opensteer/triggers";
 import type { ColumnType, Generated, Selectable } from "kysely";
-import type { KnowledgeTables } from "./knowledge-schema.js";
 
 export type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>;
 export type NullableTimestamp = ColumnType<
@@ -1936,7 +1936,7 @@ export interface AgentConnectionTable {
   revokedAt: NullableTimestamp;
 }
 
-export interface DatabaseSchema extends KnowledgeTables {
+export interface DatabaseSchema {
   agentHomeSkillInventory: {
     computerId: RunnerId;
     environmentId: EnvironmentId;
@@ -1967,8 +1967,10 @@ export interface DatabaseSchema extends KnowledgeTables {
   teamMessagePins: TeamMessagePinTable;
   teamBlobs: TeamBlobTable;
   teamMessageAttachments: TeamMessageAttachmentTable;
+  teamTopics: TeamTopicTable;
   teamTopicGrants: TeamTopicGrantTable;
-  teamChannelTopics: TeamChannelTopicTable;
+  teamNotes: TeamNoteTable;
+  teamNoteVersions: TeamNoteVersionTable;
   teamOutbox: TeamOutboxTable;
   teamLinks: TeamLinkTable;
   teamAgentRequests: TeamAgentRequestTable;
@@ -2266,7 +2268,9 @@ export interface TeamInviteTable {
   id: TeamInviteId;
   selector: string;
   verifierHash: string;
-  maxUses: number;
+  /** Set only on reusable invites, which `team.invite.reset` creates; at most one is unrevoked. */
+  sealedVerifier: Buffer | null;
+  maxUses: number | null;
   usedCount: Generated<number>;
   expiresAt: Timestamp;
   revokedAt: NullableTimestamp;
@@ -2394,19 +2398,48 @@ export interface TeamMessageAttachmentTable {
   channelId: TeamChannelId;
   createdAt: Timestamp;
 }
+export interface TeamTopicTable {
+  id: KnowledgeTopicId;
+  name: string;
+  description: Generated<string>;
+  /** Null for the topic every team starts with. */
+  createdBy: UserId | null;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  archivedAt: NullableTimestamp;
+  accessRevision: Generated<string>;
+}
 export interface TeamTopicGrantTable {
   topicId: KnowledgeTopicId;
-  subjectKind: "person" | "group";
+  subjectKind: "person" | "group" | "everyone";
+  /** A user or group id; "team" for everyone. */
   subjectId: string;
   level: "read" | "write" | "manage";
-  addedBy: UserId;
+  addedBy: UserId | null;
   addedAt: Timestamp;
 }
-export interface TeamChannelTopicTable {
-  channelId: TeamChannelId;
+export interface TeamNoteTable {
+  id: KnowledgeNoteId;
   topicId: KnowledgeTopicId;
-  attachedBy: UserId;
-  attachedAt: Timestamp;
+  version: number;
+  title: string;
+  body: string;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  deletedAt: NullableTimestamp;
+  search: ColumnType<string, never, never>;
+}
+export interface TeamNoteVersionTable {
+  noteId: KnowledgeNoteId;
+  version: number;
+  title: string;
+  body: string;
+  deleted: boolean;
+  writerKind: "human" | "agent";
+  writerUserId: UserId;
+  linkId: TeamLinkId | null;
+  requestId: TeamAgentRequestId | null;
+  writtenAt: Timestamp;
 }
 export interface TeamOutboxTable {
   id: Generated<string>;

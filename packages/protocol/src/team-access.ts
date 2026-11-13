@@ -32,10 +32,21 @@ export const TeamChannelAccessEntrySchema = z.strictObject({
   level: z.enum(["read", "post"]),
   manage: z.boolean(),
 });
-export const TeamTopicAccessEntrySchema = z.strictObject({
-  subject: TeamAccessSubjectSchema,
-  level: z.enum(["read", "write", "manage"]),
-});
+/** A topic can also be shared with everyone in the team, now and later. */
+export const TeamTopicSubjectSchema = z.discriminatedUnion("kind", [
+  ...TeamAccessSubjectSchema.options,
+  z.strictObject({ kind: z.literal("everyone") }),
+]);
+export type TeamTopicSubject = z.infer<typeof TeamTopicSubjectSchema>;
+export const TeamTopicLevelSchema = z.enum(["read", "write", "manage"]);
+export type TeamTopicLevel = z.infer<typeof TeamTopicLevelSchema>;
+export const TeamTopicAccessEntrySchema = z
+  .strictObject({ subject: TeamTopicSubjectSchema, level: TeamTopicLevelSchema })
+  .refine(
+    (entry) => entry.subject.kind !== "everyone" || entry.level !== "manage",
+    "Everyone can read or write a topic; managing is for people and groups.",
+  );
+export type TeamTopicAccessEntry = z.infer<typeof TeamTopicAccessEntrySchema>;
 export const TeamChannelCanSchema = z.strictObject({
   read: z.boolean(),
   post: z.boolean(),
@@ -85,6 +96,26 @@ export const TeamInviteSchema = z.strictObject({
   createdBy: UserIdSchema,
   createdAt: IsoDateTimeSchema,
 });
+/** How long a reset invite works, in days: the only choices a manager is offered. */
+export const TeamInviteExpiryDaysSchema = z.union([z.literal(1), z.literal(7), z.literal(30)]);
+export type TeamInviteExpiryDays = z.infer<typeof TeamInviteExpiryDaysSchema>;
+/** `null` admits until the invite expires or is reset. */
+export const TeamInviteMaxUsesSchema = z.number().int().min(1).max(1000).nullable();
+/**
+ * The team's one reusable invite, shown only to people who may manage invites. `url` is the
+ * canonical `https://<team>/invite/<selector>#<verifier>`, redisplayable on any of their devices.
+ */
+export const TeamCurrentInviteSchema = z.strictObject({
+  id: TeamInviteIdSchema,
+  url: z.url(),
+  expiresInDays: TeamInviteExpiryDaysSchema,
+  expiresAt: IsoDateTimeSchema,
+  maxUses: TeamInviteMaxUsesSchema,
+  usedCount: z.number().int().nonnegative(),
+  createdBy: UserIdSchema,
+  createdAt: IsoDateTimeSchema,
+});
+export type TeamCurrentInvite = z.infer<typeof TeamCurrentInviteSchema>;
 export const TeamAuditSchema = z.strictObject({
   id: SequenceSchema,
   occurredAt: IsoDateTimeSchema,

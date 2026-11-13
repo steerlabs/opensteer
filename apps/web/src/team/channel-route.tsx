@@ -3,7 +3,6 @@ import { useLocation, useNavigate } from "react-router";
 import {
   TeamChannelIdSchema,
   TeamMessageIdSchema,
-  KnowledgeTopicIdSchema,
   TeamAgentRequestIdSchema,
   UserIdSchema,
   type TeamChannelId,
@@ -23,7 +22,6 @@ import {
   ChannelScreen,
   ThreadPane,
 } from "../components/team/channel-view.js";
-import { KnowledgeTab } from "../components/team/knowledge-tab.js";
 import { MessageList } from "../components/team/message-list.js";
 import { AgentUnavailable, TeamComposer } from "../components/team/team-composer.js";
 import type {
@@ -42,8 +40,8 @@ import { useWorkspace } from "../components/workspace/workspace-context.js";
 import { DrawerButton } from "../components/workspace/place-stage.js";
 import { SidebarRestoreButton } from "../components/sidebar-chrome.js";
 import { actionErrorMessage, fromLivePage } from "../ui-utils.js";
+import { useConnectAgent, WelcomeCard } from "./hosted-teams.js";
 import { useTeams, useTeamSession } from "./team-attachments.js";
-import { useKnowledge } from "./team-knowledge.js";
 import { channelPath } from "./team-paths.js";
 import { teamMessage } from "./team-send.js";
 import { prepareTeamUpload } from "./team-upload.js";
@@ -64,7 +62,6 @@ interface ChannelPlace {
   readonly tab: ChannelTab;
   readonly threadId: string | null;
   readonly messageId: string | null;
-  readonly topicId: string | null;
 }
 
 function placeOf(rest: readonly string[]): ChannelPlace {
@@ -74,15 +71,11 @@ function placeOf(rest: readonly string[]): ChannelPlace {
       tab: "messages",
       threadId: second,
       messageId: third === "m" ? (fourth ?? null) : null,
-      topicId: null,
     };
-  if (first === "m" && second)
-    return { tab: "messages", threadId: null, messageId: second, topicId: null };
+  if (first === "m" && second) return { tab: "messages", threadId: null, messageId: second };
   if (first === "files" || first === "pinned")
-    return { tab: first, threadId: null, messageId: null, topicId: null };
-  if (first === "knowledge")
-    return { tab: "knowledge", threadId: null, messageId: null, topicId: second ?? null };
-  return { tab: "messages", threadId: null, messageId: null, topicId: null };
+    return { tab: first, threadId: null, messageId: null };
+  return { tab: "messages", threadId: null, messageId: null };
 }
 
 function usePreviews(key: string, session: TeamView["client"] | null) {
@@ -247,6 +240,7 @@ function ChannelScreenFor({
   const { drawer, selection, work } = useWorkspace();
   const hostClient = useOptionalShell()?.hostClient ?? null;
   const { links, surface } = useTeams();
+  const connectAgent = useConnectAgent(team);
   const toast = useToast();
   const report = (error: unknown) => toast.error(actionErrorMessage(error));
   const docked = selection.kind === "place";
@@ -535,6 +529,10 @@ function ChannelScreenFor({
   };
 
   /* ---- Composer ---- */
+  const general =
+    snapshot.bootstrap?.generalChannelId != null
+      ? snapshot.bootstrap.generalChannelId === channelId
+      : channel.name === "general" && channel.kind === "public";
   const agent: MyAgentHere = channel.peopleOnly
     ? { kind: "people-only" }
     : can?.wakeOwnAgent
@@ -582,11 +580,7 @@ function ChannelScreenFor({
         }
         me={me}
         onAddFiles={addFiles(rootId)}
-        onConnect={
-          surface === "desktop"
-            ? () => go(`/join?team=${encodeURIComponent(team.teamId)}`)
-            : undefined
-        }
+        onConnect={connectAgent ?? undefined}
         onRemoveFile={(id) => {
           retireFile(id);
           setStaged(rootId, (current) => current.filter((row) => row.id !== id));
@@ -681,8 +675,6 @@ function ChannelScreenFor({
       <ChannelFiles channel={channel} channelId={channelId} onOpenFile={openFile} view={view} />
     ) : place.tab === "pinned" ? (
       <ChannelPins channelId={channelId} onOpenFile={openFile} view={view} />
-    ) : place.tab === "knowledge" ? (
-      <ChannelKnowledge channelId={channelId} topicId={place.topicId} view={view} />
     ) : (
       <ChannelMessages
         composer={
@@ -703,7 +695,16 @@ function ChannelScreenFor({
             onEditingChange={setEditingId}
             flashId={place.messageId}
             hasOlder={timeline?.hasMore ?? false}
-            intro={<ChannelIntro channel={channel} />}
+            intro={
+              general ? (
+                <>
+                  <ChannelIntro channel={channel} />
+                  <WelcomeCard team={team} />
+                </>
+              ) : (
+                <ChannelIntro channel={channel} />
+              )
+            }
             items={items}
             label={channel.name}
             onLoadOlder={() => void client.loadPage("channel", "before").catch(report)}
@@ -865,34 +866,6 @@ function ChannelPins({
   );
 }
 
-function ChannelKnowledge({
-  channelId,
-  topicId,
-  view,
-}: {
-  readonly channelId: TeamChannelId;
-  readonly topicId: string | null;
-  readonly view: TeamView;
-}) {
-  const navigate = useNavigate();
-  const knowledge = useKnowledge(view, channelId, topicId);
-  return (
-    <KnowledgeTab
-      actions={{
-        ...knowledge.actions,
-        onSelectTopic: (next) =>
-          void navigate(
-            `${channelPath(view.team.teamId, channelId, { tab: "knowledge" })}/${next}`,
-          ),
-      }}
-      history={knowledge.history}
-      selectedTopicId={knowledge.selectedTopicId}
-      things={knowledge.things}
-      topics={knowledge.topics}
-    />
-  );
-}
-
 function ChannelDetailsPane({
   channel,
   channelId,
@@ -911,14 +884,9 @@ function ChannelDetailsPane({
   readonly view: TeamView;
 }) {
   const toast = useToast();
-  const navigate = useNavigate();
   const report = (error: unknown) => toast.error(actionErrorMessage(error));
   const dispatch = (command: Parameters<(typeof view.client.rpc)["commands.dispatch"]>[0]) =>
     view.client.rpc["commands.dispatch"](command).then(unwrapRpcResult).catch(report);
-  const topics = useTeamRead(
-    () => view.client.rpc["team.knowledge.topics.list"]({ channelId }).then(unwrapRpcResult),
-    `topics:${channelId}`,
-  );
   const level: NotifyLevel =
     notify === "all" ? "everything" : notify === "muted" ? "nothing" : "mentions";
   const live = timeline?.channel ?? null;
@@ -939,10 +907,6 @@ function ChannelDetailsPane({
             notificationLevel:
               next === "everything" ? "all" : next === "nothing" ? "muted" : "mentions",
           }),
-        onOpenTopic: (topicId) =>
-          void navigate(
-            `${channelPath(view.team.teamId, channelId, { tab: "knowledge" })}/${topicId}`,
-          ),
         onLeave: live?.can.leave
           ? () => void dispatch({ type: "team.channel.leave", channelId })
           : undefined,
@@ -969,26 +933,12 @@ function ChannelDetailsPane({
                   name: live.name,
                   peopleOnly,
                 }),
-              onDetachTopic: (topicId: string) =>
-                void dispatch({
-                  type: "team.channel.topic.detach",
-                  channelId,
-                  topicId: KnowledgeTopicIdSchema.parse(topicId),
-                }).then(topics.reload),
-              onAttachTopic: () =>
-                void navigate(`/teams/${encodeURIComponent(view.team.teamId)}/knowledge`),
               onArchive: () => void dispatch({ type: "team.channel.archive", channelId }),
             }
           : {}),
       }}
       channel={channel}
       notify={level}
-      topics={(topics.value?.topics ?? []).map((topic) => ({
-        id: topic.id,
-        name: topic.name,
-        kind: topic.originChannelId === channelId ? "channel" : "shared",
-        detail: topic.peopleOnly ? "People only" : "",
-      }))}
       workingAgents={workingAgents}
     />
   );

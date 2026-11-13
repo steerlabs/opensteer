@@ -3,7 +3,7 @@ import type { NotificationPreviewEnvelope } from "@opensteer/core";
 import {
   teamNotificationDeepLink,
   type TeamNotificationTarget,
-  type PublishedNotificationKind,
+  type AccountNotificationKind,
 } from "@opensteer/control-plane-protocol";
 import {
   buildMobileThreadDeepLink,
@@ -32,7 +32,7 @@ interface NotificationPhrase {
  * The last three rows are what Hosts before Host API epoch 30 publish. Their
  * people keep the words those Hosts were built with until the Host upgrades.
  */
-const notificationPhrases: Readonly<Record<PublishedNotificationKind, NotificationPhrase>> = {
+const notificationPhrases: Readonly<Record<AccountNotificationKind, NotificationPhrase>> = {
   "team-message": { anchor: "message", body: "New team message", title: "Opensteer" },
   "team-agent-needs-you": { anchor: "thread", body: "Your agent needs you", title: "Opensteer" },
   "team-agent-completed": {
@@ -41,6 +41,7 @@ const notificationPhrases: Readonly<Record<PublishedNotificationKind, Notificati
     title: "Opensteer",
   },
   "team-notice": { anchor: "thread", body: "New team notice", title: "Opensteer" },
+  "team-ready": { anchor: "thread", body: "Your team is ready", title: "Opensteer" },
   "reply-published": { anchor: "message", body: "Opensteer replied", title: "Opensteer" },
   "request-opened": {
     anchor: "request",
@@ -66,7 +67,7 @@ export interface NotificationMessage {
     readonly expiresAt?: string;
     readonly preview?: string;
     readonly deploymentId: string;
-    readonly kind: PublishedNotificationKind;
+    readonly kind: AccountNotificationKind;
     readonly messageId?: string;
     readonly requestId?: string;
     readonly threadId?: string;
@@ -86,7 +87,7 @@ export function notificationMessage(input: {
     readonly installationId: string;
     readonly expiresAt: Date;
   };
-  readonly kind: PublishedNotificationKind;
+  readonly kind: AccountNotificationKind;
   readonly messageId?: string | null;
   readonly requestId: string | null;
   readonly threadId: string | null;
@@ -108,7 +109,9 @@ export function notificationMessage(input: {
         teamId: target.teamId,
         ...(target.kind === "team-message"
           ? { channelId: target.channelId, teamMessageId: target.messageId }
-          : { noticeId: target.noticeId }),
+          : target.kind === "team-ready"
+            ? { channelId: target.channelId }
+            : { noticeId: target.noticeId }),
         ...(input.preview
           ? {
               notificationId: input.preview.notificationId,
@@ -158,7 +161,7 @@ export function notificationMessage(input: {
 
 export function notificationCollapseId(input: {
   readonly deploymentId: string;
-  readonly kind: PublishedNotificationKind;
+  readonly kind: AccountNotificationKind;
   readonly requestId: string | null;
   readonly notificationId: string;
   readonly threadId: string | null;
@@ -173,7 +176,7 @@ export function notificationCollapseId(input: {
           input.kind,
           input.kind === "request-opened"
             ? (input.requestId ?? input.notificationId)
-            : input.teamTarget?.kind === "team-message"
+            : input.teamTarget?.kind === "team-message" || input.teamTarget?.kind === "team-ready"
               ? input.teamTarget.channelId
               : input.teamTarget?.kind === "team-notice"
                 ? input.teamTarget.noticeId

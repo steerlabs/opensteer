@@ -72,7 +72,7 @@ export const color = {
   redLine: "rgba(231, 126, 118, 0.34)",
   amberWash: "rgba(223, 179, 107, 0.07)",
   amberLine: "rgba(223, 179, 107, 0.32)",
-  /** People only: a channel or topic agents can't be woken in, read or search. */
+  /** People only: a channel agents can't be woken in, read or search. */
   blueWash: "rgba(132, 181, 224, 0.09)",
   blueLine: "rgba(132, 181, 224, 0.32)",
 } as const;

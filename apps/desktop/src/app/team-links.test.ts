@@ -7,12 +7,12 @@ import { DesktopWebLinks, routeDesktopUrl } from "./web-links.js";
 
 const scheme = "com.opensteer.opensteer";
 function appLink(page: string): string {
-  return teamPageAppLink(parseTeamPageLink(page)!, scheme);
+  return teamPageAppLink(parseTeamPageLink(page)!, "desktop");
 }
 
 it("retains a first-join invite and its verifier fragment through a cold launch and renderer reload", () => {
   const page = `https://new-team.example/invite/${"s".repeat(24)}#${"v".repeat(32)}`;
-  const links = new DesktopTeamLinks(scheme);
+  const links = new DesktopTeamLinks();
   expect(links.accept(appLink(page))).toBe(true);
   const received: DesktopTeamLink[] = [];
   const detach = links.attach((link) => received.push(link));
@@ -32,7 +32,7 @@ it("hands unknown-team channel and message/thread targets to the renderer withou
     `https://unknown.example/c/${channel}`,
     `https://unknown.example/c/${channel}/m/42`,
   ];
-  const links = new DesktopTeamLinks(scheme);
+  const links = new DesktopTeamLinks();
   const received: DesktopTeamLink[] = [];
   links.attach((link) => received.push(link));
   for (const page of pages) expect(links.accept(appLink(page))).toBe(true);
@@ -43,7 +43,7 @@ it("hands unknown-team channel and message/thread targets to the renderer withou
 
 it("rejects the wrong scheme, credentials, non-HTTPS pages and malformed targets", () => {
   const channel = createId("teamChannel");
-  const links = new DesktopTeamLinks(scheme);
+  const links = new DesktopTeamLinks();
   for (const raw of [
     appLink(`https://team.example/c/${channel}`).replace(scheme, "another.app"),
     `${scheme}:/team?url=${encodeURIComponent(`http://team.example/c/${channel}`)}`,
@@ -55,7 +55,7 @@ it("rejects the wrong scheme, credentials, non-HTTPS pages and malformed targets
 });
 
 it("keeps OAuth callbacks separate from team handoffs", async () => {
-  const teams = new DesktopTeamLinks(scheme);
+  const teams = new DesktopTeamLinks();
   const oauth = new OAuthDeepLinkBroker({
     application: "desktop",
     clientId: "opensteer-desktop",

@@ -4,12 +4,13 @@ import {
 } from "@opensteer/client/connections";
 import type { MockTeamHost, TeamCacheScope } from "@opensteer/client/team";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
-import { createId, OpensteerError } from "@opensteer/core";
+import { createId, DeploymentIdSchema, OpensteerError } from "@opensteer/core";
 import type { HostApiClient } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { MobileClient } from "../client/mobile-client.js";
 import {
   mockDeploymentConnections,
+  mockTeamConnection,
   mockDeploymentId,
   mockFamilyTeamId,
   mockFamilyTeamOrigin,
@@ -41,6 +42,8 @@ function fixture(
     readonly previews?: Pick<NotificationPreviews, "attach" | "clear">;
     /** Answers a team command in place of the mock team Host. */
     readonly dispatch?: (command: { readonly type: string }) => unknown;
+    /** Teams on this phone beside the mock ones, and whether a credential is held for each. */
+    readonly catalog?: readonly { connection: DeploymentConnection; signedIn: boolean }[];
   } = {},
 ) {
   const hosts = new Map<string, MockTeamHost>();
@@ -70,7 +73,10 @@ function fixture(
   const signOut = vi.fn(async (_teamId: string) => undefined);
   let snapshot = {
     selection: { deploymentId: mockDeploymentId, hostClient: null },
-    teams: connections.map((connection) => ({ connection, signedIn: true })),
+    teams: [
+      ...connections.map((connection) => ({ connection, signedIn: true })),
+      ...(options.catalog ?? []),
+    ],
   };
   const client = {
     subscribe: (listener: () => void) => {
@@ -227,6 +233,40 @@ describe("the one team socket a phone keeps", () => {
     expect(next.getSnapshot().bootstrap?.member.userId ?? null).toBe(null);
     await next.load(false);
     expect(next.getSnapshot().bootstrap?.member.userId).toBe(someoneElse);
+    f.teams.dispose();
+  });
+});
+
+describe("the teams a phone lists", () => {
+  it("lists a team Account says the person joined elsewhere, with no agent link anywhere", async () => {
+    const teamId = DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-0000000000b1");
+    const joinedElsewhere = DeploymentConnectionSchema.parse({
+      ...mockTeamConnection({
+        deploymentId: teamId,
+        name: "Beta",
+        origin: "https://beta.teams.opensteer.com",
+      }),
+      accountAccess: "member",
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+      lastUsedAt: null,
+      preferredEndpointOrigin: null,
+    });
+    const f = fixture({ catalog: [{ connection: joinedElsewhere, signedIn: false }] });
+    f.teams.start();
+    await vi.waitFor(() => expect(f.teams.team(teamId), "Beta never listed").not.toBeNull(), {
+      timeout: 2_000,
+    });
+    const { teams, unlinked } = f.teams.getSnapshot();
+    expect(teams.map((team) => [team.teamId, team.state])).toEqual([
+      [teamId, "signed-out"],
+      [mockTeamId, expect.any(String)],
+      [mockFamilyTeamId, expect.any(String)],
+    ]);
+    expect(unlinked).toEqual([]);
+    // Another computer on screen, with no link to any team: the membership still shows.
+    f.showComputer(createId("deployment"));
+    expect(f.teams.getSnapshot().teams.map((team) => team.teamId)).toEqual([teamId]);
     f.teams.dispose();
   });
 });

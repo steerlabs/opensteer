@@ -17,6 +17,7 @@ import { sql, type Kysely, type Transaction, type RawBuilder } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { appendTeamAudit } from "./team-audit-store.js";
 import { addTeamSelfAddNotices } from "./team-notices-store.js";
+import { teamReadableTopicIds } from "./team-knowledge-store.js";
 
 export interface TeamStoreAccessEffects {
   readonly users: readonly UserId[];
@@ -168,45 +169,31 @@ export class TeamAccessStore {
       where c.id in (${sql.join(channelIds)}) group by c.id,m.role`.execute(transaction);
     return new Map(result.rows.map(({ channelId, ...authority }) => [channelId, authority]));
   }
+  /** A person reads a topic granted to them, a group they are in, or everyone; their agent the same, never managing. */
   async topic(
     transaction: Transaction<DatabaseSchema>,
     actor: TeamActor,
     topicId: KnowledgeTopicId,
   ) {
-    const row = (
-      await sql<{
-        originChannelId: TeamChannelId | null;
-        peopleOnly: boolean;
-        archivedAt: Date | null;
-      }>`select origin_channel_id,people_only,archived_at from knowledge.topics where id=${topicId}`.execute(
-        transaction,
-      )
-    ).rows[0];
-    if (!row) return { read: false, write: false, manage: false, peopleOnly: false };
-    if (row.originChannelId) {
-      const channel = await this.channel(transaction, actor, row.originChannelId);
-      const blocked = actor.kind === "agent" && row.peopleOnly;
-      return {
-        read: channel.read && !blocked,
-        write: channel.post && !row.archivedAt && !blocked,
-        manage: channel.manage,
-        peopleOnly: channel.peopleOnly || row.peopleOnly,
-      };
-    }
+    const topic = await transaction
+      .selectFrom("teamTopics")
+      .select("archivedAt")
+      .where("id", "=", topicId)
+      .executeTakeFirst();
+    if (!topic) return { read: false, write: false, manage: false };
     const grants = (
       await sql<{ read: boolean; write: boolean; manage: boolean }>`${teamGroupPaths(actor.userId)}
       select count(g.topic_id)>0 as read,coalesce(bool_or(g.level in ('write','manage')),false) as write,
       (${actor.kind}='human' and (coalesce(bool_or(g.level='manage'),false) or m.role in ('owner','admin'))) as manage
       from team_members m left join team_topic_grants g on g.topic_id=${topicId} and
-      ((g.subject_kind='person' and g.subject_id=m.user_id) or (g.subject_kind='group' and g.subject_id in(select id from member_groups)))
+      (g.subject_kind='everyone' or (g.subject_kind='person' and g.subject_id=m.user_id)
+        or (g.subject_kind='group' and g.subject_id in(select id from member_groups)))
       where m.user_id=${actor.userId} and m.state='active' group by m.role`.execute(transaction)
     ).rows[0];
-    const blocked = actor.kind === "agent" && row.peopleOnly;
     return {
-      read: !!grants?.read && !blocked,
-      write: !!grants?.write && !row.archivedAt && !blocked,
+      read: !!grants?.read,
+      write: !!grants?.write && !topic.archivedAt,
       manage: !!grants?.manage,
-      peopleOnly: row.peopleOnly,
     };
   }
   async mutate<Value>(
@@ -278,19 +265,21 @@ export class TeamAccessStore {
           .where("kind", "=", "private")
           .execute())
           known.add(`channel:${id}`);
-        if (
-          (
-            await sql<{
-              present: boolean;
-            }>`select to_regclass('knowledge.topics') is not null as present`.execute(transaction)
-          ).rows[0]?.present
-        )
-          for (const { id } of (
-            await sql<{
-              id: string;
-            }>`select id from knowledge.topics where origin_channel_id is null`.execute(transaction)
-          ).rows)
-            known.add(`topic:${id}`);
+        for (const { id } of await transaction
+          .selectFrom("teamTopics")
+          .select("id")
+          .where(({ not, exists, selectFrom }) =>
+            not(
+              exists(
+                selectFrom("teamTopicGrants as g")
+                  .select("g.topicId")
+                  .whereRef("g.topicId", "=", "teamTopics.id")
+                  .where("g.subjectKind", "=", "everyone"),
+              ),
+            ),
+          )
+          .execute())
+          known.add(`topic:${id}`);
       }
       const before = admin ? await this.#readableRestricted(transaction, actor) : new Set<string>();
       const candidates = [...known].filter((key) => !before.has(key));
@@ -335,20 +324,13 @@ export class TeamAccessStore {
       .where("id", "in", teamReadableChannels(actor))
       .execute();
     for (const channel of channels) set.add(`channel:${channel.id}`);
-    const exists = (
-      await sql<{
-        present: boolean;
-      }>`select to_regclass('knowledge.topics') is not null as present`.execute(transaction)
-    ).rows[0]?.present;
-    if (exists) {
-      const topics = await sql<{
-        id: KnowledgeTopicId;
-      }>`select id from knowledge.topics where origin_channel_id is null order by id`.execute(
-        transaction,
-      );
-      for (const topic of topics.rows)
-        if ((await this.topic(transaction, actor, topic.id)).read) set.add(`topic:${topic.id}`);
-    }
+    const topics = await transaction
+      .selectFrom("teamTopics")
+      .select("id")
+      .where("id", "in", teamReadableTopicIds(actor.userId))
+      .orderBy("id")
+      .execute();
+    for (const topic of topics) set.add(`topic:${topic.id}`);
     return set;
   }
   async #managerLists(transaction: Transaction<DatabaseSchema>, keys: readonly string[]) {
@@ -504,14 +486,8 @@ export class TeamAccessStore {
       return write(transaction, await this.channel(transaction, actor, channelId));
     });
   }
-  async knowledgeWrite<Value>(
-    actor: TeamActor,
-    topicId: KnowledgeTopicId,
-    write: (
-      transaction: Transaction<DatabaseSchema>,
-      authority: Awaited<ReturnType<TeamAccessStore["topic"]>>,
-    ) => Promise<Value>,
-  ) {
+  /** Knowledge writes hold the access fence through commit; the writer authorizes inside it. */
+  async knowledgeWrite<Value>(write: (transaction: Transaction<DatabaseSchema>) => Promise<Value>) {
     return this.database.transaction().execute(async (transaction) => {
       await transaction
         .selectFrom("teamAccessState")
@@ -519,23 +495,8 @@ export class TeamAccessStore {
         .where("singletonKey", "=", "team")
         .forShare()
         .executeTakeFirstOrThrow();
-      const topic = (
-        await sql<{
-          originChannelId: TeamChannelId | null;
-        }>`select origin_channel_id from knowledge.topics where id=${topicId}`.execute(transaction)
-      ).rows[0];
-      if (topic?.originChannelId)
-        await transaction
-          .selectFrom("teamChannels")
-          .select("id")
-          .where("id", "=", topic.originChannelId)
-          // FOR UPDATE: Required by M1/M2 to fence ACL deletion against content SHARE through COMMIT.
-          .forUpdate()
-          .executeTakeFirstOrThrow();
       await this.checkSession(transaction);
-      const authority = await this.topic(transaction, actor, topicId);
-      requireTeam(authority.write);
-      return write(transaction, authority);
+      return write(transaction);
     });
   }
   async handoff<Value>(

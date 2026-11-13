@@ -41,6 +41,7 @@ export function createIntegrationMcpFixture(
     triggers: unavailable as never,
     apps: unavailable as never,
     teamRequestForRun: async () => null,
+    personalContextForRun: async () => true,
     pluginInstall: async () => {
       throw new Error("Unexpected install");
     },

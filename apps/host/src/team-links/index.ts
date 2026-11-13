@@ -12,6 +12,7 @@ import { TeamLinkNetwork } from "./network.js";
 import { TeamRunFileTransfers, type PersonalTeamAttachmentPort } from "./files.js";
 import { TeamRunTools } from "./tools.js";
 import { PersonalTeamToolAdapter } from "./team-tool-adapter.js";
+import { PersonalTeamKnowledge } from "./knowledge.js";
 
 export function createPersonalTeamLinkServices(options: {
   readonly database: Kysely<DatabaseSchema>;
@@ -52,6 +53,10 @@ export function createPersonalTeamLinkServices(options: {
   });
   const tools = new TeamRunTools(requestsStore, requests, (teamId) => links.rpc(teamId), files);
   const teamTools = new PersonalTeamToolAdapter(tools, files);
+  const knowledge = new PersonalTeamKnowledge(
+    () => links.list(),
+    (teamId) => links.rpc(teamId),
+  );
   const teamContext = async (runId: RunId) => {
     const context = await tools.context(runId);
     const owner = await options.database
@@ -62,7 +67,7 @@ export function createPersonalTeamLinkServices(options: {
       .executeTakeFirstOrThrow();
     return { ...context, ownerDisplayName: owner.displayName };
   };
-  return { links, requests, files, tools, teamTools, teamContext };
+  return { links, requests, files, tools, teamTools, knowledge, teamContext };
 }
 
 export type { PersonalTeamRunPort } from "./requests.js";

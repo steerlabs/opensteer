@@ -232,4 +232,22 @@ describe("NotificationDeliveryWorker", () => {
       expect.objectContaining({ nextAttemptAt: new Date(now().getTime() + 1_000) }),
     );
   });
+
+  it("leaves a kind this release can't word to a newer replica, sending nothing", async () => {
+    // During a rolling deploy an older replica claims rows a newer one wrote.
+    const claimed = delivery({ kind: "team-from-a-newer-release" as never });
+    const sender = vi.fn<PushSender>();
+    const harness = worker({ claimed: [claimed], sender });
+
+    await harness.instance.deliverOnce();
+
+    expect(sender).not.toHaveBeenCalled();
+    expect(harness.settleDelivery).not.toHaveBeenCalled();
+    expect(harness.retryDelivery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        notificationId: claimed.notificationId,
+        outcome: "notification-delivery-error",
+      }),
+    );
+  });
 });

@@ -1,43 +1,33 @@
-import { PersonalTeamLinks, unwrapRpcResult } from "@opensteer/client/host";
+import { unwrapRpcResult } from "@opensteer/client/host";
 import type { TeamSessionClient } from "@opensteer/client/team";
-import { createId, TeamGroupIdSchema, TeamInviteIdSchema, UserIdSchema } from "@opensteer/core";
-import type { HostApiCommandInput, TeamGroupSchema, TeamInviteSchema } from "@opensteer/protocol";
+import type { HostedTeamId } from "@opensteer/control-plane-protocol/hosted-teams";
+import { createId, DeploymentIdSchema, TeamGroupIdSchema, UserIdSchema } from "@opensteer/core";
+import type { HostApiCommandInput, TeamGroupSchema } from "@opensteer/protocol";
 import type { z } from "zod";
-import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import * as Clipboard from "expo-clipboard";
 import { useEffect, useState, type ReactNode } from "react";
-import {
-  ActivityIndicator,
-  Alert,
-  FlatList,
-  ScrollView,
-  Share,
-  StyleSheet,
-  View,
-} from "react-native";
+import { ActivityIndicator, Alert, FlatList, ScrollView, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootParamList } from "../navigation.js";
 import { color, material, radius, space } from "../theme.js";
-import { useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { Notice, RowGroup } from "../ui/primitives.js";
 import { LinkRow } from "./settings-rows.js";
 import { Screen } from "../ui/screen.js";
 import {
   GroupDetailBody,
   GroupsAdminBody,
-  InvitesAdminBody,
   PeopleAdminBody,
   TeamSettingsBody,
   type GroupMemberRow,
   type PersonAdminRow,
 } from "./team-admin.js";
-import { useMobileTeams, useTeamMembers, useTeamSession } from "./team-context.js";
+import { useMobileTeams, useTeamEntry, useTeamMembers, useTeamSession } from "./team-context.js";
+import { agentWords, useAgentConnection } from "./team-entry-screens.js";
 import { personView } from "./team-views.js";
 
 type Navigation = NativeStackNavigationProp<RootParamList>;
 type TeamGroup = z.infer<typeof TeamGroupSchema>;
-type TeamInvite = z.infer<typeof TeamInviteSchema>;
 type TeamParams = StaticScreenProps<{ readonly teamId: string }>;
 
 async function command(session: TeamSessionClient, input: HostApiCommandInput) {
@@ -84,36 +74,43 @@ function useGroups(session: TeamSessionClient | null): {
   return { groups, reload: () => setGeneration((next) => next + 1) };
 }
 
+/**
+ * Whether Account says this Account holds the hosted team: only its holder may transfer it. Read
+ * again whenever the screen comes back into view, as after a transfer.
+ */
+function useHoldsHostedTeam(hostedTeamId: HostedTeamId | null): boolean {
+  const { account } = useTeamEntry();
+  const focused = useIsFocused();
+  const [held, setHeld] = useState<HostedTeamId | null>(null);
+  useEffect(() => {
+    if (!focused) return;
+    if (hostedTeamId === null) return;
+    const controller = new AbortController();
+    void account.hostedTeam(hostedTeamId, controller.signal).then(
+      (view) => !controller.signal.aborted && setHeld(view?.creator ? hostedTeamId : null),
+      () => undefined,
+    );
+    return () => controller.abort();
+  }, [account, focused, hostedTeamId]);
+  return hostedTeamId !== null && held === hostedTeamId;
+}
+
 /** A team's own page: the reader in it, their agent's link, and for admins the team itself. */
 export function TeamSettingsScreen(props: TeamParams): ReactNode {
   const { teamId } = props.route.params;
   const navigation = useNavigation<Navigation>();
-  const teams = useMobileTeams();
-  const personal = useSelectedHostClient();
+  const { coordinator } = useTeamEntry();
   const { session, snapshot, team, failure } = useTeamSession(teamId);
   const { members, directory } = useTeamMembers(teamId);
   const { groups } = useGroups(session);
   const padding = useSafeAreaInsets().bottom + space[24];
-  const [agentLink, setAgentLink] = useState<string | null>(null);
-  useEffect(() => {
-    if (personal === null) return;
-    let current = true;
-    void new PersonalTeamLinks(personal.rpc).list().then(
-      (links) => {
-        const link = links.find((row) => row.teamId === teamId && row.state === "active");
-        if (current)
-          setAgentLink(
-            link === undefined ? null : (personal.getSnapshot().ownerName ?? "your computer"),
-          );
-      },
-      () => undefined,
-    );
-    return () => {
-      current = false;
-    };
-  }, [personal, teamId]);
+  const agent = useAgentConnection(teamId);
   const bootstrap = snapshot.bootstrap;
+  const hostedTeamId = bootstrap?.member.role === "owner" ? (bootstrap.hostedTeamId ?? null) : null;
+  const holds = useHoldsHostedTeam(hostedTeamId);
   if (session === null || bootstrap === null || team === null) return <Waiting failure={failure} />;
+  const words = agentWords(agent.intent, agent.linked, bootstrap.member.handle);
+  const connected = words.tone === "done";
   return (
     <Screen edgeToEdge>
       <TeamSettingsBody
@@ -136,21 +133,28 @@ export function TeamSettingsScreen(props: TeamParams): ReactNode {
           onKnowledge: () => navigation.navigate("TeamKnowledge", { teamId }),
           onAuditLog: () => navigation.navigate("TeamAudit", { teamId }),
           onLeave: () =>
-            Alert.alert(
-              `Leave ${team.name}?`,
-              `You'll lose access to its channels. Tasks your agent did for ${team.name} stay on your computer.`,
-              [
-                { style: "cancel", text: "Cancel" },
-                {
-                  style: "destructive",
-                  text: "Leave",
-                  onPress: () => void teams.leave(teamId).then(() => navigation.popToTop(), failed),
-                },
-              ],
-            ),
+            void coordinator
+              .leaveTeam(DeploymentIdSchema.parse(teamId))
+              .then(() => navigation.popToTop(), failed),
+          onDisconnect: connected
+            ? () => void coordinator.disconnectAgent(DeploymentIdSchema.parse(teamId)).catch(failed)
+            : null,
+          onTransfer: holds ? () => navigation.navigate("TransferTeam", { teamId }) : null,
+          onDelete:
+            hostedTeamId === null ? null : () => navigation.navigate("DeleteTeam", { teamId }),
         }}
         address={new URL(team.origin).host}
-        agentLink={agentLink}
+        agent={
+          connected
+            ? { value: agent.computerName ?? "Connected", detail: null, attention: false }
+            : words.tone === "busy" || words.tone === "waiting"
+              ? {
+                  value: words.tone === "busy" ? "Connecting" : "Waiting",
+                  detail: words.line,
+                  attention: false,
+                }
+              : { value: "Not connected", detail: words.line, attention: true }
+        }
         counts={{ people: members.length, groups: groups?.length ?? 0 }}
         me={personView(bootstrap.member.userId, directory)}
         paddingBottom={padding}
@@ -323,83 +327,6 @@ export function TeamGroupScreen(
         }}
         paddingBottom={padding}
         usedBy={[]}
-      />
-    </Screen>
-  );
-}
-
-/**
- * The team's invite link. Its secret half exists only when it is made, so a
- * link made elsewhere can be replaced here but not shown again.
- */
-export function TeamInvitesScreen(props: TeamParams): ReactNode {
-  const { teamId } = props.route.params;
-  const { session, failure } = useTeamSession(teamId);
-  const padding = useSafeAreaInsets().bottom + space[24];
-  const [invites, setInvites] = useState<readonly TeamInvite[] | null>(null);
-  const [link, setLink] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-  const [generation, setGeneration] = useState(0);
-  useEffect(() => {
-    if (session === null) return;
-    let current = true;
-    void session.rpc["team.invites.list"]({})
-      .then(unwrapRpcResult)
-      .then(
-        (page) => current && setInvites(page.invites),
-        () => undefined,
-      );
-    return () => {
-      current = false;
-    };
-  }, [generation, session]);
-  if (session === null || invites === null) return <Waiting failure={failure} />;
-  const live = invites.find(
-    (invite) => invite.revokedAt === null && Date.parse(invite.expiresAt) > Date.now(),
-  );
-  const revokeLive = async (): Promise<void> => {
-    if (live !== undefined)
-      await command(session, {
-        type: "team.invite.revoke",
-        inviteId: TeamInviteIdSchema.parse(live.id),
-      });
-  };
-  const makeLink = async (): Promise<void> => {
-    await revokeLive();
-    const made = await command(session, {
-      type: "team.invite.create",
-      id: createId("teamInvite"),
-      maxUses: 1,
-      expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
-    });
-    if (made.type === "team.invite.create") setLink(made.url);
-    setGeneration((next) => next + 1);
-  };
-  return (
-    <Screen edgeToEdge>
-      <InvitesAdminBody
-        copied={copied}
-        enabled={live !== undefined}
-        link={link ?? (live === undefined ? "No link is on" : "Make a new link to share it here")}
-        onCopy={() => {
-          if (link === null) return;
-          void Clipboard.setStringAsync(link).then(() => setCopied(true));
-        }}
-        onEnabled={(on) =>
-          void (on ? makeLink() : revokeLive().then(() => setGeneration((n) => n + 1))).catch(
-            failed,
-          )
-        }
-        onNewLink={() => void makeLink().catch(failed)}
-        onShare={() => {
-          if (link !== null) void Share.share({ message: link });
-        }}
-        paddingBottom={padding}
-        status={
-          live === undefined
-            ? "Off"
-            : `One person can join with it. Expires ${new Date(live.expiresAt).toLocaleDateString()}.`
-        }
       />
     </Screen>
   );

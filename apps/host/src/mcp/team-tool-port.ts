@@ -1,5 +1,12 @@
 import type { DeploymentId, RunId, TeamAgentRequestId } from "@opensteer/core";
-import type { team_read, team_search, team_reply, sql } from "@opensteer/agent-tools/tools";
+import type {
+  knowledge_read,
+  knowledge_topics,
+  knowledge_write,
+  team_read,
+  team_search,
+  team_reply,
+} from "@opensteer/agent-tools/tools";
 import type { z } from "zod";
 
 export interface TeamToolRun {
@@ -24,9 +31,28 @@ export interface TeamToolPort {
     input: z.output<typeof team_reply.input>,
     signal?: AbortSignal,
   ): Promise<z.output<typeof team_reply.output>>;
-  sql(
-    run: TeamToolRun,
-    input: z.output<typeof sql.input>,
+}
+
+/** A Run reaching team knowledge as its owner; a team thread's Run also names its team and request. */
+export interface TeamKnowledgeCaller {
+  readonly runId: RunId;
+  readonly teamOrigin: { readonly teamId: DeploymentId } | null;
+  readonly requestId: TeamAgentRequestId | null;
+}
+export interface TeamKnowledgePort {
+  topics(
+    caller: TeamKnowledgeCaller,
+    input: z.output<typeof knowledge_topics.input>,
     signal?: AbortSignal,
-  ): Promise<z.output<typeof sql.output>>;
+  ): Promise<z.output<typeof knowledge_topics.output>>;
+  read(
+    caller: TeamKnowledgeCaller,
+    input: z.output<typeof knowledge_read.input>,
+    signal?: AbortSignal,
+  ): Promise<z.output<typeof knowledge_read.output>>;
+  write(
+    caller: TeamKnowledgeCaller,
+    input: z.output<typeof knowledge_write.input>,
+    signal?: AbortSignal,
+  ): Promise<z.output<typeof knowledge_write.output>>;
 }

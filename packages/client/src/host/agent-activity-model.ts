@@ -2099,6 +2099,23 @@ const opensteerSteps = new Map<string, OpensteerStep>([
   ["team_read", said(["Reading team context", "Read team context"], "list")],
   ["team_search", said(["Searching team messages", "Searched team messages"], "search")],
   ["team_reply", said(["Replying to the team", "Replied to the team"], "share")],
+  ["knowledge_topics", said(["Looking up team topics", "Looked up team topics"], "list")],
+  [
+    "knowledge_read",
+    (tool, args) =>
+      (stringField(args, "query") !== null
+        ? said(["Searching team notes", "Searched team notes"], "search")
+        : said(["Reading team notes", "Read team notes"], "list"))(tool, args),
+  ],
+  [
+    "knowledge_write",
+    (tool, args) =>
+      (isRecord(args) && args["delete"] === true
+        ? said(["Deleting a team note", "Deleted a team note"], "pencil")
+        : stringField(args, "noteId") !== null
+          ? said(["Updating a team note", "Updated a team note"], "pencil")
+          : said(["Saving a team note", "Saved a team note"], "pencil"))(tool, args),
+  ],
 
   ["settings_read", said(["Reading settings", "Read settings"], "list")],
   [
@@ -2291,13 +2308,6 @@ const opensteerSteps = new Map<string, OpensteerStep>([
     saidByAction(taskActions, ["Changing a task", "Changed a task"], "pencil", "title"),
   ],
   ["trigger_read", said(["Looking up automations", "Looked up automations"], "list")],
-  [
-    "sql",
-    (tool, args) =>
-      (stringField(args, "mode") === "write"
-        ? said(["Saving facts", "Saved facts"], "pencil")
-        : said(["Looking up facts", "Looked up facts"], "list"))(tool, args),
-  ],
   [
     "trigger_write",
     saidByAction(

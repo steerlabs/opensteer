@@ -49,6 +49,7 @@ export function registerHostedTeamProvisionerRoutes(
   dependencies: {
     readonly hostedTeams: HostedTeamStore;
     readonly verifyProvisioner: (authorization: string | undefined) => Promise<void>;
+    readonly kickBootstrap?: () => void;
   },
 ): void {
   const authenticate = (request: FastifyRequest) =>
@@ -65,10 +66,11 @@ export function registerHostedTeamProvisionerRoutes(
   app.post("/v1/hosted-teams/:id/status", async (request, reply) => {
     await authenticate(request);
     const { id } = StatusParamsSchema.parse(request.params);
-    await dependencies.hostedTeams.reportStatus(
+    const recorded = await dependencies.hostedTeams.reportStatus(
       id,
       HostedTeamStatusReportSchema.parse(request.body),
     );
+    if (recorded.configuring) dependencies.kickBootstrap?.();
     void reply.header("cache-control", "no-store");
     return { recorded: true };
   });

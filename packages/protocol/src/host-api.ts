@@ -1518,6 +1518,11 @@ export const hostApi = defineRpc({
     teamReadSchemas["team.invites.list"].input,
     teamReadViews["team.invites.list"],
   ),
+  "team.invite.current.get": declaration(
+    "POST",
+    teamReadSchemas["team.invite.current.get"].input,
+    teamReadViews["team.invite.current.get"],
+  ),
   "team.audit.page": declaration(
     "POST",
     teamReadSchemas["team.audit.page"].input,
@@ -1583,15 +1588,20 @@ export const hostApi = defineRpc({
     teamReadSchemas["team.files.page"].input,
     teamReadViews["team.files.page"],
   ),
-  "team.knowledge.facts.page": declaration(
+  "team.knowledge.notes.page": declaration(
     "POST",
-    teamReadSchemas["team.knowledge.facts.page"].input,
-    teamReadViews["team.knowledge.facts.page"],
+    teamReadSchemas["team.knowledge.notes.page"].input,
+    teamReadViews["team.knowledge.notes.page"],
   ),
-  "team.knowledge.history.page": declaration(
+  "team.knowledge.note.get": declaration(
     "POST",
-    teamReadSchemas["team.knowledge.history.page"].input,
-    teamReadViews["team.knowledge.history.page"],
+    teamReadSchemas["team.knowledge.note.get"].input,
+    teamReadViews["team.knowledge.note.get"],
+  ),
+  "team.knowledge.note.history": declaration(
+    "POST",
+    teamReadSchemas["team.knowledge.note.history"].input,
+    teamReadViews["team.knowledge.note.history"],
   ),
 
   "browser.searchSuggestions.get": declaration(

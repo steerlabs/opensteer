@@ -10,6 +10,12 @@ import { hostApi } from "./host-api.js";
 import { teamIdentityRpcNames, teamReadSchemas, TeamCommandSchema } from "./team-api.js";
 import { TeamClientFrameSchema, TeamServerFrameSchema } from "./team-chat.js";
 import {
+  TeamInvitePreviewRequestSchema,
+  TeamInvitePreviewResponseSchema,
+  TeamSessionExchangeRequestSchema,
+  TeamSessionExchangeResponseSchema,
+} from "./team-session.js";
+import {
   TeamBinaryDownloadHeadersSchema,
   TeamBinaryUploadHeadersSchema,
   TeamBinaryUploadMetadataSchema,
@@ -84,11 +90,15 @@ function teamWire(): TeamWire {
       "link download headers": json(TeamBinaryDownloadHeadersSchema),
       "link upload headers": json(TeamBinaryUploadHeadersSchema),
       "link upload metadata": json(TeamBinaryUploadMetadataSchema),
+      "session exchange": json(TeamSessionExchangeRequestSchema),
+      "invite preview": json(TeamInvitePreviewRequestSchema),
     },
     output: {
       ...Object.fromEntries(rpcs.map((name) => [`rpc ${name}`, json(declaration(name).success)])),
       ...commandOptions(hostApi["commands.dispatch"].success),
       "link view": json(TeamLinkViewSchema),
+      "session exchange": json(TeamSessionExchangeResponseSchema),
+      "invite preview": json(TeamInvitePreviewResponseSchema),
       // Strict: a signed discovery document is verified over exactly what was signed.
       descriptor: json(HostDescriptorSchema),
     },

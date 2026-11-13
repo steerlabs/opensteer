@@ -191,12 +191,10 @@ function ChannelTabs({
   readonly onTab: (tab: ChannelTab) => void;
   readonly tab: ChannelTab;
 }) {
-  const dm = channel.kind === "dm" || channel.kind === "group-dm";
   const tabs: readonly (readonly [ChannelTab, string, number | null])[] = [
     ["messages", "Messages", null],
     ["files", "Files", channel.fileCount],
     ["pinned", "Pinned", channel.pinCount],
-    ...(dm ? [] : ([["knowledge", "Knowledge", null]] as const)),
   ];
   return (
     <div aria-label="Channel" className="channel__tabs" role="tablist">

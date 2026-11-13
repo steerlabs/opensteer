@@ -46,6 +46,14 @@ export const PublishedNotificationKindSchema = z.enum([
 ]);
 export type PublishedNotificationKind = z.infer<typeof PublishedNotificationKindSchema>;
 
+/** What Account delivers: every kind a Host publishes, and the ones Account sends itself. */
+export const AccountNotificationKindSchema = z.enum([
+  ...PublishedNotificationKindSchema.options,
+  /** A hosted team this Account created finished setting up. */
+  "team-ready",
+]);
+export type AccountNotificationKind = z.infer<typeof AccountNotificationKindSchema>;
+
 /**
  * What a Host tells the Account when a person should hear from Opensteer.
  * Identifiers, bounded delivery metadata and optional per-installation sealed
@@ -100,7 +108,8 @@ export const HostNotificationPublicationSchema = z
           publication.messageId != null ||
           publication.teamTarget?.teamId !== publication.deploymentId ||
           (publication.kind === "team-notice") !==
-            (publication.teamTarget?.kind === "team-notice"))) ||
+            (publication.teamTarget?.kind === "team-notice") ||
+          publication.teamTarget?.kind === "team-ready")) ||
       (!teamKind && publication.threadId === null)
     )
       context.addIssue({ code: "custom", message: "Notification target does not match its kind" });
@@ -220,18 +229,30 @@ export const TeamNotificationTargetSchema = z.discriminatedUnion("kind", [
     teamId: DeploymentIdSchema,
     noticeId: TeamNoticeIdSchema,
   }),
+  /** Account's own: the team's #general, where its new owner lands. */
+  z.strictObject({
+    kind: z.literal("team-ready"),
+    origin: TeamOriginSchema,
+    teamId: DeploymentIdSchema,
+    channelId: TeamChannelIdSchema,
+  }),
 ]);
 export type TeamNotificationTarget = z.infer<typeof TeamNotificationTargetSchema>;
 
 export function teamNotificationDeepLink(targetInput: TeamNotificationTarget): string {
   const target = TeamNotificationTargetSchema.parse(targetInput);
+  if (target.kind === "team-ready")
+    return teamPageAppLink(
+      { origin: target.origin, target: { kind: "channel", channelId: target.channelId } },
+      "mobile",
+    );
   if (target.kind === "team-message")
     return teamPageAppLink(
       {
         origin: target.origin,
         target: { kind: "message", channelId: target.channelId, messageId: target.messageId },
       },
-      "com.opensteer.mobile",
+      "mobile",
     );
   return `com.opensteer.mobile:/team-notice?${new URLSearchParams({ origin: target.origin, teamId: target.teamId, noticeId: target.noticeId })}`;
 }

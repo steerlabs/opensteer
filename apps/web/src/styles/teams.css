@@ -1,0 +1,544 @@
+/* Creating, joining and inviting to hosted teams: the Teams page, its sheets,
+   setup progress, and the welcome #general shows. One centered column; never
+   stretched edge to edge. */
+
+/* ---- Sidebar ---- */
+
+.teams-nav,
+.team-side__invite,
+.teams-setup-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+  width: calc(100% - var(--space-12));
+  min-height: var(--control-height);
+  margin: 0 var(--space-6);
+  padding: var(--space-6) var(--space-8);
+  border-radius: var(--radius-sm);
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+  text-align: left;
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.teams-nav {
+  flex: none;
+  margin-bottom: var(--space-2);
+}
+
+.teams-nav:hover,
+.team-side__invite:hover,
+.teams-setup-entry:hover,
+.teams-nav[aria-current="page"] {
+  background-color: var(--fill-quiet);
+  color: var(--text);
+}
+
+.teams-nav > svg,
+.team-side__invite > svg {
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+}
+
+.team-side__invite {
+  width: 100%;
+  margin: var(--space-2) 0 var(--space-8);
+  color: var(--ember);
+}
+
+.team-side__invite > svg {
+  color: currentColor;
+}
+
+.teams-setup-entries {
+  flex: none;
+  margin: 0 0 var(--space-4);
+  padding: 0;
+  list-style: none;
+}
+
+.teams-setup-entry__dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin: 0 var(--space-4);
+  border-radius: 50%;
+  background: var(--ember);
+  animation: teams-pulse 1.6s var(--ease-out) infinite;
+}
+
+.teams-setup-entry__dot.is-failed {
+  background: var(--red);
+  animation: none;
+}
+
+.teams-setup-entry__text {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes teams-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ---- Teams page ---- */
+
+.teams-home {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+  width: 100%;
+  max-width: 560px;
+  margin: 0 auto;
+  padding: var(--space-48) var(--space-20) var(--space-40);
+}
+
+.teams-home__head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  margin-bottom: var(--space-4);
+}
+
+.teams-home__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--display-lg);
+  font-weight: var(--weight-medium);
+  letter-spacing: -0.01em;
+}
+
+.teams-home__lede {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: var(--text-2xl);
+  line-height: 1.55;
+}
+
+.teams-home__foot {
+  margin: var(--space-4) 0 0;
+  color: var(--muted);
+  font-size: var(--text-lg);
+  text-align: center;
+}
+
+.teams-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-14);
+  padding: var(--space-20);
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-lg);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
+}
+
+.teams-card--stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-12);
+}
+
+.teams-card__mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  background: var(--ember-wash);
+  color: var(--ember);
+}
+
+.teams-card__mark > svg {
+  width: 20px;
+  height: 20px;
+}
+
+.teams-card__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.teams-card__title {
+  margin: 0;
+  font-size: var(--display-xs);
+  font-weight: var(--weight-bold);
+}
+
+.teams-card__detail {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-lg);
+}
+
+.teams-card__action {
+  flex: none;
+}
+
+.teams-card__join {
+  display: flex;
+  gap: var(--space-8);
+}
+
+.teams-card__join > .text-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.teams-card .btn,
+.teams-card .text-input {
+  min-height: 38px;
+}
+
+@media (max-width: 520px) {
+  .teams-home {
+    padding-top: var(--space-28);
+  }
+
+  .teams-card:not(.teams-card--stack) {
+    flex-wrap: wrap;
+  }
+
+  .teams-card__action {
+    width: 100%;
+  }
+}
+
+/* ---- Sheets ---- */
+
+.teams-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+}
+
+.teams-form__lede {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: var(--text-xl);
+  line-height: 1.55;
+}
+
+/* The owners a team can be handed to: one bordered list of radio rows. */
+.teams-owners {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-md);
+}
+
+.teams-owners > .option-row + .option-row {
+  border-top-color: var(--line);
+}
+
+.teams-form__fine {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+.teams-field-hint {
+  min-height: 1.4em;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.teams-field-hint--ok {
+  color: var(--green);
+}
+
+.teams-field-hint--error {
+  color: var(--red-text);
+}
+
+.teams-address {
+  display: flex;
+  align-items: center;
+  min-height: var(--control-height);
+  border: 1px solid var(--rim-control);
+  border-radius: var(--radius-sm);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
+  transition:
+    border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.teams-address:focus-within {
+  border-color: var(--ember);
+  box-shadow: var(--edge-plate), var(--ring-ember);
+}
+
+.teams-address__input {
+  flex: 1;
+  min-width: 4ch;
+  align-self: stretch;
+  padding: var(--space-6) var(--space-10);
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--control-font);
+}
+
+.teams-address__input:focus {
+  outline: none;
+}
+
+.teams-address__domain {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  overflow: hidden;
+  padding: 0 var(--space-10);
+  border-left: 1px solid var(--line);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--fill-quiet);
+  color: var(--muted);
+  font-size: var(--control-font);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.teams-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-14);
+  margin: var(--space-18) 0 var(--space-4);
+  padding: 0;
+  list-style: none;
+}
+
+.teams-steps__step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  color: var(--muted);
+  font-size: var(--text-2xl);
+}
+
+.teams-steps__dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--line-strong);
+  transition:
+    background-color var(--duration-med) var(--ease-out),
+    box-shadow var(--duration-med) var(--ease-out);
+}
+
+.teams-steps__step--done {
+  color: var(--text-soft);
+}
+
+.teams-steps__step--done .teams-steps__dot {
+  background: var(--green);
+}
+
+.teams-steps__step--active {
+  color: var(--text);
+  font-weight: var(--weight-medium);
+}
+
+.teams-steps__step--active .teams-steps__dot {
+  background: var(--ember);
+  box-shadow: 0 0 0 4px var(--ember-wash);
+  animation: teams-pulse 1.6s var(--ease-out) infinite;
+}
+
+.teams-steps__step--failed {
+  color: var(--red-text);
+}
+
+.teams-steps__step--failed .teams-steps__dot {
+  background: var(--red);
+}
+
+.teams-setup__cancel {
+  margin-right: auto;
+}
+
+.teams-join {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-14);
+}
+
+.teams-join__team {
+  display: flex;
+  align-items: center;
+  gap: var(--space-10);
+}
+
+.teams-join__host {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-lg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.teams-invite {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-18);
+  margin-top: var(--space-6);
+}
+
+.teams-invite__qr {
+  flex: none;
+  width: 124px;
+  height: 124px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+}
+
+.teams-invite__controls {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-14);
+  min-width: 0;
+}
+
+.teams-invite__controls > .field {
+  align-self: stretch;
+}
+
+.teams-invite__link {
+  display: flex;
+  gap: var(--space-8);
+}
+
+.teams-invite__link > .text-input {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-soft);
+  font-size: var(--text-md);
+  text-overflow: ellipsis;
+}
+
+.teams-invite__expiry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-10);
+}
+
+.teams-invite__expiry > .select-input {
+  width: auto;
+}
+
+.teams-invite__reset {
+  margin-left: calc(var(--space-10) * -1);
+  color: var(--muted);
+}
+
+@media (max-width: 520px) {
+  .teams-invite {
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .teams-invite__qr {
+    width: 152px;
+    height: 152px;
+  }
+
+  .teams-invite__controls {
+    align-self: stretch;
+  }
+}
+
+/* ---- Welcome in #general ---- */
+
+.teams-welcome {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  max-width: 600px;
+  margin: var(--space-24) var(--space-20) 0;
+  padding: var(--space-18) var(--space-20);
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-lg);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
+}
+
+.teams-welcome__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.teams-welcome__title {
+  flex: 1;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--display-sm);
+  font-weight: var(--weight-medium);
+}
+
+.teams-welcome__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-10);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.teams-welcome__row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-10);
+  color: var(--text-soft);
+  font-size: var(--text-xl);
+  line-height: 1.5;
+}
+
+.teams-welcome__row > svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 3px;
+  color: var(--green);
+}
+
+.teams-welcome__row--todo,
+.teams-welcome__row:has(> svg + .teams-welcome__grow) {
+  align-items: center;
+}
+
+.teams-welcome__row--todo > svg,
+.teams-welcome__row > svg:has(+ .teams-welcome__grow) {
+  margin-top: 0;
+  color: var(--muted);
+}
+
+.teams-welcome__grow {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-8);
+}
+
+.teams-welcome__inline {
+  flex: none;
+}

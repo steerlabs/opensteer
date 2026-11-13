@@ -38,6 +38,7 @@
     "@opensteer/agent-phone-setup": "workspace:*",
     "@opensteer/channel-core": "workspace:*",
     "@opensteer/client": "workspace:*",
+    "@opensteer/control-plane-protocol": "workspace:*",
     "@opensteer/core": "workspace:*",
     "@opensteer/integration-core": "workspace:*",
     "@opensteer/protocol": "workspace:*",

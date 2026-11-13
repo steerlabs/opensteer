@@ -158,6 +158,10 @@ export interface DesktopBridgeOptions {
     readonly request: () => Promise<void>;
   };
   readonly teamLinks?: import("../app/team-links.js").DesktopTeamLinks;
+  /** Account's hosted-team calls; absent without an Account service. */
+  readonly accountTeams?: import("@opensteer/client/team").AccountTeamsClient | null;
+  /** Entering teams with the Account's identity; absent without an Account service. */
+  readonly teamSessions?: import("../app/team-sessions.js").DesktopTeamSessions | null;
   readonly personalDataReset?: {
     oldData(): import("@opensteer/protocol/desktop").DesktopPersonalOldDataState | null;
     startFresh(): Promise<void>;

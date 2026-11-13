@@ -30,7 +30,7 @@ interface PlaceBodyProps {
 /**
  * A channel, a DM or a group DM: its messages and the composer floating over
  * their foot. The bar above it is the native one; `ChannelTitle` is its title,
- * which opens Details (Members, Files, Pinned, Knowledge live there on a phone).
+ * which opens Details (Members, Files and Pinned live there on a phone).
  *
  * Asks to agents are answered in a thread under the asking message, in DMs as
  * in channels, so this screen shows only roots, their summaries and the
@@ -41,11 +41,20 @@ export function ChannelScreenBody(
     readonly channel: ChannelHeaderView;
     /** Nothing older to load: the start of the channel is drawn above its first message. */
     readonly atStart: boolean;
+    /** A new team's welcome, at the very start of #general. */
+    readonly welcome?: ReactNode;
   },
 ): ReactNode {
   const { channel } = props;
   return (
-    <PlaceLayout {...props}>{props.atStart ? <PlaceStart channel={channel} /> : null}</PlaceLayout>
+    <PlaceLayout {...props}>
+      {props.atStart ? (
+        <>
+          <PlaceStart channel={channel} />
+          {props.welcome}
+        </>
+      ) : null}
+    </PlaceLayout>
   );
 }
 
@@ -129,7 +138,7 @@ function PlaceStart(props: { readonly channel: ChannelHeaderView }): ReactNode {
       description={channel.description}
       instructions={channel.instructions}
       peopleOnly={channel.peopleOnly}
-      title={`Welcome to #${channel.name}`}
+      title={`This is the start of #${channel.name}`}
     />
   );
 }

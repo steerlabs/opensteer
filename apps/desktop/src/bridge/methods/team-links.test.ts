@@ -8,10 +8,9 @@ import { desktopBridgeChannels } from "../desktop-bridge-channels.js";
 import { teamLinkDelivery } from "./team-links.js";
 
 it("delivers pending team links only to the ready application window and retains them across navigation", () => {
-  const scheme = "com.opensteer.opensteer";
-  const teamLinks = new DesktopTeamLinks(scheme);
+  const teamLinks = new DesktopTeamLinks();
   const page = `https://unknown.example/c/${createId("teamChannel")}/m/42`;
-  teamLinks.accept(teamPageAppLink(parseTeamPageLink(page)!, scheme));
+  teamLinks.accept(teamPageAppLink(parseTeamPageLink(page)!, "desktop"));
   const mainFrame = { url: "app://opensteer/" };
   const sender = Object.assign(new EventEmitter(), {
     mainFrame,

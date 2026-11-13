@@ -158,12 +158,16 @@ export const AuthenticatedSessionViewSchema = z.object({
 export const HostKeyFingerprintSchema = z.string().regex(/^sha256:[A-Za-z0-9_-]{43}$/u);
 export type HostKeyFingerprint = z.infer<typeof HostKeyFingerprintSchema>;
 
+/** The two signed first-party applications; each owns its own URL scheme and OAuth client. */
+export const OpensteerNativeApplicationSchema = z.enum(["desktop", "mobile"]);
+export type OpensteerNativeApplication = z.infer<typeof OpensteerNativeApplicationSchema>;
+
 /** One signed Opensteer build with its public OAuth identity. */
 export interface OpensteerNativeClient {
   readonly accountCallback: string;
   readonly accountDisplayName: string;
   readonly accountSoftwareId: string;
-  readonly application: "desktop" | "mobile";
+  readonly application: OpensteerNativeApplication;
   readonly applicationId: string;
   readonly clientId: string;
   readonly hostCallback: string;
@@ -218,6 +222,12 @@ export const opensteerMobileClient = nativeClient({
   name: "Opensteer Mobile",
 });
 export const opensteerNativeClients = [opensteerDesktopClient, opensteerMobileClient] as const;
+
+export function opensteerNativeClient(
+  application: OpensteerNativeApplication,
+): OpensteerNativeClient {
+  return application === "desktop" ? opensteerDesktopClient : opensteerMobileClient;
+}
 
 export const opensteerDesktopOAuthClientId = opensteerDesktopClient.clientId;
 export const opensteerDesktopApplicationId = opensteerDesktopClient.applicationId;

@@ -330,6 +330,42 @@ describe("DeploymentCatalogStore", () => {
     ]);
   });
 
+  it("keeps a just-joined team until Account's directory lists it or the window passes", async () => {
+    let now = new Date("2026-08-11T10:00:00.000Z");
+    const store = new DeploymentCatalogStore({
+      filePath: catalogPath,
+      privateFiles: new MemoryPrivateFilesystem(),
+      now: () => now,
+    });
+    const listed = deploymentInput({ kind: "team", name: "Listed" });
+    const joined = DeploymentConnectionInputSchema.parse({
+      ...deploymentInput({ accountAccess: "member", kind: "team", name: "Joined" }),
+      source: accountSource,
+    });
+    const ids = (catalog: { deployments: readonly DeploymentConnection[] }) =>
+      catalog.deployments.map(({ authority }) => authority.document.deploymentId);
+    await store.addPendingAccountDeployment(joined, 60_000);
+    const unlisted = { connections: [listed], directoryDeployments: [accountDeployment(listed)] };
+    expect(ids(await reconcileAccountDeployments(store, unlisted))).toEqual([
+      joined.authority.document.deploymentId,
+      listed.authority.document.deploymentId,
+    ]);
+    now = new Date("2026-08-11T10:01:01.000Z");
+    expect(ids(await reconcileAccountDeployments(store, unlisted))).toEqual([
+      listed.authority.document.deploymentId,
+    ]);
+
+    await store.addPendingAccountDeployment(joined, 60_000);
+    await reconcileAccountDeployments(store, {
+      connections: [listed, joined],
+      directoryDeployments: [accountDeployment(listed), accountDeployment(joined)],
+    });
+    // Listed once, the team is the directory's: leaving it removes it at once.
+    expect(ids(await reconcileAccountDeployments(store, unlisted))).toEqual([
+      listed.authority.document.deploymentId,
+    ]);
+  });
+
   it("still fences the selected Deployment when the directory reports it as gone", async () => {
     const files = new MemoryPrivateFilesystem();
     const store = new DeploymentCatalogStore({

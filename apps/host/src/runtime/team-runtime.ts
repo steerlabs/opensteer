@@ -5,7 +5,7 @@ import websocket from "@fastify/websocket";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
-import { type Deployment, type HostKeyFingerprint } from "@opensteer/core";
+import { deploymentPolicy, type Deployment, type HostKeyFingerprint } from "@opensteer/core";
 import {
   HostDescriptorSchema,
   apiNegotiation,
@@ -18,8 +18,6 @@ import {
   NotificationPreviewKeyStore,
   TeamAccessStore,
   appendTeamAudit,
-  prepareKnowledgeExecutor,
-  teamChannelTopics,
   type DatabaseSchema,
   type DeploymentAuthorityLease,
 } from "@opensteer/database";
@@ -46,7 +44,11 @@ import { createIdentityRpcHandlers, registerIdentityRoutes } from "../identity/i
 import { registerHostApi, carryWebSocketVersion } from "../server/host-api-registration.js";
 import { normalizeHostError } from "../server/http-errors.js";
 import { HostStaticDistribution } from "../server/static-distribution.js";
-import { RemoteAccountAdoptionGrantVerifier } from "../access/account-adoption-grant-verifier.js";
+import {
+  RemoteAccountAdoptionGrantVerifier,
+  RemoteHostedTeamOwnerCheckVerifier,
+} from "../access/account-adoption-grant-verifier.js";
+import { RemoteTeamIdentityAssertionVerifier } from "../access/team-identity-assertion-verifier.js";
 import { AccountDirectoryClient } from "../access/account-directory-client.js";
 import { AccountDirectoryPublisher } from "../access/account-directory-publisher.js";
 import { HostAuthorityPublisher } from "../access/host-authority-publisher.js";
@@ -55,6 +57,8 @@ import { startTeamKnowledge, type TeamKnowledge } from "../knowledge/team-knowle
 import { startTeamServices, assertTeamApiVersion } from "../team/services.js";
 import { registerTeamBinaryRoutes } from "../team/binary-routes.js";
 import { registerTeamSetupRoutes } from "../team/setup-routes.js";
+import { registerTeamSessionExchangeRoute } from "../team/session-exchange-routes.js";
+import { createTeamInviteVerifierVault } from "../team/invite-verifier-vault.js";
 import { createTeamMachineAdapters } from "../team/machine-adapters.js";
 import { createTeamPushPublisher } from "../team/push.js";
 import {
@@ -82,6 +86,7 @@ export async function createTeamHostRuntime(input: {
   let account = config.account;
   let authority: HostAuthorityPublisher | undefined;
   let directory: AccountDirectoryPublisher | undefined;
+  let admitted: TeamIdentityAdmission | undefined;
   let stopped = false;
   let step: string | undefined;
   const report = (area: string) => app.log.error({ area }, "Team background service failed");
@@ -118,7 +123,7 @@ export async function createTeamHostRuntime(input: {
       ...(options.accountDirectoryFetch ? { fetch: options.accountDirectoryFetch } : {}),
     });
     directory = new AccountDirectoryPublisher({
-      store: new AccountDirectoryStore(database),
+      store: new AccountDirectoryStore(database, deploymentPolicy({ kind: "team" })),
       publish: (projection) => client.publish(projection),
       onError: () => report("team-directory"),
       ...(options.accountDirectoryIntervalMs
@@ -138,7 +143,6 @@ export async function createTeamHostRuntime(input: {
   }
   try {
     const access = new TeamAccessStore(database);
-    let credentials: Awaited<ReturnType<typeof prepareKnowledgeExecutor>> | undefined;
     services = await startTeamServices({
       kind: "team",
       database,
@@ -147,12 +151,9 @@ export async function createTeamHostRuntime(input: {
       teamName: config.deploymentName ?? "Team",
       hostKeyFingerprint,
       origin: deployment.canonicalOrigin,
+      inviteVerifiers: createTeamInviteVerifierVault(config.authSecret, deployment.id),
       dataDirectory: config.dataDirectory,
       storageLimitBytes: config.teamStorageLimitBytes,
-      topics: teamChannelTopics,
-      ensureKnowledge: async () => {
-        credentials = await prepareKnowledgeExecutor(database);
-      },
       knowledge: {
         read: (actor, name, raw) => {
           if (!knowledge) throw new Error("Knowledge is not ready");
@@ -173,6 +174,7 @@ export async function createTeamHostRuntime(input: {
       },
       registerPreviewKey: (session, command) =>
         preview.register({ userId: session.user.id, authSessionId: session.id, ...command }),
+      hostedTeam: async () => (admitted ? admitted.hostedTeam() : null),
       publishPush: createTeamPushPublisher({
         teamId: deployment.id,
         hostInstanceId: deployment.activeHostInstanceId,
@@ -187,14 +189,7 @@ export async function createTeamHostRuntime(input: {
       }),
       backgroundError: report,
     });
-    if (!credentials) throw new Error("Knowledge executor credentials are missing");
-    knowledge = await startTeamKnowledge({
-      database,
-      databaseUrl: config.databaseUrl,
-      credentials,
-      access,
-      audit: appendTeamAudit,
-    });
+    knowledge = await startTeamKnowledge({ database, access, audit: appendTeamAudit });
     const team = services;
     const adapters = createTeamMachineAdapters(team, knowledge);
     machine = createTeamLinkEndpoint({
@@ -225,6 +220,23 @@ export async function createTeamHostRuntime(input: {
         issuer,
         ...(options.accountControlFetch ? { fetch: options.accountControlFetch } : {}),
       }),
+      hosted: {
+        createGeneralChannel: (transaction, ownerUserId) =>
+          team.chat.createGeneral(transaction, ownerUserId),
+        verifyOwnerCheck: (() => {
+          const verifier = new RemoteHostedTeamOwnerCheckVerifier({
+            audience: deployment.canonicalOrigin,
+            issuer,
+            ...(options.accountControlFetch ? { fetch: options.accountControlFetch } : {}),
+          });
+          return (assertion: unknown) => verifier.verify(assertion);
+        })(),
+      },
+      identityVerifier: new RemoteTeamIdentityAssertionVerifier({
+        audience: deployment.canonicalOrigin,
+        issuer,
+        ...(options.accountControlFetch ? { fetch: options.accountControlFetch } : {}),
+      }),
       installAccountBundle: async (bundle) => {
         await persistAccountBundle(config.accountBundlePath, bundle);
         account = {
@@ -239,6 +251,7 @@ export async function createTeamHostRuntime(input: {
         await publishDirectory();
       },
     });
+    admitted = admission;
     const identity = new IdentityService(database, {
       team: admission,
       deployment: { kind: "team", name: config.deploymentName ?? null },
@@ -320,8 +333,11 @@ export async function createTeamHostRuntime(input: {
         authority: envelope,
         bootstrapMethods: ["oidc"],
         capabilities: [
-          ...(config.identity.nativeOAuth ? ["native-oauth"] : []),
+          ...(config.identity.nativeOAuth ? ["native-oauth", "team-session-exchange-v1"] : []),
           "notification-preview-v1",
+          "team-hosted-bootstrap-v1",
+          "team-reusable-invites-v1",
+          "team-invite-native-continuation-v1",
         ],
       }),
     );
@@ -347,8 +363,13 @@ export async function createTeamHostRuntime(input: {
     });
     registerTeamSetupRoutes(app, {
       identity,
+      hosted: admission,
+      invites: team.invites,
+      teamName: config.deploymentName ?? "Team",
       accountPortalOrigin: config.portalOrigin?.origin ?? "https://app.opensteer.com",
     });
+    if (config.identity.nativeOAuth)
+      registerTeamSessionExchangeRoute(app, { identity, members: team.members });
     registerTeamBinaryRoutes(app, {
       files: team.files,
       access,
@@ -443,7 +464,6 @@ export async function createTeamHostRuntime(input: {
             ["http", () => app.close()],
             ["Account directory", () => directory?.close()],
             ["Account authority", () => authority?.close()],
-            ["knowledge", () => knowledge?.close()],
             ["authority lease", () => authorityLease.close()],
             ["database", () => database.destroy()],
           ] as const) {
@@ -467,7 +487,6 @@ export async function createTeamHostRuntime(input: {
       app.close(),
       directory?.close(),
       authority?.close(),
-      knowledge?.close(),
     ]);
     throw error;
   }

@@ -527,6 +527,8 @@ export class OpensteerMcpService {
     return toolsFor({
       ...caller,
       teamBound: caller.kind === "run" && caller.thread.teamOrigin !== null,
+      // Its handlers recheck personal context and a live team link on every call.
+      knowledge: caller.kind === "run",
     });
   }
   async #targets(caller: AgentCaller, tool: AgentTool, input: object): Promise<Thread[]> {
