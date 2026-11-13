@@ -20,6 +20,15 @@ export interface TeamRequestStorePort {
     requestId: TeamAgentRequestId,
     action: "read" | "post" | "knowledge" | "status",
   ): Promise<TeamAgentRequest>;
+  reconcile(
+    linkId: TeamLinkId,
+    requestIds: readonly TeamAgentRequestId[],
+  ): Promise<
+    readonly {
+      readonly requestId: TeamAgentRequestId;
+      readonly request: TeamAgentRequest | null;
+    }[]
+  >;
   pending(linkId: TeamLinkId): Promise<readonly TeamRunRequest[]>;
   /** First accept fixes expiry at seven days; repeated accepts never extend it. */
   accept(

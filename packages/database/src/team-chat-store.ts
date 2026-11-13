@@ -27,6 +27,8 @@ import {
   type TeamSearchInputSchema,
   type TeamSubscriptionScopeSchema,
 } from "@opensteer/protocol";
+import { teamMentions } from "@opensteer/shared/teamMentions";
+import { createTeamAskReturn, teamAttachmentRefs } from "./team-request-returns.js";
 import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { z } from "zod";
@@ -82,7 +84,8 @@ export async function teamMessageViews(
     database
       .selectFrom("teamAgentRequests")
       .selectAll()
-      .where("threadRootId", "in", ids)
+      .where("kind", "!=", "return")
+      .where((e) => e.or([e("threadRootId", "in", ids), e("triggerMessageId", "in", ids)]))
       .orderBy("createdAt")
       .execute(),
     sql<{
@@ -99,6 +102,17 @@ export async function teamMessageViews(
   ]);
   return rows.map((row) => {
     const summary = summaries.rows.find((r) => r.rootId === row.id);
+    const direct = requests.filter((request) => request.triggerMessageId === row.id).slice(-32);
+    const threadSelf = requests.filter(
+      (request) =>
+        request.kind === "self" &&
+        request.threadRootId === row.id &&
+        request.triggerMessageId !== row.id,
+    );
+    const shownRequests = [
+      ...threadSelf.slice(Math.max(0, threadSelf.length + direct.length - 32)),
+      ...direct,
+    ];
     return TeamMessageSchema.strip().parse({
       ...row,
       bodyMarkdown: row.deletedAt ? "" : row.bodyMarkdown,
@@ -120,9 +134,8 @@ export async function teamMessageViews(
         latestMessageId: summary?.latestMessageId ?? null,
         repliers: summary?.repliers ?? [],
       },
-      requests: requests
-        .filter((r) => r.threadRootId === row.id)
-        .slice(-32)
+      requests: shownRequests
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
         .map(teamRequestView),
     });
   });
@@ -760,25 +773,42 @@ export class TeamChatStore {
     transaction: Transaction<DatabaseSchema>,
     _actor: TeamActor,
     channelId: TeamChannelId,
-    mentions: readonly Mention[],
+    bodyMarkdown: string,
   ) {
-    requireTeam(
-      mentions.length <= 20 &&
-        new Set(mentions.map((m) => `${m.kind}:${m.userId}`)).size === mentions.length,
-      "Invalid mentions",
-    );
-    for (const mention of mentions)
-      requireTeam(
-        (
-          await this.access.channel(
-            transaction,
-            { kind: "human", userId: mention.userId },
-            channelId,
-          )
-        ).read,
-        "Mention target must belong to this channel",
-      );
-    return mentions;
+    if (!bodyMarkdown.includes("@")) return [];
+    const members = await transaction
+      .selectFrom("teamMembers")
+      .select(["userId", "handle"])
+      .where("state", "=", "active")
+      .where(
+        "userId",
+        "in",
+        transaction
+          .selectFrom("teamMembers as m")
+          .select("m.userId")
+          .where(
+            sql<boolean>`${channelId} in ${teamReadableChannelIds(sql.ref("m.userId"), "human")}`,
+          ),
+      )
+      .execute();
+    return teamMentions(bodyMarkdown, members);
+  }
+  async notifyRequests(triggerMessageId: TeamMessageId, returnsOnly = false) {
+    const rows = await this.access.database
+      .selectFrom("teamAgentRequests")
+      .select(["id", "linkId", "state", "kind"])
+      .where("triggerMessageId", "=", triggerMessageId)
+      .execute();
+    for (const row of rows) {
+      if (returnsOnly && (row.kind !== "return" || row.state !== "queued")) continue;
+      await this.requestChanged({
+        kind: ["awaiting_approval", "queued", "working", "needs_you"].includes(row.state)
+          ? "queued"
+          : "cancelled",
+        linkId: row.linkId,
+        requestId: row.id,
+      });
+    }
   }
   async send(
     actor: TeamActor,
@@ -816,20 +846,13 @@ export class TeamChatStore {
           return {
             message: (await teamMessageViews(transaction, [existing]))[0]!,
             wake: "not-requested" as const,
+            askOutcomes: [] as { ownerUserId: UserId; outcome: string }[],
           };
         return this.insert(transaction, actor, input);
       },
     );
     this.changed(input.channelId);
-    if (result.wake === "queued") {
-      const request = await this.access.database
-        .selectFrom("teamAgentRequests")
-        .select(["id", "linkId"])
-        .where("triggerMessageId", "=", result.message.id)
-        .where("ownerUserId", "=", actor.userId)
-        .executeTakeFirstOrThrow();
-      await this.requestChanged({ kind: "queued", linkId: request.linkId, requestId: request.id });
-    }
+    if (result.askOutcomes.length) await this.notifyRequests(result.message.id);
     return result;
   }
   async insert(
@@ -845,6 +868,9 @@ export class TeamChatStore {
       agentRequestId?: import("@opensteer/core").TeamAgentRequestId;
       linkId?: TeamLinkId;
       agent?: TeamAgentOperation;
+      publication?: boolean;
+      deferAudit?: boolean;
+      statusMessageIds?: readonly TeamMessageId[];
     },
   ) {
     TeamMarkdownSchema.parse(input.bodyMarkdown);
@@ -858,7 +884,7 @@ export class TeamChatStore {
       requireTeam(input.linkId);
       link = await this.access.link(transaction, actor, input.linkId);
     }
-    const mentions = await this.#mentions(transaction, actor, input.channelId, input.mentions);
+    const mentions = await this.#mentions(transaction, actor, input.channelId, input.bodyMarkdown);
     if (input.threadRootId) {
       const root = await transaction
         .selectFrom("teamMessages")
@@ -871,13 +897,23 @@ export class TeamChatStore {
         "Replies require a top-level message in the same channel",
       );
     }
-    // This owner row serializes the one rate budget across different channel writers.
+    // Requester and target rows serialize budgets across channel writers.
     await transaction
       .selectFrom("teamMembers")
       .select("userId")
-      .where("userId", "=", actor.userId)
+      .where("userId", "in", [
+        ...new Set([
+          actor.userId,
+          ...mentions.filter((m) => m.kind === "agent").map((m) => m.userId),
+        ]),
+      ])
+      .orderBy("userId")
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
+    await lockTeamMessages(transaction, [
+      ...(input.statusMessageIds ?? []),
+      ...(input.threadRootId ? [input.threadRootId] : []),
+    ]);
     const { changeSeq } = await bumpTeamChannel(transaction, input.channelId);
     const row = await transaction
       .insertInto("teamMessages")
@@ -927,7 +963,6 @@ export class TeamChatStore {
         .execute();
     let wake: "queued" | "no-link" | "not-requested" | "rate-limited" | "people-only" =
       "not-requested";
-    let wakeLinkId: TeamLinkId | undefined;
     const ownMention = mentions.some((m) => m.kind === "agent" && m.userId === actor.userId);
     const sticky =
       actor.kind === "human" && input.threadRootId
@@ -939,65 +974,118 @@ export class TeamChatStore {
             .where("rootId", "=", input.threadRootId)
             .executeTakeFirst()
         : undefined;
-    if (actor.kind === "human" && (ownMention || sticky?.enabled)) {
+    const targets = new Set(
+      mentions.filter((m) => m.kind === "agent" && m.userId !== actor.userId).map((m) => m.userId),
+    );
+    if (actor.kind === "human" && (ownMention || sticky?.enabled)) targets.add(actor.userId);
+    if (input.publication) targets.clear();
+    const admissions: { ownerUserId: UserId; linkId: TeamLinkId; kind: "self" | "ask" }[] = [];
+    const outcomes: { ownerUserId: UserId; outcome: string }[] = [];
+    let minute = targets.size
+      ? Number(
+          (
+            await sql<{ count: string }>`select count(*)::text as count from team_agent_requests r
+      join team_messages m on m.id=r.trigger_message_id where r.kind<>'return' and m.author_user_id=${actor.userId}
+      and r.created_at>now()-interval '1 minute'`.execute(transaction)
+          ).rows[0]!.count,
+        )
+      : 0;
+    for (const ownerUserId of [...targets].sort()) {
       const authority = await this.access.channel(
         transaction,
-        { kind: "agent", userId: actor.userId },
+        { kind: "agent", userId: ownerUserId },
         row.channelId,
       );
-      const link = await transaction
+      const targetLink = await transaction
         .selectFrom("teamLinks")
         .select("id")
-        .where("ownerUserId", "=", actor.userId)
+        .where("ownerUserId", "=", ownerUserId)
         .where("state", "=", "active")
+        .orderBy("id")
         .executeTakeFirst();
-      if (!authority.post) wake = "people-only";
-      else if (!link) wake = "no-link";
-      else {
-        const counts = (
-          await sql<{
-            minute: string;
-            queued: string;
-          }>`select count(*) filter(where created_at>now()-interval '1 minute')::text as minute,count(*) filter(where state='queued')::text as queued from team_agent_requests where owner_user_id=${actor.userId}`.execute(
-            transaction,
-          )
-        ).rows[0]!;
-        if (Number(counts.minute) >= 10 || Number(counts.queued) >= 32) wake = "rate-limited";
-        else {
-          wake = "queued";
-          if (ownMention)
-            await transaction
-              .insertInto("teamAgentRecipients")
-              .values({
-                userId: actor.userId,
-                channelId: row.channelId,
-                rootId: input.threadRootId ?? row.id,
-                enabled: true,
-              })
-              .onConflict((c) =>
-                c.columns(["userId", "channelId", "rootId"]).doUpdateSet({
-                  enabled: true,
-                  version: sql`case when team_agent_recipients.enabled then team_agent_recipients.version else team_agent_recipients.version+1 end`,
-                  updatedAt: new Date(),
-                }),
-              )
-              .execute();
-          wakeLinkId = link.id;
-        }
-      }
+      const queued = await transaction
+        .selectFrom("teamAgentRequests")
+        .select((e) => e.fn.countAll<string>().as("count"))
+        .where("kind", "!=", "return")
+        .where("ownerUserId", "=", ownerUserId)
+        .where("state", "in", ["awaiting_approval", "queued"])
+        .executeTakeFirstOrThrow();
+      const outcome = authority.peopleOnly
+        ? "people-only"
+        : !authority.read || !authority.post
+          ? "no-access"
+          : !targetLink
+            ? "no-link"
+            : minute >= 10 || Number(queued.count) >= 32
+              ? "rate-limited"
+              : "queued";
+      outcomes.push({ ownerUserId, outcome });
+      if (ownerUserId === actor.userId) wake = outcome === "no-access" ? "people-only" : outcome;
+      if (outcome !== "queued" || !targetLink) continue;
+      minute++;
+      admissions.push({
+        ownerUserId,
+        linkId: targetLink.id,
+        kind: ownerUserId === actor.userId ? "self" : "ask",
+      });
     }
+    if (ownMention && admissions.some((a) => a.kind === "self"))
+      await transaction
+        .insertInto("teamAgentRecipients")
+        .values({
+          userId: actor.userId,
+          channelId: row.channelId,
+          rootId: input.threadRootId ?? row.id,
+          enabled: true,
+        })
+        .onConflict((c) =>
+          c.columns(["userId", "channelId", "rootId"]).doUpdateSet({
+            enabled: true,
+            version: sql`case when team_agent_recipients.enabled then team_agent_recipients.version else team_agent_recipients.version+1 end`,
+            updatedAt: new Date(),
+          }),
+        )
+        .execute();
     await bindTeamFiles(transaction, actor, row, input.attachmentIds);
-    if (wakeLinkId) {
+    const asker = admissions.some((a) => a.kind === "ask")
+      ? await transaction
+          .selectFrom("users")
+          .select("displayName")
+          .where("id", "=", actor.userId)
+          .executeTakeFirstOrThrow()
+      : null;
+    const source = admissions.some((a) => a.kind === "ask")
+      ? await this.source(transaction, actor, row.channelId, input.threadRootId ?? row.id, row.id)
+      : null;
+    for (const admission of admissions) {
       await transaction
         .insertInto("teamAgentRequests")
         .values({
           id: createId("teamAgentRequest"),
-          ownerUserId: actor.userId,
+          ...admission,
           channelId: row.channelId,
           threadRootId: input.threadRootId ?? row.id,
           triggerMessageId: row.id,
-          linkId: wakeLinkId,
-          state: "queued",
+          state: admission.kind === "ask" ? "awaiting_approval" : "queued",
+          presentation:
+            admission.kind === "ask"
+              ? {
+                  asker: {
+                    teamUserId: actor.userId,
+                    displayName: asker!.displayName,
+                    actor: actor.kind,
+                  },
+                  bodyMarkdown: row.bodyMarkdown,
+                  attachments: await teamAttachmentRefs(transaction, row.id),
+                  destination: {
+                    teamId: this.identity.teamId,
+                    channelId: row.channelId,
+                    threadRootId: input.threadRootId ?? row.id,
+                  },
+                  audience: source!.audience,
+                }
+              : null,
+          consentExpiresAt: admission.kind === "ask" ? new Date(Date.now() + 7 * 86400000) : null,
           steps: sql`'[]'::jsonb`,
           createdAt: new Date(),
           acceptedAt: null,
@@ -1009,6 +1097,17 @@ export class TeamChatStore {
         })
         .execute();
     }
+    if (!input.deferAudit)
+      for (const outcome of outcomes)
+        await appendTeamAudit(transaction, {
+          actor,
+          action: "request.create",
+          resourceKind: "message",
+          resourceId: row.id,
+          channelId: row.channelId,
+          outcome: outcome.outcome === "queued" ? "allowed" : "denied",
+          metadata: outcome,
+        });
     await transaction
       .insertInto("teamOutbox")
       .values({
@@ -1019,7 +1118,7 @@ export class TeamChatStore {
         createdAt: new Date(),
       })
       .execute();
-    if (actor.kind === "agent")
+    if (actor.kind === "agent" && !input.deferAudit)
       await appendTeamAudit(transaction, {
         actor,
         ...input.agent,
@@ -1031,7 +1130,11 @@ export class TeamChatStore {
         channelId: row.channelId,
         requestId: input.agentRequestId,
       });
-    return { message: (await teamMessageViews(transaction, [row]))[0]!, wake };
+    return {
+      message: (await teamMessageViews(transaction, [row]))[0]!,
+      wake,
+      askOutcomes: outcomes,
+    };
   }
   async editOrDelete(
     actor: TeamActor,
@@ -1101,7 +1204,6 @@ export class TeamChatStore {
         requireTeam(
           authority.post && row.authorUserId === actor.userId && row.authorKind === "human",
         );
-        await this.#mentions(transaction, actor, channelId, input.mentions);
       }
       await transaction
         .updateTable("teamMessages")
@@ -1118,11 +1220,14 @@ export class TeamChatStore {
         .where("id", "=", messageId)
         .execute();
       await transaction.deleteFrom("teamMentions").where("messageId", "=", messageId).execute();
-      if (input?.mentions.length)
+      const editedMentions = input
+        ? await this.#mentions(transaction, actor, channelId, input.bodyMarkdown)
+        : [];
+      if (editedMentions.length)
         await transaction
           .insertInto("teamMentions")
           .values(
-            input.mentions.map((m) => ({
+            editedMentions.map((m) => ({
               messageId,
               channelId,
               targetUserId: m.userId,
@@ -1137,34 +1242,38 @@ export class TeamChatStore {
           .set({ changeSeq })
           .where("id", "=", row.threadRootId)
           .execute();
-      if (!input) {
+      const unanswered = await transaction
+        .selectFrom("teamAgentRequests")
+        .selectAll()
+        .where("triggerMessageId", "=", messageId)
+        .where("replyMessageId", "is", null)
+        .where((e) =>
+          e.or([
+            e.and([
+              e("kind", "=", "ask"),
+              e("state", "in", ["awaiting_approval", "queued", "working", "needs_you"]),
+            ]),
+            ...(input ? [] : [e.and([e("kind", "=", "self"), e("state", "=", "queued")])]),
+          ]),
+        )
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
+      for (const request of unanswered) {
         await transaction
-          .selectFrom("teamAgentRequests")
-          .select("id")
-          .where("triggerMessageId", "=", messageId)
-          .where("state", "=", "queued")
-          .orderBy("id")
-          .forNoKeyUpdate()
-          .execute();
-        const queued = await transaction
           .updateTable("teamAgentRequests")
           .set({
             state: "cancelled",
-            failureCode: "trigger_deleted",
+            failureCode: input ? "trigger_edited" : "trigger_deleted",
             finishedAt: new Date(),
             changeSeq,
           })
-          .where("triggerMessageId", "=", messageId)
-          .where("state", "=", "queued")
-          .returning(["id", "threadRootId"])
+          .where("id", "=", request.id)
           .execute();
-        deletedRequests.push(...queued.map((r) => r.id));
-        for (const { threadRootId } of queued)
-          await transaction
-            .updateTable("teamMessages")
-            .set({ changeSeq })
-            .where("id", "=", threadRootId)
-            .execute();
+        deletedRequests.push(request.id);
+        await createTeamAskReturn(transaction, request, "cancelled", changeSeq);
+      }
+      if (!input) {
         await transaction
           .updateTable("teamBlobs")
           .set({ state: "deleting" })
@@ -1191,17 +1300,7 @@ export class TeamChatStore {
       }
     });
     this.changed(channelId);
-    if (deletedRequests.length)
-      for (const request of await this.access.database
-        .selectFrom("teamAgentRequests")
-        .select(["id", "linkId"])
-        .where("id", "in", deletedRequests)
-        .execute())
-        await this.requestChanged({
-          kind: "cancelled",
-          linkId: request.linkId,
-          requestId: request.id,
-        });
+    if (deletedRequests.length) await this.notifyRequests(messageId);
     return deletedRequests;
   }
   async pin(actor: TeamActor, channelId: TeamChannelId, messageId: TeamMessageId, pin: boolean) {
@@ -1396,6 +1495,7 @@ export class TeamChatStore {
       let requests = t
         .selectFrom("teamAgentRequests")
         .selectAll()
+        .where("kind", "!=", "return")
         .where("channelId", "=", channel.id);
       if (input.scope.kind === "thread") {
         const rootId = input.scope.rootId;
