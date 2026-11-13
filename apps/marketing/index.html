@@ -252,6 +252,20 @@
           <stop offset="0" stop-color="#dcdcdc" />
           <stop offset="1" stop-color="#e9c3b5" />
         </linearGradient>
+        <linearGradient
+          id="sap-lg"
+          x1="206.19"
+          y1="0"
+          x2="206.19"
+          y2="204"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop offset="0" stop-color="#00b1eb" />
+          <stop offset=".212" stop-color="#009ad9" />
+          <stop offset=".519" stop-color="#007fc4" />
+          <stop offset=".792" stop-color="#006eb8" />
+          <stop offset="1" stop-color="#0069b4" />
+        </linearGradient>
         <linearGradient id="dg-globe" x1="0" y1="0" x2="1" y2="1">
           <stop offset="0" stop-color="#6fd0ff" />
           <stop offset="1" stop-color="#2557e6" />
@@ -353,7 +367,7 @@
           font-weight="300"
           fill="#1d1d1f"
         >
-          10
+          17
         </text>
       </symbol>
       <symbol id="d-os" viewBox="0 0 48 48">
@@ -478,12 +492,15 @@
           stroke-linejoin="round"
         />
       </symbol>
-      <symbol id="t-support" viewBox="0 0 16 16">
-        <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-          <circle cx="8" cy="8" r="6" />
-          <circle cx="8" cy="8" r="2.4" />
-          <path d="M3.8 3.8l2.5 2.5M9.7 9.7l2.5 2.5M12.2 3.8L9.7 6.3M6.3 9.7l-2.5 2.5" />
-        </g>
+      <symbol id="t-billing" viewBox="0 0 16 16">
+        <path
+          d="M3.5 1.8h9v12.4l-1.5-1-1.5 1-1.5-1-1.5 1-1.5-1-1.5 1zM6 5.5h4M6 8h4M6 10.5h2.5"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
       </symbol>
       <symbol id="t-engineer" viewBox="0 0 16 16">
         <path
@@ -495,11 +512,15 @@
           stroke-linejoin="round"
         />
       </symbol>
-      <symbol id="t-sales" viewBox="0 0 16 16">
-        <g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round">
-          <rect x="1.8" y="5" width="12.4" height="8.2" rx="1.8" />
-          <path d="M5.8 5V3.6a1 1 0 0 1 1-1h2.4a1 1 0 0 1 1 1V5M1.8 9h12.4" />
-        </g>
+      <symbol id="t-legal" viewBox="0 0 16 16">
+        <path
+          d="M8 2v11.5M5 13.8h6M3 4.5h10M3 4.5 1.2 9a1.9 1.9 0 0 0 3.6 0zM13 4.5 11.2 9a1.9 1.9 0 0 0 3.6 0z"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
       </symbol>
       <symbol id="t-doc" viewBox="0 0 16 16">
         <path
@@ -623,7 +644,8 @@
           <div class="row__head reveal">
             <h2>Already signed in.</h2>
             <p>
-              Your agents use the Chrome sessions, saved logins, apps and files already on your Mac.
+              Your agents work in the portals, desktop apps and saved logins already on your Mac,
+              even the ones with no API.
             </p>
           </div>
           <div class="shot shot--chrome reveal" id="signedShot" aria-hidden="true"></div>

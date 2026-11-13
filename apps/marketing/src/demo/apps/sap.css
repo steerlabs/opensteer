@@ -1,0 +1,256 @@
+/* SAP GUI for Java 7.80 on macOS, Blue Crystal theme, at its real sizes. Swing draws its Dialog font as Lucida Grande on a Mac. */
+.sap {
+  display: flex;
+  flex-direction: column;
+  background: #f2f3f3;
+  color: #222;
+  font:
+    12px/1.2 "Lucida Grande",
+    "Lucida Sans Unicode",
+    "Helvetica Neue",
+    Arial,
+    sans-serif;
+  letter-spacing: 0;
+}
+.sap svg {
+  display: block;
+  overflow: visible;
+}
+.sp-titlebar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 14px;
+  background: #ededed;
+  flex: none;
+}
+.sp-titlebar b {
+  position: absolute;
+  inset: 0;
+  color: #4a4a4a;
+  font: 600 13px/28px var(--mac-font);
+  text-align: center;
+}
+.sp-menubar {
+  display: flex;
+  gap: 19px;
+  height: 33px;
+  padding: 0 17px;
+  border-top: 4px solid #009fe7;
+  box-shadow: inset 0 -3px 0 -2px #d1d1d1;
+  color: #5e5e5e;
+  line-height: 28px;
+  flex: none;
+  box-sizing: content-box;
+}
+.sp-systb,
+.sp-apptb {
+  position: relative;
+  flex: none;
+}
+.sp-systb {
+  height: 37px;
+  border-bottom: 1px solid #e0e0e0;
+}
+.sp-systb > i,
+.sp-apptb > i {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.sp-systb > i {
+  top: 7px;
+}
+.sp-systb > i.is-off {
+  opacity: 0.55;
+}
+.sp-cmd {
+  position: absolute;
+  left: 42px;
+  top: 7px;
+  width: 138px;
+  height: 22px;
+  padding-left: 4px;
+  border: 1px solid #bdbdbd;
+  background: #fff;
+  color: #000;
+  line-height: 20px;
+  box-sizing: border-box;
+}
+.sp-cmd-tog {
+  position: absolute;
+  left: 184px;
+  top: 13px;
+}
+.sp-title {
+  height: 30px;
+  padding-left: 14px;
+  border-bottom: 1px solid #e7e7e7;
+  background: #f9f9f9;
+  color: #5f5f5f;
+  font-size: 17px;
+  font-weight: 700;
+  font-style: italic;
+  line-height: 29px;
+  white-space: nowrap;
+  flex: none;
+}
+.sp-apptb {
+  height: 30px;
+  border-bottom: 1px solid #e7e7e7;
+  background: #f9f9f9;
+}
+.sp-apptb > i {
+  top: 3px;
+  height: 24px;
+  padding-left: 3px;
+}
+.sp-asep {
+  position: absolute;
+  top: 7px;
+  width: 1px;
+  height: 16px;
+  background: #d6d6d6;
+}
+.sp-content {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: linear-gradient(#e8eef2 0, #ecf6fb 2px, #ebf4f9 100%);
+}
+.sp-info {
+  position: absolute;
+  left: 10px;
+  top: 5px;
+  color: #333;
+  line-height: 18px;
+  white-space: nowrap;
+}
+.sp-grid {
+  position: absolute;
+  inset: 27px 7px 7px;
+  border: 1px solid #c3ccd5;
+  background: #f3f6f8;
+  overflow: hidden;
+}
+.sp-hrow,
+.sp-row {
+  display: flex;
+  height: 21px;
+}
+.sp-hrow {
+  height: 22px;
+}
+.sp-hc,
+.sp-c {
+  padding: 0 5px;
+  border-right: 1px solid #dce2e8;
+  white-space: nowrap;
+  overflow: hidden;
+  flex: none;
+  box-sizing: border-box;
+}
+.sp-hc {
+  border-right-color: #d3dae1;
+  border-bottom: 1px solid #bfc9d3;
+  background: linear-gradient(#fbfcfd, #edf1f5);
+  color: #2b2b2b;
+  line-height: 21px;
+}
+.sp-c {
+  position: relative;
+  border-bottom: 1px solid #dce2e8;
+  background: #fff;
+  color: #1e1e1e;
+  line-height: 20px;
+}
+.sp-hc.is-num,
+.sp-c.is-num {
+  text-align: right;
+}
+.sp-row.is-alt .sp-c {
+  background: #f5f8fb;
+}
+.sp-c.is-key {
+  background: #e3edf7;
+}
+.sp-row.is-alt .sp-c.is-key {
+  background: #dce8f4;
+}
+.sp-corner,
+.sp-sel {
+  position: relative;
+  width: 16px;
+  flex: none;
+  border-right: 1px solid #bfc9d3;
+  box-sizing: border-box;
+}
+.sp-corner {
+  border-bottom: 1px solid #bfc9d3;
+  background: linear-gradient(#f7f9fb, #e8edf2);
+}
+.sp-corner svg {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+}
+.sp-sel {
+  border-bottom: 1px solid #d5dce3;
+  background: linear-gradient(90deg, #f4f6f8, #ecf0f4);
+}
+.grp[data-sap-pick] .sp-row--pick .sp-c {
+  border-color: #b3cde8;
+  background: #c7ddf3;
+}
+.grp[data-sap-pick] .sp-row--pick .sp-sel {
+  border-color: #6d9bcb;
+  background: linear-gradient(90deg, #8db8e2, #79a9d9);
+}
+.sp-total .sp-c {
+  border-color: #eee3ac;
+  border-bottom-color: #e8dc9c;
+  background: #fff5c4;
+  font-weight: 700;
+}
+.sp-sigma {
+  color: #6a5a10;
+}
+.sp-status {
+  padding: 0;
+}
+.sp-st {
+  position: absolute;
+  left: 5px;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 20px;
+}
+.sp-statusbar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 31px;
+  border-top: 1px solid #ddd;
+  flex: none;
+}
+.sp-sysinfo {
+  position: absolute;
+  right: 14px;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 31px;
+  color: #111;
+  white-space: nowrap;
+}
+.sp-sysinfo i {
+  width: 1px;
+  height: 17px;
+  background: #c4c4c4;
+}
