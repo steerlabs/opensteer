@@ -224,7 +224,7 @@ describe("Personal user environment", () => {
       environment: { Path: '"C:\\Windows\\System32";"D:\\Tools"', SystemRoot: "C:\\Windows" },
       isDirectory: () => false,
       platform: "win32",
-      registryProbe: async () => [],
+      registryProbe: async () => Buffer.from("[]", "utf8"),
     });
     await expect(environment.resolve()).resolves.toMatchObject({
       PATH: '"C:\\Windows\\System32";"D:\\Tools"',
