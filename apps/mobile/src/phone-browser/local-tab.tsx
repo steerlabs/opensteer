@@ -1,11 +1,19 @@
 import { useLayoutEffect, useState, type ReactNode } from "react";
 import type { HostClient } from "@opensteer/client/host";
 import { useBrowserFeedState } from "../browser/browser-stream.js";
+import type { PagePresence } from "../ui/page-presence.js";
 import type { PhoneBrowserManager, PhonePresentationAdmission } from "./manager.js";
 import { PhoneBrowserTabHost } from "./tab-host.js";
 
+/**
+ * This phone's own tab, drawn by its own browser once the Host admits this
+ * screen's viewer. The viewer and the page stay for as long as the screen is on
+ * its stack in the foreground: a sheet or a screen over it only takes input
+ * away, and the native host parks and returns the page as it leaves and
+ * rejoins the window, so showing it again needs nothing of the Host.
+ */
 export function LocalPhoneTab(props: {
-  readonly active: boolean;
+  readonly presence: PagePresence;
   readonly available: boolean;
   readonly deploymentId: string;
   readonly hostClient: HostClient;
@@ -14,8 +22,8 @@ export function LocalPhoneTab(props: {
   readonly liveSession: boolean;
   readonly status: (message: string) => ReactNode;
 }) {
-  const { active, available, deploymentId, hostClient, manager, admission, liveSession, status } =
-    props;
+  const { available, deploymentId, hostClient, manager, admission, liveSession, status } = props;
+  const { held, shown } = props.presence;
   const [ready, setReady] = useState<PhonePresentationAdmission | null>(null);
   const feed = useBrowserFeedState(
     hostClient,
@@ -23,18 +31,22 @@ export function LocalPhoneTab(props: {
     admission.surfaceId,
   );
   const [failure, setFailure] = useState<unknown>(null);
+  // While the page is drawn the phone's visible slot is its own, so waking it
+  // takes no agent's covered slot.
   useLayoutEffect(() => {
-    if (!active) return;
+    if (!shown) return;
     return manager.markLocalPresentation(admission.surfaceId);
-  }, [active, manager, admission.surfaceId]);
+  }, [shown, manager, admission.surfaceId]);
   useLayoutEffect(() => {
     setFailure(null);
-    if (!active || (!liveSession && !available)) {
+    if (!held || (!liveSession && !available)) {
       setReady(null);
       return;
     }
-    const held = manager.localPresentation(deploymentId, admission.surfaceId);
-    setReady((previous) => (previous?.sessionId === held?.sessionId ? previous : null));
+    const kept = manager.localPresentation(deploymentId, admission.surfaceId);
+    setReady((previous) => (previous?.sessionId === kept?.sessionId ? previous : null));
+    // Off screen a page keeps what it has and wakes nothing.
+    if (!shown) return;
     let cancelled = false;
     void (async () => {
       if (!liveSession) {
@@ -55,17 +67,18 @@ export function LocalPhoneTab(props: {
       cancelled = true;
     };
   }, [
-    active,
     available,
     deploymentId,
+    held,
     hostClient,
     manager,
     admission.sessionId,
     admission.surfaceId,
     liveSession,
+    shown,
   ]);
   useLayoutEffect(() => {
-    if (!active || !ready) return;
+    if (!held || !ready) return;
     try {
       return hostClient.retainBrowserViewer(ready.sessionId, ready.surfaceId, {
         picture: false,
@@ -75,10 +88,10 @@ export function LocalPhoneTab(props: {
       setFailure(error);
     }
     return;
-  }, [active, hostClient, ready]);
+  }, [held, hostClient, ready]);
   if (failure)
     return status(failure instanceof Error ? failure.message : "This tab could not open.");
-  if (!active || !ready || !feed.admitted) return status(feed.error ?? "Opening…");
+  if (!held || !ready || !feed.admitted) return status(feed.error ?? "Opening…");
   return (
     <PhoneBrowserTabHost
       style={{ flex: 1 }}

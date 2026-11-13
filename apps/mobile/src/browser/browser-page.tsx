@@ -96,6 +96,7 @@ import { FloatingPlaceStatus, PlaceVoiceDock, usePlaceStatus } from "./place-foo
 import { barFloats } from "./floating-bar.js";
 import { PageChromeProvider, PageEdge, useFloatingBar, type PageChrome } from "./floating-page.js";
 import { useContentInsets } from "../ui/pane.js";
+import type { PagePresence } from "../ui/page-presence.js";
 import { Toolbar, ToolbarButton, ToolbarCapsule, ToolbarMenu } from "./toolbar.js";
 import { systemBrowserLabel } from "./system-browser.js";
 
@@ -148,8 +149,7 @@ const maxZoom = 4;
  */
 export function BrowserPage(props: {
   readonly nativeContent?: ReactNode;
-  /** In front of the reader, with the app in the foreground. */
-  readonly active: boolean;
+  readonly presence: PagePresence;
   readonly connected: boolean;
   readonly hostClient: HostClient;
   /** The page being read, whenever it changes, for the composer to include. */
@@ -175,6 +175,7 @@ export function BrowserPage(props: {
   readonly onSteer?: () => void;
 }): ReactNode {
   const { hostClient, onSwitchTab, onTyping, onViewing, session, tabId } = props;
+  const { interactive } = props.presence;
   const surfaceId = BrowserSurfaceIdSchema.parse(tabId);
   useNativeBarAway();
   const dialog = session.dialog?.surfaceId === tabId ? session.dialog : null;
@@ -293,7 +294,7 @@ export function BrowserPage(props: {
     }
   }, [editable]);
   useEffect(() => {
-    if (!props.active || !props.connected || props.nativeContent) {
+    if (!interactive || !props.connected || props.nativeContent) {
       setTyping(false);
       return;
     }
@@ -301,7 +302,7 @@ export function BrowserPage(props: {
       setProblem(message);
       if (!editing.get().negotiated) setTyping(false);
     });
-  }, [editing, props.active, props.connected, props.nativeContent]);
+  }, [editing, interactive, props.connected, props.nativeContent]);
   const [confirmingLogin, setConfirmingLogin] = useState<string | null>(null);
   const [fillNotice, setFillNotice] = useState<string | null>(null);
   useEffect(() => {
@@ -370,7 +371,7 @@ export function BrowserPage(props: {
     [autofill],
   );
   const channelReady =
-    props.active && props.connected && session.state === "ready" && feed.status === "live";
+    interactive && props.connected && session.state === "ready" && feed.status === "live";
   const { review: closeReview, ask: askClose, dismiss: dismissClose } = useActionReview(hostClient);
   const ready = channelReady && closeReview === null;
   // A tap the page answers by focusing a field brings the keyboard up, as a
@@ -992,12 +993,15 @@ export function BrowserPage(props: {
                 <BrowserStream
                   // The device check takes the app inactive; keeping the stream keeps
                   // its connection, and with it the offer the person chose from.
-                  active={props.active || confirmingLogin !== null}
+                  active={props.presence.shown || confirmingLogin !== null}
+                  held={props.presence.held || confirmingLogin !== null}
                   tabId={tabId}
                   documentId={liveTab?.documentId}
                   hostClient={hostClient}
                   interactive
-                  inputEnabled={closeReview === null && !addressOpen && pageMenu === null}
+                  inputEnabled={
+                    interactive && closeReview === null && !addressOpen && pageMenu === null
+                  }
                   inputEpoch={`${navigationKey}:${keyboardOpen}:${slideTo}`}
                   dragSelect={dragSelect}
                   onDragEnd={() => setDragSelect(false)}
