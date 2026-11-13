@@ -245,7 +245,12 @@ describe("Opensteer MCP spine", () => {
     });
     const pending = { requestId, kind: "browser.access", status: "pending", replayed: false };
     Object.assign(f.handlers, {
-      sign_in: async () => pending,
+      use_saved_login: async () => ({
+        status: "pending",
+        site: "https://example.com",
+        requestId,
+        replayed: false,
+      }),
       browser_profile_request: async () => pending,
       integration_request: async () => pending,
       integration_call: async () => ({
@@ -305,7 +310,10 @@ describe("Opensteer MCP spine", () => {
                     },
                   }
                 : state === "settled"
-                  ? { name: "sign_in", arguments: { site: "example.com", reason: "Check email" } }
+                  ? {
+                      name: "use_saved_login",
+                      arguments: { site: "example.com", reason: "Check email" },
+                    }
                   : {
                       name: "browser_profile_request",
                       arguments: {
@@ -1065,7 +1073,8 @@ describe("Opensteer MCP spine", () => {
       expect(names).toContain("thread_wait");
       expect(names).not.toContain("browser_profile_write");
       expect(names).not.toContain("computer");
-      expect(names).not.toContain("sign_in");
+      expect(names).not.toContain("use_saved_login");
+      expect(names).not.toContain("copy_chrome_cookies");
       expect(names).not.toContain("person_message");
     } finally {
       await client.close();

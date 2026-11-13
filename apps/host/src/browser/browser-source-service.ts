@@ -4,7 +4,6 @@ import WebSocket, { type RawData } from "ws";
 import {
   OpensteerError,
   browserSessionClosedReason,
-  isLoopbackHostname,
   type AgentEvent,
   type BrowserSourceId,
   type Request,
@@ -16,14 +15,9 @@ import {
 } from "@opensteer/core";
 import {
   browserSiteDomain,
-  browserSiteFromUrl,
   validateBrowserSourceSnapshot,
 } from "@opensteer/browser-profile/source-state";
-import {
-  BrowserSessionIdSchema,
-  type BrowserSessionId,
-  type PasswordSignInAvailability,
-} from "@opensteer/protocol";
+import type { BrowserSessionId } from "@opensteer/protocol";
 import {
   BrowserSignInRequestResponseSchema,
   BrowserSourceClientMessageSchema,
@@ -34,10 +28,10 @@ import {
   negotiateWire,
   parseWireQuery,
   readClientMessage,
-  type AgentBrowserSignInResult,
+  type ChromeCookiesResult,
+  type ChromeCookiesUnavailableReason,
   type BrowserSignInDecision,
   type BrowserSignInOutcome,
-  type BrowserSignInPasswords,
   type BrowserSignInProblem,
   type BrowserSignInRequestResponse,
   type BrowserSourceClientFrame,
@@ -67,12 +61,13 @@ import {
   type PersonalHostAccessRouteEnvelope,
 } from "@opensteer/deployment-authority";
 import type { BrowserService, BrowserSignInTarget } from "./browser-service.js";
-import type { PasswordSignInService } from "./password-sign-in-service.js";
 import {
-  PasswordsOffers,
-  type PasswordsOffer,
-  type PasswordsOfferOutcome,
-} from "./passwords-offers.js";
+  admitSignIn,
+  admitWithin,
+  parseSignInSessionId,
+  parseSignInSite,
+  signInSiteRefusal,
+} from "./sign-in-admission.js";
 
 const pairingLifetimeMs = 15 * 60_000;
 const operationTimeoutMs = 25_000;
@@ -80,27 +75,21 @@ const helloTimeoutMs = 10_000;
 const heartbeatMs = 15_000;
 const maxPendingOperations = 8;
 const maxPendingSourceConnections = 8;
-const rateWindowMs = 10 * 60_000;
-const maxCallsPerSessionSite = 3;
-const maxCallsPerRun = 30;
 const pairChallengeWindowMs = 60_000;
 const maxPairChallengesPerAddress = 30;
 const drainPageSize = 64;
 /** The first wire whose peers read frames tolerantly; wire-4 peers keep today's strict schemas. */
 const tolerantWire = 5;
 
-type AgentSignInInput = {
+type AgentCopyInput = {
   readonly ownerId: UserId;
   readonly runId: RunId;
   readonly threadId: ThreadId;
   readonly deploymentId: DeploymentId;
   readonly callId: string;
-  readonly loginFill?: boolean;
-  readonly sessionId?: string;
+  readonly sessionId: string;
   readonly site: string;
   readonly reason: string;
-  readonly code?: string;
-  readonly targetId?: string;
 };
 
 /** A wire-4 peer's frames parse strictly; a newer peer's tolerantly. */
@@ -162,10 +151,8 @@ type SignInRequests = Pick<
   | "findPendingBrowserSignIn"
   | "fulfilBrowserSignInRequest"
   | "get"
-  | "hasPendingDurableRequest"
   | "listDeliverableBrowserSignIns"
   | "listUngrantedBrowserSignIns"
-  | "withdraw"
 >;
 
 /**
@@ -195,15 +182,11 @@ export class BrowserSourceService {
   readonly #authenticating = new Set<SourceSocket>();
   readonly #pendingByAddress = new Map<string, number>();
   readonly #turns = new Map<string, Promise<unknown>>();
-  readonly #signIns = new Map<string, Promise<void>>();
   readonly #pairChallenges = new Map<string, number[]>();
   readonly #drains = new Map<UserId, Promise<void>>();
   readonly #calls = new Map<string, number[]>();
   readonly #heartbeat: ReturnType<typeof setInterval>;
-  readonly #passwords: PasswordSignInEntry;
-  readonly #offers: PasswordsOffers;
-  readonly #onLoginSaved: (offer: PasswordsOffer) => Promise<void>;
-  readonly #stoppedByPerson: (threadId: ThreadId) => Promise<boolean>;
+  readonly #refusesSite: (site: string) => Promise<boolean>;
   #closed = false;
 
   constructor(options: {
@@ -221,17 +204,8 @@ export class BrowserSourceService {
     readonly onRequestResolved: () => void;
     readonly onError?: (error: unknown) => void;
     readonly now?: () => number;
-    /** Personal saved logins from the Personal vault authority. */
-    readonly passwords: PasswordSignInEntry;
-    /** Tells a Thread the login its agent was missing now exists. */
-    readonly onLoginSaved: (offer: PasswordsOffer) => Promise<void>;
-    /** Whether the person stopped the Thread's newest Run themselves. */
-    readonly stoppedByPerson: (threadId: ThreadId) => Promise<boolean>;
   }) {
     this.#deploymentId = options.deploymentId;
-    this.#passwords = options.passwords;
-    this.#onLoginSaved = options.onLoginSaved;
-    this.#stoppedByPerson = options.stoppedByPerson;
     this.#store = options.store;
     this.#requests = options.requests;
     this.#browser = options.browser;
@@ -243,11 +217,9 @@ export class BrowserSourceService {
     this.#onRequestResolved = options.onRequestResolved;
     this.#onError = options.onError ?? (() => {});
     this.#now = options.now ?? Date.now;
-    this.#offers = new PasswordsOffers({
-      now: this.#now,
-      onError: this.#onError,
-      probe: (ownerId, site) => this.#passwords.probe(ownerId, site),
-      wake: (offer, found) => this.#wakeForSavedLogin(offer, found),
+    this.#refusesSite = signInSiteRefusal({
+      canonicalOrigin: options.canonicalOrigin,
+      currentRoute: options.currentRoute,
     });
     this.#heartbeat = setInterval(() => {
       void this.#pulse().catch(() => {});
@@ -512,7 +484,7 @@ export class BrowserSourceService {
     readonly ownerId: UserId;
     readonly url: string;
   }): Promise<BrowserSourceInspection> {
-    const site = parseSite(input.url);
+    const site = parseSignInSite(input.url);
     const candidates = await this.#candidates(await this.#store.list(input.ownerId), site);
     return {
       site,
@@ -553,7 +525,7 @@ export class BrowserSourceService {
     readonly deploymentId: DeploymentId;
     readonly site: string;
   }): Promise<void> {
-    await this.#store.removeGrant({ ...input, site: parseSite(input.site) });
+    await this.#store.removeGrant({ ...input, site: parseSignInSite(input.site) });
   }
 
   /**
@@ -568,11 +540,11 @@ export class BrowserSourceService {
     readonly sourceId: BrowserSourceId | null;
     readonly idempotencyKey: string;
   }): Promise<BrowserSignInOutcome> {
-    const site = parseSite(input.url);
+    const site = parseSignInSite(input.url);
     if (await this.#refusesSite(site)) return problem("not-allowed", site, null);
     const target = await this.#browser.signInTarget({
       ownerId: input.ownerId,
-      sessionId: parseSessionId(input.sessionId),
+      sessionId: parseSignInSessionId(input.sessionId),
       ...(input.surfaceId ? { surfaceId: input.surfaceId } : {}),
     });
     if (!target) {
@@ -609,225 +581,46 @@ export class BrowserSourceService {
   }
 
   /**
-   * An agent asks for one site in one live session. The personal deployment is
-   * authoritative, whichever folder the task uses. Standing grants sign
-   * in immediately; anything that needs the owner opens one Request, which
-   * completes by itself once a connected Chrome can supply the sign-in.
+   * An agent copies one site's Chrome cookies into one live session. A
+   * remembered site copies at once; anything else opens one Request, which
+   * completes by itself once a connected Chrome can supply the cookies.
    */
-  async agentUseCard(
-    input: Omit<Parameters<BrowserSourceService["agentSignIn"]>[0], "sessionId"> & {
-      sessionId: string;
-    },
-  ): Promise<import("@opensteer/protocol").UseCardResult> {
-    const site = parseSite(input.site);
-    const unavailable = (
-      reason:
-        | "not-allowed"
-        | "unsupported"
-        | "session-closed"
-        | "runtime-outdated"
-        | "main-browser-required"
-        | "no-saved-card"
-        | "passwords-off"
-        | "passwords-not-set-up"
-        | "passwords-not-responding",
-    ) => ({ status: "unavailable" as const, site, reason });
-    if (await this.#refusesSite(site)) return unavailable("not-allowed");
-    const check = () =>
-      this.#browser.signInTarget({
-        agentBindingId: `run:${input.runId}`,
-        ownerId: input.ownerId,
-        sessionId: parseSessionId(input.sessionId),
-      });
-    const target = await check();
-    if (!target?.live) return unavailable("session-closed");
-    if (!target.main) return unavailable("main-browser-required");
-    const availability = await this.#passwords.probeCard(input.ownerId);
-    const current = await check();
-    if (!current?.live || current.computer?.runnerId !== target.computer?.runnerId)
-      return unavailable("session-closed");
-    if (availability !== "has-card")
-      return unavailable(
-        availability === "unsupported" || availability === "runtime-outdated"
-          ? availability
-          : availability === "no-card"
-            ? "no-saved-card"
-            : availability === "off"
-              ? "passwords-off"
-              : availability === "not-set-up"
-                ? "passwords-not-set-up"
-                : "passwords-not-responding",
-      );
-    if (!current.cardFill || !target.computer) return unavailable("runtime-outdated");
-    const result = await this.#passwords.requestCard({
-      ...input,
-      site,
-      cardRunnerId: target.computer.runnerId,
-      admitStart: () => this.#admitCall(input.runId, input.deploymentId, site),
-    });
-    const after = await check();
-    if (!after?.live || !after.cardFill || after.computer?.runnerId !== target.computer.runnerId)
-      return unavailable("session-closed");
-    return result;
-  }
-
-  async agentSignIn(input: AgentSignInInput): Promise<AgentBrowserSignInResult> {
-    const site = parseSite(input.site);
-    const key = `offer\0${input.threadId}\0${site}`;
-    const result = (this.#turns.get(key) ?? Promise.resolve()).then(async () => {
-      const result = await this.#signIn(input);
-      this.#offers.note(
-        {
-          ownerId: input.ownerId,
-          runId: input.runId,
-          sessionId: input.sessionId ?? null,
-          site,
-          threadId: input.threadId,
-        },
-        result,
-      );
-      return result;
-    });
-    const settled = Promise.allSettled([this.#signIns.get(key), result]).then(() => undefined);
-    this.#signIns.set(key, settled);
-    void settled.then(() => {
-      if (this.#signIns.get(key) === settled) this.#signIns.delete(key);
-    });
-    return result;
-  }
-
-  /** One pass over the sign-ins waiting on Passwords; a timer runs it while any wait. */
-  sweepPasswordsOffers(): Promise<void> {
-    return this.#offers.sweep();
-  }
-
-  async #signIn(input: AgentSignInInput): Promise<AgentBrowserSignInResult> {
-    const arrivedAt = Date.now();
-    const site = parseSite(input.site);
-    if (await this.#refusesSite(site))
-      return { reason: "not-allowed", site, status: "unavailable" };
-    if (input.sessionId === undefined) {
-      const joined = this.#passwords.join({ ...input, arrivedAt, site });
-      if (joined) return joined;
-      const prior = await this.#requests.findByCallIdentity({
-        callId: input.callId,
-        originatingRunId: input.runId,
-      });
-      if (prior) {
-        if (
-          prior.payload.kind !== "browser.password-sign-in" ||
-          prior.payload.scope !== "personal" ||
-          prior.payload.site !== site
-        )
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Sign-in call identity belongs to another scope or site.",
-          });
-        return this.#passwords.replayResult(prior);
-      }
-      const availability = await this.#passwords.probe(input.ownerId, site);
-      if (availability !== "has-login")
-        return {
-          status: "unavailable",
-          site,
-          reason:
-            availability === "no-login"
-              ? "no-saved-login"
-              : availability === "off"
-                ? "passwords-off"
-                : availability === "not-set-up"
-                  ? "passwords-not-set-up"
-                  : "unsupported",
-        };
-      return this.#passwords.request({
-        ...input,
-        arrivedAt,
-        site,
-        admitStart: () => this.#admitCall(input.runId, input.deploymentId, site),
-      });
-    }
-    const sessionId = parseSessionId(input.sessionId);
-    const liveTarget = await this.#browser.signInTarget({
-      agentBindingId: `run:${input.runId}`,
-      ownerId: input.ownerId,
-      sessionId,
-    });
-    const joined =
-      input.loginFill && liveTarget?.live && liveTarget.main && liveTarget.signIn
-        ? this.#passwords.join({ ...input, arrivedAt, site })
-        : null;
-    if (joined) return joined;
+  async agentCopyChromeCookies(input: AgentCopyInput): Promise<ChromeCookiesResult> {
+    const site = parseSignInSite(input.site);
+    if (await this.#refusesSite(site)) return unavailable(site, "not-allowed");
+    const sessionId = parseSignInSessionId(input.sessionId);
     const invocationId = invocationUuid(`agent:${input.runId}:${input.callId}`);
     const receipt = await this.#store.getSignIn({ ownerId: input.ownerId, invocationId });
-    if (receipt) return appliedResult(assertReceiptScope(receipt, sessionId, site));
+    if (receipt) return copiedResult(assertReceiptScope(receipt, sessionId, site));
     const prior = await this.#requests.findByCallIdentity({
       callId: input.callId,
       originatingRunId: input.runId,
     });
-    if (prior?.kind === "browser.password-sign-in") {
-      if (liveTarget && !liveTarget.main)
-        return { status: "unavailable", reason: "main-browser-required", site };
-      if (!input.loginFill) return { status: "unavailable", reason: "runtime-outdated", site };
-      if (
-        prior.payload.kind !== "browser.password-sign-in" ||
-        prior.payload.scope !== "personal" ||
-        prior.payload.site !== site
-      ) {
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Sign-in call identity belongs to another session or site.",
-        });
-      }
-      return this.#passwords.replayResult(prior);
-    }
     if (prior) return this.#requestResult(prior, sessionId, site);
-    const target = liveTarget;
-    if (!target?.live) return { reason: "session-closed", site, status: "unavailable" };
+    const target = await this.#browser.signInTarget({
+      agentBindingId: `run:${input.runId}`,
+      ownerId: input.ownerId,
+      sessionId,
+    });
+    if (!target?.live) return unavailable(site, "session-closed");
+    if (!target.stateImport) return unavailable(site, stateImportRefusal(target));
     const grant = await this.#store.getGrant({
       ownerId: input.ownerId,
       site,
       deploymentId: target.deploymentId,
     });
-    // A Runner that cannot fill logins never starts Passwords; Chrome still
-    // serves it exactly as before.
-    const probePasswords = async () =>
-      target.main && target.signIn && input.loginFill
-        ? await this.#passwords.probe(input.ownerId, site)
-        : "unavailable";
-    const passwords = grant ? "unavailable" : await probePasswords();
-    if (passwords === "has-login") {
-      return this.#passwords.request({
-        ...input,
-        arrivedAt,
-        site,
-        admitStart: () => this.#admitCall(input.runId, sessionId, site),
-      });
-    }
     const sources = await this.#store.list(input.ownerId);
-    const candidates = !grant ? await this.#candidates(sources, site) : [];
-    if (
-      passwords === "no-login" &&
-      !candidates.some((candidate) => candidate.status === "available")
-    ) {
-      return { status: "unavailable", reason: "no-saved-login", site };
-    }
-    if (!target.main && !grant && !candidates.some((candidate) => candidate.status === "available"))
-      return { reason: "main-browser-required", site, status: "unavailable" };
-    if (!target.stateImport)
-      return { reason: stateImportRefusal(target), site, status: "unavailable" };
-    if (!this.#admitCall(input.runId, sessionId, site)) {
-      return { reason: "rate-limited", site, status: "unavailable" };
-    }
+    const candidates = grant ? [] : await this.#candidates(sources, site);
+    if (!this.#admitCall(input.runId, sessionId, site)) return unavailable(site, "rate-limited");
+    if (candidates.length > 0 && candidates.every((candidate) => candidate.status === "no-state"))
+      return unavailable(site, "chrome-signed-out");
     const pending = await this.#requests.findPendingBrowserSignIn({
       originatingRunId: input.runId,
       ownerId: input.ownerId,
       site,
     });
     if (pending) return this.#completePending(pending, grant, sources, sessionId, site);
-    const ask = async (): Promise<AgentBrowserSignInResult> => {
-      const opened = await this.#openRequest({ ...input, site, target });
-      return opened.status === "pending" ? { ...opened, ...passwordsOffer(passwords) } : opened;
-    };
+    const ask = () => this.#openRequest({ ...input, site, target });
     if (grant) {
       const chosen = await this.#standingSource(grant, sources, site);
       if (chosen) {
@@ -843,25 +636,9 @@ export class BrowserSourceService {
           target,
         });
         const result = agentResult(delivered, site);
-        if (result?.status === "not-signed-in") {
-          const saved = await probePasswords();
-          // This call was admitted above. The grant puts Chrome first, not alone.
-          if (saved === "has-login") {
-            return this.#passwords.request({
-              ...input,
-              arrivedAt,
-              site,
-              admitStart: () => true,
-            });
-          }
-          return { ...result, ...passwordsOffer(saved) };
-        }
         if (result) return result;
       }
       return ask();
-    }
-    if (candidates.length > 0 && candidates.every((candidate) => candidate.status === "no-state")) {
-      return { site, status: "not-signed-in", ...passwordsOffer(passwords) };
     }
     const asked = await ask();
     // A Chrome that connected after `candidates` may have run its check before
@@ -878,76 +655,6 @@ export class BrowserSourceService {
       if (request) await this.#endIfUnservable(input.ownerId, request, new Map());
     }
     return asked;
-  }
-
-  /**
-   * Wakes the agent an offer belongs to, unless the person already said no.
-   * Runs in the Chrome Request's turn, so a decline or an Allow lands first.
-   */
-  #wakeForSavedLogin(
-    offer: PasswordsOffer,
-    found: readonly PasswordsOffer[],
-  ): Promise<PasswordsOfferOutcome> {
-    const key = `offer\0${offer.threadId}\0${offer.site}`;
-    const signIns = this.#signIns.get(key);
-    return this.#inTurn(key, async () => {
-      await signIns;
-      if (!this.#offers.isCurrent(offer)) return "ended";
-      const { requestId } = offer;
-      return requestId === null
-        ? this.#wakeIfWanted(offer, found)
-        : this.#inTurn(`request\0${requestId}`, () => this.#wakeIfWanted(offer, found));
-    });
-  }
-
-  async #wakeIfWanted(
-    offer: PasswordsOffer,
-    found: readonly PasswordsOffer[],
-  ): Promise<PasswordsOfferOutcome> {
-    const request = offer.requestId === null ? null : await this.#requests.get(offer.requestId);
-    if (offer.requestId !== null && (!request || !leavesOfferOpen(request))) return "ended";
-    if (await this.#stoppedByPerson(offer.threadId)) return "ended";
-    // The Run's outcomes arrive together: a newer Run now would release them early.
-    // Chrome Requests a saved login just replaced aren't waiting on anyone anymore.
-    if (
-      await this.#requests.hasPendingDurableRequest({
-        except: found.flatMap(({ requestId, runId }) =>
-          runId === offer.runId && requestId !== null ? [requestId] : [],
-        ),
-        originatingRunId: offer.runId,
-      })
-    ) {
-      return "held";
-    }
-    const waiting = request?.status === "pending" ? request : null;
-    // A grant here is an Allow still delivering through Chrome, which wins.
-    if (
-      waiting &&
-      (await this.#store.getGrant({
-        ownerId: offer.ownerId,
-        site: offer.site,
-        deploymentId: this.#deploymentId,
-      }))
-    ) {
-      return "ended";
-    }
-    await this.#onLoginSaved(offer);
-    if (waiting) {
-      const withdrawn = await this.#requests.withdraw({
-        requestId: waiting.id,
-        threadId: offer.threadId,
-        withdrawnBy: offer.ownerId,
-      });
-      for (const event of withdrawn.events) this.#onDeploymentEvent(event);
-    }
-    return "ended";
-  }
-
-  passwordSignInGet(input: Parameters<PasswordSignInService["get"]>[0]) {
-    return this.#passwords.get(input);
-  }
-  passwordSignInRespond(input: Parameters<PasswordSignInService["respond"]>[0]) {
-    return this.#passwords.respond(input);
   }
 
   /**
@@ -1032,7 +739,6 @@ export class BrowserSourceService {
     if (this.#closed) return;
     this.#closed = true;
     clearInterval(this.#heartbeat);
-    this.#offers.close();
     for (const socket of this.#sockets) socket.close(1001, "Host stopping");
     this.#connections.clear();
   }
@@ -1106,9 +812,9 @@ export class BrowserSourceService {
 
   /**
    * Ends pending Requests nobody has allowed once every Chrome is connected
-   * and none has a sign-in to the site, so the agent can offer signing in by
-   * hand or Opensteer Passwords instead of waiting on a card with no Allow.
-   * The same rule `agentSignIn` applies before it opens one.
+   * and none has a sign-in to the site, so the agent can try another way in
+   * instead of waiting on a card with no Allow. The same rule
+   * `agentCopyChromeCookies` applies before it opens one.
    */
   async #endUnservable(ownerId: UserId, sourceId: BrowserSourceId): Promise<void> {
     const unservable = new Map<string, Promise<BrowserSignInRequestResponse | null>>();
@@ -1179,10 +885,7 @@ export class BrowserSourceService {
     ) {
       return null;
     }
-    const passwords = await this.#passwords
-      .probe(ownerId, site)
-      .catch(() => "unavailable" as const);
-    return { outcome: "not-signed-in", ...passwordsOffer(passwords) };
+    return { outcome: "not-signed-in" };
   }
 
   /**
@@ -1214,13 +917,13 @@ export class BrowserSourceService {
     sources: readonly BrowserSourceRecord[],
     sessionId: BrowserSessionId,
     site: string,
-  ): Promise<AgentBrowserSignInResult> {
+  ): Promise<ChromeCookiesResult> {
     const sameSession =
       request.payload.kind === "browser.sign-in" && request.payload.sessionId === sessionId;
     const chosen = grant && sameSession ? await this.#standingSource(grant, sources, site) : null;
-    if (!chosen) return { replayed: true, requestId: request.id, status: "pending" };
+    if (!chosen) return { status: "pending", site, requestId: request.id, replayed: true };
     const delivered = await this.#deliverRequest(request, chosen);
-    if (delivered.status === "applied") return delivered;
+    if (delivered.status === "applied") return copiedResult(delivered);
     const current = (await this.#requests.get(request.id)) ?? request;
     return this.#requestResult(current, sessionId, site);
   }
@@ -1243,7 +946,7 @@ export class BrowserSourceService {
   ): Promise<RequestDelivery> {
     if (request.payload.kind !== "browser.sign-in") throw new Error("Not a sign-in Request");
     const { site } = request.payload;
-    const sessionId = parseSessionId(request.payload.sessionId);
+    const sessionId = parseSignInSessionId(request.payload.sessionId);
     const target = await this.#browser.signInTarget({ ownerId: request.requestedBy, sessionId });
     const closed = async (): Promise<RequestDelivery> => {
       const settled = await this.#requests.fulfilBrowserSignInRequest({
@@ -1285,7 +988,7 @@ export class BrowserSourceService {
     readonly reason: string;
     readonly site: string;
     readonly target: BrowserSignInTarget;
-  }): Promise<AgentBrowserSignInResult> {
+  }): Promise<ChromeCookiesResult> {
     const created = await this.#requests
       .create({
         callId: input.callId,
@@ -1317,7 +1020,7 @@ export class BrowserSourceService {
         }
         throw error;
       });
-    if (!created) return { reason: "session-closed", site: input.site, status: "unavailable" };
+    if (!created) return unavailable(input.site, "session-closed");
     for (const event of created.events) this.#onDeploymentEvent(event);
     return this.#requestResult(
       created.request,
@@ -1332,7 +1035,7 @@ export class BrowserSourceService {
     sessionId: BrowserSessionId,
     site: string,
     replayed = true,
-  ): AgentBrowserSignInResult {
+  ): ChromeCookiesResult {
     if (
       request.payload.kind !== "browser.sign-in" ||
       request.payload.site !== site ||
@@ -1343,37 +1046,7 @@ export class BrowserSourceService {
         message: "This call already asked for a different site or session.",
       });
     }
-    switch (request.status) {
-      case "pending":
-        return { replayed, requestId: request.id, status: "pending" };
-      case "declined":
-        return { requestId: request.id, status: "declined" };
-      case "fulfilled": {
-        const response = BrowserSignInRequestResponseSchema.parse(
-          request.response.kind === "external" ? request.response.value : undefined,
-        );
-        switch (response.outcome) {
-          case "applied":
-            return {
-              profileName: response.profileName,
-              site,
-              sourceName: response.sourceName,
-              status: "applied",
-            };
-          case "not-signed-in":
-            return {
-              site,
-              status: "not-signed-in",
-              ...(response.passwords ? { passwords: response.passwords } : {}),
-            };
-          case "session-closed":
-            return { reason: "session-closed", site, status: "unavailable" };
-        }
-      }
-      case "cancelled":
-      case "withdrawn":
-        return { reason: "needs-approval", site, status: "unavailable" };
-    }
+    return chromeCookiesResult(request, replayed);
   }
 
   async #chooseForOwner(
@@ -1549,26 +1222,8 @@ export class BrowserSourceService {
   }
 
   /** In-memory, so a restart forgets it; the admission ledger still bounds each Run. */
-  #admitCall(runId: RunId, sessionId: BrowserSessionId | DeploymentId, site: string): boolean {
-    return admitWithin(this.#calls, this.#now(), rateWindowMs, [
-      [`site\0${sessionId}\0${site}`, maxCallsPerSessionSite],
-      [`run\0${runId}`, maxCallsPerRun],
-    ]);
-  }
-
-  /**
-   * Sites no sign-in may reach. Loopback addresses hold this Host's own
-   * session cookie on a Personal Deployment (and every local dev server's);
-   * the sites of the Deployment's canonical origin and remote route hold it
-   * everywhere else. An agent signed in there could approve its own Requests.
-   */
-  async #refusesSite(site: string): Promise<boolean> {
-    const host = browserSiteDomain(site);
-    if (isLoopbackHostname(host) || host === "0.0.0.0" || host === "[::]") return true;
-    const route = await this.#currentRoute();
-    return [this.#canonicalOrigin, route?.document.route.origin].some(
-      (origin) => origin !== undefined && ownSiteHost(origin) === host,
-    );
+  #admitCall(runId: RunId, sessionId: BrowserSessionId, site: string): boolean {
+    return admitSignIn(this.#calls, this.#now(), { runId, target: sessionId, site });
   }
 
   #admitPairChallenge(address: string): boolean {
@@ -1801,60 +1456,6 @@ export class BrowserSourceService {
   }
 }
 
-/**
- * Sliding-window limits kept in memory, so a restart forgets them. A call is
- * admitted only when every key is under its limit, and then counts against all.
- */
-function admitWithin(
-  ledger: Map<string, number[]>,
-  now: number,
-  windowMs: number,
-  limits: readonly (readonly [key: string, max: number])[],
-): boolean {
-  const recent = limits.map(
-    ([key, max]) =>
-      [key, max, (ledger.get(key) ?? []).filter((at) => now - at < windowMs)] as const,
-  );
-  if (recent.some(([, max, calls]) => calls.length >= max)) return false;
-  for (const [key, , calls] of recent) ledger.set(key, [...calls, now]);
-  if (ledger.size > 10_000) {
-    for (const [key, calls] of ledger) {
-      if (calls.every((at) => now - at >= windowMs)) ledger.delete(key);
-    }
-  }
-  return true;
-}
-
-function parseSite(input: string): string {
-  try {
-    return browserSiteFromUrl(input);
-  } catch (error) {
-    throw new OpensteerError({
-      code: "bad_request",
-      message: error instanceof Error ? error.message : "Choose one website.",
-    });
-  }
-}
-
-/** The site host of one of this Deployment's own origins, or null when it has none. */
-function ownSiteHost(origin: string): string | null {
-  try {
-    return browserSiteDomain(browserSiteFromUrl(origin));
-  } catch {
-    // An origin with no site of its own (an intranet name) is not one any
-    // sign-in can name either, so nothing needs refusing for it.
-    return null;
-  }
-}
-
-function parseSessionId(input: string): BrowserSessionId {
-  const parsed = BrowserSessionIdSchema.safeParse(input);
-  if (!parsed.success) {
-    throw new OpensteerError({ code: "bad_request", message: "Browser Session ID is invalid." });
-  }
-  return parsed.data;
-}
-
 function problem(
   reason: BrowserSignInProblem,
   site: string,
@@ -1863,34 +1464,7 @@ function problem(
   return { problem: reason, site, sourceName, status: "problem" };
 }
 
-/** A Chrome Request ending because Chrome had nothing is no answer about Passwords. */
-function leavesOfferOpen(request: Request): boolean {
-  if (request.status === "pending") return true;
-  if (request.status !== "fulfilled") return false;
-  const response = BrowserSignInRequestResponseSchema.safeParse(
-    request.response.kind === "external" ? request.response.value : null,
-  );
-  return response.success && response.data.outcome === "not-signed-in";
-}
-
-function passwordsOffer(availability: PasswordSignInAvailability): {
-  readonly passwords?: BrowserSignInPasswords;
-} {
-  return availability === "no-login" || availability === "not-set-up" || availability === "off"
-    ? { passwords: availability }
-    : {};
-}
-
 function appliedOutcome(receipt: BrowserSignInReceipt): BrowserSignInOutcome {
-  return {
-    profileName: receipt.profileName,
-    site: receipt.site,
-    sourceName: receipt.sourceName,
-    status: "applied",
-  };
-}
-
-function appliedResult(receipt: BrowserSignInReceipt): AgentBrowserSignInResult {
   return {
     profileName: receipt.profileName,
     site: receipt.site,
@@ -1917,12 +1491,12 @@ function assertReceiptScope(
  * What the agent learns from one delivery, or null when the owner has to be
  * asked instead: the chosen Chrome went away, or the site stopped being allowed.
  */
-function agentResult(delivery: Delivery, site: string): AgentBrowserSignInResult | null {
+function agentResult(delivery: Delivery, site: string): ChromeCookiesResult | null {
   if (delivery.status === "grant-removed" || delivery.status === "request-closed") return null;
-  if (delivery.status === "applied") return delivery;
+  if (delivery.status === "applied") return copiedResult(delivery);
   switch (delivery.problem) {
     case "no-state":
-      return { site, status: "not-signed-in" };
+      return unavailable(site, "chrome-signed-out");
     case "chrome-offline":
     case "no-chrome":
     case "choose-source":
@@ -1937,7 +1511,50 @@ function agentResult(delivery: Delivery, site: string): AgentBrowserSignInResult
     case "runtime-outdated":
     case "unsupported-operation":
     case "not-allowed":
-      return { reason: delivery.problem, site, status: "unavailable" };
+      return unavailable(site, delivery.problem);
+  }
+}
+
+function copiedResult(
+  applied: Pick<BrowserSignInReceipt, "profileName" | "site" | "sourceName">,
+): ChromeCookiesResult {
+  return {
+    status: "copied",
+    site: applied.site,
+    sourceName: applied.sourceName,
+    profileName: applied.profileName,
+  };
+}
+
+function unavailable(site: string, reason: ChromeCookiesUnavailableReason): ChromeCookiesResult {
+  return { status: "unavailable", site, reason };
+}
+
+/** What a `copy_chrome_cookies` call learns from its Chrome Request. */
+export function chromeCookiesResult(request: Request, replayed = true): ChromeCookiesResult {
+  if (request.payload.kind !== "browser.sign-in") throw new Error("Not a Chrome sign-in Request");
+  const { site } = request.payload;
+  switch (request.status) {
+    case "pending":
+      return { status: "pending", site, requestId: request.id, replayed };
+    case "declined":
+      return { status: "declined", site, requestId: request.id };
+    case "fulfilled": {
+      const response = BrowserSignInRequestResponseSchema.parse(
+        request.response.kind === "external" ? request.response.value : undefined,
+      );
+      switch (response.outcome) {
+        case "applied":
+          return copiedResult({ ...response, site });
+        case "not-signed-in":
+          return unavailable(site, "chrome-signed-out");
+        case "session-closed":
+          return unavailable(site, "session-closed");
+      }
+    }
+    case "cancelled":
+    case "withdrawn":
+      return unavailable(site, "needs-approval");
   }
 }
 
@@ -1978,8 +1595,3 @@ function rejectPending(peer: SourceSocket, error: Error): void {
   }
   peer.pending.clear();
 }
-
-type PasswordSignInEntry = Pick<
-  PasswordSignInService,
-  "join" | "probe" | "replayResult" | "request" | "get" | "respond" | "probeCard" | "requestCard"
->;

@@ -667,7 +667,7 @@ describe("human Passwords settlement", () => {
         .wait({
           caller: { claims: h.call } as unknown as RunCaller,
           result: { status: "pending", requestId: h.request().id },
-          tool: "sign_in",
+          tool: "use_saved_login",
           admittedAt: Date.now(),
           steersAtAdmission: 0,
           limitMs: 45_000,
@@ -697,7 +697,7 @@ describe("human Passwords settlement", () => {
           expect(result?.text).toContain(h.loginRef());
         } else {
           expect(result).toMatchObject({
-            record: { status: "resolved" },
+            record: { status: "unavailable", reason: "interrupted" },
             text: expect.stringContaining("stopped"),
           });
           expect(JSON.stringify(result)).not.toContain(h.loginRef());

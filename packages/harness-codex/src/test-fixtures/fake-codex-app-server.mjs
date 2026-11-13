@@ -698,7 +698,7 @@ function handleClientMethod(message) {
                             tool !== "integration_search"))) &&
                       (scenario !== "mcp-direct-missing-required-tool" ||
                         name !== "opensteer-direct" ||
-                        tool !== "sign_in"),
+                        tool !== "use_saved_login"),
                   ),
                   ...((scenario === "mcp-extra-tool" && name === "opensteer") ||
                   (scenario === "mcp-direct-extra-tool" && name === "opensteer-direct")
@@ -1353,7 +1353,7 @@ function handleTurnStart(message) {
       arguments: { site: "https://example.test" },
       id: "direct-1",
       server: "opensteer-direct",
-      tool: "sign_in",
+      tool: "use_saved_login",
       type: "mcpToolCall",
     };
     send({

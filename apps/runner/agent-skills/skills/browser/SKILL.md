@@ -11,7 +11,7 @@ Choose the identity yourself, then observe the exact page: Guest for signed-out 
 
 A profile opens only on its home device, chosen when the person creates it. If that device is offline, name it and stop; another computer or Guest cannot replace it. Saved passwords and cards fill websites only in the hosting computer's browser. Downloads stay on the device running the browser.
 
-With full access, `browser_profile_write` lists profiles and grants, renames or deletes profiles, clears history or remembered sites, and revokes grants directly. Request sign-in with `sign_in`; never manage sign-in sessions or retrieve saved credentials yourself. SMS/email codes for a sign-in the person asked for may come from an already-granted integration; follow the sign-in reference.
+With full access, `browser_profile_write` lists profiles and grants, renames or deletes profiles, clears history or remembered sites, and revokes grants directly. Sign in with `copy_chrome_cookies` or `use_saved_login`; never manage sign-in sessions or retrieve saved credentials yourself. SMS/email codes for a sign-in the person asked for may come from an already-granted integration; follow the sign-in reference.
 
 On a voice call, show pages worth following as you start reading or working in them and when you move to another; a shown page stays visible, so skip repeat shows and quick lookups.
 

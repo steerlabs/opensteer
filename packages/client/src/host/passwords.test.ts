@@ -9,9 +9,10 @@ import type { PasswordSignInRequestResponse } from "@opensteer/protocol";
 import type { DesktopPasswordsStatus } from "@opensteer/protocol/desktop";
 import { describe, expect, it } from "vitest";
 import {
-  browserSignInStep,
+  chromeCookiesStep,
   passwordsOfferLine,
-  readBrowserSignInResult,
+  readSavedLoginResult,
+  savedLoginStep,
   passwordsOfferNeedHere,
   passwordSignInAccountList,
   passwordSignInAllowRemembers,
@@ -54,45 +55,22 @@ it("reads a held sign-in result with its outcome prose after it", () => {
   const requestId = createId("request");
   const { text } = normalizeToolOutput({
     content: [
-      { type: "text", text: JSON.stringify({ requestId, status: "declined" }) },
+      { type: "text", text: JSON.stringify({ requestId, site, status: "declined" }) },
       { type: "text", text: "The person declined this sign-in." },
     ],
   });
-  expect(readBrowserSignInResult(text)).toEqual({ requestId, status: "declined" });
-  expect(readBrowserSignInResult("The person declined this sign-in.")).toBeNull();
+  expect(readSavedLoginResult(text)).toEqual({ requestId, site, status: "declined" });
+  expect(readSavedLoginResult("The person declined this sign-in.")).toBeNull();
 });
 
 describe("passwordSignInOutcome", () => {
   const cases: readonly [PasswordSignInRequestResponse, string, boolean][] = [
-    [{ method: "saved-password", outcome: "signed-in" }, "Signed in to example.com", true],
-    [{ method: "person", outcome: "signed-in" }, "You signed in to example.com", true],
+    [
+      { outcome: "authorized", account: "p•••" },
+      "Allowed agents to sign in to example.com as p•••",
+      true,
+    ],
     [{ outcome: "expired" }, "This sign-in timed out", false],
-    [
-      { outcome: "failed", reason: "wrong-password" },
-      "example.com didn’t accept the saved password",
-      false,
-    ],
-    [
-      { outcome: "failed", reason: "unsupported-page" },
-      "Opensteer couldn’t find where to sign in on example.com",
-      false,
-    ],
-    [
-      { outcome: "failed", reason: "blocked-destination" },
-      "The page tried to reach a blocked address, so nothing was handed to the agent",
-      false,
-    ],
-    [
-      { outcome: "failed", reason: "cleanup-failed" },
-      "The private sign-in couldn’t be cleared, so nothing was handed to the agent",
-      false,
-    ],
-    [{ outcome: "failed", reason: "busy" }, "Too many sign-ins at once", false],
-    [
-      { outcome: "failed", reason: "needs-fresh-session" },
-      "This needs a new browser session. Ask your agent to open one and try again",
-      false,
-    ],
     [
       { outcome: "unavailable", reason: "passwords-off" },
       "Agent sign-ins are off on Mac mini",
@@ -104,7 +82,6 @@ describe("passwordSignInOutcome", () => {
       "Passwords didn’t respond on Mac mini",
       false,
     ],
-    [{ outcome: "outcome-unknown" }, "Opensteer couldn’t confirm the sign-in", false],
     [{ outcome: "session-closed" }, "The agent’s browser closed", false],
     [{ outcome: "interrupted" }, "The sign-in stopped on Mac mini", false],
   ];
@@ -142,16 +119,13 @@ describe("passwordSignInOutcome", () => {
   it("never reports an unreadable response as signed in", () => {
     const request = {
       ...passwordRequest("fulfilled", null),
-      response: { kind: "external", value: { outcome: "signed-in", method: "magic" } },
+      response: { kind: "external", value: { outcome: "signed-in", method: "saved-password" } },
     } as Request;
     expect(passwordSignInOutcome(request)).toEqual({ signedIn: false, text: "Answered" });
   });
 
   it("folds a settled sign-in into the transcript in the card's words", () => {
-    const request = passwordRequest("fulfilled", {
-      method: "saved-password",
-      outcome: "signed-in",
-    });
+    const request = passwordRequest("fulfilled", { outcome: "authorized", account: "p•••" });
     const event = {
       createdAt: "2026-10-11T12:00:00.000Z",
       data: { request },
@@ -164,7 +138,7 @@ describe("passwordSignInOutcome", () => {
     } as AgentEvent;
     expect(foldTranscriptEvent([], event)).toEqual([
       expect.objectContaining({
-        outcome: "Signed in to example.com",
+        outcome: "Allowed agents to sign in to example.com as p•••",
         requestKind: "browser.password-sign-in",
       }),
     ]);
@@ -366,18 +340,34 @@ function passwordRequest(
   } as Request;
 }
 
-describe("direct Passwords endings in the transcript", () => {
+describe("agent sign-in steps in the transcript", () => {
   it.each([
+    ["no-saved-login", "No saved login for example.com"],
     ["passwords-off", "Agent sign-ins are off"],
     ["passwords-not-set-up", "Passwords isn’t set up on your Passwords Mac"],
     ["passwords-not-responding", "Passwords didn’t respond"],
     ["expired", "This sign-in timed out"],
     ["interrupted", "The sign-in stopped"],
     ["stopped", "The sign-in stopped"],
-    ["busy", "Another agent is waiting for you to sign in to this site. Try again later"],
-  ] as const)("renders %s without claiming a sign-in", (reason, hint) => {
-    const result = { status: "unavailable", reason, site } as const;
-    expect(browserSignInStep(result, site)).toMatchObject({ signedIn: false, hint });
+    ["busy", "Another agent is waiting for you to allow this site. Try again later"],
+  ] as const)("renders a saved login's %s without claiming a sign-in", (reason, hint) => {
+    expect(savedLoginStep({ status: "unavailable", reason, site })).toMatchObject({
+      succeeded: false,
+      hint,
+    });
+  });
+
+  it("never reads copied Chrome cookies as more than copied", () => {
+    expect(
+      chromeCookiesStep({ status: "copied", site, sourceName: "Work", profileName: null }),
+    ).toEqual({
+      hint: "From Work",
+      label: "Copied your Chrome sign-in for example.com",
+      succeeded: true,
+    });
+    expect(
+      chromeCookiesStep({ status: "unavailable", site, reason: "chrome-signed-out" }),
+    ).toMatchObject({ hint: "Chrome isn’t signed in to example.com", succeeded: false });
   });
 });
 

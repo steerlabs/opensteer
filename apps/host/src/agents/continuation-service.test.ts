@@ -348,30 +348,14 @@ describe("ContinuationService", () => {
   });
 });
 describe("continuationMessage", () => {
-  it.each([
-    ["not-set-up", "set up Opensteer Passwords"],
-    ["no-login", "add this login in Opensteer Passwords"],
-    ["off", "turn agent sign-ins back on"],
-    [undefined, null],
-  ] as const)(
-    "offers Passwords a sign-in Chrome couldn't serve as %s allows",
-    async (state, offer) => {
-      const message = await continuationMessage(
-        browserSignInRequest({
-          outcome: "not-signed-in",
-          ...(state === undefined
-            ? {}
-            : {
-                passwords: state,
-              }),
-        }),
-        inventory(),
-      );
-      expect(message).toContain("did not decline");
-      if (offer === null) expect(message).not.toContain("Passwords");
-      else expect(message).toContain(offer);
-    },
-  );
+  it("says a Chrome Request found nothing to copy without steering the agent", async () => {
+    const message = await continuationMessage(
+      browserSignInRequest({ outcome: "not-signed-in" }),
+      inventory(),
+    );
+    expect(message).toContain("did not decline");
+    expect(message).toContain("nothing was copied");
+  });
   it.each(["browser.access"] as const)(
     "names the exact Host-recorded profile for %s",
     async (kind) => {
@@ -435,18 +419,6 @@ describe("continuationMessage", () => {
       outcome: "unavailable",
       reason: "not-responding",
     },
-    {
-      outcome: "failed",
-      reason: "wrong-password",
-    },
-    {
-      outcome: "failed",
-      reason: "cleanup-failed",
-    },
-    {
-      outcome: "failed",
-      reason: "busy",
-    },
   ])("describes a recoverable Passwords result honestly: %o", async (value) => {
     const request = RequestSchema.parse({
       ...fulfilledRequest("browser.access"),
@@ -472,7 +444,7 @@ describe("continuationMessage", () => {
     expect(message).not.toContain("open a fresh Browser Session");
     expect(message).not.toContain("because Opensteer Passwords stopped answering");
     expect(message).not.toContain("the user did not sign in another way");
-    expect(message).toContain("sign_in");
+    expect(message).toContain("use_saved_login again");
   });
   it("uses the live personal ref on every surface without inventing a session", async () => {
     const request = RequestSchema.parse({
@@ -503,7 +475,7 @@ describe("continuationMessage", () => {
     expect(message).toContain("type");
     expect(message).toContain("fillLogin");
     expect(message).not.toContain("Browser Session undefined");
-    expect(await continuationMessage(request, inventory())).toContain("sign_in again");
+    expect(await continuationMessage(request, inventory())).toContain("use_saved_login again");
   });
   it("does not claim access when the Mac has been removed", async () => {
     await expect(

@@ -21,7 +21,8 @@ import {
   passwordLoginLifetimeMs,
   loginEnvelopeMaxLifetimeMs,
   PasswordSignInRequesterSchema,
-  type AgentBrowserSignInResult,
+  PasswordSignInRequestResponseSchema,
+  type SavedLoginResult,
   type LoginText,
   type LoginReceiverKey,
   type LoginEnvelopeBinding,
@@ -81,12 +82,12 @@ interface OperationShared {
   readonly site: string;
   readonly expiresAt: number;
   readonly calls: Map<string, Call>;
-  readonly answers: Map<string, AgentBrowserSignInResult>;
+  readonly answers: Map<string, SavedLoginResult>;
   readonly waiters: Set<() => void>;
   cancelSent: PasswordSignInCancelReason | null;
   cancelledAt: number | null;
   need: "approval" | null;
-  result: AgentBrowserSignInResult | null;
+  result: SavedLoginResult | null;
   requestId: RequestId | null;
   opening: Promise<void> | null;
   settlement: Settlement | null;
@@ -241,8 +242,7 @@ export class PasswordSignInService {
     }
     if (result.status === "pending")
       return { status: "pending", site: input.site, requestId: result.requestId };
-    if (result.status === "declined" || result.status === "resolved")
-      return { status: result.status, site: input.site };
+    if (result.status === "declined") return { status: "declined", site: input.site };
     if (result.status === "unavailable" && result.reason === "needs-approval")
       return { status: "needs-approval", site: input.site };
     if (result.status === "unavailable") {
@@ -309,16 +309,16 @@ export class PasswordSignInService {
     return result;
   }
 
-  replayResult(request: Request): AgentBrowserSignInResult {
-    if (request.status === "pending") {
-      return {
-        replayed: true,
-        requestId: request.id,
-        status: "pending",
-      };
-    }
-    if (request.status === "declined") return { requestId: request.id, status: "declined" };
-    return { requestId: request.id, status: "resolved" };
+  /** What a call already answered by `request` learns again. */
+  replayResult(request: Request, deploymentId?: DeploymentId): SavedLoginResult {
+    const result = savedLoginRequestResult(request);
+    if (
+      result.status !== "unavailable" ||
+      result.reason !== "expired" ||
+      deploymentId === undefined
+    )
+      return result;
+    return this.#ready(deploymentId, result.site) ?? result;
   }
 
   leaseForOperation(operationId: string): PasswordLoginLease | null {
@@ -370,11 +370,7 @@ export class PasswordSignInService {
     return lease;
   }
 
-  #ready(
-    deploymentId: DeploymentId,
-    site: string,
-    credential?: "card",
-  ): AgentBrowserSignInResult | null {
+  #ready(deploymentId: DeploymentId, site: string, credential?: "card"): SavedLoginResult | null {
     for (const lease of this.#leases.values()) {
       if (
         lease.deploymentId === deploymentId &&
@@ -391,7 +387,7 @@ export class PasswordSignInService {
    * A call answered from a live lease joins that lease's operation, so reusing
    * its call ID for another deployment or site is refused like any joined call.
    */
-  #bindToLease(result: AgentBrowserSignInResult, call: Call): void {
+  #bindToLease(result: SavedLoginResult, call: Call): void {
     if (result.status !== "ready") return;
     const lease = this.#leases.get(result.loginRef);
     const operation = lease ? this.#operations.get(lease.operationId) : undefined;
@@ -406,7 +402,7 @@ export class PasswordSignInService {
   }
 
   /** A live join or a recorded call bypasses method selection and start rate limits. */
-  join(input: Call & { readonly site: string }): Promise<AgentBrowserSignInResult> | null {
+  join(input: Call & { readonly site: string }): Promise<SavedLoginResult> | null {
     if (this.#closed) return Promise.resolve(unavailable(input.site, "unsupported"));
     const own = this.#calls.get(callKey(input));
     if (own) this.#assertScope(own, input);
@@ -436,11 +432,11 @@ export class PasswordSignInService {
       readonly admitStart: () => boolean;
       readonly cardRunnerId?: RunnerId;
     },
-  ): Promise<AgentBrowserSignInResult> {
+  ): Promise<SavedLoginResult> {
     if (this.#closed) return unavailable(input.site, "unsupported");
     const key = siteKey(input.deploymentId, input.site, input.credential);
     const prior = this.#admissions.get(key) ?? Promise.resolve();
-    const admitted = prior.then(async (): Promise<Operation | AgentBrowserSignInResult> => {
+    const admitted = prior.then(async (): Promise<Operation | SavedLoginResult> => {
       const own = this.#calls.get(callKey(input));
       if (own) this.#assertScope(own, input);
       const ready = this.#ready(input.deploymentId, input.site, input.credential);
@@ -749,11 +745,7 @@ export class PasswordSignInService {
     return work;
   }
 
-  async #answer(
-    operation: Operation,
-    call: Call,
-    replayed: boolean,
-  ): Promise<AgentBrowserSignInResult> {
+  async #answer(operation: Operation, call: Call, replayed: boolean): Promise<SavedLoginResult> {
     const recorded = operation.answers.get(callKey(call));
     if (recorded) return recorded;
     const refuse = (reason: "busy" | "needs-approval") => {
@@ -805,12 +797,9 @@ export class PasswordSignInService {
           throw new Error("Sign-in join changed its Request");
       }
       const request = await this.#requests.get(operation.requestId);
-      if (request && request.status !== "pending") return this.replayResult(request);
-      return {
-        status: "pending",
-        requestId: operation.requestId,
-        replayed,
-      };
+      if (request && request.status !== "pending")
+        return this.replayResult(request, call.deploymentId);
+      return { status: "pending", site: operation.site, requestId: operation.requestId, replayed };
     }
     if (
       operation.settlement?.status === "fulfilled" &&
@@ -1322,23 +1311,45 @@ function requestInput(
 }
 function unavailable(
   site: string,
-  reason: Extract<AgentBrowserSignInResult, { status: "unavailable" }>["reason"],
-): AgentBrowserSignInResult {
+  reason: Extract<SavedLoginResult, { status: "unavailable" }>["reason"],
+): SavedLoginResult {
   return { site, reason, status: "unavailable" };
 }
 function interrupted(): Settlement {
   return { status: "fulfilled", response: { outcome: "interrupted" } };
 }
-function directResult(site: string, settlement: Settlement): AgentBrowserSignInResult {
+/**
+ * What a `use_saved_login` call learns from its Request without a live lease:
+ * an approval whose reference is gone reads as expired.
+ */
+export function savedLoginRequestResult(request: Request): SavedLoginResult {
+  if (request.payload.kind !== "browser.password-sign-in")
+    throw new Error("Not a saved-login Request");
+  const { site } = request.payload;
+  switch (request.status) {
+    case "pending":
+      return { status: "pending", site, requestId: request.id, replayed: true };
+    case "declined":
+      return { status: "declined", site, requestId: request.id };
+    case "cancelled":
+    case "withdrawn":
+      return unavailable(site, "interrupted");
+    case "fulfilled":
+      return directResult(site, {
+        status: "fulfilled",
+        response: PasswordSignInRequestResponseSchema.parse(
+          request.response.kind === "external" ? request.response.value : undefined,
+        ),
+      });
+  }
+}
+
+function directResult(site: string, settlement: Settlement): SavedLoginResult {
   if (settlement.status === "declined") return unavailable(site, "interrupted");
   const response = settlement.response;
   switch (response.outcome) {
     case "authorized":
       return unavailable(site, "expired");
-    case "signed-in":
-      return unavailable(site, "expired");
-    case "failed":
-      return unavailable(site, "interrupted");
     case "unavailable":
       return unavailable(
         site,
@@ -1353,7 +1364,6 @@ function directResult(site: string, settlement: Settlement): AgentBrowserSignInR
     case "expired":
       return unavailable(site, "expired");
     case "interrupted":
-    case "outcome-unknown":
       return unavailable(site, "interrupted");
     case "session-closed":
       return unavailable(site, "session-closed");

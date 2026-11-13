@@ -107,11 +107,16 @@ integration("agent-to-agent messaging round trip", () => {
     browserTabs,
     personShow: (userId, message) => realtime.showToPerson(userId, message),
     browserSources: {
-      agentUseCard: async () => {
+      agentCopyChromeCookies: async () => {
+        throw new Error("Unexpected Chrome cookie copy");
+      },
+    },
+    savedLogins: {
+      useCard: async () => {
         throw new Error("Unexpected card use");
       },
-      agentSignIn: async () => {
-        throw new Error("Unexpected browser sign-in");
+      useSavedLogin: async () => {
+        throw new Error("Unexpected saved login");
       },
     },
     machineFullDiskAccess: {

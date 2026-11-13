@@ -1691,7 +1691,7 @@ describe("Codex app-server harness", () => {
     try {
       await session.execute(fixture.turn("Sign in"));
       expect(observer.events.filter((event) => event.type === "tool.started")).toMatchObject([
-        { data: { callId: "direct-1", tool: { name: "sign_in", namespace: "opensteer" } } },
+        { data: { callId: "direct-1", tool: { name: "use_saved_login", namespace: "opensteer" } } },
       ]);
       expect(observer.events.filter((event) => event.type === "tool.completed")).toMatchObject([
         { data: { callId: "direct-1", isError: false, output: { text: "ready" } } },

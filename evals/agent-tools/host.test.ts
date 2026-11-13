@@ -153,7 +153,7 @@ it("validates prompt overhaul case inputs and mocked positive calls with product
           await client.callTool({
             name: required.tool,
             arguments:
-              required.tool === "sign_in"
+              required.tool === "use_saved_login" || required.tool === "copy_chrome_cookies"
                 ? { ...args, reason: "Check the assigned account" }
                 : args,
           });
@@ -189,7 +189,9 @@ it("validates the new surface cases with each caller's production inventory", as
           name: required.tool,
           arguments: {
             ...required.args,
-            ...(["integration_request", "sign_in"].includes(required.tool)
+            ...(["integration_request", "use_saved_login", "copy_chrome_cookies"].includes(
+              required.tool,
+            )
               ? { reason: "Complete the account check" }
               : {}),
             ...(required.tool === "delegate_task" ? { task: "Compare vendors" } : {}),
@@ -199,7 +201,7 @@ it("validates the new surface cases with each caller's production inventory", as
       }
       if (c.caller === "connection") {
         const result = await client.callTool({
-          name: "sign_in",
+          name: "use_saved_login",
           arguments: { site: "example.com", reason: "Check account" },
         });
         expect(result.isError).toBe(true);

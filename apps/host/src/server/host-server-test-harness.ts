@@ -26,6 +26,7 @@ export function hostServerTestDependencies(
     browser: inert(),
     browserTabs: inert(),
     browserSources: inert(),
+    passwordSignIns: inert(),
     signBrowserSourceInvitation: inert(),
     deviceAccess: inert(),
     machineFullDiskAccess: inert(),
