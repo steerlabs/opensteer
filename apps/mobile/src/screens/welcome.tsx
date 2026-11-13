@@ -1,14 +1,16 @@
 import { useHeaderHeight } from "@react-navigation/elements";
 import type { ReactNode } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from "react-native";
-import { color, controlFontScaleLimit, radius, space } from "../theme.js";
+import { color, space } from "../theme.js";
 import { AppText, Notice, PrimaryButton, RowGroup, SectionLabel } from "../ui/primitives.js";
 import { Screen, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
+import { thisPhoneNoun } from "../computers/phone-noun.js";
 import {
   shareMacLink,
   welcomeCopy,
   welcomePresentation,
+  welcomeSentence,
   type WelcomeProps,
 } from "./welcome-model.js";
 
@@ -32,17 +34,35 @@ export function Welcome(props: WelcomeProps): ReactNode {
             {welcomeCopy.title}
           </AppText>
           <AppText role="body" style={styles.centred} tone="soft">
-            {welcomeCopy.sentence}
+            {welcomeSentence(thisPhoneNoun)}
           </AppText>
         </View>
         {view.failure === null ? null : (
           <Notice detail={view.failure} title={welcomeCopy.failureTitle} />
         )}
-        <PrimaryButton label={welcomeCopy.scan} onPress={props.onScan} prominent />
+        {view.macLink === null ? null : (
+          <PrimaryButton
+            label={welcomeCopy.mac}
+            onPress={() => shareMacLink(view.macLink!)}
+            prominent
+          />
+        )}
+        <PrimaryButton
+          label={welcomeCopy.scan}
+          onPress={props.onScan}
+          prominent={view.macLink === null}
+        />
         <View style={styles.section}>
           <SectionLabel>{welcomeCopy.otherWays}</SectionLabel>
           <RowGroup>
             {[
+              view.signedInAs === null ? null : (
+                <View key="identity" style={styles.row}>
+                  <AppText role="body" style={styles.rowLabel}>
+                    {view.signedInAs}
+                  </AppText>
+                </View>
+              ),
               view.account === null ? null : (
                 <WelcomeRow
                   busy={props.signingIn}
@@ -59,17 +79,6 @@ export function Welcome(props: WelcomeProps): ReactNode {
             {view.footer}
           </AppText>
         </View>
-        {view.macLink === null ? null : (
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => shareMacLink(view.macLink!)}
-            style={({ pressed }) => [styles.mac, pressed && styles.pressed]}
-          >
-            <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="secondary" tone="ember">
-              {welcomeCopy.mac}
-            </AppText>
-          </Pressable>
-        )}
       </ScrollView>
     </Screen>
   );
@@ -105,14 +114,6 @@ const styles = StyleSheet.create({
   centred: { textAlign: "center" },
   content: { flexGrow: 1, gap: space[24], justifyContent: "center", paddingBottom: space[24] },
   intro: { alignItems: "center", gap: space[8] },
-  mac: {
-    alignItems: "center",
-    alignSelf: "center",
-    borderRadius: radius.full,
-    justifyContent: "center",
-    minHeight: 44,
-    paddingHorizontal: space[12],
-  },
   pressed: { backgroundColor: color.surfacePressed },
   row: {
     alignItems: "center",

@@ -71,6 +71,7 @@ import { SheetBarButton } from "../ui/sheet-bar.js";
 import { Symbol } from "../ui/symbol.js";
 import { AnswerPill, AnswerRow } from "./answer-pill.js";
 import { requestTitle } from "./docked-requests.js";
+import { withSwitch } from "../screens/device-page-model.js";
 import { AskerByline, useRequestAsker } from "./asker-byline.js";
 import { InstallReview } from "./integration-install-review.js";
 import {
@@ -683,6 +684,34 @@ function RequestBody(props: {
           pendingId={session.pendingId}
           reason={reason}
           runnerId={request.payload.runnerId}
+        />
+      ) : request.kind === "device.access" && request.payload.kind === "device.access" ? (
+        <DeviceAccessBody
+          access={request.payload.access}
+          canRespond={canRespond}
+          failure={session.failure}
+          machineName={request.payload.machineName}
+          onDecline={() => decline("device-access-decline")}
+          onTurnOn={() => {
+            const { payload } = request;
+            if (payload.kind !== "device.access") return;
+            void responder.attempt("device-access-allow", { shareWithAi: false }, async () => {
+              const machine = props.machines.find(({ id }) => id === payload.machineId);
+              if (machine?.access == null)
+                throw new Error(`${payload.machineName} can't be changed from here.`);
+              // Turning it on fulfils this Request inside the same Host change.
+              await props.hostClient.dispatch({
+                expectedRevision: machine.access.revision,
+                idempotencyKey: mutationIdempotencyKey(`device-access:${request.id}`),
+                policy: withSwitch(machine.access.policy, payload.access, true),
+                runnerId: machine.id,
+                type: "machine.access.update",
+              });
+              responder.admitted();
+            });
+          }}
+          pendingId={session.pendingId}
+          reason={reason}
         />
       ) : request.kind === "browser.access" && request.payload.kind === "browser.access" ? (
         <BrowserAccessBody
@@ -1300,6 +1329,52 @@ function ComputerAppAccessBody(props: {
           disabled={locked}
           label="Allow"
           onPress={props.onAllow}
+          tone="primary"
+        />
+      </AnswerRow>
+    </View>
+  );
+}
+
+const deviceAccessNames = {
+  apps: "Apps",
+  browser: "Browser",
+  files: "Files and commands",
+} as const;
+
+/** Needs you: one switch on one device, turned on here or left off for this task. */
+function DeviceAccessBody(props: {
+  readonly access: keyof typeof deviceAccessNames;
+  readonly canRespond: boolean;
+  readonly failure: string | null;
+  readonly machineName: string;
+  readonly onDecline: () => void;
+  readonly onTurnOn: () => void;
+  readonly pendingId: string | null;
+  readonly reason: string | null;
+}): ReactNode {
+  const locked = !props.canRespond || props.pendingId !== null;
+  return (
+    <View style={styles.section}>
+      <Notice
+        detail={`Turns on ${deviceAccessNames[props.access]} on ${props.machineName} for your agent. Apps, browser profiles and system permissions may still ask on that device.`}
+        title={`Let your agent use ${deviceAccessNames[props.access]} on ${props.machineName}?`}
+        tone="neutral"
+      />
+      <ResponseStatus failure={props.failure} reason={props.reason} />
+      <AnswerRow>
+        <AnswerPill
+          busy={props.pendingId === "device-access-decline"}
+          disabled={locked}
+          label="Not now"
+          onPress={props.onDecline}
+          tone="secondary"
+        />
+        <AnswerPill
+          busy={props.pendingId === "device-access-allow"}
+          disabled={locked}
+          label="Turn it on"
+          onPress={props.onTurnOn}
           tone="primary"
         />
       </AnswerRow>

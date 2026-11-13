@@ -12744,7 +12744,7 @@ function createInitialSnapshot(): HostSnapshot {
       {
         ...mockMachines[3]!,
         id: "rnr_55555555-5555-4555-8555-555555555555",
-        name: "Tim’s iPhone",
+        name: "Alex's iPhone",
         kind: "phone",
         device: { form: "phone", platform: "ios", app: "opensteer" },
         computerUse: null,

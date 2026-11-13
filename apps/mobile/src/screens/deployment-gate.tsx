@@ -1,7 +1,7 @@
 import type { HostClient } from "@opensteer/client/host";
 import type { DeploymentId } from "@opensteer/core";
 import { useNavigation } from "@react-navigation/native";
-import { useState, type ReactNode } from "react";
+import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
 import { deploymentStatusDetail, deploymentStatusLabel } from "../client/deployment-rows.js";
@@ -21,6 +21,11 @@ import { statusTone } from "./deployment-row.js";
 import { deploymentRecoveryLabel, runDeploymentRecovery } from "./deployment-recovery.js";
 import { deploymentUpdateRows } from "./deployment-update.js";
 import { useDeploymentUpdate } from "./use-deployment-update.js";
+import { useOptionalIphoneApps } from "../iphone-apps/context.js";
+import type { IphoneAppsController } from "../iphone-apps/controller.js";
+import { thisPhoneNoun } from "../computers/phone-noun.js";
+import { removedCopy } from "../phone-setup/removed-copy.js";
+import { RemovedView } from "../phone-setup/removed-view.js";
 
 /**
  * The Host a Deployment-bound screen may use, or null.
@@ -59,6 +64,30 @@ export function DeploymentGate(props: {
   const { deploymentId } = props;
   const row = rows.find((candidate) => candidate.deploymentId === deploymentId);
   const top = { paddingTop: props.paddingTop ?? 0 };
+  const iphone = useOptionalIphoneApps();
+  const removedFrom = useRemovedFrom(iphone);
+
+  // Removed by its Host: nothing signs back in until the person sets it up again.
+  if (iphone !== null && removedFrom?.deploymentId === deploymentId) {
+    const copy = removedCopy(thisPhoneNoun, row?.name ?? removedFrom.deploymentName);
+    return (
+      <View style={[styles.removed, top]}>
+        <RemovedView
+          {...copy}
+          onNotNow={resetToDeployments}
+          onSetUpAgain={() => {
+            setFailure(null);
+            void iphone
+              .clearRemoved()
+              .then(() => client.signIn(deploymentId))
+              .catch((error: unknown) =>
+                setFailure(operationDetail(error, "Opensteer could not be opened.")),
+              );
+          }}
+        />
+      </View>
+    );
+  }
 
   if (row === undefined) {
     return (
@@ -168,8 +197,19 @@ function DeploymentUpdate(props: {
   return update === null ? null : <RowGroup>{deploymentUpdateRows(update)}</RowGroup>;
 }
 
+/** Whether this phone's Host removed it from a Deployment, until Set up again. */
+function useRemovedFrom(controller: IphoneAppsController | null) {
+  return useSyncExternalStore(
+    controller?.subscribe ?? noSubscription,
+    () => controller?.getState().removedFrom ?? null,
+    () => controller?.getState().removedFrom ?? null,
+  );
+}
+const noSubscription = () => () => undefined;
+
 const styles = StyleSheet.create({
   content: { flex: 1, gap: space[8], justifyContent: "center" },
   opening: { alignItems: "center", gap: space[12] },
+  removed: { backgroundColor: color.background, flex: 1 },
   statusLine: { alignItems: "center", flexDirection: "row", flexWrap: "wrap", gap: space[8] },
 });

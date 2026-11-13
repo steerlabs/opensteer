@@ -28,6 +28,7 @@ import {
 import { BrowserTabsScreen } from "./screens/browser-tabs.js";
 import { ChromeScreen, type ChromeDestination } from "./screens/chrome.js";
 import { ComputerScreen } from "./screens/computer.js";
+import { DevicePageScreen } from "./screens/device-page.js";
 import { ConversationActivityScreen } from "./screens/conversation-activity.js";
 import { DeploymentsScreen } from "./screens/deployments.js";
 import { HomeScreen } from "./screens/home.js";
@@ -418,7 +419,7 @@ const RootStack = createNativeStackNavigator({
       options: { title: "Plugins", headerShown: Platform.OS !== "ios" },
     },
     SettingsPluginDetail: { screen: SettingsPluginsScreen, options: { title: "Plugin" } },
-    SettingsDeviceDetail: { screen: ComputerScreen, options: { title: "Device" } },
+    SettingsDeviceDetail: { screen: DevicePageScreen, options: { title: "Device" } },
     SettingsSignIns: { screen: SettingsSignInsScreen, options: { title: "Sign-ins" } },
     Settings: {
       screen: SettingsScreen,

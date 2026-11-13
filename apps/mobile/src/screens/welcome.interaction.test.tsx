@@ -51,7 +51,7 @@ const signedOut = {
 };
 
 describe("first-run welcome", () => {
-  it("offers the Account and an address beside the scan, and shares the Mac download", async () => {
+  it("leads with the Mac link and the scan, then the Account and an address", async () => {
     const container = document.createElement("div");
     const root = createRoot(container);
     const signIn = vi.fn();
@@ -64,6 +64,7 @@ describe("first-run welcome", () => {
             readonly detail: string;
           });
       readonly portalOrigin: string | null;
+      readonly signedInAs?: string;
       readonly signingIn?: boolean;
     }) => (
       <Welcome
@@ -73,6 +74,7 @@ describe("first-run welcome", () => {
         onAddress={() => undefined}
         onScan={scan}
         portalOrigin={props.portalOrigin}
+        signedInAs={props.signedInAs ?? null}
         signingIn={props.signingIn ?? false}
       />
     );
@@ -84,9 +86,9 @@ describe("first-run welcome", () => {
     };
     try {
       await act(async () => root.render(render({ portalOrigin: null })));
-      expect(container.textContent).toContain("Connect your computer");
+      expect(container.textContent).toContain("Opensteer runs on your Mac");
       expect(container.textContent).toContain("Enter address");
-      expect(container.textContent).not.toContain("Get Opensteer for Mac");
+      expect(container.textContent).not.toContain("Send me the Mac link");
       await click("Scan QR Code");
       expect(scan).toHaveBeenCalledOnce();
       await click("Sign in");
@@ -109,11 +111,21 @@ describe("first-run welcome", () => {
       expect(container.textContent).toContain("Enter address");
 
       await act(async () => root.render(render({ portalOrigin: "https://portal.example.com" })));
-      await click("Get Opensteer for Mac");
+      await click("Send me the Mac link");
       expect(share).toHaveBeenCalledWith({
         message: "https://portal.example.com/mac",
         url: "https://portal.example.com/mac",
       });
+
+      // Signed in with no Opensteer yet: who, and no second sign-in.
+      await act(async () =>
+        root.render(render({ portalOrigin: null, signedInAs: "alex@example.com" })),
+      );
+      expect(container.textContent).toContain("alex@example.com");
+      expect(button("Sign in")).toBeUndefined();
+      expect(container.textContent).toContain(
+        "Your Opensteer appears here as soon as your Mac has it.",
+      );
     } finally {
       await act(async () => root.unmount());
     }
