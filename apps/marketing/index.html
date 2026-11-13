@@ -244,18 +244,6 @@
           stroke-linecap="round"
         />
       </symbol>
-      <symbol id="d-contacts" viewBox="0 0 48 48">
-        <rect x="2" y="2" width="44" height="44" rx="10.5" fill="url(#dg-sky)" />
-        <circle cx="24" cy="19.5" r="6.5" fill="#9b9ba1" />
-        <path d="M11.5 38c1.6-6.5 6.6-10 12.5-10s10.9 3.5 12.5 10" fill="#9b9ba1" />
-      </symbol>
-      <symbol id="d-remind" viewBox="0 0 48 48">
-        <rect x="2" y="2" width="44" height="44" rx="10.5" fill="#fff" />
-        <circle cx="14" cy="15" r="3.4" fill="#0a84ff" />
-        <circle cx="14" cy="24" r="3.4" fill="#ff3b30" />
-        <circle cx="14" cy="33" r="3.4" fill="#ff9f0a" />
-        <path d="M21 15h15M21 24h15M21 33h15" stroke="#d6d6db" stroke-width="2" />
-      </symbol>
       <symbol id="i-xmark" viewBox="0 0 16 16">
         <path
           d="M4.5 4.5l7 7M11.5 4.5l-7 7"
@@ -393,33 +381,6 @@
         <circle cx="18" cy="23.5" r="1.9" fill="#15a595" />
         <circle cx="24" cy="23.5" r="1.9" fill="#15a595" />
         <circle cx="30" cy="23.5" r="1.9" fill="#15a595" />
-      </symbol>
-      <symbol id="d-cal" viewBox="0 0 48 48">
-        <rect x="2" y="2" width="44" height="44" rx="10.5" fill="#fff" />
-        <path d="M2 12.5A10.5 10.5 0 0 1 12.5 2h23A10.5 10.5 0 0 1 46 12.5V15H2z" fill="#f0453a" />
-        <text
-          x="24"
-          y="12"
-          text-anchor="middle"
-          font-family="-apple-system, Inter, sans-serif"
-          font-size="7.5"
-          font-weight="700"
-          fill="#fff"
-          letter-spacing="0.6"
-        >
-          NOV
-        </text>
-        <text
-          x="24"
-          y="38"
-          text-anchor="middle"
-          font-family="-apple-system, Inter, sans-serif"
-          font-size="22"
-          font-weight="300"
-          fill="#1d1d1f"
-        >
-          17
-        </text>
       </symbol>
       <symbol id="d-os" viewBox="0 0 48 48">
         <rect x="2" y="2" width="44" height="44" rx="10.5" fill="url(#dg-os)" />
@@ -775,33 +736,108 @@
         <div class="wrap">
           <div class="row__head reveal">
             <h2>Connect <em>your devices.</em></h2>
-            <p>Your Mac does the work. Your phones come along.</p>
+            <p>
+              Your agent lives on your Mac. Give it your phone, your other computers and your home.
+            </p>
           </div>
           <ul class="devs reveal">
             <li class="dev">
               <div class="dev__pic dev__pic--chat" aria-hidden="true">
-                <p class="bub bub--me">Is Brightline's invoice in?</p>
-                <p class="bub">Yes. LUMEN-0143 is in their portal, due Dec 1.</p>
+                <div class="msgs">
+                  <div class="msgs__who"><span class="msgs__av">M</span>Maya · Brightline</div>
+                  <p class="bub">Did our invoice go out?</p>
+                  <p class="bub bub--me">Sent this morning. LUMEN-0143, $12,675, due Dec 1.</p>
+                  <span class="msgs__sent">Delivered by your agent</span>
+                </div>
               </div>
-              <h3>Text it from iMessage</h3>
-              <p>Message your agent from your iPhone, like anyone else in Messages.</p>
+              <h3>Integrate iMessage</h3>
+              <p>Your agent reads your texts and replies in iMessage directly.</p>
             </li>
             <li class="dev">
               <div class="dev__pic dev__pic--droid" aria-hidden="true">
-                <div class="droid"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                <div class="droid">
+                  <span class="droid__state">Calling…</span>
+                  <span class="droid__av">DP</span>
+                  <span class="droid__name">Dr. Patel's office</span>
+                  <span class="droid__time">0:42</span>
+                  <span class="droid__keys">
+                    <i
+                      ><svg viewBox="0 0 24 24">
+                        <rect x="9" y="3" width="6" height="11" rx="3" />
+                        <path d="M6 10v1a6 6 0 0 0 12 0v-1M12 17v4M9 21h6" /></svg
+                    ></i>
+                    <i
+                      ><svg viewBox="0 0 24 24">
+                        <path
+                          d="m11 5-5 4H3v6h3l5 4zM15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14"
+                        /></svg
+                    ></i>
+                    <i class="droid__end"
+                      ><svg viewBox="0 0 24 24">
+                        <path d="M3 13v-3c5-4 13-4 18 0v3l-5 1v-4a14 14 0 0 0-8 0v4z" /></svg
+                    ></i>
+                  </span>
+                </div>
               </div>
-              <h3>Give it an Android phone</h3>
+              <h3>Give it its own phone</h3>
               <p>
-                An Agent Phone lets your agent use any app on it, for work that lives on a phone.
+                Your agent deserves a phone of its own. On an Android Agent Phone it uses real apps,
+                sends texts and makes calls.
               </p>
             </li>
             <li class="dev">
-              <div class="dev__pic dev__pic--ios" aria-hidden="true">
-                <svg><use href="#d-cal" /></svg><svg><use href="#d-contacts" /></svg
-                ><svg><use href="#d-remind" /></svg>
+              <div class="dev__pic dev__pic--home" aria-hidden="true">
+                <ul class="tiles">
+                  <li>
+                    <svg viewBox="0 0 20 20">
+                      <rect x="3" y="4" width="14" height="9" rx="1.5" />
+                      <path d="m3 13-1.5 3h17L17 13M8 16h4" />
+                    </svg>
+                    <b>Work laptop</b><span>Online</span>
+                  </li>
+                  <li>
+                    <svg viewBox="0 0 20 20">
+                      <rect x="2.5" y="5.5" width="15" height="9" rx="3" />
+                      <path d="M5 12h5M14.5 12h.01" />
+                    </svg>
+                    <b>Mac mini</b><span>Online</span>
+                  </li>
+                  <li class="tiles__on">
+                    <svg viewBox="0 0 20 20">
+                      <path
+                        d="M8 14h4M8.5 17h3M7 11.5a5 5 0 1 1 6 0c-.7.5-1 1.2-1 2.5H8c0-1.3-.3-2-1-2.5Z"
+                      />
+                    </svg>
+                    <b>Lights</b><span>On</span>
+                  </li>
+                  <li>
+                    <svg viewBox="0 0 20 20">
+                      <circle cx="10" cy="10" r="7.5" />
+                      <path d="m10 10 3-3M5.5 10h.01M10 5.5h.01" />
+                    </svg>
+                    <b>Thermostat</b><span>68°</span>
+                  </li>
+                  <li>
+                    <svg viewBox="0 0 20 20">
+                      <rect x="4" y="9" width="12" height="9" rx="2" />
+                      <path d="M7 9V6.5a3 3 0 0 1 6 0V9" />
+                    </svg>
+                    <b>Front door</b><span>Locked</span>
+                  </li>
+                  <li>
+                    <svg viewBox="0 0 20 20">
+                      <path d="M2.5 8 10 3l7.5 5v9h-15z" />
+                      <path d="M5.5 17V9.5h9V17M5.5 12h9M5.5 14.5h9" />
+                    </svg>
+                    <b>Garage</b><span>Closed</span>
+                  </li>
+                </ul>
               </div>
-              <h3>Lend it your iPhone</h3>
-              <p>Calendar, Contacts and Reminders, while the Opensteer app is open.</p>
+              <h3>Your computers and your home</h3>
+              <p>
+                Your work laptop, the Mac mini in the closet, the lights and the front door.
+                Automate everything in your life.
+              </p>
             </li>
           </ul>
         </div>
