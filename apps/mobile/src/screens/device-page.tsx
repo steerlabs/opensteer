@@ -1,4 +1,4 @@
-import { withDeviceSwitch } from "@opensteer/client/computers";
+import { cancelDeviceSetup, withDeviceSwitch } from "@opensteer/client/computers";
 import { computerConnectionsOn } from "@opensteer/client/integrations";
 import { computerStatus } from "@opensteer/client/computers";
 import { mutationIdempotencyKey, type HostClient, type HostSnapshot } from "@opensteer/client/host";
@@ -86,7 +86,7 @@ function DevicePage(props: {
               {
                 key: "gone",
                 kind: "text",
-                label: "This device is no longer part of this Opensteer.",
+                label: failure ?? "This device is no longer part of this Opensteer.",
               },
             ],
           },
@@ -94,12 +94,12 @@ function DevicePage(props: {
       />
     );
 
-  const run = (operation: () => Promise<unknown>, fallback: string): void => {
+  const run = (operation: () => Promise<unknown>, fallback: string, refresh = true): void => {
     if (busy.current) return;
     busy.current = true;
     setFailure(null);
     void operation()
-      .then(() => props.hostClient.refresh())
+      .then(() => (refresh ? props.hostClient.refresh() : undefined))
       .catch((error: unknown) => setFailure(operationDetail(error, fallback)))
       .finally(() => {
         busy.current = false;
@@ -141,16 +141,26 @@ function DevicePage(props: {
                 label: "Cancel setup",
                 destructive: true,
                 onPress: () =>
-                  run(async () => {
-                    if (ownPending) await iphoneController.remove({ hostClient: props.hostClient });
-                    else
-                      await props.hostClient.dispatch({
-                        type: "runner.enrollment.retire",
-                        enrollmentId: machine.enrollmentId ?? machine.id,
-                        idempotencyKey: mutationIdempotencyKey("device-cancel-setup"),
-                      });
-                    navigation.goBack();
-                  }, "Setup could not be cancelled. Try again."),
+                  run(
+                    async () => {
+                      if (ownPending)
+                        await iphoneController.remove({ hostClient: props.hostClient });
+                      else if (
+                        (await cancelDeviceSetup(
+                          props.hostClient,
+                          machine.enrollmentId ?? machine.id,
+                        )) === "joined"
+                      ) {
+                        setFailure(
+                          "This device finished joining. Open it in Devices to remove it.",
+                        );
+                        return;
+                      }
+                      navigation.goBack();
+                    },
+                    "Setup could not be cancelled. Try again.",
+                    ownPending,
+                  ),
               },
               ...(failure ? [{ key: "failure", kind: "text" as const, label: failure }] : []),
             ],
@@ -162,18 +172,18 @@ function DevicePage(props: {
   const toggle = (key: DeviceSwitchKey, on: boolean): void => {
     const access = machine.access;
     if (access === null) return;
-    run(
-      () =>
-        props.hostClient.dispatch({
-          expectedRevision: access.revision,
-          idempotencyKey: mutationIdempotencyKey("device-switch"),
-          policy: withDeviceSwitch(access.policy, key, on),
-          runnerId: machine.id,
-          type: "machine.access.update",
-        }),
-      "That change could not be confirmed. Try again.",
-    );
+    run(async () => {
+      const result = await props.hostClient.updateMachineAccess({
+        expectedRevision: access.revision,
+        policy: withDeviceSwitch(access.policy, key, on),
+        runnerId: machine.id,
+      });
+      if (result.outcome === "conflict") {
+        setFailure("It changed on another device. Look again and try once more.");
+      }
+    }, "That change could not be confirmed. Try again.");
   };
+
   const draft = name ?? machine.name;
   const rename = (): void => {
     const next = draft.trim();
@@ -198,7 +208,6 @@ function DevicePage(props: {
     rows.find((row) => row.deploymentId === props.deploymentId)?.name ?? "Opensteer",
   );
   const connections = computerConnectionsOn(apps.data?.connections ?? [], machine.id);
-  // Only an iPhone's own build lends these apps; Android lends its browser alone.
   const appRows: NativeSettingsRow[] = thisDevice
     ? iphoneAppIds.flatMap((app) => {
         const permission = iphonePermissionOf(iphone.snapshot, app);
@@ -275,7 +284,6 @@ function DevicePage(props: {
                 value: row.value,
                 onChange: (on) => toggle(row.key, on),
               },
-          // Each app keeps its own row, and its own approvals, under Apps.
           ...(row.key === "apps" ? appRows : []),
         ]),
         ...(thisDevice

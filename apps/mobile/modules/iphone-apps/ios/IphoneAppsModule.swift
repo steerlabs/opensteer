@@ -6,6 +6,7 @@ private struct PrepareInput: Record {
   @Field var deploymentId: String = ""
 }
 private struct IssuanceInput: Record {
+  @Field var name: String = ""
   @Field var pairing: PairingInput = PairingInput()
   @Field var devicesV1: Bool = false
 }
@@ -74,7 +75,7 @@ public final class IphoneAppsModule: Module {
     }
     AsyncFunction("beginIssuance") { (input: IssuanceInput) throws -> Void in
       guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }
-      do { try IphoneExecutorRuntime.shared.beginIssuance(pairing: input.pairing.dictionary, devicesV1: input.devicesV1) }
+      do { try IphoneExecutorRuntime.shared.beginIssuance(pairing: input.pairing.dictionary, devicesV1: input.devicesV1, name: input.name) }
       catch { throw Self.map(error) }
     }
     AsyncFunction("clearRemoved") { () throws -> Void in

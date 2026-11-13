@@ -4,12 +4,6 @@ import type { HostClient, MachineAccessUpdateOutcome } from "../host/client.js";
 
 export type DeviceSwitchName = "browser" | "apps" | "files";
 
-/**
- * The policy one "Your agent can use" switch writes. Only the changed one of
- * the optional switches rides along, so the Host keeps whatever the other is
- * now. Files is reach alone: turning it back on restores the commands,
- * forwarding and folders saved underneath, which only new enrollment sets.
- */
 export function withDeviceSwitch(
   policy: MachineAccessPolicy,
   name: DeviceSwitchName,
@@ -26,7 +20,7 @@ export function withDeviceSwitch(
 }
 
 export async function answerDeviceAccessRequest(
-  client: Pick<HostClient, "dispatch" | "getSnapshot" | "updateMachineAccess">,
+  client: Pick<HostClient, "dispatch" | "getSnapshot" | "refresh" | "updateMachineAccess">,
   request: Request,
   decision: "fulfilled" | "declined",
 ): Promise<MachineAccessUpdateOutcome | void> {
@@ -41,13 +35,24 @@ export async function answerDeviceAccessRequest(
     });
     return;
   }
-  const { machineId, access } = request.payload;
-  const machine = client.getSnapshot().machines.find((entry) => entry.id === machineId);
-  if (!machine?.access)
-    throw new Error("Device access settings are unavailable. Refresh and try again.");
-  return client.updateMachineAccess({
-    runnerId: machineId,
-    expectedRevision: machine.access.revision,
-    policy: withDeviceSwitch(machine.access.policy, access, true),
-  });
+  return turnOnDeviceAccess(client, request.payload.machineId, request.payload.access);
+}
+
+export async function turnOnDeviceAccess(
+  client: Pick<HostClient, "getSnapshot" | "refresh" | "updateMachineAccess">,
+  machineId: string,
+  access: DeviceSwitchName,
+): Promise<MachineAccessUpdateOutcome> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const machine = client.getSnapshot().machines.find((entry) => entry.id === machineId);
+    if (!machine?.access) throw new Error("This device can’t be changed from here right now.");
+    const result = await client.updateMachineAccess({
+      runnerId: machineId,
+      expectedRevision: machine.access.revision,
+      policy: withDeviceSwitch(machine.access.policy, access, true),
+    });
+    if (result.outcome === "updated") return result;
+    await client.refresh();
+  }
+  throw new Error("It changed on another device. Look again and try once more.");
 }

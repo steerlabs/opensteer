@@ -9,7 +9,7 @@ import type {
   IphoneAppsConnection,
   IphoneAppsSnapshot,
   IphonePermission,
-} from "../platform/iphone-apps.js";
+} from "../platform/iphone-apps-types.js";
 import {
   iphonePermissionAllows,
   type IphoneAddFailure,

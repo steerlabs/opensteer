@@ -24,6 +24,21 @@ class DeviceLeavesTest {
         assertFalse(legacy.containsKey("preparedIdentity"))
         assertFalse(legacy.containsKey("access"))
     }
+    @Test fun preparedLeaveRetainsPublicKeyAndLegacyMintReceiptAfterErasure() {
+        for (devicesV1 in listOf(true, false)) {
+            val identity = JsonObject(leave("rnr_one") + mapOf("state" to JsonPrimitive("prepared"), "devicesV1" to JsonPrimitive(devicesV1),
+                "mintKey" to JsonPrimitive("android-enroll:stable"), "name" to JsonPrimitive("Pixel")))
+            val bytes = Memory()
+            val obligation = DeviceLeaves.obligation(identity, "public-key", identity.text("issuedAt"), "signature")
+            DeviceLeaves(bytes).persist(obligation)
+            val survived = DeviceLeaves(bytes).pending().single()
+            assertEquals("android-enroll:stable", survived.text("mintKey"))
+            assertEquals("Pixel", survived.text("name"))
+            if (devicesV1) assertEquals(Wire.fields("runnerId" to JsonPrimitive("rnr_one"), "publicKeyPem" to JsonPrimitive("public-key")), survived.obj("preparedIdentity"))
+            else assertEquals(JsonNull, survived["preparedIdentity"])
+            assertFalse(survived.containsKey("seed"))
+        }
+    }
     @Test fun successiveLeavesSurviveRestartAndNeedSeparateAcknowledgments() {
         val bytes = Memory()
         val ledger = DeviceLeaves(bytes)

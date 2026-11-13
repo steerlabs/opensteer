@@ -698,6 +698,47 @@ describe("RequestSheetContent external requests", () => {
     });
   });
 
+  it("keeps a stale device Request answerable until a refreshed update succeeds", async () => {
+    const request = deviceAccessRequest();
+    if (request.payload.kind !== "device.access") throw new Error("Expected device Request");
+    const machine = {
+      id: request.payload.machineId,
+      access: {
+        revision: 7,
+        policy: { reach: "nobody", commands: false, forwarding: false, shares: [] },
+      },
+    } as unknown as MachineSummary;
+    let succeeds = false;
+    const dispatch = vi.fn(async () => ({
+      type: "machine.access.update",
+      outcome: succeeds ? "updated" : "conflict",
+      revision: machine.access!.revision + 1,
+    }));
+    const refresh = vi.fn(async () => {
+      machine.access!.revision += 1;
+      machine.access!.policy.shares = [{ path: "/current", mode: "read" }];
+    });
+    await render(surface(request), dispatch, { machines: [machine], refresh });
+    await click("Turn it on");
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(dispatch).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        expectedRevision: 8,
+        policy: expect.objectContaining({ shares: [{ path: "/current", mode: "read" }] }),
+      }),
+    );
+    expect(refresh).toHaveBeenCalled();
+    expect(text()).toContain("Could not confirm your answer was sent.");
+    expect(button("Turn it on").disabled).toBe(false);
+    succeeds = true;
+    await click("Turn it on");
+    expect(dispatch).toHaveBeenLastCalledWith(
+      expect.objectContaining({ expectedRevision: machine.access!.revision }),
+    );
+    expect(text()).not.toContain("Turn it on");
+  });
+
   it("restores Files without enabling commands or forwarding", async () => {
     const request = deviceAccessRequest();
     if (request.payload.kind !== "device.access") throw new Error("Expected device Request");
@@ -907,6 +948,7 @@ async function render(
     readonly passwordRead?: ReturnType<typeof vi.fn>;
     readonly reason?: boolean;
     readonly review?: ReturnType<typeof vi.fn>;
+    readonly refresh?: () => Promise<void>;
     readonly snapshot?: object;
   } = {},
 ): Promise<void> {
@@ -934,7 +976,7 @@ async function render(
           {
             dispatch,
             load: async () => undefined,
-            refresh: async () => undefined,
+            refresh: options.refresh ?? (async () => undefined),
             subscribe: () => () => undefined,
             getSnapshot: () => snapshot,
             updateMachineAccess: async (input: {

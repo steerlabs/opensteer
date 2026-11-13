@@ -1,7 +1,6 @@
 import { useContext, useState, type ReactNode } from "react";
 import type { Request } from "@opensteer/core";
-import { withDeviceSwitch } from "@opensteer/client/computers";
-import type { HostClient } from "@opensteer/client/host";
+import { turnOnDeviceAccess } from "@opensteer/client/computers";
 import { mutationIdempotencyKey } from "@opensteer/client/host";
 import { actionErrorMessage } from "../ui-utils.js";
 import { ActionNote } from "./action-rows.js";
@@ -22,35 +21,13 @@ import {
   type DeviceGrantFollowUp,
 } from "./workspace/device-grant-follow-ups.js";
 
+export { turnOnDeviceAccess } from "@opensteer/client/computers";
+
 export function deviceAccessRequestTitle(payload: {
   readonly access: DeviceCapability;
   readonly machineName: string;
 }): string {
   return `Let your agent use ${capabilityLabel[payload.access]} on ${payload.machineName}?`;
-}
-
-/**
- * Turns one switch on, as the device page would. A revision someone else
- * moved first is read again and asked once more: the only field this writes
- * on top of what is stored is the one switch the person just said yes to.
- */
-export async function turnOnDeviceAccess(
-  hostClient: Pick<HostClient, "getSnapshot" | "refresh" | "updateMachineAccess">,
-  machineId: string,
-  capability: DeviceCapability,
-): Promise<void> {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const machine = hostClient.getSnapshot().machines.find((entry) => entry.id === machineId);
-    if (!machine?.access) throw new Error("This device can’t be changed from here right now.");
-    const result = await hostClient.updateMachineAccess({
-      expectedRevision: machine.access.revision,
-      policy: withDeviceSwitch(machine.access.policy, capability, true),
-      runnerId: machineId,
-    });
-    if (result.outcome === "updated") return;
-    await hostClient.refresh();
-  }
-  throw new Error("It changed on another device. Look again and try once more.");
 }
 
 /**

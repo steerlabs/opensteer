@@ -82,11 +82,7 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
         ["deploymentId": $0.deploymentId, "deploymentName": $0.deploymentName]
       },
       "pendingLeaves": (try? storage?.pendingLeaves()).flatMap { $0 }.map { leaves in
-        leaves.map { leave -> [String: Any?] in
-          ["deploymentId": leave.deploymentId, "runnerId": leave.runnerId, "hostUrl": leave.hostUrl,
-            "issuedAt": leave.issuedAt, "signature": leave.signature, "devicesV1": leave.devicesV1,
-            "enrollmentId": leave.enrollmentId, "enrolled": leave.enrolled, "hostInstanceId": leave.hostInstanceId]
-        }
+        leaves.map { $0.publicSnapshot }
       } ?? [],
       "working": gate?.inFlight ?? 0]
   }
@@ -312,13 +308,13 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     reconnect()
   }
 
-  func beginIssuance(pairing: [String: String], devicesV1: Bool) throws {
+  func beginIssuance(pairing: [String: String], devicesV1: Bool, name: String) throws {
     lock.lock(); defer { lock.unlock() }
     guard foreground, !enrollmentStopped, let storage else { throw IphoneRuntimeError.notForeground }
     _ = try HostTarget(pairing["hostUrl"] ?? "")
     try storage.beginIssuance(deploymentId: pairing["deploymentId"] ?? "",
       deploymentName: pairing["deploymentName"] ?? "", hostInstanceId: pairing["hostInstanceId"] ?? "",
-      hostUrl: pairing["hostUrl"] ?? "", devicesV1: devicesV1)
+      hostUrl: pairing["hostUrl"] ?? "", devicesV1: devicesV1, name: name)
     identity = try storage.load()
   }
 

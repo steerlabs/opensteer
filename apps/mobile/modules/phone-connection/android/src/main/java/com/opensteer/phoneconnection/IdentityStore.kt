@@ -22,7 +22,6 @@ class IdentityStore(context: Context) {
     private val directory = File(context.noBackupFilesDir, "phone-connection").apply { mkdirs() }
     private val file = AtomicBytes(File(directory, "identity.v1.sealed"), ::syncDirectory)
     private val denial = AtomicBytes(File(directory, "retiring.v1.json"), ::syncDirectory)
-    // Outlives the identity: a signed leave is delivered after the seed is gone.
     private val leaves = DeviceLeaves(AtomicBytes(File(directory, "leave.v1.json"), ::syncDirectory))
     private val removed = AtomicBytes(File(directory, "removed.v1.json"), ::syncDirectory)
     private val alias = "opensteer-mobile-phone-connection-v1"
@@ -95,6 +94,8 @@ class IdentityStore(context: Context) {
         val seed = Wire.decode64(identity.text("seed"))
         try { return Proofs.sign(seed, value) } finally { seed.fill(0) }
     }
+    fun leaveObligation(identity: JsonObject, issuedAt: String): JsonObject = DeviceLeaves.obligation(identity, publicKey(identity), issuedAt,
+        sign(identity, Proofs.deviceLeave(identity.text("deploymentId"), identity.text("runnerId"), issuedAt)))
     fun <T> leave(fence: () -> Unit, sign: () -> JsonObject?, erase: () -> T) = leaves.leave(fence, sign, erase)
     fun pendingLeaves(): List<JsonObject> = leaves.pending()
     fun completeLeave(runnerId: String) = leaves.complete(runnerId)
