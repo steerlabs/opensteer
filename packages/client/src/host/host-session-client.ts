@@ -1047,6 +1047,7 @@ export class HttpHostClient {
       searchSuggestionsAvailable:
         this.#capabilities?.includes("browser-search-suggestions-v1") === true,
       iphoneAppsAvailable: this.#capabilities?.includes("iphone-apps-v1") === true,
+      devicesAvailable: this.#capabilities?.includes("devices-v1") === true,
       voiceAvailable: this.#capabilities?.includes("voice-run-v1") === true,
 
       ownerViewWindowsAvailable: this.#capabilities?.includes("ownerViewWindows") === true,
@@ -3531,6 +3532,7 @@ export class HttpHostClient {
       browserProfileManageAvailable: capabilities.includes("browser-profile-manage-v1"),
       searchSuggestionsAvailable: capabilities.includes("browser-search-suggestions-v1"),
       iphoneAppsAvailable: capabilities.includes("iphone-apps-v1"),
+      devicesAvailable: capabilities.includes("devices-v1"),
       voiceAvailable: capabilities.includes("voice-run-v1"),
       ownerViewWindowsAvailable: capabilities.includes("ownerViewWindows"),
     });
@@ -5486,6 +5488,7 @@ export class HttpHostClient {
       searchSuggestionsAvailable:
         this.#capabilities?.includes("browser-search-suggestions-v1") === true,
       iphoneAppsAvailable: this.#capabilities?.includes("iphone-apps-v1") === true,
+      devicesAvailable: this.#capabilities?.includes("devices-v1") === true,
       voiceAvailable: this.#capabilities?.includes("voice-run-v1") === true,
       ownerViewWindowsAvailable: this.#capabilities?.includes("ownerViewWindows") === true,
       threads:

@@ -22,18 +22,7 @@ export function useMacosGrants(bridge: OpensteerDesktopBridge | null): {
 } {
   const [grants, setGrants] = useState<MacosGrants>(null);
   const reload = useCallback(() => {
-    if (!bridge) return;
-    void Promise.all([
-      bridge.computerUsePermissionsGet().catch(() => null),
-      bridge.checkFullDiskAccess().catch(() => null),
-    ]).then(
-      ([apps, disk]: [DesktopComputerUsePermissionsResult | null, { granted: boolean } | null]) =>
-        setGrants({
-          accessibility: apps?.accessibility === "granted",
-          screenRecording: apps?.screenRecording === "granted",
-          fullDiskAccess: disk?.granted === true,
-        }),
-    );
+    if (bridge) void readMacosGrants(bridge).then(setGrants);
   }, [bridge]);
   useEffect(() => {
     reload();
@@ -41,6 +30,19 @@ export function useMacosGrants(bridge: OpensteerDesktopBridge | null): {
     return () => window.removeEventListener("focus", reload);
   }, [reload]);
   return { grants, reload };
+}
+
+export async function readMacosGrants(bridge: OpensteerDesktopBridge): Promise<MacosGrants> {
+  const [apps, disk]: [DesktopComputerUsePermissionsResult | null, { granted: boolean } | null] =
+    await Promise.all([
+      bridge.computerUsePermissionsGet().catch(() => null),
+      bridge.checkFullDiskAccess().catch(() => null),
+    ]);
+  return {
+    accessibility: apps?.accessibility === "granted",
+    screenRecording: apps?.screenRecording === "granted",
+    fullDiskAccess: disk?.granted === true,
+  };
 }
 
 /** Whether a switch that is on still waits on macOS here. */

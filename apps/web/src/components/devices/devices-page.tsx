@@ -156,9 +156,10 @@ function deviceBadge(machine: MachineSummary, here: boolean): string | null {
 }
 
 function DeviceListRow({ here, row }: { readonly here: boolean; readonly row: DeviceRow }) {
+  const { snapshot } = useShell();
   const { machine } = row;
   const badge = deviceBadge(machine, here);
-  const uses = deviceUsesLine(machine);
+  const uses = deviceUsesLine(machine, snapshot.devicesAvailable === true);
   const away = machine.status === "offline";
   return (
     <li className="devices-list__item">

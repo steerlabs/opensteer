@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
+import type { MachineSummary } from "@opensteer/protocol";
 import { bindSessionToDevice, setUpThisDevice, type DeviceSetupPorts } from "./device-setup.js";
-import { deviceSwitches, switchPolicy } from "./device-access.js";
+import { appliedSetupAccess, deviceSwitchDetail, deviceSwitches } from "./device-access.js";
 
 const access = { browser: true, apps: false, files: true };
 const proof = { issuedAt: "2026-11-12T12:00:00Z", signature: "a".repeat(86) };
@@ -113,54 +114,85 @@ describe("access switches", () => {
       .getSnapshot()
       .machines.find((entry) => entry.id === "rnr_33333333-3333-4333-8333-333333333333")!;
 
-  it("writes only the switch that changed, so the Host keeps the other", () => {
-    const policy = { ...laptop().access!.policy, browser: true, apps: true };
-    const written = switchPolicy(policy, "browser", false);
-    expect(written).toEqual({
-      browser: false,
-      reach: policy.reach,
-      commands: policy.commands,
-      forwarding: policy.forwarding,
-      shares: policy.shares,
-    });
-    expect("apps" in written).toBe(false);
-  });
-
-  it("turns Files and commands off by reach alone, and on to the owner with commands", () => {
-    const policy = { ...laptop().access!.policy, commands: false, forwarding: false };
-    expect(switchPolicy(policy, "files", false)).toMatchObject({
-      reach: "nobody",
-      shares: policy.shares,
-    });
-    expect(switchPolicy({ ...policy, reach: "nobody" }, "files", true)).toMatchObject({
-      reach: "owner",
-      commands: true,
-      forwarding: true,
-      shares: policy.shares,
-    });
-  });
-
   it("fixes Home's browser and files, and marks a switch waiting on macOS", () => {
     const client = new MockHostClient({ latencyMs: 0 });
     const home = client.getSnapshot().machines.find((entry) => entry.kind === "home")!;
     client.dispose();
-    expect(deviceSwitches(home).map((item) => [item.capability, item.kind])).toEqual([
+    expect(deviceSwitches(home, true).map((item) => [item.capability, item.kind])).toEqual([
       ["browser", "fixed"],
       ["apps", "switch"],
       ["files", "fixed"],
     ]);
     const mac = laptop();
-    const waiting = deviceSwitches({
-      ...mac,
-      allowedModules: ["browser", "integrations", "shell"],
-      fullDiskAccess: false,
-      access: { ...mac.access!, policy: { ...mac.access!.policy, apps: true, reach: "owner" } },
-    });
+    const waiting = deviceSwitches(
+      {
+        ...mac,
+        allowedModules: ["browser", "integrations", "shell"],
+        fullDiskAccess: false,
+        access: { ...mac.access!, policy: { ...mac.access!.policy, apps: true, reach: "owner" } },
+      },
+      true,
+    );
     expect(waiting).toContainEqual({
       capability: "files",
       kind: "switch",
       needsMacos: true,
       on: true,
     });
+  });
+
+  it("offers Apps wherever the Host granted integrations, with macOS remedies only on a Mac", () => {
+    const mac = laptop();
+    const server: MachineSummary = {
+      ...mac,
+      kind: "server",
+      allowedModules: ["integrations", "shell"],
+      device: { form: "server", platform: "linux" },
+      computerUse: null,
+      fullDiskAccess: false,
+      access: { ...mac.access!, policy: { ...mac.access!.policy, apps: true, reach: "owner" } },
+    };
+    const switches = deviceSwitches(server, true);
+    expect(switches).toEqual([
+      { capability: "apps", kind: "switch", needsMacos: false, on: true },
+      { capability: "files", kind: "switch", needsMacos: false, on: true },
+    ]);
+    expect(deviceSwitchDetail(switches[0]!, server, false)).toBe("Apps and tools it hosts");
+  });
+
+  it("shows an older Host's Browser and Apps as always on, keeping only Files a switch", () => {
+    const mac: MachineSummary = {
+      ...laptop(),
+      allowedModules: ["browser", "integrations", "shell"],
+    };
+    expect(
+      deviceSwitches(mac, false).map((item) => [
+        item.capability,
+        item.kind === "fixed" ? item.reason : "switch",
+      ]),
+    ).toEqual([
+      ["browser", "older-host"],
+      ["apps", "older-host"],
+      ["files", "switch"],
+    ]);
+  });
+
+  it("reads Ready from what the Host stored, never from choices it couldn't take", () => {
+    const mac = laptop();
+    const chosen = { browser: true, apps: true, files: true };
+    const legacy = {
+      ...mac,
+      access: {
+        ...mac.access!,
+        policy: { reach: "nobody" as const, commands: false, forwarding: false, shares: [] },
+      },
+    };
+    expect(appliedSetupAccess({ machine: legacy, chosen, devicesAvailable: false })).toEqual({
+      browser: true,
+      apps: true,
+      files: false,
+    });
+    expect(appliedSetupAccess({ machine: null, chosen, devicesAvailable: false })).toBeNull();
+    expect(appliedSetupAccess({ machine: null, chosen, devicesAvailable: true })).toBe(chosen);
   });
 });

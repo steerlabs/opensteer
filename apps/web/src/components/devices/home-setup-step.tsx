@@ -1,14 +1,14 @@
 import { useId, useState } from "react";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { deviceAccess } from "@opensteer/protocol";
-import { hostsDeployment } from "@opensteer/client/computers";
+import { hostsDeployment, withDeviceSwitch } from "@opensteer/client/computers";
 import { mutationIdempotencyKey } from "@opensteer/client/host";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { useShell } from "../app-shell.js";
 import { SetupFooter, SetupFrame } from "../first-run/setup-frame.js";
 import { SetupList } from "../first-run/setup-list.js";
 import { ErrorNotice } from "../onboarding-card.js";
-import { capabilityDetailHere, switchPolicy } from "./device-access.js";
+import { capabilityDetailHere } from "./device-access.js";
 import { deviceNotificationsOn, setDeviceNotifications } from "./device-preferences.js";
 import { MacosPermissionRows, useMacosGrants } from "./macos-permission-rows.js";
 import { SetupGroup, SwitchRow } from "./set-up-this-mac.js";
@@ -42,6 +42,7 @@ export function HomeSetupStep({
   const [error, setError] = useState<string | null>(null);
   const { grants, reload } = useMacosGrants(bridge);
   const nameId = useId();
+  const switchable = snapshot.devicesAvailable === true;
 
   async function save() {
     setSaving(true);
@@ -57,10 +58,10 @@ export function HomeSetupStep({
         });
         if (result.type !== "machine.rename") throw new Error("The rename didn’t finish.");
       }
-      if (home?.access && deviceAccess(home.access.policy).apps !== apps) {
+      if (switchable && home?.access && deviceAccess(home.access.policy).apps !== apps) {
         const result = await hostClient.updateMachineAccess({
           expectedRevision: home.access.revision,
-          policy: switchPolicy(home.access.policy, "apps", apps),
+          policy: withDeviceSwitch(home.access.policy, "apps", apps),
           runnerId: home.id,
         });
         if (result.outcome === "conflict") {
@@ -70,7 +71,7 @@ export function HomeSetupStep({
       }
       if (deploymentId) setDeviceNotifications(deploymentId, notifications);
       if (notifications) void bridge.testNotification().catch(() => undefined);
-      if (apps) setPhase("macos");
+      if (apps || !switchable) setPhase("macos");
       else onNext();
     } catch (reason) {
       setError(actionErrorMessage(reason));
@@ -146,15 +147,17 @@ export function HomeSetupStep({
           />
         </label>
       ) : null}
-      <SetupGroup title="Your agent can use">
-        <SwitchRow
-          checked={apps}
-          detail={capabilityDetailHere.apps}
-          disabled={saving}
-          label="Apps"
-          onChange={setApps}
-        />
-      </SetupGroup>
+      {switchable ? (
+        <SetupGroup title="Your agent can use">
+          <SwitchRow
+            checked={apps}
+            detail={capabilityDetailHere.apps}
+            disabled={saving}
+            label="Apps"
+            onChange={setApps}
+          />
+        </SetupGroup>
+      ) : null}
       <SetupGroup title="On this Mac">
         <SwitchRow
           checked={notifications}

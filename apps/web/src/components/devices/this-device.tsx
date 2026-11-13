@@ -115,8 +115,7 @@ export function useThisDeviceLifecycle(input: {
     deployment !== null &&
     deployment.kind === "personal" &&
     (hosting || (localStatus !== null && localStatus.platform !== "windows"));
-  const selected = input.deploymentAccess?.deployments.find(({ id }) => id === deploymentId);
-  const devicesAvailable = selected?.capabilities?.includes("devices-v1") ?? true;
+  const devicesAvailable = snapshot.devicesAvailable === true;
   const record = membershipRecord(localStatus);
   const againChosen = deploymentId !== null && setUpAgainChosen(deploymentId);
   const effectiveRecord =

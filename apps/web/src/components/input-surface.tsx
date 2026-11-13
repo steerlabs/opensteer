@@ -30,6 +30,7 @@ import { ThreadFullDiskAccessAction } from "./thread-full-disk-access-action.js"
 import {
   ThreadDeviceAccessAction,
   deviceAccessRequestTitle,
+  useDeviceGrantFollowUps,
 } from "./thread-device-access-action.js";
 import { ThreadPasswordSignInAction } from "./thread-password-sign-in-action.js";
 import { ThreadIntegrationAction } from "./thread-integration-action.js";
@@ -322,12 +323,13 @@ export function RequestStack({
   readonly openId: string | null;
   readonly threadId: string;
 }) {
+  const followUps = useDeviceGrantFollowUps(items.map((item) => item.surface.request.id));
   const index = Math.max(
     0,
     items.findIndex((item) => item.surface.request.id === openId),
   );
   const open = items[index];
-  if (!open) return null;
+  if (!open) return followUps.node ? <div className="request-stack">{followUps.node}</div> : null;
   if (folded)
     return (
       <div className="request-stack">
@@ -347,6 +349,7 @@ export function RequestStack({
     ) : null;
   return (
     <div className="request-stack">
+      {followUps.node}
       <div
         className={`${inputSurfaceClass(open.surface)} request-card`}
         key={open.surface.request.id}
@@ -371,11 +374,13 @@ export function RequestStack({
         ) : pager ? (
           <div className="request-card__by">{pager}</div>
         ) : null}
-        <RequestPanel
-          disabled={disabled}
-          surface={open.surface}
-          threadId={open.source ? open.surface.request.originatingThreadId : threadId}
-        />
+        <followUps.Provider value={followUps.context}>
+          <RequestPanel
+            disabled={disabled}
+            surface={open.surface}
+            threadId={open.source ? open.surface.request.originatingThreadId : threadId}
+          />
+        </followUps.Provider>
       </div>
     </div>
   );

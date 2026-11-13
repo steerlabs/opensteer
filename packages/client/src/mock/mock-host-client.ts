@@ -329,6 +329,7 @@ import {
 import { MockPhoneDisplaySocket } from "./mock-phone-display.js";
 import {
   MockPlaceWorld,
+  mockIphoneRunnerId,
   seedMockPlaces,
   type MockPlaceScript,
   type MockPlacesWorld,
@@ -6055,14 +6056,20 @@ class MockHostState {
           id: createId("authSession"),
           lastSeenAt: "2026-09-14T00:00:00.000Z",
         },
-        ...["Chrome on Mac", "Opensteer for iPhone"].map((deviceLabel) => ({
+        // A web tab, and an older iPhone app that signed in before devices bound sessions.
+        ...(
+          [
+            ["Chrome on Mac", "computer"],
+            ["Opensteer for iPhone", "mobile"],
+          ] as const
+        ).map(([deviceLabel, form]) => ({
           absoluteExpiresAt: "2026-10-14T00:00:00.000Z",
           createdAt: "2026-09-14T00:00:00.000Z",
           current: false,
           deviceLabel,
           deviceId: null,
           expiresAt: "2026-09-21T00:00:00.000Z",
-          form: "computer" as const,
+          form,
           id: createId("authSession"),
           lastSeenAt: "2026-09-14T00:00:00.000Z",
         })),
@@ -12865,14 +12872,43 @@ function createInitialSnapshot(): HostSnapshot {
     },
     machines: [
       ...mockMachines.map((machine) => ({ ...machine })),
+      // Every device can hold browsers: the person's iPhone too, while Opensteer is open on it.
       {
-        ...mockMachines[3]!,
-        id: "rnr_55555555-5555-4555-8555-555555555555",
-        name: "Tim’s iPhone",
-        kind: "phone",
-        device: { form: "phone", platform: "ios", app: "opensteer" },
-        computerUse: null,
         tabOpenedAt: null,
+        access: {
+          activeSessions: [],
+          ownerReachAvailable: true,
+          policy: {
+            browser: true,
+            apps: true,
+            reach: "nobody",
+            commands: false,
+            forwarding: false,
+            shares: [],
+          },
+          revision: 1,
+        },
+        apps: null,
+        allowedModules: ["browser", "integrations"],
+        detail: null,
+        device: { form: "phone", platform: "ios", app: "opensteer" },
+        enrollmentId: "ren_runner_iphone",
+        expiresAt: null,
+        computerUse: null,
+        fullDiskAccess: null,
+        id: mockIphoneRunnerId,
+        kind: "phone",
+        lastSeenAt: "2026-09-14T00:00:00.000Z",
+        modules: {
+          browser: { checkedAt: null, detail: null, readiness: "ready" },
+          integrations: { checkedAt: null, detail: null, readiness: "ready" },
+        },
+        name: "Alex's iPhone",
+        ownership: "mine",
+        pinnedThreads: 0,
+        revocable: true,
+        status: "online",
+        runtimeVersion: null,
       },
     ],
     ownerName: "Alex",
@@ -12898,6 +12934,7 @@ function createInitialSnapshot(): HostSnapshot {
     browserProfileManageAvailable: true,
     searchSuggestionsAvailable: true,
     iphoneAppsAvailable: true,
+    devicesAvailable: true,
     ownerViewWindowsAvailable: true,
     voiceAvailable: true,
 
