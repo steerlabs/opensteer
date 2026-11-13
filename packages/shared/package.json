@@ -49,6 +49,7 @@
     "./markdown": "./src/markdown.ts",
     "./markdownParser": "./src/markdownParser.ts",
     "./transcriptLinks": "./src/transcriptLinks.ts",
+    "./userEnvironment": "./src/userEnvironment.ts",
     "./validationIssues": "./src/validationIssues.ts",
     "./webSocketFrame": "./src/webSocketFrame.ts",
     "./withTimeout": "./src/withTimeout.ts",

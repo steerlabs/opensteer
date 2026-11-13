@@ -262,6 +262,41 @@ describe("EngineInstallationResolver", () => {
     expect(resolved.plan?.environment).not.toHaveProperty("UNRELATED_SESSION_TOKEN");
   });
 
+  it("keeps the Windows baseline for update subprocesses, with one spelling per name", async () => {
+    const root = await mkdtemp(join(tmpdir(), "opensteer-engine-installation-"));
+    roots.push(root);
+    const executable = join(root, "codex");
+    await writeFile(executable, "binary");
+    const resolver = new EngineInstallationResolver({
+      environment: {
+        ComSpec: "C:\\Windows\\system32\\cmd.exe",
+        NODE_OPTIONS: "--require evil.js",
+        OPENAI_API_KEY: "must-not-leak",
+        Path: "",
+        ProgramData: "C:\\ProgramData",
+        SystemRoot: "C:\\Windows",
+        windir: "C:\\Windows",
+      },
+      platform: "win32",
+      run: async () => result("codex-cli 0.160.0"),
+    });
+    const resolved = await resolver.resolve(
+      executable,
+      {
+        ...codex,
+        native: { executableBasename: "codex", updateArgs: ["update"] },
+        updateEnvironment: { comspec: "C:\\engine\\cmd.exe" },
+      },
+      "ambient",
+    );
+    expect(resolved.plan?.environment).toEqual({
+      ProgramData: "C:\\ProgramData",
+      SystemRoot: "C:\\Windows",
+      WINDIR: "C:\\Windows",
+      comspec: "C:\\engine\\cmd.exe",
+    });
+  });
+
   it("cancels a hung version probe at the inspection deadline", async () => {
     let probeAborted = false;
     const resolver = new EngineInstallationResolver({

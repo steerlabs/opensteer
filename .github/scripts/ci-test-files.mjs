@@ -63,6 +63,8 @@ export const defaultTestExclude = [
   "**/*.engine.test.ts",
   "**/*.device.test.ts",
   "**/*.soak.test.ts",
+  // Windows-real tests run on the Windows job through vitest.windows.config.ts.
+  "**/*.windows.test.ts",
   // VM journeys select their own config inside pnpm test:vm.
   "**/*.vm.test.*",
 ];

@@ -1,5 +1,6 @@
 import { isNodeError } from "@opensteer/shared/nodeError";
 import { assertPluginDataId, removePluginData } from "@opensteer/shared/privateFiles";
+import { mergeEnvironment, selectEnvironment } from "@opensteer/shared/userEnvironment";
 import { mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fetchPluginPackage, retainPluginPackages } from "../skills/plugin-cache.js";
@@ -335,6 +336,24 @@ function launchTransport(launch: LocalMcpLaunch): Session["transport"] {
 }
 
 /**
+ * A local program's environment: the SDK's safe defaults and the Windows
+ * baseline, under the person's approved variables. On Windows an approved
+ * `Path` replaces `PATH` rather than standing beside it.
+ */
+export function localMcpEnvironment(
+  approved: Readonly<Record<string, string>>,
+  source: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Record<string, string> {
+  const defaults = mergeEnvironment(
+    getDefaultEnvironment(),
+    selectEnvironment(source, [], platform),
+    platform,
+  );
+  return mergeEnvironment(defaults, approved, platform);
+}
+
+/**
  * A program's MCP session over its standard input and output, in a process
  * group of its own. A program is often a launcher — `npx`, `uvx`, a shell
  * script — whose own child is the server, so ending the session ends every
@@ -366,7 +385,7 @@ class ProgramTransport implements Transport {
       const child = spawn(this.#launch.command, [...this.#launch.args], {
         cwd: this.#launch.cwd,
         detached: true,
-        env: { ...getDefaultEnvironment(), ...this.#launch.env },
+        env: localMcpEnvironment(this.#launch.env),
         stdio: ["pipe", "pipe", "pipe"],
       });
       this.#child = child;

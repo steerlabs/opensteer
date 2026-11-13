@@ -5,8 +5,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   NativePersonalUserEnvironment,
   PersonalUserEnvironmentError,
+  composeWindowsEnvironment,
+  filterUserEnvironment,
   parseLoginShellEnvironment,
+  parseWindowsRegistryEnvironment,
   probeLoginShell,
+  type WindowsRegistryValue,
 } from "./personal-user-environment.js";
 
 const temporaryDirectories: string[] = [];
@@ -117,21 +121,179 @@ describe("Personal user environment", () => {
     expect(probe).toHaveBeenCalledOnce();
   });
 
-  it("uses Windows PATH and PATHEXT directly without a shell probe", async () => {
-    const probe = vi.fn();
+  it("reads the Windows registry once, without a shell, and keeps the baseline but no secrets", async () => {
+    const shellProbe = vi.fn();
+    const registryProbe = vi.fn(async () =>
+      Buffer.from(
+        JSON.stringify([
+          {
+            kind: "ExpandString",
+            name: "Path",
+            scope: "machine",
+            value: "%SystemRoot%\\system32;%SystemRoot%",
+          },
+          { kind: "ExpandString", name: "Path", scope: "user", value: "%PNPM_HOME%" },
+          {
+            kind: "ExpandString",
+            name: "PNPM_HOME",
+            scope: "user",
+            value: "%LOCALAPPDATA%\\pnpm",
+          },
+          { kind: "String", name: "OPENAI_API_KEY", scope: "user", value: "must-not-cross" },
+        ]),
+      ),
+    );
+    const log = vi.fn();
     const environment = new NativePersonalUserEnvironment({
       environment: {
-        PATH: "C:\\Users\\alex\\bin;C:\\Windows\\System32",
+        ComSpec: "C:\\Windows\\system32\\cmd.exe",
+        LOCALAPPDATA: "C:\\Users\\Ada\\AppData\\Local",
+        NODE_OPTIONS: "--require C:\\evil.js",
+        Path: "C:\\Windows\\system32;C:\\dev\\node_modules\\.bin",
         PATHEXT: ".COM;.EXE;.BAT;.CMD",
         SECRET_TOKEN: "no",
+        SystemRoot: "C:\\Windows",
       },
+      isDirectory: () => false,
+      log,
       platform: "win32",
-      probe,
+      probe: shellProbe,
+      registryProbe,
     });
     await expect(environment.resolve()).resolves.toEqual({
-      PATH: "C:\\Users\\alex\\bin;C:\\Windows\\System32",
+      ComSpec: "C:\\Windows\\system32\\cmd.exe",
+      LOCALAPPDATA: "C:\\Users\\Ada\\AppData\\Local",
+      PATH: "C:\\Windows\\system32;C:\\Windows;C:\\Users\\Ada\\AppData\\Local\\pnpm;C:\\dev\\node_modules\\.bin",
       PATHEXT: ".COM;.EXE;.BAT;.CMD",
+      PNPM_HOME: "C:\\Users\\Ada\\AppData\\Local\\pnpm",
+      SystemRoot: "C:\\Windows",
     });
-    expect(probe).not.toHaveBeenCalled();
+    await environment.resolve();
+    expect(registryProbe).toHaveBeenCalledOnce();
+    expect(registryProbe).toHaveBeenCalledWith(
+      expect.objectContaining({
+        powershell: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      }),
+    );
+    expect(shellProbe).not.toHaveBeenCalled();
+    expect(log).not.toHaveBeenCalled();
+  });
+
+  it("says so when the Windows registry is unreadable and uses only the inherited environment", async () => {
+    const log = vi.fn();
+    const environment = new NativePersonalUserEnvironment({
+      environment: { Path: "C:\\Windows\\system32", SystemRoot: "C:\\Windows" },
+      isDirectory: () => false,
+      log,
+      platform: "win32",
+      registryProbe: async () => {
+        throw new PersonalUserEnvironmentError("The Windows registry environment probe timed out.");
+      },
+    });
+    await expect(environment.resolve()).resolves.toEqual({
+      PATH: "C:\\Windows\\system32",
+      SystemRoot: "C:\\Windows",
+    });
+    expect(log).toHaveBeenCalledWith(
+      "personal.user_environment.windows_registry_unavailable",
+      expect.objectContaining({
+        detail: expect.stringContaining("only the environment Opensteer started with"),
+        error: "The Windows registry environment probe timed out.",
+      }),
+    );
+  });
+
+  it("decodes the registry probe's UTF-8 JSON and rejects anything else", () => {
+    const value: WindowsRegistryValue = {
+      kind: "ExpandString",
+      name: "Path",
+      scope: "user",
+      value: "%USERPROFILE%\\Zoë\\工具",
+    };
+    expect(parseWindowsRegistryEnvironment(Buffer.from(JSON.stringify([value]), "utf8"))).toEqual([
+      value,
+    ]);
+    expect(() => parseWindowsRegistryEnvironment(Buffer.from([0x5b, 0xff, 0x5d]))).toThrow(
+      PersonalUserEnvironmentError,
+    );
+    expect(() =>
+      parseWindowsRegistryEnvironment(Buffer.from(JSON.stringify([{ ...value, kind: "Binary" }]))),
+    ).toThrow(/unrecognized/u);
+  });
+
+  it("expands only REG_EXPAND_SZ values and leaves self-references, cycles and unknown names literal", () => {
+    const registry: WindowsRegistryValue[] = [
+      { kind: "ExpandString", name: "Path", scope: "machine", value: "C:\\Windows;%PATH%" },
+      { kind: "ExpandString", name: "PATH", scope: "user", value: "%TOOLS%\\bin;%MISSING%\\bin" },
+      { kind: "String", name: "LITERAL", scope: "machine", value: "%TOOLS%" },
+      { kind: "ExpandString", name: "TOOLS", scope: "machine", value: "C:\\machine-tools" },
+      { kind: "ExpandString", name: "TOOLS", scope: "user", value: "%USERPROFILE%\\tools" },
+      { kind: "ExpandString", name: "LOOP_A", scope: "user", value: "%LOOP_B%" },
+      { kind: "ExpandString", name: "LOOP_B", scope: "user", value: "%LOOP_A%" },
+      { kind: "ExpandString", name: "SELF", scope: "user", value: "x%self%y" },
+    ];
+    const environment = composeWindowsEnvironment({
+      inherited: { USERPROFILE: "C:\\Users\\Zoë" },
+      isDirectory: () => false,
+      registry,
+    });
+    expect(environment).toMatchObject({
+      LITERAL: "%TOOLS%",
+      PATH: "C:\\Windows;%PATH%;C:\\Users\\Zoë\\tools\\bin;%MISSING%\\bin",
+      SELF: "x%self%y",
+      TOOLS: "C:\\Users\\Zoë\\tools",
+    });
+    expect(environment.LOOP_A).toMatch(/^%LOOP_[AB]%$/u);
+  });
+
+  it("composes PATH from machine, user, inherited, then existing package-manager directories", () => {
+    const existing = new Set([
+      "C:\\Users\\Ada\\AppData\\Roaming\\npm",
+      "D:\\volta\\bin",
+      "C:\\Users\\Ada\\scoop\\shims",
+      "C:\\Users\\Ada\\.local\\bin",
+    ]);
+    const environment = composeWindowsEnvironment({
+      inherited: {
+        APPDATA: "C:\\Users\\Ada\\AppData\\Roaming",
+        LOCALAPPDATA: "C:\\Users\\Ada\\AppData\\Local",
+        PATH: "c:\\windows\\SYSTEM32\\;C:\\injected\\toolchain;;C:\\Users\\Ada\\.local\\bin",
+        USERPROFILE: "C:\\Users\\Ada",
+      },
+      isDirectory: (directory) => existing.has(directory),
+      registry: [
+        { kind: "String", name: "Path", scope: "machine", value: "C:\\Windows\\System32" },
+        { kind: "String", name: "Path", scope: "user", value: '"C:\\Program Files\\Tool"' },
+        { kind: "String", name: "VOLTA_HOME", scope: "user", value: "D:\\volta" },
+      ],
+    });
+    expect(environment.PATH?.split(";")).toEqual([
+      "C:\\Windows\\System32",
+      '"C:\\Program Files\\Tool"',
+      "C:\\injected\\toolchain",
+      "C:\\Users\\Ada\\.local\\bin",
+      "C:\\Users\\Ada\\AppData\\Roaming\\npm",
+      "D:\\volta\\bin",
+      "C:\\Users\\Ada\\scoop\\shims",
+    ]);
+  });
+
+  it("filters the Desktop environment with the Windows baseline only on Windows", () => {
+    const source = {
+      ComSpec: "C:\\Windows\\system32\\cmd.exe",
+      HOME: "/Users/ada",
+      NODE_OPTIONS: "--require evil.js",
+      Path: "C:\\Windows\\system32",
+      ProgramData: "C:\\ProgramData",
+      SystemRoot: "C:\\Windows",
+    };
+    expect(filterUserEnvironment(source, "win32")).toEqual({
+      ComSpec: "C:\\Windows\\system32\\cmd.exe",
+      HOME: "/Users/ada",
+      PATH: "C:\\Windows\\system32",
+      ProgramData: "C:\\ProgramData",
+      SystemRoot: "C:\\Windows",
+    });
+    expect(filterUserEnvironment(source, "darwin")).toEqual({ HOME: "/Users/ada" });
   });
 });

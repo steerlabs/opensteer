@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, realpath, readFile, rm, symlink, writeFile } from "node
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { LocalMcpServers, type LocalMcpFrame } from "./local-mcp-servers.js";
+import { LocalMcpServers, localMcpEnvironment, type LocalMcpFrame } from "./local-mcp-servers.js";
 
 let directory: string | undefined;
 afterEach(async () => {
@@ -120,4 +120,31 @@ it("confirms removal when the state directory has never existed", async () => {
   });
   await servers.removePluginData("plugin-1");
   expect(sent).toEqual([{ type: "runner.integrations.plugin-data.removed", pluginId: "plugin-1" }]);
+});
+
+it("gives a Windows local program the baseline under its approved variables, one spelling each", () => {
+  const environment = localMcpEnvironment(
+    { Path: "C:\\plugin\\bin", TOOL_MODE: "fast" },
+    {
+      ComSpec: "C:\\Windows\\system32\\cmd.exe",
+      NODE_OPTIONS: "--require evil.js",
+      OPENSTEER_RUNNER_TOKEN: "private",
+      PATH: "C:\\Windows\\system32",
+      PATHEXT: ".COM;.EXE;.BAT;.CMD",
+      SystemRoot: "C:\\Windows",
+    },
+    "win32",
+  );
+  expect(environment).toMatchObject({
+    ComSpec: "C:\\Windows\\system32\\cmd.exe",
+    Path: "C:\\plugin\\bin",
+    PATHEXT: ".COM;.EXE;.BAT;.CMD",
+    SystemRoot: "C:\\Windows",
+    TOOL_MODE: "fast",
+  });
+  expect(Object.keys(environment).filter((name) => name.toUpperCase() === "PATH")).toEqual([
+    "Path",
+  ]);
+  expect(environment).not.toHaveProperty("NODE_OPTIONS");
+  expect(environment).not.toHaveProperty("OPENSTEER_RUNNER_TOKEN");
 });
