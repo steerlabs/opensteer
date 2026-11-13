@@ -12739,7 +12739,7 @@ function createInitialSnapshot(): HostSnapshot {
       setupState: "complete",
       signupPolicy: "closed",
     },
-    machines: [...mockMachines.map((machine) => ({ ...machine }))],
+    machines: mockMachines.map((machine) => ({ ...machine })),
     ownerName: "Alex",
     session: "authenticated",
     sessionSurface: "canonical",
