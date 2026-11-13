@@ -13,6 +13,7 @@ const pinned = (name: string, digit: string) =>
 const input: TeamTemplateInput = {
   id: "0b8f2b5e-3c0a-4b8e-9c47-6c1f3a2d9e10",
   slug: "acme",
+  name: "Acme Design",
   images: {
     host: pinned("opensteer-team-host", "1"),
     gateway: pinned("opensteer-team-gateway", "1"),
@@ -117,6 +118,7 @@ describe("renderTeam", () => {
       );
     expect(env("host")).toMatchObject({
       OPENSTEER_DEPLOYMENT_KIND: "team",
+      OPENSTEER_DEPLOYMENT_NAME: "Acme Design",
       OPENSTEER_CANONICAL_ORIGIN: "https://acme.teams.opensteer.com",
       OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST_FILE: "/run/secrets/host/setup-token-digest",
     });

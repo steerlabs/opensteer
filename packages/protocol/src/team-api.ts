@@ -20,7 +20,10 @@ import {
   TeamAuditSchema,
   TeamChannelAccessEntrySchema,
   TeamChannelAccessSchema,
+  TeamCurrentInviteSchema,
   TeamGroupSchema,
+  TeamInviteExpiryDaysSchema,
+  TeamInviteMaxUsesSchema,
   TeamInviteSchema,
   TeamMemberRoleSchema,
   TeamMemberSchema,
@@ -148,6 +151,18 @@ export const TeamCommandSchema = z.discriminatedUnion("type", [
     expiresAt: IsoDateTimeSchema,
   }),
   z.strictObject({ type: z.literal("team.invite.revoke"), inviteId: TeamInviteIdSchema }),
+  /**
+   * Replaces the team's current reusable invite only when it is still `replaces` (null: when
+   * there is none); otherwise answers the one another manager made meanwhile. `id` names the new
+   * invite, so a retried reset returns it instead of replacing it again.
+   */
+  z.strictObject({
+    type: z.literal("team.invite.reset"),
+    id: TeamInviteIdSchema,
+    replaces: TeamInviteIdSchema.nullable(),
+    expiresInDays: TeamInviteExpiryDaysSchema,
+    maxUses: TeamInviteMaxUsesSchema,
+  }),
   z.strictObject({
     type: z.literal("team.invite.accept"),
     selector: z.string().min(24).max(96),
@@ -325,6 +340,10 @@ export const teamReadSchemas = {
   "team.invites.list": {
     input: z.strictObject({ after: TeamInviteIdSchema.optional() }),
     output: z.strictObject({ invites: z.array(TeamInviteSchema).max(50), hasMore: z.boolean() }),
+  },
+  "team.invite.current.get": {
+    input: z.strictObject({}),
+    output: z.strictObject({ invite: TeamCurrentInviteSchema.nullable() }),
   },
   "team.audit.page": {
     input: z.strictObject({ before: SequenceSchema.optional() }),

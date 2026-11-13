@@ -215,7 +215,6 @@ export const databaseLockOrder = [
   "trigger_revisions",
   // Host User fences precede auth sessions, adoption proofs and account reconciliation.
   "users",
-  "account_directory_projections",
   "auth_sessions",
   "personal_remote_administration",
   "personal_desktop_update",
@@ -223,6 +222,8 @@ export const databaseLockOrder = [
   "host_account_adoption_proofs",
   "account_directory_provider",
   "auth_accounts",
+  // Triggers write a projection after the users, auth_accounts or team_members row it mirrors.
+  "account_directory_projections",
   "personal_remote_pairing_codes",
   "personal_remote_session_grant_uses",
   "watch_control_requests",
@@ -265,10 +266,11 @@ export const databaseLockOrder = [
   "control-plane:deployment_credentials",
   "control-plane:deployment_connect",
   "control-plane:deployment_directory_entries",
-  // Deleting a hosted team removes the Deployment adopted at its address first.
-  "control-plane:hosted_teams",
   // OAuth client identity precedes cloud operation projection and token cleanup.
   "control-plane:oauth_clients",
+  // Deleting a hosted team removes the Deployment adopted at its address first, and an
+  // adoption, retried ones included, fences its team's claim after its own locks.
+  "control-plane:hosted_teams",
   "control-plane:cloud_deployment_operations",
   "control-plane:oauth_refresh_token",
   "control-plane:oauth_consents",

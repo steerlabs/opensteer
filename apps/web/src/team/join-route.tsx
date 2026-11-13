@@ -1,94 +1,47 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { parseTeamPageLink, teamPageUrl } from "@opensteer/core";
-import { parseTeamLinkOffer } from "@opensteer/protocol";
+import { useOptionalShell } from "../components/app-shell.js";
 import { AreaHeader } from "../components/workspace/conversation-header.js";
-import { useShell } from "../components/app-shell.js";
-import { actionErrorMessage } from "../ui-utils.js";
+import { TeamsHome, useTeamDialogs } from "./hosted-teams.js";
 import { useTeams } from "./team-attachments.js";
 import { channelPath } from "./team-paths.js";
 
-/**
- * Join a team, or connect this computer's agent to one: paste the link the
- * team gave you. An invite opens on the team's own page, where you sign in;
- * a connect link links this Opensteer to the team so your agent can be asked.
- */
-export function JoinTeamRoute() {
-  const { hostClient, snapshot } = useShell();
-  const portalOrigin = snapshot.identityConfig?.portalOrigin ?? null;
-  const { links, reload, teams } = useTeams();
-  const navigate = useNavigate();
-  const [params] = useSearchParams();
-  const [text, setText] = useState(params.get("link") ?? "");
-  const [state, setState] = useState<{ readonly busy: boolean; readonly error: string | null }>({
-    busy: false,
-    error: null,
-  });
-  // A channel or message link of a team this computer is in opens there at once.
-  const linked = params.get("link");
-  useEffect(() => {
-    const path = linked ? joinedTeamPath(linked, teams) : null;
-    if (path) void navigate(path, { replace: true });
-  }, [linked, navigate, teams]);
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    const value = text.trim();
-    const page = parseTeamPageLink(value);
-    if (page) {
-      const path = joinedTeamPath(value, teams);
-      if (path) void navigate(path);
-      else window.open(teamPageUrl(page), "_blank", "noopener,noreferrer");
-      return;
-    }
-    if (!parseTeamLinkOffer(value) || !links) {
-      setState({ busy: false, error: "That isn’t a team link. Copy it again from the team." });
-      return;
-    }
-    setState({ busy: true, error: null });
-    void links
-      .join(value)
-      .then(async (link) => {
-        await reload();
-        void navigate(`/teams/${encodeURIComponent(link.teamId)}/browse`);
-      })
-      .catch((error: unknown) => setState({ busy: false, error: actionErrorMessage(error) }));
-  };
+/** Teams: create one, or join with an invite. */
+export function TeamsRoute() {
+  const shell = useOptionalShell();
   return (
     <div className="thread team-page">
-      <AreaHeader hostClient={hostClient} title="Join a team" />
-      <form className="team-join-form" onSubmit={submit}>
-        <p className="hero__subtitle">
-          Paste an invite or a connect link from your team. Your agent stays on your computers; the
-          team sees only what you, or your agent when you ask it, post there.
-        </p>
-        <input
-          aria-label="Team link"
-          autoFocus
-          className="text-input"
-          onChange={(event) => setText(event.currentTarget.value)}
-          placeholder="https://chat.acme.example/…"
-          value={text}
-        />
-        {state.error ? (
-          <p className="notice notice--error" role="alert">
-            {state.error}
-          </p>
-        ) : null}
-        <button className="btn btn--primary" disabled={!text.trim() || state.busy} type="submit">
-          {state.busy ? "Joining…" : "Continue"}
-        </button>
-        {portalOrigin ? (
-          <p className="hero__subtitle">
-            No team yet?{" "}
-            <a href={`${portalOrigin}/teams/new`} rel="noreferrer" target="_blank">
-              Create a team
-            </a>{" "}
-            and Opensteer hosts it for you.
-          </p>
-        ) : null}
-      </form>
+      <AreaHeader hostClient={shell?.hostClient ?? null} title="Teams" />
+      <TeamsHome portalOrigin={shell?.snapshot.identityConfig?.portalOrigin ?? null} />
     </div>
   );
+}
+
+/**
+ * A team page the app was asked to open (`/join?link=…`): a channel or message of a team this
+ * computer is in opens there, an invite opens the join confirmation, and anything else opens at
+ * the team's own address.
+ */
+export function JoinTeamRoute() {
+  const { coordination, teams } = useTeams();
+  const { openJoin } = useTeamDialogs();
+  const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const linked = params.get("link");
+  useEffect(() => {
+    const page = linked ? parseTeamPageLink(linked) : null;
+    if (!page || !linked) return void navigate("/teams", { replace: true });
+    const path = joinedTeamPath(linked, teams);
+    if (path) return void navigate(path, { replace: true });
+    if (page.target.kind === "invite" && coordination) {
+      openJoin(linked);
+      return void navigate("/teams", { replace: true });
+    }
+    window.open(teamPageUrl(page), "_blank", "noopener,noreferrer");
+    void navigate("/teams", { replace: true });
+  }, [linked, coordination, navigate, openJoin, teams]);
+  return null;
 }
 
 /** Where a team page link opens in this app, when it names a channel of a team already joined. */

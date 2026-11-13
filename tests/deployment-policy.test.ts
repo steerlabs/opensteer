@@ -235,9 +235,38 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   },
   "packages/client/src/auth/native-oauth.ts": {
     counts: {
-      "connection.kind": 3,
+      "connection.kind": 5,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
+    reason:
+      "The boundary distinguishes team data from personal resource scope, and only team Hosts take an Account-vouched session exchange.",
+  },
+  "packages/client/src/team/native-team-entry.ts": {
+    counts: {
+      "verified.discovery.deploymentShape.kind": 1,
+    },
+    reason:
+      "An Account identity assertion is exchanged only at a Host whose signed discovery says it is a team.",
+  },
+  "apps/control-plane/src/account/team-identity-grants.ts": {
+    counts: {
+      "verifyHostDiscoveryEnvelope(envelope.data).deploymentShape.kind": 1,
+    },
+    reason:
+      "Account vouches identity only to a team Host; the kind is part of the signed authority it names.",
+  },
+  "apps/control-plane/src/hosted-teams/hosted-team-host.ts": {
+    counts: {
+      "descriptor.data.kind": 1,
+      "document.deploymentShape.kind": 1,
+    },
+    reason: "Hosted setup adopts only a Host whose discovery at the team origin says it is a team.",
+  },
+  "apps/web/src/app.tsx": {
+    counts: {
+      "deployment.kind": 1,
+    },
+    reason:
+      "The team list shows the Account catalog's team Deployments; the kind is Account's record, not a client rule.",
   },
   "packages/client/src/connections/connection-resolver.ts": {
     counts: {

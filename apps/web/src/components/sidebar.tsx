@@ -157,7 +157,7 @@ export function Sidebar({
 }: SidebarProps) {
   const workspace = useWorkspace();
   const { nav } = workspace;
-  const { pathname } = useLocation();
+  const { pathname, state: locationState } = useLocation();
   const snapshot = useTaskSnapshot(hostClient);
   const deploymentId = useHostSelector(hostClient, (current) => current.deploymentId);
   const userId = useHostSelector(hostClient, (current) => current.user?.id ?? null);
@@ -272,6 +272,11 @@ export function Sidebar({
   const { list } = directory;
   const tasksList = useRef<HTMLUListElement | null>(null);
   const [side, setSide] = useSidebarSide(deploymentId, userId, pathname);
+  // Entering a team the person just created or joined is their choice of side.
+  const enteredTeam = enteredTeamOf(locationState);
+  useEffect(() => {
+    if (enteredTeam) setSide(enteredTeam);
+  }, [enteredTeam, setSide]);
   const doneShelf = useRef<HTMLLIElement | null>(null);
   // Done takes the place of Tasks while it is open, at the height Tasks had,
   // so Tabs below never move.
@@ -1069,6 +1074,16 @@ function useSidebarSide(
   );
   // A team that is gone leaves its side; Tasks is what remains.
   return [side === "tasks" || teams.some((team) => team.teamId === side) ? side : "tasks", choose];
+}
+
+/** The team a navigation entered, as `TeamDialogsProvider` marks it. */
+export function enteredTeamOf(state: unknown): string | null {
+  return typeof state === "object" &&
+    state !== null &&
+    "enteredTeam" in state &&
+    typeof state.enteredTeam === "string"
+    ? state.enteredTeam
+    : null;
 }
 
 function routeSide(pathname: string): string | null {

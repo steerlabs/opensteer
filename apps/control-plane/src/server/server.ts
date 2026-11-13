@@ -39,6 +39,7 @@ import { createPortalRouter, type PortalRouter } from "../portal/portal.js";
 import type { PortalSessionStore } from "../portal/portal-sessions.js";
 import type { ControlPlaneStore } from "../database/store.js";
 import type { PersonalRemoteAccountService } from "../account/personal-remote-account.js";
+import type { TeamIdentityGrantService } from "../account/team-identity-grants.js";
 import {
   hostedOAuthLaunchReturnTo,
   registerHostedOAuthBrokerRoutes,
@@ -46,6 +47,7 @@ import {
 import type { HostedOAuthBrokerService } from "../auth/hosted-oauth-broker-service.js";
 import type { HostedTeamStore } from "../hosted-teams/hosted-team-store.js";
 import { registerHostedTeamProvisionerRoutes } from "../hosted-teams/provisioner-routes.js";
+import { registerHostedTeamAccountRoutes } from "../hosted-teams/account-routes.js";
 
 const maxHttpBodyBytes = 1 * 1_024 * 1_024;
 /** Every response from both vhosts, so no Opensteer hostname is ever downgraded. */
@@ -75,6 +77,8 @@ export async function createControlPlaneServer(
     readonly hostedTeams?: {
       readonly store: HostedTeamStore;
       readonly verifyProvisioner: (authorization: string | undefined) => Promise<void>;
+      /** Wakes Account's setup of teams whose Host just started. */
+      readonly kickBootstrap?: () => void;
     };
     readonly desktopDownloadUrl?: string;
     readonly iosAppUrl?: string;
@@ -86,6 +90,7 @@ export async function createControlPlaneServer(
     readonly personalRemoteAccount?: PersonalRemoteAccountService;
     readonly portalSessions?: PortalSessionStore;
     readonly store: ControlPlaneStore;
+    readonly teamIdentityGrants?: TeamIdentityGrantService;
   },
   options: { readonly logger?: boolean | Record<string, unknown> } = {},
 ): Promise<FastifyInstance> {
@@ -200,6 +205,13 @@ export async function createControlPlaneServer(
     registerHostedTeamProvisionerRoutes(app, {
       hostedTeams: dependencies.hostedTeams.store,
       verifyProvisioner: dependencies.hostedTeams.verifyProvisioner,
+      ...(dependencies.hostedTeams.kickBootstrap
+        ? { kickBootstrap: dependencies.hostedTeams.kickBootstrap }
+        : {}),
+    });
+    registerHostedTeamAccountRoutes(app, {
+      authenticator: dependencies.authenticator,
+      hostedTeams: dependencies.hostedTeams.store,
     });
   }
   if (dependencies.hostedOAuthBroker) {

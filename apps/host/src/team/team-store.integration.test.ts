@@ -9,7 +9,13 @@ import { TeamLinkService } from "./link-service.js";
 import { parseTeamLinkOffer } from "@opensteer/protocol";
 import { TeamFileService } from "./file-service.js";
 import { startTeamServices } from "./services.js";
-import { createId, type TeamActor, type TeamChannelId, type TeamMessageId } from "@opensteer/core";
+import {
+  TeamLinkIdSchema,
+  createId,
+  type TeamActor,
+  type TeamChannelId,
+  type TeamMessageId,
+} from "@opensteer/core";
 import { createTeamKnowledgeFixture } from "@opensteer/database/test-support/team-knowledge";
 import { hostApi } from "@opensteer/protocol";
 import { teamApiVersion } from "@opensteer/deployment-authority";
@@ -64,8 +70,7 @@ describe("team transaction authority", () => {
       access: [],
     });
   }
-  async function link(userId = owner.userId) {
-    const id = createId("teamLink");
+  async function link(userId = owner.userId, id = createId("teamLink")) {
     await sql`insert into team_links(id,owner_user_id,personal_deployment_id,state,code_hash,credential_hash,code_expires_at) values(${id},${userId},${createId("deployment")},'active',${randomUUID()},${randomUUID()},now())`.execute(
       fixture.database,
     );
@@ -781,6 +786,27 @@ describe("team transaction authority", () => {
     }
     await expect(requests.accept(active, request.id)).rejects.toThrow();
     expect((await links.list(owner)).links.map((row) => row.state)).toEqual(["pending"]);
+  });
+
+  it("lists an admin's own links first, however many others the team has", async () => {
+    const links = new TeamLinkService(access, {
+      teamName: "Acme",
+      teamId: fixture.deploymentId,
+      origin: "https://team.example.invalid",
+      hostKeyFingerprint: `sha256:${"A".repeat(43)}`,
+    });
+    // Each person holds one active link, so this is sixty other people's.
+    for (let index = 0; index < 60; index += 1) await link((await person(`Other${index}`)).userId);
+    // Sorts after every other link by id.
+    const mine = await link(
+      owner.userId,
+      TeamLinkIdSchema.parse(
+        `${createId("teamLink").split("_")[0]}_ffffffff-ffff-4fff-bfff-ffffffffffff`,
+      ),
+    );
+    const listed = (await links.list(owner)).links;
+    expect(listed).toHaveLength(50);
+    expect(listed[0]?.id).toBe(mine);
   });
 
   it("holds the content share lock through commit and rechecks posts after the last access path is removed", async () => {

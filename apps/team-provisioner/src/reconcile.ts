@@ -134,6 +134,7 @@ export class Reconciler {
     const objects = renderTeam({
       id: team.id,
       slug: team.slug,
+      name: team.name ?? team.slug,
       images: this.#images,
       postgresImage: this.#images.postgres,
       replicas: team.state === "suspended" ? 0 : 1,
@@ -207,7 +208,8 @@ export class Reconciler {
     await this.#report(team, { phase: "deleted", hostImage: null, observedSetupGeneration: 0 });
   }
 
-  async #report(team: DesiredHostedTeam, report: HostedTeamStatusReport): Promise<void> {
+  async #report(team: DesiredHostedTeam, observed: HostedTeamStatusReport): Promise<void> {
+    const report = { ...observed, setupGeneration: team.setupGeneration };
     const key = JSON.stringify(report);
     if (this.#reported.get(team.id) === key) return;
     this.#reported.delete(team.id);

@@ -29,6 +29,7 @@ import {
 } from "./team-link.js";
 import { TeamChannelSummarySchema, TeamConsistentCutSchema } from "./team-chat.js";
 import { hostApi } from "./host-api.js";
+import { TeamCommandSchema } from "./team-api.js";
 import {
   readTeamFrame,
   TeamClientFrameViewSchema,
@@ -38,6 +39,22 @@ import {
 } from "./team-views.js";
 
 describe("team boundary contracts", () => {
+  it("offers only the reusable invite lifetimes and use limits managers choose from", () => {
+    const reset = (change: Record<string, unknown>) =>
+      TeamCommandSchema.safeParse({
+        type: "team.invite.reset",
+        id: createId("teamInvite"),
+        replaces: null,
+        expiresInDays: 7,
+        maxUses: null,
+        ...change,
+      }).success;
+    for (const expiresInDays of [1, 7, 30]) expect(reset({ expiresInDays })).toBe(true);
+    for (const expiresInDays of [0, 2, 14, 31, 365, "7"])
+      expect(reset({ expiresInDays })).toBe(false);
+    for (const maxUses of [null, 1, 1000]) expect(reset({ maxUses })).toBe(true);
+    for (const maxUses of [0, -1, 1.5, 1001, undefined]) expect(reset({ maxUses })).toBe(false);
+  });
   it("negotiates team independently of the personal epoch", () => {
     expect(apiNegotiation("personal")).toEqual({ kind: "personal", apiVersion: hostApiVersion });
     expect(apiNegotiation("team")).toEqual({ kind: "team", apiVersion: teamApiVersion });
@@ -81,10 +98,11 @@ describe("team boundary contracts", () => {
       origin: "https://team.example.invalid",
       target: { kind: "invite", selector: "s".repeat(24), verifier: "v".repeat(43) },
     } as const;
-    for (const scheme of ["com.opensteer.mobile", "opensteer"]) {
-      expect(parseTeamPageAppLink(teamPageAppLink(link, scheme), scheme)).toEqual(link);
-      expect(parseTeamPageAppLink(teamPageAppLink(link, scheme), "wrong")).toBeNull();
-    }
+    expect(teamPageAppLink(link, "desktop")).toMatch(/^com\.opensteer\.opensteer:\/team\?/u);
+    expect(teamPageAppLink(link, "mobile")).toMatch(/^com\.opensteer\.mobile:\/team\?/u);
+    expect(parseTeamPageAppLink(teamPageAppLink(link, "desktop"), "desktop")).toEqual(link);
+    expect(parseTeamPageAppLink(teamPageAppLink(link, "mobile"), "mobile")).toEqual(link);
+    expect(parseTeamPageAppLink(teamPageAppLink(link, "desktop"), "mobile")).toBeNull();
     expect(parseTeamPageLink(teamPageUrl(link))).toEqual(link);
     expect(parseTeamPageLink(teamPageUrl(link).replace("https:", "http:"))).toBeNull();
     expect(
@@ -93,7 +111,7 @@ describe("team boundary contracts", () => {
     expect(
       parseTeamPageAppLink(
         "com.opensteer.mobile:/oauth/callback?url=https://team.example.invalid",
-        "com.opensteer.mobile",
+        "mobile",
       ),
     ).toBeNull();
   });

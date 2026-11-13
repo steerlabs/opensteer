@@ -326,6 +326,8 @@ it("expires a setup capability across restart and rotates unfinished setup witho
   const http = Fastify();
   registerTeamSetupRoutes(http, {
     identity,
+    invites,
+    teamName: "Acme",
     accountPortalOrigin: "https://account.example.invalid",
   });
   try {

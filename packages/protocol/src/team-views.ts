@@ -9,6 +9,7 @@ import {
   TeamChannelAccessSchema,
   TeamChannelCanSchema,
   TeamGroupSchema,
+  TeamCurrentInviteSchema,
   TeamInviteSchema,
   TeamMemberSchema,
   TeamNoticeSchema,
@@ -113,6 +114,8 @@ export const TeamMessageViewSchema = z.object({
 
 export const TeamInviteViewSchema = z.object({ ...TeamInviteSchema.shape });
 
+export const TeamCurrentInviteViewSchema = z.object({ ...TeamCurrentInviteSchema.shape });
+
 export const TeamLinkViewViewSchema = z.object({ ...TeamLinkViewSchema.shape });
 
 export const PersonalTeamLinkViewSchema = z.object({ ...PersonalTeamLinkSchema.shape });
@@ -141,6 +144,7 @@ export const TeamCommandResultViewSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("team.group.delete") }),
   z.object({ type: z.literal("team.invite.create"), invite: TeamInviteViewSchema, url: z.url() }),
   z.object({ type: z.literal("team.invite.revoke") }),
+  z.object({ type: z.literal("team.invite.reset"), invite: TeamCurrentInviteViewSchema }),
   z.object({ type: z.literal("team.invite.accept") }),
   z.object({
     type: z.literal("team.link.code.create"),
@@ -331,6 +335,7 @@ export const teamReadViews = {
     invites: z.array(TeamInviteViewSchema).max(50),
     hasMore: z.boolean(),
   }),
+  "team.invite.current.get": z.object({ invite: TeamCurrentInviteViewSchema.nullable() }),
   "team.audit.page": z.object({
     audit: z.array(TeamAuditViewSchema).max(50),
     hasMore: z.boolean(),

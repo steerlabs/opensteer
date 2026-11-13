@@ -81,10 +81,17 @@ import {
   TeamChannelsScreen,
   TeamGroupScreen,
   TeamGroupsScreen,
-  TeamInvitesScreen,
   TeamPeopleScreen,
   TeamSettingsScreen,
 } from "./team/team-admin-screens.js";
+import { TeamInvitesScreen } from "./team/invite-people-screen.js";
+import {
+  CreateTeamScreen,
+  DeleteTeamScreen,
+  TeamSetupScreen,
+  TeamsScreen,
+  TransferTeamScreen,
+} from "./team/team-entry-screens.js";
 import { ConnectOpensteerScreen, JoinTeamScreen } from "./team/team-join-screens.js";
 import { TeamNewChannelScreen, TeamNewMessageScreen } from "./team/team-create-screens.js";
 import {
@@ -391,7 +398,50 @@ const RootStack = createNativeStackNavigator({
     TeamPeople: { screen: TeamPeopleScreen, options: { title: "People" } },
     TeamGroups: { screen: TeamGroupsScreen, options: { title: "Groups" } },
     TeamGroup: { screen: TeamGroupScreen, options: { title: "Group" } },
-    TeamInvites: { screen: TeamInvitesScreen, options: { title: "Invites" } },
+    TeamInvites: { screen: TeamInvitesScreen, options: { title: "Invite people" } },
+    // Create a team or join with an invite, from the drawer and Settings.
+    Teams: { screen: TeamsScreen, options: { headerLargeTitle: true, title: "Teams" } },
+    CreateTeam: {
+      screen: CreateTeamScreen,
+      options: {
+        headerShown: false,
+        presentation: screenPresentations.CreateTeam,
+        sheetAllowedDetents: [0.95],
+        sheetGrabberVisible: true,
+        title: "Create a team",
+      },
+    },
+    // A hosted team being set up; swiping it away is Keep working.
+    TeamSetup: {
+      screen: TeamSetupScreen,
+      options: {
+        headerShown: false,
+        presentation: screenPresentations.TeamSetup,
+        sheetAllowedDetents: "fitToContents",
+        sheetGrabberVisible: true,
+        title: "Setting up your team",
+      },
+    },
+    DeleteTeam: {
+      screen: DeleteTeamScreen,
+      options: {
+        headerShown: false,
+        presentation: screenPresentations.DeleteTeam,
+        sheetAllowedDetents: [0.95],
+        sheetGrabberVisible: true,
+        title: "Delete team",
+      },
+    },
+    TransferTeam: {
+      screen: TransferTeamScreen,
+      options: {
+        headerShown: false,
+        presentation: screenPresentations.TransferTeam,
+        sheetAllowedDetents: "fitToContents",
+        sheetGrabberVisible: true,
+        title: "Transfer team",
+      },
+    },
     TeamChannels: { screen: TeamChannelsScreen, options: { title: "Channels" } },
     TeamNewChannel: { screen: TeamNewChannelScreen, options: { title: "New channel" } },
     TeamNewMessage: { screen: TeamNewMessageScreen, options: { title: "New message" } },
@@ -642,6 +692,11 @@ type OpensteerRootParamList = {
   readonly TeamGroups: { readonly teamId: string };
   readonly TeamGroup: { readonly teamId: string; readonly groupId: string };
   readonly TeamInvites: { readonly teamId: string };
+  readonly Teams: undefined;
+  readonly CreateTeam: undefined;
+  readonly TeamSetup: { readonly hostedTeamId: string };
+  readonly DeleteTeam: { readonly teamId: string };
+  readonly TransferTeam: { readonly teamId: string };
   readonly TeamChannels: { readonly teamId: string };
   readonly TeamNewChannel: { readonly teamId: string };
   readonly TeamNewMessage: { readonly teamId: string };

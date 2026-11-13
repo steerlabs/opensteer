@@ -41,7 +41,9 @@ import { mockIphoneRunnerId, type MockHostClient } from "@opensteer/client/mock"
 import type { MockTeamHost } from "@opensteer/client/team";
 import { verifyAccessEndpoint } from "@opensteer/client/connections";
 import { MobileTeams } from "./team/mobile-teams.js";
-import { MobileTeamsProvider } from "./team/team-context.js";
+import { MobileTeamsProvider, type TeamEntry } from "./team/team-context.js";
+import { createMobileTeamEntry } from "./team/mobile-team-entry.js";
+import { TeamReadyNotices } from "./team/team-entry-screens.js";
 import { mockTeamTransport, networkTeamTransport } from "./team/team-transport.js";
 import { createTransportNetwork } from "./platform/host-network.js";
 import { createNetworkHostPort } from "./client/host-port.js";
@@ -162,6 +164,7 @@ const storeName = configuration.mock ? "mock" : "opensteer";
 interface MobileRoot {
   readonly broker: OAuthDeepLinkBroker;
   readonly client: MobileClient;
+  readonly entry: TeamEntry;
   readonly iphone: IphoneAppsController;
   readonly notifications: MobileNotifications;
   readonly teams: MobileTeams;
@@ -328,8 +331,8 @@ function mobileClient(): MobileRoot {
       void previews.reconcile().catch(() => {});
     });
   }
-  // The teams of the computer being shown, each its own Host reached directly,
-  // so team chat keeps working when that computer is off.
+  // The person's teams, each its own Host reached directly, so team chat keeps
+  // working when their computer is off.
   const mockTeams = new Map<string, MockTeamHost>();
   const teams = new MobileTeams({
     client,
@@ -365,7 +368,15 @@ function mobileClient(): MobileRoot {
         }
       : {}),
   });
-  singleton = { broker, client, iphone, notifications, teams };
+  const entry = createMobileTeamEntry({
+    accountOrigin: configuration.accountOrigin,
+    client,
+    directory: `${root}${storeName}`,
+    files: privateFiles,
+    mockHosts: configuration.mock ? mockTeams : null,
+    teams,
+  });
+  singleton = { broker, client, entry, iphone, notifications, teams };
   return singleton;
 }
 
@@ -381,7 +392,7 @@ const startupRefusal: StartupFailure | null =
     : { detail: configuration.refusal, title: "This build cannot run" };
 
 export function App(): ReactNode {
-  const [{ broker, client, iphone, notifications, teams }] = useState(mobileClient);
+  const [{ broker, client, entry, iphone, notifications, teams }] = useState(mobileClient);
   const [startupFailure, setStartupFailure] = useState<StartupFailure | null>(startupRefusal);
   const [initialNavigationState, setInitialNavigationState] = useState<InitialState | null>(null);
   const [linkFailure, setLinkFailure] = useState<string | null>(null);
@@ -738,6 +749,28 @@ export function App(): ReactNode {
   }, [teams]);
 
   useEffect(() => {
+    if (startupRefusal !== null) return;
+    // Hosted teams still being set up, and agents waiting for their computer, carry on from
+    // what Account and this phone remember: at launch, on return, and under a new Account.
+    const resume = (): void => void entry.coordinator.resume().catch(() => undefined);
+    resume();
+    const state = AppState.addEventListener("change", (next) => {
+      if (next === "active") resume();
+    });
+    let subject = client.getSnapshot().account.account.identity?.subject ?? null;
+    const detach = client.subscribe(() => {
+      const next = client.getSnapshot().account.account.identity?.subject ?? null;
+      if (next === subject) return;
+      subject = next;
+      resume();
+    });
+    return () => {
+      state.remove();
+      detach();
+    };
+  }, [client, entry]);
+
+  useEffect(() => {
     /**
      * The registration is re-checked whenever something that decides it may
      * have changed: a return to the foreground, where a permission can have
@@ -847,7 +880,7 @@ export function App(): ReactNode {
                       />
                     )}
                     <AppLinksProvider value={appLinks}>
-                      <MobileTeamsProvider teams={teams}>
+                      <MobileTeamsProvider entry={entry} teams={teams}>
                         <Navigation
                           initialState={initialNavigationState}
                           onReady={handleNavigatorReady}
@@ -855,6 +888,7 @@ export function App(): ReactNode {
                           ref={navigationRef}
                           theme={navigationTheme}
                         />
+                        <TeamReadyNotices />
                       </MobileTeamsProvider>
                     </AppLinksProvider>
                     <ConnectionPill />

@@ -1,0 +1,471 @@
+import {
+  ControlPlaneAccountIdSchema,
+  type ControlPlaneAccountId,
+} from "@opensteer/control-plane-protocol";
+import {
+  HostedTeamSlugSchema,
+  HostedTeamViewSchema,
+  hostedTeamOrigin,
+  reservedHostedTeamSlugs,
+  type HostedTeamAvailability,
+  type HostedTeamId,
+  type HostedTeamView,
+} from "@opensteer/control-plane-protocol/hosted-teams";
+import {
+  createId,
+  DeploymentIdSchema,
+  OpensteerError,
+  UserIdSchema,
+  type DeploymentId,
+  type TeamInviteSecret,
+} from "@opensteer/core";
+import { TeamEntryRefusedError } from "../auth/native-oauth.js";
+import { unwrapRpcResult } from "../host/host-session-client.js";
+import type { AccountTeamsClient } from "./account-teams.js";
+import { MockTeamHost } from "./mock-team-host.js";
+import type { TeamMembership } from "./team-memberships.js";
+import {
+  revokeOwnAgentLinks,
+  type PersonalTeamLinksPort,
+  type TeamConnectionIntent,
+  type TeamConnectionIntentStore,
+  type TeamSessionPort,
+  type VerifiedTeam,
+} from "./team-coordinator.js";
+
+export const mockAccountSubject = ControlPlaneAccountIdSchema.parse(
+  "acct_00000000-0000-4000-8000-0000000000aa",
+);
+export const mockAccountEmail = "you@example.com";
+const mockUserId = UserIdSchema.parse("usr_00000000-0000-4000-8000-0000000000ab");
+/** The other owner every mock hosted team has, so Transfer has someone to hand it to. */
+const mockCoOwner = {
+  accountId: ControlPlaneAccountIdSchema.parse("acct_00000000-0000-4000-8000-0000000000ac"),
+  displayName: "Sam Rivera",
+  email: "sam@example.com",
+};
+
+/** How long each setup stage lasts in the mock, in ms. */
+const stages = { reserving: 1_100, starting: 1_300, configuring: 1_000 } as const;
+
+interface MockHostedTeam {
+  view: Omit<HostedTeamView, "stage" | "error">;
+  startedAt: number;
+  /** `fail…` addresses fail their first setup, so Retry can be exercised. */
+  failsOnce: boolean;
+  deleted: boolean;
+  /** Handed to its other owner. */
+  transferred?: boolean;
+}
+
+interface MockTeamRecord {
+  readonly verified: VerifiedTeam;
+  readonly name: string;
+  readonly hostedTeamId: HostedTeamId | null;
+  /** The person's own view of the team once they hold a session. */
+  host: MockTeamHost | null;
+  /** The invite a non-member may join with. */
+  readonly invite: TeamInviteSecret | null;
+  /** A team the preview shows by itself; it is reached through these ports but not listed. */
+  readonly seeded?: true;
+  /** Joined on another device: Account lists it, and it admits the person without an invite. */
+  readonly member?: true;
+}
+
+const fingerprint = (seed: string) =>
+  `sha256:${(seed.replaceAll(/[^A-Za-z0-9]/gu, "") + "x".repeat(43)).slice(0, 43)}`;
+
+/**
+ * The hosted-teams world mock mode runs against: Account creating teams through real stages, team
+ * Hosts admitting the person by session exchange or invite, and their own Opensteer that can be
+ * switched off. Every port the `TeamCoordinator` needs, in memory.
+ */
+export class MockTeamWorld {
+  readonly #teams = new Map<HostedTeamId, MockHostedTeam>();
+  readonly #records = new Map<string, MockTeamRecord>();
+  readonly #listeners = new Set<() => void>();
+  readonly #intents: TeamConnectionIntent[] = [];
+  #joined: readonly MockTeamHost[] = [];
+  /** The person's own Opensteer: off, joins wait as pending. */
+  personalOnline = true;
+  readonly sampleInviteUrl: string;
+  /** Multiplies every setup stage; 0 makes a new team ready at once. */
+  readonly #pace: number;
+
+  readonly #seeded: () => Iterable<MockTeamHost>;
+
+  constructor(
+    options: {
+      readonly pace?: number;
+      /** Teams the preview already shows (`?mock-team`, mobile's seeded teams). */
+      readonly seeded?: () => Iterable<MockTeamHost>;
+      /** A team the person joined on another device, with no session or agent link here. */
+      readonly joinedElsewhere?: { readonly name: string; readonly origin: string };
+      /** The sample invite's team is an older server: joining it goes through the browser. */
+      readonly olderInviteTeam?: boolean;
+    } = {},
+  ) {
+    this.#pace = options.pace ?? 1;
+    this.#seeded = options.seeded ?? (() => []);
+    const invite = {
+      selector: "Zq4tR8sampleInviteSelector00",
+      verifier: "sampleInviteVerifierZq4tR8aaaaaaaa",
+    };
+    const origin = "https://northwind.teams.opensteer.com";
+    this.sampleInviteUrl = `${origin}/invite/${invite.selector}#${invite.verifier}`;
+    const northwind = this.#verified(origin, DeploymentIdSchema.parse(createId("deployment")));
+    this.#records.set(origin, {
+      verified: options.olderInviteTeam
+        ? { ...northwind, capabilities: ["team-reusable-invites-v1"] }
+        : northwind,
+      name: "Northwind",
+      hostedTeamId: null,
+      host: null,
+      invite,
+    });
+    if (options.joinedElsewhere)
+      this.#records.set(options.joinedElsewhere.origin, {
+        verified: this.#verified(
+          options.joinedElsewhere.origin,
+          DeploymentIdSchema.parse(createId("deployment")),
+        ),
+        name: options.joinedElsewhere.name,
+        hostedTeamId: null,
+        host: null,
+        invite: null,
+        member: true,
+      });
+  }
+
+  readonly accountSubject = (): ControlPlaneAccountId => mockAccountSubject;
+
+  /** The teams Account lists the person in that this device hasn't entered. */
+  memberships(): readonly TeamMembership[] {
+    return [...this.#records.values()].flatMap((record) =>
+      record.member
+        ? [
+            {
+              teamDeploymentId: record.verified.authority.deploymentId,
+              origin: record.verified.authority.canonicalOrigin,
+              name: record.name,
+            },
+          ]
+        : [],
+    );
+  }
+
+  /** Teams the person holds a session in, newest last. */
+  joined(): readonly MockTeamHost[] {
+    return this.#joined;
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  #publish(): void {
+    this.#joined = [...this.#records.values()].flatMap((record) =>
+      record.host && !record.seeded && record.host.bootstrap.member.state === "active"
+        ? [record.host]
+        : [],
+    );
+    for (const listener of this.#listeners) listener();
+  }
+
+  /** Every team this world answers for, the preview's own seeded ones included. */
+  #reachable(): Map<string, MockTeamRecord> {
+    for (const host of this.#seeded())
+      if (!this.#records.has(host.origin))
+        this.#records.set(host.origin, {
+          verified: this.#verified(host.origin, DeploymentIdSchema.parse(host.teamId)),
+          name: host.bootstrap.teamName,
+          hostedTeamId: null,
+          host,
+          invite: null,
+          seeded: true,
+        });
+    return this.#records;
+  }
+
+  #verified(origin: string, deploymentId: DeploymentId): VerifiedTeam {
+    return {
+      authority: {
+        deploymentId,
+        hostInstanceId: createId("hostInstance"),
+        canonicalOrigin: origin,
+        hostKeyFingerprint: fingerprint(deploymentId),
+      },
+      capabilities: [
+        "team-session-exchange-v1",
+        "team-reusable-invites-v1",
+        "team-invite-native-continuation-v1",
+      ],
+    };
+  }
+
+  #view(team: MockHostedTeam): HostedTeamView {
+    const elapsed = this.#pace === 0 ? Infinity : (Date.now() - team.startedAt) / this.#pace;
+    const stage = team.deleted
+      ? "deleting"
+      : elapsed < stages.reserving
+        ? "reserving"
+        : elapsed < stages.reserving + stages.starting
+          ? "starting"
+          : team.failsOnce
+            ? "failed"
+            : elapsed < stages.reserving + stages.starting + stages.configuring
+              ? "configuring"
+              : "ready";
+    if (stage === "ready" && !this.#records.has(team.view.origin))
+      this.#records.set(team.view.origin, {
+        verified: this.#verified(team.view.origin, team.view.deploymentId!),
+        name: team.view.name,
+        hostedTeamId: team.view.id,
+        host: null,
+        invite: null,
+      });
+    return HostedTeamViewSchema.parse({
+      ...team.view,
+      stage,
+      ...(stage === "failed"
+        ? { error: { message: "The team server didn’t start. Try again." } }
+        : {}),
+      creator: team.transferred !== true,
+    });
+  }
+
+  readonly account: AccountTeamsClient = {
+    hostedTeamAvailability: async (slug): Promise<HostedTeamAvailability> => {
+      if (reservedHostedTeamSlugs.has(slug)) return { available: false, reason: "reserved" };
+      if (!HostedTeamSlugSchema.safeParse(slug).success)
+        return { available: false, reason: "invalid" };
+      const taken =
+        slug === "taken" ||
+        [...this.#teams.values()].some((team) => !team.deleted && team.view.slug === slug) ||
+        this.#reachable().has(hostedTeamOrigin(slug));
+      return taken ? { available: false, reason: "taken" } : { available: true };
+    },
+    createHostedTeam: async (request) => {
+      const replay = [...this.#teams.values()].find((team) => team.view.id === request.requestId);
+      if (replay) return this.#view(replay);
+      const availability = await this.account.hostedTeamAvailability(request.slug);
+      if (!availability.available)
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Someone already uses that address.",
+          reason: "hosted-team-address-taken",
+        });
+      const id = request.requestId as HostedTeamId;
+      const team: MockHostedTeam = {
+        view: {
+          id,
+          name: request.name,
+          slug: request.slug,
+          origin: hostedTeamOrigin(request.slug),
+          deploymentId: DeploymentIdSchema.parse(createId("deployment")),
+        },
+        startedAt: Date.now(),
+        failsOnce: request.slug.startsWith("fail"),
+        deleted: false,
+      };
+      this.#teams.set(id, team);
+      return this.#view(team);
+    },
+    listHostedTeams: async () =>
+      [...this.#teams.values()].filter((team) => !team.deleted).map((team) => this.#view(team)),
+    hostedTeam: async (id) => {
+      const team = this.#teams.get(id);
+      if (!team) return null;
+      if (team.deleted) {
+        this.#teams.delete(id);
+        return null;
+      }
+      return this.#view(team);
+    },
+    retryHostedTeam: async (id) => {
+      const team = this.#teams.get(id);
+      if (!team) throw new OpensteerError({ code: "not_found", message: "That team is gone." });
+      team.failsOnce = false;
+      team.startedAt = Date.now() - stages.reserving;
+      return this.#view(team);
+    },
+    hostedTeamOwners: async (id) => {
+      const team = this.#teams.get(id);
+      if (!team || team.deleted)
+        throw new OpensteerError({ code: "not_found", message: "That team is gone." });
+      if (team.transferred)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Only the person who holds this team in Opensteer can transfer it.",
+        });
+      return [mockCoOwner];
+    },
+    transferHostedTeam: async (id, to) => {
+      const team = this.#teams.get(id);
+      if (!team || team.deleted)
+        throw new OpensteerError({ code: "not_found", message: "That team is gone." });
+      if (to !== mockCoOwner.accountId)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "They aren’t an owner of this team. Make them one in the team first.",
+        });
+      team.transferred = true;
+      return this.#view(team);
+    },
+    deleteHostedTeam: async (id) => {
+      const team = this.#teams.get(id);
+      if (!team) return null;
+      team.deleted = true;
+      const record = this.#records.get(team.view.origin);
+      this.#records.delete(team.view.origin);
+      if (record?.host) record.host.dispose();
+      this.#publish();
+      return this.#view(team);
+    },
+  };
+
+  #record(teamDeploymentId: DeploymentId): MockTeamRecord {
+    const record = [...this.#reachable().values()].find(
+      (candidate) => candidate.verified.authority.deploymentId === teamDeploymentId,
+    );
+    if (!record?.host)
+      throw new OpensteerError({ code: "unauthorized", message: "Sign in to the team first." });
+    return record;
+  }
+
+  readonly sessions: TeamSessionPort = {
+    verify: async (origin) => {
+      const record = this.#reachable().get(origin);
+      if (!record) throw new TypeError(`${new URL(origin).host} can’t be reached.`);
+      return record.verified;
+    },
+    exchange: async (team, invite) => {
+      const record = this.#reachable().get(team.authority.canonicalOrigin);
+      if (!record) throw new TypeError("The team can’t be reached.");
+      let admitted = false;
+      if (!record.host) {
+        const owner = record.hostedTeamId !== null;
+        if (!owner && !record.member) {
+          if (
+            !invite ||
+            !record.invite ||
+            invite.selector !== record.invite.selector ||
+            invite.verifier !== record.invite.verifier
+          )
+            throw new TeamEntryRefusedError(
+              "invite-invalid",
+              "This invite no longer works. Ask for a new one.",
+            );
+          admitted = true;
+        }
+        record.host = new MockTeamHost({
+          teamId: team.authority.deploymentId,
+          userId: mockUserId,
+          teamName: record.name,
+          origin: record.verified.authority.canonicalOrigin,
+          role: owner ? "owner" : "member",
+          displayName: "You",
+          hostedTeamId: record.hostedTeamId,
+        });
+        this.#publish();
+      }
+      return { admitted, member: record.host.bootstrap.member, team: record.verified };
+    },
+    // The browser sign-in of an older team server ends the same way in memory.
+    signIn: (team, invite) => this.sessions.exchange(team, invite),
+    // The person joins on the team's invite page in the browser.
+    joinInBrowser: async (team, invite) => {
+      await this.sessions.exchange(team, invite);
+    },
+    previewInvite: async (team, invite) => {
+      const record = this.#reachable().get(team.authority.canonicalOrigin);
+      if (!record?.invite || record.invite.verifier !== invite.verifier)
+        throw new TeamEntryRefusedError(
+          "invite-invalid",
+          "This invite no longer works. Ask for a new one.",
+        );
+      return {
+        teamName: record.name,
+        expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      };
+    },
+    restore: async ({ origin }) => {
+      const record = this.#reachable().get(origin);
+      if (!record?.host)
+        throw new TeamEntryRefusedError("not-a-member", "You're not a member of this team.");
+    },
+    createLinkCode: async (teamDeploymentId) => {
+      const result = unwrapRpcResult(
+        await this.#record(teamDeploymentId).host!.rpc["commands.dispatch"]({
+          type: "team.link.code.create",
+        }),
+      );
+      if (result.type !== "team.link.code.create") throw new Error("The team made no code.");
+      return result.offer;
+    },
+    revokeAgentLinks: (teamDeploymentId) =>
+      revokeOwnAgentLinks(this.#record(teamDeploymentId).host!.rpc),
+    leave: async (teamDeploymentId) => {
+      const host = this.#record(teamDeploymentId).host!;
+      unwrapRpcResult(
+        await host.rpc["commands.dispatch"]({ type: "team.member.remove", userId: host.userId }),
+      );
+    },
+    forget: async (teamDeploymentId) => {
+      const record = [...this.#reachable().values()].find(
+        (candidate) => candidate.verified.authority.deploymentId === teamDeploymentId,
+      );
+      if (!record?.host) return;
+      record.host.dispose();
+      record.host = null;
+      this.#publish();
+    },
+  };
+
+  readonly personal: PersonalTeamLinksPort = {
+    join: async (_personal, offer) => {
+      if (!this.personalOnline) return { kind: "offline" };
+      const origin = [...this.#reachable().keys()].find((candidate) =>
+        offer.includes(new URL(candidate).host),
+      );
+      const record = origin ? this.#reachable().get(origin) : undefined;
+      if (!record) throw new Error("That code isn’t for a team you’re in.");
+      return {
+        kind: "joined",
+        link: {
+          teamId: record.verified.authority.deploymentId,
+          hostInstanceId: record.verified.authority.hostInstanceId,
+          origin: record.verified.authority.canonicalOrigin,
+          teamName: record.name,
+          remoteLinkId: null,
+          ownerUserId: mockUserId,
+          state: "active",
+          updateRequiredBy: null,
+          lastContactAt: new Date().toISOString(),
+        },
+      };
+    },
+    leave: async () => {
+      if (!this.personalOnline) throw new Error("Your computer isn’t reachable right now.");
+    },
+  };
+
+  readonly intents: TeamConnectionIntentStore = {
+    load: async () => [...this.#intents],
+    save: async (intent) => {
+      const index = this.#intents.findIndex(
+        (held) =>
+          held.accountSubject === intent.accountSubject && held.teamOrigin === intent.teamOrigin,
+      );
+      if (index === -1) this.#intents.push(intent);
+      else this.#intents[index] = intent;
+    },
+    remove: async (key) => {
+      const index = this.#intents.findIndex(
+        (held) => held.accountSubject === key.accountSubject && held.teamOrigin === key.teamOrigin,
+      );
+      if (index !== -1) this.#intents.splice(index, 1);
+    },
+  };
+}

@@ -3057,7 +3057,15 @@ describe("MobileClient sign-in", () => {
     await client.sessions.save(personalSession());
     await vi.waitFor(() => expect(port.attached).toHaveLength(2));
     expect(port.disposed).toEqual([serverId]);
-    expect(client.getSnapshot().selection.row?.status).toBe("connected");
+    // The new attachment reports connected after it is made, not with it.
+    await vi.waitFor(
+      () =>
+        expect(
+          client.getSnapshot().selection.row?.status,
+          "the new attachment never connected",
+        ).toBe("connected"),
+      { timeout: 2_000 },
+    );
     client.dispose();
   });
 

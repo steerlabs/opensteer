@@ -336,6 +336,13 @@ transition:background-color var(--fast) var(--ease-out),color var(--fast) var(--
 .field:focus-within{outline:2px solid var(--ember);outline-offset:2px}
 .field input{flex:1;width:0;min-width:0;height:var(--control);padding:0 2px 0 12px;border:0;background:transparent;color:var(--text);font:inherit;outline:none}
 .field__suffix{padding-right:12px;color:var(--muted);white-space:nowrap}
+.steps{display:grid;gap:10px;list-style:none;padding:0;margin:0}
+.step{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13.5px;line-height:1.4}
+.step::before{content:"";flex:none;width:8px;height:8px;margin:0 4px;border-radius:50%;background:rgb(var(--light) / 18%)}
+.step[data-state="active"]{color:var(--text)}
+.step[data-state="active"]::before{background:var(--ember);animation:pulse 1.6s var(--ease-out) infinite}
+.step[data-state="done"]{color:var(--text-soft)}
+.step[data-state="done"]::before{background:var(--green)}
 .section-title{color:var(--muted);font-size:12px;font-weight:600;letter-spacing:.02em}
 
 /* Masthead */
@@ -421,6 +428,17 @@ padding-bottom:calc(18px + env(safe-area-inset-bottom,0px))}
 .grant{display:flex;align-items:center;gap:11px;padding:10px 12px;color:var(--text-soft);font-size:13px;line-height:1.4;text-align:left}
 .grant + .grant{border-top:1px solid var(--divider)}
 .grant .icon{width:16px;height:16px;color:var(--ember)}
+.grant input{flex:none;width:16px;height:16px;margin:0;accent-color:var(--ember)}
+.grant__who{display:flex;flex-direction:column;min-width:0}
+.grant > a{flex:none;white-space:nowrap}
+.grant__detail{min-width:0;margin-left:auto;color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.grants > li + li > .grant{border-top:1px solid var(--divider)}
+.grant__who .grant__detail{margin-left:0}
+label.grant{cursor:pointer;min-height:var(--control)}
+.alert{display:grid;gap:10px;padding:14px;border:1px solid color-mix(in srgb,var(--amber) 32%,transparent);border-radius:var(--radius-md);
+background:color-mix(in srgb,var(--amber) 6%,transparent);text-align:left}
+.alert__title{color:var(--text);font-size:14px;font-weight:600;line-height:1.4}
+.place:target{outline:2px solid var(--amber);outline-offset:2px}
 .grant--danger .icon{color:var(--red)}
 .chip{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:3px 10px;border-radius:var(--radius-full);
 background:var(--fill-quiet);color:var(--muted);font:11.5px/1.4 var(--font-mono)}

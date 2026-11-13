@@ -463,6 +463,9 @@ const migrationProvider = {
       "0016_oauth_app_finish": oauthAppFinishMigration,
       "0017_team_notifications": teamNotificationsMigration,
       "0018_hosted_teams": hostedTeamsMigration,
+      "0019_hosted_team_bootstrap": hostedTeamBootstrapMigration,
+      "0020_team_ready_notifications": teamReadyNotificationsMigration,
+      "0021_account_deletion_fence": accountDeletionFenceMigration,
     };
   },
 };
@@ -537,6 +540,19 @@ const teamNotificationsMigration: Migration = {
   },
 };
 
+/** Account tells a hosted team's creator it is ready. Add-only: every earlier kind stays valid. */
+const teamReadyNotificationsMigration: Migration = {
+  async up(database) {
+    for (const table of ["notification_publications", "notification_deliveries"]) {
+      await sql`alter table ${sql.table(table)}
+      drop constraint ${sql.id(`${table}_kind_check`)},
+      add constraint ${sql.id(`${table}_kind_check`)} check(kind in ('reply-published','request-opened','run-failed','report-published','run-completed','run-interrupted','team-message','team-agent-needs-you','team-agent-completed','team-notice','team-ready'))`.execute(
+        database,
+      );
+    }
+  },
+};
+
 /**
  * Hosted team servers this Account asked Opensteer to run. A deleted row stays as a tombstone so
  * its address is never handed to someone else; the creator link clears when that Account goes.
@@ -592,6 +608,85 @@ export const hostedTeamsMigration: Migration = {
     await sql`
       create index hosted_teams_pending on public.hosted_teams (created_at)
       where state <> 'deleted' or phase <> 'deleted'
+    `.execute(database);
+  },
+};
+
+/**
+ * While an Account is being deleted, nothing may give it a hosted team. Add-only: a previous
+ * release never sets them, and deletes the row they sit on.
+ */
+const accountDeletionFenceMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.users
+        add column deletion_attempt_id uuid,
+        add column deletion_fenced_until timestamptz
+    `.execute(database);
+  },
+};
+
+/**
+ * Account finishes a hosted team's setup itself. Add-only: a previous release keeps creating,
+ * reporting and deleting rows, which take the defaults below and are recovered by a retry.
+ */
+export const hostedTeamBootstrapMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.hosted_teams
+        add column name text check (char_length(name) between 1 and 120),
+        add column create_request_id uuid,
+        add column stage text not null default 'reserving'
+          check (stage in ('reserving', 'starting', 'configuring', 'ready', 'failed')),
+        add column stage_message text check (char_length(stage_message) between 1 and 1000),
+        add column sealed_setup_token text check (char_length(sealed_setup_token) <= 1024),
+        add column deployment_id text,
+        add column bootstrap_receipt jsonb,
+        add column bootstrap_attempt integer not null default 0 check (bootstrap_attempt >= 0),
+        add column bootstrap_next_at timestamptz,
+        add column bootstrap_lease_until timestamptz,
+        add column configuring_since timestamptz
+    `.execute(database);
+    await sql`
+      create unique index hosted_teams_create_request
+      on public.hosted_teams (creator_account_id, create_request_id)
+      where create_request_id is not null
+    `.execute(database);
+    await sql`
+      create index hosted_teams_bootstrap on public.hosted_teams (bootstrap_next_at)
+      where stage = 'configuring' and state = 'active'
+    `.execute(database);
+    // Whichever release deletes a team, its sealed setup token goes with it. Row triggers fire
+    // in name order, so this one sorts after hosted_teams_tombstone_orphan, which may set state.
+    await sql`
+      create function public.hosted_teams_clear_sealed_setup_token() returns trigger
+      language plpgsql as $$
+      begin
+        new.sealed_setup_token := null;
+        return new;
+      end
+      $$
+    `.execute(database);
+    await sql`
+      create trigger hosted_teams_tombstone_sealed_setup_token
+      before update on public.hosted_teams
+      for each row
+      when (new.state = 'deleted' and new.sealed_setup_token is not null)
+      execute function public.hosted_teams_clear_sealed_setup_token()
+    `.execute(database);
+    // Teams from before Account finished setup: adopted ones are running; the rest never got an
+    // owner this way and need a retry, which seals a new setup token.
+    await sql`
+      update public.hosted_teams as team
+      set deployment_id = deployment.id, stage = 'ready'
+      from public.deployments as deployment
+      where team.state <> 'deleted'
+        and deployment.canonical_origin = 'https://' || team.slug || '.teams.opensteer.com'
+    `.execute(database);
+    await sql`
+      update public.hosted_teams
+      set stage = 'failed', stage_message = 'Setup didn’t finish. Try again.'
+      where state <> 'deleted' and stage <> 'ready'
     `.execute(database);
   },
 };

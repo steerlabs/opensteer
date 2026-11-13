@@ -39,28 +39,42 @@ export class AccountDeletionService {
   }
 
   async delete(accountId: ControlPlaneAccountId): Promise<void> {
-    for (const deployment of await this.#store.ownedDeployments(accountId)) {
-      if (deployment.connectState === null || deployment.connectState === "revoked") continue;
-      try {
-        await this.#connectLifecycle.revoke(accountId, deployment.id, {
-          hostInstanceId: deployment.activeHostInstanceId,
-          // A fresh identity per attempt: a replayed one that another device's
-          // provision superseded would refuse every retry.
-          operationId: ConnectOperationIdSchema.parse(`cop_${randomUUID()}`),
-        });
-      } catch (error) {
-        // The Host unlinked itself first, which is what this step wanted.
-        if (!isNotFound(error)) throw error;
-      }
-    }
-    // The token row goes with the Account, and Apple must only hear of a deletion
-    // that committed.
-    const appleRefreshToken = this.#apple
-      ? await this.#store.oauthRefreshToken(accountId, "apple")
-      : null;
+    // Before anything is undone: a hosted team the Account holds refuses here, and from here on
+    // nothing can give it one.
+    let attemptId: string;
     try {
-      await this.#store.deleteAccount(accountId);
+      attemptId = await this.#store.beginAccountDeletion(accountId);
     } catch (error) {
+      if (isNotFound(error)) return;
+      throw error;
+    }
+    let appleRefreshToken: string | null;
+    try {
+      for (const deployment of await this.#store.ownedDeployments(accountId)) {
+        if (deployment.connectState === null || deployment.connectState === "revoked") continue;
+        // Each step renews the fence, so a slow deletion keeps it and only a dead one lets go.
+        await this.#store.renewAccountDeletion(accountId, attemptId);
+        try {
+          await this.#connectLifecycle.revoke(accountId, deployment.id, {
+            hostInstanceId: deployment.activeHostInstanceId,
+            // A fresh identity per attempt: a replayed one that another device's
+            // provision superseded would refuse every retry.
+            operationId: ConnectOperationIdSchema.parse(`cop_${randomUUID()}`),
+          });
+        } catch (error) {
+          // The Host unlinked itself first, which is what this step wanted.
+          if (!isNotFound(error)) throw error;
+        }
+      }
+      // The token row goes with the Account, and Apple must only hear of a deletion
+      // that committed.
+      appleRefreshToken = this.#apple
+        ? await this.#store.oauthRefreshToken(accountId, "apple")
+        : null;
+      await this.#store.renewAccountDeletion(accountId, attemptId);
+      await this.#store.deleteAccount(accountId, attemptId);
+    } catch (error) {
+      await this.#store.abandonAccountDeletion(accountId, attemptId).catch(() => undefined);
       if (isNotFound(error)) return;
       throw error;
     }
