@@ -52,7 +52,7 @@ export interface TeamComposerProps {
    * The words are one of the reader's messages, and sending saves them in its
    * place. Cancel puts back whatever was being written before.
    */
-  readonly editing?: { readonly onCancel: () => void } | null;
+  readonly editing?: { readonly onCancel: () => void; readonly saving: boolean } | null;
 }
 
 /**
@@ -197,7 +197,7 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
           action={
             open ? (
               <ComposerAction
-                busy={false}
+                busy={editing?.saving === true}
                 disabled={!hasContent || refused}
                 kind="send"
                 label={editing !== null ? "Save edit" : toMyAgent ? "Send to my agent" : "Send"}

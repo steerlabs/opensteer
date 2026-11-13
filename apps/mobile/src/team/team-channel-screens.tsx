@@ -466,6 +466,11 @@ function Place(props: {
     readonly id: TeamMessageId;
     readonly draft: string;
   } | null>(null);
+  // The edit open now. A save that ends after it was cancelled, or another began, leaves
+  // the composer as the reader has it since.
+  const openEdit = useRef(editing);
+  openEdit.current = editing;
+  const [savingEdit, setSavingEdit] = useState(false);
   const [selection, setSelection] = useState({ start: 0, end: 0 });
   const ownActive = view.requests.some(
     (request) =>
@@ -538,19 +543,26 @@ function Place(props: {
     const words = text.trim();
     setFailure(null);
     if (editing !== null) {
-      if (words === "") return;
+      if (words === "" || savingEdit) return;
+      const saving = editing;
+      setSavingEdit(true);
       try {
         await command(session, {
           type: "team.message.edit",
           channelId,
-          messageId: editing.id,
+          messageId: saving.id,
           bodyMarkdown: words,
           mentions: writtenMentions(words, props.members),
         });
-        setText(editing.draft);
-        setEditing(null);
+        if (openEdit.current === saving) {
+          setText(saving.draft);
+          setEditing(null);
+        }
       } catch (error) {
-        setFailure(error instanceof Error ? error.message : "That edit wasn't saved.");
+        if (openEdit.current === saving)
+          setFailure(error instanceof Error ? error.message : "That edit wasn't saved.");
+      } finally {
+        setSavingEdit(false);
       }
       return;
     }
@@ -753,7 +765,7 @@ function Place(props: {
     onRemoveAttachment: (id) =>
       setStaged((held) => held.filter((row) => row.source.localId !== id)),
     onSend: () => void send(),
-    editing: editing === null ? null : { onCancel: cancelEdit },
+    editing: editing === null ? null : { onCancel: cancelEdit, saving: savingEdit },
     ...(failure !== null
       ? {
           hint: (

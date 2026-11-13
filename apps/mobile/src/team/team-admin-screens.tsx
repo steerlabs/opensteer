@@ -42,14 +42,22 @@ function failed(error: unknown): void {
   Alert.alert("That didn't work", error instanceof Error ? error.message : undefined);
 }
 
-function Waiting(props: { readonly failure: string | null }): ReactNode {
+function Waiting(props: {
+  readonly failure: string | null;
+  readonly onRetry?: () => void;
+}): ReactNode {
   return (
     <Screen>
       <View style={styles.center}>
         {props.failure === null ? (
           <ActivityIndicator color={color.muted} />
         ) : (
-          <Notice detail={props.failure} title="This team didn't answer" tone="neutral" />
+          <Notice
+            {...(props.onRetry ? { action: { label: "Try again", onPress: props.onRetry } } : {})}
+            detail={props.failure}
+            title="This team didn't answer"
+            tone="neutral"
+          />
         )}
       </View>
     </Screen>
@@ -281,7 +289,7 @@ export function TeamGroupsScreen(props: TeamParams): ReactNode {
     }, [reload]),
   );
   if (session === null || groups.groups === null)
-    return <Waiting failure={failure ?? groups.failure} />;
+    return <Waiting failure={failure ?? groups.failure} onRetry={groups.reload} />;
   return (
     <Screen edgeToEdge>
       <GroupsAdminBody
@@ -316,7 +324,8 @@ export function TeamGroupScreen(
   const { groups, reload, failure: groupsFailure } = useGroups(session);
   const padding = useSafeAreaInsets().bottom + space[24];
   const group = groups?.find((row) => row.id === groupId) ?? null;
-  if (session === null || group === null) return <Waiting failure={failure ?? groupsFailure} />;
+  if (session === null || group === null)
+    return <Waiting failure={failure ?? groupsFailure} onRetry={reload} />;
   const id = TeamGroupIdSchema.parse(groupId);
   const rows: GroupMemberRow[] = [
     ...group.people.map((userId) => {
@@ -382,6 +391,7 @@ export function TeamAuditScreen(props: TeamParams): ReactNode {
   const { directory } = useTeamMembers(teamId);
   const [rows, setRows] = useState<readonly TeamAuditRow[] | null>(null);
   const [readFailure, setReadFailure] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (session === null) return;
     let current = true;
@@ -396,8 +406,17 @@ export function TeamAuditScreen(props: TeamParams): ReactNode {
     return () => {
       current = false;
     };
-  }, [session]);
-  if (session === null || rows === null) return <Waiting failure={failure ?? readFailure} />;
+  }, [attempt, session]);
+  if (session === null || rows === null)
+    return (
+      <Waiting
+        failure={failure ?? readFailure}
+        onRetry={() => {
+          setReadFailure(null);
+          setAttempt((next) => next + 1);
+        }}
+      />
+    );
   return (
     <Screen edgeToEdge>
       <ScrollView contentContainerStyle={styles.page}>

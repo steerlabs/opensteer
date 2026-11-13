@@ -50,7 +50,10 @@ function useTeamRead<Value>(
   const [value, setValue] = useState<Value | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
-  const reload = useCallback(() => setGeneration((next) => next + 1), []);
+  const reload = useCallback(() => {
+    setFailure(null);
+    setGeneration((next) => next + 1);
+  }, []);
   useEffect(() => {
     if (session === null) return;
     let current = true;
@@ -76,13 +79,21 @@ async function command(session: TeamSessionClient, input: HostApiCommandInput): 
   unwrapRpcResult(await session.rpc["commands.dispatch"](input));
 }
 
-function Loading(props: { readonly failure: string | null }): ReactNode {
+function Loading(props: {
+  readonly failure: string | null;
+  readonly onRetry?: () => void;
+}): ReactNode {
   return (
     <View style={styles.center}>
       {props.failure === null ? (
         <ActivityIndicator color={color.muted} />
       ) : (
-        <Notice detail={props.failure} title="This didn't load" tone="neutral" />
+        <Notice
+          {...(props.onRetry ? { action: { label: "Try again", onPress: props.onRetry } } : {})}
+          detail={props.failure}
+          title="This didn't load"
+          tone="neutral"
+        />
       )}
     </View>
   );
@@ -149,7 +160,7 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
   if (session === null || channel.value === null)
     return (
       <Screen>
-        <Loading failure={channel.failure} />
+        <Loading failure={channel.failure} onRetry={channel.reload} />
       </Screen>
     );
   const value = channel.value;
@@ -268,7 +279,7 @@ export function TeamMembersScreen(props: ChannelParams): ReactNode {
   if (session === null || access.value === null)
     return (
       <Screen>
-        <Loading failure={access.failure} />
+        <Loading failure={access.failure} onRetry={access.reload} />
       </Screen>
     );
   const { list, groups, channel } = access.value;
@@ -411,7 +422,7 @@ export function TeamInstructionsScreen(props: ChannelParams): ReactNode {
   if (session === null || read.value === null)
     return (
       <Screen>
-        <Loading failure={read.failure} />
+        <Loading failure={read.failure} onRetry={read.reload} />
       </Screen>
     );
   const { channel, instructions } = read.value;
@@ -472,7 +483,7 @@ export function TeamFilesScreen(props: ChannelParams): ReactNode {
   if (session === null || read.value === null)
     return (
       <Screen>
-        <Loading failure={read.failure} />
+        <Loading failure={read.failure} onRetry={read.reload} />
       </Screen>
     );
   const lower = query.trim().toLowerCase();
@@ -532,7 +543,7 @@ export function TeamPinnedScreen(props: ChannelParams): ReactNode {
   if (session === null || read.value === null)
     return (
       <Screen>
-        <Loading failure={read.failure} />
+        <Loading failure={read.failure} onRetry={read.reload} />
       </Screen>
     );
   const viewerId = snapshot.bootstrap?.member.userId ?? "";
@@ -594,8 +605,15 @@ export function TeamSearchScreen(
   const [searching, setSearching] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  // Each search replaces the last: only the current one may say it failed or finished.
+  const generation = useRef(0);
   useEffect(() => {
-    if (session === null || query.trim() === "") return;
+    const mine = ++generation.current;
+    const current = () => mine === generation.current;
+    if (session === null || query.trim() === "") {
+      setSearching(false);
+      return;
+    }
     const timer = setTimeout(() => {
       setFailure(null);
       setSearching(true);
@@ -607,10 +625,12 @@ export function TeamSearchScreen(
           ...(hasFile ? { hasFile: true } : {}),
           ...(inThreads ? { threadsOnly: true } : {}),
         })
-        .catch((error: unknown) =>
-          setFailure(error instanceof Error ? error.message : "The team didn't answer."),
+        .catch(
+          (error: unknown) =>
+            current() &&
+            setFailure(error instanceof Error ? error.message : "The team didn't answer."),
         )
-        .finally(() => setSearching(false));
+        .finally(() => current() && setSearching(false));
     }, 250);
     return () => clearTimeout(timer);
   }, [attempt, authorId, channelId, hasFile, inThreads, query, session]);
@@ -695,13 +715,16 @@ export function TeamSearchScreen(
           },
         ]}
         onFilter={onFilter}
-        onMore={() =>
+        onMore={() => {
+          const mine = generation.current;
           void session
             ?.loadMoreSearch()
-            .catch((error: unknown) =>
-              setFailure(error instanceof Error ? error.message : "The team didn't answer."),
-            )
-        }
+            .catch(
+              (error: unknown) =>
+                mine === generation.current &&
+                setFailure(error instanceof Error ? error.message : "The team didn't answer."),
+            );
+        }}
         onOpenMessage={(_team, result) => {
           const raw = results.find((row) => row.message.id === result.message.id)?.raw;
           if (raw === undefined) return;
@@ -758,7 +781,7 @@ export function TeamNoticesScreen(
   if (session === null || read.value === null)
     return (
       <Screen>
-        <Loading failure={read.failure} />
+        <Loading failure={read.failure} onRetry={read.reload} />
       </Screen>
     );
   const now = new Date();
