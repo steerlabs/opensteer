@@ -135,7 +135,7 @@ describe("test tiers", () => {
     expect(config.test?.exclude).toContain("**/*.integration.test.*");
     expect(config.test?.exclude).toContain("**/*.gui.test.*");
     expect(config.test?.exclude).toContain("**/*.vm.test.*");
-    expect(config.test?.exclude).toContain("**/*.windows.test.*");
+    expect(config.test?.exclude).toContain("**/*.windows.test.ts");
   });
 });
 
