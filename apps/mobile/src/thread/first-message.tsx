@@ -20,7 +20,6 @@ import { useIsFocused } from "@react-navigation/native";
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
   Pressable,
-  ScrollView,
   StyleSheet,
   TextInput,
   type TextInputInstance,
@@ -48,7 +47,7 @@ import { ComposerPills } from "./composer-pills.js";
 import { UsageNotice } from "./usage-notice.js";
 import { AttachmentStrip } from "./attachment-views.js";
 import { ComposerBar, ComposerGlyph, composerLaneHeight } from "./composer-bar.js";
-import { ComposerDockLayout } from "./composer-dock.js";
+import { ComposerDockLayout, DockScrollView } from "./composer-dock.js";
 import { NativeMenu, type NativeMenuOption } from "./composer-menu.js";
 import {
   attachmentKey,
@@ -686,7 +685,7 @@ export function FirstMessageComposer(props: {
       }
     >
       {(clearance) => (
-        <ScrollView
+        <DockScrollView
           automaticallyAdjustsScrollIndicatorInsets={false}
           contentContainerStyle={[
             styles.content,
@@ -706,7 +705,7 @@ export function FirstMessageComposer(props: {
           }}
         >
           {props.children}
-        </ScrollView>
+        </DockScrollView>
       )}
     </ComposerDockLayout>
   );

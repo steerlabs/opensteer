@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, useImperativeHandle, type ReactNode, type Ref } from "react";
+import { act, useImperativeHandle, type ReactElement, type ReactNode, type Ref } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -12,6 +12,7 @@ const harness = vi.hoisted(() => ({
   scrollToIndex: vi.fn(),
   scrollToOffset: vi.fn(),
   scroll: null as ((y: number) => void) | null,
+  inset: null as ((top: number) => void) | null,
 }));
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 type Children = { readonly children?: ReactNode };
@@ -30,14 +31,23 @@ vi.mock("react-native", () => ({
   FlatList: (props: {
     readonly ref?: Ref<unknown>;
     readonly onScroll: (event: { nativeEvent: { contentOffset: { y: number } } }) => void;
+    readonly renderScrollComponent: (props: object) => ReactElement<{
+      readonly onContentInsetChange: (insets: { bottom: number; top: number }) => void;
+    }>;
   }) => {
     useImperativeHandle(props.ref, () => ({
       scrollToIndex: harness.scrollToIndex,
       scrollToOffset: harness.scrollToOffset,
     }));
     harness.scroll = (y) => props.onScroll({ nativeEvent: { contentOffset: { y } } });
+    harness.inset = (top) =>
+      props.renderScrollComponent({}).props.onContentInsetChange({ bottom: 0, top });
     return <div />;
   },
+}));
+vi.mock("../thread/composer-dock.js", () => ({
+  DockScrollView: () => null,
+  OverDock: ({ children }: Children) => <>{children}</>,
 }));
 vi.mock("../ui/glass.js", () => ({
   GlassSurface: ({ children }: Children) => <div>{children}</div>,
@@ -96,6 +106,10 @@ it("scrolls to the newest message on 'N new', and follows only once the list is 
   expect(harness.scrollToOffset).toHaveBeenCalledWith({ offset: 0, animated: true });
   // Pressing alone says nothing about where the reader is.
   expect(onFollowingChange).not.toHaveBeenCalled();
+  // With the keyboard up the newest message is past its inset, not under it.
+  act(() => harness.inset!(300));
+  act(() => host.querySelector<HTMLButtonElement>("button[aria-label^='3 new']")!.click());
+  expect(harness.scrollToOffset).toHaveBeenLastCalledWith({ offset: -300, animated: true });
 
   act(() => harness.scroll!(0));
   expect(onFollowingChange).toHaveBeenCalledExactlyOnceWith(true);

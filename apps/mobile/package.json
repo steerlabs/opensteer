@@ -55,6 +55,7 @@
     "react-dom": "catalog:",
     "react-native": "0.88.0",
     "react-native-gesture-handler": "~3.3.0",
+    "react-native-keyboard-controller": "1.22.7",
     "react-native-reanimated": "4.7.1",
     "react-native-reserved-regions": "0.2.0",
     "react-native-safe-area-context": "~5.10.1",

@@ -38,7 +38,7 @@ import {
   type ComputerUseSessionSummary,
   type MachineSummary,
 } from "@opensteer/protocol";
-import { act, useState, type ReactNode, type Ref } from "react";
+import { act, useState, type ReactElement, type ReactNode, type Ref } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -125,6 +125,9 @@ const harness = vi.hoisted(() => ({
     readonly onScroll?: (event: object) => void;
     readonly onScrollBeginDrag?: () => void;
     readonly onScrollEndDrag?: () => void;
+    readonly renderScrollComponent?: (props: object) => ReactElement<{
+      readonly onContentInsetChange?: (insets: { bottom: number; top: number }) => void;
+    }>;
   },
 }));
 
@@ -133,6 +136,10 @@ let dictation = new DictationController({ port: null, createId: () => crypto.ran
 vi.mock("./settings/engine-mark.js", () => ({ EngineMark: () => null }));
 vi.mock("../voice/cursor-mark.js", () => ({ PillMic: () => null, VoiceCursor: () => null }));
 vi.mock("react-native-webview", () => ({ WebView: () => null }));
+vi.mock("react-native-keyboard-controller", () => ({
+  KeyboardChatScrollView: () => null,
+  useReanimatedKeyboardAnimation: () => ({ height: { value: 0 }, progress: { value: 0 } }),
+}));
 vi.mock("../dictation/context.js", () => ({ useDictation: () => dictation }));
 
 vi.mock("react-native", async () => {
@@ -3445,6 +3452,16 @@ describe("a conversation in a pane that changes shape", () => {
       list().onContentSizeChange?.(390, 2000);
     });
     expect(harness.scrollToOffset).toHaveBeenLastCalledWith({ animated: false, offset: 1400 });
+
+    // With the keyboard up the newest entry is past its inset, not under it.
+    const inset = (bottom: number) =>
+      list().renderScrollComponent?.({}).props.onContentInsetChange?.({ bottom, top: 0 });
+    act(() => {
+      inset(300);
+      list().onContentSizeChange?.(390, 2100);
+    });
+    expect(harness.scrollToOffset).toHaveBeenLastCalledWith({ animated: false, offset: 1800 });
+    act(() => inset(0));
 
     // Unfolded: the same text, wider, is shorter.
     harness.scrollToOffset.mockReset();
