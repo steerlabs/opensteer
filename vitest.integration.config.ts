@@ -20,6 +20,7 @@ export default defineConfig({
       "./packages/database/src/test-database-setup.test-support.ts",
       "./packages/database/src/integration-setup.test-support.ts",
       "./packages/database/src/lock-order-setup.test-support.ts",
+      "./tests/process-supervisor-setup.test-support.ts",
     ],
     maxWorkers: 4,
     maxConcurrency: 1,

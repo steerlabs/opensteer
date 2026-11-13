@@ -11,7 +11,7 @@ import {
   shipsHarnessRuntimeBytes,
   type HarnessKind,
 } from "@opensteer/core";
-import { findExecutableOnPath } from "@opensteer/harness";
+import { hostCommandPlatform, resolveCommand } from "@opensteer/shared/command";
 import { parseAgentExecutionConfig } from "@opensteer/runner";
 import { setFileMode } from "@opensteer/shared/privateFiles";
 
@@ -147,7 +147,11 @@ export async function qualifiedVersion(engine: QualifiedEngine): Promise<string>
   const account = qualificationAccount(engine);
   const executable =
     command && account.stateKind === "ambient"
-      ? findExecutableOnPath(command, process.env.PATH)
+      ? resolveCommand(command, {
+          cwd: process.cwd(),
+          environment: process.env,
+          platform: hostCommandPlatform(),
+        })?.path
       : undefined;
   if (engine.driverKind === "claude") {
     const result = await inspectClaudeExecutable(

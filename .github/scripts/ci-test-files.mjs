@@ -57,12 +57,15 @@ export const optInIntegrationBenchmarks = [
   "tests/team-mobile-network.integration.test.ts",
   "tests/team-performance.integration.test.ts",
 ];
+// Real Windows behaviour: `vitest --config vitest.windows.config.ts` on the Windows CI job.
+export const windowsTestInclude = ["apps/**/*.windows.test.ts", "packages/**/*.windows.test.ts"];
 export const defaultTestExclude = [
   "**/*.integration.test.*",
   "**/*.gui.test.*",
   "**/*.engine.test.ts",
   "**/*.device.test.ts",
   "**/*.soak.test.ts",
+  "**/*.windows.test.ts",
   // VM journeys select their own config inside pnpm test:vm.
   "**/*.vm.test.*",
 ];

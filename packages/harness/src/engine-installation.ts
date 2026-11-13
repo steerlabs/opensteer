@@ -1,7 +1,8 @@
 import type { HarnessInstallation } from "@opensteer/protocol";
 import { readFile, realpath, stat } from "node:fs/promises";
-import { basename, join, normalize, resolve, sep } from "node:path";
-import { findExecutableOnPath, meetsMinimumVersion } from "./installed-engine.js";
+import { basename, dirname, join, normalize, resolve, sep } from "node:path";
+import { hostCommandPlatform, resolveCommand } from "@opensteer/shared/command";
+import { meetsMinimumVersion } from "./installed-engine.js";
 import { spawnSupervised } from "./process-supervisor.js";
 
 export type EnginePackageManager = "bun" | "homebrew" | "npm" | "pnpm" | "volta" | "yarn";
@@ -229,12 +230,11 @@ export class EngineInstallationResolver {
     | { readonly kind: Exclude<EnginePackageManager, "homebrew">; readonly executable: string }
     | undefined
   > {
-    const path = this.#environment.PATH;
     const normalized = slash(executable).toLowerCase();
     const packagePath = packageName.toLowerCase().replace("@", "@");
     const containsPackage = normalized.includes(`/node_modules/${packagePath}/`);
     if (normalized.includes("/.bun/bin/") && containsPackage) {
-      const command = findExecutableOnPath("bun", path);
+      const command = this.#onPath("bun");
       if (command) return { executable: command, kind: "bun" };
     }
     const pnpmPatterns = [
@@ -245,37 +245,40 @@ export class EngineInstallationResolver {
       "/pnpm/global/",
     ];
     if (pnpmPatterns.some((part) => normalized.includes(part)) && containsPackage) {
-      const command = findExecutableOnPath("pnpm", path);
+      const command = this.#onPath("pnpm");
       if (command) return { executable: command, kind: "pnpm" };
     }
     if (/\/yarn\/(?:data\/)?global\/node_modules\//.test(normalized) && containsPackage) {
-      const command = findExecutableOnPath("yarn", path);
+      const command = this.#onPath("yarn");
       if (command) return { executable: command, kind: "yarn" };
     }
     const volta = this.#environment.VOLTA_HOME;
     if (volta && normalized.endsWith("/volta-shim")) {
       const packageDirectory = join(volta, "tools", "image", "packages", packageName);
       if (await isDirectory(packageDirectory)) {
-        const command = findExecutableOnPath("volta", path);
+        const command = this.#onPath("volta");
         if (command) return { executable: command, kind: "volta" };
       }
     }
-    const npm = findExecutableOnPath("npm", path);
+    const npm = this.#onPath("npm");
     if (npm) {
-      const prefixResult = await this.#runInspection(
+      const rootResult = await this.#runInspection(
         npm,
-        ["prefix", "--global"],
+        ["root", "--global"],
         processEnvironment(this.#environment),
       );
-      const prefix = prefixResult.code === 0 ? prefixResult.stdout.trim() : "";
-      if (prefix) {
-        const resolvedPrefix = await realpath(prefix).catch(() => prefix);
-        const root = slash(
-          resolve(resolvedPrefix, "lib", "node_modules", packageName),
-        ).toLowerCase();
-        if (normalized === root || normalized.startsWith(`${root}/`)) {
+      const root = rootResult.code === 0 ? rootResult.stdout.trim() : "";
+      if (root) {
+        const resolvedRoot = await realpath(root).catch(() => root);
+        const packageRoot = slash(resolve(resolvedRoot, packageName)).toLowerCase();
+        if (normalized === packageRoot || normalized.startsWith(`${packageRoot}/`))
           return { executable: npm, kind: "npm" };
-        }
+        // On Windows npm's global commands are batch shims in the directory above its root.
+        if (
+          slash(dirname(executable)).toLowerCase() === slash(dirname(resolvedRoot)).toLowerCase() &&
+          (await isDirectory(join(resolvedRoot, packageName)))
+        )
+          return { executable: npm, kind: "npm" };
       }
     }
     return undefined;
@@ -300,9 +303,7 @@ export class EngineInstallationResolver {
     const expected = brewType === "cask" ? facts.homebrew?.cask : facts.homebrew?.formula;
     if (!expected || expected.toLowerCase() !== match[3].toLowerCase()) return undefined;
     const candidate = join(match[1], "bin", "brew");
-    const manager = (await isFile(candidate))
-      ? candidate
-      : findExecutableOnPath("brew", this.#environment.PATH);
+    const manager = (await isFile(candidate)) ? candidate : this.#onPath("brew");
     if (!manager) return undefined;
     const prefix = await this.#runInspection(
       manager,
@@ -356,7 +357,7 @@ export class EngineInstallationResolver {
       return readStringField(manifest, facts.latest.versionField);
     }
     if (!facts.packageName) return null;
-    const npm = findExecutableOnPath("npm", this.#environment.PATH);
+    const npm = this.#onPath("npm");
     if (!npm) return null;
     const result = await this.#runInspection(
       npm,
@@ -364,6 +365,14 @@ export class EngineInstallationResolver {
       processEnvironment(this.#environment),
     );
     return result.code === 0 ? parseNpmLatestVersion(result.stdout) : null;
+  }
+
+  #onPath(command: string): string | undefined {
+    return resolveCommand(command, {
+      cwd: process.cwd(),
+      environment: this.#environment,
+      platform: hostCommandPlatform(),
+    })?.path;
   }
 
   #runInspection(
