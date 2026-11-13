@@ -472,6 +472,7 @@
     "apps/runner/src/messaging/prepare.ts",
     "apps/runner/src/runtime/bounded-inbox.ts",
     "apps/runner/src/runtime/execution-containment.ts",
+    "apps/runner/src/runtime/execution-containment.windows.test.ts",
     "apps/runner/src/runtime/live-progress.ts",
     "apps/runner/src/runtime/logger.ts",
     "apps/runner/src/runtime/node-executable.ts",
