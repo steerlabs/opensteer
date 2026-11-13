@@ -1,4 +1,7 @@
-import { answerDeviceAccessRequest } from "../computers/device-access-request.js";
+import {
+  answerDeviceAccessRequest,
+  applyDeviceAccess,
+} from "../computers/device-access-request.js";
 import { devicesView } from "../computers/devices.js";
 import { expect, it } from "vitest";
 import { createId } from "@opensteer/core";
@@ -231,6 +234,39 @@ it("cancels pending device Requests atomically with removal as resource-deleted"
     expect(
       snapshot.threads.find(({ id }) => id === request.originatingThreadId)?.pendingRequests,
     ).toBe(beforeCount - 1);
+  } finally {
+    client.dispose();
+  }
+});
+
+it("applies a retried setup's choices to a device an earlier enrollment already joined", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    const machine = client
+      .getSnapshot()
+      .machines.find((entry) => entry.access && entry.ownership === "mine")!;
+    await client.updateMachineAccess({
+      runnerId: machine.id,
+      expectedRevision: machine.access!.revision,
+      policy: {
+        ...machine.access!.policy,
+        browser: true,
+        apps: true,
+        reach: "owner",
+        commands: false,
+        forwarding: false,
+        shares: [{ path: "/tmp/project", mode: "read" }],
+      },
+    });
+    const joined = client.getSnapshot().machines.find((entry) => entry.id === machine.id)!.access!;
+    const chosen = { browser: false, apps: true, files: false };
+    await expect(applyDeviceAccess(client, machine.id, chosen)).resolves.toEqual(chosen);
+    const applied = client.getSnapshot().machines.find((entry) => entry.id === machine.id)!.access!;
+    expect(applied.policy).toEqual({ ...joined.policy, browser: false, reach: "nobody" });
+    await applyDeviceAccess(client, machine.id, chosen);
+    expect(
+      client.getSnapshot().machines.find((entry) => entry.id === machine.id)!.access!.revision,
+    ).toBe(applied.revision);
   } finally {
     client.dispose();
   }

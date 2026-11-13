@@ -16,6 +16,7 @@ import type {
   OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
 import {
+  applyDeviceAccess,
   deviceMembership,
   hostsDeployment,
   type DeviceMembership,
@@ -241,6 +242,9 @@ export function useThisDeviceLifecycle(input: {
             onLocalStatus(status);
             await hostClient.refresh();
             return { runnerId: status.membership?.runnerId ?? status.runner.runnerId };
+          },
+          applyAccess: async (runnerId, access) => {
+            await applyDeviceAccess(hostClient, runnerId, access);
           },
           bind: async (runnerId) => {
             if (!bindPorts) return;

@@ -28,6 +28,9 @@ function ports(overrides: Partial<DeviceSetupPorts> = {}) {
       calls.push("setUp");
       return { runnerId: "rnr_1" };
     },
+    applyAccess: async (runnerId, chosen) => {
+      calls.push(`apply:${runnerId}:${JSON.stringify(chosen)}`);
+    },
     bind: async (runnerId) => {
       calls.push(`bind:${runnerId}`);
     },
@@ -42,7 +45,13 @@ describe("setting up this Mac", () => {
     await expect(
       setUpThisDevice(value, { name: "MBP", access, devicesAvailable: true, homeName: "Mac mini" }),
     ).resolves.toEqual({ ok: true, runnerId: "rnr_1" });
-    expect(calls).toEqual(["prepare", `mint:${JSON.stringify(access)}`, "setUp", "bind:rnr_1"]);
+    expect(calls).toEqual([
+      "prepare",
+      `mint:${JSON.stringify(access)}`,
+      "setUp",
+      `apply:rnr_1:${JSON.stringify(access)}`,
+      "bind:rnr_1",
+    ]);
   });
 
   it("asks an older Host for the plain enrollment and binds nothing", async () => {

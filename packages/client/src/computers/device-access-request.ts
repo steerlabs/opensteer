@@ -1,5 +1,9 @@
 import type { Request } from "@opensteer/core";
-import type { MachineAccessPolicy } from "@opensteer/protocol";
+import {
+  deviceAccess,
+  type DeviceInitialAccess,
+  type MachineAccessPolicy,
+} from "@opensteer/protocol";
 import type { HostClient, MachineAccessUpdateOutcome } from "../host/client.js";
 
 export type DeviceSwitchName = "browser" | "apps" | "files";
@@ -55,4 +59,41 @@ export async function turnOnDeviceAccess(
     await client.refresh();
   }
   throw new Error("It changed on another device. Look again and try once more.");
+}
+
+/** Makes a device's switches match a setup's choices, whatever an earlier enrollment applied. */
+export async function applyDeviceAccess(
+  client: Pick<HostClient, "getSnapshot" | "refresh" | "updateMachineAccess">,
+  machineId: string,
+  wanted: DeviceInitialAccess,
+): Promise<DeviceInitialAccess> {
+  await client.refresh();
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const access = client
+      .getSnapshot()
+      .machines.find((machine) => machine.id === machineId)?.access;
+    if (!access) throw new Error("This device’s access couldn’t be confirmed. Try again.");
+    const current = deviceAccess(access.policy);
+    if (
+      current.browser === wanted.browser &&
+      current.apps === wanted.apps &&
+      current.files === wanted.files
+    )
+      return current;
+    const result = await client.updateMachineAccess({
+      runnerId: machineId,
+      expectedRevision: access.revision,
+      policy: {
+        ...withDeviceSwitch(access.policy, "files", wanted.files),
+        browser: wanted.browser,
+        apps: wanted.apps,
+      },
+    });
+    if (result.outcome === "updated") {
+      const stored = client.getSnapshot().machines.find((machine) => machine.id === machineId);
+      return stored?.access ? deviceAccess(stored.access.policy) : wanted;
+    }
+    await client.refresh();
+  }
+  throw new Error("This device’s access changed on another device. Try again.");
 }

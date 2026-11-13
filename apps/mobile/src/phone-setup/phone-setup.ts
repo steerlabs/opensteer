@@ -1,6 +1,6 @@
 import {
   deviceMembership,
-  withDeviceSwitch,
+  applyDeviceAccess,
   type DeviceMembership,
 } from "@opensteer/client/computers";
 import type { HostClient, HostSnapshot } from "@opensteer/client/host";
@@ -239,28 +239,8 @@ function phoneAccess(host: HostClient, runnerId: string): ReturnType<typeof devi
   return deviceAccess(access.policy);
 }
 
-async function applyPhoneAccess(host: HostClient, runnerId: string, draft: PhoneSetupDraft) {
-  await host.refresh();
-  const wanted = phoneInitialAccess(draft);
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const access = host.getSnapshot().machines.find((machine) => machine.id === runnerId)?.access;
-    if (!access) throw new Error("This phone's access could not be confirmed. Try again.");
-    const current = deviceAccess(access.policy);
-    if (current.browser === wanted.browser && current.apps === wanted.apps && !current.files)
-      return current;
-    const result = await host.updateMachineAccess({
-      runnerId,
-      expectedRevision: access.revision,
-      policy: {
-        ...withDeviceSwitch(access.policy, "browser", wanted.browser),
-        apps: wanted.apps,
-        reach: "nobody",
-      },
-    });
-    if (result.outcome === "updated") return phoneAccess(host, runnerId);
-    await host.refresh();
-  }
-  throw new Error("This phone's access changed on another device. Try again.");
+function applyPhoneAccess(host: HostClient, runnerId: string, draft: PhoneSetupDraft) {
+  return applyDeviceAccess(host, runnerId, phoneInitialAccess(draft));
 }
 
 function outcomeOf(failure: IphoneAllowFailure | undefined): PhoneSetupOutcome {

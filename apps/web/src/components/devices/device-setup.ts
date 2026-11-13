@@ -45,6 +45,8 @@ export interface DeviceSetupPorts {
     readonly token: string;
     readonly name: string;
   }) => Promise<{ readonly runnerId: string | null }>;
+  /** A retry can reach an already-joined Runner whose enrollment applied older choices. */
+  readonly applyAccess: (runnerId: string, access: DeviceInitialAccess) => Promise<void>;
   readonly bind: (runnerId: string) => Promise<void>;
 }
 
@@ -97,6 +99,11 @@ export async function setUpThisDevice(
       runnerId: null,
     };
   if (!input.devicesAvailable) return { ok: true, runnerId };
+  try {
+    await ports.applyAccess(runnerId, input.access);
+  } catch (reason) {
+    return { ok: false, cause: { kind: "failed", detail: actionErrorMessage(reason) }, runnerId };
+  }
   try {
     onStage("binding");
     await ports.bind(runnerId);
