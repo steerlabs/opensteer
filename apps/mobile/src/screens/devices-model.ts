@@ -70,10 +70,15 @@ export function deviceListSections(input: {
       machine.id === homeMachine?.id
         ? "Home · your agent runs here"
         : computerStatus(machine, input.now).label;
+    const kind = thisDevice || machine.id === homeMachine?.id ? null : deviceKindLabel(machine);
     return {
       key: machine.id,
       title: machine.name,
-      detail: thisDevice ? `This ${input.noun} · ${status}` : status,
+      detail: thisDevice
+        ? `This ${input.noun} · ${status}`
+        : kind === null
+          ? status
+          : `${kind} · ${status}`,
       symbol: deviceSymbol(machine, thisDevice),
       opens: { kind: "device", machineId: machine.id },
     };
@@ -128,6 +133,13 @@ export function deviceListSections(input: {
       rows: signedIn,
     },
   ].filter((section) => section.rows.length > 0);
+}
+
+/** What kind of device it is, where its name alone doesn't say: from the Host's kind only. */
+export function deviceKindLabel(machine: Pick<MachineSummary, "kind">): string | null {
+  if (machine.kind === "agent-phone") return "Agent Phone";
+  if (machine.kind === "server") return "Server";
+  return null;
 }
 
 function deviceSymbol(machine: MachineSummary, thisDevice: boolean): SFSymbolName {

@@ -189,7 +189,9 @@ ended it; expiry then reads as Sign in again, and removal arrives as 4010.
 ## Notifications
 
 Alerts are best effort; conversations are durable. Muting suppresses replies and failures, never
-Requests. Provider acceptance proves neither display nor reading, and sent alerts cannot be
+Requests. Off, chosen in setup or by turning every alert off, is a durable preference: the phone
+never asks the OS for permission while it holds, and setup's Ready reports permission and
+registration as they settled. Provider acceptance proves neither display nor reading, and sent alerts cannot be
 recalled.
 
 Phone push needs an Account channel and raw APNs or FCM tokens. The Account gets routing

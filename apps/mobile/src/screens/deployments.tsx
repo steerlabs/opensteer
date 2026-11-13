@@ -21,6 +21,8 @@ import {
   View,
 } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
+import { thisPhoneNoun } from "../computers/phone-noun.js";
+import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import {
   deploymentStatusDetail,
   deploymentStatusLabel,
@@ -75,6 +77,7 @@ import {
 import { deploymentInitial, deploymentTone, statusTone } from "./deployment-row.js";
 import { deploymentRecoveryLabel, runDeploymentRecovery } from "./deployment-recovery.js";
 import { DeploymentMenu } from "./deployment-menu.js";
+import { phoneLeaves } from "./device-page-model.js";
 import { useSetupScanner } from "./setup-scanner.js";
 import { Welcome } from "./welcome.js";
 
@@ -358,6 +361,7 @@ export function DeploymentsScreen(): ReactNode {
   const navigation = useNavigation();
   const route = useRoute();
   const { account, directory, rows, selection } = useMobileState();
+  const enrolledIn = useIphoneAppsState(useIphoneApps()).snapshot.enrollment?.deploymentId ?? null;
   const attention = useOtherComputersAttention(rows, selection.deploymentId);
   const switching = route.name === "DeploymentSwitcher";
   const listInsets = useListContentInsets(space[32]);
@@ -516,32 +520,40 @@ export function DeploymentsScreen(): ReactNode {
 
   const confirmRemove = useCallback(
     (row: DeploymentRow) => {
-      Alert.alert(`Remove ${row.name}?`, "This phone forgets its address and your sign-in.", [
-        { style: "cancel", text: "Keep" },
-        {
-          onPress: () => {
-            void client
-              .remove(row.deploymentId)
-              .then(() => {
-                if (client.getSnapshot().selection.deploymentId === null) resetToDeployments();
-              })
-              .catch((error: unknown) => {
-                setFailure(operationDetail(error, "That deployment could not be removed."));
-              });
+      Alert.alert(
+        `Remove ${row.name}?`,
+        row.deploymentId === enrolledIn
+          ? `${phoneLeaves(thisPhoneNoun, row.name)} It also forgets the address and your sign-in.`
+          : `This ${thisPhoneNoun} forgets its address and your sign-in.`,
+        [
+          { style: "cancel", text: "Keep" },
+          {
+            onPress: () => {
+              void client
+                .remove(row.deploymentId)
+                .then(() => {
+                  if (client.getSnapshot().selection.deploymentId === null) resetToDeployments();
+                })
+                .catch((error: unknown) => {
+                  setFailure(operationDetail(error, "That deployment could not be removed."));
+                });
+            },
+            style: "destructive",
+            text: "Remove",
           },
-          style: "destructive",
-          text: "Remove",
-        },
-      ]);
+        ],
+      );
     },
-    [client],
+    [client, enrolledIn],
   );
 
   const confirmSignOut = useCallback(
     (row: DeploymentRow) => {
       Alert.alert(
         `Sign out of ${row.name}?`,
-        "This phone ends its session there and forgets the sign-in. The deployment stays in this list.",
+        row.deploymentId === enrolledIn
+          ? `${phoneLeaves(thisPhoneNoun, row.name)} It stays in this list.`
+          : `This ${thisPhoneNoun} ends its session there and forgets the sign-in. It stays in this list.`,
         [
           { style: "cancel", text: "Stay signed in" },
           {
@@ -559,7 +571,7 @@ export function DeploymentsScreen(): ReactNode {
         ],
       );
     },
-    [client],
+    [client, enrolledIn],
   );
 
   const showDetails = useCallback((row: DeploymentRow): void => {

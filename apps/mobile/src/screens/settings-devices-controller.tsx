@@ -14,6 +14,7 @@ import { headerActions } from "../navigation-header.js";
 import { useMobileClient, useHostValue, useMobileState } from "../ui/mobile-client-context.js";
 import { useLeaveSheets } from "./leave-sheets.js";
 import { confirmDestructive } from "./confirm.js";
+import { phoneLeaves } from "./device-page-model.js";
 import { deviceListSections, type DeviceListRow, type PhoneHere } from "./devices-model.js";
 import type { NativeSettingsSection } from "./native-settings-page.types.js";
 import { otherDevicesSettingsRows } from "./settings-model.js";
@@ -121,7 +122,7 @@ export function DevicesSettingsController(): ReactNode {
         const elsewhere = opens.elsewhereName;
         confirmDestructive({
           title: `Use this ${thisPhoneNoun} here instead?`,
-          message: `It is removed from ${elsewhere} and signed out there. Then you set it up here.`,
+          message: `${phoneLeaves(thisPhoneNoun, elsewhere)} Then you set it up here.`,
           confirm: "Use it here",
           onConfirm: () => {
             setFailure(null);

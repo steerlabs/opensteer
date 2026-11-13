@@ -1,4 +1,4 @@
-import { hostsDeployment } from "@opensteer/client/computers";
+import { deviceRemovalProfiles, hostsDeployment } from "@opensteer/client/computers";
 import { deviceAccess, type MachineAccessPolicy, type MachineSummary } from "@opensteer/protocol";
 
 export type DeviceSwitchKey = "browser" | "apps" | "files";
@@ -97,23 +97,37 @@ export function withSwitch(
     : { ...policy, reach: "nobody" };
 }
 
-/** The destructive action alone in the last section, and its confirmation. */
+/** The destructive action alone in the last section, and its confirmation, as on web. */
 export function deviceRemoval(
   machine: MachineSummary,
-  options: { readonly thisDevice: boolean; readonly noun: string },
+  options: {
+    readonly thisDevice: boolean;
+    readonly noun: string;
+    readonly profiles: Parameters<typeof deviceRemovalProfiles>[1];
+  },
 ): { readonly label: string; readonly title: string; readonly message: string } | null {
   if (isHome(machine) || !machine.revocable) return null;
   if (options.thisDevice)
     return {
       label: `Sign out and remove this ${options.noun}`,
       title: `Sign out and remove this ${options.noun}?`,
-      message: `Your agent can no longer use this ${options.noun}. Browser data kept here is deleted.`,
+      message: `Your agent can no longer use this ${options.noun}. Browser profiles kept here are deleted.`,
     };
   return {
     label: "Remove",
     title: `Remove ${machine.name}?`,
-    message: `It is signed out and your agent can't use it.${
-      machine.status === "online" ? "" : " It finishes the next time it connects."
-    }`,
+    message: [
+      "It is signed out and your agent can't use it.",
+      machine.status === "online" ? null : "It finishes the next time it connects.",
+      deviceRemovalProfiles(machine, options.profiles) ??
+        "Browser profiles kept on it are deleted.",
+    ]
+      .filter((part): part is string => part !== null)
+      .join(" "),
   };
+}
+
+/** What this phone leaving an Opensteer deletes, for every way it can leave. */
+export function phoneLeaves(noun: string, deploymentName: string): string {
+  return `This ${noun} is removed from ${deploymentName}. Browser profiles kept on this ${noun} for it are deleted.`;
 }
