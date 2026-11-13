@@ -1,3 +1,4 @@
+import { TeamAskReview } from "./team-ask-review.js";
 import { placeByKey } from "@opensteer/client/host";
 import { DesktopUpdateButton } from "./desktop-update-button.js";
 import { PendingBrowserTabRows } from "./workspace/pending-browser-tab.js";
@@ -415,12 +416,20 @@ export function Sidebar({
     },
     [onCloseMobile],
   );
+  const [reviewAskId, setReviewAskId] = useState<string | null>(null);
+  const teamAsks = useHostSelector(
+    hostClient,
+    (current) => current.needsYou?.entries.filter((entry) => entry.kind === "team-ask") ?? [],
+  );
+  const reviewAsk = teamAsks.find((entry) => entry.requestId === reviewAskId);
   const needsYouCount = useHostSelector(hostClient, (current) => current.needsYou?.count ?? 0);
   const openNeedsYou = () => {
-    const first = hostClient
-      .getSnapshot()
-      .needsYou?.entries.find((entry) => entry.kind === "request");
+    const first = hostClient.getSnapshot().needsYou?.entries[0];
     if (!first) return;
+    if (first.kind === "team-ask") {
+      setReviewAskId(first.requestId);
+      return;
+    }
     onCloseMobile();
     nav.openConversation(nav.threadPath(first.navigationThreadId), {
       focusRequest: first.request.id,
@@ -661,6 +670,14 @@ export function Sidebar({
       onKeyDown={handleKeyDown}
       ref={sidebarRef}
     >
+      {reviewAsk ? (
+        <TeamAskReview
+          key={reviewAsk.requestId}
+          entry={reviewAsk}
+          client={hostClient}
+          onClose={() => setReviewAskId(null)}
+        />
+      ) : null}
       <div className="sidebar__header">
         <h1 className="sidebar__title">Opensteer</h1>
         <VoiceButton onOpen={openVoice} />
@@ -738,6 +755,18 @@ export function Sidebar({
         >
           {side === "tasks" ? (
             <>
+              {teamAsks.map((entry) => (
+                <button
+                  className="side-task"
+                  type="button"
+                  key={entry.requestId}
+                  onClick={() => setReviewAskId(entry.requestId)}
+                >
+                  {entry.presentation.asker.displayName}
+                  {entry.presentation.asker.actor === "agent" ? "'s agent" : ""} · #
+                  {entry.presentation.audience.channelName}
+                </button>
+              ))}
               {doneView ? (
                 <div className="side-head side-head--done">
                   <button

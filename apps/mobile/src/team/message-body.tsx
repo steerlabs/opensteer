@@ -178,7 +178,7 @@ export function MentionChip(props: { readonly mention: MentionView }): ReactNode
     <Text
       accessibilityLabel={
         props.mention.kind === "agent-inert"
-          ? `${props.mention.label}, not woken`
+          ? `${props.mention.label}, owner approval required`
           : props.mention.label
       }
       style={[styles.chip, tone]}

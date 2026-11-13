@@ -151,6 +151,11 @@ export const MessageRow = memo(function MessageRow({
             ) : null}
           </p>
         ) : null}
+        {message.askStatuses?.map((status) => (
+          <p key={status.id} className="team-ask-status">
+            {status.label}
+          </p>
+        ))}
         {message.work ? (
           <AgentWorkFooter
             durationMs={message.work.durationMs}

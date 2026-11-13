@@ -8,8 +8,8 @@ const mentionLimit = 20;
 /**
  * What a composer's words become on the wire. `@handle` names a person and
  * `@handle-agent` names that person's agent. Asking one's own agent puts its
- * handle first, so everyone reads who was asked; anyone else's agent is only
- * a reference, which the team server never wakes.
+ * handle first, so everyone reads who was asked. The team Host decides which
+ * mentions need owner approval.
  */
 export function teamMessage(
   input: { readonly body: string; readonly toMyAgent: boolean },

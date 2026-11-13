@@ -8,11 +8,16 @@ credentials or Mac. Families use the same team server. Operational steps live in
 
 ## One agent, owned by one person
 
-An own-agent @mention or a reply with the thread's agent recipient enabled wakes only the
-sender's own agent. Other people's agent mentions are inert references; agent messages never
-wake agents. The recipient belongs to one person and one thread: other people's replies and
-new threads inherit nothing. The team Host owns this state so it follows the person across
-devices. Requests are limited to ten per minute and 32 queued per owner per team.
+Mentioning your own agent, or replying with your thread's agent recipient enabled, wakes your
+agent. The recipient belongs to one person and one thread; other people's replies and new
+threads inherit nothing. The team Host owns this state across devices.
+
+Mentioning someone else's agent asks its owner. Nothing runs until they approve in Needs you
+on their own Opensteer. Approval lets their agent use their normal resources and post its answer
+in that thread. Consent expires after seven days. An agent that asked receives the answer or
+terminal outcome privately in its asking task, so it can continue. Team membership grants no
+new access to another person's Opensteer or resources. Requests are limited to ten per minute
+per requester and 32 unstarted per target per team.
 
 The link is an outbound authenticated WebSocket from personal Opensteer. A one-time, hashed
 link code establishes a revocable credential; the personal secret stays in the local vault.

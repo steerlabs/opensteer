@@ -1,3 +1,4 @@
+import { settleTeamAsk } from "../host/needs-you.js";
 import { isDeviceAccessRequestEvent } from "@opensteer/protocol";
 import { deviceAccess } from "@opensteer/protocol";
 import { hostsDeployment } from "../computers/computers.js";
@@ -1716,6 +1717,7 @@ export interface MockPhoneJoin {
 }
 
 export interface MockHostClientOptions {
+  teamAsks?: readonly import("@opensteer/protocol").NeedsYouTeamAskEntry[];
   /** `seeded`, or one task holding a single scene of the subagent design. */
   subagents?: "seeded" | "absent" | MockSubagentScene;
   desktopUpdates?: MockDesktopUpdateScenario;
@@ -1844,8 +1846,9 @@ function mockNeedsYou(
   before?: string,
   limit = 50,
   deviceAccessRequests: "include" | "omit" = "include",
+  teamAsks: readonly import("@opensteer/protocol").NeedsYouTeamAskEntry[] = [],
 ) {
-  const rows = snapshot.waitingRequests.flatMap(({ request }) => {
+  const requestRows = snapshot.waitingRequests.flatMap(({ request }) => {
     if (request.kind === "device.access" && deviceAccessRequests !== "include") return [];
     const thread = snapshot.threads.find(({ id }) => id === request.originatingThreadId);
     return thread
@@ -1861,6 +1864,7 @@ function mockNeedsYou(
         ]
       : [];
   });
+  const rows = [...requestRows, ...teamAsks];
   const start = before ? Number(before) : 0;
   if (!Number.isSafeInteger(start) || start < 0 || start > rows.length)
     throw new Error("Invalid Needs-you cursor.");
@@ -1898,10 +1902,13 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       const snapshot = client.getSnapshot();
       return rpcSuccess({
         homeName: snapshot.machines.find(hostsDeployment)?.name ?? null,
-        needsYou: snapshot.waitingRequests.filter(
-          ({ request }) =>
-            input.deviceAccessRequests === "include" || request.kind !== "device.access",
-        ).length,
+        needsYou: mockNeedsYou(
+          snapshot,
+          undefined,
+          50,
+          input.deviceAccessRequests ?? "omit",
+          client.teamAsks,
+        ).count,
         unread: snapshot.threads.some(
           (thread) =>
             thread.listed &&
@@ -1918,6 +1925,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
           input.before,
           input.limit,
           input.deviceAccessRequests ?? "omit",
+          client.teamAsks,
         ),
       ),
     "teams.links.list": async () => rpcSuccess({ links: [...client.teamLinks.values()] }),
@@ -2600,15 +2608,24 @@ async function executeMockCommand(
       client.teamLinks.set(link.teamId, link);
       return rpcSuccess({ type: command.type, link });
     }
-    case "teams.ask.decide":
-      return {
-        ok: false,
-        error: HostApiErrorSchema.parse({
-          code: "not_found",
-          message: "Pending team ask not found.",
-          retryable: false,
-        }),
-      };
+    case "teams.ask.decide": {
+      const page = client.getSnapshot().needsYou;
+      const next = settleTeamAsk(page, command.teamId, command.requestId);
+      if (next === page)
+        return {
+          ok: false,
+          error: HostApiErrorSchema.parse({
+            code: "not_found",
+            message: "Pending team ask not found.",
+            retryable: false,
+          }),
+        };
+      client.teamAsks = client.teamAsks.filter(
+        (entry) => entry.teamId !== command.teamId || entry.requestId !== command.requestId,
+      );
+      client.updatePlaces({ ...client.getSnapshot(), needsYou: next });
+      return rpcSuccess({ type: command.type });
+    }
     case "teams.link.leave":
       client.teamLinks.delete(command.teamId);
       return rpcSuccess({ type: command.type });
@@ -3732,7 +3749,13 @@ export class MockHostClient implements HostClient {
         active: page(snapshot.activeTasks),
         done: page(recent.filter(({ thread }) => thread.doneAt !== null)),
       },
-      needsYou: mockNeedsYou(snapshot, undefined, undefined, deviceAccessRequests),
+      needsYou: mockNeedsYou(
+        snapshot,
+        undefined,
+        undefined,
+        deviceAccessRequests,
+        this.#state.teamAsks,
+      ),
       resources: { appTabs: snapshot.appTabs ?? [], browser: this.#state.bootstrap().browser },
     });
     const serializedBytes = new TextEncoder().encode(JSON.stringify(cut)).byteLength;
@@ -5133,6 +5156,7 @@ interface MockPlugin {
   updatedAt: string;
 }
 class MockHostState {
+  teamAsks: import("@opensteer/protocol").NeedsYouTeamAskEntry[] = [];
   readonly teamLinks = new Map<string, PersonalTeamLink>();
   nodeEvents: readonly import("@opensteer/core").AgentEventView[] = [];
   openPhoneTab(machineId: string) {
@@ -6022,6 +6046,7 @@ class MockHostState {
   }
 
   constructor(options: MockHostClientOptions = {}) {
+    this.teamAsks = [...(options.teamAsks ?? [])];
     this.automaticModels = options.automaticModels ?? "seeded";
     if (this.automaticModels === "edited")
       this.automaticModelConfig.roles.deep = [
@@ -6343,7 +6368,13 @@ class MockHostState {
     this.snapshot = { ...this.snapshot, tasks, activeTasks: this.activeTaskEntries(tasks) };
     this.snapshot = {
       ...this.snapshot,
-      needsYou: mockNeedsYou(this.snapshot, undefined, this.needsYouLimit),
+      needsYou: mockNeedsYou(
+        this.snapshot,
+        undefined,
+        this.needsYouLimit,
+        "include",
+        this.teamAsks,
+      ),
     };
   }
 
@@ -11765,7 +11796,13 @@ class MockHostState {
     }
     this.snapshot = {
       ...this.snapshot,
-      needsYou: mockNeedsYou(this.snapshot, undefined, this.needsYouLimit),
+      needsYou: mockNeedsYou(
+        this.snapshot,
+        undefined,
+        this.needsYouLimit,
+        "include",
+        this.teamAsks,
+      ),
     };
     this.runPlaces.flush();
     this.emit();
@@ -11789,7 +11826,13 @@ class MockHostState {
     this.needsYouLimit += 50;
     this.snapshot = {
       ...this.snapshot,
-      needsYou: mockNeedsYou(this.snapshot, undefined, this.needsYouLimit),
+      needsYou: mockNeedsYou(
+        this.snapshot,
+        undefined,
+        this.needsYouLimit,
+        "include",
+        this.teamAsks,
+      ),
     };
     this.emit();
   }

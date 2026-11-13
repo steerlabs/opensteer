@@ -1,3 +1,4 @@
+import { teamAskStatuses } from "@opensteer/client/team";
 import type {
   TeamAgentRequest,
   TeamChannel,
@@ -210,7 +211,6 @@ export function mentionViews(words: TeamWords, message: TeamMessage): readonly M
     return {
       handle: `${member?.handle ?? owner.handle}-agent`,
       label: owner.you ? "My agent" : `${firstName(owner)}’s agent`,
-      // Only its owner's ask is live; anyone else's mention of it is a reference.
       tone: message.authorUserId === mention.userId ? "agent" : "agent-reference",
     };
   });
@@ -247,6 +247,11 @@ export function messageView(
     : undefined;
   const replies = message.replySummary;
   return {
+    askStatuses: teamAskStatuses(
+      [...(options.requests ?? []), ...message.requests],
+      message.id,
+      (id) => person(words, id).name,
+    ),
     id: message.id,
     author: author(words, message),
     at: message.createdAt,
@@ -336,7 +341,7 @@ export function timelineItems(
   const asks = new Map<string, TeamAgentRequest[]>();
   if (cards)
     for (const request of timeline.requests) {
-      if (replied.has(request.id)) continue;
+      if (replied.has(request.id) || request.kind === "ask") continue;
       asks.set(request.triggerMessageId, [...(asks.get(request.triggerMessageId) ?? []), request]);
     }
   for (const message of timeline.messages) {
