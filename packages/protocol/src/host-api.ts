@@ -1446,6 +1446,7 @@ export const hostApi = defineRpc({
   "needsYou.get": declaration(
     "POST",
     z.strictObject({
+      deviceAccessRequests: z.literal("include").optional(),
       before: z.string().min(1).max(4096).optional(),
       limit: z.number().int().min(1).max(50).optional(),
     }),
@@ -1989,6 +1990,7 @@ export const hostApi = defineRpc({
       .strictObject({
         threadId: ThreadIdSchema,
         aroundMessageId: MessageIdSchema.optional(),
+        deviceAccessRequests: z.literal("include").optional(),
         placeEvents: z.literal("include").optional(),
         toolOutputs: z.literal("preview").optional(),
         /** Whole turns, newest first, up to this many. Needs `history-turns-v1`. */
@@ -2015,6 +2017,7 @@ export const hostApi = defineRpc({
       .strictObject({
         nodeId: ExecutionNodeIdSchema,
         threadId: ThreadIdSchema,
+        deviceAccessRequests: z.literal("include").optional(),
         toolOutputs: z.literal("preview").optional(),
         through: SequenceSchema.optional(),
       })

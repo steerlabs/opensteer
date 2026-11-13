@@ -1,3 +1,4 @@
+import { isDeviceAccessRequestEvent } from "@opensteer/protocol";
 import { deviceAccess } from "@opensteer/protocol";
 import { listedRowThreadId } from "../host/task-list.js";
 import {
@@ -1840,8 +1841,10 @@ function mockNeedsYou(
   >,
   before?: string,
   limit = 50,
+  deviceAccessRequests: "include" | "omit" = "include",
 ) {
   const rows = snapshot.waitingRequests.flatMap(({ request }) => {
+    if (request.kind === "device.access" && deviceAccessRequests !== "include") return [];
     const thread = snapshot.threads.find(({ id }) => id === request.originatingThreadId);
     return thread
       ? [
@@ -1890,7 +1893,14 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       });
     },
     "needsYou.get": async (input) =>
-      rpcSuccess(mockNeedsYou(client.getSnapshot(), input.before, input.limit)),
+      rpcSuccess(
+        mockNeedsYou(
+          client.getSnapshot(),
+          input.before,
+          input.limit,
+          input.deviceAccessRequests ?? "omit",
+        ),
+      ),
     "teams.links.list": async () => rpcSuccess({ links: [...client.teamLinks.values()] }),
     "teams.replyTask.get": async () => rpcSuccess({ taskId: null, throughSequence: null }),
     "teams.threadTask.get": async ({ teamId, channelId, threadRootId }) =>
@@ -2343,7 +2353,15 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         }),
       );
     },
-    "node.events.list": async ({ threadId, nodeId, through, before, toolOutputs, limit = 100 }) => {
+    "node.events.list": async ({
+      threadId,
+      nodeId,
+      through,
+      before,
+      toolOutputs,
+      deviceAccessRequests,
+      limit = 100,
+    }) => {
       const own = (client.getSnapshot().transcripts[threadId] ?? []).find(
         (entry) => entry.kind === "node" && entry.nodeId === nodeId,
       );
@@ -2359,6 +2377,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
         (event) =>
           event.threadId === threadId &&
           nodeDetailEventNodeId(event) === nodeId &&
+          (deviceAccessRequests === "include" || !isDeviceAccessRequestEvent(event)) &&
           (!through || compareSequence(event.sequence, through) <= 0) &&
           (!before || compareSequence(event.sequence, SequenceSchema.parse(before)) < 0),
       );
@@ -3605,7 +3624,10 @@ const MockMacAnswerSchema = z.discriminatedUnion("kind", [
 type MockMacAnswer = z.output<typeof MockMacAnswerSchema>;
 
 export class MockHostClient implements HostClient {
-  deploymentSnapshot(sequence = String(this.getSnapshot().revision)) {
+  deploymentSnapshot(
+    sequence = String(this.getSnapshot().revision),
+    deviceAccessRequests: "include" | "omit" = "include",
+  ) {
     const snapshot = this.getSnapshot(),
       page = (entries: readonly TaskEntry[]) => ({
         readStates: entries
@@ -3631,8 +3653,15 @@ export class MockHostClient implements HostClient {
       messages: [],
       messageWindows: [],
       messagesOmitted: true,
-      pendingRequests: snapshot.waitingRequests.map(({ request }) => request).slice(0, 100),
-      pendingRequestWindow: mockWindow(snapshot.waitingRequests.length),
+      pendingRequests: snapshot.waitingRequests
+        .map(({ request }) => request)
+        .filter((request) => deviceAccessRequests === "include" || request.kind !== "device.access")
+        .slice(0, 32),
+      pendingRequestWindow: mockWindow(
+        snapshot.waitingRequests.filter(
+          ({ request }) => deviceAccessRequests === "include" || request.kind !== "device.access",
+        ).length,
+      ),
       runQueue: [],
       readStates: Object.values(snapshot.threadReadStates).slice(0, 100),
       tasks: {
@@ -3640,7 +3669,7 @@ export class MockHostClient implements HostClient {
         active: page(snapshot.activeTasks),
         done: page(recent.filter(({ thread }) => thread.doneAt !== null)),
       },
-      needsYou: mockNeedsYou(snapshot),
+      needsYou: mockNeedsYou(snapshot, undefined, undefined, deviceAccessRequests),
       resources: { appTabs: snapshot.appTabs ?? [], browser: this.#state.bootstrap().browser },
     });
     const serializedBytes = new TextEncoder().encode(JSON.stringify(cut)).byteLength;
@@ -3848,6 +3877,7 @@ export class MockHostClient implements HostClient {
           await this.rpc["node.events.list"]({
             ...input,
             nodeId: ExecutionNodeIdSchema.parse(input.nodeId),
+            deviceAccessRequests: "include",
           }),
         ),
       sendWatch: (deploymentId, nodeId) => {

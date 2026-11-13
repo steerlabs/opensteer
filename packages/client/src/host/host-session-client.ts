@@ -861,6 +861,9 @@ export class HttpHostClient {
     read: async (input) => {
       const page = unwrapRpcResult(
         await this.rpc["node.events.list"]({
+          ...(this.#capabilities?.includes("devices-v1")
+            ? { deviceAccessRequests: "include" as const }
+            : {}),
           ...(this.#capabilities?.includes("tool-output-detail-v1")
             ? { toolOutputs: "preview" as const }
             : {}),
@@ -2250,6 +2253,9 @@ export class HttpHostClient {
         ...(this.#capabilities?.includes("tool-output-detail-v1")
           ? { toolOutputs: "preview" as const }
           : {}),
+        ...(this.#capabilities?.includes("devices-v1")
+          ? { deviceAccessRequests: "include" as const }
+          : {}),
         ...(this.#capabilities?.includes("place-events-v1")
           ? { placeEvents: "include" as const }
           : {}),
@@ -2615,6 +2621,9 @@ export class HttpHostClient {
       await this.rpc["thread.events.list"]({
         ...(this.#capabilities?.includes("tool-output-detail-v1")
           ? { toolOutputs: "preview" as const }
+          : {}),
+        ...(this.#capabilities?.includes("devices-v1")
+          ? { deviceAccessRequests: "include" as const }
           : {}),
         ...(this.#capabilities?.includes("place-events-v1")
           ? { placeEvents: "include" as const }
@@ -3261,7 +3270,13 @@ export class HttpHostClient {
       generation = this.#viewerGeneration;
     if (!held?.window.hasMore || !held.window.nextBefore) return;
     const page = unwrapRpcResult(
-      await this.rpc["needsYou.get"]({ before: held.window.nextBefore, limit: 50 }),
+      await this.rpc["needsYou.get"]({
+        before: held.window.nextBefore,
+        limit: 50,
+        ...(this.#capabilities?.includes("devices-v1")
+          ? { deviceAccessRequests: "include" as const }
+          : {}),
+      }),
     );
     if (generation !== this.#viewerGeneration || this.#disposed || this.#snapshot.needsYou !== held)
       return;
@@ -3277,7 +3292,11 @@ export class HttpHostClient {
 
   async #readWaitingRequests(): Promise<void> {
     const needsGeneration = this.#viewerGeneration;
-    const needsYou = unwrapRpcResult(await this.rpc["needsYou.get"]({}));
+    const needsYou = unwrapRpcResult(
+      await this.rpc["needsYou.get"](
+        this.#capabilities?.includes("devices-v1") ? { deviceAccessRequests: "include" } : {},
+      ),
+    );
     if (needsGeneration !== this.#viewerGeneration || this.#disposed) return;
     this.#update({ ...this.#snapshot, needsYou });
     const generation = this.#viewerGeneration;
@@ -4043,6 +4062,9 @@ export class HttpHostClient {
             // an upgraded Host refuses the stream before sending an event this
             // app would read with the wrong meaning.
             apiVersion: hostApiVersion,
+            ...(this.#capabilities?.includes("devices-v1")
+              ? { deviceAccessRequests: "include" }
+              : {}),
             ...(this.#capabilities?.includes("person-show-v1") ? { personShow: "accept" } : {}),
             ...(this.#capabilities?.includes("tool-output-detail-v1")
               ? { toolOutputs: "preview" }

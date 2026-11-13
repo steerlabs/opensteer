@@ -1,6 +1,6 @@
 import type { DeviceAccessService } from "./administration/device-access-service.js";
 import { consumeAnonymousRateLimit } from "./identity/anonymous-rate-limit.js";
-import { deviceAccess } from "@opensteer/protocol";
+import { deviceAccess, isDeviceAccessRequestEvent } from "@opensteer/protocol";
 import {
   deviceMembershipTurn,
   removeSignedDevice,
@@ -1327,9 +1327,15 @@ export async function createHostServer(
         threadId: input.threadId,
       });
       if (!page) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+      const projected = {
+        ...page,
+        events: page.events.filter(
+          (event) => input.deviceAccessRequests === "include" || !isDeviceAccessRequestEvent(event),
+        ),
+      };
       return rpcSuccess(
         hostApi["thread.events.list"].success.parse(
-          input.toolOutputs === "preview" ? clientToolOutputPage(page) : page,
+          input.toolOutputs === "preview" ? clientToolOutputPage(projected) : projected,
         ),
       );
     },
@@ -1343,9 +1349,15 @@ export async function createHostServer(
         ownerId: requireRpcSession(context).user.id,
       });
       if (!page) throw new OpensteerError({ code: "not_found", message: "Subagent not found" });
+      const projected = {
+        ...page,
+        events: page.events.filter(
+          (event) => input.deviceAccessRequests === "include" || !isDeviceAccessRequestEvent(event),
+        ),
+      };
       return rpcSuccess(
         hostApi["node.events.list"].success.parse(
-          input.toolOutputs === "preview" ? clientToolOutputPage(page) : page,
+          input.toolOutputs === "preview" ? clientToolOutputPage(projected) : projected,
         ),
       );
     },
@@ -1492,6 +1504,9 @@ export async function createHostServer(
         await needsYouPage(dependencies.store.database, {
           ...(input.before ? { before: input.before } : {}),
           ...(input.limit ? { limit: input.limit } : {}),
+          ...(input.deviceAccessRequests
+            ? { deviceAccessRequests: input.deviceAccessRequests }
+            : {}),
           userId: requireRpcSession(context).user.id,
         }),
       ),
@@ -3819,6 +3834,9 @@ function attachRealtimeSocket(
       try {
         const subscription = await realtime.subscribe({
           afterSequence: message.cursor.afterSequence,
+          ...(message.deviceAccessRequests
+            ? { deviceAccessRequests: message.deviceAccessRequests }
+            : {}),
           ...(message.placeEvents ? { placeEvents: message.placeEvents } : {}),
           ...(message.toolOutputs ? { toolOutputs: message.toolOutputs } : {}),
           ...(message.personShow ? { personShow: message.personShow } : {}),

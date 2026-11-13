@@ -6,6 +6,7 @@ import { BrowserGroupStreamSchema, BrowserClientTabStreamSchema } from "./browse
 import { ComputerViewChangedSchema, ComputerViewRemovedSchema } from "./computer-view.js";
 import {
   AgentEventViewSchema,
+  type AgentEventView,
   PlaceEnteredEventViewSchema,
   LiveRunProgressViewSchema,
   MessageViewSchema,
@@ -105,6 +106,8 @@ export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
     apiVersion: z.number().int().positive().optional(),
     /** Requires `snapshot-messages-omit-v1`; absence retains message history. */
     snapshotMessages: z.literal("omit").optional(),
+    /** Requires `devices-v1`; legacy subscribers cannot parse these Requests. */
+    deviceAccessRequests: z.literal("include").optional(),
     placeEvents: z.literal("include").optional(),
     toolOutputs: z.literal("preview").optional(),
     /** Requires `person-show-v1`; old subscribers receive no navigation requests. */
@@ -476,5 +479,14 @@ export function isRealtimeFrameMetadata(
         path === "$" ||
         path.split(".").every((part) => part === "[]" || part === "*" || isRealtimeWireField(part)),
     )
+  );
+}
+
+export function isDeviceAccessRequestEvent(event: AgentEventView): boolean {
+  return (
+    (event.type === "request.opened" ||
+      event.type === "request.updated" ||
+      event.type === "request.resolved") &&
+    event.data.request.kind === "device.access"
   );
 }

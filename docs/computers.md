@@ -28,7 +28,10 @@ attempt against redemption. Tokens minted for other computers are independent.
 Remote route changes disconnect route-admitted computers without deleting enrollment. The hosting
 computer and supervised services are not remote computers to sweep. Revocation is terminal and
 stops reconnecting; network and lease failures preserve identity. Loopback in an endpoint means
-the executing computer, never the viewer's.
+the executing computer, never the viewer's. Server connection commands resolve the Host-approved
+remote route before minting enrollment, as Agent Phone setup does; a desktop Host's canonical
+loopback origin cannot be used from the new server or its container. With no route, setup asks the
+person to turn on remote access.
 
 ## Runner and desktop
 

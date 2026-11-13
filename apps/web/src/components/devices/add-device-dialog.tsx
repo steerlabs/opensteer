@@ -5,7 +5,7 @@ import {
   runnerDistributionPrefix,
   runnerImageReference,
 } from "@opensteer/client/computers";
-import { mutationIdempotencyKey } from "@opensteer/client/host";
+import { mutationIdempotencyKey, unwrapRpcResult } from "@opensteer/client/host";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { useShell } from "../app-shell.js";
 import { AddPhoneDialog } from "../computers/add-phone-dialog.js";
@@ -200,6 +200,7 @@ function AddServer() {
   const [issued, setIssued] = useState<{
     readonly enrollmentId: string;
     readonly token: string;
+    readonly hostOrigin: string;
   } | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -210,7 +211,7 @@ function AddServer() {
       ? computerConnectionCommands({
           deploymentShape: snapshot.deploymentShape,
           enrollmentId: issued.enrollmentId,
-          hostOrigin: snapshot.identityConfig.publicOrigin,
+          hostOrigin: issued.hostOrigin,
           name: name.trim(),
           token: issued.token,
           runnerDistribution: runnerDistributionPrefix(
@@ -225,6 +226,7 @@ function AddServer() {
     setPending(true);
     setError(null);
     try {
+      const target = unwrapRpcResult(await hostClient.rpc["agentPhone.target.get"]({}));
       const result = await hostClient.dispatch({
         allowedModules: [...localEnrollmentModules],
         idempotencyKey: mutationIdempotencyKey("server-add"),
@@ -233,7 +235,7 @@ function AddServer() {
       });
       if (result.type !== "runner.enrollment.createLocal")
         throw new Error("The command couldn’t be created.");
-      setIssued(result);
+      setIssued({ ...result, hostOrigin: target.hostUrl });
     } catch (reason) {
       setError(actionErrorMessage(reason));
     } finally {
