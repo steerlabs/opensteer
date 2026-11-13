@@ -444,11 +444,11 @@ describe("team knowledge", () => {
     await t.topics(t.agents.mira);
     await new TeamMembersStore(t.lock).change(person(t.people.owner), t.people.mira, "remove");
     for (const call of [
-      t.topics(t.agents.mira),
-      t.readNotes(t.agents.mira, { query: "anything" }),
-      t.create(t.agents.mira, t.topicIds.general),
+      () => t.topics(t.agents.mira),
+      () => t.readNotes(t.agents.mira, { query: "anything" }),
+      () => t.create(t.agents.mira, t.topicIds.general),
     ])
-      expect(await reason(call)).toBe("knowledge-link-unavailable");
+      expect(await reason(call())).toBe("knowledge-link-unavailable");
   });
 
   it("replays a write's outcome only while its topic is still writable", async () => {
