@@ -110,6 +110,7 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
   hasPasswordAuthority = false;
   /** What the Mac answers a sign-in probe; the Passwords switch, as the runtime sees it. */
   holdStartAck = false;
+  readonly startAck = Promise.withResolvers<void>();
   passwords: "has-login" | "no-login" | "off" | "not-set-up" | "unavailable" = "has-login";
   onStart = (
     message: Extract<PasswordSignInAuthorityCommand, { type: "login.authorize"; loginRef: string }>,
@@ -210,7 +211,7 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
         reservedLoginRef = command.loginRef;
         reservedLoginExpiresAt = command.expiresAt;
         queueMicrotask(() => this.onStart(command));
-        if (this.holdStartAck) return new Promise(() => undefined);
+        if (this.holdStartAck) await this.startAck.promise;
         return { type: "login.authorize.started" };
       case "login.approve":
         if (!this.approvalResult) return { type: "unavailable" };
@@ -624,7 +625,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
   });
   afterEach(async () => {
     service?.close();
-    passwords?.close();
+    await passwords?.close();
     await browser?.close();
     expect(v4Violations, "The Host sent a wire-4 extension a frame it refuses").toEqual([]);
   });
@@ -1752,34 +1753,38 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     const ready = await passwordScene();
     ready.connection.holdStartAck = true;
     ready.connection.onStart = () => undefined;
-    const site = "https://stuck-write.test";
-    // Release both calls into the site's admission together. Otherwise their
-    // own database reads can land the second after the first settled, 40 ms
-    // in, and it rightly starts its own attempt, as the last call checks.
-    const request = passwords.request.bind(passwords);
-    const arrived: (() => void)[] = [];
-    const together = vi.spyOn(passwords, "request").mockImplementation(async (input) => {
-      const turn = Promise.withResolvers<void>();
-      arrived.push(turn.resolve);
-      if (arrived.length === 2) for (const release of arrived) release();
-      await turn.promise;
-      return request(input);
-    });
-    const results = await Promise.all(
-      [0, 1].map(() => service.agentSignIn({ ...ready.agent, callId: randomUUID(), site })),
-    );
-    together.mockRestore();
-    expect(results).toEqual(
-      [0, 1].map(() => ({ status: "unavailable", reason: "passwords-not-responding", site })),
-    );
-    expect(ready.connection.signInStarts()).toHaveLength(1);
-    expect(await service.agentSignIn({ ...ready.agent, callId: randomUUID(), site })).toEqual({
-      status: "unavailable",
-      reason: "passwords-not-responding",
-      site,
-    });
-    expect(ready.connection.signInStarts()).toHaveLength(2);
-    expect(await passwordRequestCount(ready.agent.runId)).toBe(0);
+    try {
+      const site = "https://stuck-write.test";
+      // Release both calls into the site's admission together. Otherwise their
+      // own database reads can land the second after the first settled, 40 ms
+      // in, and it rightly starts its own attempt, as the last call checks.
+      const request = passwords.request.bind(passwords);
+      const arrived: (() => void)[] = [];
+      const together = vi.spyOn(passwords, "request").mockImplementation(async (input) => {
+        const turn = Promise.withResolvers<void>();
+        arrived.push(turn.resolve);
+        if (arrived.length === 2) for (const release of arrived) release();
+        await turn.promise;
+        return request(input);
+      });
+      const results = await Promise.all(
+        [0, 1].map(() => service.agentSignIn({ ...ready.agent, callId: randomUUID(), site })),
+      );
+      together.mockRestore();
+      expect(results).toEqual(
+        [0, 1].map(() => ({ status: "unavailable", reason: "passwords-not-responding", site })),
+      );
+      expect(ready.connection.signInStarts()).toHaveLength(1);
+      expect(await service.agentSignIn({ ...ready.agent, callId: randomUUID(), site })).toEqual({
+        status: "unavailable",
+        reason: "passwords-not-responding",
+        site,
+      });
+      expect(ready.connection.signInStarts()).toHaveLength(2);
+      expect(await passwordRequestCount(ready.agent.runId)).toBe(0);
+    } finally {
+      ready.connection.startAck.resolve();
+    }
   });
 
   it("accepts requester consent through the Host and settles once from the vault answer", async () => {
@@ -2113,7 +2118,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     try {
       await restarted.sweepAfterRestart();
     } finally {
-      restarted.close();
+      await restarted.close();
     }
     expect((await passwordRequest(orphan.requestId)).request.response).toEqual({
       kind: "external",
@@ -3272,7 +3277,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
 
   it("sends a wire-4 extension every frame type in a shape its frozen schemas accept", async () => {
     service.close();
-    passwords.close();
+    await passwords.close();
     await browser.close();
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     try {

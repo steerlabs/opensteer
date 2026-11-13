@@ -2833,7 +2833,7 @@ export async function createHostRuntime(
         await step("administration catalogs", () => administrationCatalogs?.close());
         await step("integration platform", () => integrationPlatform.close());
         await step("browser", () => browser.close());
-        passwordSignIns.close();
+        await step("password sign-ins", () => passwordSignIns.close());
         browserSources.close();
         runnerBrowsers.close();
         browserRelay.close();

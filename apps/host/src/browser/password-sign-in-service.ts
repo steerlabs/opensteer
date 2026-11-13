@@ -136,6 +136,8 @@ export class PasswordSignInService {
   readonly #requests: PasswordSignInRequests;
   readonly #reconcile: ReturnType<typeof setInterval>;
   readonly #unsubscribe: () => void;
+  readonly #background = new Set<Promise<unknown>>();
+  #closePromise: Promise<void> | undefined;
   #closed = false;
   #reconciling = false;
 
@@ -171,10 +173,11 @@ export class PasswordSignInService {
     this.#onDeploymentEvent = options.onDeploymentEvent;
     this.#requests = options.requests;
     this.#unsubscribe = this.#authority.onPasswordSignIn((runnerId, event) => {
-      void this.#onAuthorityEvent(runnerId, event).catch(this.#onError);
+      if (!this.#closed)
+        void this.#track(this.#onAuthorityEvent(runnerId, event).catch(this.#onError));
     });
     this.#reconcile = setInterval(() => {
-      void this.#reconcileOperations().catch(this.#onError);
+      void this.#track(this.#reconcileOperations().catch(this.#onError));
     }, options.reconcileIntervalMs ?? defaultReconcileIntervalMs);
     this.#reconcile.unref();
   }
@@ -404,6 +407,7 @@ export class PasswordSignInService {
 
   /** A live join or a recorded call bypasses method selection and start rate limits. */
   join(input: Call & { readonly site: string }): Promise<AgentBrowserSignInResult> | null {
+    if (this.#closed) return Promise.resolve(unavailable(input.site, "unsupported"));
     const own = this.#calls.get(callKey(input));
     if (own) this.#assertScope(own, input);
     const ready = this.#ready(input.deploymentId, input.site, input.credential);
@@ -423,7 +427,7 @@ export class PasswordSignInService {
     if (recorded) return Promise.resolve(recorded);
     const replayed = operation.calls.has(callKey(input)) || operation.requestId !== null;
     this.#recordCall(operation, input);
-    return this.#answer(operation, input, replayed);
+    return this.#track(this.#answer(operation, input, replayed));
   }
 
   async request(
@@ -433,6 +437,7 @@ export class PasswordSignInService {
       readonly cardRunnerId?: RunnerId;
     },
   ): Promise<AgentBrowserSignInResult> {
+    if (this.#closed) return unavailable(input.site, "unsupported");
     const key = siteKey(input.deploymentId, input.site, input.credential);
     const prior = this.#admissions.get(key) ?? Promise.resolve();
     const admitted = prior.then(async (): Promise<Operation | AgentBrowserSignInResult> => {
@@ -469,6 +474,7 @@ export class PasswordSignInService {
         threadId: input.threadId,
         deploymentId: input.deploymentId,
       });
+      if (this.#closed) return unavailable(input.site, "unsupported");
       if (description.deploymentId !== input.deploymentId)
         throw new OpensteerError({
           code: "forbidden",
@@ -508,26 +514,28 @@ export class PasswordSignInService {
       this.#operations.set(operation.id, operation);
       this.#bySite.set(key, operation);
       this.#recordCall(operation, input);
-      void this.#authority
-        .sendPasswordSignIn(target.runnerId, {
-          type: "login.authorize",
-          ...(operation.credential === "card"
-            ? { credential: "card" as const, cardRef: operation.loginRef }
-            : { loginRef: operation.loginRef }),
-          expiresAt: new Date(operation.expiresAt).toISOString(),
-          operationId: operation.id,
-          site: input.site,
-          requester,
-          deploymentId: input.deploymentId,
-        })
-        .then(async (result) => {
-          if (result.type !== "login.authorize.started")
-            await this.#finish(operation, interrupted());
-        })
-        .catch(async () => {
-          if (!operation.settlement) await this.#finish(operation, interrupted());
-        })
-        .catch(this.#onError);
+      void this.#track(
+        this.#authority
+          .sendPasswordSignIn(target.runnerId, {
+            type: "login.authorize",
+            ...(operation.credential === "card"
+              ? { credential: "card" as const, cardRef: operation.loginRef }
+              : { loginRef: operation.loginRef }),
+            expiresAt: new Date(operation.expiresAt).toISOString(),
+            operationId: operation.id,
+            site: input.site,
+            requester,
+            deploymentId: input.deploymentId,
+          })
+          .then(async (result) => {
+            if (result.type !== "login.authorize.started")
+              await this.#finish(operation, interrupted());
+          })
+          .catch(async () => {
+            if (!operation.settlement) await this.#finish(operation, interrupted());
+          })
+          .catch(this.#onError),
+      );
       return operation;
     });
     const tail = admitted.then(
@@ -540,7 +548,7 @@ export class PasswordSignInService {
     });
     const operation = await admitted;
     if (!("id" in operation)) return operation;
-    return this.#answer(operation, input, operation.starter !== input);
+    return this.#track(this.#answer(operation, input, operation.starter !== input));
   }
 
   async get(input: { ownerId: UserId; requestId: RequestId }): Promise<PasswordSignInCard> {
@@ -711,16 +719,34 @@ export class PasswordSignInService {
     return (await this.#requests.get(input.requestId))?.status ?? "declined";
   }
 
-  close(): void {
-    if (this.#closed) return;
+  close(): Promise<void> {
+    if (this.#closePromise) return this.#closePromise;
     this.#closed = true;
     clearInterval(this.#reconcile);
     this.#unsubscribe();
     this.#leases.clear();
-    for (const operation of this.#operations.values()) {
-      void this.#cancel(operation, "authority-lost").catch(this.#onError);
-      if (!operation.settlement) void this.#finish(operation, interrupted()).catch(this.#onError);
-    }
+    this.#closePromise = (async () => {
+      await Promise.allSettled(this.#admissions.values());
+      for (const operation of this.#operations.values()) {
+        void this.#track(this.#cancel(operation, "authority-lost").catch(this.#onError));
+        if (!operation.settlement)
+          void this.#track(this.#finish(operation, interrupted()).catch(this.#onError));
+        if (operation.opening) void this.#track(operation.opening);
+        if (operation.settling) void this.#track(operation.settling);
+      }
+      // Producers are stopped; admitted work can still start its terminal settlement.
+      while (this.#background.size) await Promise.allSettled(this.#background);
+    })();
+    return this.#closePromise;
+  }
+
+  #track<T>(work: Promise<T>): Promise<T> {
+    this.#background.add(work);
+    void work.then(
+      () => this.#background.delete(work),
+      () => this.#background.delete(work),
+    );
+    return work;
   }
 
   async #answer(
@@ -1016,19 +1042,21 @@ export class PasswordSignInService {
     operation.cancelSent = reason;
     operation.authorityEnded = true;
     operation.cancelledAt = this.#now();
-    void this.#authority
-      .sendPasswordSignIn(operation.target.runnerId, {
-        type: "login.cancel",
-        operationId: operation.id,
-        reason,
-      })
-      .then(async (result) => {
-        if (result.type !== "login.cancelled") await this.#finish(operation, interrupted());
-      })
-      .catch(async () => {
-        await this.#finish(operation, interrupted());
-      })
-      .catch(this.#onError);
+    void this.#track(
+      this.#authority
+        .sendPasswordSignIn(operation.target.runnerId, {
+          type: "login.cancel",
+          operationId: operation.id,
+          reason,
+        })
+        .then(async (result) => {
+          if (result.type !== "login.cancelled") await this.#finish(operation, interrupted());
+        })
+        .catch(async () => {
+          await this.#finish(operation, interrupted());
+        })
+        .catch(this.#onError),
+    );
   }
 
   async #finish(operation: Operation, settlement: Settlement): Promise<Finish> {
