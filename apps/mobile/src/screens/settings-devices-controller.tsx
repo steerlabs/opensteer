@@ -81,7 +81,7 @@ export function DevicesSettingsController(): ReactNode {
           rows.find((row) => row.deploymentId === enrollment.deploymentId)?.name ??
           membership.deploymentName,
       };
-    if (membership.state === "needs-setup")
+    if (membership.state === "needs-setup" || membership.state === "finish-setup")
       return { state: "needs-setup", deviceName: iphone.snapshot.deviceName };
     if (membership.state === "ready" && enrollment?.state === "enrolled")
       return { state: "member", runnerId: enrollment.runnerId };

@@ -5,6 +5,10 @@ import UIKit
 private struct PrepareInput: Record {
   @Field var deploymentId: String = ""
 }
+private struct IssuanceInput: Record {
+  @Field var pairing: PairingInput = PairingInput()
+  @Field var devicesV1: Bool = false
+}
 private struct CompleteLeaveInput: Record {
   @Field var runnerId: String = ""
 }
@@ -64,9 +68,18 @@ public final class IphoneAppsModule: Module {
       guard #available(iOS 17, *) else { return ["deploymentId": nil, "runnerId": nil] }
       return IphoneExecutorRuntime.shared.disconnect()
     }
-    Function("leave") { () -> [String: String?] in
+    Function("leave") { () throws -> [String: String?] in
       guard #available(iOS 17, *) else { return ["deploymentId": nil, "runnerId": nil] }
-      return IphoneExecutorRuntime.shared.leave()
+      do { return try IphoneExecutorRuntime.shared.leave() } catch { throw Self.map(error) }
+    }
+    AsyncFunction("beginIssuance") { (input: IssuanceInput) throws -> Void in
+      guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }
+      do { try IphoneExecutorRuntime.shared.beginIssuance(pairing: input.pairing.dictionary, devicesV1: input.devicesV1) }
+      catch { throw Self.map(error) }
+    }
+    AsyncFunction("clearRemoved") { () throws -> Void in
+      guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }
+      do { try IphoneExecutorRuntime.shared.clearRemoved() } catch { throw Self.map(error) }
     }
     AsyncFunction("completeLeave") { (input: CompleteLeaveInput) throws -> Void in
       guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }

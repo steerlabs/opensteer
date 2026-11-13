@@ -150,6 +150,20 @@ describe("whether this phone needs setting up here", () => {
   });
   const host = { iphoneAppsAvailable: true };
 
+  it("resumes pending and expired enrollment instead of claiming ready", () => {
+    for (const issue of [null, "enrollment-expired"] as const) {
+      const membership = phoneMembership({
+        deploymentId,
+        host,
+        iphone: state({
+          enrollment: { ...enrolled(deploymentId), state: "pending", enrollmentId: "ren_pending" },
+          issue,
+        }),
+      });
+      expect(membership).toEqual({ state: "finish-setup", reason: "Finish setting up this phone" });
+    }
+  });
+
   it("is due only on a Host that can take it, with no other Opensteer and no removal", () => {
     expect(phoneMembership({ deploymentId, host, iphone: state({}) }).state).toBe("needs-setup");
     expect(

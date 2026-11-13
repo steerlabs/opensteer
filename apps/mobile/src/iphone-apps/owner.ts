@@ -12,6 +12,7 @@ export interface IphoneAppsStopped {
   readonly enrollmentId: string | null;
   /** A signed leave was persisted natively before the stop erased its key. */
   readonly left: boolean;
+  readonly leaveRunnerId?: string;
   /** The Host's Runner id, only once added. */
   readonly machineId: string | null;
   readonly name: string;
@@ -29,6 +30,8 @@ export type IphoneLeaveOutcome = "removed" | "unconfirmed";
 export interface IphoneAppsOwner {
   /** The Deployment this iPhone shares its apps with, or is being added to. */
   enrolledDeploymentId(): string | null;
+  removedDeploymentId?(): string | null;
+  automaticSignInAllowed?(): boolean;
   /** Leaves synchronously: the signed leave is durable, then nothing new runs. */
   stop(): IphoneAppsStopped | null;
   /** Tells the Host, bounded; a Host that cannot be told is the person's notice. */

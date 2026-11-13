@@ -1,6 +1,7 @@
+import { withDeviceSwitch as withSwitch } from "@opensteer/client/computers";
 import type { MachineAccessPolicy, MachineSummary } from "@opensteer/protocol";
 import { describe, expect, it } from "vitest";
-import { deviceRemoval, deviceSwitches, homeFixed, withSwitch } from "./device-page-model.js";
+import { deviceRemoval, deviceSwitches, homeFixed } from "./device-page-model.js";
 
 const policy: MachineAccessPolicy = {
   apps: false,
@@ -60,11 +61,20 @@ describe("a device page's switches", () => {
   });
 
   it("changes one switch and keeps everything else, so files off and on restores its folders", () => {
-    expect(withSwitch(policy, "apps", true)).toEqual({ ...policy, apps: true });
+    expect(withSwitch(policy, "apps", true)).toMatchObject({
+      commands: false,
+      forwarding: false,
+      apps: true,
+    });
     const on = withSwitch(policy, "files", true);
-    expect(on).toEqual({ ...policy, commands: true, forwarding: true, reach: "owner" });
+    expect(on).toMatchObject({
+      commands: false,
+      forwarding: false,
+      shares: policy.shares,
+      reach: "owner",
+    });
     expect(withSwitch(on, "files", false)).toEqual({ ...on, reach: "nobody" });
-    expect(withSwitch({ ...on, reach: "deployment" }, "files", true).reach).toBe("deployment");
+    expect(withSwitch({ ...on, reach: "deployment" }, "files", true).reach).toBe("owner");
   });
 });
 

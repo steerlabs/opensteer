@@ -90,10 +90,12 @@ export class IphoneAppsController {
   readonly #removedFile: RemovedFile | null;
   readonly #removedListeners = new Set<(deploymentId: string) => void>();
   readonly #deliverLeave: DeliverLeave | null;
-  #delivering: Promise<LeaveDelivery> | null = null;
+  readonly #delivering = new Map<string, Promise<LeaveDelivery>>();
   /** The session bound to this phone's runner, per Deployment, as the Host last confirmed. */
   readonly #bound = new Map<string, string>();
   #binding: string | null = null;
+  #bindingAttempts = 0;
+  #bindingRetry: ReturnType<typeof setTimeout> | null = null;
   #recheckedAt = "";
   #retargetChecked = -1;
   #shown = new Map<string, string>();
@@ -121,6 +123,11 @@ export class IphoneAppsController {
         this.#bridge.getSnapshot().enrollment?.deploymentId ?? this.#adding?.deploymentId ?? null,
       stop: () => this.#stop(),
       tellHost: (stopped, dispatch) => this.#tellHost(stopped, dispatch),
+      automaticSignInAllowed: () => this.#bridge.getSnapshot().lifecycleReady !== false,
+      removedDeploymentId: () =>
+        this.#bridge.getSnapshot().removedFrom?.deploymentId ??
+        this.#removedFrom?.deploymentId ??
+        null,
       sessionBound: (deploymentId) => this.#bound.has(deploymentId),
       onRemoved: (listener) => {
         this.#removedListeners.add(listener);
@@ -160,8 +167,11 @@ export class IphoneAppsController {
 
   /** A leave persisted before a restart or while offline goes out again; it never needs a session. */
   async retryLeave(): Promise<LeaveDelivery | null> {
-    const pending = this.#bridge.getSnapshot().pendingLeave ?? null;
-    return pending === null ? null : this.#deliver(pending);
+    const snapshot = this.#bridge.getSnapshot();
+    const pending =
+      snapshot.pendingLeaves ?? (snapshot.pendingLeave ? [snapshot.pendingLeave] : []);
+    const outcomes = await Promise.all(pending.map((leave) => this.#deliver(leave)));
+    return outcomes.find((outcome) => outcome !== "removed") ?? outcomes[0] ?? null;
   }
 
   /**
@@ -169,9 +179,10 @@ export class IphoneAppsController {
    * clears, and only then may this Deployment sign in or set up again.
    */
   async clearRemoved(): Promise<void> {
+    await this.#bridge.clearRemoved?.();
+    await this.#removedFile?.write(null);
     this.#removedFrom = null;
     this.#publish();
-    await this.#removedFile?.write(null);
   }
 
   /**
@@ -188,9 +199,14 @@ export class IphoneAppsController {
     }
     this.#detachHost?.();
     this.#host = host;
+    this.#bound.clear();
+    this.#bindingAttempts = 0;
+    if (this.#bindingRetry !== null) clearTimeout(this.#bindingRetry);
+    this.#bindingRetry = null;
     let machines = host?.hostClient.getSnapshot().machines;
     this.#detachHost =
       host?.hostClient.subscribe(() => {
+        this.#maybeBind();
         const next = host.hostClient.getSnapshot().machines;
         if (next !== machines) {
           machines = next;
@@ -239,8 +255,20 @@ export class IphoneAppsController {
         ? this.#adding.outcome
         : Promise.resolve(failed("enrolled-elsewhere"));
     }
+    const uncertain = held?.state === "pending" && held.enrollmentId === null ? this.#stop() : null;
     const generation = this.#generation;
-    const outcome = this.#addNow(input, generation).finally(() => {
+    const attempt =
+      uncertain === null
+        ? this.#addNow(input, generation)
+        : this.#tellHost(uncertain, (command) => input.hostClient.dispatch(command)).then(
+            (outcome) =>
+              generation !== this.#generation
+                ? superseded
+                : outcome === "removed"
+                  ? this.#addNow(input, generation)
+                  : failed("host-unreachable"),
+          );
+    const outcome = attempt.finally(() => {
       if (this.#adding?.outcome !== outcome) return;
       this.#adding = null;
       this.#publish();
@@ -573,6 +601,7 @@ export class IphoneAppsController {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    if (this.#bindingRetry !== null) clearTimeout(this.#bindingRetry);
     this.#generation += 1;
     this.#detachBridge();
     this.#detachHost?.();
@@ -592,36 +621,40 @@ export class IphoneAppsController {
   ): Promise<IphoneAddOutcome> {
     const current = () => generation === this.#generation;
     let mintKey: string;
+    let runnerId: string;
+    let publicKeyPem: string | undefined;
     try {
-      ({ mintKey } = await this.#bridge
-        .prepare({ deploymentId: input.deploymentId })
-        .catch((error: unknown) => {
-          if (
-            !current() ||
-            bridgeErrorCode(error) !== "enrolled-elsewhere" ||
-            this.#bridge.getSnapshot().enrollment !== null
-          ) {
-            throw error;
-          }
-          // A prepared identity has no enrollment to retire or sharing to stop.
-          this.#bridge.disconnect();
-          return this.#bridge.prepare({ deploymentId: input.deploymentId });
-        }));
+      ({ mintKey, runnerId, publicKeyPem } = await this.#bridge.prepare({
+        deploymentId: input.deploymentId,
+      }));
     } catch (error) {
       if (!current()) return superseded;
       return failed(
         bridgeErrorCode(error) === "enrolled-elsewhere" ? "enrolled-elsewhere" : "failed",
       );
     }
+    let resumed = this.#bridge.getSnapshot().enrollment;
     for (let attempt = 1; ; attempt += 1) {
       if (!current()) return superseded;
       let minted: Pick<Minted, "enrollmentId">;
       try {
-        if (this.#enrollNative !== undefined) {
+        if (resumed?.state === "pending" && resumed.enrollmentId) {
+          minted = { enrollmentId: resumed.enrollmentId };
+          resumed = null;
+        } else if (this.#enrollNative !== undefined) {
           minted = await this.#enrollNative(input);
         } else {
+          const devicesV1 = input.hostClient.getSnapshot().devicesAvailable === true;
+          const target = unwrapRpcResult(await input.hostClient.rpc["agentPhone.target.get"]({}));
+          if (!current()) return superseded;
+          if (target.deploymentId !== input.deploymentId) return failed("host-mismatch");
+          await this.#bridge.beginIssuance?.({ pairing: target, devicesV1 });
+          if (!current()) return superseded;
+          if (devicesV1 && (!publicKeyPem || !this.#bridge.beginIssuance))
+            return failed("needs-update");
           const enrollment = await mint(input.hostClient, {
             mintKey,
+            ...(devicesV1 ? { preparedIdentity: { runnerId, publicKeyPem: publicKeyPem! } } : {}),
             name: input.name,
             ...(input.access === undefined ? {} : { access: input.access }),
           });
@@ -959,35 +992,113 @@ export class IphoneAppsController {
       deploymentName: enrollment?.deploymentName ?? null,
       enrollmentId: enrollment?.state === "pending" ? enrollment.enrollmentId : null,
       left: ids.leave === "persisted",
+      ...(ids.leave === "persisted" && enrollment?.state !== "enrolled" && ids.runnerId
+        ? { leaveRunnerId: ids.runnerId }
+        : {}),
       machineId: enrollment?.state === "enrolled" ? enrollment.runnerId : null,
       name: enrollment?.name ?? before.deviceName,
       sessionBound,
     };
   }
 
-  /**
-   * One delivery at a time. A Host that answered for good (removed, refused,
-   * or too old to know self-leave) ends the obligation; an unreachable one
-   * keeps it for the next launch or attachment.
-   */
-  #deliver(pending: IphonePendingLeave): Promise<LeaveDelivery> {
-    if (this.#delivering !== null) return this.#delivering;
-    const deliver = this.#deliverLeave;
-    if (deliver === null) return Promise.resolve("missing");
+  #deliver(
+    pending: IphonePendingLeave,
+    dispatch?: HostClient["dispatch"] | null,
+  ): Promise<LeaveDelivery> {
+    const existing = this.#delivering.get(pending.runnerId);
+    if (existing) return existing;
     const delivering = (async (): Promise<LeaveDelivery> => {
-      const outcome =
-        (await withDeadline(
-          deliver(pending).catch((): LeaveDelivery => "unreachable"),
-          this.#timing.revokeMs,
-        )) ?? "unreachable";
-      if (outcome !== "unreachable") {
-        await this.#bridge.completeLeave({ runnerId: pending.runnerId }).catch(() => undefined);
+      let outcome: LeaveDelivery = "unreachable";
+      const devicesV1 =
+        pending.devicesV1 ??
+        (this.#host?.deploymentId === pending.deploymentId
+          ? this.#host.hostClient.getSnapshot().devicesAvailable
+          : undefined);
+      if (devicesV1 === true) {
+        outcome =
+          this.#deliverLeave === null
+            ? "unreachable"
+            : ((await withDeadline(
+                this.#deliverLeave(pending).catch((): LeaveDelivery => "unreachable"),
+                this.#timing.revokeMs,
+              )) ?? "unreachable");
+        const host = this.#host;
+        if (
+          outcome !== "removed" &&
+          pending.hostInstanceId &&
+          host?.deploymentId === pending.deploymentId &&
+          this.#deliverLeave
+        ) {
+          const target = await withDeadline(
+            host.hostClient.rpc["agentPhone.target.get"]({}).catch(() => null),
+            this.#timing.revokeMs,
+          );
+          if (
+            target?.ok &&
+            target.data.deploymentId === pending.deploymentId &&
+            target.data.hostInstanceId === pending.hostInstanceId &&
+            target.data.hostUrl !== pending.hostUrl
+          ) {
+            outcome =
+              (await withDeadline(
+                this.#deliverLeave({ ...pending, hostUrl: target.data.hostUrl }).catch(
+                  (): LeaveDelivery => "unreachable",
+                ),
+                this.#timing.revokeMs,
+              )) ?? "unreachable";
+          }
+        }
+      } else if (devicesV1 === false) {
+        const authenticated =
+          dispatch ??
+          (this.#host?.deploymentId === pending.deploymentId
+            ? this.#host.hostClient.dispatch.bind(this.#host.hostClient)
+            : null);
+        if (authenticated) {
+          try {
+            const result = await withDeadline(
+              pending.enrolled !== false
+                ? authenticated({
+                    type: "machine.revoke",
+                    machineId: pending.runnerId,
+                    idempotencyKey: `phone-leave:${pending.runnerId}`,
+                  })
+                : pending.enrollmentId
+                  ? authenticated({
+                      type: "runner.enrollment.retire",
+                      enrollmentId: pending.enrollmentId,
+                      idempotencyKey: `phone-leave:${pending.runnerId}`,
+                    })
+                  : Promise.resolve(null),
+              this.#timing.revokeMs,
+            );
+            if (result?.type === "runner.enrollment.retire" && result.state === "consumed") {
+              const revoked = await withDeadline(
+                authenticated({
+                  type: "machine.revoke",
+                  machineId: pending.runnerId,
+                  idempotencyKey: `phone-leave:${pending.runnerId}:consumed`,
+                }),
+                this.#timing.revokeMs,
+              );
+              if (revoked?.type === "machine.revoke") outcome = "removed";
+            } else if (
+              result?.type === "machine.revoke" ||
+              result?.type === "runner.enrollment.retire"
+            )
+              outcome = "removed";
+          } catch {
+            outcome = "unreachable";
+          }
+        }
       }
+      if (outcome === "removed")
+        await this.#bridge.completeLeave({ runnerId: pending.runnerId }).catch(() => undefined);
       return outcome;
     })().finally(() => {
-      this.#delivering = null;
+      this.#delivering.delete(pending.runnerId);
     });
-    this.#delivering = delivering;
+    this.#delivering.set(pending.runnerId, delivering);
     return delivering;
   }
 
@@ -1004,13 +1115,17 @@ export class IphoneAppsController {
       host === null ||
       enrollment?.state !== "enrolled" ||
       host.deploymentId !== enrollment.deploymentId ||
-      host.hostClient.getSnapshot().devicesAvailable !== true
+      host.hostClient.getSnapshot().devicesAvailable !== true ||
+      host.hostClient.getSnapshot().session !== "authenticated"
     ) {
       return;
     }
     const at = `${this.#hostGeneration}:${enrollment.runnerId}`;
-    if (this.#binding === at) return;
+    if (this.#binding === at || this.#bound.has(host.deploymentId)) return;
+    if (this.#bindingRetry !== null) clearTimeout(this.#bindingRetry);
+    this.#bindingRetry = null;
     this.#binding = at;
+    this.#bindingAttempts += 1;
     const fence = this.#fence();
     void (async () => {
       const listed = await host.hostClient.rpc["sessions.list"]({});
@@ -1033,10 +1148,23 @@ export class IphoneAppsController {
         proof: { issuedAt: signed.issuedAt, signature: signed.signature },
       });
       if (fence.current()) this.#bound.set(host.deploymentId, own.id);
-    })().catch(() => {
-      // The next attachment tries again.
-      if (this.#binding === at) this.#binding = null;
-    });
+    })()
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.#binding !== at) return;
+        this.#binding = null;
+        if (
+          !this.#disposed &&
+          fence.current() &&
+          !this.#bound.has(host.deploymentId) &&
+          this.#bindingAttempts < 3
+        ) {
+          this.#bindingRetry = setTimeout(() => {
+            this.#bindingRetry = null;
+            this.#maybeBind();
+          }, 1_000);
+        }
+      });
   }
 
   /**
@@ -1047,16 +1175,22 @@ export class IphoneAppsController {
     stopped: IphoneAppsStopped,
     dispatch: HostClient["dispatch"] | null,
   ): Promise<IphoneLeaveOutcome> {
-    if (stopped.machineId === null && stopped.enrollmentId === null) return "removed";
-    const pending = this.#bridge.getSnapshot().pendingLeave ?? null;
-    if (stopped.left && pending !== null && pending.deploymentId === stopped.deploymentId) {
-      const delivered = await this.#deliver(pending);
+    const snapshot = this.#bridge.getSnapshot();
+    const pending = (
+      snapshot.pendingLeaves ?? (snapshot.pendingLeave ? [snapshot.pendingLeave] : [])
+    ).find(
+      (leave) =>
+        leave.deploymentId === stopped.deploymentId &&
+        ((stopped.leaveRunnerId ?? stopped.machineId) === null ||
+          leave.runnerId === (stopped.leaveRunnerId ?? stopped.machineId)),
+    );
+    if (stopped.left && pending) {
+      const delivered = await this.#deliver(pending, dispatch);
       if (delivered === "removed") return "removed";
-      if (delivered !== "missing" || dispatch === null) {
-        this.#notTold(stopped);
-        return "unconfirmed";
-      }
+      this.#notTold(stopped);
+      return "unconfirmed";
     }
+    if (stopped.machineId === null && stopped.enrollmentId === null) return "removed";
     let told = false;
     if (dispatch !== null) {
       try {
@@ -1159,6 +1293,13 @@ export class IphoneAppsController {
     const online = snapshot.connection === "online";
     if (online && !this.#online) this.#connection += 1;
     this.#online = online;
+    const durableRemoval = snapshot.removedFrom;
+    if (durableRemoval && this.#removedFrom?.deploymentId !== durableRemoval.deploymentId) {
+      this.#removedFrom = durableRemoval;
+      this.#bound.delete(durableRemoval.deploymentId);
+      this.#generation += 1;
+      for (const listener of this.#removedListeners) listener(durableRemoval.deploymentId);
+    }
     if (snapshot.enrollment !== null) {
       this.#lastEnrollment = snapshot.enrollment;
     } else if (snapshot.issue === "removed" && this.#lastEnrollment !== null) {
@@ -1171,8 +1312,6 @@ export class IphoneAppsController {
       this.#bound.delete(removed.deploymentId);
       void this.#removedFile?.write(removed).catch(() => undefined);
       for (const listener of this.#removedListeners) listener(removed.deploymentId);
-    } else {
-      this.#lastEnrollment = null;
     }
   }
 
@@ -1459,6 +1598,7 @@ async function mint(
   hostClient: HostClient,
   input: {
     readonly access?: DeviceInitialAccess;
+    readonly preparedIdentity?: { readonly runnerId: string; readonly publicKeyPem: string };
     readonly mintKey: string;
     readonly name: string;
   },
@@ -1469,6 +1609,7 @@ async function mint(
     profile: "iphone",
     type: "runner.enrollment.createPhone",
     ...(input.access === undefined ? {} : { access: input.access }),
+    ...(input.preparedIdentity === undefined ? {} : { preparedIdentity: input.preparedIdentity }),
   } as const;
   let result: Awaited<ReturnType<HostClient["dispatch"]>>;
   try {

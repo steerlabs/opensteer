@@ -4,7 +4,7 @@ import {
   runnerDistributionPrefix,
   runnerImageReference,
 } from "@opensteer/client/computers";
-import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
+import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import { Text, View } from "react-native";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import { useSettingsLease } from "./use-settings-read.js";
@@ -16,6 +16,7 @@ export function SettingsComputerEnrollment({ host }: { readonly host: HostClient
     enrollmentId: string;
     token: string;
     expiresAt: string;
+    hostOrigin: string;
   } | null>(null);
   const [pending, setPending] = useState(false);
   const busy = useRef(false);
@@ -27,7 +28,7 @@ export function SettingsComputerEnrollment({ host }: { readonly host: HostClient
       ? computerConnectionCommands({
           deploymentShape: snapshot.deploymentShape,
           enrollmentId: issued.enrollmentId,
-          hostOrigin: snapshot.identityConfig.publicOrigin,
+          hostOrigin: issued.hostOrigin,
           name: name.trim(),
           token: issued.token,
           runnerDistribution: runnerDistributionPrefix(
@@ -43,13 +44,15 @@ export function SettingsComputerEnrollment({ host }: { readonly host: HostClient
     setPending(true);
     setError(null);
     try {
+      const target = unwrapRpcResult(await host.rpc["agentPhone.target.get"]({}));
       const result = await host.dispatch({
         type: "runner.enrollment.createLocal",
         allowedModules: ["agents", "shell"],
         name: name.trim(),
         idempotencyKey: mutationIdempotencyKey("computer-add"),
       });
-      if (current() && result.type === "runner.enrollment.createLocal") setIssued(result);
+      if (current() && result.type === "runner.enrollment.createLocal")
+        setIssued({ ...result, hostOrigin: target.hostUrl });
     } catch {
       if (current()) setError("Couldn’t create the command. Try again.");
     } finally {

@@ -9,12 +9,14 @@ describe("native phone enrollment's Host authority", () => {
     registerPhoneEnrollmentHost(client, {
       deploymentId: "deployment",
       origin: "https://host.example.test",
+      hostInstanceId: "hst_pinned",
       authorization: { current: async () => credential, cached: () => null },
     });
     await expect(phoneEnrollmentHost(client, "other")).rejects.toThrow();
     await expect(phoneEnrollmentHost({} as unknown as HostClient, "deployment")).rejects.toThrow();
     await expect(phoneEnrollmentHost(client, "deployment")).resolves.toEqual({
       origin: "https://host.example.test",
+      hostInstanceId: "hst_pinned",
       authorization: credential,
     });
     credential = null;

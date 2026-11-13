@@ -149,8 +149,9 @@ use the store.
 
 The Runner's Ed25519 key and enrollment token live only in the Keychain
 (`WhenUnlockedThisDeviceOnly`, not synchronized); JavaScript never sees the key, the token after
-enrollment, tickets or signatures. Discovery must name the same Deployment and Host instance before
-a token or proof is sent, and redirects are refused. The enrollment marker is excluded from backup;
+enrollment or runner authentication/ticket proofs. Only the scoped session-binding and leave
+signatures cross the native bridge; they never expose the signing key. Discovery must name the
+same Deployment and Host instance before a token or proof is sent, and redirects are refused. The enrollment marker is excluded from backup;
 a missing marker wipes the Keychain items, and removal clears the marker first so a failed Keychain
 delete cannot restore sharing.
 
@@ -173,18 +174,25 @@ A phone becomes one of a personal Opensteer's devices only through Set up, which
 and asks the OS nothing before Continue. Native storage holds one identity, so a phone belongs to
 one Opensteer; moving it to another is an explicit leave there, never automatic.
 
-Sign-out is the device's leave. Sign-out, removal, Account sign-out and catalog removal sign the
-leave natively and persist it before the same synchronous call starts erasing the key, so erasure
-never waits on the network. The leave goes to the runner's pinned route at `/v1/runner/leave` with
-no session, and survives restarts until that Host answers for good; the Host ends the sessions bound
-to the device, so a bound session is never revoked a second time. Only a Host without self-leave
-gets the old authenticated revoke. The phone binds its session after every attachment on a
-`devices-v1` Host.
+Sign-out is the device's leave. Native admission stops synchronously, before push cleanup or
+network work. The signed obligation must reach durable storage before key/profile erasure can
+start; a signing or storage failure returns an error and retains the identity in a non-admitting
+leave state. Obligations are keyed by runner identity, so moving to another Opensteer cannot replace
+an earlier offline leave. Each survives restart until removal is confirmed.
 
-A 4010 removal is remembered until the person chooses Set up again: it drops the local session,
-saved views and preview keys without revoking anything, and no automatic sign-in may restore a
-session meanwhile. A lost bound session suppresses automatic sign-in too, whether removal or expiry
-ended it; expiry then reads as Sign in again, and removal arrives as 4010.
+Setup records the Host's advertised `devices-v1` support and pinned route before issuance. New
+Hosts receive the prepared runner ID and public key, so signed leave can retire issuance even when
+the enrollment response was lost. A never-issued prepared identity needs only local cleanup. On
+older Hosts the retained obligation uses authenticated revoke or enrollment retirement; an HTTP
+404 never selects that compatibility path and never clears an obligation. The phone binds its
+session when the authenticated Host snapshot becomes capable, independently of native timing.
+
+Native storage remembers 4010 removal before erasure, carries its Deployment after enrollment
+vanishes, and exposes it before restored attachments may authorize. It stays until Set up again.
+Removal drops the local session, saved views and preview keys without another revoke. Losing a
+session, including cold-start natural expiry, keeps the identity and requires explicit Sign in
+again. A pending or expired enrollment stays unfinished, with resume/remint and cancellation;
+it never counts as ready.
 
 ## Notifications
 

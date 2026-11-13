@@ -23,7 +23,8 @@ class IdentityStore(context: Context) {
     private val file = AtomicBytes(File(directory, "identity.v1.sealed"), ::syncDirectory)
     private val denial = AtomicBytes(File(directory, "retiring.v1.json"), ::syncDirectory)
     // Outlives the identity: a signed leave is delivered after the seed is gone.
-    private val leave = AtomicBytes(File(directory, "leave.v1.json"), ::syncDirectory)
+    private val leaves = DeviceLeaves(AtomicBytes(File(directory, "leave.v1.json"), ::syncDirectory))
+    private val removed = AtomicBytes(File(directory, "removed.v1.json"), ::syncDirectory)
     private val alias = "opensteer-mobile-phone-connection-v1"
 
     @Synchronized fun load(): JsonObject? {
@@ -51,8 +52,12 @@ class IdentityStore(context: Context) {
     @Synchronized fun prepare(deploymentId: String): JsonObject {
         val current = load()
         if (current != null) {
-            Wire.requireThat(current.text("state") != "retiring", "erasure-pending")
-            Wire.requireThat(current.text("deploymentId") == deploymentId, "enrolled-elsewhere")
+            Wire.requireThat(current.text("state") != "retiring" && current["leaveRequested"] != JsonPrimitive(true), "erasure-pending")
+            if (current.text("deploymentId") != deploymentId) {
+                Wire.requireThat(current.text("state") == "prepared" && current["issuanceStarted"] != JsonPrimitive(true), "enrolled-elsewhere")
+                forget()
+                return prepare(deploymentId)
+            }
             return current
         }
         val key = Ed25519PrivateKeyParameters(SecureRandom())
@@ -90,20 +95,15 @@ class IdentityStore(context: Context) {
         val seed = Wire.decode64(identity.text("seed"))
         try { return Proofs.sign(seed, value) } finally { seed.fill(0) }
     }
-    @Synchronized fun saveLeave(obligation: JsonObject) { leave.write(obligation.toString().toByteArray(Charsets.UTF_8)) }
-    @Synchronized fun pendingLeave(): JsonObject? {
-        val bytes = leave.read()?.takeIf { it.isNotEmpty() } ?: return null
-        return Wire.parse(Wire.decode(bytes), 4096).also {
-            it.only("version", "deploymentId", "runnerId", "hostUrl", "issuedAt", "signature")
-            Wire.requireThat(it.number("version") == 1L, "identity-unavailable")
-        }
+    fun <T> leave(fence: () -> Unit, sign: () -> JsonObject?, erase: () -> T) = leaves.leave(fence, sign, erase)
+    fun pendingLeaves(): List<JsonObject> = leaves.pending()
+    fun completeLeave(runnerId: String) = leaves.complete(runnerId)
+    fun markRemoved(identity: JsonObject) {
+        removed.write(Wire.fields("deploymentId" to identity.getValue("deploymentId"),
+            "deploymentName" to (identity["deploymentName"] ?: JsonPrimitive("Opensteer"))).toString().toByteArray(Charsets.UTF_8))
     }
-    @Synchronized fun completeLeave(runnerId: String) {
-        if (pendingLeave()?.text("runnerId") != runnerId) return
-        val file = File(directory, "leave.v1.json")
-        Wire.requireThat(!file.exists() || file.delete(), "identity-unavailable")
-        syncDirectory(directory)
-    }
+    fun removedFrom(): JsonObject? = removed.read()?.takeIf { it.isNotEmpty() }?.let { Wire.parse(Wire.decode(it), 4096) }
+    fun clearRemoved() { removed.write(ByteArray(0)) }
     private fun key(create: Boolean): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (store.getKey(alias, null) as? SecretKey)?.let { return it }

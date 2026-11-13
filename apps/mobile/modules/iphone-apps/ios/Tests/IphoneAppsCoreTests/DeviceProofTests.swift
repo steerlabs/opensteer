@@ -70,6 +70,67 @@ final class DeviceProofTests: XCTestCase {
     XCTAssertNil(try restarted.pendingLeave())
   }
 
+  func testFailedLeavePersistenceNeverErasesTheKey() throws {
+    let vault = MemoryIdentityVault()
+    let record = MemoryRecordStore()
+    let leaves = FailingLeaveRecord()
+    let store = IdentityStore(vault: vault, record: record, leaveRecord: leaves)
+    _ = try store.prepare(deploymentId: "dep_one")
+    try store.enroll(deploymentId: "dep_one", deploymentName: "Home", hostInstanceId: "hst_one",
+      hostUrl: "https://home.example", enrollmentId: "ren_one", enrollmentToken: "token", expiresAt: "2030-01-01T00:00:00.000Z", name: "iPhone")
+    var fenced = false
+    var erased = false
+    XCTAssertThrowsError(try store.leave(issuedAt: "2026-11-12T18:30:00.000Z", fence: { fenced = true }, erase: { erased = true }))
+    XCTAssertTrue(fenced)
+    XCTAssertFalse(erased)
+    XCTAssertNotNil(vault.get(.runnerKey))
+    XCTAssertEqual(try store.load()?.state, .pending)
+    XCTAssertEqual(try store.load()?.leaveRequested, true)
+    let restarted = IdentityStore(vault: vault, record: record, leaveRecord: leaves)
+    XCTAssertThrowsError(try restarted.prepare(deploymentId: "dep_one"), "A failed leave cannot restore admission after restart")
+    leaves.fail = false
+    vault.put(Data([1]), account: .runnerKey)
+    XCTAssertThrowsError(try store.leave(issuedAt: "2026-11-12T18:30:00.000Z", fence: {}, erase: { erased = true }))
+    XCTAssertFalse(erased, "Signing failure must preserve the identity too")
+  }
+
+  func testIssuanceAndSuccessiveLeavesSurviveRestart() throws {
+    let vault = MemoryIdentityVault()
+    let record = MemoryRecordStore()
+    let leaves = MemoryRecordStore()
+    let store = IdentityStore(vault: vault, record: record, leaveRecord: leaves)
+    _ = try store.prepare(deploymentId: "dep_one")
+    XCTAssertNil(try store.persistLeave(issuedAt: "2026-11-12T18:30:00.000Z"))
+    try store.beginIssuance(deploymentId: "dep_one", deploymentName: "Home", hostInstanceId: "hst_one", hostUrl: "https://home.example", devicesV1: true)
+    let first = try XCTUnwrap(try store.persistLeave(issuedAt: "2026-11-12T18:30:00.000Z"))
+    XCTAssertEqual(first.devicesV1, true)
+    try store.wipe()
+    _ = try store.prepare(deploymentId: "dep_two")
+    try store.beginIssuance(deploymentId: "dep_two", deploymentName: "Studio", hostInstanceId: "hst_two", hostUrl: "https://studio.example", devicesV1: true)
+    let second = try XCTUnwrap(try store.persistLeave(issuedAt: "2026-11-12T18:31:00.000Z"))
+    try store.wipe()
+    let restarted = IdentityStore(vault: vault, record: record, leaveRecord: leaves)
+    XCTAssertEqual(try restarted.pendingLeaves(), [first, second])
+    try restarted.completeLeave(runnerId: second.runnerId)
+    XCTAssertEqual(try restarted.pendingLeaves(), [first])
+  }
+
+  func testRemovalIsDurableBeforeErasure() throws {
+    let vault = MemoryIdentityVault()
+    let record = MemoryRecordStore()
+    let removed = MemoryRecordStore()
+    let store = IdentityStore(vault: vault, record: record, removedRecord: removed)
+    _ = try store.prepare(deploymentId: "dep_one")
+    try store.enroll(deploymentId: "dep_one", deploymentName: "Home", hostInstanceId: "hst_one",
+      hostUrl: "https://home.example", enrollmentId: "ren_one", enrollmentToken: "token", expiresAt: "2030-01-01T00:00:00.000Z", name: "iPhone")
+    try store.markRemoved()
+    try store.wipe()
+    let restarted = IdentityStore(vault: vault, record: record, removedRecord: removed)
+    XCTAssertEqual(try restarted.removedFrom()?.deploymentId, "dep_one")
+    try restarted.clearRemoved()
+    XCTAssertNil(try restarted.removedFrom())
+  }
+
   func testBindingNeedsTheEnrolledDeployment() throws {
     let store = IdentityStore(vault: MemoryIdentityVault(), record: MemoryRecordStore(), leaveRecord: MemoryRecordStore())
     _ = try store.prepare(deploymentId: "dep_one")
@@ -109,4 +170,15 @@ final class DeviceProofTests: XCTestCase {
     }
     return data
   }
+}
+
+private final class FailingLeaveRecord: IdentityRecordStore {
+  var fail = true
+  var bytes: Data?
+  func read() throws -> Data? { bytes }
+  func write(_ value: Data) throws {
+    if fail { throw IdentityStoreError.invalidIdentity }
+    bytes = value
+  }
+  func remove() throws { bytes = nil }
 }

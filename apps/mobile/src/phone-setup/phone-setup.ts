@@ -203,6 +203,7 @@ export function phoneMembership(input: {
     hosting: false,
     membership: {
       generation: 0,
+      enrolled: enrollment?.state === "enrolled",
       runnerId: RunnerIdSchema.safeParse(enrollment?.runnerId).data ?? null,
       state:
         input.iphone.removedFrom?.deploymentId === input.deploymentId
@@ -211,6 +212,7 @@ export function phoneMembership(input: {
             ? "active"
             : "none",
     },
+    finishSetupReason: enrollment?.state === "pending" ? "Finish setting up this phone" : null,
     settingUp: input.iphone.adding === input.deploymentId,
   });
 }

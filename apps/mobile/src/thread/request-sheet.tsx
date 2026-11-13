@@ -71,7 +71,7 @@ import { SheetBarButton } from "../ui/sheet-bar.js";
 import { Symbol } from "../ui/symbol.js";
 import { AnswerPill, AnswerRow } from "./answer-pill.js";
 import { requestTitle } from "./docked-requests.js";
-import { withSwitch } from "../screens/device-page-model.js";
+import { answerDeviceAccessRequest } from "@opensteer/client/computers";
 import { AskerByline, useRequestAsker } from "./asker-byline.js";
 import { InstallReview } from "./integration-install-review.js";
 import {
@@ -694,17 +694,7 @@ function RequestBody(props: {
             const { payload } = request;
             if (payload.kind !== "device.access") return;
             void responder.attempt("device-access-allow", { shareWithAi: false }, async () => {
-              const machine = props.machines.find(({ id }) => id === payload.machineId);
-              if (machine?.access == null)
-                throw new Error(`${payload.machineName} can't be changed from here.`);
-              // Turning it on fulfils this Request inside the same Host change.
-              await props.hostClient.dispatch({
-                expectedRevision: machine.access.revision,
-                idempotencyKey: mutationIdempotencyKey(`device-access:${request.id}`),
-                policy: withSwitch(machine.access.policy, payload.access, true),
-                runnerId: machine.id,
-                type: "machine.access.update",
-              });
+              await answerDeviceAccessRequest(props.hostClient, request, "fulfilled");
               responder.admitted();
             });
           }}
