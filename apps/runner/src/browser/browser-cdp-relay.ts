@@ -1,5 +1,10 @@
 import { randomBytes } from "node:crypto";
-import { createServer, type Server as HttpServer } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+  type Server as HttpServer,
+} from "node:http";
 import { once } from "node:events";
 import type { RunnerConfig } from "@opensteer/config";
 import { allowsPlaintextRunnerTransport } from "@opensteer/core";
@@ -9,6 +14,12 @@ import { z } from "zod";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 import { closeHttpServerNow, refuseConnection } from "@opensteer/shared/httpServer";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
+import {
+  browserAgentHostRoutePrefix,
+  browserAgentRequestMaxBytes,
+  browserAgentResponseMaxBytes,
+  browserAgentRoutePaths,
+} from "@opensteer/protocol/browser-agent";
 import { BrowserAgentBackendSchema } from "@opensteer/protocol/browser-actions";
 
 const maximumFrameBytes = 1_024 * 1_024;
@@ -28,6 +39,7 @@ const maximumConnections = 16;
  */
 export class BrowserCdpRelay {
   readonly #connections = new Set<RelayedConnection>();
+  readonly #agentRequests = new Set<Promise<void>>();
   readonly #negotiations = new Set<AbortController>();
   readonly #http: HttpServer;
   readonly #path: string;
@@ -38,6 +50,7 @@ export class BrowserCdpRelay {
     noServer: true,
     perMessageDeflate: false,
   });
+  #generation = 0;
   #closed = false;
   #closing: Promise<void> | null = null;
   #listening: Promise<unknown> | null = null;
@@ -55,6 +68,19 @@ export class BrowserCdpRelay {
     this.#upstreamUrl = validateUpstream(new URL(options.url), options.transport);
     this.#http = createServer((request, response) => {
       const pathname = safePathname(request.url);
+      const agentPath = pathname?.startsWith(`${this.#path}/agent/`)
+        ? pathname.slice(`${this.#path}/agent/`.length)
+        : undefined;
+      if (agentPath && Object.values(browserAgentRoutePaths).some((path) => path === agentPath)) {
+        if (request.method !== "GET" && request.method !== "POST") {
+          response.writeHead(405).end();
+          return;
+        }
+        const pending = this.#agentResponse(request, response, agentPath);
+        this.#agentRequests.add(pending);
+        void pending.finally(() => this.#agentRequests.delete(pending));
+        return;
+      }
       const sessionId = this.#sessionIdFromPath(pathname, "backend");
       if (request.method !== "GET" || !sessionId) {
         response.writeHead(404).end();
@@ -153,6 +179,7 @@ export class BrowserCdpRelay {
   /** A warm engine went idle: its connections end and none opens until the next Run. */
   suspend(): void {
     this.#suspended = true;
+    this.#generation++;
     for (const negotiation of this.#negotiations) negotiation.abort();
     for (const connection of this.#connections) connection.dispose();
   }
@@ -166,13 +193,116 @@ export class BrowserCdpRelay {
   /** Ends every connection and the listener; every call settles when all of it has closed. */
   close(): Promise<void> {
     this.#closed = true;
+    this.#generation++;
     for (const negotiation of this.#negotiations) negotiation.abort();
     this.#closing ??= this.#dispose();
     return this.#closing;
   }
 
+  async #agentResponse(
+    request: IncomingMessage,
+    response: ServerResponse,
+    path: string,
+  ): Promise<void> {
+    if (this.#closed || this.#suspended) {
+      response.writeHead(403).end();
+      return;
+    }
+    if (this.#negotiations.size >= maximumConnections) {
+      response.writeHead(503).end();
+      return;
+    }
+    const generation = this.#generation;
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(30_000)]);
+    const fenced = () => this.#closed || this.#suspended || generation !== this.#generation;
+    this.#negotiations.add(controller);
+    response.once("close", () => controller.abort());
+    try {
+      const token = this.#upstreamToken();
+      const body = await new Promise<Buffer>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        let size = 0;
+        const cleanup = () => {
+          request.off("data", data);
+          request.off("end", end);
+          request.off("error", fail);
+          signal.removeEventListener("abort", abort);
+        };
+        const fail = (error: unknown) => {
+          cleanup();
+          reject(error);
+        };
+        const abort = () => fail(signal.reason);
+        const end = () => {
+          cleanup();
+          resolve(Buffer.concat(chunks));
+        };
+        const data = (chunk: Buffer) => {
+          size += chunk.byteLength;
+          if (size > browserAgentRequestMaxBytes) {
+            response.writeHead(413).end();
+            fail(new Error("Browser request exceeds its size limit"));
+          } else chunks.push(chunk);
+        };
+        request.on("data", data);
+        request.once("end", end);
+        request.once("error", fail);
+        signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) abort();
+      });
+      signal.throwIfAborted();
+      const url = new URL(this.#upstreamUrl);
+      url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+      url.pathname = `${browserAgentHostRoutePrefix}/${path}`;
+      url.search = new URL(request.url ?? "", "http://relay.invalid").search;
+      const upstream = await fetch(url, {
+        method: request.method ?? "GET",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        ...(request.method === "POST" ? { body } : {}),
+        redirect: "error",
+        signal,
+      });
+      const result = await readBoundedJson(upstream, {
+        maximumBytes: browserAgentResponseMaxBytes,
+        signal,
+      }).catch((error: unknown) => {
+        if (upstream.ok) throw error;
+        return undefined;
+      });
+      if (fenced()) {
+        response.writeHead(403).end();
+        return;
+      }
+      const refusal = z.object({ error: z.object({ message: z.string() }) }).safeParse(result);
+      response.writeHead(upstream.status, {
+        "content-type": "application/json",
+        "cache-control": "no-store",
+      });
+      response.end(
+        JSON.stringify(
+          upstream.ok
+            ? result
+            : {
+                error: {
+                  message: refusal.success
+                    ? refusal.data.error.message
+                    : "The Host refused browser control.",
+                },
+              },
+        ),
+      );
+    } catch {
+      if (!response.destroyed && !response.writableEnded)
+        response.writeHead(fenced() ? 403 : 502).end();
+    } finally {
+      this.#negotiations.delete(controller);
+    }
+  }
+
   async #dispose(): Promise<void> {
     await this.#listening?.catch(() => undefined);
+    await Promise.allSettled(this.#agentRequests);
     const closed = [
       new Promise<void>((resolve) => this.#websockets.close(() => resolve())),
       ...Array.from(this.#connections, (connection) => connection.closed),
