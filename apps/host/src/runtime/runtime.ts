@@ -886,6 +886,7 @@ export async function createHostRuntime(
       deploymentId: deployment.id,
       browser,
       canonicalOrigin: config.canonicalOrigin.origin,
+      extensionDirectory: config.personal?.browserExtensionDirectory ?? null,
       currentRoute: async () => (await personalRemoteAccess?.status())?.route ?? null,
       sign: (bytes) => sign(null, bytes, keys.privateKey).toString("base64url"),
       store: new BrowserSourceStore(database),
@@ -2056,6 +2057,7 @@ export async function createHostRuntime(
     const triggers = new TriggerService({
       runnerStore: store,
       onChanged: () => realtime.publishTriggersChanged(),
+      onDeploymentEvent: publishDeploymentEvent,
       onOccurrenceQueued: () => {
         coordinator.wake();
       },
@@ -2386,10 +2388,9 @@ export async function createHostRuntime(
           credentialVault: teamLinkVault,
           admission: taskAdmission,
           runs: personalTeamRunPort(database),
-          onPublished: async (threadId) => {
+          onPublished: async () => {
             const ownerId = service.options.ownerId;
-            const state = await store.notificationState.getReadState({ threadId, userId: ownerId });
-            realtime.publishReadState(ownerId, state);
+            realtime.publishViewerTasksChanged(ownerId);
           },
           attachments: new PersonalTeamAttachments({
             store,

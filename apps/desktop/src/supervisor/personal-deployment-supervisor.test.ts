@@ -48,6 +48,26 @@ import type {
 } from "./personal-process-port.js";
 
 describe("PersonalDeploymentSupervisor", () => {
+  it.each(["/test/Browser Extension", null, "throws"])(
+    "passes only a usable extension folder to the Host: %s",
+    async (result) => {
+      const fixture = supervisorFixture(null, undefined, undefined, undefined, {
+        syncExtensionDirectory: async () => {
+          if (result === "throws") throw new Error("sync failed");
+          return result;
+        },
+      });
+      try {
+        await fixture.supervisor.start();
+        expect(specsOf(fixture, "host")[0]!.environment.OPENSTEER_BROWSER_EXTENSION_DIRECTORY).toBe(
+          result === "throws" || result === null ? undefined : result,
+        );
+        expect(fixture.supervisor.status.state).toBe("ready");
+      } finally {
+        await fixture.supervisor.stop();
+      }
+    },
+  );
   it.each([2, 3])(
     "offers Start fresh for a pre-reset v%s manifest without changing old files",
     async (schemaVersion) => {
@@ -1397,6 +1417,9 @@ function supervisorFixture(
     assertAvailable(port: number, component: "host" | "postgresql"): Promise<void>;
   } = { assertAvailable: async () => undefined },
   restarts: {
+    readonly syncExtensionDirectory?: (
+      options: import("./browser-extension-directory.js").BrowserExtensionDirectoryOptions,
+    ) => Promise<string | null>;
     readonly restartBackoffMs?: number;
     readonly passkeys?: boolean;
     readonly dataReset?: PersonalDataReset;
@@ -1481,6 +1504,9 @@ function supervisorFixture(
   let nextPort = 4310;
   const logs: Record<string, unknown>[] = [];
   const supervisor = new PersonalDeploymentSupervisor({
+    ...(restarts.syncExtensionDirectory
+      ? { userDataDirectory: "/test", syncExtensionDirectory: restarts.syncExtensionDirectory }
+      : {}),
     ...(restarts.dataReset ? { dataReset: restarts.dataReset } : {}),
     passkeys: restarts.passkeys === true,
     allocatePort: async () => nextPort++,

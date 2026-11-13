@@ -2,6 +2,7 @@ import { claudeInstallGuidance } from "@opensteer/harness-claude";
 import { harnessCatalog } from "@opensteer/core";
 import { HarnessRegistry, findExecutableOnPath } from "@opensteer/harness";
 import type { AgentExecutionConfig } from "../app-config.js";
+import type { RunnerLogger } from "../host/host-connection.js";
 import { harnessDriverFactories, type HarnessDriverRuntime } from "./harness-drivers.js";
 import { installedEngineUpdateFacts } from "./installed-engine-updates.js";
 
@@ -17,8 +18,16 @@ import { installedEngineUpdateFacts } from "./installed-engine-updates.js";
 export function createHarnessRegistry(
   executables: AgentExecutionConfig["harnessExecutables"],
   runtime: HarnessDriverRuntime,
+  logger?: RunnerLogger,
 ): HarnessRegistry {
-  const registry = new HarnessRegistry();
+  const registry = new HarnessRegistry(
+    logger
+      ? {
+          log: (level, message, fields) =>
+            level === "warn" ? logger.error(message, fields) : logger.info(message, fields),
+        }
+      : {},
+  );
   for (const entry of harnessCatalog) {
     const factory = harnessDriverFactories[entry.kind];
     const installed =

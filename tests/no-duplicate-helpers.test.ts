@@ -80,7 +80,11 @@ const helperHomes: Readonly<Record<string, string | readonly string[]>> = {
   compatibleModelDescriptors: "packages/harness/src/compatible-endpoint.ts",
   compatibleModelHint: "packages/harness/src/compatible-endpoint.ts",
   createPrivateFileAtomically: "packages/shared/src/atomicPrivateFile.ts",
-  decodeBase64Url: "packages/shared/src/base64url.ts",
+  /** Frozen wire copy: must never change under shipped extensions. */
+  decodeBase64Url: [
+    "packages/browser-source-wire/src/frozen/primitives.ts",
+    "packages/shared/src/base64url.ts",
+  ],
   canonicalBase64urlBytes: "packages/shared/src/base64url.ts",
   canonicalBase64urlByteLength: "packages/shared/src/base64url.ts",
   Deferred: "packages/harness/src/deferred.ts",

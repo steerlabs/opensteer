@@ -27,7 +27,8 @@ export function signInSummaryLine(
   allowed: boolean,
   site: string,
 ): { readonly live: boolean; readonly text: string; readonly tone: DotTone } | null {
-  if (allowed) return { live: true, text: "Allowed. Finishes when Chrome is back.", tone: "amber" };
+  if (allowed)
+    return { live: true, text: "Allowed. Finishes when that browser is back.", tone: "amber" };
   if (availability === null) return null;
   switch (availability.kind) {
     case "no-chrome":
@@ -80,7 +81,7 @@ export function signInStatus(input: {
   if (input.allowed !== null) {
     const name = input.allowed.status === "problem" ? input.allowed.sourceName : null;
     return {
-      detail: "Open Chrome on that computer. This finishes by itself.",
+      detail: `${signInCopy("chrome-offline", site, name).fix} This finishes by itself.`,
       live: true,
       title: `Allowed. Waiting for ${name ?? "Chrome"}`,
       tone: "amber",
@@ -107,7 +108,7 @@ export function signInStatus(input: {
       if (first?.online !== true) {
         const copy = signInCopy("chrome-offline", site, single?.name ?? null);
         return {
-          detail: `${copy.fix ?? ""} Allow now; this finishes by itself when Chrome opens.`.trim(),
+          detail: `${copy.fix ?? ""} Allow now; this finishes by itself when it opens.`.trim(),
           live: false,
           title: copy.title,
           tone: "amber",

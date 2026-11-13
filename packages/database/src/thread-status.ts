@@ -16,6 +16,7 @@ export async function projectThreadState(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
   updatedAt = new Date(),
+  force = false,
 ): Promise<readonly AgentEvent[]> {
   await transaction
     .selectFrom("delegations")
@@ -87,7 +88,7 @@ export async function projectThreadState(
     })
     .where("id", "=", threadId)
     .executeTakeFirstOrThrow();
-  if (!changed) return [];
+  if (!changed && !force) return [];
   return [
     await appendHostDeploymentEvent(transaction, {
       data: {

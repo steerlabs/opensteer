@@ -679,6 +679,8 @@ describeStore("PostgreSQL store", (it) => {
     expect(terminal.compensatingEvents.map(({ type }) => type)).toEqual([
       "message.placed",
       "run.queued",
+      "thread.state-changed",
+      "thread.state-changed",
     ]);
     // A delivered Assignment is never drained again, so cancelling this input
     // would leave the result in the Thread with no Run that reads it.

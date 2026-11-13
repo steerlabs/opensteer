@@ -220,15 +220,27 @@ describe("NotificationDispatcher", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(answered.calls).toEqual([]);
   });
-  it("H5 never decides or delivers an event at or past the window", async () => {
+  it("H5 never delivers a publication at or past the window", async () => {
     const f = setup();
     dispatchers.push(f.dispatcher);
     vi.setSystemTime(instant.getTime() + notificationPushWindowMilliseconds);
     f.dispatcher.dispatch(f.event);
     await vi.advanceTimersByTimeAsync(0);
-    expect(f.store.decide).not.toHaveBeenCalled();
     expect(f.onLive).not.toHaveBeenCalled();
     expect(f.calls).toEqual([]);
+  });
+  it("uses the Host publication clock when the Runner event is stale", async () => {
+    const f = setup();
+    dispatchers.push(f.dispatcher);
+    f.event.createdAt = "2001-01-01T00:00:00.000Z";
+    f.dispatcher.dispatch(f.event);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(f.onLive).toHaveBeenCalledExactlyOnceWith(f.decided);
+    expect(f.calls).toHaveLength(1);
+    expect(f.calls[0]!.body).toMatchObject({
+      occurredAt: f.decided.view.occurredAt,
+      expiresAt: new Date(instant.getTime() + notificationPushWindowMilliseconds).toISOString(),
+    });
   });
   it("H6 retries network, 5xx and 429 after 1, 2, 4, 8, 16 seconds then logs one drop", async () => {
     const f = start({

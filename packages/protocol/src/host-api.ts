@@ -94,7 +94,8 @@ import {
   ThreadInputPolicySchema,
   ThreadInputQueueViewSchema,
   ThreadInputViewSchema,
-  ThreadReadStateSchema,
+  ThreadVisitSchema,
+  IsoDateTimeSchema,
   ThreadTitleSchema,
   ThreadViewSchema,
   TimeZoneSchema,
@@ -406,14 +407,20 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     threadId: ThreadIdSchema,
     type: z.literal("thread.icon.set"),
   }),
-  z.strictObject({
-    content: MessageContentSchema,
-    delivery: ThreadInputPolicySchema.extract(["queue", "steer"]).optional().default("queue"),
-    idempotencyKey: idempotencyKeySchema,
-    threadId: ThreadIdSchema,
-    type: z.literal("thread.sendMessage"),
-    quotedMessageId: MessageIdSchema.optional(),
-  }),
+  z
+    .strictObject({
+      content: MessageContentSchema,
+      delivery: ThreadInputPolicySchema.extract(["queue", "steer"]).optional().default("queue"),
+      freshContext: z.boolean().optional(),
+      idempotencyKey: idempotencyKeySchema,
+      threadId: ThreadIdSchema,
+      type: z.literal("thread.sendMessage"),
+      quotedMessageId: MessageIdSchema.optional(),
+    })
+    .refine((command) => !command.freshContext || command.delivery === "queue", {
+      message: "freshContext requires queue delivery",
+      path: ["freshContext"],
+    }),
   z.strictObject({
     assignmentId: AssignmentIdSchema,
     idempotencyKey: idempotencyKeySchema,
@@ -446,10 +453,10 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("thread.inputQueue.resume"),
   }),
   z.strictObject({
-    type: z.literal("thread.read.mark"),
+    type: z.literal("thread.visit"),
     idempotencyKey: idempotencyKeySchema,
     threadId: ThreadIdSchema,
-    throughSequence: SequenceSchema,
+    visitedAt: IsoDateTimeSchema,
   }),
   // The epoch-48 personal-placement command is accepted only to return a typed
   // update-required refusal. It must never reach shared Done or receipt lookup.
@@ -1145,8 +1152,13 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     thread: ThreadViewSchema,
     type: z.literal("thread.execution.update"),
   }),
-  z.object({ type: z.literal("thread.read.mark"), state: ThreadReadStateSchema }),
-  z.object({ type: z.literal("thread.done.set"), state: ThreadReadStateSchema }),
+  z.object({ type: z.literal("thread.visit"), ...ThreadVisitSchema.shape }),
+  z.object({
+    type: z.literal("thread.done.set"),
+    thread: ThreadViewSchema,
+    asOfSequence: SequenceSchema,
+    wasDuplicate: z.boolean(),
+  }),
 
   z.object({
     type: z.literal("notification.preview.register"),
@@ -2065,11 +2077,6 @@ export const hostApi = defineRpc({
       ),
     ThreadMessagePageSchema,
   ),
-  "thread.readState.get": declaration(
-    "GET",
-    z.strictObject({ threadId: ThreadIdSchema }),
-    ThreadReadStateSchema,
-  ),
   "thread.requests.list": declaration(
     "GET",
     z.strictObject({ threadId: ThreadIdSchema }).extend(durablePageInputSchema.shape),
@@ -2107,7 +2114,10 @@ export const hostApi = defineRpc({
     z.strictObject({
       systemRole: z.enum(["memory-light", "memory-nightly"]).optional(),
 
-      /** Only those that run in this conversation. Needs `task-family-v1`. */
+      /**
+       * This conversation's family: what runs in it, then what runs in tasks
+       * linked under it, ended ones included and listed last. Needs `task-family-v1`.
+       */
       anchorThreadId: ThreadIdSchema.optional(),
     }),
     z.object({ triggers: z.array(TriggerSummaryViewSchema).max(100) }),

@@ -155,7 +155,17 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
         createdAt: row.createdAt.toISOString(),
       });
       const state = new NotificationStateStore(database);
-      const clock = new ManualClock(Date.parse(event.createdAt));
+      const publicationTime =
+        event.type === "run.completed" && event.data.replyMessageId
+          ? (
+              await database
+                .selectFrom("messages")
+                .select("createdAt")
+                .where("id", "=", event.data.replyMessageId)
+                .executeTakeFirstOrThrow()
+            ).createdAt
+          : new Date(event.createdAt);
+      const clock = new ManualClock(publicationTime.getTime());
       const now = () => new Date(clock.now());
       const notifications = new NotificationStore(database, {
         now,
@@ -181,12 +191,12 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
             throw new Error("Expected a reply");
           const message = await database
             .selectFrom("messages")
-            .select("sequence")
+            .select("createdAt")
             .where("id", "=", event.data.replyMessageId)
             .executeTakeFirstOrThrow();
-          await state.markRead({
+          await state.visit({
             threadId,
-            throughSequence: message.sequence,
+            visitedAt: message.createdAt.toISOString(),
             userId: recipientId,
           });
         }
@@ -298,7 +308,14 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
       ...row,
       createdAt: row.createdAt.toISOString(),
     });
-    const clock = new ManualClock(Date.parse(event.createdAt));
+    if (event.type !== "run.completed" || !event.data.replyMessageId)
+      throw new Error("Expected a completed reply");
+    const message = await stack.host.store.database
+      .selectFrom("messages")
+      .select("createdAt")
+      .where("id", "=", event.data.replyMessageId)
+      .executeTakeFirstOrThrow();
+    const clock = new ManualClock(message.createdAt.getTime());
     const now = () => new Date(clock.now());
     const store = new NotificationStore(stack.host.store.database, {
       now,
@@ -323,8 +340,10 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
         userId: decision.userId,
         eventId: event.eventId,
         sequence: event.sequence,
-        occurredAt: new Date(event.createdAt),
-        expiresAt: new Date(Date.parse(event.createdAt) + notificationPushWindowMilliseconds),
+        occurredAt: new Date(decision.view.occurredAt),
+        expiresAt: new Date(
+          Date.parse(decision.view.occurredAt) + notificationPushWindowMilliseconds,
+        ),
       };
       await expect(store.publicationSkipReason(entry)).resolves.toBeNull();
       dispatcher.dispatch(event);

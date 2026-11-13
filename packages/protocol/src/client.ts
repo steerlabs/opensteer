@@ -16,7 +16,7 @@ import {
   ThreadRunQueueEntryViewSchema,
   ThreadIdSchema,
   ThreadViewSchema,
-  ThreadReadStateSchema,
+  ThreadVisitSchema,
 } from "@opensteer/core";
 import {
   BrowserProfileIdSchema,
@@ -142,7 +142,6 @@ export const DeploymentSnapshotSchema = z
     }),
     needsYou: z.lazy(() => NeedsYouPageSchema),
     resources: z.object({ appTabs: AppTabsSchema, browser: HostedBrowserBootstrapSchema }),
-    readStates: z.array(ThreadReadStateSchema).max(deploymentSnapshotMaxThreads),
     messages: z.array(MessageViewSchema).max(deploymentSnapshotMaxMessages),
     messageWindows: z.array(ThreadMessageWindowSchema).max(deploymentSnapshotMaxThreads),
     /** History was not loaded; the empty arrays do not mean an empty conversation. */
@@ -195,7 +194,7 @@ export const TaskEntryViewSchema = z.object({
 export type TaskEntryView = z.infer<typeof TaskEntryViewSchema>;
 
 export const TaskPageSchema = z.object({
-  readStates: z.array(ThreadReadStateSchema).max(threadPageMaxItems),
+  asOfSequence: SequenceSchema,
   tasks: z.array(TaskEntryViewSchema).max(threadPageMaxItems),
   window: DurableWindowSchema,
 });
@@ -209,7 +208,7 @@ export const ThreadMessagePageSchema = z.object({
 export type ThreadMessagePage = z.infer<typeof ThreadMessagePageSchema>;
 
 export const ThreadEventPageSchema = z.object({
-  readState: ThreadReadStateSchema,
+  asOfSequence: SequenceSchema,
   thread: ThreadViewSchema,
   events: z
     .array(z.unknown())
@@ -254,14 +253,8 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
   ComputerViewChangedSchema,
   ComputerViewRemovedSchema,
   z.object({
-    type: z.literal("host.read-states"),
-
-    states: z.array(ThreadReadStateSchema).max(100),
-  }),
-  z.object({
-    type: z.literal("host.read-markers"),
-
-    markers: z.array(z.object({ threadId: ThreadIdSchema, readSequence: SequenceSchema })).max(100),
+    type: z.literal("host.thread-visits"),
+    visits: z.array(ThreadVisitSchema).max(100),
   }),
 
   z.object({

@@ -4,7 +4,7 @@ import type { ThreadSummary } from "./client.js";
 const unloadedThreadLimit = 4096;
 
 export type ThreadName = Pick<ThreadSummary, "title" | "icon"> &
-  Partial<Pick<ThreadSummary, "doneAt" | "doneReason">>;
+  Partial<Pick<ThreadSummary, "doneAt" | "doneReason" | "latestRunCompletedAt" | "lastVisitedAt">>;
 
 type ThreadState = Pick<
   ThreadSummary,
@@ -14,6 +14,7 @@ type ThreadState = Pick<
   readonly doneReason?: ThreadSummary["doneReason"] | undefined;
   readonly title?: string | undefined;
   readonly icon?: ThreadSummary["icon"] | undefined;
+  readonly latestRunCompletedAt?: string | null | undefined;
   readonly stateSequence: Sequence;
 };
 
@@ -79,6 +80,10 @@ export class ThreadStateProjection {
       doneReason: state.doneReason ?? null,
       title: state.title,
       icon: state.icon,
+      latestRunCompletedAt:
+        state.latestRunCompletedAt === undefined
+          ? summary.latestRunCompletedAt
+          : state.latestRunCompletedAt,
       status: state.status,
       inputQueuePaused: state.inputQueuePaused,
       pendingRequests: state.pendingRequests,
@@ -91,6 +96,10 @@ export class ThreadStateProjection {
     return {
       doneAt: state?.doneAt === undefined ? thread.doneAt : state.doneAt,
       doneReason: state?.doneAt === undefined ? thread.doneReason : (state.doneReason ?? null),
+      latestRunCompletedAt:
+        state?.latestRunCompletedAt === undefined
+          ? thread.latestRunCompletedAt
+          : state.latestRunCompletedAt,
       title: state?.title ?? thread.title,
       icon: state?.icon === undefined ? thread.icon : state.icon,
     };
@@ -125,6 +134,10 @@ export class ThreadStateProjection {
         incoming.doneAt === undefined ? previous?.doneReason : (incoming.doneReason ?? null),
       title: incoming.title ?? previous?.title,
       icon: incoming.icon === undefined ? previous?.icon : incoming.icon,
+      latestRunCompletedAt:
+        incoming.latestRunCompletedAt === undefined
+          ? previous?.latestRunCompletedAt
+          : incoming.latestRunCompletedAt,
       status: incoming.status,
       inputQueuePaused: incoming.inputQueuePaused,
       pendingRequests: incoming.pendingRequests,

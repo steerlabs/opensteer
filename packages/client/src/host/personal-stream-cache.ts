@@ -20,7 +20,7 @@ export interface PersonalStreamCheckpoint {
     | "requests"
     | "waitingRequests"
     | "needsYou"
-    | "threadReadStates"
+    | "threadVisits"
   >;
 }
 // The port commits rows and their cursor atomically, fenced against logout or attachment replacement.

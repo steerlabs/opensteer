@@ -7,6 +7,7 @@ description: Find, read, delegate, continue, configure, queue, interrupt or canc
 
 A Thread holds durable history; a Run is one execution; a task is private durable work, optionally assigned by another task. Use native workers for Run-local work, `delegate_task` for independent work or durable continuation.
 
+- Automations: keep reminders here; use `trigger_write` with `ownTask: true` for ongoing monitors, or program `delegate_task` with `standalone: true` for a new listed task per run. Check in code first. State belongs under `automations/<trigger-id>/` in Agent home. Start child checks from the monitor task and queue repeated checks with `freshContext: true`, including criteria, destination and state path each time. Briefly say what happened on each background wake; send real finds to the asking task with `thread_send` queue or email through a connected integration. A `report` never notifies.
 - New work: `delegate_task`, optionally with a ready `specialist`. Finished task: `delegate_task` with `threadId`. Active task: `thread_send`.
 - Your tasks: `thread_list({parentThreadId: "self"})`. What one did and where: `thread_read`, with `view: "activity"` for its tools. One task's state: `task_status`.
 - Pause work: `thread_interrupt`, resumable with `thread_queue`. Stop it for good: `task_cancel`.

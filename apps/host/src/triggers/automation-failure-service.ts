@@ -6,9 +6,10 @@ import { CoalescedWake } from "@opensteer/shared/coalescedWake";
 const defaultIntervalMs = 30_000;
 
 /**
- * Tells an automation's anchor Thread that it stopped working: its one
- * scheduled run failed, or it was paused after repeated failures. The message
- * wakes that Thread's agent, whose reply is what reaches the person — the same
+ * Tells the task an automation works for that it stopped: its one scheduled
+ * run failed, or it was paused after repeated failures. That is its anchor, or
+ * the nearest listed task above an automation that runs in its own task. The
+ * message wakes that task's agent, whose reply is what reaches the person — the same
  * way an answered Request continues the Thread that asked it.
  */
 export class AutomationFailureService {
@@ -62,7 +63,7 @@ export class AutomationFailureService {
           policy: "queue",
           requestedBy: notice.createdBy,
           source: { kind: "automation", noticeId: notice.id, triggerId: notice.triggerId },
-          threadId: notice.anchorThreadId,
+          threadId: notice.destinationThreadId,
         });
         await this.#store.settle({
           id: notice.id,
@@ -81,13 +82,17 @@ export class AutomationFailureService {
   }
 }
 
-/** What the anchor agent reads: which automation stopped, why, and that it will not run. */
+/** What the agent reads: which automation stopped, where it runs, why, and that it will not run. */
 function noticeText(notice: PendingAutomationFailure): string {
+  const automation =
+    notice.destinationThreadId === notice.anchorThreadId
+      ? `The automation "${notice.triggerName}"`
+      : `The automation "${notice.triggerName}", which runs in its own task ${JSON.stringify(notice.anchorThreadTitle)} (${notice.anchorThreadId}),`;
   if (notice.reason === "final-occurrence-interrupted") {
     // Opensteer cannot know whether the program's effects happened, and running
     // it again is the agent's decision, not something to do silently.
     return [
-      `The automation "${notice.triggerName}" was interrupted on its only scheduled run when Opensteer restarted or its computer disconnected. It may not have finished, and it will not run again on its own.`,
+      `${automation} was interrupted on its only scheduled run when Opensteer restarted or its computer disconnected. It may not have finished, and it will not run again on its own.`,
       "",
       `Check what it already did, then run it again with trigger_write action "run" (triggerId ${notice.triggerId}) if it still needs to happen.`,
       "",
@@ -96,8 +101,8 @@ function noticeText(notice: PendingAutomationFailure): string {
   }
   const ended =
     notice.reason === "final-occurrence-failed"
-      ? `The automation "${notice.triggerName}" failed on its only scheduled run, so it will not run again.`
-      : `The automation "${notice.triggerName}" was paused after repeated failures and will not run again until it is fixed and resumed.`;
+      ? `${automation} failed on its only scheduled run, so it will not run again.`
+      : `${automation} was paused after repeated failures and will not run again until it is fixed and resumed.`;
   // The program's own words are quoted as data, so they read as its error and
   // never as something Opensteer is saying.
   return `${ended}\n\nIts error, as the program reported it: ${JSON.stringify(notice.detail)}`;

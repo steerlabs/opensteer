@@ -50,7 +50,7 @@ export class NotificationDispatcher {
   }
 
   dispatch(event: AgentEvent): void {
-    if (this.#stop.signal.aborted || !mayNotify(event) || this.#remaining(event) <= 0) return;
+    if (this.#stop.signal.aborted || !mayNotify(event)) return;
     const pending = this.#decide(event).catch(() => {
       this.#report("onError", { eventId: event.eventId, reason: "Notification decision failed" });
     });
@@ -70,9 +70,10 @@ export class NotificationDispatcher {
 
   async #decide(event: AgentEvent): Promise<void> {
     const decisions = await this.#options.store.decide(event);
-    if (this.#stop.signal.aborted || this.#remaining(event) <= 0) return;
+    if (this.#stop.signal.aborted) return;
     await Promise.all(
       decisions.map(async (decision) => {
+        if (this.#remaining(decision.view.occurredAt) <= 0) return;
         this.#options.onLive(decision);
         if (!this.#options.client) return;
         const entry: NotificationPublication = {
@@ -80,8 +81,10 @@ export class NotificationDispatcher {
           eventId: event.eventId,
           sequence: event.sequence,
           userId: decision.userId,
-          occurredAt: new Date(event.createdAt),
-          expiresAt: new Date(Date.parse(event.createdAt) + notificationPushWindowMilliseconds),
+          occurredAt: new Date(decision.view.occurredAt),
+          expiresAt: new Date(
+            Date.parse(decision.view.occurredAt) + notificationPushWindowMilliseconds,
+          ),
         };
         await this.#send(entry);
       }),
@@ -160,8 +163,8 @@ export class NotificationDispatcher {
     }
   }
 
-  #remaining(event: AgentEvent): number {
-    return Date.parse(event.createdAt) + notificationPushWindowMilliseconds - this.#now().getTime();
+  #remaining(occurredAt: string): number {
+    return Date.parse(occurredAt) + notificationPushWindowMilliseconds - this.#now().getTime();
   }
 
   #report(level: "onError" | "onWarning", failure: NotificationDispatchFailure): void {

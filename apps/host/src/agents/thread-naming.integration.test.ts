@@ -58,6 +58,9 @@ interface Captured {
   readonly fakeOpensteerTokenEnvironment?: {
     readonly agentTools: boolean;
   };
+  readonly fakeThreadConfig?: {
+    readonly config: Readonly<Record<string, unknown>>;
+  };
 }
 type TitleScript = Record<
   string,
@@ -186,11 +189,23 @@ integration("Task naming through the Runner", () => {
     const namingProcess = capture.filter((line) => line.captureProcessId === naming!.pid);
     expect(namingProcess.filter((line) => line.method === "initialize")).toHaveLength(1);
     expect(namingProcess.some((line) => line.method === "model/list")).toBe(false);
-    // Naming holds no agent-tools token, unlike the Run's own engine.
-    const toolTokens = (lines: readonly Captured[]) =>
-      lines.flatMap((line) => line.fakeOpensteerTokenEnvironment?.agentTools ?? []);
-    expect(toolTokens(namingProcess)).toEqual([false]);
-    expect(toolTokens(capture)).toContain(true);
+    // Naming holds no agent-tools token, unlike the Run's own conversation;
+    // no engine process holds one, since a shared engine serves many Runs.
+    const processTokens = capture.flatMap(
+      (line) => line.fakeOpensteerTokenEnvironment?.agentTools ?? [],
+    );
+    expect(processTokens.length).toBeGreaterThan(1);
+    expect(processTokens).not.toContain(true);
+    const conversationTokens = (lines: readonly Captured[]) =>
+      lines.flatMap((line) => {
+        const headers = line.fakeThreadConfig?.config["mcp_servers.opensteer.http_headers"];
+        if (!line.fakeThreadConfig) return [];
+        const authorization = (headers as { readonly Authorization?: unknown } | undefined)
+          ?.Authorization;
+        return [typeof authorization === "string" && authorization.startsWith("Bearer ")];
+      });
+    expect(conversationTokens(namingProcess)).toEqual([false]);
+    expect(conversationTokens(capture)).toContain(true);
     expect(
       capture.filter(
         (line) =>

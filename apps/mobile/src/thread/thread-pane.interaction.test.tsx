@@ -29,7 +29,6 @@ import {
   PlaceEnteredEventViewSchema,
   RunIdSchema,
   ThreadIdSchema,
-  ThreadReadStateSchema,
   voiceCallSeed,
   type Request,
   type ThreadInputQueue,
@@ -821,6 +820,7 @@ function wrote(body: string, runId: string, threadId = conversationId): MessageE
     id: createId("message"),
     kind: "message",
     messageKind: "assistant",
+    published: true,
     runId,
     sequence: String(sequence),
   };
@@ -1085,7 +1085,7 @@ function snapshotFor(input: {
             },
           ],
     session: "authenticated",
-    threadReadStates: {},
+    threadVisits: {},
     threads: base.threads.map((thread) =>
       thread.id === input.threadId
         ? { ...thread, inputQueuePaused: input.paused ?? false, status }
@@ -1152,7 +1152,7 @@ function fakeHost(initial: HostSnapshot) {
     loadLatestTranscript: vi.fn(async () => undefined),
     loadTranscriptAround,
     readAttachment: vi.fn(async () => new Blob()),
-    markThreadRead: vi.fn(async () => undefined),
+    visitThread: vi.fn(async () => undefined),
     moveThreadInput: vi.fn(async () => undefined),
     refresh: vi.fn(async () => undefined),
     resumeThreadInputQueue,
@@ -1455,23 +1455,21 @@ describe("a conversation with a page", () => {
 
   it("kept out of view beside a page, claims nothing, marks nothing read, and keeps its draft and choices", async () => {
     const included = page();
-    const readState = ThreadReadStateSchema.parse({
-      asOfSequence: "1",
-      readSequence: null,
-      threadId: workId,
-      unreadSequence: null,
-    });
     const host = fakeHost({
-      ...snapshotFor({ entries: [said("First reply", null)], run: null, threadId: workId }),
-      threadReadStates: { [workId]: readState },
+      ...snapshotFor({
+        entries: [wrote("First reply", createId("run"), workId)],
+        run: null,
+        threadId: workId,
+      }),
+      threadVisits: {},
     });
     const activate = vi.mocked(host.client.activateThread);
-    const markRead = vi.mocked(host.client.markThreadRead);
+    const markRead = vi.mocked(host.client.visitThread);
     const { container, root, pane } = await mount(host, workId, {
       withPage: { page: included, showTab: null },
     });
     expect(activate).toHaveBeenCalledWith(workId);
-    expect(markRead).toHaveBeenCalled();
+    await vi.waitFor(() => expect(markRead).toHaveBeenCalled());
     await type(container, "Message", "Half a thought");
     await press(container, "Remove page");
 
@@ -1483,11 +1481,14 @@ describe("a conversation with a page", () => {
     expect(harness.blur).toHaveBeenCalled();
     host.move({
       ...snapshotFor({
-        entries: [said("First reply", null), said("Arrived out of view", null)],
+        entries: [
+          wrote("First reply", createId("run"), workId),
+          wrote("Arrived out of view", createId("run"), workId),
+        ],
         run: null,
         threadId: workId,
       }),
-      threadReadStates: { [workId]: readState },
+      threadVisits: {},
     });
     await settle();
     expect(activate).not.toHaveBeenCalled();
@@ -1498,7 +1499,7 @@ describe("a conversation with a page", () => {
     await act(async () => root.render(pane(() => undefined)));
     await settle();
     expect(activate).toHaveBeenCalledWith(workId);
-    expect(markRead).toHaveBeenCalled();
+    await vi.waitFor(() => expect(markRead).toHaveBeenCalled());
     expect(text(container)).toContain("Arrived out of view");
     expect(text(container)).not.toContain("Research page");
     expect(

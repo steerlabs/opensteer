@@ -1575,6 +1575,8 @@ function thread(
   > = {},
 ): Thread {
   return {
+    lastVisitedAt: null,
+    latestRunCompletedAt: null,
     accessMode: "full-access",
     teamOrigin: null,
     continuationIdentity: null,

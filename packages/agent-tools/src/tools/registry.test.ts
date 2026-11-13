@@ -315,6 +315,11 @@ it("fits a full Thread listing page and requires explicit agent message delivery
     threadId: createId("thread"),
   });
   expect(untitled).toMatchObject({ delivery: "queue" });
+  expect(thread_send.input.parse({ ...untitled, freshContext: true }).freshContext).toBe(true);
+  for (const delivery of ["report", "steer"] as const)
+    expect(thread_send.input.safeParse({ ...untitled, delivery, freshContext: true }).success).toBe(
+      false,
+    );
   expect(
     thread_send.input.safeParse({
       message: "Status?",

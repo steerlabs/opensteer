@@ -22,7 +22,7 @@ import {
   sealedTestRequestResponse,
 } from "./store.integration.test-support.js";
 describeStore("PostgreSQL store", (it) => {
-  it("pages the owner's active listed tasks with filter-bound cursors and read states", async ({
+  it("pages the owner's active listed tasks with filter-bound cursors", async ({
     storeFixture,
   }) => {
     const { createRunFixture, store, database } = storeFixture;
@@ -64,9 +64,6 @@ describeStore("PostgreSQL store", (it) => {
     expect(next.window.hasMore).toBe(false);
     expect(new Set([...page.tasks, ...next.tasks].map(({ thread }) => thread.id))).toEqual(
       new Set([running, waiting]),
-    );
-    expect([...page.readStates, ...next.readStates].map((state) => state.threadId)).toEqual(
-      [...page.tasks, ...next.tasks].map(({ thread }) => thread.id),
     );
     await expect(
       store.taskPageForUser({ before: page.window.nextBefore!, userId: fixture.userId }),
@@ -333,6 +330,7 @@ describeStore("PostgreSQL store", (it) => {
           expect.objectContaining({
             type: "thread.state-changed",
             data: {
+              latestRunCompletedAt: null,
               pendingRequests: 1,
               inputQueuePaused: true,
               status: "running",
@@ -620,8 +618,14 @@ describeStore("PostgreSQL store", (it) => {
         .where("type", "=", "thread.state-changed")
         .orderBy("sequence", "asc")
         .execute();
+      const completed = await database
+        .selectFrom("runs")
+        .select("completedAt")
+        .where("id", "=", turn.run.id)
+        .executeTakeFirstOrThrow();
       expect(stored.map(({ data }) => data)).toEqual([
         {
+          latestRunCompletedAt: null,
           status: "running",
           inputQueuePaused: false,
           pendingRequests: 0,
@@ -631,6 +635,7 @@ describeStore("PostgreSQL store", (it) => {
           doneReason: null,
         },
         {
+          latestRunCompletedAt: completed.completedAt!.toISOString(),
           status: "idle",
           inputQueuePaused: true,
           pendingRequests: 0,
@@ -640,6 +645,7 @@ describeStore("PostgreSQL store", (it) => {
           doneReason: null,
         },
         {
+          latestRunCompletedAt: null,
           status: "running",
           inputQueuePaused: false,
           pendingRequests: 0,

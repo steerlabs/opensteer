@@ -1,4 +1,5 @@
 import { listedRowThreadId } from "../host/task-list.js";
+import { familyAutomations } from "../host/task-family.js";
 import {
   DeploymentSnapshotSchema,
   parseTeamLinkOffer,
@@ -143,12 +144,11 @@ import {
   type Request,
   type RequestResponse,
   type Run,
-  type Sequence,
   type Thread,
   type ThreadAccessMode,
   type ThreadInput,
   type ThreadInputQueue,
-  type ThreadReadState,
+  type ThreadVisit,
   type WaitingRequest,
   type IconName,
 } from "@opensteer/core";
@@ -278,7 +278,8 @@ import {
   threadPlacementOptions,
   type ThreadPlacementOption,
 } from "../host/thread-placement.js";
-import { isThreadUnread } from "../host/thread-read-state.js";
+import { isThreadUnread } from "../host/thread-unread.js";
+import { withPublishedReplies } from "../host/thread-visits.js";
 import { ThreadStateProjection } from "../host/thread-state.js";
 import {
   assignmentReturnId,
@@ -1878,14 +1879,14 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
             thread.listed &&
             thread.purpose === "task" &&
             thread.status !== "archived" &&
-            isThreadUnread(snapshot.threadReadStates[thread.id]),
+            isThreadUnread(thread),
         ),
       });
     },
     "needsYou.get": async (input) =>
       rpcSuccess(mockNeedsYou(client.getSnapshot(), input.before, input.limit)),
     "teams.links.list": async () => rpcSuccess({ links: [...client.teamLinks.values()] }),
-    "teams.replyTask.get": async () => rpcSuccess({ taskId: null, throughSequence: null }),
+    "teams.replyTask.get": async () => rpcSuccess({ taskId: null, completedAt: null }),
     "teams.threadTask.get": async ({ teamId, channelId, threadRootId }) =>
       rpcSuccess(
         hostApi["teams.threadTask.get"].success.parse({
@@ -2202,7 +2203,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       const end = start + page.length;
       return rpcSuccess(
         hostApi["tasks.list"].success.parse({
-          readStates: page.map(({ thread }) => client.threadReadState(thread.id)),
+          asOfSequence: SequenceSchema.parse(String(client.getSnapshot().revision)),
           tasks: page.map((entry) => ({ ...entry, thread: mockThread(entry.thread) })),
           window: {
             byteCount: 2,
@@ -2328,7 +2329,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       if (!thread) throw new Error("Thread not found.");
       return rpcSuccess(
         hostApi["thread.events.list"].success.parse({
-          readState: client.threadReadState(threadId),
+          asOfSequence: SequenceSchema.parse(String(client.getSnapshot().revision)),
           thread: mockThread(thread),
           events: [],
           threadId,
@@ -2483,7 +2484,6 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       ),
 
     "thread.messages.list": async (input) => rpcSuccess(client.listThreadMessages(input)),
-    "thread.readState.get": async ({ threadId }) => rpcSuccess(client.threadReadState(threadId)),
   };
   return new Proxy(handlers, {
     get: (target, name) => Reflect.get(target, name) ?? unsupportedMockRpc,
@@ -2621,6 +2621,8 @@ async function executeMockCommand(
       });
     }
     case "thread.sendMessage": {
+      if (command.freshContext && command.delivery !== "queue")
+        throw mockConflict("freshContext requires queue delivery.");
       const body = command.content
         .flatMap((part) => (part.type === "text" ? [part.text] : []))
         .join("\n");
@@ -2642,6 +2644,7 @@ async function executeMockCommand(
       const result = await client.sendMessage({
         body,
         content: command.content,
+        ...(command.freshContext !== undefined ? { freshContext: command.freshContext } : {}),
         threadId: command.threadId,
         ...(command.quotedMessageId ? { quotedMessageId: command.quotedMessageId } : {}),
       });
@@ -2666,13 +2669,20 @@ async function executeMockCommand(
         type: command.type,
       });
     }
-    case "thread.read.mark": {
-      const state = client.markThreadRead(command.threadId, command.throughSequence);
-      return rpcSuccess({ state, type: command.type });
+    case "thread.visit": {
+      const visit = client.visitThread(command.threadId, command.visitedAt);
+      return rpcSuccess({ ...visit, type: command.type });
     }
     case "thread.done.set": {
       await client.setTaskDone(command.threadId, command.done);
-      return rpcSuccess({ type: command.type, state: client.threadReadState(command.threadId) });
+      return rpcSuccess({
+        type: command.type,
+        thread: mockThread(
+          client.getSnapshot().threads.find((thread) => thread.id === command.threadId)!,
+        ),
+        asOfSequence: SequenceSchema.parse(String(client.getSnapshot().revision)),
+        wasDuplicate: false,
+      });
     }
     case "notification.preview.register":
       return rpcSuccess({
@@ -3413,6 +3423,8 @@ function mockAuthenticatedSession(snapshot: HostSnapshot) {
 
 function mockThread(thread: ThreadSummary): Thread {
   return ThreadSchema.parse({
+    lastVisitedAt: thread.lastVisitedAt,
+    latestRunCompletedAt: thread.latestRunCompletedAt,
     providerSessionId: thread.providerSessionId,
     doneAt: thread.doneAt,
     doneReason: thread.doneReason,
@@ -3597,9 +3609,7 @@ export class MockHostClient implements HostClient {
   deploymentSnapshot(sequence = String(this.getSnapshot().revision)) {
     const snapshot = this.getSnapshot(),
       page = (entries: readonly TaskEntry[]) => ({
-        readStates: entries
-          .slice(0, 100)
-          .map(({ thread }) => this.#state.threadReadState(thread.id)),
+        asOfSequence: SequenceSchema.parse(sequence),
         tasks: entries
           .slice(0, 100)
           .map((entry) => ({ ...entry, thread: mockThread(entry.thread) })),
@@ -3623,7 +3633,6 @@ export class MockHostClient implements HostClient {
       pendingRequests: snapshot.waitingRequests.map(({ request }) => request).slice(0, 100),
       pendingRequestWindow: mockWindow(snapshot.waitingRequests.length),
       runQueue: [],
-      readStates: Object.values(snapshot.threadReadStates).slice(0, 100),
       tasks: {
         recent: page(recent),
         active: page(snapshot.activeTasks),
@@ -4590,12 +4599,12 @@ export class MockHostClient implements HostClient {
     return this.#state.subscribeNotifications(listener);
   }
 
-  async markThreadRead(threadId: string, throughSequence: string): Promise<void> {
+  async visitThread(threadId: string, visitedAt: string): Promise<void> {
     await this.dispatch({
-      type: "thread.read.mark",
-      idempotencyKey: `mock-read:${crypto.randomUUID()}`,
+      type: "thread.visit",
+      idempotencyKey: `mock-visit:${crypto.randomUUID()}`,
       threadId,
-      throughSequence,
+      visitedAt,
     });
   }
 
@@ -5391,31 +5400,6 @@ class MockHostState {
     });
   }
 
-  /** The latest of these messages the reader has not read, by number. */
-  private unreadAfter(messages: readonly Message[], read: string | null): Sequence | null {
-    let latest: Sequence | null = null;
-    for (const message of messages) {
-      if (read !== null && BigInt(message.sequence) <= BigInt(read)) continue;
-      if (message.author.kind === "human" && message.author.userId === this.snapshot.user?.id)
-        continue;
-      if (latest === null || BigInt(message.sequence) > BigInt(latest)) latest = message.sequence;
-    }
-    return latest;
-  }
-
-  threadReadState(threadId: string): ThreadReadState {
-    const existing = this.snapshot.threadReadStates[threadId];
-    const read = existing?.readSequence ?? null;
-    const unread = this.unreadAfter(this.publishedMessages(threadId), read);
-    return {
-      threadId: ThreadIdSchema.parse(threadId),
-      readSequence: read === null ? null : SequenceSchema.parse(read),
-      unreadSequence: unread === null ? null : SequenceSchema.parse(unread),
-
-      asOfSequence: SequenceSchema.parse(String(this.snapshot.revision)),
-    };
-  }
-
   bootstrap() {
     return mockBootstrap(this.snapshot, this.harnessSourceConfigs);
   }
@@ -5448,7 +5432,6 @@ class MockHostState {
       ),
     });
     this.#threadState.retainLoaded(this.snapshot.threads);
-    this.applyThreadReadStates([this.threadReadState(event.threadId)]);
     const current = this.snapshot.threads.find(({ id }) => id === event.threadId);
     if (current?.title !== previous?.title || current?.icon !== previous?.icon) {
       for (const assignment of this.assignments.values()) {
@@ -5492,41 +5475,25 @@ class MockHostState {
     }
   }
 
-  applyThreadReadStates(states: readonly ThreadReadState[]): void {
-    const readStates = { ...this.snapshot.threadReadStates };
-    for (const state of states) readStates[state.threadId] = state;
+  visitThread(threadId: string, visitedAt: string): ThreadVisit {
+    if (!this.snapshot.threads.some((thread) => thread.id === threadId))
+      throw new Error("Thread not found");
+    const lastVisitedAt = [
+      this.snapshot.threadVisits[threadId] ?? "",
+      new Date(Math.min(Date.parse(visitedAt), this.now().getTime())).toISOString(),
+    ]
+      .sort()
+      .at(-1)!;
     this.update({
       ...this.snapshot,
-      threadReadStates: readStates,
-      threads: this.snapshot.threads.map((thread) => ({
-        ...thread,
-        unread: isThreadUnread(readStates[thread.id]),
-      })),
-    });
-  }
-
-  markThreadRead(threadId: string, throughSequence: string): ThreadReadState {
-    const current = this.threadReadState(threadId);
-    const messages = this.publishedMessages(threadId);
-    if (!messages.some((message) => message.sequence === throughSequence))
-      throw mockConflict("Read position must name a published message in this Thread");
-    const readSequence = SequenceSchema.parse(
-      String(
-        current.readSequence === null
-          ? BigInt(throughSequence)
-          : BigInt(current.readSequence) > BigInt(throughSequence)
-            ? BigInt(current.readSequence)
-            : BigInt(throughSequence),
+      threadVisits: { ...this.snapshot.threadVisits, [threadId]: lastVisitedAt },
+      threads: this.snapshot.threads.map((thread) =>
+        thread.id === threadId
+          ? { ...thread, lastVisitedAt, unread: isThreadUnread({ ...thread, lastVisitedAt }) }
+          : thread,
       ),
-    );
-    const state: ThreadReadState = {
-      ...current,
-      readSequence,
-
-      unreadSequence: this.unreadAfter(messages, readSequence),
-    };
-    this.applyThreadReadStates([state]);
-    return state;
+    });
+    return { threadId: ThreadIdSchema.parse(threadId), lastVisitedAt };
   }
 
   /** The preview's stand-in for the Host's hourly pass over quiet tasks. */
@@ -5925,7 +5892,10 @@ class MockHostState {
       this.#browserStream = new MockBrowserStream(this.browserTabs);
       this.#published = null;
     }
-    this.#published = this.#browserStream.publish(this.snapshot, this.#published);
+    this.#published = this.#browserStream.publish(
+      withPublishedReplies(this.#published, this.snapshot),
+      this.#published,
+    );
   }
   tabGroups: BrowserTabLayout = { revision: 0, groups: [], order: [] };
   projectTabGroups: (() => BrowserTabLayout | undefined) | undefined;
@@ -6215,31 +6185,23 @@ class MockHostState {
         }),
       ),
     };
-    // The reader has read each seeded Thread through its latest message,
-    // except the ones seeded unread.
-    const readStates = Object.fromEntries(
-      this.snapshot.threads.map((thread) => {
-        const state = this.threadReadState(thread.id);
-        const latest = this.listThreadMessages({ threadId: thread.id, limit: 1 }).messages.at(-1);
-        if (!latest) return [thread.id, state];
-        return [
-          thread.id,
-          thread.unread
-            ? { ...state, readSequence: null, unreadSequence: latest.sequence }
-            : { ...state, readSequence: latest.sequence, unreadSequence: null },
-        ];
-      }),
-    );
-    // What `requests.list` and `tasks.list` would answer for what is seeded above.
     this.snapshot = {
       ...this.snapshot,
-      threadReadStates: readStates,
+      threads: this.snapshot.threads.map((thread) => ({
+        ...thread,
+        latestRunCompletedAt: ["running", "waiting"].includes(thread.status)
+          ? null
+          : thread.updatedAt,
+        lastVisitedAt: thread.unread ? null : thread.updatedAt,
+      })),
       waitingRequests: this.waitingRequests(),
     };
     this.snapshot = {
       ...this.snapshot,
-      threadReadStates: Object.fromEntries(
-        this.snapshot.threads.map((thread) => [thread.id, this.threadReadState(thread.id)]),
+      threadVisits: Object.fromEntries(
+        this.snapshot.threads.flatMap((thread) =>
+          thread.lastVisitedAt ? [[thread.id, thread.lastVisitedAt]] : [],
+        ),
       ),
     };
     const tasks = this.taskList(null);
@@ -6641,6 +6603,8 @@ class MockHostState {
     if (queue.steerRunId === null || queue.steerRunId !== expectedRunId) {
       throw mockConflict("This Run cannot accept steering. Your message remains queued.");
     }
+    if (queue.items.find((item) => item.input.messageId === messageId)?.input.freshContext)
+      throw mockConflict("A fresh-context input cannot be steered.");
     const item = this.takePendingInput(threadId, messageId);
     const input = ThreadInputSchema.parse({
       ...item.input,
@@ -6787,7 +6751,7 @@ class MockHostState {
         input: item.input,
         canCancel: true,
         canMove: true,
-        canSteer: steerRunId !== null,
+        canSteer: steerRunId !== null && !item.input.freshContext,
       })),
     });
   }
@@ -6849,6 +6813,14 @@ class MockHostState {
     readonly message: Message;
     readonly run: Run;
   } {
+    if (pending.input.freshContext) {
+      thread = {
+        ...thread,
+        providerSessionId: createId("providerSession"),
+        continuationIdentity: null,
+      };
+      this.publishThreadExecution(thread);
+    }
     const timestamp = this.now().toISOString();
     const run: ActiveMockRun = {
       cancelled: false,
@@ -7378,22 +7350,37 @@ class MockHostState {
     return this.snapshot.harnesses.find((candidate) => candidate.id === harness.id) ?? harness;
   }
 
-  /** What `triggers.list` answers: every Trigger still in use, most recently changed first. */
+  /**
+   * What `triggers.list` answers: every Trigger still in use, most recently
+   * changed first; for an anchor, its family, as the Host builds it.
+   */
   listTriggers(
     deploymentId?: string,
     anchorThreadId?: string,
     systemRole?: TriggerSummary["systemRole"],
   ): TriggerSummary[] {
+    const inFamily = ({ trigger }: MockTriggerRecord) => {
+      if (anchorThreadId === undefined) return trigger.status !== "archived";
+      if (trigger.anchorThreadId === anchorThreadId) return trigger.status !== "archived";
+      const anchor = this.snapshot.threads.find(({ id }) => id === trigger.anchorThreadId);
+      return (
+        anchor?.parentThreadId === anchorThreadId &&
+        ![...this.assignments.values()].some(
+          (assignment) => assignment.workerThreadId === anchor.id,
+        )
+      );
+    };
     return [...this.triggers.values()]
       .filter(
-        ({ trigger }) =>
-          trigger.status !== "archived" &&
-          (systemRole === undefined || trigger.systemRole === systemRole) &&
-          (deploymentId === undefined || mockMainDeploymentId === deploymentId) &&
-          (anchorThreadId === undefined || trigger.anchorThreadId === anchorThreadId),
+        (record) =>
+          inFamily(record) &&
+          (systemRole === undefined || record.trigger.systemRole === systemRole) &&
+          (deploymentId === undefined || mockMainDeploymentId === deploymentId),
       )
       .sort(
         (left, right) =>
+          Number(left.trigger.status === "archived") -
+            Number(right.trigger.status === "archived") ||
           Number(Boolean(right.trigger.systemRole)) - Number(Boolean(left.trigger.systemRole)) ||
           right.trigger.updatedAt.localeCompare(left.trigger.updatedAt),
       )
@@ -9763,6 +9750,8 @@ class MockHostState {
     );
     const timestamp = this.now().toISOString();
     const thread: ThreadSummary = {
+      lastVisitedAt: null,
+      latestRunCompletedAt: null,
       id: this.nextId("thread"),
       askedAt: timestamp,
       createdAt: timestamp,
@@ -9862,27 +9851,31 @@ class MockHostState {
       modelSelection: storedModelSelection(input.modelSelection, model),
       updatedAt: this.now().toISOString(),
     };
+    this.publishThreadExecution(updated);
+    return updated;
+  }
+
+  private publishThreadExecution(thread: ThreadSummary): void {
     // The Host records the switch as an event, and its marker is what that
     // event folds into, live or reloaded.
     const recorded = AgentEventSchema.parse({
-      createdAt: updated.updatedAt,
-      data: { thread: mockThread(updated) },
-      environmentId: updated.environmentId,
+      createdAt: thread.updatedAt,
+      data: { thread: mockThread(thread) },
+      environmentId: thread.environmentId,
       eventId: createId("event"),
       runId: null,
       sequence: String(++this.sequence),
-      threadId: updated.id,
+      threadId: thread.id,
       type: "thread.execution-updated",
     });
     this.update({
       ...this.snapshot,
-      threads: this.snapshot.threads.map((item) => (item.id === thread.id ? updated : item)),
+      threads: this.snapshot.threads.map((item) => (item.id === thread.id ? thread : item)),
       transcripts: {
         ...this.snapshot.transcripts,
         [thread.id]: foldTranscriptEvent(this.snapshot.transcripts[thread.id] ?? [], recorded),
       },
     });
-    return updated;
   }
 
   /** The streams a reply is still writing, as the Host's live read reports them. */
@@ -9936,7 +9929,7 @@ class MockHostState {
    * from the moment it is sent; the queue view is what hides it meanwhile.
    */
   async sendMessage(
-    input: SendMessageInput & { quotedMessageId?: string },
+    input: SendMessageInput & { quotedMessageId?: string; freshContext?: boolean },
   ): Promise<{ readonly input: ThreadInput; readonly message: Message; readonly run: Run | null }> {
     const body = input.body.trim();
     if (!body && !input.content?.some((part) => part.type !== "text"))
@@ -10011,6 +10004,7 @@ class MockHostState {
     const assignmentId = this.openAssignmentOf(thread.id)?.id ?? null;
     if (input.content) this.bindAttachments(input.content, thread.id, message.id);
     const threadInput: ThreadInput = ThreadInputSchema.parse({
+      ...(input.freshContext ? { freshContext: true } : {}),
       teamRequestId: null,
       teamSource: null,
       assignmentId,
@@ -10028,7 +10022,7 @@ class MockHostState {
     });
     const pending: PendingMockInput = { body, input: threadInput, message };
     this.generateThreadName(thread, body);
-    const joining = this.replyInProgress(thread, message.author);
+    const joining = input.freshContext ? null : this.replyInProgress(thread, message.author);
     if (joining) {
       // In a conversation the person's message joins the reply in progress
       // where it was sent, and the Host answers with the Run it joined: no
@@ -10191,7 +10185,17 @@ class MockHostState {
     );
     if (waiting.length === 0) return;
     let entries = this.snapshot.transcripts[thread.id] ?? [];
+    const barrierIndex = (this.threadInputQueues.get(thread.id) ?? []).findIndex(
+      (item) => item.input.freshContext,
+    );
+    const beforeBarrier = new Set(
+      (this.threadInputQueues.get(thread.id) ?? []).slice(
+        0,
+        barrierIndex < 0 ? undefined : barrierIndex,
+      ),
+    );
     for (const item of waiting) {
+      if (!beforeBarrier.has(item)) break;
       this.dropPendingInput(thread.id, item);
       run.joined.push(this.joinedInput(item, run));
       run.steered.push(item.body);
@@ -10513,6 +10517,7 @@ class MockHostState {
         id: streamId,
         kind: "message",
         messageKind: "assistant",
+        published: true,
         runId: run.id,
         streaming: true,
       });
@@ -10526,6 +10531,7 @@ class MockHostState {
       id: this.nextId("message"),
       kind: "message",
       messageKind: "assistant",
+      published: true,
       runId: run.id,
       sequence: String(++this.sequence),
     });
@@ -10964,6 +10970,7 @@ class MockHostState {
         id: this.nextId("message"),
         kind: "message",
         messageKind: "assistant",
+        published: true,
         runId,
         sequence: String(++this.sequence),
       },
@@ -11191,6 +11198,7 @@ class MockHostState {
       id: streamId,
       kind: "message",
       messageKind: "assistant",
+      published: true,
       runId: run.id,
       streaming: true,
     };
@@ -11209,6 +11217,7 @@ class MockHostState {
       id: this.nextId("message"),
       kind: "message",
       messageKind: "assistant",
+      published: true,
       runId: run.id,
     };
     this.replaceEntryById(thread.id, streamId, assistantEntry);
@@ -11291,8 +11300,22 @@ class MockHostState {
   }
 
   private replaceTranscript(threadId: string, entries: TranscriptEntry[]): void {
+    const run = entries.findLast((entry) => entry.kind === "run");
+    const completedAt =
+      run?.kind === "run" && ["completed", "failed", "interrupted"].includes(run.status)
+        ? (run.endedAt ?? run.createdAt)
+        : null;
     this.update({
       ...this.snapshot,
+      threads: this.snapshot.threads.map((thread) =>
+        thread.id === threadId
+          ? {
+              ...thread,
+              latestRunCompletedAt: completedAt,
+              unread: isThreadUnread({ ...thread, latestRunCompletedAt: completedAt }),
+            }
+          : thread,
+      ),
       transcripts: { ...this.snapshot.transcripts, [threadId]: entries },
     });
   }
@@ -11406,16 +11429,7 @@ class MockHostState {
       threadAutomations: Object.fromEntries(
         this.snapshot.threads.map((thread) => [
           thread.id,
-          this.listTriggers(undefined, thread.id).map((trigger) => ({
-            id: trigger.id,
-            name: trigger.name,
-            kind: trigger.kind,
-            paused: trigger.status === "paused",
-            nextFireAt:
-              trigger.status === "active" && trigger.kind === "schedule"
-                ? trigger.nextFireAt
-                : null,
-          })),
+          familyAutomations(this.listTriggers(undefined, thread.id), thread.id),
         ]),
       ),
     };
@@ -11885,6 +11899,7 @@ function createInitialSnapshot(): HostSnapshot {
         id: "msg_00000000-0000-4000-8000-000000000002",
         kind: "message",
         messageKind: "assistant",
+        published: true,
         runId: "run_00000000-0000-4000-8000-000000000001",
       },
       {
@@ -11973,6 +11988,7 @@ function createInitialSnapshot(): HostSnapshot {
         id: "msg_00000000-0000-4000-8000-000000000007",
         kind: "message",
         messageKind: "assistant",
+        published: true,
         runId: "run_00000000-0000-4000-8000-000000000002",
       },
     ],
@@ -12067,6 +12083,7 @@ function createInitialSnapshot(): HostSnapshot {
         id: "msg_00000000-0000-4000-8000-000000000014",
         kind: "message",
         messageKind: "assistant",
+        published: true,
         runId: mockStatementsRunId,
       },
     ],
@@ -12144,6 +12161,7 @@ function createInitialSnapshot(): HostSnapshot {
         id: "msg_00000000-0000-4000-8000-000000000010",
         kind: "message",
         messageKind: "assistant",
+        published: true,
         runId: "run_00000000-0000-4000-8000-000000000004",
       },
       {
@@ -12625,7 +12643,8 @@ function createInitialSnapshot(): HostSnapshot {
 
     voiceThreadId: null,
 
-    threadReadStates: {},
+    threadVisits: {},
+    publishedReplyAt: {},
     tasks: null,
     activeTasks: [],
 
@@ -12676,6 +12695,8 @@ function createInitialSnapshot(): HostSnapshot {
 
     threads: withMockThreadMarks([
       {
+        lastVisitedAt: null,
+        latestRunCompletedAt: null,
         teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
@@ -12699,6 +12720,8 @@ function createInitialSnapshot(): HostSnapshot {
         updatedAt: "2026-08-09T16:39:00.000Z",
       },
       {
+        lastVisitedAt: null,
+        latestRunCompletedAt: null,
         teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
@@ -12722,6 +12745,8 @@ function createInitialSnapshot(): HostSnapshot {
         updatedAt: "2026-08-09T13:08:00.000Z",
       },
       {
+        lastVisitedAt: null,
+        latestRunCompletedAt: null,
         teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
@@ -12745,6 +12770,8 @@ function createInitialSnapshot(): HostSnapshot {
         updatedAt: "2026-08-08T20:04:00.000Z",
       },
       {
+        lastVisitedAt: null,
+        latestRunCompletedAt: null,
         teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
@@ -12769,6 +12796,8 @@ function createInitialSnapshot(): HostSnapshot {
         updatedAt: "2026-08-07T19:12:00.000Z",
       },
       {
+        lastVisitedAt: null,
+        latestRunCompletedAt: null,
         teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
@@ -12797,6 +12826,8 @@ function createInitialSnapshot(): HostSnapshot {
           [mockSlackLiveThreadId, "running", "Switch Slack to Opensteer"],
         ] as const
       ).map(([id, status, title]) => ({
+        lastVisitedAt: null,
+        latestRunCompletedAt: null,
         teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
@@ -12821,6 +12852,8 @@ function createInitialSnapshot(): HostSnapshot {
         deploymentId: "dep_00000000-0000-4000-8000-000000000001",
       })),
       {
+        lastVisitedAt: null,
+        latestRunCompletedAt: null,
         teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
@@ -12844,6 +12877,8 @@ function createInitialSnapshot(): HostSnapshot {
         updatedAt: "2026-08-09T09:32:00.000Z",
       },
       {
+        lastVisitedAt: null,
+        latestRunCompletedAt: null,
         teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,

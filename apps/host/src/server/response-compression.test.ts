@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { Readable } from "node:stream";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
+import { SequenceSchema } from "@opensteer/core";
 import { hostApi } from "@opensteer/protocol";
 import { createHttpHostApiClient } from "@opensteer/client/host-api";
 import { compressedReads, registerResponseCompression } from "./response-compression.js";
@@ -10,7 +11,7 @@ const data = {
   ok: true,
   data: {
     tasks: [],
-    readStates: [],
+    asOfSequence: SequenceSchema.parse("0"),
     window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
   },
   padding: "x".repeat(2048),

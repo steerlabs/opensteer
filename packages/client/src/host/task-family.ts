@@ -11,8 +11,8 @@ import type { TaskMark } from "./task-marks.js";
 import { requestWaitingOnAssignment } from "./waiting-requests.js";
 
 /**
- * A conversation's family: the tasks it handed out and the automations
- * anchored to it. The way back to the conversation it works for is
+ * A conversation's family: the tasks it handed out, the automations
+ * anchored to it and those running in their own tasks linked under it. The way back to the conversation it works for is
  * `threadRequester`; this is the way down. Web and mobile both read it, so a
  * task's children never read differently on two screens.
  *
@@ -46,6 +46,8 @@ export interface TaskFamily {
   readonly automations: readonly ThreadAutomation[];
   /** Settled, most recently finished first. */
   readonly earlier: readonly FamilyTask[];
+  /** Automations that ran in their own task and ended; shown with Earlier. */
+  readonly ended: readonly ThreadAutomation[];
 }
 
 /** What a family is drawn from, and nothing else. */
@@ -56,11 +58,43 @@ const noAutomations: readonly ThreadAutomation[] = [];
 
 export function taskFamily(reader: FamilyReader, threadId: string): TaskFamily {
   const { open, settled } = children(reader.assignments, threadId);
+  const automations = reader.threadAutomations[threadId] ?? noAutomations;
   return {
     running: open.map((assignment) => familyTask(assignment, reader)),
-    automations: arrangedAutomations(reader.threadAutomations[threadId] ?? noAutomations),
+    automations: arrangedAutomations(automations.filter(({ ended }) => !ended)),
     earlier: settled.map((assignment) => familyTask(assignment, reader)),
+    ended: arrangedAutomations(automations.filter(({ ended }) => ended)),
   };
+}
+
+/**
+ * A conversation's automations as the Host's family list gives them. Any
+ * archived one of its own is gone; one that ran in its own task stays, ended.
+ */
+export function familyAutomations(
+  triggers: readonly {
+    readonly anchorThreadId: string;
+    readonly id: string;
+    readonly kind: ThreadAutomation["kind"];
+    readonly name: string;
+    readonly nextFireAt: string | null;
+    readonly status: "active" | "paused" | "archived";
+  }[],
+  threadId: string,
+): ThreadAutomation[] {
+  return triggers
+    .filter(({ anchorThreadId, status }) => status !== "archived" || anchorThreadId !== threadId)
+    .map((trigger) => ({
+      id: trigger.id,
+      name: trigger.name,
+      kind: trigger.kind,
+      paused: trigger.status === "paused",
+      ended: trigger.status === "archived",
+      taskId: trigger.anchorThreadId === threadId ? null : trigger.anchorThreadId,
+      nextFireAt:
+        trigger.status === "active" && trigger.kind === "schedule" ? trigger.nextFireAt : null,
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
 }
 
 /**
@@ -81,8 +115,12 @@ export const familyGlanceMarks = 3;
 
 export function taskFamilyGlance(reader: FamilyReader, threadId: string): TaskFamilyGlance | null {
   const { open, settled } = children(reader.assignments, threadId);
-  const automations = reader.threadAutomations[threadId]?.length ?? 0;
-  if (open.length === 0 && settled.length === 0 && automations === 0) return null;
+  const held = reader.threadAutomations[threadId] ?? noAutomations;
+  const ended = held.filter((automation) => automation.ended).length;
+  const automations = held.length - ended;
+  // Ended automations count as earlier, so their tasks never lose the way in.
+  const earlier = settled.length + ended;
+  if (open.length === 0 && earlier === 0 && automations === 0) return null;
   const asking = open.map(
     (assignment) =>
       [
@@ -99,7 +137,7 @@ export function taskFamilyGlance(reader: FamilyReader, threadId: string): TaskFa
     running: open.length,
     needsYou: asking.some(([, needsYou]) => needsYou),
     automations,
-    earlier: settled.length,
+    earlier,
   };
 }
 
@@ -123,7 +161,8 @@ export function sameTaskFamily(left: TaskFamily, right: TaskFamily): boolean {
   return (
     sameList(left.running, right.running, sameFamilyTask) &&
     sameList(left.earlier, right.earlier, sameFamilyTask) &&
-    sameList(left.automations, right.automations, sameAutomation)
+    sameList(left.automations, right.automations, sameAutomation) &&
+    sameList(left.ended, right.ended, sameAutomation)
   );
 }
 
@@ -219,6 +258,8 @@ function sameAutomation(left: ThreadAutomation, right: ThreadAutomation): boolea
     left.name === right.name &&
     left.kind === right.kind &&
     left.paused === right.paused &&
+    left.ended === right.ended &&
+    left.taskId === right.taskId &&
     left.nextFireAt === right.nextFireAt
   );
 }

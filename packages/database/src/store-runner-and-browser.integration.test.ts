@@ -672,6 +672,9 @@ describeStore("PostgreSQL store", (it) => {
         type: "run.queued",
         runId: later.run.id,
       },
+      // The queued Run hides the failed completion from unread on every device.
+      { type: "thread.state-changed", data: { latestRunCompletedAt: null } },
+      { type: "thread.state-changed", data: { latestRunCompletedAt: null } },
     ]);
     await expect(store.failCommand(turn.command.id, "ambiguous retry")).resolves.toEqual([]);
     expect(JSON.stringify(failure)).not.toContain("top-secret-provider-token");
@@ -817,6 +820,8 @@ describeStore("PostgreSQL store", (it) => {
       "thread-input.updated",
       "message.placed",
       "run.queued",
+      "thread.state-changed",
+      "thread.state-changed",
     ]);
     await expect(
       database

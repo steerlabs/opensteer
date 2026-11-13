@@ -145,9 +145,11 @@ open streams; gaps need a reread, not invented appends
 
 ## Viewer state synchronization
 
-Read and mute state belongs to one person and must resynchronize even on cursor resume: shared
-event replay cannot recover private changes from another device. Late reads never undo newer
-choices, and pending inputs are not read messages.
+Visits and mute state belong to one person and must resynchronize even on cursor resume: shared
+event replay cannot recover private changes from another device. Visits merge by greatest
+Host-authored timestamp across frames, pages, responses and checkpoints.
+Unread follows the latest Run completion; newer active work hides an older completion. Presented
+replies can advance a visit before completion, suppressing their push on every device.
 
 ## Conversation history
 
@@ -155,8 +157,8 @@ choices, and pending inputs are not read messages.
 [`agent-activity-model.ts`](../packages/client/src/host/agent-activity-model.ts) alone decides what
 a conversation shows. The Host pages by whole turns and never predicts what a client draws, because
 a second copy drifts; opening and Earlier scan in bounded reads until something draws. Inputs from
-agents, Triggers and Opensteer never get a row or count as unread. Keeping silent wakes rare is the
-waker's job, since each costs scan reads.
+agents, Triggers and Opensteer never get a row. Passive reports never make a task unread. Keeping
+silent wakes rare is the waker's job, since each costs scan reads.
 
 ## Personal process recovery and diagnostics
 

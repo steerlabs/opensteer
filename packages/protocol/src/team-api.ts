@@ -392,8 +392,8 @@ export const teamReadSchemas = {
       replyMessageId: TeamMessageIdSchema,
     }),
     output: z.union([
-      z.strictObject({ taskId: ThreadIdSchema, throughSequence: SequenceSchema }),
-      z.strictObject({ taskId: z.null(), throughSequence: z.null() }),
+      z.strictObject({ taskId: ThreadIdSchema, completedAt: IsoDateTimeSchema }),
+      z.strictObject({ taskId: z.null(), completedAt: z.null() }),
     ]),
   },
   "team.mentions.page": {

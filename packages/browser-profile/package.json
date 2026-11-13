@@ -16,8 +16,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "zod": "catalog:",
-    "tldts": "6.1.86"
+    "@opensteer/browser-source-wire": "workspace:*",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@types/node": "catalog:",

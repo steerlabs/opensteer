@@ -8,6 +8,7 @@ import {
   HarnessIdSchema,
   TeamMessageIdSchema,
   ProviderContinuationIdentitySchema,
+  type ContentPart,
   type TeamSource,
   type ThreadId,
   type RunId,
@@ -1120,4 +1121,175 @@ it("navigates a reused worker's Request to the current assigning task without ch
       .where("id", "=", child.id)
       .executeTakeFirstOrThrow(),
   ).resolves.toEqual({ parentThreadId: original.id });
+});
+
+it("shows a Request from an automation's own task, or work it handed out, on the task above", async () => {
+  const f = await fixture();
+  const parent = await f.task("Watch prices");
+  const linked = async (parentThreadId: ThreadId, title: string) =>
+    (
+      await createThread(f.database, {
+        ...f.execution,
+        createdBy: f.userId,
+        parentThreadId,
+        idempotencyKey: `linked:${title}`,
+        title,
+      })
+    ).thread;
+  const monitor = await linked(parent.id, "Price monitor");
+  const helper = await linked(monitor.id, "Checkout helper");
+  const send = (threadId: ThreadId, idempotencyKey: string) =>
+    enqueueThreadInput(f.database, {
+      threadId,
+      requestedBy: f.userId,
+      source: { kind: "human" },
+      policy: "queue",
+      content: [{ type: "text", text: "Work" }],
+      idempotencyKey,
+    });
+  const monitorInput = await send(monitor.id, "monitor-asks");
+  await f.start(monitorInput.run!.id);
+  const helperInput = await send(helper.id, "helper-asks");
+  const assignmentId = createId("delegation");
+  await withPersonalTransaction(f.database, async (transaction) => {
+    await transaction
+      .updateTable("runs")
+      .set({ assignmentId })
+      .where("id", "=", helperInput.run!.id)
+      .execute();
+    await transaction
+      .insertInto("delegations")
+      .values({
+        id: assignmentId,
+        childRunId: helperInput.run!.id,
+        childThreadId: helper.id,
+        initialInputMessageId: helperInput.message.id,
+        objective: "Check out",
+        origin: "run",
+        parentAssignmentId: null,
+        parentRunId: monitorInput.run!.id,
+        parentThreadId: monitor.id,
+        parentOccurrenceId: null,
+        parentWatchActivationId: null,
+        status: "open",
+        revision: 1,
+        resultStatus: "pending",
+        resultText: null,
+        finishedAt: null,
+        completedAt: null,
+        replyTarget: null,
+        resultAttemptedAt: null,
+        resultMessageId: null,
+        resultReason: null,
+      })
+      .execute();
+  });
+  await f.start(helperInput.run!.id);
+  const { RequestStore } = await import("./request-store.js");
+  const requests = new RequestStore(f.database);
+  const ask = async (runId: RunId, threadId: ThreadId) =>
+    (
+      await requests.create({
+        callId: `ask:${threadId}`,
+        kind: "browser.access",
+        mode: "durable",
+        originatingRunId: runId,
+        originatingThreadId: threadId,
+        requestedBy: f.userId,
+        requiredActor: "requester",
+        payload: { kind: "browser.access", reason: "Sign in", suggestion: { kind: "user_choice" } },
+        presentation: {
+          kind: "external",
+          title: "Choose a profile",
+          subject: { kind: "task", id: threadId },
+        },
+      })
+    ).request.id;
+  const fromMonitor = await ask(monitorInput.run!.id, monitor.id);
+  const fromHelper = await ask(helperInput.run!.id, helper.id);
+  const shown = { threadId: parent.id, workerThread: { id: monitor.id, title: "Price monitor" } };
+  const page = await requests.waitingOnUserPage({ userId: f.userId, limit: 10 });
+  expect(
+    Object.fromEntries(
+      page.requests.map(({ presentation, request }) => [request.id, presentation]),
+    ),
+  ).toEqual({ [fromMonitor]: shown, [fromHelper]: shown });
+  const { needsYouPage } = await import("./needs-you-store.js");
+  expect(
+    Object.fromEntries(
+      (await needsYouPage(f.database, { userId: f.userId })).entries.map((entry) => [
+        entry.request.id,
+        entry.navigationThreadId,
+      ]),
+    ),
+  ).toEqual({ [fromMonitor]: parent.id, [fromHelper]: parent.id });
+});
+
+it("keeps a reply that says nothing out of the transcript, and a file-only reply in it", async () => {
+  const f = await fixture();
+  const task = await f.task("Quiet check");
+  const input = await enqueueThreadInput(f.database, {
+    threadId: task.id,
+    requestedBy: f.userId,
+    source: { kind: "human" },
+    policy: "queue",
+    content: [{ type: "text", text: "Check" }],
+    idempotencyKey: "quiet-check",
+  });
+  const { run, bindingGeneration } = await f.start(input.run!.id);
+  const reply = async (content: readonly ContentPart[]) => {
+    const messageId = createId("message");
+    const ordinal = (
+      await f.database
+        .selectFrom("runs")
+        .select("nextRunnerOrdinal")
+        .where("id", "=", run.id)
+        .executeTakeFirstOrThrow()
+    ).nextRunnerOrdinal;
+    const committed = await commitRunnerEvent(f.database, threadPathLinks, {
+      environmentId: f.environmentId,
+      runnerId: f.runnerId,
+      runnerBootId: "fixture",
+      event: {
+        type: "assistant.message",
+        environmentId: f.environmentId,
+        emittedAt: new Date().toISOString(),
+        ordinal,
+        bindingGeneration,
+        runId: run.id,
+        threadId: task.id,
+        data: { messageId, content: [...content] },
+      },
+    });
+    return { committed, messageId };
+  };
+  const sequence = async () =>
+    Number(
+      (
+        await f.database
+          .selectFrom("threads")
+          .select("nextMessageSequence")
+          .where("id", "=", task.id)
+          .executeTakeFirstOrThrow()
+      ).nextMessageSequence,
+    );
+  const before = await sequence();
+  const blank = await reply([{ type: "text", text: " \n" }]);
+  expect(blank.committed.event.type).toBe("assistant.message");
+  expect(blank.committed.compensatingEvents).toEqual([]);
+  expect(await sequence()).toBe(before);
+  const file = await reply([
+    { type: "artifact", artifactId: "art_report", mediaType: "text/csv", name: "deals.csv" },
+  ]);
+  expect(file.committed.compensatingEvents.map(({ type }) => type)).toEqual(["message.created"]);
+  expect(
+    (
+      await f.database
+        .selectFrom("messages")
+        .select("id")
+        .where("id", "in", [blank.messageId, file.messageId])
+        .execute()
+    ).map(({ id }) => id),
+  ).toEqual([file.messageId]);
+  expect(await sequence()).toBe(before + 1);
 });

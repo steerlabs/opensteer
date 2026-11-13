@@ -113,7 +113,6 @@ export function createHostApiHandlers(
     | "node.events.list"
     | "tool.output.get"
     | "thread.messages.list"
-    | "thread.readState.get"
     | "thread.inputQueue.get"
     | "thread.live.get"
     | "thread.requests.list"

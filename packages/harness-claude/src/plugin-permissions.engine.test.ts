@@ -129,6 +129,7 @@ console.log(JSON.stringify({ hookSpecificOutput: {
         token: "fixture",
         url: "http://127.0.0.1:1/internal/v1/mcp",
       },
+      commandEnvironment: {},
       environment: process.env as Record<string, string>,
       environmentId: createId("environment"),
       harnessInstanceId: instanceId,

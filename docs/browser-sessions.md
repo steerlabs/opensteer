@@ -244,6 +244,41 @@ connected without the site, the Request ends as `not-signed-in`: the check `agen
 before opening one. Left pending, its card offers only Don't allow, which tells the agent the
 person refused; ending it lets the agent offer signing in by hand or Opensteer Passwords.
 
+A source token works only at the destination (origin and route generation) it paired on; a source
+paired before that rule binds to the first destination it connects through. The Host checks token,
+owner and binding before the version, and replaces a live connection only with one that is ready,
+so a failed hello learns and changes nothing. One site Chrome and the Host scope differently fails
+that site alone; the Host closes the connection only for framing and authentication violations.
+
+### Installed extensions keep working
+
+Unpacked extensions are never forced to update: the Host carries compatibility, back to wire 4
+(every build since #542, pinned as `apps/browser-extension/compat/opensteer-extension-0.1.565.zip`).
+A newer extension states its highest wire in the connect URL's `wire` query; the Host speaks the
+lower of that and its own, and wire 4 to one that states none. Negotiation is unsigned, so every
+supported version must keep every security property (Host proof before any secret, token
+authentication, exact signed and scoped fields); a downgrade is then harmless. Never add a version
+that weakens one.
+
+While wire-4 extensions are supported, what they strictly parse is frozen
+([`@opensteer/browser-source-wire/frozen`](../packages/browser-source-wire/src/frozen/index.ts) and
+the v4 frame schemas in [`./frames`](../packages/browser-source-wire/src/frames/v4.ts)):
+
+- the `/.well-known/opensteer` descriptor: its outer object is read tolerantly, but `kind` must stay
+  in its enum, `apiVersion` positive, `bootstrapMethods` in its enum and at most 4, capabilities at
+  most 64 of at most 64 characters, and the nested authority envelope exact (document fields,
+  `deploymentShape` as `{ kind }`, host key, SPKI and signature formats, signing bytes);
+- the Personal access route envelope (document version 2, purpose, kind enum, origin rules,
+  signing);
+- the v2 invitation format and its signing bytes;
+- the ID formats inside those documents (deployment, host instance, source);
+- every frame the Host sends a wire-4 peer.
+
+CI runs the pinned build through the real-Host journey, and tests check that what the Host signs
+parses under the frozen copies. Builds from before #542 can't be served: their strict reader
+requires `deploymentShape.defaultWorkspaceBacking`, which the current strict reader forbids, so no
+Host can satisfy both. Their stored pairings carry over after one update.
+
 ## Files and downloads
 
 Page uploads name only files staged in the session's private folder. Desktop downloads appear only

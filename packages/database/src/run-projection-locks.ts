@@ -10,6 +10,23 @@ type ProjectionScope = {
   readonly causalChainIds?: readonly CausalChainId[];
 };
 
+/**
+ * A Thread can hold several provider sessions (fresh context, engine switches), and projection
+ * locks take them all in ID order; lock them together before reading the Run's own.
+ */
+export function lockThreadProviderSessions(
+  transaction: Transaction<DatabaseSchema>,
+  threadId: ThreadId,
+) {
+  return transaction
+    .selectFrom("providerSessions")
+    .selectAll()
+    .where("threadId", "=", threadId)
+    .orderBy("id", "asc")
+    .forNoKeyUpdate()
+    .execute();
+}
+
 /** Fence projection parents before Assignment/input mutations; see ./lock-order.ts.
  * Callers already own the complete Run, Workspace and Thread sets.
  */

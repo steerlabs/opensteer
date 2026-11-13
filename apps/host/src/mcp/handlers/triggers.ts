@@ -70,7 +70,7 @@ function triggerWriteOperation(write: TriggerWriteInput, requestId: string): Tri
   // action would silently drop is refused so the caller learns it had no effect.
   const accepted: Readonly<Record<TriggerWriteInput["action"], readonly string[]>> = {
     cancel: ["occurrenceId", "triggerId"],
-    create: ["anchorThreadId", "name", "program", "source"],
+    create: ["anchorThreadId", "name", "ownTask", "program", "source"],
     run: ["payload", "triggerId"],
     set_next_fire: ["nextFireAt", "triggerId"],
     set_status: ["status", "triggerId"],
@@ -97,6 +97,7 @@ function triggerWriteOperation(write: TriggerWriteInput, requestId: string): Tri
         idempotencyKey: requestId,
         name: requiredTriggerToolField(write.name, "name", context),
         operation: "create",
+        ...(write.ownTask ? { ownTask: true } : {}),
         program: requiredTriggerToolField(write.program, "program", context),
         source: triggerSourceFromInput(requiredTriggerToolField(write.source, "source", context)),
       };

@@ -1,4 +1,4 @@
-import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
+import type { BrowserCookie } from "@opensteer/browser-source-wire/site";
 import {
   BrowserSourceSnapshotSchema,
   browserCookieIdentity,
@@ -7,7 +7,7 @@ import {
   maxBrowserSourceCookies,
   maxBrowserSourceSnapshotBytes,
   type BrowserSourceSnapshot,
-} from "@opensteer/browser-profile/source-state";
+} from "@opensteer/browser-source-wire/site";
 
 export type SiteCookies =
   | { status: "exported"; snapshot: BrowserSourceSnapshot }

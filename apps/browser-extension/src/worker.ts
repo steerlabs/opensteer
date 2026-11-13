@@ -1,28 +1,25 @@
-import { browserSiteDomain, browserSiteFromUrl } from "@opensteer/browser-profile/source-state";
-import { isLoopbackHostname } from "@opensteer/core";
+import { browserSiteDomain, browserSiteFromUrl } from "@opensteer/browser-source-wire/site";
+import { isLoopbackHostname } from "@opensteer/browser-source-wire/frozen";
 import {
   verifyBrowserSourceChallenge,
   verifyBrowserSourceRouteChanged,
   type BrowserSourceInvitation,
-} from "@opensteer/deployment-authority";
+} from "@opensteer/browser-source-wire/frozen";
 import {
-  BrowserSourceClientMessageSchema,
-  BrowserSourceHostMessageSchema,
-  browserSourceProtocolVersion,
+  browserSourceWireFloor,
+  readHostMessage,
+  browserSourceWireCurrent,
   maxBrowserSourceFrameBytes,
-  type BrowserSourceClientMessage,
-  type BrowserSourceHostMessage,
+  type BrowserSourceClientFrame as BrowserSourceClientMessage,
+  type BrowserSourceHostFrame as BrowserSourceHostMessage,
   type BrowserSourceStatus,
-} from "@opensteer/protocol/browser-sources";
+} from "@opensteer/browser-source-wire/frames";
 import { readSiteCookies } from "./cookies.js";
 import {
   ConnectProblem,
   chooseDestination,
-  fetchHostAuthority,
   readInvitation,
   requestPairing,
-  sameDeployment,
-  samePinnedAuthority,
   websocketUrl,
 } from "./host.js";
 import {
@@ -35,6 +32,9 @@ import {
   type UiRequest,
 } from "./messages.js";
 import {
+  storageBusy,
+  loadQuarantine,
+  forgetQuarantine,
   addConnection,
   dailyNewSiteBudget,
   budgetWindowMs,
@@ -63,7 +63,8 @@ interface Handshake {
   proofAccepted: boolean;
 }
 
-type HeldState = "ended" | "route-changed" | "update-required" | "host-outdated";
+type HeldState =
+  "ended" | "route-changed" | "update-required" | "host-outdated" | "different-opensteer";
 
 const links = new Map<string, Link>();
 let pairingInProgress = false;
@@ -130,19 +131,32 @@ function dropSocket(current: Link, state: ConnectionState, reason?: string): voi
   }
 }
 
-const persistedStates = new Set<ConnectionState>([
-  "ended",
-  "route-changed",
-  "update-required",
+const persistedStates = new Set<ConnectionState>(["ended", "route-changed", "update-required"]);
+/**
+ * Named, but still retrying: nothing secret leaves before the Host's proof, and
+ * a Host updates itself, so these clear once the right, current Host answers.
+ */
+const retryingStates = new Set<ConnectionState>([
+  "offline",
+  "different-opensteer",
   "host-outdated",
 ]);
 
 function persistedState(connection: Connection): HeldState | null {
-  if (connection.ended) return "ended";
-  if (connection.routeChanged) return "route-changed";
-  if (connection.hostOutdated) return "host-outdated";
-  if (connection.blockedVersion === browserSourceProtocolVersion) return "update-required";
-  return null;
+  const held = connection.held;
+  if (!held || !persistedStates.has(held.state)) return null;
+  if (held.state === "update-required" && held.version !== browserSourceWireCurrent) return null;
+  return held.state;
+}
+
+function pause(
+  current: Link,
+  generation: number,
+  state: "different-opensteer" | "host-outdated",
+): void {
+  if (generation !== current.generation) return;
+  dropSocket(current, state, "Stopped by extension");
+  scheduleReconnect(current);
 }
 
 async function connectLink(current: Link): Promise<void> {
@@ -156,10 +170,10 @@ async function connectLink(current: Link): Promise<void> {
     current.state = held;
     return;
   }
-  if (connection.blockedVersion !== undefined) {
+  if (connection.held !== undefined) {
     // A newer build than the one the Host refused may try again.
     await updateConnection(connection.sourceId, (item) => {
-      const { blockedVersion: _blocked, ...rest } = item;
+      const { held: _held, ...rest } = item;
       return { connection: rest, result: true };
     });
   }
@@ -174,18 +188,8 @@ async function connectLink(current: Link): Promise<void> {
   // A retry Chrome makes by itself leaves an offline connection saying so
   // until one succeeds, rather than flickering through Connecting on every
   // attempt; an attempt someone asked for says it is connecting.
-  if (current.state !== "offline") current.state = "connecting";
+  if (!retryingStates.has(current.state)) current.state = "connecting";
   current.ready = false;
-  try {
-    const live = await fetchHostAuthority(connection.origin);
-    if (generation !== current.generation) return;
-    if (!samePinnedAuthority(connection.authority, live)) throw new Error("Different Opensteer");
-  } catch {
-    if (generation !== current.generation) return;
-    current.state = "offline";
-    scheduleReconnect(current);
-    return;
-  }
   let socket: WebSocket;
   try {
     socket = new WebSocket(websocketUrl(connection.origin));
@@ -207,7 +211,7 @@ async function connectLink(current: Link): Promise<void> {
       send(current, generation, {
         nonce: handshake.nonce,
         origin: connection.origin,
-        routeGeneration: connection.route?.document.route.generation ?? null,
+        routeGeneration: connection.routeGeneration,
         sourceId: connection.sourceId,
         type: "source.challenge",
       });
@@ -245,7 +249,7 @@ function send(current: Link, generation: number, frame: BrowserSourceClientMessa
   ) {
     return false;
   }
-  const payload = JSON.stringify(BrowserSourceClientMessageSchema.parse(frame));
+  const payload = JSON.stringify(frame);
   if (new TextEncoder().encode(payload).byteLength > maxBrowserSourceFrameBytes) {
     throw new RangeError("Frame too large");
   }
@@ -269,14 +273,9 @@ async function hold(
   if (generation !== current.generation) return;
   clearReconnect(current);
   dropSocket(current, state, "Stopped by Opensteer");
-  const marker: Partial<Connection> =
-    state === "ended"
-      ? { ended: true }
-      : state === "route-changed"
-        ? { routeChanged: true }
-        : state === "host-outdated"
-          ? { hostOutdated: true }
-          : { blockedVersion: browserSourceProtocolVersion };
+  const marker: Partial<Connection> = {
+    held: { state, ...(state === "update-required" ? { version: browserSourceWireCurrent } : {}) },
+  };
   await updateConnection(
     connection.sourceId,
     (item) => ({ connection: { ...item, ...marker }, result: true }),
@@ -288,9 +287,7 @@ async function hold(
 function refusal(error: Extract<BrowserSourceHostMessage, { type: "source.error" }>): HeldState {
   if (error.code === "source-unauthorized") return "ended";
   if (error.code === "route-changed") return "route-changed";
-  return error.supportedVersion < browserSourceProtocolVersion
-    ? "host-outdated"
-    : "update-required";
+  return error.supportedVersion < browserSourceWireCurrent ? "host-outdated" : "update-required";
 }
 
 async function receive(
@@ -307,19 +304,12 @@ async function receive(
     reject(current, generation, "Invalid frame");
     return;
   }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
+  const message = readHostMessage(raw);
+  if (!message) {
     reject(current, generation, "Invalid frame");
     return;
   }
-  const frame = BrowserSourceHostMessageSchema.safeParse(parsed);
-  if (!frame.success) {
-    reject(current, generation, "Invalid frame");
-    return;
-  }
-  const message = frame.data;
+  if (message.type === "unknown") return;
   if (message.type === "source.error") {
     // Anyone answering on this address could send an error; only a Host that
     // proved the pinned identity may end or pause the connection. A Host that
@@ -331,10 +321,10 @@ async function receive(
         message.signature !== undefined &&
         handshake.nonce !== null &&
         verifyBrowserSourceRouteChanged({
-          authority: connection.authority,
+          authority: { publicKey: { algorithm: "Ed25519", spki: connection.publicKey } },
           nonce: handshake.nonce,
           origin: connection.origin,
-          routeGeneration: connection.route?.document.route.generation ?? null,
+          routeGeneration: connection.routeGeneration,
           signature: message.signature,
           sourceId: connection.sourceId,
         });
@@ -342,7 +332,9 @@ async function receive(
       else reject(current, generation, "Proof required");
       return;
     }
-    await hold(connection, current, generation, refusal(message));
+    const refused = refusal(message);
+    if (refused === "host-outdated") pause(current, generation, refused);
+    else await hold(connection, current, generation, refused);
     return;
   }
   if (message.type === "source.proof") {
@@ -351,24 +343,33 @@ async function receive(
       handshake.proofAccepted ||
       message.nonce !== handshake.nonce ||
       !verifyBrowserSourceChallenge({
-        authority: connection.authority,
+        authority: { publicKey: { algorithm: "Ed25519", spki: connection.publicKey } },
         nonce: message.nonce,
         origin: connection.origin,
-        routeGeneration: connection.route?.document.route.generation ?? null,
+        routeGeneration: connection.routeGeneration,
         signature: message.signature,
         sourceId: connection.sourceId,
       })
     ) {
-      reject(current, generation, "Proof failed");
+      pause(current, generation, "different-opensteer");
       return;
     }
     handshake.nonce = null;
     handshake.proofAccepted = true;
+    const negotiated = message.wire ?? 4;
+    if (negotiated < browserSourceWireFloor) {
+      pause(current, generation, "host-outdated");
+      return;
+    }
+    if (negotiated > browserSourceWireCurrent) {
+      await hold(connection, current, generation, "update-required");
+      return;
+    }
     send(current, generation, {
       sourceId: connection.sourceId,
       token: connection.token,
       type: "source.hello",
-      version: browserSourceProtocolVersion,
+      version: negotiated,
     });
     return;
   }
@@ -403,6 +404,7 @@ async function receive(
     });
     return;
   }
+  if (message.type !== "source.export") return;
   try {
     await exportSite(connection, current, generation, message.site, message.operationId);
   } catch {
@@ -433,11 +435,7 @@ function siteDomainOf(origin: string): string | null {
 async function refusedSite(domain: string): Promise<boolean> {
   if (isLoopbackHostname(domain)) return true;
   for (const connection of await loadConnections()) {
-    const origins = [
-      connection.origin,
-      connection.authority.document.canonicalOrigin,
-      connection.route?.document.route.origin,
-    ];
+    const origins = connection.excludedOrigins;
     if (origins.some((origin) => origin !== undefined && siteDomainOf(origin) === domain)) {
       return true;
     }
@@ -513,10 +511,7 @@ async function exportSite(
     reply("too-large");
     return;
   }
-  // Stop sharing may land while cookies were being read, and two new sites may
-  // race for the last slot of the budget; both are settled here, atomically.
-  // The frame is sent inside the same update, so a share is recorded (and
-  // notified) only when it actually left on this connection's live socket.
+  // Reserve durably before any cookies leave; an uncertain send stays counted.
   const now = Date.now();
   const recorded = await updateConnection(
     connection.sourceId,
@@ -527,7 +522,7 @@ async function exportSite(
       if (!previous && recent.length >= dailyNewSiteBudget) {
         return { connection: item, result: "limit" };
       }
-      if (!send(current, generation, frame)) return null;
+      if (generation !== current.generation || !current.ready) return null;
       if (previous) {
         return {
           connection: {
@@ -552,12 +547,16 @@ async function exportSite(
     reply(recorded);
     return;
   }
-  // null: the socket closed or was replaced, or this connection was replaced;
-  // nothing was sent, and the reply below is dropped unless the socket lives.
   if (recorded === null) {
     reply("unsupported");
     return;
   }
+  const final = await loadConnection(connection.sourceId);
+  if (!final || final.token !== connection.token || final.stoppedSites.includes(site)) {
+    reply(final?.stoppedSites.includes(site) ? "stopped" : "unsupported");
+    return;
+  }
+  if (!send(current, generation, frame)) return;
   if (recorded === "first") await notifyFirstShare(connection, site).catch(() => undefined);
 }
 
@@ -572,7 +571,7 @@ function siteHost(site: string): string {
 async function notifyFirstShare(connection: Connection, site: string): Promise<void> {
   await chrome.notifications.create(`${shareNotificationPrefix}${connection.sourceId}\n${site}`, {
     buttons: [{ title: "Stop sharing" }],
-    iconUrl: chrome.runtime.getURL("icons/icon-128.png"),
+    iconUrl: new URL("icons/icon-128.png", import.meta.url).href,
     message: `Opensteer agents can now use ${siteHost(site)} as you. You can stop this any time.`,
     priority: 0,
     title: `${siteHost(site)} sign-in shared with ${connection.deploymentName}`,
@@ -594,7 +593,7 @@ chrome.notifications.onButtonClicked.addListener((id, buttonIndex) => {
     await chrome.notifications.clear(id);
     if (!connection) return;
     await chrome.notifications.create(`stopped\n${target.sourceId}\n${target.site}`, {
-      iconUrl: chrome.runtime.getURL("icons/icon-128.png"),
+      iconUrl: new URL("icons/icon-128.png", import.meta.url).href,
       message: `Share it again from the Opensteer button in Chrome's toolbar.`,
       priority: 0,
       title: `Stopped sharing ${siteHost(target.site)} with ${connection.deploymentName}`,
@@ -630,9 +629,11 @@ function view(connection: Connection): ConnectionView {
     deploymentName: connection.deploymentName,
     name: connection.name,
     origin: connection.origin,
-    sites: Object.entries(connection.sharedSites)
-      .map(([site, share]) => ({
-        lastSharedAt: share.lastSharedAt,
+    // A stop can exist for a site this connection never shared (carried from a
+    // previous connection), and it must still be visible to undo.
+    sites: [...new Set([...Object.keys(connection.sharedSites), ...connection.stoppedSites])]
+      .map((site) => ({
+        lastSharedAt: connection.sharedSites[site]?.lastSharedAt ?? 0,
         site,
         stopped: connection.stoppedSites.includes(site),
       }))
@@ -643,7 +644,7 @@ function view(connection: Connection): ConnectionView {
 }
 
 async function status(): Promise<Status> {
-  return { connections: (await loadConnections()).map(view) };
+  return { connections: (await loadConnections()).map(view), quarantined: await loadQuarantine() };
 }
 
 async function waitForState(
@@ -662,8 +663,10 @@ async function waitForState(
 /** The connection a new pairing replaces: one Deployment keeps one signing key. */
 async function existingFor(invitation: BrowserSourceInvitation): Promise<Connection | null> {
   return (
-    (await loadConnections()).find((item) =>
-      sameDeployment(item.authority, invitation.authority),
+    (await loadConnections()).find(
+      (item) =>
+        item.deploymentId === invitation.authority.document.deploymentId &&
+        item.publicKey === invitation.authority.publicKey.spki,
     ) ?? null
   );
 }
@@ -762,13 +765,22 @@ async function connect(
     }
     await addConnection(
       {
-        authority: invitation.authority,
+        schema: 2,
+        deploymentId: invitation.authority.document.deploymentId,
+        publicKey: invitation.authority.publicKey.spki,
+        canonicalOrigin: invitation.authority.document.canonicalOrigin,
+        excludedOrigins: [
+          ...new Set([
+            invitation.authority.document.canonicalOrigin,
+            ...invitation.destinations.map((item) => item.origin),
+          ]),
+        ],
         connectedAt: Date.now(),
         deploymentName: invitation.deploymentName,
         name,
         newShares: [],
         origin: destination.origin,
-        route: destination.route,
+        routeGeneration: destination.route?.document.route.generation ?? null,
         sharedSites: {},
         sourceId: paired.sourceId,
         stoppedSites: [],
@@ -790,6 +802,9 @@ async function connect(
 
 async function handle(request: UiRequest, tab: ChromeTab | undefined): Promise<unknown> {
   switch (request.type) {
+    case "ui.quarantine.forget":
+      await forgetQuarantine(request.id);
+      return await status();
     case "ui.status":
       return await status();
     case "ui.invitation.check":
@@ -808,9 +823,13 @@ async function handle(request: UiRequest, tab: ChromeTab | undefined): Promise<u
       return await status();
     case "ui.retry": {
       const connection = await loadConnection(request.sourceId);
-      if (connection && !connection.ended && !connection.routeChanged) {
+      if (
+        connection &&
+        connection.held?.state !== "ended" &&
+        connection.held?.state !== "route-changed"
+      ) {
         await updateConnection(request.sourceId, (item) => {
-          const { blockedVersion: _blocked, hostOutdated: _outdated, ...rest } = item;
+          const { held: _held, ...rest } = item;
           return { connection: rest, result: true };
         });
         const current = link(request.sourceId);
@@ -886,7 +905,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === "reconnect") connectAll();
+  if (alarm.name === "reconnect") {
+    void checkForUpdate().then(connectAll);
+  }
 });
 chrome.runtime.onStartup.addListener(connectAll);
 chrome.runtime.onInstalled.addListener(() => {
@@ -896,5 +917,27 @@ void (async () => {
   await restrictCredentialStorage();
   // Chrome stops an idle service worker; the alarm wakes it to reconnect.
   await chrome.alarms.create("reconnect", { periodInMinutes: 1 });
+  await checkForUpdate();
   connectAll();
 })().catch(() => undefined);
+
+async function checkForUpdate(): Promise<void> {
+  if (pairingInProgress || storageBusy()) return;
+  try {
+    const response = await fetch(chrome.runtime.getURL("manifest.json"), { cache: "no-store" });
+    const manifest: unknown = await response.json();
+    if (typeof manifest !== "object" || manifest === null || !("background" in manifest)) return;
+    const background = manifest.background;
+    if (typeof background !== "object" || background === null || !("service_worker" in background))
+      return;
+    if (
+      typeof background.service_worker === "string" &&
+      chrome.runtime.getURL(background.service_worker) !== import.meta.url &&
+      !pairingInProgress &&
+      !storageBusy()
+    )
+      chrome.runtime.reload();
+  } catch {
+    /* A failed read leaves this worker running. */
+  }
+}

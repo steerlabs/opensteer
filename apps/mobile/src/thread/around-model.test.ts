@@ -204,7 +204,7 @@ describe("the sheet's sections", () => {
     needsYou: false,
     ...patch,
   });
-  const empty: TaskFamily = { automations: [], earlier: [], running: [] };
+  const empty: TaskFamily = { automations: [], earlier: [], ended: [], running: [] };
 
   // Failure: a tile stands for a section with nothing in it, or tiles change order.
   it("offers only the sections with something in them, in the button's order", () => {

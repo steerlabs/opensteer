@@ -209,7 +209,7 @@ export const databaseLockOrder = [
   "personal_remote_account_link",
   "personal_remote_sessions",
   "security_audit",
-  "thread_read_markers",
+  "thread_visits",
   "trigger_revisions",
   // Host User fences precede auth sessions, adoption proofs and account reconciliation.
   "users",

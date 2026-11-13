@@ -607,6 +607,7 @@ async function setup(scenario: string) {
       token: "agent-tools-token",
       url: "https://host.test/mcp",
     },
+    commandEnvironment: {},
     environment,
     environmentId: createId("environment"),
     harnessInstanceId,

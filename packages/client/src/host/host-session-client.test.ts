@@ -8,6 +8,7 @@ import * as lastPictures from "./browser-last-picture.js";
 import { browserLineages } from "../test-support/browser-snapshot.js";
 import { seedBrowserSession } from "../test-support/browser-snapshot.js";
 import type { PersonalTabLineage } from "./client.js";
+import type { PersonalStreamCheckpoint } from "./personal-stream-cache.js";
 import { KeyedStreamPublisher, keyedStreamBytes } from "@opensteer/protocol/keyed-stream";
 import {
   BrowserGroupRowSchema,
@@ -973,7 +974,7 @@ function rpcContractFetch(
     if (name === "tasks.list" && taskReads === "answered") {
       return json({
         data: {
-          readStates: [],
+          asOfSequence: SequenceSchema.parse("0"),
           tasks: [],
           window: { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
         },
@@ -1017,7 +1018,7 @@ function rpcContractFetch(
         : name === "thread.events.list"
           ? {
               ...body,
-              readState: body.readState ?? defaultReadState(requiredString(payload, "threadId")),
+              asOfSequence: body.asOfSequence ?? SequenceSchema.parse("0"),
             }
           : responseBody;
     if (name === "commands.dispatch" && payload.type === "browser.session.close") {
@@ -1106,15 +1107,6 @@ function requiredString(input: Readonly<Record<string, unknown>>, key: string): 
   const value = input[key];
   if (typeof value !== "string") throw new TypeError(`Missing ${key}`);
   return value;
-}
-
-function defaultReadState(threadId: string) {
-  return {
-    asOfSequence: SequenceSchema.parse("0"),
-    readSequence: null,
-    threadId: ThreadIdSchema.parse(threadId),
-    unreadSequence: null,
-  };
 }
 
 describe("HttpHostClient authentication and onboarding", () => {
@@ -4015,10 +4007,7 @@ describe("HttpHostClient durable realtime", () => {
             thread,
             threadId: thread.id,
             events: page.events,
-            readState: {
-              ...defaultReadState(thread.id),
-              asOfSequence: options.asOf ?? page.events.at(-1)?.sequence ?? "5",
-            },
+            asOfSequence: options.asOf ?? page.events.at(-1)?.sequence ?? "5",
             window: {
               byteCount: 256,
               itemCount: page.events.length,
@@ -4727,14 +4716,6 @@ describe("HttpHostClient durable realtime", () => {
       socket.receive({
         snapshot: {
           ...deploymentSnapshot(workspace, "0"),
-          readStates: [
-            {
-              asOfSequence: sequence("0"),
-              readSequence: null,
-              threadId: open.id,
-              unreadSequence: null,
-            },
-          ],
           threads: [open, busy],
         },
         type: "host.snapshot",
@@ -6141,6 +6122,47 @@ describe("HttpHostClient durable realtime", () => {
 });
 
 describe("HttpHostClient input queue", () => {
+  it("keeps a fresh-context send unsteerable while the confirming queue read waits", async () => {
+    const host = await queueHost();
+    try {
+      host.items = [];
+      host.client.activateThread(host.thread.id);
+      await vi.waitFor(
+        () =>
+          expect(
+            host.client.getSnapshot().inputQueues[host.thread.id],
+            "The initial queue never loaded",
+          ).toBeDefined(),
+        { timeout: 2_000 },
+      );
+      host.holdReads();
+      const message = { ...makeMessage(host.thread.id, "input", "Independent check"), runId: null };
+      host.answerWith(() =>
+        json(
+          {
+            input: { ...pendingInput(message), freshContext: true },
+            message,
+            run: null,
+            wasDuplicate: false,
+          },
+          202,
+        ),
+      );
+      await host.client.dispatch({
+        content: message.content,
+        freshContext: true,
+        idempotencyKey: "fresh-send",
+        threadId: host.thread.id,
+        type: "thread.sendMessage",
+      });
+      expect(host.client.getSnapshot().inputQueues[host.thread.id]?.items).toMatchObject([
+        { canSteer: false, input: { freshContext: true, messageId: message.id } },
+      ]);
+    } finally {
+      host.releaseReads();
+      host.client.dispose();
+    }
+  });
   it("reads the queue when a Thread is activated and reuses a read in flight", async () => {
     const host = await queueHost();
     host.client.activateThread(host.thread.id);
@@ -7591,7 +7613,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   function historyPage(thread: Thread, asOfSequence = "0", events: AgentEvent[] = []) {
     return {
       events,
-      readState: { ...defaultReadState(thread.id), asOfSequence },
+      asOfSequence,
       thread,
       threadId: thread.id,
       window: {
@@ -8056,7 +8078,7 @@ describe("HttpHostClient Thread state reconciliation", () => {
   );
 
   it.each(["1", "4"])(
-    "reconciles history at its read-state cut %s even when the last history event is older",
+    "reconciles history at its sequence cut %s even when the last history event is older",
     async (asOfSequence) => {
       const workspace = makeDeployment();
       const thread = makeThread(workspace.id);
@@ -9616,7 +9638,7 @@ describe("HttpHostClient Run activity and live streams", () => {
         if (path === "/v1/rpc/thread.events.list")
           return json({
             ...historyPage(thread),
-            readState: { ...defaultReadState(thread.id), asOfSequence: "1" },
+            asOfSequence: SequenceSchema.parse("1"),
           });
         return json(
           viewer === "owner"
@@ -9929,9 +9951,11 @@ describe("HttpHostClient Run activity and live streams", () => {
 
   it("retains selection state live and after reload without adding conversation rows", async () => {
     const workspace = makeDeployment();
-    const thread = makeThread(workspace.id);
+    const thread = { ...makeThread(workspace.id), providerSessionId: createId("providerSession") };
     const switched = {
       ...thread,
+      providerSessionId: createId("providerSession"),
+      continuationIdentity: null,
       modelSelection: ModelSelectionSchema.parse({
         modelId: "gpt-5.6-sol",
         options: { effort: "high" },
@@ -9974,11 +9998,14 @@ describe("HttpHostClient Run activity and live streams", () => {
           harnessInstanceId: switched.harnessInstanceId,
           id: event.eventId,
           modelSelection: switched.modelSelection,
+          providerSessionId: switched.providerSessionId,
         }),
       ]);
-      expect(
-        client.getSnapshot().threads.find(({ id }) => id === thread.id)?.modelSelection,
-      ).toEqual(switched.modelSelection);
+      expect(client.getSnapshot().threads.find(({ id }) => id === thread.id)).toMatchObject({
+        modelSelection: switched.modelSelection,
+        providerSessionId: switched.providerSessionId,
+        continuationIdentity: null,
+      });
       expect(visibleTranscript(client.getSnapshot().transcripts[thread.id] ?? [], null)).toEqual(
         [],
       );
@@ -9986,6 +10013,9 @@ describe("HttpHostClient Run activity and live streams", () => {
       history = [event];
       await client.loadLatestTranscript(thread.id);
       expect(markers()).toEqual(live);
+      expect(
+        client.getSnapshot().threads.find(({ id }) => id === thread.id)?.providerSessionId,
+      ).toBe(switched.providerSessionId);
       expect(visibleTranscript(client.getSnapshot().transcripts[thread.id] ?? [], null)).toEqual(
         [],
       );
@@ -11490,7 +11520,7 @@ describe("realtime review regressions", () => {
         type: "host.snapshot",
         snapshot: {
           ...deploymentSnapshot(f.workspace, "10"),
-          readStates: "invalid",
+          threadWindow: "invalid",
           threads: [f.thread],
         },
       });
@@ -11501,7 +11531,7 @@ describe("realtime review regressions", () => {
       expect(f.client.getSnapshot().threads.map(({ id }) => id)).not.toContain(f.thread.id);
       expect(JSON.parse(diagnostics.mock.calls[0]![0] as string)).toMatchObject({
         event: "host.realtime.frame-rejected",
-        issuePaths: ["snapshot.readStates"],
+        issuePaths: ["snapshot.threadWindow"],
       });
     } finally {
       f.client.dispose();
@@ -11810,7 +11840,7 @@ describe("realtime protocol recovery journey", () => {
 
   const unreadableSnapshot = (f: Synchronized) => ({
     type: "host.snapshot",
-    snapshot: { ...deploymentSnapshot(f.workspace, "12"), readStates: "invalid" },
+    snapshot: { ...deploymentSnapshot(f.workspace, "12"), threadWindow: "invalid" },
   });
 
   /** Fails three times at one position, which leaves the fourth socket asking for a snapshot. */
@@ -12411,78 +12441,66 @@ describe("realtime protocol recovery journey", () => {
       }
     });
 
-    it("replays an unreadable read marker page, which no reread would bring back", async () => {
+    it("replays an unreadable visit page, which no reread would bring back", async () => {
       const f = await synchronizedClient();
       try {
         const socket = f.sockets[0]!;
         socket.receiveRaw({
-          type: "host.read-states",
+          type: "host.thread-visits",
 
-          states: [
-            { asOfSequence: "10", readSequence: "1", threadId: f.thread.id, unreadSequence: null },
-          ],
-        });
-        socket.receiveRaw({
-          type: "host.read-markers",
-
-          markers: [{ readSequence: "9", threadId: "unreadable" }],
+          visits: [{ lastVisitedAt: "2026-01-02T00:00:00.000Z", threadId: "unreadable" }],
         });
         expect(socket.closeEvents).toEqual([{ code: 4002, reason: "Invalid Host protocol frame" }]);
         const next = await reconnectAfter(f, 10);
         expect(next.afterSequence).toBe("10");
         next.socket.receiveRaw({
-          type: "host.read-markers",
+          type: "host.thread-visits",
 
-          markers: [{ readSequence: "9", threadId: f.thread.id }],
+          visits: [{ lastVisitedAt: "2026-01-02T00:00:00.000Z", threadId: f.thread.id }],
         });
         next.socket.receiveRaw({
           type: "host.synchronized",
           sequence: "10",
         });
-        expect(f.client.getSnapshot().threadReadStates[f.thread.id]?.readSequence).toBe("9");
+        expect(f.client.getSnapshot().threadVisits[f.thread.id]).toBe("2026-01-02T00:00:00.000Z");
         expect(f.client.getSnapshot().connection).toBe("connected");
       } finally {
         f.client.dispose();
       }
     });
 
-    it("starts over from a snapshot when a read state is lost, which no replay would resend", async () => {
-      const f = await synchronizedClient();
-      try {
-        const socket = f.sockets[0]!;
-        socket.receiveRaw(
-          eventsFrame({ type: "host.events", events: [stateEvent(f, "11", "running")] }),
-        );
-        socket.receiveRaw({
-          type: "host.read-states",
-
-          states: [{ threadId: "unreadable" }],
-        });
-        expect(socket.closeEvents).toEqual([{ code: 4002, reason: "Invalid Host protocol frame" }]);
-        expect(f.records()).toMatchObject([{ event: "host.realtime.frame-rejected" }]);
-        const next = await reconnectAfter(f, 10);
-        expect(next.afterSequence).toBe("0");
-        next.socket.receiveRaw({
-          type: "host.snapshot",
-          snapshot: {
-            ...deploymentSnapshot(f.workspace, "11"),
-            readStates: [
-              {
-                asOfSequence: "11",
-                readSequence: "2",
-                threadId: f.thread.id,
-                unreadSequence: "11",
-              },
-            ],
-            threads: [f.thread],
+    it("merges many reconnect visit pages and checkpoints them once, at synchronization", async () => {
+      const commits: PersonalStreamCheckpoint[] = [];
+      const f = await synchronizedClient({
+        streamCache: {
+          load: async () => null,
+          remove: async () => {},
+          commit: async (checkpoint) => {
+            commits.push(checkpoint);
           },
-        });
-        next.socket.receiveRaw({
-          type: "host.synchronized",
-          sequence: "11",
-        });
-        expect(f.client.getSnapshot().threadReadStates[f.thread.id]?.unreadSequence).toBe("11");
-        expect(f.client.getSnapshot().connection).toBe("connected");
+        },
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        f.sockets[0]!.serverClose();
+        const next = await reconnectAfter(f, 10);
+        const before = commits.length;
+        const pages = Array.from({ length: 50 }, () =>
+          Array.from({ length: 100 }, () => ({
+            threadId: createId("thread"),
+            lastVisitedAt: "2026-01-02T00:00:00.000Z",
+          })),
+        );
+        for (const visits of pages) next.socket.receiveRaw({ type: "host.thread-visits", visits });
+        const merged = f.client.getSnapshot().threadVisits;
+        next.socket.receiveRaw({ type: "host.thread-visits", visits: pages[0] });
+        expect(f.client.getSnapshot().threadVisits).toBe(merged);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(commits).toHaveLength(before);
+        next.socket.receiveRaw({ type: "host.synchronized", sequence: "10" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(commits).toHaveLength(before + 1);
+        expect(Object.keys(commits.at(-1)!.snapshot.threadVisits)).toHaveLength(5000);
       } finally {
         f.client.dispose();
       }
@@ -12841,6 +12859,8 @@ function makeDeployment(name = "Opensteer"): PersonalFixture {
 function makeThread(_deploymentId: import("@opensteer/core").DeploymentId): Thread {
   const id = createId("thread");
   return {
+    lastVisitedAt: null,
+    latestRunCompletedAt: null,
     doneAt: null,
     doneReason: null,
     accessMode: "full-access",
@@ -12923,10 +12943,10 @@ function makeThreadInput(message: Message) {
 
 function deploymentSnapshot(deployment: PersonalFixture, sequence: string) {
   const window = { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 };
-  const page = { readStates: [], tasks: [], window };
+  const page = { asOfSequence: SequenceSchema.parse("0"), tasks: [], window };
   return {
     deploymentId: deployment.id,
-    readStates: [],
+    asOfSequence: SequenceSchema.parse("0"),
     messages: [],
     messageWindows: [],
     pendingRequests: [],
@@ -13140,7 +13160,7 @@ describe("HttpHostClient overnight transcript residency", () => {
   function page(thread: Thread, events: AgentEvent[], asOfSequence: string) {
     return {
       events,
-      readState: { ...defaultReadState(thread.id), asOfSequence },
+      asOfSequence,
       thread,
       threadId: thread.id,
       window: {
@@ -14606,7 +14626,7 @@ it("hydrates older running helper cards and routes a watched node's work only to
           threadId: thread.id,
           events: [],
           window: { ...window, threadId: thread.id },
-          readState: { ...defaultReadState(thread.id), asOfSequence: "10" },
+          asOfSequence: SequenceSchema.parse("10"),
         });
       const node = {
         id: nodeId,

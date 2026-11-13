@@ -1,7 +1,12 @@
 import readline from "node:readline";
 
 const scenario = process.env.FAKE_CODEX_PROCESS_SCENARIO ?? "timeout";
-const lines = readline.createInterface({ input: process.stdin });
+// `no-read` is a process that stopped reading its stdin while it still runs.
+if (scenario === "no-read") setInterval(() => undefined, 1_000);
+const lines =
+  scenario === "no-read"
+    ? { on: () => undefined }
+    : readline.createInterface({ input: process.stdin });
 
 // Diagnostic production is gated separately from the timed request, so a
 // scheduled-out child cannot masquerade as missing diagnostic capture.

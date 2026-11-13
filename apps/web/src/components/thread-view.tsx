@@ -1,3 +1,4 @@
+import { useThreadVisits } from "@opensteer/client/react";
 import { ThreadServerApprovals } from "./computer-apps/thread-server-approvals.js";
 import { threadMark, type PasswordsSetupOffer } from "@opensteer/client/host";
 import { observeResize } from "@opensteer/shared/resizeObserver";
@@ -614,31 +615,11 @@ function ThreadView({
     }
   };
 
-  /* ---- Reading position: read marking, exact jumps ---- */
+  /* ---- Reading position: exact jumps ---- */
 
-  const readState = snapshot.threadReadStates?.[thread.id] ?? null;
-  const readKnown = readState !== null;
-
-  // What this reader has actually seen published here: the furthest sequence
-  // the loaded conversation carries. The Host's `unreadSequence` is not it —
-  // that names content this page may never have rendered.
-  const markedSequence = readState?.readSequence ?? null;
-  // Coming back to the window is an observation of what is on screen; a window
-  // that is merely visible behind another one is not.
+  // A window behind another app shows nothing to anyone; returning to it records what it shows.
   const foreground = useWindowInForeground();
-  useEffect(() => {
-    if (foreground) handleScroll();
-  }, [foreground]);
-  useEffect(() => {
-    // Until this reader's position arrives, a mark could only repeat it.
-    if (!readKnown || historical || !atTail || !foreground) return;
-    if (observed === null) return;
-    if (markedSequence !== null && BigInt(markedSequence) >= BigInt(observed)) return;
-    void hostClient.markThreadRead(thread.id, observed).catch(() => {
-      // A read marker that did not land is retried by the next observation;
-      // it is not worth interrupting the reader for.
-    });
-  }, [atTail, foreground, historical, hostClient, markedSequence, observed, readKnown, thread.id]);
+  useThreadVisits(hostClient, thread.id, foreground);
 
   // What a notification has to know before it decides to interrupt: one about
   // the conversation on screen, at its tail, in front of the reader, is
@@ -650,9 +631,6 @@ function ThreadView({
 
   /** Moves the reader to one exact message, and leaves them there. */
   const jumpToMessage = async (messageId: string) => {
-    // Set before the fetch, not after: the client pins the Thread to the
-    // historical window as it answers, and a render in between would otherwise
-    // read the foot of the old page as the conversation's tail and mark it.
     setHistorical(true);
     followsTailRef.current = false;
     setAtTail(false);

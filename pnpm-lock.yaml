@@ -201,21 +201,9 @@ importers:
 
   apps/browser-extension:
     dependencies:
-      '@opensteer/browser-profile':
+      '@opensteer/browser-source-wire':
         specifier: workspace:*
-        version: link:../../packages/browser-profile
-      '@opensteer/core':
-        specifier: workspace:*
-        version: link:../../packages/core
-      '@opensteer/deployment-authority':
-        specifier: workspace:*
-        version: link:../../packages/deployment-authority
-      '@opensteer/protocol':
-        specifier: workspace:*
-        version: link:../../packages/protocol
-      '@opensteer/shared':
-        specifier: workspace:*
-        version: link:../../packages/shared
+        version: link:../../packages/browser-source-wire
       zod:
         specifier: 'catalog:'
         version: 4.6.7
@@ -226,9 +214,18 @@ importers:
       '@fontsource-variable/inter':
         specifier: ^5.3.0
         version: 5.3.0
+      '@opensteer/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@opensteer/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@opensteer/deployment-authority':
+        specifier: workspace:*
+        version: link:../../packages/deployment-authority
+      '@opensteer/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
       '@types/ws':
         specifier: 'catalog:'
         version: 8.18.1
@@ -547,6 +544,9 @@ importers:
       electron-updater:
         specifier: 6.8.11
         version: 6.8.11
+      fflate:
+        specifier: 'catalog:'
+        version: 0.8.2
       sharp:
         specifier: 'catalog:'
         version: 0.35.5(@types/node@26.2.0)
@@ -726,6 +726,9 @@ importers:
       '@opensteer/browser-runtime-core':
         specifier: workspace:*
         version: link:../../packages/browser-runtime-core
+      '@opensteer/browser-source-wire':
+        specifier: workspace:*
+        version: link:../../packages/browser-source-wire
       '@opensteer/channel-runtime':
         specifier: workspace:*
         version: link:../channel-runtime
@@ -1415,9 +1418,9 @@ importers:
 
   packages/browser-profile:
     dependencies:
-      tldts:
-        specifier: 6.1.86
-        version: 6.1.86
+      '@opensteer/browser-source-wire':
+        specifier: workspace:*
+        version: link:../browser-source-wire
       zod:
         specifier: 'catalog:'
         version: 4.6.7
@@ -1480,6 +1483,28 @@ importers:
       react-dom:
         specifier: 'catalog:'
         version: 19.3.0(react@19.3.0)
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.10(@types/node@26.2.0)(esbuild@0.28.2)(happy-dom@21.0.4)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.11)(yaml@2.9.0)
+
+  packages/browser-source-wire:
+    dependencies:
+      '@noble/curves':
+        specifier: 2.4.0
+        version: 2.4.0
+      tldts:
+        specifier: 6.1.86
+        version: 6.1.86
+      zod:
+        specifier: 'catalog:'
+        version: 4.6.7
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.2.0
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
@@ -1765,6 +1790,9 @@ importers:
       '@noble/hashes':
         specifier: 2.4.0
         version: 2.4.0
+      '@opensteer/browser-source-wire':
+        specifier: workspace:*
+        version: link:../browser-source-wire
       '@opensteer/core':
         specifier: workspace:*
         version: link:../core
@@ -2296,6 +2324,9 @@ importers:
       '@opensteer/browser-profile':
         specifier: workspace:*
         version: link:../browser-profile
+      '@opensteer/browser-source-wire':
+        specifier: workspace:*
+        version: link:../browser-source-wire
       '@opensteer/channel-core':
         specifier: workspace:*
         version: link:../channel-core
@@ -8486,6 +8517,7 @@ packages:
 
   tldts-core@7.4.20:
     resolution: {integrity: sha512-C630TWXZCZmLq0F2bW4QqwnaaxCQ/svpAqvJwnC4JvgEM5ohhBnGsEzTLSOXcN+xjz+kEaHS5uoWIw2klnqd0A==}
+    deprecated: Partial release, see https://github.com/remusao/tldts/issues/2735. Use >=7.4.22.
 
   tldts@6.1.86:
     resolution: {integrity: sha512-WMi/OQ2axVTf/ykqCQgXiIct+mSQDFdH2fkwhPwgEwvJ1kSzZRiinb0zF2Xb8u4+OqPChmyI6MEu4EezNJz+FQ==}
