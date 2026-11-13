@@ -85,7 +85,9 @@
   color: currentColor;
   transform: none;
 }
-.hero h1 em {
+.hero h1 em,
+.row h2 em,
+.closing h2 em {
   font-style: italic;
   font-weight: 330;
   background: linear-gradient(180deg, var(--text) 10%, var(--ember) 95%);
@@ -122,6 +124,7 @@
   justify-content: center;
   gap: 10px 14px;
   margin-top: 32px;
+  padding-inline: 16px;
   color: var(--muted);
   font-size: 13px;
 }
@@ -280,6 +283,117 @@
   text-wrap: balance;
 }
 
+/* On a phone the break would leave "need" alone on its line, so this headline balances itself. */
+@media (max-width: 560px) {
+  #why h2 br {
+    display: none;
+  }
+}
+
+/* Their computer against yours: one muted list, one lit. */
+.vs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  max-width: 820px;
+  margin-inline: auto;
+  text-align: left;
+}
+.vs__side {
+  padding: 22px 24px 24px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line);
+}
+.vs__side--yours {
+  border-color: var(--ember-line);
+  background:
+    radial-gradient(120% 90% at 50% 0%, var(--ember-wash), transparent 70%), var(--fill-sheet);
+  box-shadow: var(--edge-plate);
+}
+.vs__who {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 550;
+}
+.vs__side--yours .vs__who {
+  color: var(--text);
+}
+.vs__who svg {
+  width: 18px;
+  height: 18px;
+}
+.vs__who .orb {
+  width: 16px;
+  height: 16px;
+}
+.vs ul {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.vs li {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  font-size: 16px;
+  line-height: 1.4;
+}
+.vs li svg {
+  width: 16px;
+  height: 16px;
+  margin-top: 3px;
+  flex: none;
+}
+.vs__side--cloud li {
+  color: var(--muted);
+}
+.vs__side--cloud li svg {
+  color: var(--red);
+  opacity: 0.8;
+}
+.vs__side--yours li svg {
+  color: var(--green);
+}
+@media (max-width: 640px) {
+  .vs {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* The four things already on the Mac, as chips under the headline. */
+.haves {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin: 22px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.haves li {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 14px 0 7px;
+  border-radius: 999px;
+  border: 1px solid var(--rim-plate);
+  background: var(--sheen), var(--fill-quiet);
+  box-shadow: var(--edge-plate);
+  font-size: 14.5px;
+  font-weight: 500;
+}
+.haves svg {
+  width: 24px;
+  height: 24px;
+}
+
 /* A cropped screenshot of Chrome's top: its tabs, the address bar and the start of each signed-in page. */
 .shot {
   position: relative;
@@ -433,6 +547,202 @@
   }
 }
 
+/* Three devices, each with a small picture of what the agent does there. */
+.devs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+}
+.dev {
+  display: flex;
+  flex-direction: column;
+  padding: 10px 10px 22px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line);
+  background: var(--fill-sheet);
+}
+.dev h3 {
+  margin: 20px 14px 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.dev > p {
+  margin: 6px 14px 0;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.5;
+}
+.dev__pic {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 172px;
+  border-radius: 10px;
+  background: radial-gradient(90% 100% at 50% 100%, rgb(255 255 255 / 4%), transparent), #0c0c0c;
+  overflow: hidden;
+  --mac-font:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Helvetica Neue", sans-serif;
+}
+.dev__pic--chat {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 22px;
+}
+.bub {
+  max-width: 78%;
+  margin: 0;
+  padding: 7px 12px;
+  border-radius: 17px;
+  background: #3a3a3c;
+  color: #fff;
+  font: 14px/1.3 var(--mac-font);
+  align-self: flex-start;
+}
+.bub--me {
+  background: #0a84ff;
+  align-self: flex-end;
+}
+/* A plain Android phone: punch-hole screen, four apps a row. */
+.dev__pic--droid {
+  align-items: flex-end;
+}
+.droid {
+  display: grid;
+  grid-template-columns: repeat(4, 22px);
+  align-content: start;
+  gap: 14px;
+  width: 128px;
+  height: 148px;
+  padding: 44px 0 0 14px;
+  border: 3px solid #2c2c2e;
+  border-bottom: 0;
+  border-radius: 24px 24px 0 0;
+  background:
+    radial-gradient(circle at 50% 14px, #000 0 4px, transparent 5px),
+    linear-gradient(160deg, #26324a, #141824);
+}
+.droid i {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--c, #e8eaed);
+}
+.droid i:nth-child(1) {
+  --c: #ea4335;
+}
+.droid i:nth-child(2) {
+  --c: #34a853;
+}
+.droid i:nth-child(3) {
+  --c: #fbbc04;
+}
+.droid i:nth-child(4) {
+  --c: #4285f4;
+}
+.droid i:nth-child(5) {
+  --c: #25d366;
+}
+.droid i:nth-child(6) {
+  --c: #000;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 30%);
+}
+.droid i:nth-child(7) {
+  --c: #e1306c;
+}
+.droid i:nth-child(8) {
+  --c: #1ed760;
+}
+.dev__pic--ios {
+  gap: 14px;
+}
+.dev__pic--ios svg {
+  width: 60px;
+  height: 60px;
+}
+@media (max-width: 860px) {
+  .devs {
+    grid-template-columns: 1fr;
+    max-width: 440px;
+  }
+  .dev__pic {
+    height: 132px;
+  }
+  .droid {
+    height: 116px;
+    padding-top: 36px;
+  }
+}
+
+/* Every engine the app drives, plus models on your own hardware. */
+.ais {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 22px 14px;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0;
+  list-style: none;
+}
+.ais li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 92px;
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.3;
+  text-align: center;
+  white-space: nowrap;
+}
+.ais svg {
+  box-sizing: content-box;
+  width: 30px;
+  height: 30px;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid var(--rim-plate);
+  background: var(--sheen), var(--fill-plate);
+  box-shadow: var(--edge-plate);
+  color: var(--text);
+}
+.ais__local svg {
+  border-color: var(--ember-line);
+  color: var(--ember);
+}
+.ais__local b {
+  position: absolute;
+  top: -8px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--ember);
+  color: var(--ink-on-ember);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+@media (max-width: 480px) {
+  .ais {
+    gap: 20px 6px;
+  }
+  .ais li {
+    width: 80px;
+  }
+}
+
 /* A receipt of where each thing is kept, one line per item. The last line is the point. */
 .lives {
   max-width: 660px;
@@ -574,9 +884,29 @@
 }
 
 /* ---------- Closing ---------- */
+/* The end card: the app's icon in the same ember light as the hero, and the one thing to do next. */
 .closing {
+  position: relative;
+  isolation: isolate;
+  overflow-x: clip;
   padding-block: clamp(120px, 18vh, 168px) 112px;
   text-align: center;
+}
+.closing::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: 50%;
+  top: 46%;
+  width: min(900px, 140vw);
+  aspect-ratio: 1.8;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(
+    closest-side,
+    color-mix(in srgb, var(--ember) 12%, transparent),
+    transparent
+  );
+  pointer-events: none;
 }
 .closing .wrap {
   display: flex;
@@ -601,13 +931,14 @@
   margin: 28px 0 0;
   font-family: var(--font-display);
   font-weight: 380;
-  font-size: clamp(34px, 4.8vw, 56px);
-  line-height: 1.05;
-  letter-spacing: -0.02em;
+  font-size: clamp(40px, 6.2vw, 78px);
+  line-height: 1.02;
+  letter-spacing: -0.028em;
   font-variation-settings: "opsz" 144;
+  text-wrap: balance;
 }
 .closing p {
-  margin: 12px 0 28px;
+  margin: 16px 0 32px;
   color: var(--text-soft);
   font-size: 17px;
 }
@@ -616,7 +947,15 @@
   color: var(--muted);
   font-size: 13px;
 }
+.closing .btn {
+  height: 44px;
+  padding: 0 22px;
+  font-size: 15px;
+}
 .closing__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   margin-top: 18px;
   color: var(--text-soft);
   font-size: 14px;
@@ -624,6 +963,10 @@
 }
 .closing__link:hover {
   color: var(--text);
+}
+.closing__link svg {
+  width: 15px;
+  height: 15px;
 }
 
 @media (prefers-reduced-motion: reduce) {
