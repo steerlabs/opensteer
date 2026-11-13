@@ -82,12 +82,14 @@ function fixture(
       ...(options.catalog ?? []),
     ],
   };
+  let suppressed = false;
   const client = {
     oauth: {
       subscribeAccountIdentityChanges: () => () => undefined,
       accountIdentity: () => null,
+      teamEntryLease: () => ({ generation: 0, assertCurrent: () => {} }),
       hostCredentialState: () => ({ detail: null }),
-      isTeamSignInSuppressed: () => false,
+      isTeamSignInSuppressed: () => suppressed,
     },
     subscribe: (listener: () => void) => {
       listeners.add(listener);
@@ -120,6 +122,10 @@ function fixture(
       snapshot = { ...snapshot, selection: { deploymentId, hostClient: null } } as never;
       for (const listener of listeners) listener();
     },
+    suppress() {
+      suppressed = true;
+      for (const listener of listeners) listener();
+    },
     loseAuthorization() {
       snapshot = {
         ...snapshot,
@@ -133,6 +139,19 @@ function fixture(
 }
 
 describe("the one team socket a phone keeps", () => {
+  it("shows sign-in immediately when a live team is explicitly suppressed", async () => {
+    const f = fixture();
+    f.teams.start();
+    await f.teams.select(mockFamilyTeamId);
+    await vi.waitFor(() => expect(f.teams.team(mockFamilyTeamId)?.state).toBe("live"), {
+      timeout: 1000,
+    });
+    f.suppress();
+    expect(f.teams.team(mockFamilyTeamId)?.state).toBe("signed-out");
+    expect(f.teams.team(mockFamilyTeamId)?.session).toBeNull();
+    f.teams.dispose();
+  });
+
   it("retains an open team's draft when authorization temporarily disappears", async () => {
     const f = fixture();
     f.teams.start();
@@ -311,6 +330,7 @@ describe("adding a computer's team to the phone", () => {
     async (mode) => {
       const connection = connections[0]!;
       const teamId = connection.authority.document.deploymentId;
+      const verifying = Promise.withResolvers<void>();
       const verified: VerifiedHostEndpoint = {
         discovery: connection.authority.document,
         discoveryEnvelope: connection.authority,
@@ -344,6 +364,7 @@ describe("adding a computer's team to the phone", () => {
         oauth: {
           subscribeAccountIdentityChanges: () => () => undefined,
           accountIdentity: () => null,
+          teamEntryLease: () => ({ generation: 0, assertCurrent: () => {} }),
           accountAuthorizationLease: async () => (mode === "no-account" ? null : lease),
           authorizationHeader: async () => null,
           resumeTeamSignIn: async () => {},
@@ -366,7 +387,10 @@ describe("adding a computer's team to the phone", () => {
         transport: () => {
           throw new Error("No socket needed for entry");
         },
-        verify: async () => verified,
+        verify: async () => {
+          await verifying.promise;
+          return verified;
+        },
         seed: {
           [mockDeploymentId]: [
             { teamId, origin: connection.authority.document.canonicalOrigin, teamName: "Acme" },
@@ -377,11 +401,14 @@ describe("adding a computer's team to the phone", () => {
       await vi.waitFor(() => expect(teams.team(teamId), "team row never loaded").not.toBeNull(), {
         timeout: 1000,
       });
+      const adding = teams.addToPhone(teamId);
+      expect(teams.team(teamId)?.state).toBe("loading");
+      verifying.resolve();
       try {
         if (mode === "not-member" || mode === "outage") {
-          await expect(teams.addToPhone(teamId)).rejects.toThrow();
+          await expect(adding).rejects.toThrow();
           expect(teams.team(teamId)?.state).toBe(mode === "not-member" ? "join" : "offline");
-        } else await teams.addToPhone(teamId);
+        } else await adding;
         expect(browser).toHaveBeenCalledTimes(mode === "no-account" || mode === "old-team" ? 1 : 0);
         expect(exchange).toHaveBeenCalledTimes(
           mode === "no-account" || mode === "old-team" ? 0 : 1,

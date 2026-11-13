@@ -106,6 +106,7 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
     token = "Bearer refreshed";
     return true;
   });
+  let socketEvents: import("../connections/host-transport.js").HostNetworkSocketEvents | undefined;
   const options: import("../connections/host-transport.js").HostTransportOptions & {
     deploymentId: typeof teamId;
   } = {
@@ -175,6 +176,7 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
         return new Response("ok");
       },
       openWebSocket: (input, events) => {
+        socketEvents = events;
         sockets.push(input);
         events.open();
         return {
@@ -216,6 +218,16 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
     });
     expect(sockets[0]?.deploymentId).toBe(teamId);
     expect(sockets[0]?.headers).toEqual({ [teamApiVersionHeader]: String(teamApiVersion) });
+    const late = { open: vi.fn(), close: vi.fn(), message: vi.fn(), error: vi.fn() };
+    await transport.openSocket({ path: "/v1/realtime" }, () => late);
+    late.open.mockClear();
+    transport.invalidateSession();
+    socketEvents!.message("outgoing Account data");
+    socketEvents!.open();
+    socketEvents!.error("late error");
+    expect(late.message).not.toHaveBeenCalled();
+    expect(late.open).not.toHaveBeenCalled();
+    expect(late.error).not.toHaveBeenCalled();
     const resolving = vi.fn();
     const release = Promise.withResolvers<void>();
     const delayed = new HostTransport({

@@ -175,6 +175,11 @@ export interface HostOAuthState {
   readonly viewLoginId?: string;
 }
 
+export interface TeamEntryLease {
+  readonly generation: number;
+  assertCurrent(): void;
+}
+
 /**
  * One live Account authorization capability. Its signal is invalidated before
  * sign-out, identity replacement, or credential rejection starts destructive
@@ -512,6 +517,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
   async beginHostSignIn(
     connectionInput: DeploymentConnection,
     invite?: TeamInviteSecret,
+    entry = this.teamEntryLease(connectionInput.authority.document.deploymentId, true),
   ): Promise<HostOAuthState> {
     const connection = structuredClone(connectionInput);
     if (connection.kind !== "team") {
@@ -519,17 +525,16 @@ export class NativeOAuthManager implements HostCredentialProvider {
     }
     if (invite && !supportsTeamInviteContinuation(connection))
       throw new Error("Join this team in the browser first, then sign in to it here.");
-    const deploymentId = connection.authority.document.deploymentId;
     // Claimed before the first await. Protected storage can take long enough
     // for a person to leave the flow, and only this fence sees that boundary.
-    const generation = this.#advanceHostGeneration(deploymentId);
+    entry.assertCurrent();
+    const generation = entry.generation;
     const accountIdentity = this.#currentAccountIdentity();
     await this.resumeTeamSignIn(connection);
+    entry.assertCurrent();
     await this.#beforeHostChange(connection);
     await this.#ensureStorageReady();
-    if (this.#hostGeneration(deploymentId) !== generation) {
-      return this.hostCredentialState(connection);
-    }
+    entry.assertCurrent();
     const key = hostAttachmentKey(connection);
     this.#hostDetails.delete(key);
     this.#removePending(
@@ -561,6 +566,25 @@ export class NativeOAuthManager implements HostCredentialProvider {
     };
   }
 
+  teamEntryLease(deploymentId: DeploymentId, claim = false): TeamEntryLease {
+    const generation = claim
+      ? this.#advanceHostGeneration(deploymentId)
+      : this.#hostGeneration(deploymentId);
+    this.#hostGenerations.set(deploymentId, generation);
+    const accountSignal = this.#accountSession?.controller.signal;
+    return {
+      generation,
+      assertCurrent: () => {
+        if (
+          this.#disposed ||
+          accountSignal?.aborted ||
+          this.#hostGeneration(deploymentId) !== generation
+        )
+          throw new ClientOperationError("Team authorization changed. Try again.", "transient");
+      },
+    };
+  }
+
   isTeamSignInSuppressed(connection: DeploymentConnection): boolean {
     return this.#signedOutTeams.has(connection.authority.document.deploymentId);
   }
@@ -578,9 +602,17 @@ export class NativeOAuthManager implements HostCredentialProvider {
     invite?: TeamInviteSecret,
     interactive = true,
   ): Promise<HostOAuthState> {
-    const authorized = await authorizeTeamCredential(this, connection, invite ?? null, interactive);
+    const entry = this.teamEntryLease(connection.authority.document.deploymentId, true);
+    const authorized = await authorizeTeamCredential(
+      this,
+      connection,
+      invite ?? null,
+      interactive,
+      entry,
+    );
+    entry.assertCurrent();
     if (authorized !== false || !interactive) return this.hostCredentialState(connection);
-    return this.beginHostSignIn(connection, invite);
+    return this.beginHostSignIn(connection, invite, entry);
   }
 
   /**
@@ -592,16 +624,20 @@ export class NativeOAuthManager implements HostCredentialProvider {
   async exchangeTeamSession(
     connection: DeploymentConnection,
     invite?: TeamInviteSecret,
+    entry = this.teamEntryLease(connection.authority.document.deploymentId, true),
   ): Promise<Pick<TeamSessionExchangeResponse, "admitted" | "member">> {
+    entry.assertCurrent();
     const lease = await this.accountAuthorizationLease();
+    entry.assertCurrent();
     if (!lease) throw new ClientOperationError("Account authorization changed.", "transient");
     if (this.isTeamSignInSuppressed(connection))
       throw new ClientOperationError("Signing in to this team was interrupted.", "transient");
-    const generation = this.#advanceHostGeneration(connection.authority.document.deploymentId);
+    const generation = entry.generation;
     const { assertion } = await this.issueTeamIdentityGrant(
       connection.authority.document.deploymentId,
       this.#teamIdentityRequest(connection),
     );
+    entry.assertCurrent();
     if (lease.signal.aborted)
       throw new ClientOperationError("Account authorization changed.", "transient");
     return this.#exchangeTeamAssertion(
@@ -688,7 +724,13 @@ export class NativeOAuthManager implements HostCredentialProvider {
     const deploymentId = authority.document.deploymentId;
     const origin = authority.document.canonicalOrigin;
     const generation = context.generation;
+    const current = () =>
+      this.#hostGeneration(deploymentId) === generation &&
+      !this.#disposed &&
+      !context.lease.signal.aborted;
     await this.#ensureStorageReady();
+    if (!current())
+      throw new ClientOperationError("Team authorization changed. Try again.", "transient");
     const exchanged = await this.#postJson(
       `${origin}${teamSessionExchangePath}`,
       TeamSessionExchangeRequestSchema.parse(request),
@@ -718,10 +760,6 @@ export class NativeOAuthManager implements HostCredentialProvider {
       await this.#revokeLateCredential(hostEndpoints(origin), entered.tokens.refresh_token, origin);
       throw error;
     }
-    const current = () =>
-      this.#hostGeneration(deploymentId) === generation &&
-      !this.#disposed &&
-      !context.lease.signal.aborted;
     const committed = await this.#mutateCredentials(async () => {
       if (!current()) return false;
       const state = await this.#store.setHost(credential);
@@ -953,7 +991,9 @@ export class NativeOAuthManager implements HostCredentialProvider {
     // Personal connections ride the partition session cookie, so they must
     // never also carry a self-hosted bearer token.
     if (connection.kind !== "team") return null;
+    const entry = this.teamEntryLease(connection.authority.document.deploymentId);
     await this.#retryCredentialWrite(connection.authority.document.deploymentId);
+    entry.assertCurrent();
     const credential = this.#hostCredential(connection.authority.document.deploymentId);
     if (!credential || !credentialMatchesConnection(credential, connection)) {
       return null;
@@ -974,7 +1014,9 @@ export class NativeOAuthManager implements HostCredentialProvider {
   async recoverHostAuthorization(connection: DeploymentConnection): Promise<boolean> {
     this.#assertStorageReady();
     if (connection.kind !== "team") return false;
+    const entry = this.teamEntryLease(connection.authority.document.deploymentId);
     await this.#retryCredentialWrite(connection.authority.document.deploymentId);
+    entry.assertCurrent();
     const credential = this.#hostCredential(connection.authority.document.deploymentId);
     if (
       credential &&
@@ -983,7 +1025,8 @@ export class NativeOAuthManager implements HostCredentialProvider {
     )
       return true;
     if (this.isTeamSignInSuppressed(connection)) return false;
-    return (await authorizeTeamCredential(this, connection, null, false)) !== false;
+    entry.assertCurrent();
+    return (await authorizeTeamCredential(this, connection, null, false, entry)) !== false;
   }
 
   async #refreshHostCredential(
@@ -993,7 +1036,8 @@ export class NativeOAuthManager implements HostCredentialProvider {
   ): Promise<string | null> {
     const deploymentId = connection.authority.document.deploymentId;
     const key = hostAttachmentKey(connection);
-    const generation = this.#hostGeneration(deploymentId);
+    const entry = this.teamEntryLease(deploymentId);
+    const generation = entry.generation;
     return this.#serializedRefresh(`host:${deploymentId}:${credential.refreshToken}`, async () => {
       const current = this.#hostCredential(deploymentId);
       if (
@@ -1037,13 +1081,14 @@ export class NativeOAuthManager implements HostCredentialProvider {
       } catch (error) {
         // As for the Account: an unanswered refresh keeps the credential.
         if (error instanceof OAuthGrantRefusedError) {
+          entry.assertCurrent();
           if (
             supportsTeamSessionExchange(connection) &&
             !this.isTeamSignInSuppressed(connection) &&
             (await this.accountAuthorizationLease())
           ) {
             try {
-              await this.exchangeTeamSession(connection, invite);
+              await this.exchangeTeamSession(connection, invite, entry);
               return this.authorizationHeader(connection);
             } catch (failure) {
               if (!(failure instanceof TeamIdentityGrantUnsupportedError)) throw failure;

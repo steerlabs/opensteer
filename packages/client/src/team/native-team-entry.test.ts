@@ -61,6 +61,7 @@ function setup() {
   const state = (connection: DeploymentConnection, status: HostOAuthState["status"]) =>
     ({ connection, detail: null, key: "", status }) as HostOAuthState;
   const oauth = {
+    teamEntryLease: () => ({ generation: 0, assertCurrent: () => {} }),
     resumeTeamSignIn: vi.fn(async () => {}),
     isTeamSignInSuppressed: vi.fn(() => false),
     authorizationHeader: vi.fn(async (): Promise<string | null> =>
@@ -105,6 +106,44 @@ function setup() {
 }
 
 describe("NativeTeamEntry", () => {
+  it("fences entry before the initial catalog lookup can resume", async () => {
+    const { entry, oauth, catalog } = setup();
+    const verified = team();
+    const lookup = Promise.withResolvers<Awaited<ReturnType<typeof catalog.load>>>();
+    const original = await catalog.load();
+    let invalidated = false;
+    oauth.teamEntryLease = () => ({
+      generation: 0,
+      assertCurrent: () => {
+        if (invalidated) throw new Error("Entry changed");
+      },
+    });
+    vi.spyOn(catalog, "load").mockReturnValueOnce(lookup.promise);
+    const entering = entry.ensureAuthorized(verified);
+    const rejected = expect(entering).rejects.toThrow("Entry changed");
+    invalidated = true;
+    lookup.resolve(original);
+    await rejected;
+    expect(oauth.resumeTeamSignIn).not.toHaveBeenCalled();
+    expect(oauth.exchangeTeamSession).not.toHaveBeenCalled();
+    expect(oauth.beginHostSignIn).not.toHaveBeenCalled();
+  });
+
+  it("passes a fresh invite to browser fallback despite a locally signed-in credential", async () => {
+    const { entry, oauth, callback, catalog } = setup();
+    const verified = team();
+    await entry.enter(verified, null);
+    const older = {
+      ...verified,
+      capabilities: ["native-oauth", "team-invite-native-continuation-v1"] as const,
+    };
+    const invite = { selector: "s".repeat(32), verifier: "v".repeat(43) };
+    const entering = entry.enter(older, invite);
+    await vi.waitFor(() => expect(oauth.beginHostSignIn).toHaveBeenCalledOnce(), { timeout: 1000 });
+    callback((await catalog.load()).deployments[0]!, "signed-in");
+    await entering;
+  });
+
   it("uses an explicit invite to re-admit a viewer with a stale saved credential", async () => {
     const { entry, oauth } = setup();
     const verified = team();
@@ -112,7 +151,11 @@ describe("NativeTeamEntry", () => {
     oauth.exchangeTeamSession.mockClear();
     const invite = { selector: "s".repeat(32), verifier: "v".repeat(43) };
     await entry.enter(verified, invite);
-    expect(oauth.exchangeTeamSession).toHaveBeenCalledWith(expect.anything(), invite);
+    expect(oauth.exchangeTeamSession).toHaveBeenCalledWith(
+      expect.anything(),
+      invite,
+      expect.anything(),
+    );
   });
 
   it("keeps an entered team as a pending Account entry, and nothing of one that refused", async () => {
@@ -238,7 +281,7 @@ describe("NativeTeamEntry", () => {
     await vi.waitFor(() => expect(oauth.beginHostSignIn).toHaveBeenCalledOnce());
     const [kept] = (await catalog.load()).deployments;
     // The invite goes to the browser sign-in, which proves it before the team's callback.
-    expect(oauth.beginHostSignIn).toHaveBeenCalledWith(kept, invite);
+    expect(oauth.beginHostSignIn).toHaveBeenCalledWith(kept, invite, expect.anything());
     // Added as if by hand: the team's own sign-in, not an Account entry waiting on the directory.
     expect(kept).toMatchObject({ kind: "team", source: { kind: "manual" } });
     await Promise.resolve();

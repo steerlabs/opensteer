@@ -396,6 +396,7 @@ export class MobileTeams {
     const team = this.team(teamId);
     if (team === null) throw new TeamAccessError("This team is no longer on this computer.");
     if (this.#signedIn(teamId)) return;
+    this.#setState(teamId, "loading", null);
     try {
       const verified = await this.#verify(team.origin);
       if (verified.discovery.deploymentId !== teamId)
@@ -754,6 +755,7 @@ export class MobileTeams {
 
   /** Signed out of the team on this phone: its drafts and unsent messages go with it. */
   async #signedOut(teamId: string): Promise<void> {
+    this.#setState(teamId, "signed-out", null);
     const userId = this.#memo?.users[teamId];
     this.#drop(teamId);
     if (userId !== undefined) await this.registry.remove({ teamDeploymentId: teamId, userId });
@@ -897,12 +899,14 @@ export class MobileTeams {
     const held = this.#states.get(team.teamId);
     const session = this.#sessions.get(team.teamId) ?? null;
     const state: TeamState =
-      held?.state ??
-      (entry === null || !entry.signedIn
+      entry && this.#client.oauth.isTeamSignInSuppressed(entry.connection)
         ? "signed-out"
-        : session?.getSnapshot().bootstrap
-          ? "live"
-          : "loading");
+        : (held?.state ??
+          (entry === null || !entry.signedIn
+            ? "signed-out"
+            : session?.getSnapshot().bootstrap
+              ? "live"
+              : "loading"));
     return {
       teamId: team.teamId,
       onPhone: entry !== null,

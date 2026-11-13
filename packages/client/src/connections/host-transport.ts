@@ -362,9 +362,15 @@ export class HostTransport {
           this.#sockets.delete(socket);
           bound.close(code, reason);
         },
-        error: (message) => bound.error(message),
-        message: (data) => bound.message(data),
-        open: () => bound.open(),
+        error: (message) => {
+          if (!released && sessionGeneration === this.#sessionGeneration) bound.error(message);
+        },
+        message: (data) => {
+          if (!released && sessionGeneration === this.#sessionGeneration) bound.message(data);
+        },
+        open: () => {
+          if (!released && sessionGeneration === this.#sessionGeneration) bound.open();
+        },
       },
     );
     if (selectionGeneration !== this.#fence.generation && !released) {

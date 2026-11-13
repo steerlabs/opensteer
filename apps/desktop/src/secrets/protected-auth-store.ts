@@ -1,6 +1,11 @@
 import { DeploymentIdSchema, type DeploymentId } from "@opensteer/core";
 import {
   AccountCredentialSchema,
+  LegacyProtectedAuthStateSchema,
+  TeamAuthMetadataSchema,
+  teamAuthMetadata,
+  withTeamAuthMetadata,
+  legacyProtectedAuthState,
   HostCredentialSchema,
   ProtectedAuthStateSchema,
   emptyProtectedAuthState,
@@ -21,6 +26,7 @@ export type { DesktopSecretCryptography } from "./protected-json-file.js";
 
 export class DesktopProtectedAuthStore implements ProtectedAuthStore {
   readonly #file: ProtectedJsonFile<ProtectedAuthState>;
+  readonly #metadata: ProtectedJsonFile<ReturnType<typeof teamAuthMetadata>>;
   readonly #mutations = new MutationQueue();
 
   constructor(options: {
@@ -41,7 +47,21 @@ export class DesktopProtectedAuthStore implements ProtectedAuthStore {
       },
       ...(options.platform === undefined ? {} : { platform: options.platform }),
       ...(options.privateFiles === undefined ? {} : { privateFiles: options.privateFiles }),
-      schema: ProtectedAuthStateSchema,
+      schema: LegacyProtectedAuthStateSchema,
+    });
+    this.#metadata = new ProtectedJsonFile({
+      content: "rebuildable",
+      cryptography: options.cryptography,
+      filePath: `${this.#file.filePath}.teams`,
+      maxFileBytes: maxProtectedAuthFileBytes,
+      maxPlaintextBytes: maxProtectedAuthPlaintextBytes,
+      messages: {
+        protectedState: "The team authorization metadata",
+        protectedStore: "The protected team authorization store",
+      },
+      ...(options.platform === undefined ? {} : { platform: options.platform }),
+      ...(options.privateFiles === undefined ? {} : { privateFiles: options.privateFiles }),
+      schema: TeamAuthMetadataSchema,
     });
   }
 
@@ -114,6 +134,7 @@ export class DesktopProtectedAuthStore implements ProtectedAuthStore {
 
   clearAll(): Promise<void> {
     return this.#mutations.run(async () => {
+      await this.#metadata.remove();
       await this.#file.remove();
     });
   }
@@ -130,10 +151,14 @@ export class DesktopProtectedAuthStore implements ProtectedAuthStore {
   }
 
   async #write(state: ProtectedAuthState): Promise<void> {
-    await this.#file.write(state);
+    await this.#metadata.write(teamAuthMetadata(state));
+    await this.#file.write(legacyProtectedAuthState(state));
   }
 
   async #load(): Promise<ProtectedAuthState> {
-    return (await this.#file.read()) ?? emptyProtectedAuthState();
+    return withTeamAuthMetadata(
+      (await this.#file.read()) ?? emptyProtectedAuthState(),
+      await this.#metadata.read(),
+    );
   }
 }

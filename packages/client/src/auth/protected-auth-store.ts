@@ -103,3 +103,63 @@ function refineProtectedAuthState(
     ids.add(credential.deploymentId);
   }
 }
+
+// Stable and Beta share credentials; older strict readers must see their original format.
+export const LegacyHostCredentialSchema = HostCredentialSchema.omit({ accountIdentity: true });
+export const LegacyProtectedAuthStateSchema = z
+  .strictObject({
+    account: AccountCredentialSchema.nullable(),
+    hosts: z.array(LegacyHostCredentialSchema).max(100),
+    schemaVersion: z.literal(2),
+  })
+  .superRefine(refineProtectedAuthState);
+export const TeamAuthMetadataSchema = z.strictObject({
+  hosts: z
+    .array(
+      HostCredentialSchema.pick({ deploymentId: true, refreshToken: true, accountIdentity: true }),
+    )
+    .max(100),
+  signedOutTeams: z.array(DeploymentIdSchema).max(100),
+});
+export function teamAuthMetadata(
+  state: ProtectedAuthState,
+): z.infer<typeof TeamAuthMetadataSchema> {
+  return {
+    hosts: state.hosts.map(({ deploymentId, refreshToken, accountIdentity }) => ({
+      deploymentId,
+      refreshToken,
+      ...(accountIdentity === undefined ? {} : { accountIdentity }),
+    })),
+    signedOutTeams: state.signedOutTeams ?? [],
+  };
+}
+export function withTeamAuthMetadata(
+  state: ProtectedAuthState,
+  metadata: z.infer<typeof TeamAuthMetadataSchema> | null,
+): ProtectedAuthState {
+  return {
+    ...state,
+    hosts: state.hosts.map((host) => {
+      const binding = metadata?.hosts.find(
+        (entry) =>
+          entry.deploymentId === host.deploymentId && entry.refreshToken === host.refreshToken,
+      );
+      return {
+        ...host,
+        ...(binding?.accountIdentity === undefined
+          ? {}
+          : { accountIdentity: binding.accountIdentity }),
+      };
+    }),
+    ...(metadata?.signedOutTeams.length ? { signedOutTeams: metadata.signedOutTeams } : {}),
+  };
+}
+export function legacyProtectedAuthState(
+  state: ProtectedAuthState,
+): z.infer<typeof LegacyProtectedAuthStateSchema> {
+  return {
+    account: state.account,
+    hosts: state.hosts.map(({ accountIdentity: _binding, ...host }) => host),
+    schemaVersion: 2,
+  };
+}

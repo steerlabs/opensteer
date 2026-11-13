@@ -41,7 +41,9 @@ against Account's published keys and, in one transaction, spends it and either s
 member or admits a newcomer through the invite sent beside it. It then issues the same native
 tokens a browser sign-in would. Every team credential is bound to the device's Account issuer and subject, or explicitly to
 no Account. Browser flows capture that binding when they start and discard and revoke callbacks
-after an identity change. Legacy credentials without a binding never authorize a request.
+after an identity change. Legacy credentials without a binding never authorize a request. Binding and sign-out metadata
+are stored separately from the previous credential format so Stable/Beta downgrades preserve Account
+authorization; missing or mismatched binding metadata requires silent reauthorization.
 Credential reads and refreshes enforce the binding even if deletion or revocation fails. Real
 identity changes synchronously fence transports and retire viewer clients before best-effort
 cleanup; loading the same saved Account is hydration and preserves its credentials. Explicit team

@@ -1044,7 +1044,7 @@ describe("NativeOAuthManager", () => {
     const signIn = fixture.manager.beginHostSignIn(fixture.connection);
     fixture.manager.abandonHostSignIn(deploymentId);
 
-    await expect(signIn).resolves.toMatchObject({ status: "signed-out" });
+    await expect(signIn).rejects.toMatchObject({ classification: "transient" });
     expect(fixture.opened).toEqual([]);
   });
 
@@ -1414,6 +1414,55 @@ describe("NativeOAuthManager team session exchange", () => {
       .catch((error: unknown) => error);
     expect(refused).toBeInstanceOf(Error);
     expect(refused).not.toBeInstanceOf(TeamIdentityGrantUnsupportedError);
+  });
+
+  it("does not exchange an outgoing Account's invite after a refused refresh", async () => {
+    const refresh = deferred<void>();
+    const fixture = await managerFixture({
+      refreshGate: refresh.promise,
+      refreshStatuses: [400],
+      capabilities: exchangeCapability,
+    });
+    await fixture.manager.initialize();
+    await fixture.signInAccount();
+    await fixture.manager.beginHostSignIn(fixture.connection);
+    await fixture.manager.handleCallback(
+      callbackUrl("host", new URL(fixture.opened.at(-1)!).searchParams.get("state")!, "host-code"),
+    );
+    fixture.clock.now = new Date("2026-08-11T20:00:02.000Z");
+    const grant = vi.spyOn(fixture.manager, "exchangeTeamSession");
+    const signingIn = fixture.manager.signInTeam(fixture.connection, {
+      selector: "s".repeat(32),
+      verifier: "v".repeat(43),
+    });
+    const rejected = expect(signingIn).rejects.toThrow();
+    await vi.waitFor(() => expect(fixture.refreshes).toHaveLength(1), { timeout: 1000 });
+    fixture.clock.now = new Date("2026-08-11T19:00:00.000Z");
+    fixture.accountSubject.current = ControlPlaneAccountIdSchema.parse(
+      `acct_${crypto.randomUUID()}`,
+    );
+    await fixture.signInAccount();
+    refresh.resolve();
+    await rejected;
+    expect(grant).not.toHaveBeenCalled();
+    expect((await fixture.store.load()).hosts).toEqual([]);
+  });
+
+  it("rejects entry suspended in credential lookup after explicit team sign-out", async () => {
+    const fixture = await managerFixture();
+    await fixture.manager.initialize();
+    const lookup = deferred<string | null>();
+    vi.spyOn(fixture.manager, "authorizationHeader").mockReturnValueOnce(lookup.promise);
+    const signingIn = fixture.manager.signInTeam(fixture.connection);
+    const rejected = expect(signingIn).rejects.toThrow();
+    await vi.waitFor(() => expect(fixture.manager.authorizationHeader).toHaveBeenCalled(), {
+      timeout: 1000,
+    });
+    await fixture.manager.signOutHost(fixture.connection);
+    lookup.resolve(null);
+    await rejected;
+    expect(fixture.opened).toEqual([]);
+    expect(fixture.manager.isTeamSignInSuppressed(fixture.connection)).toBe(true);
   });
 
   it("signs in through the browser when the team does not advertise the exchange", async () => {

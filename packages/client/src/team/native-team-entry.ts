@@ -18,6 +18,7 @@ import {
   TeamEntryRefusedError,
   TeamIdentityGrantUnsupportedError,
   type HostOAuthState,
+  type TeamEntryLease,
   type NativeOAuthManager,
 } from "../auth/native-oauth.js";
 import {
@@ -90,13 +91,13 @@ export async function previewTeamInvite(
 
 type TeamEntryOAuth = Pick<
   NativeOAuthManager,
+  | "teamEntryLease"
   | "authorizationHeader"
   | "isTeamSignInSuppressed"
   | "resumeTeamSignIn"
   | "accountAuthorizationLease"
   | "beginHostSignIn"
   | "exchangeTeamSession"
-  | "hostCredentialState"
   | "signOutHost"
   | "subscribeHostCredentials"
 >;
@@ -111,21 +112,27 @@ export async function authorizeTeamCredential(
   connection: DeploymentConnection,
   invite: TeamInviteSecret | null,
   interactive: boolean,
+  entry = oauth.teamEntryLease(connection.authority.document.deploymentId),
 ): Promise<Pick<TeamSessionExchangeResponse, "admitted" | "member"> | null | false> {
+  entry.assertCurrent();
   if (interactive) await oauth.resumeTeamSignIn(connection);
   else if (oauth.isTeamSignInSuppressed(connection)) return null;
+  entry.assertCurrent();
   const existing = await oauth.authorizationHeader(connection, invite ?? undefined);
+  entry.assertCurrent();
   if (existing && !invite) return null;
   if (
     connection.capabilities?.includes("team-session-exchange-v1") &&
     (await oauth.accountAuthorizationLease())
   ) {
+    entry.assertCurrent();
     try {
-      return await oauth.exchangeTeamSession(connection, invite ?? undefined);
+      return await oauth.exchangeTeamSession(connection, invite ?? undefined, entry);
     } catch (error) {
       if (!(error instanceof TeamIdentityGrantUnsupportedError)) throw error;
     }
   }
+  entry.assertCurrent();
   return false;
 }
 
@@ -153,19 +160,26 @@ export class NativeTeamEntry {
     verified: VerifiedHostEndpoint,
     invite: TeamInviteSecret | null,
   ): Promise<Pick<TeamSessionExchangeResponse, "admitted" | "member">> {
-    const entered = await this.ensureAuthorized(verified, invite);
+    const entry = this.#oauth.teamEntryLease(verified.discovery.deploymentId, true);
+    const entered = await this.ensureAuthorized(verified, invite, true, entry);
+    entry.assertCurrent();
     if (entered) return entered;
     const connection = (await this.#held(verified.discovery.deploymentId))!;
-    return { admitted: false, member: await this.#bootstrap(connection) };
+    entry.assertCurrent();
+    const member = await this.#bootstrap(connection);
+    entry.assertCurrent();
+    return { admitted: false, member };
   }
 
   async ensureAuthorized(
     verified: VerifiedHostEndpoint,
     invite: TeamInviteSecret | null = null,
     interactive = true,
+    entry = this.#oauth.teamEntryLease(verified.discovery.deploymentId, true),
   ): Promise<Pick<TeamSessionExchangeResponse, "admitted" | "member"> | null> {
     const deploymentId = verified.discovery.deploymentId;
     const held = await this.#held(deploymentId);
+    entry.assertCurrent();
     try {
       if (held) {
         const catalog = await this.#catalog.upsert(
@@ -180,30 +194,36 @@ export class NativeTeamEntry {
         const refreshed = catalog.deployments.find(
           (entry) => entry.authority.document.deploymentId === deploymentId,
         )!;
+        entry.assertCurrent();
         const authorized = await authorizeTeamCredential(
           this.#oauth,
           refreshed,
           invite,
           interactive,
+          entry,
         );
+        entry.assertCurrent();
         if (authorized !== false) return authorized;
-        if (interactive) await this.#browserSignIn(refreshed, invite);
+        if (interactive) await this.#browserSignIn(refreshed, invite, entry);
         return null;
       }
       const canExchange =
         verified.capabilities.includes("team-session-exchange-v1") &&
         (await this.#oauth.accountAuthorizationLease());
+      entry.assertCurrent();
       const connection = canExchange
-        ? await this.#keep(verified)
+        ? await this.#keep(verified, entry)
         : await this.#keepManual(verified);
       const authorized = await authorizeTeamCredential(
         this.#oauth,
         connection,
         invite,
         interactive,
+        entry,
       );
+      entry.assertCurrent();
       if (authorized !== false) return authorized;
-      if (interactive) await this.#browserSignIn(connection, invite);
+      if (interactive) await this.#browserSignIn(connection, invite, entry);
       return null;
     } catch (error) {
       if (held === null) await this.#catalog.remove(deploymentId).catch(() => undefined);
@@ -219,16 +239,20 @@ export class NativeTeamEntry {
     deploymentId: DeploymentId,
     verify: () => Promise<VerifiedHostEndpoint>,
   ): Promise<void> {
+    const entry = this.#oauth.teamEntryLease(deploymentId);
     const held = await this.#held(deploymentId);
+    entry.assertCurrent();
     if (
       held &&
       (this.#oauth.isTeamSignInSuppressed(held) || (await this.#oauth.authorizationHeader(held)))
     )
       return;
+    entry.assertCurrent();
     const verified = await verify();
+    entry.assertCurrent();
     if (verified.discovery.deploymentId !== deploymentId)
       throw new Error("That address now answers as a different team.");
-    await this.ensureAuthorized(verified, null, false);
+    await this.ensureAuthorized(verified, null, false, entry);
   }
 
   /** Drops this device's credential and entry for the team. */
@@ -268,8 +292,9 @@ export class NativeTeamEntry {
   async #browserSignIn(
     connection: DeploymentConnection,
     invite: TeamInviteSecret | null,
+    entry: TeamEntryLease,
   ): Promise<void> {
-    if (this.#oauth.hostCredentialState(connection).status === "signed-in") return;
+    entry.assertCurrent();
     const deploymentId = connection.authority.document.deploymentId;
     let stop = () => {};
     const ended = new Promise<HostOAuthState>((resolve) => {
@@ -281,7 +306,7 @@ export class NativeTeamEntry {
       });
     });
     try {
-      const begun = await this.#oauth.beginHostSignIn(connection, invite ?? undefined);
+      const begun = await this.#oauth.beginHostSignIn(connection, invite ?? undefined, entry);
       const final = begun.status === "authorizing" ? await ended : begun;
       if (final.status !== "signed-in")
         throw new ClientOperationError(
@@ -293,8 +318,12 @@ export class NativeTeamEntry {
     }
   }
 
-  async #keep(verified: VerifiedHostEndpoint): Promise<DeploymentConnection> {
+  async #keep(
+    verified: VerifiedHostEndpoint,
+    entry: TeamEntryLease,
+  ): Promise<DeploymentConnection> {
     const lease = await this.#oauth.accountAuthorizationLease();
+    entry.assertCurrent();
     if (!lease)
       throw new ClientOperationError(
         "Sign in to your Opensteer account to join a team.",
