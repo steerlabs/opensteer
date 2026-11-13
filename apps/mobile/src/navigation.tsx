@@ -98,6 +98,7 @@ import {
   TeamNewChannelScreen,
   TeamNewMessageScreen,
 } from "./team/team-directory-screens.js";
+import { TeamNewGroupScreen, TeamRenameChannelScreen } from "./team/team-name-forms.js";
 import {
   TeamKnowledgeScreen,
   TeamNoteHistoryScreen,
@@ -381,6 +382,7 @@ const RootStack = createNativeStackNavigator({
     // On a phone a channel's tabs are rows in its Details.
     TeamDetails: { screen: TeamDetailsScreen, options: { title: "Details" } },
     TeamMembers: { screen: TeamMembersScreen, options: { title: "Members" } },
+    TeamRenameChannel: { screen: TeamRenameChannelScreen, options: { title: "Rename channel" } },
     TeamInstructions: {
       screen: TeamInstructionsScreen,
       options: { title: "Instructions for agents" },
@@ -402,6 +404,7 @@ const RootStack = createNativeStackNavigator({
     TeamPeople: { screen: TeamPeopleScreen, options: { title: "People" } },
     TeamGroups: { screen: TeamGroupsScreen, options: { title: "Groups" } },
     TeamGroup: { screen: TeamGroupScreen, options: { title: "Group" } },
+    TeamNewGroup: { screen: TeamNewGroupScreen, options: { title: "New group" } },
     TeamInvites: { screen: TeamInvitesScreen, options: { title: "Invite people" } },
     // Create a team or join with an invite, from the drawer and Settings.
     Teams: { screen: TeamsScreen, options: { headerLargeTitle: true, title: "Teams" } },
@@ -685,6 +688,7 @@ type OpensteerRootParamList = {
   readonly TeamThread: TeamThreadRoute;
   readonly TeamDetails: { readonly teamId: string; readonly channelId: string };
   readonly TeamMembers: { readonly teamId: string; readonly channelId: string };
+  readonly TeamRenameChannel: { readonly teamId: string; readonly channelId: string };
   readonly TeamInstructions: { readonly teamId: string; readonly channelId: string };
   readonly TeamFiles: { readonly teamId: string; readonly channelId: string };
   readonly TeamPinned: { readonly teamId: string; readonly channelId: string };
@@ -711,6 +715,7 @@ type OpensteerRootParamList = {
   readonly TeamPeople: { readonly teamId: string };
   readonly TeamGroups: { readonly teamId: string };
   readonly TeamGroup: { readonly teamId: string; readonly groupId: string };
+  readonly TeamNewGroup: { readonly teamId: string };
   readonly TeamInvites: { readonly teamId: string };
   readonly Teams: undefined;
   readonly CreateTeam: undefined;

@@ -25,7 +25,10 @@ export interface ChannelDetailsActions {
   readonly onSaveInstructions?: ((text: string) => void) | undefined;
   readonly onSetPrivate?: ((isPrivate: boolean) => void) | undefined;
   readonly onSetPeopleOnly?: ((peopleOnly: boolean) => void) | undefined;
+  /** Asked to confirm here first. */
   readonly onArchive?: (() => void) | undefined;
+  /** An archived channel: the way back. */
+  readonly onRestore?: (() => void) | undefined;
 }
 
 /**
@@ -47,6 +50,7 @@ export function ChannelDetails({
   const dm = channel.kind === "dm" || channel.kind === "group-dm";
   const manage = channel.canManage;
   const [confirming, setConfirming] = useState(false);
+  const [archiving, setArchiving] = useState(false);
   const setPeopleOnly = (next: boolean) => {
     if (next && workingAgents > 0) setConfirming(true);
     else actions.onSetPeopleOnly?.(next);
@@ -123,8 +127,17 @@ export function ChannelDetails({
             </button>
           ) : null}
           {manage && actions.onArchive ? (
-            <button className="btn btn--small btn--ghost" onClick={actions.onArchive} type="button">
+            <button
+              className="btn btn--small btn--ghost"
+              onClick={() => setArchiving(true)}
+              type="button"
+            >
               Archive
+            </button>
+          ) : null}
+          {manage && actions.onRestore ? (
+            <button className="btn btn--small" onClick={actions.onRestore} type="button">
+              Restore
             </button>
           ) : null}
         </div>
@@ -139,6 +152,35 @@ export function ChannelDetails({
           }}
           workingAgents={workingAgents}
         />
+      ) : null}
+      {archiving ? (
+        <Dialog
+          footer={
+            <>
+              <button className="btn btn--ghost" onClick={() => setArchiving(false)} type="button">
+                Cancel
+              </button>
+              <button
+                className="btn btn--danger"
+                onClick={() => {
+                  setArchiving(false);
+                  actions.onArchive?.();
+                }}
+                type="button"
+              >
+                Archive
+              </button>
+            </>
+          }
+          labelledBy="archive-confirm"
+          onClose={() => setArchiving(false)}
+          title={`Archive ${channelLabel(channel)}?`}
+        >
+          <p className="team-dialog__text">
+            Nobody can post in it and it leaves everyone’s sidebar. Its messages stay, and it can be
+            restored from these details.
+          </p>
+        </Dialog>
       ) : null}
     </div>
   );

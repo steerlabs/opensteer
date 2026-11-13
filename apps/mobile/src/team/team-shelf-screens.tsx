@@ -8,9 +8,9 @@ import {
   UserIdSchema,
 } from "@opensteer/core";
 import type { HostApiCommandInput, TeamMessage } from "@opensteer/protocol";
-import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { useFocusEffect, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootParamList } from "../navigation.js";
@@ -27,12 +27,12 @@ import {
 import { FilesBody, PinnedBody, type FileKindFilter } from "./channel-shelves.js";
 import { LinkRow } from "./settings-rows.js";
 import { useTeamMembers, useTeamPreviews, useTeamSession } from "./team-context.js";
-import type { FileRowView, MemberRowView } from "./team-models.js";
+import { noteWhen } from "./knowledge-model.js";
+import type { FileRowView, MemberRowView, MessageView } from "./team-models.js";
 import { SearchBody, type SearchFilters } from "./team-search.js";
 import {
   attachmentView,
   channelHeader,
-  clockTime,
   messageView,
   personView,
   type MemberDirectory,
@@ -50,6 +50,7 @@ function useTeamRead<Value>(
   const [value, setValue] = useState<Value | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
+  const reload = useCallback(() => setGeneration((next) => next + 1), []);
   useEffect(() => {
     if (session === null) return;
     let current = true;
@@ -68,7 +69,7 @@ function useTeamRead<Value>(
     // `read` is rebuilt every render; `key` says when its answer can differ.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, key, generation]);
-  return { value, failure, reload: () => setGeneration((next) => next + 1) };
+  return { value, failure, reload };
 }
 
 async function command(session: TeamSessionClient, input: HostApiCommandInput): Promise<void> {
@@ -106,13 +107,31 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
   const counts = useTeamRead(
     session,
     async (team) => {
-      const [files, pins] = await Promise.all([
+      const [files, pins, access] = await Promise.all([
         team.rpc["team.files.page"]({ channelId: channelKey }).then(unwrapRpcResult),
         team.rpc["team.pins.page"]({ channelId: channelKey }).then(unwrapRpcResult),
+        team.rpc["team.channel.access.get"]({ channelId: channelKey }).then(unwrapRpcResult),
       ]);
-      return { files: files.files.length, pinned: pins.messages.length };
+      return {
+        files: files.files.length,
+        pinned: pins.messages.length,
+        members: access.entries.length,
+      };
     },
     channelId,
+  );
+  // Rename, Members, Files and Pinned are screens of their own: coming back reads again.
+  const { reload: reloadChannel } = channel;
+  const { reload: reloadCounts } = counts;
+  const returned = useRef(false);
+  useFocusEffect(
+    useCallback(() => {
+      if (returned.current) {
+        reloadChannel();
+        reloadCounts();
+      }
+      returned.current = true;
+    }, [reloadChannel, reloadCounts]),
   );
   const entry = snapshot.sidebar?.channels.find((row) => row.channel.id === channelId);
   const notify: NotifyLevel =
@@ -163,21 +182,7 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
               { text: "Mentions", onPress: () => setNotify("mentions") },
               { text: "Nothing", onPress: () => setNotify("muted") },
             ]),
-          onEditAbout: () =>
-            Alert.prompt?.(
-              "Rename channel",
-              undefined,
-              (name) =>
-                name.trim() !== "" &&
-                run({
-                  type: "team.channel.update",
-                  channelId: channelKey,
-                  name: name.trim(),
-                  peopleOnly: value.peopleOnly,
-                }),
-              "plain-text",
-              value.name,
-            ),
+          onRename: () => navigation.navigate("TeamRenameChannel", { teamId, channelId }),
           onSetPeopleOnly: (on) =>
             run({
               type: "team.channel.update",
@@ -187,25 +192,47 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
             }),
           onAddPeople: () => navigation.navigate("TeamMembers", { teamId, channelId }),
           onLeave: () =>
-            Alert.alert(`Leave #${value.name}?`, "You can join again if it's public.", [
-              { style: "cancel", text: "Cancel" },
-              {
-                style: "destructive",
-                text: "Leave",
-                onPress: () =>
-                  run({ type: "team.channel.leave", channelId: channelKey }, () =>
-                    navigation.popToTop(),
-                  ),
-              },
-            ]),
-          onArchive: () =>
-            run({ type: "team.channel.archive", channelId: channelKey }, () =>
-              navigation.popToTop(),
+            Alert.alert(
+              `Leave #${value.name}?`,
+              value.kind === "public"
+                ? "You can join it again from Browse channels."
+                : "Someone who manages it will have to add you back.",
+              [
+                { style: "cancel", text: "Cancel" },
+                {
+                  style: "destructive",
+                  text: "Leave",
+                  onPress: () =>
+                    run({ type: "team.channel.leave", channelId: channelKey }, () =>
+                      navigation.popToTop(),
+                    ),
+                },
+              ],
             ),
+          onArchive: () =>
+            Alert.alert(
+              `Archive #${value.name}?`,
+              "Nobody can post in it and it leaves everyone's list. Its messages stay, and it can be restored from these details.",
+              [
+                { style: "cancel", text: "Cancel" },
+                {
+                  style: "destructive",
+                  text: "Archive",
+                  onPress: () => run({ type: "team.channel.archive", channelId: channelKey }),
+                },
+              ],
+            ),
+          onRestore: () => run({ type: "team.channel.restore", channelId: channelKey }),
         }}
+        archived={value.archivedAt !== null}
+        canLeave={value.can.leave}
         canManage={value.can.manage}
-        channel={channelHeader({ channel: value, memberCount: 0, people: [] })}
-        counts={counts.value ?? { files: 0, pinned: 0 }}
+        channel={channelHeader({
+          channel: value,
+          memberCount: counts.value?.members ?? null,
+          people: [],
+        })}
+        counts={counts.value}
         notify={notify}
         paddingBottom={padding}
         workingAgents={working}
@@ -214,7 +241,10 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
   );
 }
 
-/** The people and groups on a channel's list. Managers add and remove them. */
+/**
+ * The people and groups on a channel's list; managers add and remove them. A
+ * group DM lists its people, and anyone in it adds more, who then read its history.
+ */
 export function TeamMembersScreen(props: ChannelParams): ReactNode {
   const { teamId, channelId } = props.route.params;
   const { session } = useTeamSession(teamId);
@@ -226,11 +256,12 @@ export function TeamMembersScreen(props: ChannelParams): ReactNode {
   const access = useTeamRead(
     session,
     async (team) => {
-      const [list, groups] = await Promise.all([
+      const [list, groups, channel] = await Promise.all([
         team.rpc["team.channel.access.get"]({ channelId: channelKey }).then(unwrapRpcResult),
         team.rpc["team.groups.list"]({}).then(unwrapRpcResult),
+        team.rpc["team.channel.get"]({ channelId: channelKey }).then(unwrapRpcResult),
       ]);
-      return { list, groups: groups.groups };
+      return { list, groups: groups.groups, channel };
     },
     channelId,
   );
@@ -240,7 +271,11 @@ export function TeamMembersScreen(props: ChannelParams): ReactNode {
         <Loading failure={access.failure} />
       </Screen>
     );
-  const { list, groups } = access.value;
+  const { list, groups, channel } = access.value;
+  // A group DM's people are added with the DM's own command and never replaced.
+  const groupDm = channel.kind === "group_dm";
+  const canAdd = groupDm ? channel.can.post : list.can.manage;
+  const canRemove = !groupDm && list.can.manage;
   const lower = query.trim().toLowerCase();
   const rows: MemberRowView[] = list.entries
     .map((entry): MemberRowView => {
@@ -252,8 +287,8 @@ export function TeamMembersScreen(props: ChannelParams): ReactNode {
           name: person.name,
           detail: `@${person.handle}`,
           person,
-          role: entry.manage ? "manager" : "member",
-          canRemove: list.can.manage,
+          role: entry.manage && !groupDm ? "manager" : "member",
+          canRemove,
         };
       }
       const groupId = entry.subject.groupId;
@@ -265,7 +300,7 @@ export function TeamMembersScreen(props: ChannelParams): ReactNode {
         detail: `${group?.people.length ?? 0} people`,
         person: null,
         role: entry.manage ? "manager" : "member",
-        canRemove: list.can.manage,
+        canRemove,
       };
     })
     .filter((row) => lower === "" || row.name.toLowerCase().includes(lower));
@@ -302,22 +337,42 @@ export function TeamMembersScreen(props: ChannelParams): ReactNode {
       Alert.alert("That didn't work", error instanceof Error ? error.message : undefined),
     );
   };
+  const addToDm = (userId: string): void => {
+    const name = personView(userId, directory).name;
+    Alert.alert(`Add ${name}?`, `${name} will see this conversation's earlier messages.`, [
+      { style: "cancel", text: "Cancel" },
+      {
+        text: "Add",
+        onPress: () =>
+          void command(session, {
+            type: "team.dm.people.add",
+            channelId: channelKey,
+            userIds: [UserIdSchema.parse(userId)],
+            historyVisibleConfirmed: true,
+          }).then(access.reload, (error: unknown) =>
+            Alert.alert("That didn't work", error instanceof Error ? error.message : undefined),
+          ),
+      },
+    ]);
+  };
   return (
     <Screen edgeToEdge>
       <MembersBody
-        canManage={list.can.manage}
+        canAdd={canAdd}
         candidates={candidates}
         members={rows}
         onAdd={() => setAdding((now) => !now)}
         onAddMember={(userId) =>
-          replace([
-            ...list.entries,
-            {
-              subject: { kind: "person", userId: UserIdSchema.parse(userId) },
-              level: "post",
-              manage: false,
-            },
-          ])
+          groupDm
+            ? addToDm(userId)
+            : replace([
+                ...list.entries,
+                {
+                  subject: { kind: "person", userId: UserIdSchema.parse(userId) },
+                  level: "post",
+                  manage: false,
+                },
+              ])
         }
         onQuery={setQuery}
         onRemove={(id) =>
@@ -395,7 +450,6 @@ export function TeamFilesScreen(props: ChannelParams): ReactNode {
   const { teamId, channelId } = props.route.params;
   const navigation = useNavigation<Navigation>();
   const { session } = useTeamSession(teamId);
-  const { directory } = useTeamMembers(teamId);
   const padding = useBottomPadding();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<FileKindFilter>("all");
@@ -427,8 +481,6 @@ export function TeamFilesScreen(props: ChannelParams): ReactNode {
       id: row.file.id,
       messageId: row.messageId,
       attachment: attachmentView(row.file, previews),
-      sharedBy: "",
-      when: "",
       pinned: false,
       mediaType: row.file.mediaType,
     }))
@@ -443,7 +495,6 @@ export function TeamFilesScreen(props: ChannelParams): ReactNode {
             : !row.mediaType.startsWith("image/") &&
               !/pdf|text|document|sheet|presentation/.test(row.mediaType),
     );
-  void directory;
   return (
     <Screen edgeToEdge>
       <FilesBody
@@ -485,6 +536,7 @@ export function TeamPinnedScreen(props: ChannelParams): ReactNode {
       </Screen>
     );
   const viewerId = snapshot.bootstrap?.member.userId ?? "";
+  const now = new Date();
   return (
     <Screen edgeToEdge>
       <PinnedBody
@@ -497,24 +549,32 @@ export function TeamPinnedScreen(props: ChannelParams): ReactNode {
           }).then(read.reload, () => undefined)
         }
         paddingBottom={padding}
-        pins={[...read.value].reverse().map((message) => ({
-          message: pinnedView(message, viewerId, directory),
-          pinnedBy: "Pinned",
-        }))}
+        pins={[...read.value]
+          .reverse()
+          .map((message) => outOfTimeline(message, viewerId, directory, now))}
       />
     </Screen>
   );
 }
 
-function pinnedView(message: TeamMessage, viewerId: string, directory: MemberDirectory) {
-  return messageView(message, {
-    viewerId,
-    members: directory,
-    previews: new Map(),
-    previous: null,
-    requests: [],
-    inThread: true,
-  });
+/** A message shown away from its timeline, where no day line says when it was: its time says the day too. */
+function outOfTimeline(
+  message: TeamMessage,
+  viewerId: string,
+  directory: MemberDirectory,
+  now: Date,
+): MessageView {
+  return {
+    ...messageView(message, {
+      viewerId,
+      members: directory,
+      previews: new Map(),
+      previous: null,
+      requests: [],
+      inThread: true,
+    }),
+    time: noteWhen(message.createdAt, now),
+  };
 }
 
 /** One team's messages, narrowed by the four filters the team answers. */
@@ -532,9 +592,12 @@ export function TeamSearchScreen(
   const [inThreads, setInThreads] = useState(false);
   const [hasFile, setHasFile] = useState(false);
   const [searching, setSearching] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (session === null || query.trim() === "") return;
     const timer = setTimeout(() => {
+      setFailure(null);
       setSearching(true);
       void session
         .search({
@@ -544,11 +607,13 @@ export function TeamSearchScreen(
           ...(hasFile ? { hasFile: true } : {}),
           ...(inThreads ? { threadsOnly: true } : {}),
         })
-        .catch(() => undefined)
+        .catch((error: unknown) =>
+          setFailure(error instanceof Error ? error.message : "The team didn't answer."),
+        )
         .finally(() => setSearching(false));
     }, 250);
     return () => clearTimeout(timer);
-  }, [authorId, channelId, hasFile, inThreads, query, session]);
+  }, [attempt, authorId, channelId, hasFile, inThreads, query, session]);
   const viewerId = snapshot.bootstrap?.member.userId ?? "";
   const channelName =
     snapshot.sidebar?.channels.find((row) => row.channel.id === channelId)?.channel.name ?? null;
@@ -558,15 +623,11 @@ export function TeamSearchScreen(
     thread: inThreads,
     file: hasFile,
   };
-  const results = (query.trim() === "" ? [] : (snapshot.search?.results ?? [])).map((row) => ({
-    message: messageView(row.message, {
-      viewerId,
-      members: directory,
-      previews: new Map(),
-      previous: null,
-      requests: [],
-      inThread: true,
-    }),
+  const now = new Date();
+  const results = (
+    query.trim() === "" || failure !== null ? [] : (snapshot.search?.results ?? [])
+  ).map((row) => ({
+    message: outOfTimeline(row.message, viewerId, directory, now),
     where:
       row.message.threadRootId === null
         ? `#${row.source.audience.channelName}`
@@ -634,7 +695,13 @@ export function TeamSearchScreen(
           },
         ]}
         onFilter={onFilter}
-        onMore={() => void session?.loadMoreSearch().catch(() => undefined)}
+        onMore={() =>
+          void session
+            ?.loadMoreSearch()
+            .catch((error: unknown) =>
+              setFailure(error instanceof Error ? error.message : "The team didn't answer."),
+            )
+        }
         onOpenMessage={(_team, result) => {
           const raw = results.find((row) => row.message.id === result.message.id)?.raw;
           if (raw === undefined) return;
@@ -652,12 +719,12 @@ export function TeamSearchScreen(
               replyId: raw.id,
             });
         }}
-        onOpenTask={() => undefined}
+        failure={query.trim() === "" ? null : failure}
         onQuery={setQuery}
+        onRetry={() => setAttempt((next) => next + 1)}
         paddingBottom={padding}
         query={query}
         searching={searching}
-        tasks={[]}
       />
     </Screen>
   );
@@ -694,6 +761,7 @@ export function TeamNoticesScreen(
         <Loading failure={read.failure} />
       </Screen>
     );
+  const now = new Date();
   return (
     <Screen edgeToEdge>
       <ScrollView contentContainerStyle={[styles.form, { paddingBottom: padding }]}>
@@ -705,7 +773,7 @@ export function TeamNoticesScreen(
           <RowGroup>
             {read.value.map((notice) => (
               <LinkRow
-                detail={clockTime(notice.createdAt)}
+                detail={noteWhen(notice.createdAt, now)}
                 key={notice.id}
                 label={`An admin added themselves to this ${notice.resourceKind}. It's in the audit log.`}
                 onPress={() => markRead(notice.id)}

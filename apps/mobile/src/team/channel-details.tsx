@@ -30,24 +30,29 @@ export interface ChannelDetailsActions {
   readonly onPinned: () => void;
   readonly onInstructions: () => void;
   readonly onNotify: () => void;
-  readonly onEditAbout: () => void;
+  readonly onRename: () => void;
   readonly onSetPeopleOnly: (on: boolean) => void;
   readonly onAddPeople: () => void;
   readonly onLeave: () => void;
   readonly onArchive: () => void;
+  readonly onRestore: () => void;
 }
 
 /**
  * A channel's Details, pushed from its title. On a phone it holds what the
  * desktop's tabs and Details pane do: Members, Files, Pinned and the
  * instructions for agents, then the reader's own settings here, then, for
- * managers, Access (People only) and Archive.
+ * managers, Access (People only) and Archive, or Restore once archived.
  */
 export function ChannelDetailsBody(props: {
   readonly actions: ChannelDetailsActions;
   readonly channel: ChannelHeaderView;
   readonly canManage: boolean;
-  readonly counts: { readonly files: number; readonly pinned: number };
+  /** The team lets the reader leave: never a DM or group DM. */
+  readonly canLeave: boolean;
+  readonly archived: boolean;
+  /** Null until read. */
+  readonly counts: { readonly files: number; readonly pinned: number } | null;
   readonly notify: NotifyLevel;
   /** Agents working here right now, named in the People only confirmation. */
   readonly workingAgents: number;
@@ -67,13 +72,13 @@ export function ChannelDetailsBody(props: {
             </AppText>
             {props.canManage ? (
               <Pressable
-                accessibilityLabel="Edit name and description"
+                accessibilityLabel="Rename channel"
                 accessibilityRole="button"
                 hitSlop={10}
-                onPress={actions.onEditAbout}
+                onPress={actions.onRename}
               >
                 <AppText role="secondaryMedium" tone="ember">
-                  Edit
+                  Rename
                 </AppText>
               </Pressable>
             ) : null}
@@ -85,7 +90,13 @@ export function ChannelDetailsBody(props: {
           )}
           <View style={styles.aboutFacts}>
             <AppText role="caption" tone="muted">
-              {[glyph, channel.peopleOnly ? null : "agents allowed"].filter(Boolean).join(" · ")}
+              {[
+                glyph,
+                props.archived ? "archived" : null,
+                channel.peopleOnly ? null : "agents allowed",
+              ]
+                .filter(Boolean)
+                .join(" · ")}
             </AppText>
             {channel.peopleOnly ? <PeopleOnlyBadge /> : null}
           </View>
@@ -99,7 +110,7 @@ export function ChannelDetailsBody(props: {
               key="members"
               label="Members"
               onPress={actions.onMembers}
-              value={String(channel.memberCount)}
+              value={channel.memberCount === null ? null : String(channel.memberCount)}
             />
           ),
           channel.kind === "group-dm" ? (
@@ -116,14 +127,14 @@ export function ChannelDetailsBody(props: {
             key="files"
             label="Files"
             onPress={actions.onFiles}
-            value={String(props.counts.files)}
+            value={props.counts === null ? null : String(props.counts.files)}
           />,
           <LinkRow
             icon="pin"
             key="pinned"
             label="Pinned"
             onPress={actions.onPinned}
-            value={String(props.counts.pinned)}
+            value={props.counts === null ? null : String(props.counts.pinned)}
           />,
           dm || channel.peopleOnly ? null : (
             <LinkRow
@@ -146,7 +157,7 @@ export function ChannelDetailsBody(props: {
               onPress={actions.onNotify}
               value={notifyWords[props.notify]}
             />,
-            channel.kind === "dm" ? null : (
+            !props.canLeave ? null : (
               <LinkRow
                 action
                 icon="rectangle.portrait.and.arrow.right"
@@ -174,13 +185,24 @@ export function ChannelDetailsBody(props: {
                 }
                 value={channel.peopleOnly}
               />,
-              <LinkRow
-                action
-                icon="archivebox"
-                key="archive"
-                label="Archive channel"
-                onPress={actions.onArchive}
-              />,
+              props.archived ? (
+                <LinkRow
+                  action
+                  icon="archivebox"
+                  key="restore"
+                  label="Restore channel"
+                  onPress={actions.onRestore}
+                  tone="ember"
+                />
+              ) : (
+                <LinkRow
+                  action
+                  icon="archivebox"
+                  key="archive"
+                  label="Archive channel"
+                  onPress={actions.onArchive}
+                />
+              ),
             ]}
           </RowGroup>
           <GroupNote>{peopleOnlySentence}</GroupNote>
@@ -323,7 +345,7 @@ export function MembersBody(props: {
   readonly members: readonly MemberRowView[];
   readonly query: string;
   readonly onQuery: (query: string) => void;
-  readonly canManage: boolean;
+  readonly canAdd: boolean;
   readonly onAdd: () => void;
   readonly onRemove: (memberId: string) => void;
   /** Adding: the team's people not on the list yet, matching the query. */
@@ -341,14 +363,14 @@ export function MembersBody(props: {
         placeholder="Find people and groups"
         value={props.query}
       />
-      {props.canManage ? (
+      {props.canAdd ? (
         <RowGroup>
           {[
             <LinkRow
               action
               icon="person.badge.plus"
               key="add"
-              label="Add people or groups"
+              label="Add people"
               onPress={props.onAdd}
               tone="ember"
             />,

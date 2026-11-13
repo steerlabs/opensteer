@@ -148,7 +148,6 @@ export function TeamPageList(props: {
       onEndReached={props.onLoadMore}
       onEndReachedThreshold={0.8}
       renderItem={renderItem}
-      style={section.state === "live" ? null : styles.dim}
       windowSize={11}
     />
   );
@@ -300,7 +299,6 @@ const markWidth = 28;
 
 const styles = StyleSheet.create({
   current: { ...material.selected },
-  dim: { opacity: 0.55 },
   head: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
   headAction: {
     alignItems: "center",
