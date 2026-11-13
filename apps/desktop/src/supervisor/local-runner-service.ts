@@ -1214,6 +1214,10 @@ export class LocalRunnerService {
     try {
       await this.#reconcileTail;
       await Promise.all([...this.#runners.values()].map((slot) => this.#stop(slot)));
+      await exitedWithin(
+        Promise.allSettled([...this.#obligations.values(), ...this.#sessionCleanups.values()]),
+        this.#stopTimeouts.removalMs,
+      );
     } finally {
       signal?.removeEventListener("abort", force);
     }

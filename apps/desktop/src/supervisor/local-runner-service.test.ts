@@ -2137,6 +2137,41 @@ describe("LocalRunnerService", () => {
     },
   );
 
+  it("waits for an in-flight profile erasure before shutdown resolves", async () => {
+    const directory = await temporaryDirectory();
+    const targets = mutableTargetAuthority();
+    const target = targets.add("https://shutdown-erasure.opensteer.test");
+    const erasure = new DesktopBrowserProfileErasure(directory);
+    const released = Promise.withResolvers<void>();
+    const order: string[] = [];
+    const erase = erasure.erase.bind(erasure);
+    const erasing = vi.spyOn(erasure, "erase").mockImplementation(async (...input) => {
+      await released.promise;
+      await erase(...input);
+      order.push("erased");
+    });
+    const running = fixture(await configuration(directory), targets, undefined, undefined, {
+      profileErasure: erasure,
+    });
+    const start = running.service.start(startInput(target.deploymentId));
+    await eventually(() => running.children.length === 1);
+    const child = childAt(running.children, 0);
+    connect(child);
+    await start;
+    child.emit("message", { type: "runner.worker.revoked" });
+    await eventually(() => hasStopMessage(child));
+    child.emit("exit", 0);
+    await vi.waitFor(() => expect(erasing, "erasure never started").toHaveBeenCalled(), {
+      timeout: 1_000,
+    });
+    const shutting = running.service.shutdown().then(() => order.push("shut down"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    released.resolve();
+    await shutting;
+    expect(order).toEqual(["erased", "shut down"]);
+    running.service.dispose();
+  });
+
   it("removes this Mac when its browser engine cannot stop, and erases its profiles at the next start", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
