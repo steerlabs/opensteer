@@ -91,6 +91,7 @@ import {
   DeleteTeamScreen,
   TeamSetupScreen,
   TeamsScreen,
+  TransferTeamScreen,
 } from "./team/team-entry-screens.js";
 import { ConnectOpensteerScreen, JoinTeamScreen } from "./team/team-join-screens.js";
 import { TeamNewChannelScreen, TeamNewMessageScreen } from "./team/team-create-screens.js";
@@ -414,6 +415,16 @@ const RootStack = createNativeStackNavigator({
         title: "Delete team",
       },
     },
+    TransferTeam: {
+      screen: TransferTeamScreen,
+      options: {
+        headerShown: false,
+        presentation: screenPresentations.TransferTeam,
+        sheetAllowedDetents: "fitToContents",
+        sheetGrabberVisible: true,
+        title: "Transfer team",
+      },
+    },
     TeamChannels: { screen: TeamChannelsScreen, options: { title: "Channels" } },
     TeamNewChannel: { screen: TeamNewChannelScreen, options: { title: "New channel" } },
     TeamNewMessage: { screen: TeamNewMessageScreen, options: { title: "New message" } },
@@ -657,6 +668,7 @@ type OpensteerRootParamList = {
   readonly CreateTeam: undefined;
   readonly TeamSetup: { readonly hostedTeamId: string };
   readonly DeleteTeam: { readonly teamId: string };
+  readonly TransferTeam: { readonly teamId: string };
   readonly TeamChannels: { readonly teamId: string };
   readonly TeamNewChannel: { readonly teamId: string };
   readonly TeamNewMessage: { readonly teamId: string };

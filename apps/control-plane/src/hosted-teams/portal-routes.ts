@@ -1,11 +1,16 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
+import {
+  ControlPlaneAccountIdSchema,
+  type ControlPlaneAccountId,
+} from "@opensteer/control-plane-protocol";
 import {
   CreateHostedTeamRequestSchema,
   HostedTeamAvailabilityQuerySchema,
   HostedTeamIdSchema,
   hostedTeamsDomain,
   maximumLiveHostedTeamsPerAccount,
+  type HostedTeamId,
+  type HostedTeamOwner,
   type HostedTeamView,
 } from "@opensteer/control-plane-protocol/hosted-teams";
 import type { BrowserPageFonts } from "@opensteer/shared/browserPage";
@@ -19,6 +24,7 @@ import {
   hostedTeamRow,
   hostedTeamsUnavailableBody,
   sendBrowserPage,
+  transferHostedTeamBody,
 } from "../portal/pages.js";
 import type { PortalSession } from "../portal/portal-sessions.js";
 import { ControlPlaneError } from "../server/errors.js";
@@ -30,6 +36,7 @@ const portalAvailabilityPath = "/teams/availability";
 const hostedTeamPath = (id: string) => `/teams/${encodeURIComponent(id)}`;
 
 const TeamParamsSchema = z.strictObject({ id: HostedTeamIdSchema });
+const TransferFormSchema = z.strictObject({ to: z.string().max(64) });
 const CreateFormSchema = z.strictObject({
   requestId: z.string().max(64),
   name: z.string().max(256),
@@ -38,7 +45,7 @@ const CreateFormSchema = z.strictObject({
 
 /**
  * The portal's hosted-team pages, over the same store as the Account API: create a team, follow
- * its setup into the team, retry or cancel it, and delete it. Without a provisioner configured,
+ * its setup into the team, retry or cancel it, transfer it, and delete it. Without a provisioner configured,
  * only the explanation remains.
  */
 export function registerHostedTeamPortal(
@@ -176,6 +183,67 @@ export function registerHostedTeamPortal(
     return reply.redirect("/", 303);
   });
 
+  app.get(`${portalHostedTeamsPath}/:id/transfer`, async (request, reply) => {
+    guard(request);
+    void reply.header("cache-control", "no-store");
+    if (!hostedTeams) return unavailable(reply);
+    const session = await readSession(request, reply);
+    const { id } = TeamParamsSchema.parse(request.params);
+    if (!session) return signIn(reply, `${hostedTeamPath(id)}/transfer`);
+    return renderTransfer(reply, accountOf(session), id, null);
+  });
+
+  app.post(`${portalHostedTeamsPath}/:id/transfer`, async (request, reply) => {
+    guard(request);
+    void reply.header("cache-control", "no-store");
+    requireExactOrigin(request, portalOrigin.origin);
+    if (!hostedTeams) return unavailable(reply);
+    const session = await readSession(request, reply);
+    if (!session) return signIn(reply, "/");
+    const { id } = TeamParamsSchema.parse(request.params);
+    const to = ControlPlaneAccountIdSchema.safeParse(
+      TransferFormSchema.parse(parseForm(request.body)).to,
+    );
+    try {
+      if (!to.success) throw new ControlPlaneError("bad_request", "Choose who to transfer it to.");
+      await hostedTeams.transfer(accountOf(session), id, to.data);
+    } catch (error) {
+      if (!(error instanceof ControlPlaneError) || error.code === "not_found") throw error;
+      return renderTransfer(reply.code(error.status), accountOf(session), id, error.message);
+    }
+    return reply.redirect("/", 303);
+  });
+
+  async function renderTransfer(
+    reply: FastifyReply,
+    accountId: ControlPlaneAccountId,
+    id: HostedTeamId,
+    failure: string | null,
+  ): Promise<string> {
+    const store = hostedTeams!;
+    const team = await store.forAccount(accountId, id);
+    if (!team || team.stage === "deleting")
+      throw new ControlPlaneError("not_found", "Hosted team was not found");
+    let owners: readonly HostedTeamOwner[] | null = null;
+    try {
+      owners = await store.owners(accountId, id);
+    } catch (error) {
+      if (!(error instanceof ControlPlaneError) || error.code === "not_found") throw error;
+      failure ??= error.message;
+    }
+    return sendBrowserPage(reply, {
+      body: transferHostedTeamBody({
+        action: `${hostedTeamPath(id)}/transfer`,
+        failure,
+        name: team.name,
+        owners,
+      }),
+      fonts,
+      layout: "card",
+      title: `Transfer ${team.name} · Opensteer`,
+    });
+  }
+
   function renderCreate(
     reply: FastifyReply,
     input: {
@@ -229,6 +297,7 @@ export function hostedTeamRows(teams: readonly HostedTeamView[]): readonly strin
       progressHref: hostedTeamPath(team.id),
       removeAction: `${hostedTeamPath(team.id)}/delete`,
       stage: team.stage,
+      transferHref: `${hostedTeamPath(team.id)}/transfer`,
     }),
   );
 }

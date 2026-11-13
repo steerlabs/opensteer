@@ -4,7 +4,9 @@ import {
   HostedTeamAvailabilityResponseSchema,
   HostedTeamIdSchema,
   HostedTeamResponseSchema,
+  ListHostedTeamOwnersResponseSchema,
   ListHostedTeamsResponseSchema,
+  TransferHostedTeamRequestSchema,
   accountHostedTeamAvailabilityPath,
   accountHostedTeamsPath,
 } from "@opensteer/control-plane-protocol/hosted-teams";
@@ -17,7 +19,7 @@ import type { HostedTeamStore } from "./hosted-team-store.js";
 
 const TeamParamsSchema = z.strictObject({ id: HostedTeamIdSchema });
 
-/** The Account JSON API native apps use to create, follow, retry and remove hosted teams. */
+/** The Account JSON API native apps use to create, follow, retry, transfer and remove hosted teams. */
 export function registerHostedTeamAccountRoutes(
   app: FastifyInstance,
   dependencies: {
@@ -71,6 +73,23 @@ export function registerHostedTeamAccountRoutes(
     const { id } = TeamParamsSchema.parse(request.params);
     void reply.header("cache-control", "no-store");
     return HostedTeamResponseSchema.parse(await hostedTeams.retry(principal.accountId, id));
+  });
+
+  app.get(`${accountHostedTeamsPath}/:id/owners`, async (request, reply) => {
+    const principal = await read(request.headers);
+    const { id } = TeamParamsSchema.parse(request.params);
+    void reply.header("cache-control", "no-store");
+    return ListHostedTeamOwnersResponseSchema.parse({
+      owners: await hostedTeams.owners(principal.accountId, id),
+    });
+  });
+
+  app.post(`${accountHostedTeamsPath}/:id/transfer`, async (request, reply) => {
+    const principal = await write(request.headers);
+    const { id } = TeamParamsSchema.parse(request.params);
+    const { to } = TransferHostedTeamRequestSchema.parse(request.body);
+    void reply.header("cache-control", "no-store");
+    return HostedTeamResponseSchema.parse(await hostedTeams.transfer(principal.accountId, id, to));
   });
 
   app.delete(`${accountHostedTeamsPath}/:id`, async (request, reply) => {

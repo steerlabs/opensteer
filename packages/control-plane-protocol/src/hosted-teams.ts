@@ -1,5 +1,6 @@
 import { DeploymentIdSchema, TeamOriginSchema } from "@opensteer/core";
 import { z } from "zod";
+import { ControlPlaneAccountIdSchema } from "./account-id.js";
 
 /** Every hosted team is served at `https://<slug>.<hostedTeamsDomain>`. */
 export const hostedTeamsDomain = "teams.opensteer.com";
@@ -123,6 +124,10 @@ export const accountHostedTeamPath = (id: HostedTeamId) =>
   `${accountHostedTeamsPath}/${encodeURIComponent(id)}`;
 export const accountHostedTeamRetryPath = (id: HostedTeamId) =>
   `${accountHostedTeamPath(id)}/retry`;
+export const accountHostedTeamOwnersPath = (id: HostedTeamId) =>
+  `${accountHostedTeamPath(id)}/owners`;
+export const accountHostedTeamTransferPath = (id: HostedTeamId) =>
+  `${accountHostedTeamPath(id)}/transfer`;
 
 /** Bounded by the Account Deployment name the team becomes. */
 export const HostedTeamNameSchema = z.string().trim().min(1).max(120);
@@ -167,6 +172,8 @@ export const HostedTeamViewSchema = z.object({
   stage: HostedTeamStageSchema,
   /** Why the last attempt failed; present only at `failed`. */
   error: z.object({ message: z.string().min(1).max(1_000) }).optional(),
+  /** Whether the signed-in Account holds the team: it created it, or was handed it. */
+  creator: z.boolean().optional(),
 });
 export type HostedTeamView = z.infer<typeof HostedTeamViewSchema>;
 
@@ -180,3 +187,23 @@ export const ListHostedTeamsResponseSchema = z.object({
  * a team already gone answers `not_found`.
  */
 export const HostedTeamResponseSchema = HostedTeamViewSchema;
+
+/** Someone the team's own Host confirms as an owner, whom its holder may hand it to. */
+export const HostedTeamOwnerSchema = z.object({
+  accountId: ControlPlaneAccountIdSchema,
+  displayName: z.string().max(256),
+  email: z.string().max(320),
+});
+export type HostedTeamOwner = z.infer<typeof HostedTeamOwnerSchema>;
+
+/** `GET …/:id/owners`, for the team's holder only: its other owners, as its Host says now. */
+export const ListHostedTeamOwnersResponseSchema = z.object({
+  owners: z.array(HostedTeamOwnerSchema).max(100),
+});
+
+/**
+ * `POST …/:id/transfer`: the team's holder hands it, with its Account sign-in, to one of its
+ * other owners, whom its Host must confirm at that moment. Answers the team as the caller sees it.
+ */
+export const TransferHostedTeamRequestSchema = z.strictObject({ to: ControlPlaneAccountIdSchema });
+export type TransferHostedTeamRequest = z.infer<typeof TransferHostedTeamRequestSchema>;

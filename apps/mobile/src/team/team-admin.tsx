@@ -25,6 +25,8 @@ export interface TeamSettingsActions {
   /** Present while the reader's agent is connected to this team. */
   readonly onDisconnect: (() => void) | null;
   /** Present for an owner of a team Opensteer hosts. */
+  readonly onTransfer: (() => void) | null;
+  /** Present for an owner of a team Opensteer hosts. */
   readonly onDelete: (() => void) | null;
 }
 
@@ -170,6 +172,15 @@ export function TeamSettingsBody(props: {
             }
             tone="danger"
           />,
+          actions.onTransfer === null ? null : (
+            <LinkRow
+              action
+              icon="arrow.turn.down.right"
+              key="transfer"
+              label={`Transfer ${team.name}`}
+              onPress={actions.onTransfer}
+            />
+          ),
           actions.onDelete === null ? null : (
             <LinkRow
               action

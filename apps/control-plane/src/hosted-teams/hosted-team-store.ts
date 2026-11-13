@@ -17,6 +17,7 @@ import {
   type DesiredHostedTeam,
   type HostedTeamAvailability,
   type HostedTeamId,
+  type HostedTeamOwner,
   type HostedTeamSlug,
   type HostedTeamStatusReport,
   type HostedTeamView,
@@ -45,8 +46,8 @@ type HostedTeamRow = Selectable<HostedTeamTable>;
 
 /** How long one bootstrap attempt may hold a team before another Account replica may take over. */
 const bootstrapLeaseMilliseconds = 2 * 60_000;
-/** Directory entries read per page while looking for another owner of a departing creator's team. */
-const successorPageSize = 50;
+/** How long a deletion that never finished, say in a crash, keeps fencing its Account. */
+const accountDeletionFenceMilliseconds = 10 * 60_000;
 const unfinishedMessage = "Setup didn’t finish. Try again.";
 
 /** A team Account is setting up, claimed by one bootstrap attempt. */
@@ -71,16 +72,6 @@ export type HostedTeamOwnerCheck = (input: {
   readonly accountId: ControlPlaneAccountId;
   readonly authority: HostAccountAdoptionAuthority;
 }) => Promise<HostedTeamOwnerCheckResponse | undefined>;
-
-/**
- * What becomes of the adopted teams an Account created when it is deleted: each passes to the
- * Host-confirmed owner in `successors`, or is in `deletable` because its Host named the creator
- * its only owner. Teams never adopted go with the Account without asking.
- */
-export interface HostedTeamsAccountDeletion {
-  readonly successors: ReadonlyMap<HostedTeamId, ControlPlaneAccountId>;
-  readonly deletable: ReadonlySet<HostedTeamId>;
-}
 
 /**
  * Hosted team servers an Account asked Opensteer to run, how far their setup got, and what the
@@ -131,11 +122,12 @@ export class HostedTeamStore {
       // The creator's row serializes their creates, so the cap and request replay both hold.
       const account = await transaction
         .selectFrom("users")
-        .select("id")
+        .select(["id", "deletionStartedAt"])
         .where("id", "=", accountId)
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!account) throw new ControlPlaneError("unauthorized", "Account sign-in required");
+      if (deletionFenced(account.deletionStartedAt)) throw deletionInProgress();
       const replayed = await transaction
         .selectFrom("hostedTeams")
         .selectAll()
@@ -186,22 +178,22 @@ export class HostedTeamStore {
       }
       return inserted;
     });
-    return toView(row);
+    return toView(row, accountId);
   }
 
   /** Teams the Account created, and teams whose directory lists it as a member. */
   async listForAccount(accountId: ControlPlaneAccountId): Promise<readonly HostedTeamView[]> {
     const rows = await this.#visible(accountId).orderBy("createdAt", "asc").limit(100).execute();
-    return rows.map(toView);
+    return rows.map((row) => toView(row, accountId));
   }
 
-  /** Teams the Account created and hasn't seen deleted, which go when the Account goes. */
+  /** Teams the Account holds (created, or was handed) and hasn't seen deleted. */
   async listCreatedBy(accountId: ControlPlaneAccountId): Promise<readonly HostedTeamView[]> {
     const rows = await this.#visible(accountId)
       .where("creatorAccountId", "=", accountId)
       .orderBy("createdAt", "asc")
       .execute();
-    return rows.map(toView);
+    return rows.map((row) => toView(row, accountId));
   }
 
   async forAccount(
@@ -209,7 +201,7 @@ export class HostedTeamStore {
     id: HostedTeamId,
   ): Promise<HostedTeamView | null> {
     const row = await this.#visible(accountId).where("id", "=", id).executeTakeFirst();
-    return row ? toView(row) : null;
+    return row ? toView(row, accountId) : null;
   }
 
   /**
@@ -219,6 +211,15 @@ export class HostedTeamStore {
   async retry(accountId: ControlPlaneAccountId, id: HostedTeamId): Promise<HostedTeamView> {
     const setupToken = randomBytes(32).toString("base64url");
     const row = await this.#database.transaction().execute(async (transaction) => {
+      // FOR SHARE: waits for, or holds off, this Account's deletion fence.
+      const account = await transaction
+        .selectFrom("users")
+        .select("deletionStartedAt")
+        .where("id", "=", accountId)
+        .forShare()
+        .executeTakeFirst();
+      if (!account) throw new ControlPlaneError("unauthorized", "Account sign-in required");
+      if (deletionFenced(account.deletionStartedAt)) throw deletionInProgress();
       const current = await transaction
         .selectFrom("hostedTeams")
         .selectAll()
@@ -256,7 +257,7 @@ export class HostedTeamStore {
         .returningAll()
         .executeTakeFirstOrThrow();
     });
-    return toView(row);
+    return toView(row, accountId);
   }
 
   /**
@@ -298,7 +299,7 @@ export class HostedTeamStore {
           .where("id", "=", id)
           .executeTakeFirstOrThrow();
       });
-      if (outcome !== "owner-check") return toView(outcome);
+      if (outcome !== "owner-check") return toView(outcome, accountId);
       await this.#requireOwner(accountId, current);
       confirmedOwner = true;
     }
@@ -308,11 +309,7 @@ export class HostedTeamStore {
   async #requireOwner(accountId: ControlPlaneAccountId, team: HostedTeamRow): Promise<void> {
     const authority = await this.#authority(team);
     const answer = authority ? await this.#ownerCheck({ accountId, authority }) : undefined;
-    if (answer === undefined)
-      throw new ControlPlaneError(
-        "unavailable",
-        "Your team’s server didn’t answer. Try again in a minute.",
-      );
+    if (answer === undefined) throw hostUnavailable();
     if (answer.owner) return;
     const settled = await this.#database
       .selectFrom("hostedTeams")
@@ -330,65 +327,68 @@ export class HostedTeamStore {
     );
   }
 
-  /**
-   * Asks the Host of every adopted team `accountId` created who keeps it once the Account goes.
-   * Refuses, naming the team, whenever a Host can't settle that: no team another person owns is
-   * ever deleted on a guess.
-   */
-  async accountDeletion(accountId: ControlPlaneAccountId): Promise<HostedTeamsAccountDeletion> {
-    const teams = await this.#database
-      .selectFrom("hostedTeams")
-      .selectAll()
-      .where("creatorAccountId", "=", accountId)
-      .where("state", "!=", "deleted")
-      .orderBy("createdAt", "asc")
+  /** The team's other owners, as its own Host confirms them now. Only its holder may ask. */
+  async owners(accountId: ControlPlaneAccountId, id: HostedTeamId): Promise<HostedTeamOwner[]> {
+    const team = await this.#held(accountId, id);
+    const authority = await this.#authority(team);
+    const answer = authority ? await this.#ownerCheck({ accountId, authority }) : undefined;
+    if (answer === undefined) throw hostUnavailable();
+    const others = answer.owners.filter((owner) => owner !== accountId);
+    if (others.length === 0) return [];
+    const people = await this.#database
+      .selectFrom("users")
+      .select(["id", "displayName", "email"])
+      .where("id", "in", others)
       .execute();
-    const successors = new Map<HostedTeamId, ControlPlaneAccountId>();
-    const deletable = new Set<HostedTeamId>();
-    for (const team of teams) {
-      const adopted = await this.#database
-        .selectFrom("deployments")
-        .select("id")
-        .where("canonicalOrigin", "=", hostedTeamOrigin(team.slug as HostedTeamSlug))
-        .executeTakeFirst();
-      if (!adopted) continue;
-      const authority = await this.#authority(team);
-      const creator = authority ? await this.#ownerCheck({ accountId, authority }) : undefined;
-      if (!authority || !creator) throw ownerUnconfirmed(team);
-      if (creator.onlyOwner) {
-        deletable.add(team.id);
-        continue;
-      }
-      const successor = await this.#otherOwner(accountId, authority);
-      if (!successor) throw ownerUnconfirmed(team);
-      successors.set(team.id, successor);
-    }
-    return { successors, deletable };
+    return others.flatMap((owner) => {
+      const person = people.find((candidate) => candidate.id === owner);
+      return person
+        ? [{ accountId: person.id, displayName: person.displayName, email: person.email }]
+        : [];
+    });
   }
 
-  /** The first person the team's directory lists whom its Host confirms as an owner. */
-  async #otherOwner(
+  /**
+   * Hands a set-up team from its holder to `to`, whom its Host must confirm as an owner just
+   * before: the team, its Account Deployment and that Deployment's Account sign-in.
+   */
+  async transfer(
     accountId: ControlPlaneAccountId,
-    authority: HostAccountAdoptionAuthority,
-  ): Promise<ControlPlaneAccountId | undefined> {
-    let after: ControlPlaneAccountId | undefined;
-    for (;;) {
-      let page = this.#database
-        .selectFrom("deploymentDirectoryEntries")
-        .select("accountId")
-        .where("deploymentId", "=", authority.deploymentId)
-        .where("present", "=", true)
-        .where("accountId", "!=", accountId);
-      if (after) page = page.where("accountId", ">", after);
-      const candidates = await page.orderBy("accountId", "asc").limit(successorPageSize).execute();
-      for (const { accountId: candidate } of candidates) {
-        const answer = await this.#ownerCheck({ accountId: candidate, authority });
-        if (!answer) return undefined;
-        if (answer.owner) return candidate;
-      }
-      if (candidates.length < successorPageSize) return undefined;
-      after = candidates.at(-1)!.accountId;
-    }
+    id: HostedTeamId,
+    to: ControlPlaneAccountId,
+  ): Promise<HostedTeamView> {
+    if (to === accountId) throw new ControlPlaneError("bad_request", "You already hold this team.");
+    const team = await this.#held(accountId, id);
+    const authority = await this.#authority(team);
+    if (!authority) throw new ControlPlaneError("conflict", "This team isn’t set up yet.");
+    const answer = await this.#ownerCheck({ accountId: to, authority });
+    if (answer === undefined) throw hostUnavailable();
+    if (!answer.owner)
+      throw new ControlPlaneError(
+        "forbidden",
+        "They aren’t an owner of this team. Make them one in the team first.",
+        { reason: "hosted-team-owner-required" },
+      );
+    const row = await this.#database
+      .transaction()
+      .execute((transaction) =>
+        transferHostedTeam(transaction, { id, from: accountId, to, authority }),
+      );
+    return toView(row, accountId);
+  }
+
+  async #held(accountId: ControlPlaneAccountId, id: HostedTeamId): Promise<HostedTeamRow> {
+    const team = await this.#visible(accountId)
+      .where("id", "=", id)
+      .where("state", "!=", "deleted")
+      .executeTakeFirst();
+    if (!team) throw new ControlPlaneError("not_found", "Hosted team was not found");
+    if (team.creatorAccountId !== accountId)
+      throw new ControlPlaneError(
+        "forbidden",
+        "Only the person who holds this team in Opensteer can transfer it.",
+      );
+    return team;
   }
 
   /* ---- Provisioner ---- */
@@ -855,123 +855,166 @@ async function notifyTeamReady(
 }
 
 /**
- * Hands each team in `successors` from `accountId` to the Account its Host confirmed as another
- * owner: the hosted team and the Account Deployment adopted at its address. Runs first in the
- * transaction deleting `accountId`, so those teams outlive it; one no longer `accountId`'s, or
- * whose successor is gone, is left to be deleted with it.
+ * Moves a team, under its origin lock, from `from` to `to` with the Account Deployment adopted at
+ * its address (still the one `authority` names) and that Deployment's Account sign-in client.
  */
-export async function handOverHostedTeams(
+async function transferHostedTeam(
   transaction: DatabaseTransaction,
-  accountId: ControlPlaneAccountId,
-  successors: ReadonlyMap<HostedTeamId, ControlPlaneAccountId>,
-): Promise<void> {
-  if (successors.size === 0) return;
-  const named = await transaction
+  input: {
+    readonly id: HostedTeamId;
+    readonly from: ControlPlaneAccountId;
+    readonly to: ControlPlaneAccountId;
+    readonly authority: HostAccountAdoptionAuthority;
+  },
+): Promise<HostedTeamRow> {
+  const origin = input.authority.canonicalOrigin;
+  // Every writer of a team's holder, state or Deployment takes its origin first, so the reads
+  // below are stable without row locks, which are then taken in rank order.
+  await lockDeploymentOrigin(transaction, origin);
+  const team = await transaction
     .selectFrom("hostedTeams")
-    .select(["id", "slug"])
-    .where("id", "in", [...successors.keys()])
-    .orderBy("slug", "asc")
+    .select(["creatorAccountId", "slug"])
+    .where("id", "=", input.id)
+    .where("state", "!=", "deleted")
+    .executeTakeFirst();
+  if (!team || hostedTeamOrigin(team.slug as HostedTeamSlug) !== origin)
+    throw new ControlPlaneError("not_found", "Hosted team was not found");
+  if (team.creatorAccountId !== input.from)
+    throw new ControlPlaneError("conflict", "Someone else holds this team now.");
+  const deployment = await transaction
+    .selectFrom("deployments")
+    .select(["id", "oidcClientId"])
+    .where("id", "=", input.authority.deploymentId)
+    .where("canonicalOrigin", "=", origin)
+    .where("ownerAccountId", "=", input.from)
+    .executeTakeFirst();
+  if (!deployment) throw new ControlPlaneError("conflict", "This team changed. Try again.");
+  // An owner keeps no hide marker; the directory shows them their team.
+  await transaction
+    .deleteFrom("deploymentDirectoryVisibility")
+    .where("deploymentId", "=", deployment.id)
+    .where("accountId", "=", input.to)
     .execute();
-  for (const { id, slug } of named) {
-    const origin = hostedTeamOrigin(slug as HostedTeamSlug);
-    const successor = successors.get(id)!;
-    // Serializes with deleting the team and with its bootstrap, as both take the origin first.
-    // Every writer of a team's creator or state holds this lock, so the reads below are stable
-    // without row locks, which are then taken in rank order.
-    await lockDeploymentOrigin(transaction, origin);
-    const team = await transaction
-      .selectFrom("hostedTeams")
-      .select("id")
-      .where("id", "=", id)
-      .where("creatorAccountId", "=", accountId)
-      .where("state", "!=", "deleted")
-      .executeTakeFirst();
-    // The Deployment's owner foreign key keeps the heir from vanishing once it is moved.
-    const heirExists = await transaction
-      .selectFrom("users")
-      .select("id")
-      .where("id", "=", successor)
-      .where("id", "!=", accountId)
-      .executeTakeFirst();
-    if (!team || !heirExists) continue;
-    const adopted = await transaction
-      .selectFrom("deployments")
-      .select(["id", "oidcClientId"])
-      .where("canonicalOrigin", "=", origin)
-      .where("ownerAccountId", "=", accountId)
-      .execute();
-    if (adopted.length > 0)
-      // An owner keeps no hide marker; the directory shows them their team.
-      await transaction
-        .deleteFrom("deploymentDirectoryVisibility")
-        .where(
-          "deploymentId",
-          "in",
-          adopted.map((deployment) => deployment.id),
-        )
-        .where("accountId", "=", successor)
-        .execute();
-    const moved = await transaction
-      .updateTable("deployments")
-      .set({ ownerAccountId: successor })
-      .where("canonicalOrigin", "=", origin)
-      .where("ownerAccountId", "=", accountId)
-      .returning(["id", "oidcClientId"])
-      .execute();
-    for (const deployment of moved) {
-      // The team's Account sign-in client belongs to its owner and would go with the Account.
-      if (deployment.oidcClientId)
-        await transaction
-          .updateTable("oauthClients")
-          .set({ userId: successor, updatedAt: new Date() })
-          .where("clientId", "=", deployment.oidcClientId)
-          .where("userId", "=", accountId)
-          .execute();
-    }
+  // FOR SHARE: holds off the recipient's deletion fence, and its row, until this commits.
+  const recipient = await transaction
+    .selectFrom("users")
+    .select("deletionStartedAt")
+    .where("id", "=", input.to)
+    .forShare()
+    .executeTakeFirst();
+  if (!recipient) throw new ControlPlaneError("not_found", "That person’s Account is gone.");
+  if (deletionFenced(recipient.deletionStartedAt)) throw deletionInProgress();
+  await transaction
+    .updateTable("deployments")
+    .set({ ownerAccountId: input.to })
+    .where("id", "=", deployment.id)
+    .execute();
+  if (deployment.oidcClientId)
     await transaction
-      .updateTable("hostedTeams")
-      .set({ creatorAccountId: successor, updatedAt: new Date() })
-      .where("id", "=", id)
+      .updateTable("oauthClients")
+      .set({ userId: input.to, updatedAt: new Date() })
+      .where("clientId", "=", deployment.oidcClientId)
+      .where("userId", "=", input.from)
       .execute();
-  }
+  return transaction
+    .updateTable("hostedTeams")
+    .set({ creatorAccountId: input.to, updatedAt: new Date() })
+    .where("id", "=", input.id)
+    .returningAll()
+    .executeTakeFirstOrThrow();
 }
 
 /**
- * Refuses an Account deletion that would take an adopted team `accountId` created which
- * `deletable` (`HostedTeamStore.accountDeletion`) doesn't name: only its Host may say a team has
- * no other owner.
+ * Starts deleting an Account, before anything else is undone: refuses while it holds a team
+ * whose Host may have an owner (deleting or transferring that is the person's call), cancels its
+ * teams still being set up, and fences it so nothing gives it a team until the deletion ends.
  */
-export async function requireHostedTeamsSettled(
-  transaction: DatabaseTransaction,
+export async function beginAccountDeletion(
+  database: Database,
   accountId: ControlPlaneAccountId,
-  deletable: ReadonlySet<HostedTeamId>,
 ): Promise<void> {
-  const teams = await transaction
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const listed = await database
+      .selectFrom("hostedTeams")
+      .select("slug")
+      .where("creatorAccountId", "=", accountId)
+      .where("state", "!=", "deleted")
+      .orderBy("slug", "asc")
+      .execute();
+    const fenced = await database.transaction().execute(async (transaction) => {
+      // Adoption and transfer take a team's origin first, so neither lands on one checked here.
+      for (const { slug } of listed)
+        await lockDeploymentOrigin(transaction, hostedTeamOrigin(slug as HostedTeamSlug));
+      const account = await transaction
+        .updateTable("users")
+        .set({ deletionStartedAt: new Date() })
+        .where("id", "=", accountId)
+        .returning("id")
+        .executeTakeFirst();
+      if (!account) throw new ControlPlaneError("not_found", "Account was not found");
+      const teams = await transaction
+        .selectFrom("hostedTeams")
+        .select(["id", "slug", "bootstrapReceipt"])
+        .where("creatorAccountId", "=", accountId)
+        .where("state", "!=", "deleted")
+        .orderBy("id", "asc")
+        .forNoKeyUpdate()
+        .execute();
+      // Handed one between the listing and the fence: lock its origin too.
+      if (teams.some((team) => !listed.some(({ slug }) => slug === team.slug))) return false;
+      const adopted = await heldHostedTeams(transaction, accountId);
+      if (adopted.length > 0) throw hostedTeamsRemain(adopted);
+      if (teams.length > 0) await deleteHostedTeams(transaction, { creatorAccountId: accountId });
+      return true;
+    });
+    if (fenced) return;
+  }
+  throw new ControlPlaneError("unavailable", "Your teams changed. Try again.");
+}
+
+/** Ends a deletion that won't finish, so the Account may have teams again. */
+export async function abandonAccountDeletion(
+  database: Database,
+  accountId: ControlPlaneAccountId,
+): Promise<void> {
+  await database
+    .updateTable("users")
+    .set({ deletionStartedAt: null })
+    .where("id", "=", accountId)
+    .execute();
+}
+
+/** Live teams `accountId` holds whose Host was adopted, receipt or not: they may have an owner. */
+export async function heldHostedTeams(
+  database: Database | DatabaseTransaction,
+  accountId: ControlPlaneAccountId,
+): Promise<
+  readonly { readonly id: HostedTeamId; readonly name: string; readonly origin: string }[]
+> {
+  const teams = await database
     .selectFrom("hostedTeams")
-    .select(["id", "slug"])
+    .select(["id", "slug", "name", "bootstrapReceipt"])
     .where("creatorAccountId", "=", accountId)
     .where("state", "!=", "deleted")
-    .orderBy("slug", "asc")
+    .orderBy("createdAt", "asc")
     .execute();
-  const unsettled = teams.filter((team) => !deletable.has(team.id));
-  if (unsettled.length === 0) return;
+  if (teams.length === 0) return [];
+  const origins = teams.map((team) => hostedTeamOrigin(team.slug as HostedTeamSlug));
   const adopted = new Set(
     (
-      await transaction
+      await database
         .selectFrom("deployments")
         .select("canonicalOrigin")
-        .where(
-          "canonicalOrigin",
-          "in",
-          unsettled.map((team) => hostedTeamOrigin(team.slug as HostedTeamSlug)),
-        )
+        .where("canonicalOrigin", "in", origins)
         .execute()
     ).map((deployment) => deployment.canonicalOrigin),
   );
-  const team = unsettled.find((candidate) =>
-    adopted.has(hostedTeamOrigin(candidate.slug as HostedTeamSlug)),
-  );
-  if (team) throw ownerUnconfirmed(team);
+  return teams.flatMap((team) => {
+    const origin = hostedTeamOrigin(team.slug as HostedTeamSlug);
+    return team.bootstrapReceipt !== null || adopted.has(origin)
+      ? [{ id: team.id, name: team.name ?? team.slug, origin }]
+      : [];
+  });
 }
 
 /**
@@ -1059,11 +1102,29 @@ function claimed(
   ]);
 }
 
-function ownerUnconfirmed(team: Pick<HostedTeamRow, "slug">) {
+function hostedTeamsRemain(teams: readonly { readonly origin: string }[]) {
+  const hosts = teams.map((team) => new URL(team.origin).host).join(", ");
+  return new ControlPlaneError(
+    "conflict",
+    `Delete or transfer these teams first: ${hosts}`.slice(0, 500),
+    { reason: "hosted-teams-remain" },
+  );
+}
+
+function deletionFenced(startedAt: Date | null): boolean {
+  return startedAt !== null && Date.now() - startedAt.getTime() < accountDeletionFenceMilliseconds;
+}
+
+function deletionInProgress() {
+  return new ControlPlaneError("conflict", "This Account is being deleted.", {
+    reason: "account-deletion-in-progress",
+  });
+}
+
+function hostUnavailable() {
   return new ControlPlaneError(
     "unavailable",
-    `Your Account wasn’t deleted: ${new URL(hostedTeamOrigin(team.slug as HostedTeamSlug)).host} couldn’t confirm who else owns it. Try again in a few minutes.`,
-    { reason: "hosted-team-owner-unconfirmed" },
+    "Your team’s server didn’t answer. Try again in a minute.",
   );
 }
 
@@ -1084,7 +1145,7 @@ function superseded() {
   return new HostedTeamSupersededError();
 }
 
-function toView(row: HostedTeamRow): HostedTeamView {
+function toView(row: HostedTeamRow, accountId: ControlPlaneAccountId): HostedTeamView {
   const stage =
     row.state === "deleted" ? "deleting" : row.state === "suspended" ? "failed" : row.stage;
   const message =
@@ -1097,5 +1158,6 @@ function toView(row: HostedTeamRow): HostedTeamView {
     ...(row.deploymentId ? { deploymentId: row.deploymentId } : {}),
     stage,
     ...(stage === "failed" ? { error: { message: message ?? unfinishedMessage } } : {}),
+    creator: row.creatorAccountId === accountId,
   };
 }

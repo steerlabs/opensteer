@@ -116,6 +116,8 @@ export function TeamSettingsScreen(props: TeamParams): ReactNode {
           onDisconnect: connected
             ? () => void coordinator.disconnectAgent(DeploymentIdSchema.parse(teamId)).catch(failed)
             : null,
+          onTransfer:
+            hostedTeamId === null ? null : () => navigation.navigate("TransferTeam", { teamId }),
           onDelete:
             hostedTeamId === null ? null : () => navigation.navigate("DeleteTeam", { teamId }),
         }}

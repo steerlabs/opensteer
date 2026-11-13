@@ -173,7 +173,6 @@ export async function createControlPlaneServer(
     ...(dependencies.appleSignIn ? { appleSignIn: dependencies.appleSignIn } : {}),
     auth: dependencies.auth,
     connectLifecycle: dependencies.connectLifecycle,
-    ...(dependencies.hostedTeams ? { hostedTeams: dependencies.hostedTeams.store } : {}),
     store: dependencies.store,
   });
   const portal = dependencies.portalSessions

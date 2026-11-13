@@ -8,6 +8,7 @@ import {
   hostedTeamOrigin,
   type HostedTeamId,
   type HostedTeamSlug,
+  type HostedTeamOwner,
   type HostedTeamView,
 } from "@opensteer/control-plane-protocol/hosted-teams";
 import {
@@ -227,6 +228,10 @@ export interface TeamCoordinator {
   dismissReady(id: HostedTeamId): void;
   /** Cancels setup or deletes the team, and forgets its intent. */
   deleteHostedTeam(id: HostedTeamId): Promise<void>;
+  /** Who the team can be handed to: its other owners, as its Host confirms them now. */
+  hostedTeamOwners(id: HostedTeamId, signal?: AbortSignal): Promise<readonly HostedTeamOwner[]>;
+  /** Hands the team to one of them. The person stays an owner; nothing in the team changes. */
+  transferHostedTeam(id: HostedTeamId, to: ControlPlaneAccountId): Promise<HostedTeamView>;
   /** What the join confirmation shows; consumes nothing. */
   previewInvite(inviteUrl: string): Promise<TeamInvitePreview>;
   joinWithInvite(input: {
@@ -652,6 +657,16 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
       publish({ ready: snapshot.ready.filter((notice) => notice.hostedTeamId !== id) });
       if (view === null || view.stage !== "deleting") drop(id);
       else follow(view);
+    },
+
+    hostedTeamOwners(id, signal) {
+      return ports.account.hostedTeamOwners(id, signal);
+    },
+
+    async transferHostedTeam(id, to) {
+      const view = await ports.account.transferHostedTeam(id, to);
+      if (snapshot.hostedTeams.some((team) => team.id === id)) update(view);
+      return view;
     },
 
     async previewInvite(inviteUrl) {

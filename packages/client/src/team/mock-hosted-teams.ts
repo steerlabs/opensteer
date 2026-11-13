@@ -38,6 +38,12 @@ export const mockAccountSubject = ControlPlaneAccountIdSchema.parse(
 );
 export const mockAccountEmail = "you@example.com";
 const mockUserId = UserIdSchema.parse("usr_00000000-0000-4000-8000-0000000000ab");
+/** The other owner every mock hosted team has, so Transfer has someone to hand it to. */
+const mockCoOwner = {
+  accountId: ControlPlaneAccountIdSchema.parse("acct_00000000-0000-4000-8000-0000000000ac"),
+  displayName: "Sam Rivera",
+  email: "sam@example.com",
+};
 
 /** How long each setup stage lasts in the mock, in ms. */
 const stages = { reserving: 1_100, starting: 1_300, configuring: 1_000 } as const;
@@ -48,6 +54,8 @@ interface MockHostedTeam {
   /** `fail…` addresses fail their first setup, so Retry can be exercised. */
   failsOnce: boolean;
   deleted: boolean;
+  /** Handed to its other owner. */
+  transferred?: boolean;
 }
 
 interface MockTeamRecord {
@@ -223,6 +231,7 @@ export class MockTeamWorld {
       ...(stage === "failed"
         ? { error: { message: "The team server didn’t start. Try again." } }
         : {}),
+      creator: team.transferred !== true,
     });
   }
 
@@ -279,6 +288,29 @@ export class MockTeamWorld {
       if (!team) throw new OpensteerError({ code: "not_found", message: "That team is gone." });
       team.failsOnce = false;
       team.startedAt = Date.now() - stages.reserving;
+      return this.#view(team);
+    },
+    hostedTeamOwners: async (id) => {
+      const team = this.#teams.get(id);
+      if (!team || team.deleted)
+        throw new OpensteerError({ code: "not_found", message: "That team is gone." });
+      if (team.transferred)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Only the person who holds this team in Opensteer can transfer it.",
+        });
+      return [mockCoOwner];
+    },
+    transferHostedTeam: async (id, to) => {
+      const team = this.#teams.get(id);
+      if (!team || team.deleted)
+        throw new OpensteerError({ code: "not_found", message: "That team is gone." });
+      if (to !== mockCoOwner.accountId)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "They aren’t an owner of this team. Make them one in the team first.",
+        });
+      team.transferred = true;
       return this.#view(team);
     },
     deleteHostedTeam: async (id) => {

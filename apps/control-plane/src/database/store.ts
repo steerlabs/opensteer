@@ -66,10 +66,10 @@ import type { HostAccountAdoptionCompletionGrantIssuer } from "../adoption/adopt
 import type { AdoptionOperationCipher } from "../adoption/adoption-operation-crypto.js";
 import { ControlPlaneError } from "../server/errors.js";
 import {
+  abandonAccountDeletion,
+  beginAccountDeletion,
   deleteHostedTeams,
-  handOverHostedTeams,
-  requireHostedTeamsSettled,
-  type HostedTeamsAccountDeletion,
+  heldHostedTeams,
   promoteReadyHostedTeams,
 } from "../hosted-teams/hosted-team-store.js";
 import {
@@ -1535,24 +1535,27 @@ export class ControlPlaneStore {
     return account?.refreshToken ?? null;
   }
 
+  /** Refuses, or fences the Account for its deletion; see `beginAccountDeletion`. */
+  async beginAccountDeletion(accountId: ControlPlaneAccountId): Promise<void> {
+    await beginAccountDeletion(this.#database, accountId);
+  }
+
+  async abandonAccountDeletion(accountId: ControlPlaneAccountId): Promise<void> {
+    await abandonAccountDeletion(this.#database, accountId);
+  }
+
+  /** Hosted teams that keep this Account from being deleted until each is deleted or transferred. */
+  heldHostedTeams(accountId: ControlPlaneAccountId) {
+    return heldHostedTeams(this.#database, accountId);
+  }
+
   /**
-   * Removes the Account, the Deployments it owns and the teams Opensteer hosts for it. Their Connect resources must
-   * already be revoked: a tunnel left behind would outlive every row that names it.
-   * Hosts learn nothing here, so they keep running and find out on their next call.
-   * `hostedTeams` (`HostedTeamStore.accountDeletion`) settles each adopted team the Account
-   * created; one it doesn't settle refuses the deletion.
+   * Removes the Account, the Deployments it owns and its hosted teams still being set up. Their
+   * Connect resources must already be revoked: a tunnel left behind would outlive every row that
+   * names it. Hosts learn nothing here, so they keep running and find out on their next call.
+   * A hosted team the Account still holds refuses it; `beginAccountDeletion` refuses that first.
    */
-  async deleteAccount(
-    accountId: ControlPlaneAccountId,
-    hostedTeams: HostedTeamsAccountDeletion = { successors: new Map(), deletable: new Set() },
-  ): Promise<void> {
-    const { successors, deletable } = hostedTeams;
-    // Handing a team to an owner its Host confirmed is right even if the deletion then fails, so
-    // it commits on its own and each transaction keeps the lock order.
-    if (successors.size > 0)
-      await this.#database
-        .transaction()
-        .execute((transaction) => handOverHostedTeams(transaction, accountId, successors));
+  async deleteAccount(accountId: ControlPlaneAccountId): Promise<void> {
     await this.#database.transaction().execute(async (transaction) => {
       await transaction.deleteFrom("authAccounts").where("userId", "=", accountId).execute();
       const account = await transaction
@@ -1588,7 +1591,9 @@ export class ControlPlaneStore {
         // FOR UPDATE: Deleting the Account deletes the Deployments it owns.
         .forUpdate()
         .execute();
-      await requireHostedTeamsSettled(transaction, accountId, deletable);
+      // Locked above, the Account can't be handed a team or have one adopted from here on.
+      if ((await heldHostedTeams(transaction, accountId)).length > 0)
+        throw new ControlPlaneError("conflict", "This Account still holds a team.");
       if (owned.length > 0) {
         // Locked, because a provision committing after a plain read would lose its row
         // to the cascade and leave its tunnel unrecorded.

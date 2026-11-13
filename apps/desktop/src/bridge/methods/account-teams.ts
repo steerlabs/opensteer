@@ -26,6 +26,10 @@ function run(client: AccountTeamsClient, call: DesktopAccountTeamsCall): Promise
       return client.retryHostedTeam(call.id);
     case "delete":
       return client.deleteHostedTeam(call.id);
+    case "owners":
+      return client.hostedTeamOwners(call.id);
+    case "transfer":
+      return client.transferHostedTeam(call.id, call.to);
   }
 }
 

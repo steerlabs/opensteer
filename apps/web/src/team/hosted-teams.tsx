@@ -24,9 +24,11 @@ import {
   type TeamCoordinatorSnapshot,
   type TeamSessionClient,
 } from "@opensteer/client/team";
+import type { ControlPlaneAccountId } from "@opensteer/control-plane-protocol";
 import {
   hostedTeamsDomain,
   type HostedTeamAvailability,
+  type HostedTeamOwner,
   type HostedTeamSlug,
   type HostedTeamView,
 } from "@opensteer/control-plane-protocol/hosted-teams";
@@ -35,6 +37,7 @@ import type { TeamCurrentInvite, TeamInviteExpiryDays } from "@opensteer/protoco
 import { Dialog } from "../components/dialog.js";
 import { QrCode } from "../components/first-run/qr-code.js";
 import { Icon } from "../components/icon.js";
+import { OptionRow } from "../components/option-row.js";
 import { TeamTile } from "../components/team/team-marks.js";
 import { useToast } from "../components/toast.js";
 import { actionErrorMessage } from "../ui-utils.js";
@@ -50,13 +53,15 @@ type OpenDialog =
   | { readonly kind: "create" }
   | { readonly kind: "join"; readonly url: string }
   | { readonly kind: "invite"; readonly teamId: string }
-  | { readonly kind: "delete"; readonly teamId: string };
+  | { readonly kind: "delete"; readonly teamId: string }
+  | { readonly kind: "transfer"; readonly teamId: string };
 
 interface TeamDialogs {
   readonly openCreate: () => void;
   readonly openJoin: (url: string) => void;
   readonly openInvite: (teamId: string) => void;
   readonly openDelete: (teamId: string) => void;
+  readonly openTransfer: (teamId: string) => void;
 }
 
 const TeamDialogsContext = createContext<TeamDialogs>({
@@ -64,6 +69,7 @@ const TeamDialogsContext = createContext<TeamDialogs>({
   openJoin: () => undefined,
   openInvite: () => undefined,
   openDelete: () => undefined,
+  openTransfer: () => undefined,
 });
 
 export function useTeamDialogs(): TeamDialogs {
@@ -131,6 +137,7 @@ export function TeamDialogsProvider({ children }: { readonly children: ReactNode
       openJoin: (url) => setOpen({ kind: "join", url }),
       openInvite: (teamId) => setOpen({ kind: "invite", teamId }),
       openDelete: (teamId) => setOpen({ kind: "delete", teamId }),
+      openTransfer: (teamId) => setOpen({ kind: "transfer", teamId }),
     }),
     [],
   );
@@ -144,6 +151,9 @@ export function TeamDialogsProvider({ children }: { readonly children: ReactNode
       {open?.kind === "join" ? <JoinDialog onClose={close} url={open.url} /> : null}
       {open?.kind === "invite" ? <InviteDialog onClose={close} teamId={open.teamId} /> : null}
       {open?.kind === "delete" ? <DeleteTeamDialog onClose={close} teamId={open.teamId} /> : null}
+      {open?.kind === "transfer" ? (
+        <TransferTeamDialog onClose={close} teamId={open.teamId} />
+      ) : null}
     </TeamDialogsContext>
   );
 }
@@ -1069,6 +1079,120 @@ export function WelcomeCard({ team }: { readonly team: TeamAttachment }) {
         ) : null}
       </ul>
     </section>
+  );
+}
+
+/**
+ * Hand a hosted team to another owner its own Host confirms, so it stays when the person deletes
+ * their Account. Only the person holding it may; Account says so otherwise.
+ */
+function TransferTeamDialog({
+  onClose,
+  teamId,
+}: {
+  readonly onClose: () => void;
+  readonly teamId: string;
+}) {
+  const { coordination, teams } = useTeams();
+  const toast = useToast();
+  const team = teams.find((candidate) => candidate.teamId === teamId) ?? null;
+  const hostedTeamId = team?.client?.getSnapshot().bootstrap?.hostedTeamId ?? null;
+  const [owners, setOwners] = useState<readonly HostedTeamOwner[] | null>(null);
+  const [chosen, setChosen] = useState<ControlPlaneAccountId | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const coordinator = coordination?.coordinator ?? null;
+  useEffect(() => {
+    if (!coordinator || hostedTeamId === null) return;
+    const controller = new AbortController();
+    void coordinator.hostedTeamOwners(hostedTeamId, controller.signal).then(
+      (found) => {
+        setOwners(found);
+        if (found.length === 1) setChosen(found[0]!.accountId);
+      },
+      (failure: unknown) => {
+        if (!controller.signal.aborted) setError(actionErrorMessage(failure));
+      },
+    );
+    return () => controller.abort();
+  }, [coordinator, hostedTeamId]);
+  if (!team || !coordinator || hostedTeamId === null) return null;
+  const name = team.client?.getSnapshot().bootstrap?.teamName ?? team.name;
+  const person = owners?.find((owner) => owner.accountId === chosen) ?? null;
+  const transfer = () => {
+    if (!person) return;
+    setBusy(true);
+    setError(null);
+    void coordinator.transferHostedTeam(hostedTeamId, person.accountId).then(
+      () => {
+        toast.success(`${person.displayName || person.email} now holds ${name}`);
+        onClose();
+      },
+      (failure: unknown) => {
+        setBusy(false);
+        setError(actionErrorMessage(failure));
+      },
+    );
+  };
+  return (
+    <Dialog
+      footer={
+        <>
+          <button className="btn btn--ghost" onClick={onClose} type="button">
+            Cancel
+          </button>
+          {owners !== null && owners.length > 0 ? (
+            <button
+              className="btn btn--primary"
+              disabled={!person || busy}
+              onClick={transfer}
+              type="button"
+            >
+              {busy ? "Transferring…" : "Transfer"}
+            </button>
+          ) : null}
+        </>
+      }
+      labelledBy="transfer-team-title"
+      onClose={onClose}
+      title={`Transfer ${name}`}
+    >
+      <p className="teams-form__lede">
+        The owner you choose holds {name} in Opensteer from now on, so it stays if you delete your
+        Account. You stay an owner, and nothing in the team changes.
+      </p>
+      {owners === null && error === null ? (
+        <p className="teams-form__lede" role="status">
+          Asking {name} who its owners are…
+        </p>
+      ) : null}
+      {owners !== null && owners.length === 0 ? (
+        <p className="notice">
+          Only another owner can hold {name}. Make someone an owner in People, then come back.
+        </p>
+      ) : null}
+      {owners !== null && owners.length > 0 ? (
+        <div className="teams-owners" role="radiogroup" aria-label="Transfer to">
+          {owners.map((owner) => (
+            <OptionRow
+              as="radio"
+              checked={chosen === owner.accountId}
+              detail={owner.email}
+              key={owner.accountId}
+              name="transfer-to"
+              onSelect={() => setChosen(owner.accountId)}
+              title={owner.displayName || owner.email}
+              value={owner.accountId}
+            />
+          ))}
+        </div>
+      ) : null}
+      {error ? (
+        <p className="notice notice--error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </Dialog>
   );
 }
 

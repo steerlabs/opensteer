@@ -230,6 +230,19 @@
   line-height: 1.55;
 }
 
+/* The owners a team can be handed to: one bordered list of radio rows. */
+.teams-owners {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-md);
+}
+
+.teams-owners > .option-row + .option-row {
+  border-top-color: var(--line);
+}
+
 .teams-form__fine {
   margin: 0;
   color: var(--muted);

@@ -1,6 +1,7 @@
 import type { ControlPlaneAccountId } from "@opensteer/control-plane-protocol";
 import {
   HostedTeamAvailabilityResponseSchema,
+  HostedTeamOwnerSchema,
   HostedTeamResponseSchema,
   HostedTeamViewSchema,
 } from "@opensteer/control-plane-protocol/hosted-teams";
@@ -64,6 +65,8 @@ export function desktopAccountTeams(
     hostedTeam: (id) => call({ call: "get", id }, HostedTeamResponseSchema.nullable()),
     retryHostedTeam: (id) => call({ call: "retry", id }, HostedTeamResponseSchema),
     deleteHostedTeam: (id) => call({ call: "delete", id }, HostedTeamResponseSchema.nullable()),
+    hostedTeamOwners: (id) => call({ call: "owners", id }, z.array(HostedTeamOwnerSchema).max(100)),
+    transferHostedTeam: (id, to) => call({ call: "transfer", id, to }, HostedTeamResponseSchema),
   };
 }
 

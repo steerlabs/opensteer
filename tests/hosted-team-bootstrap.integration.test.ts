@@ -32,7 +32,18 @@ import {
   ControlPlaneAccountIdSchema,
   type ControlPlaneAccountId,
 } from "../packages/control-plane-protocol/src/index.js";
-import { opensteerAccountNativeOAuthClients, type UserId } from "../packages/core/src/index.js";
+import {
+  HostedTeamViewSchema,
+  accountHostedTeamTransferPath,
+} from "../packages/control-plane-protocol/src/hosted-teams.js";
+import {
+  DeploymentIdSchema,
+  HostInstanceIdSchema,
+  HostKeyFingerprintSchema,
+  opensteerAccountNativeOAuthClients,
+  type DeploymentId,
+  type UserId,
+} from "../packages/core/src/index.js";
 import type { DatabaseSchema } from "../packages/database/src/schema.js";
 import {
   cloneTestDatabase,
@@ -599,105 +610,6 @@ it("fails setup for a Host that already has an owner, without touching that owne
   expect(await system.accounts.selectFrom("deployments").select("id").execute()).toEqual([]);
 });
 
-it("keeps a team another owner runs when its creator deletes their Account, handing it to them", async () => {
-  const system = await startHostedTeam();
-  await system.report();
-  await system.bootstrapper.runOnce();
-  await system.ready();
-  const deploymentId = system.team.deployment.id;
-  const providerId = oidcIdentityProviderIdForIssuer("opensteer-account", issuer.origin);
-  /** Someone the directory lists, who is `role` on the team's own Host. */
-  const person = async (email: string, role: "owner" | "member") => {
-    const account = await createAccount(system.accounts, email, email.split("@")[0]!);
-    await system.accounts
-      .insertInto("deploymentDirectoryEntries")
-      .values({
-        deploymentId,
-        accountId: account,
-        generation: 1,
-        present: true,
-        observedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .execute();
-    const userId = `usr_${crypto.randomUUID()}`;
-    await sql`insert into users(id,display_name,email,email_verified) values(${userId},${email},${email},true)`.execute(
-      system.hostDatabase,
-    );
-    await sql`insert into auth_accounts(id,account_id,provider_id,user_id) values(${`aac_${crypto.randomUUID()}`},${account},${providerId},${userId})`.execute(
-      system.hostDatabase,
-    );
-    await sql`insert into team_members(user_id,handle,role,state,joined_at,changed_at) values(${userId},${email.split("@")[0]!},${role},'active',now(),now())`.execute(
-      system.hostDatabase,
-    );
-    return account;
-  };
-  await person("ada@example.test", "member");
-  const sam = await person("sam@example.test", "owner");
-  // A member who hid the team before becoming its owner keeps no contradicting marker.
-  await system.accounts
-    .insertInto("deploymentDirectoryVisibility")
-    .values({ deploymentId, accountId: sam, hiddenAt: new Date() })
-    .execute();
-
-  await new AccountDeletionService({
-    auth: system.auth,
-    connectLifecycle: system.connectLifecycle,
-    hostedTeams: system.teams,
-    store: system.store,
-  }).delete(system.creator);
-
-  expect(
-    await system.accounts
-      .selectFrom("hostedTeams")
-      .select(["state", "creatorAccountId", "deploymentId"])
-      .where("id", "=", system.created.id)
-      .executeTakeFirstOrThrow(),
-  ).toEqual({ state: "active", creatorAccountId: sam, deploymentId });
-  expect(
-    await system.accounts.selectFrom("deployments").select(["id", "ownerAccountId"]).execute(),
-  ).toEqual([{ id: deploymentId, ownerAccountId: sam }]);
-  // The team keeps its Account sign-in.
-  expect(
-    await system.accounts
-      .selectFrom("oauthClients")
-      .innerJoin("deployments", "deployments.oidcClientId", "oauthClients.clientId")
-      .select("oauthClients.userId")
-      .execute(),
-  ).toEqual([{ userId: sam }]);
-  expect(
-    await system.accounts.selectFrom("deploymentDirectoryVisibility").select("accountId").execute(),
-  ).toEqual([]);
-  expect((await system.teams.forAccount(sam, system.created.id))?.stage).toBe("ready");
-  expect(
-    await system.accounts
-      .selectFrom("users")
-      .select("id")
-      .where("id", "=", system.creator)
-      .execute(),
-  ).toEqual([]);
-});
-
-it("deletes a team with its creator's Account when the creator is its only owner", async () => {
-  const system = await startHostedTeam();
-  await system.report();
-  await system.bootstrapper.runOnce();
-  await system.ready();
-  await new AccountDeletionService({
-    auth: system.auth,
-    connectLifecycle: system.connectLifecycle,
-    hostedTeams: system.teams,
-    store: system.store,
-  }).delete(system.creator);
-  expect(
-    await system.accounts
-      .selectFrom("hostedTeams")
-      .select(["state", "creatorAccountId"])
-      .executeTakeFirstOrThrow(),
-  ).toEqual({ state: "deleted", creatorAccountId: null });
-  expect(await system.accounts.selectFrom("deployments").select("id").execute()).toEqual([]);
-});
-
 /** Someone the directory lists for the team, who is `role` on its own Host when given one. */
 async function listedPerson(
   system: Awaited<ReturnType<typeof startHostedTeam>>,
@@ -732,13 +644,81 @@ async function listedPerson(
   return account;
 }
 
-function deleteAccountOf(system: Awaited<ReturnType<typeof startHostedTeam>>) {
+/**
+ * A computer `accountId` owns with remote access on. Turning that off runs `during` first and
+ * is recorded, so a test sees whether deletion got that far.
+ */
+async function computerWithRemoteAccess(
+  system: Awaited<ReturnType<typeof startHostedTeam>>,
+  accountId: ControlPlaneAccountId,
+  during?: () => Promise<void>,
+) {
+  const id = DeploymentIdSchema.parse(`dep_${crypto.randomUUID()}`);
+  const now = new Date();
+  await system.accounts
+    .insertInto("deployments")
+    .values({
+      id,
+      ownerAccountId: accountId,
+      name: "Mac",
+      reachability: "canonical",
+      activeHostInstanceId: HostInstanceIdSchema.parse(`hst_${crypto.randomUUID()}`),
+      hostKeyFingerprint: HostKeyFingerprintSchema.parse(`sha256:${"B".repeat(43)}`),
+      canonicalOrigin: `https://${id.slice(4)}.connect.hosted-team-bootstrap.invalid`,
+      lifecycle: "active",
+      oidcClientId: null,
+      authorityEnvelope: null,
+      accountLink: null,
+    })
+    .execute();
+  await system.accounts
+    .insertInto("deploymentConnectResources")
+    .values({
+      createdAt: now,
+      credentialGeneration: 1,
+      deploymentId: id,
+      dnsRecordId: "c".repeat(32),
+      hostname: `${id.slice(4)}.connect.hosted-team-bootstrap.invalid`,
+      lastCompletedOperationId: null,
+      lastCompletedOperationKind: null,
+      localOrigin: "http://127.0.0.1:4310",
+      operationExpiresAt: null,
+      operationId: null,
+      operationKind: null,
+      provider: "cloudflare",
+      state: "ready",
+      tunnelId: "11111111-1111-4111-8111-111111111111",
+      tunnelName: `opensteer-${id.slice(4)}`,
+      updatedAt: now,
+    })
+    .execute();
+  const revoked: DeploymentId[] = [];
+  const revoke = system.connectLifecycle.revoke.bind(system.connectLifecycle);
+  vi.spyOn(system.connectLifecycle, "revoke").mockImplementation(
+    async (owner, deploymentId, request) => {
+      if (deploymentId !== id) return revoke(owner, deploymentId, request);
+      await during?.();
+      revoked.push(deploymentId);
+      await system.accounts
+        .updateTable("deploymentConnectResources")
+        .set({ dnsRecordId: null, state: "revoked", tunnelId: null })
+        .where("deploymentId", "=", id)
+        .execute();
+      return {} as never;
+    },
+  );
+  return revoked;
+}
+
+function deleteAccountOf(
+  system: Awaited<ReturnType<typeof startHostedTeam>>,
+  accountId: ControlPlaneAccountId = system.creator,
+) {
   return new AccountDeletionService({
     auth: system.auth,
     connectLifecycle: system.connectLifecycle,
-    hostedTeams: system.teams,
     store: system.store,
-  }).delete(system.creator);
+  }).delete(accountId);
 }
 
 async function teamAccountState(system: Awaited<ReturnType<typeof startHostedTeam>>) {
@@ -751,6 +731,7 @@ async function teamAccountState(system: Awaited<ReturnType<typeof startHostedTea
     deployments: await system.accounts
       .selectFrom("deployments")
       .select(["id", "ownerAccountId"])
+      .where("canonicalOrigin", "=", origin)
       .execute(),
     creator: await system.accounts
       .selectFrom("users")
@@ -760,102 +741,247 @@ async function teamAccountState(system: Awaited<ReturnType<typeof startHostedTea
   };
 }
 
-it("refuses to delete an Account while a team it created can't say who else owns it", async () => {
+async function accountBearer(
+  system: Awaited<ReturnType<typeof startHostedTeam>>,
+  accountId: ControlPlaneAccountId,
+) {
+  const session = await (await system.auth.$context).internalAdapter.createSession(accountId);
+  const { token } = await system.auth.api.signJWT({
+    body: {
+      payload: {
+        aud: issuer.origin,
+        iss: issuer.origin,
+        scope: "deployments:read deployments:write",
+        sid: session.id,
+        sub: accountId,
+      },
+    },
+  });
+  return `Bearer ${token}`;
+}
+
+it("refuses to delete an Account holding a set-up team, before turning anything off", async () => {
   const system = await startHostedTeam();
   await system.report();
   await system.bootstrapper.runOnce();
   await system.ready();
-  const sam = await listedPerson(system, "sam@example.test", "owner");
-  system.faults.push({ step: "discover", when: "before" });
-
-  await expect(deleteAccountOf(system)).rejects.toMatchObject({
-    code: "unavailable",
-    reason: "hosted-team-owner-unconfirmed",
-    message: expect.stringContaining("acme.teams.opensteer.com"),
-  });
-  expect(await teamAccountState(system)).toEqual({
-    team: { state: "active", creatorAccountId: system.creator },
-    deployments: [{ id: system.team.deployment.id, ownerAccountId: system.creator }],
-    creator: [{ id: system.creator }],
-  });
-
-  // Once the Host answers, the same request hands the team over.
-  await deleteAccountOf(system);
-  expect((await teamAccountState(system)).team).toEqual({ state: "active", creatorAccountId: sam });
-});
-
-it("finds another owner however many people the directory lists before them", async () => {
-  const system = await startHostedTeam();
-  await system.report();
-  await system.bootstrapper.runOnce();
-  await system.ready();
-  const listed: ControlPlaneAccountId[] = [];
-  for (let index = 0; index < 55; index += 1)
-    listed.push(await listedPerson(system, `member${index}@example.test`));
-  // The owner sorts after every other listed person.
-  const ownerAccount = ControlPlaneAccountIdSchema.parse(
-    `acct_${"f".repeat(8)}-ffff-4fff-bfff-${"f".repeat(12)}`,
-  );
-  await system.accounts
-    .insertInto("users")
-    .values({
-      id: ownerAccount,
-      displayName: "Zed",
-      email: "zed@example.test",
-      emailVerified: true,
-      image: null,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .execute();
-  await system.accounts
-    .insertInto("deploymentDirectoryEntries")
-    .values({
-      deploymentId: system.team.deployment.id,
-      accountId: ownerAccount,
-      generation: 1,
-      present: true,
-      observedAt: new Date(),
-      updatedAt: new Date(),
-    })
-    .execute();
-  const providerId = oidcIdentityProviderIdForIssuer("opensteer-account", issuer.origin);
-  const userId = `usr_${crypto.randomUUID()}`;
-  await sql`insert into users(id,display_name,email,email_verified) values(${userId},'Zed','zed@example.test',true)`.execute(
-    system.hostDatabase,
-  );
-  await sql`insert into auth_accounts(id,account_id,provider_id,user_id) values(${`aac_${crypto.randomUUID()}`},${ownerAccount},${providerId},${userId})`.execute(
-    system.hostDatabase,
-  );
-  await sql`insert into team_members(user_id,handle,role,state,joined_at,changed_at) values(${userId},'zed','owner','active',now(),now())`.execute(
-    system.hostDatabase,
-  );
-
-  await deleteAccountOf(system);
-  expect(await teamAccountState(system)).toEqual({
-    team: { state: "active", creatorAccountId: ownerAccount },
-    deployments: [{ id: system.team.deployment.id, ownerAccountId: ownerAccount }],
-    creator: [],
-  });
-});
-
-it("hands over a ready team the previous Account release set up, which has no receipt", async () => {
-  const system = await startHostedTeam();
-  await system.report();
-  await system.bootstrapper.runOnce();
-  await system.ready();
-  // The previous release finished setup without recording a bootstrap receipt.
+  // A previous Account release finished setup without recording a receipt: still adopted.
   await system.accounts
     .updateTable("hostedTeams")
     .set({ bootstrapReceipt: null })
     .where("id", "=", system.created.id)
     .execute();
-  const sam = await listedPerson(system, "sam@example.test", "owner");
+  const later = await system.teams.create(system.creator, {
+    requestId: crypto.randomUUID(),
+    name: "Later",
+    slug: "later",
+  });
+  const revoked = await computerWithRemoteAccess(system, system.creator);
 
+  await expect(deleteAccountOf(system)).rejects.toMatchObject({
+    code: "conflict",
+    reason: "hosted-teams-remain",
+    message: expect.stringContaining("acme.teams.opensteer.com"),
+  });
+  expect(revoked).toEqual([]);
+  expect(await teamAccountState(system)).toEqual({
+    team: { state: "active", creatorAccountId: system.creator },
+    deployments: [{ id: system.team.deployment.id, ownerAccountId: system.creator }],
+    creator: [{ id: system.creator }],
+  });
+  // Refusing undid nothing it started: the team being set up stays, and so can new ones.
+  expect((await system.teams.forAccount(system.creator, later.id))?.stage).toBe("reserving");
+  await expect(
+    system.teams.create(system.creator, {
+      requestId: crypto.randomUUID(),
+      name: "Third",
+      slug: "third",
+    }),
+  ).resolves.toMatchObject({ stage: "reserving" });
+});
+
+it("cancels teams still being set up when deletion starts, so no adoption lands after", async () => {
+  const system = await startHostedTeam();
+  await system.report();
+  expect(await system.stage()).toBe("configuring");
+  // While remote access is being turned off, the team's setup gets its turn.
+  const revoked = await computerWithRemoteAccess(system, system.creator, async () => {
+    expect(await system.bootstrapper.runOnce()).toBe(0);
+  });
+
+  await deleteAccountOf(system);
+  expect(revoked).toHaveLength(1);
+  expect(await teamAccountState(system)).toEqual({
+    team: { state: "deleted", creatorAccountId: null },
+    deployments: [],
+    creator: [],
+  });
+  expect(await system.pass()).toBe(0);
+  expect(await system.owners()).toEqual([]);
+});
+
+it("refuses new teams and incoming transfers while an Account is being deleted", async () => {
+  const system = await startHostedTeam();
+  await system.report();
+  await system.bootstrapper.runOnce();
+  await system.ready();
+  const sam = await listedPerson(system, "sam@example.test", "owner");
+  const refusals: unknown[] = [];
+  // Sam deletes their Account; while it turns their remote access off, Maya hands Sam the team.
+  await computerWithRemoteAccess(system, sam, async () => {
+    refusals.push(
+      await system.teams
+        .create(sam, { requestId: crypto.randomUUID(), name: "Sam’s", slug: "sams" })
+        .catch((error: unknown) => error),
+      await system.teams
+        .transfer(system.creator, system.created.id, sam)
+        .catch((error: unknown) => error),
+    );
+  });
+
+  await deleteAccountOf(system, sam);
+  expect(refusals).toEqual([
+    expect.objectContaining({ reason: "account-deletion-in-progress" }),
+    expect.objectContaining({ reason: "account-deletion-in-progress" }),
+  ]);
+  expect(await teamAccountState(system)).toEqual({
+    team: { state: "active", creatorAccountId: system.creator },
+    deployments: [{ id: system.team.deployment.id, ownerAccountId: system.creator }],
+    creator: [{ id: system.creator }],
+  });
+  expect(await system.accounts.selectFrom("hostedTeams").select("slug").execute()).toEqual([
+    { slug: "acme" },
+  ]);
+});
+
+it("transfers a team only by its creator, only to an owner its own Host confirms", async () => {
+  const system = await startHostedTeam();
+  await system.report();
+  await system.bootstrapper.runOnce();
+  await system.ready();
+  const deploymentId = system.team.deployment.id;
+  const ada = await listedPerson(system, "ada@example.test", "member");
+  const sam = await listedPerson(system, "sam@example.test", "owner");
+  const stranger = await createAccount(system.accounts, "stranger@example.test", "Stranger");
+  // A member who hid the team before becoming its owner keeps no contradicting marker.
+  await system.accounts
+    .insertInto("deploymentDirectoryVisibility")
+    .values({ deploymentId, accountId: sam, hiddenAt: new Date() })
+    .execute();
+
+  expect(await system.teams.owners(system.creator, system.created.id)).toEqual([
+    { accountId: sam, displayName: "sam", email: "sam@example.test" },
+  ]);
+  await expect(system.teams.owners(sam, system.created.id)).rejects.toMatchObject({
+    code: "forbidden",
+  });
+  // An owner who doesn't hold the team can't move it, even to another owner.
+  await expect(system.teams.transfer(sam, system.created.id, system.creator)).rejects.toMatchObject(
+    { code: "forbidden" },
+  );
+  for (const to of [ada, stranger])
+    await expect(
+      system.teams.transfer(system.creator, system.created.id, to),
+    ).rejects.toMatchObject({ code: "forbidden", reason: "hosted-team-owner-required" });
+  // A Host that can't answer hands nothing over.
+  system.faults.push({ step: "discover", when: "before" });
+  await expect(system.teams.transfer(system.creator, system.created.id, sam)).rejects.toMatchObject(
+    { code: "unavailable" },
+  );
+  expect((await teamAccountState(system)).team.creatorAccountId).toBe(system.creator);
+
+  const transferred = await system.server.inject({
+    method: "POST",
+    url: accountHostedTeamTransferPath(system.created.id),
+    headers: { authorization: await accountBearer(system, system.creator) },
+    payload: { to: sam },
+  });
+  expect(transferred.statusCode).toBe(200);
+  expect(HostedTeamViewSchema.parse(transferred.json())).toMatchObject({
+    id: system.created.id,
+    stage: "ready",
+    creator: false,
+  });
+  expect(await teamAccountState(system)).toEqual({
+    team: { state: "active", creatorAccountId: sam },
+    deployments: [{ id: deploymentId, ownerAccountId: sam }],
+    creator: [{ id: system.creator }],
+  });
+  // The team keeps its Account sign-in.
+  expect(
+    await system.accounts
+      .selectFrom("oauthClients")
+      .innerJoin("deployments", "deployments.oidcClientId", "oauthClients.clientId")
+      .select("oauthClients.userId")
+      .execute(),
+  ).toEqual([{ userId: sam }]);
+  expect(
+    await system.accounts.selectFrom("deploymentDirectoryVisibility").select("accountId").execute(),
+  ).toEqual([]);
+  expect(await system.teams.forAccount(sam, system.created.id)).toMatchObject({
+    stage: "ready",
+    creator: true,
+  });
+
+  // Holding no team any more, Maya's Account goes and the team stays Sam's.
   await deleteAccountOf(system);
   expect(await teamAccountState(system)).toEqual({
     team: { state: "active", creatorAccountId: sam },
-    deployments: [{ id: system.team.deployment.id, ownerAccountId: sam }],
+    deployments: [{ id: deploymentId, ownerAccountId: sam }],
+    creator: [],
+  });
+});
+
+it("never lets a transfer and its creator's deletion both miss the team", async () => {
+  const system = await startHostedTeam();
+  await system.report();
+  await system.bootstrapper.runOnce();
+  await system.ready();
+  const sam = await listedPerson(system, "sam@example.test", "owner");
+  let duringTransfer: unknown;
+  system.faults.push({
+    step: "owner",
+    // Maya deletes her Account while her transfer waits on the Host.
+    during: async () => {
+      duringTransfer = await deleteAccountOf(system).catch((error: unknown) => error);
+    },
+  });
+  await system.teams.transfer(system.creator, system.created.id, sam);
+  expect(duringTransfer).toMatchObject({ reason: "hosted-teams-remain" });
+  expect((await teamAccountState(system)).team.creatorAccountId).toBe(sam);
+
+  // Sam hands it straight back while Maya deletes again, at once: whichever wins, the team is
+  // never deleted with an Account and always has someone holding it.
+  const [handBack, deletion] = await Promise.allSettled([
+    system.teams.transfer(sam, system.created.id, system.creator),
+    deleteAccountOf(system),
+  ]);
+  const state = await teamAccountState(system);
+  expect(state.team.state).toBe("active");
+  if (deletion.status === "fulfilled") {
+    expect(handBack).toMatchObject({ status: "rejected" });
+    expect(state).toMatchObject({ team: { creatorAccountId: sam }, creator: [] });
+  } else {
+    expect(handBack).toMatchObject({ status: "fulfilled" });
+    expect(deletion.reason).toMatchObject({ reason: "hosted-teams-remain" });
+    expect(state).toMatchObject({
+      team: { creatorAccountId: system.creator },
+      creator: [{ id: system.creator }],
+    });
+  }
+});
+
+it("lets an Account go once its team is deleted", async () => {
+  const system = await startHostedTeam();
+  await system.report();
+  await system.bootstrapper.runOnce();
+  await system.ready();
+  await expect(deleteAccountOf(system)).rejects.toMatchObject({ reason: "hosted-teams-remain" });
+  expect((await system.teams.remove(system.creator, system.created.id)).stage).toBe("deleting");
+  await deleteAccountOf(system);
+  expect(await teamAccountState(system)).toEqual({
+    team: { state: "deleted", creatorAccountId: null },
+    deployments: [],
     creator: [],
   });
 });

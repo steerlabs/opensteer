@@ -57,7 +57,8 @@ describe("control-plane protocol", () => {
       "hosted-team-limit-reached",
       "hosted-team-address-taken",
       "hosted-team-owner-required",
-      "hosted-team-owner-unconfirmed",
+      "hosted-teams-remain",
+      "account-deletion-in-progress",
     ]);
     expect(
       ControlPlaneErrorResponseSchema.safeParse({

@@ -10,6 +10,7 @@ export const screenPresentations = {
   CreateTeam: "formSheet",
   TeamSetup: "formSheet",
   DeleteTeam: "formSheet",
+  TransferTeam: "formSheet",
   ConnectOpensteer: "formSheet",
   ThreadStep: "formSheet",
   RequestSheet: "formSheet",

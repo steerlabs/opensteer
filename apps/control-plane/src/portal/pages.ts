@@ -193,13 +193,35 @@ export function deleteAccountBody(input: {
   readonly action: string;
   readonly computers: readonly string[];
   readonly email: string;
-  /** Why the last attempt refused; true when it may have turned remote access off first. */
-  readonly failed: boolean | string;
-  readonly hostedTeams: readonly string[];
+  /** True when the last attempt failed after it may have turned remote access off. */
+  readonly failed: boolean;
+  /** Teams the Account holds, which it must delete or transfer before it can go. */
+  readonly heldTeams: readonly {
+    readonly name: string;
+    readonly origin: string;
+    readonly href: string;
+  }[];
+  /** Teams still being set up, which deleting the Account cancels. */
+  readonly settingUp: readonly string[];
   readonly servers: readonly { readonly name: string; readonly otherMembers: number }[];
 }): string {
   const list = (items: readonly string[]) =>
     `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+  const head = `${brandMark()}<h1 class="title">Delete your Opensteer Account?</h1>`;
+  if (input.heldTeams.length > 0) {
+    const teams = input.heldTeams
+      .map(
+        (team) =>
+          `<li class="grant"><a href="${escapeHtml(team.href)}">${escapeHtml(team.name)}</a><span class="grant__detail">${escapeHtml(new URL(team.origin).host)}</span></li>`,
+      )
+      .join("");
+    return card({
+      head,
+      content: `<div class="alert" role="alert"><p class="alert__title">Delete or transfer these teams first</p><p class="lead">Other people may use them, so Opensteer never deletes a team with your Account. Transfer one to another owner to keep it for them.</p><ul class="grants">${teams}</ul></div>
+      <p class="lead">Nothing has been deleted or turned off.</p>
+      <a class="btn btn--block" href="/">Back</a>`,
+    });
+  }
   const computers = input.computers.length
     ? `<p class="lead">These computers lose remote access and leave your Account. Opensteer keeps running on them, with their files and conversations. Apps connected through Opensteer’s sign-in will need reconnecting.</p>${list(input.computers)}`
     : "";
@@ -212,19 +234,15 @@ export function deleteAccountBody(input: {
         ),
       )}`
     : "";
-  const hostedTeams = input.hostedTeams.length
-    ? `<p class="lead">These teams Opensteer hosts for you are deleted, with everything in them, for everyone who uses them. A team with another owner passes to them instead.</p>${list(input.hostedTeams)}`
+  const settingUp = input.settingUp.length
+    ? `<p class="lead">Setting these teams up stops, and their addresses aren’t used again.</p>${list(input.settingUp)}`
     : "";
   const failed = input.failed
-    ? `<p class="lead" role="alert">${escapeHtml(
-        input.failed === true
-          ? "Your Account wasn’t deleted. Remote access may already be off on these computers. Try again, or turn it back on from each computer."
-          : input.failed,
-      )}</p>`
+    ? `<p class="lead" role="alert">Your Account wasn’t deleted. Remote access may already be off on these computers. Try again, or turn it back on from each computer.</p>`
     : "";
   return card({
-    head: `${brandMark()}<h1 class="title">Delete your Opensteer Account?</h1>`,
-    content: `<p class="lead">This permanently deletes ${escapeHtml(input.email)}. It can’t be undone.</p>${failed}${computers}${servers}${hostedTeams}
+    head,
+    content: `<p class="lead">This permanently deletes ${escapeHtml(input.email)}. It can’t be undone.</p>${failed}${computers}${servers}${settingUp}
       <form method="post" action="${escapeHtml(input.action)}"><div class="actions"><a class="btn" href="/">Keep Account</a><button class="btn btn--danger" type="submit">Delete Account</button></div></form>`,
   });
 }
@@ -309,6 +327,8 @@ export interface PlaceStatus {
  * accessible name stays the name rather than every word on the row.
  */
 export function placeRow(input: {
+  /** An element id, so another page can link straight to this row. */
+  readonly anchor?: string;
   readonly control: PlaceControl;
   readonly id: string;
   readonly kind: "personal" | "team";
@@ -318,6 +338,8 @@ export function placeRow(input: {
     readonly action: string;
     /** What the confirmation says, when the row's one menu action isn't "remove from your list". */
     readonly confirm?: { readonly detail: string; readonly label: string; readonly title: string };
+    /** What to do instead, offered in the confirmation. */
+    readonly instead?: { readonly href: string; readonly label: string };
   } | null;
   readonly status: PlaceStatus | null;
 }): string {
@@ -345,11 +367,11 @@ export function placeRow(input: {
     ? `<span class="place__menu needs-popover"><button class="icon-btn" type="button" popovertarget="${sheetId}" aria-label="${input.remove.confirm ? `${escapeHtml(input.remove.confirm.label)} ${name}` : `Remove ${name} from your list`}">${icon("more")}</button></span>
       <div class="sheet" id="${sheetId}" popover role="dialog" aria-labelledby="${sheetId}-title">
         <h2 class="title" id="${sheetId}-title">${escapeHtml(confirm.title)}</h2>
-        <p class="lead">${escapeHtml(confirm.detail)}</p>
+        <p class="lead">${escapeHtml(confirm.detail)}</p>${input.remove.instead ? `<p class="lead"><a href="${escapeHtml(input.remove.instead.href)}">${escapeHtml(input.remove.instead.label)}</a></p>` : ""}
         <form class="actions" method="post" action="${escapeHtml(input.remove.action)}"><button class="btn" type="button" popovertarget="${sheetId}" popovertargetaction="hide">Cancel</button><button class="btn btn--danger" type="submit">${escapeHtml(confirm.label)}</button></form>
       </div>`
     : "";
-  return `<li class="place ${open ? "place--open" : "place--still"}">
+  return `<li class="place ${open ? "place--open" : "place--still"}"${input.anchor ? ` id="${escapeHtml(input.anchor)}"` : ""}>
     <span class="device">${icon(input.kind === "personal" ? "laptop" : "server")}${dot}</span>
     <span class="place__body">${control}${note}${spoken}</span>
     ${remove}${open ? `<span class="place__go" aria-hidden="true">${icon("chevron")}</span>` : ""}
@@ -492,6 +514,7 @@ export function hostedTeamRow(input: {
   readonly origin: string;
   readonly progressHref: string;
   readonly removeAction: string;
+  readonly transferHref: string;
   readonly stage: "configuring" | "deleting" | "failed" | "ready" | "reserving" | "starting";
 }): string {
   const ready = input.stage === "ready";
@@ -510,6 +533,7 @@ export function hostedTeamRow(input: {
           ? { label: "Setting up", reason: "Setting up…", tone: "busy" }
           : { label: "Ready", reason: null, tone: "ok" };
   return placeRow({
+    anchor: hostedTeamAnchor(input.id),
     control,
     id: input.id,
     kind: "team",
@@ -532,8 +556,61 @@ export function hostedTeamRow(input: {
                   label: "Cancel setup",
                   title: `Stop setting up ${input.name}?`,
                 },
+            ...(ready
+              ? {
+                  instead: {
+                    href: input.transferHref,
+                    label: "Transfer it to another owner instead",
+                  },
+                }
+              : {}),
           },
     status,
+  });
+}
+
+export function hostedTeamAnchor(id: string): string {
+  return `team-${id.replace(/[^\w-]/gu, "")}`;
+}
+
+/** Hand a team to one of the other owners its Host confirms. */
+export function transferHostedTeamBody(input: {
+  readonly action: string;
+  readonly failure: string | null;
+  readonly name: string;
+  readonly owners:
+    | readonly {
+        readonly accountId: string;
+        readonly displayName: string;
+        readonly email: string;
+      }[]
+    | null;
+}): string {
+  const head = `<span class="device device--large">${icon("server")}</span><h1 class="title">Transfer ${escapeHtml(input.name)}</h1>`;
+  const failure = input.failure
+    ? `<p class="lead" role="alert">${escapeHtml(input.failure)}</p>`
+    : "";
+  if (input.owners === null || input.owners.length === 0)
+    return card({
+      head,
+      content: `${failure}${
+        input.owners === null
+          ? ""
+          : `<p class="lead">Only another owner can hold ${escapeHtml(input.name)}. Make someone an owner in the team, then come back.</p>`
+      }<a class="btn btn--block" href="/">Back</a>`,
+    });
+  const owners = input.owners
+    .map(
+      (owner, index) =>
+        `<li><label class="grant"><input type="radio" name="to" value="${escapeHtml(owner.accountId)}" required${index === 0 && input.owners!.length === 1 ? " checked" : ""}><span class="grant__who"><span>${escapeHtml(owner.displayName || owner.email)}</span><span class="grant__detail">${escapeHtml(owner.email)}</span></span></label></li>`,
+    )
+    .join("");
+  return card({
+    head,
+    content: `<p class="lead">The owner you choose holds it in Opensteer from now on. You stay an owner, and nothing in the team changes.</p>${failure}
+      <form class="form" method="post" action="${escapeHtml(input.action)}"><ul class="grants">${owners}</ul>
+        <div class="actions"><a class="btn" href="/">Cancel</a><button class="btn btn--primary" type="submit">Transfer</button></div>
+      </form>`,
   });
 }
 

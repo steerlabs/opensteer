@@ -17,13 +17,25 @@ audience, and offers no hosted teams without that setting. Turn it on in
 provisioner, or teams wait at `starting`.
 
 Addresses are never reused: a deleted team stays as a tombstone, and the database tombstones a team
-whenever its creator's Account is deleted, whichever release deletes it. Before deleting an Account,
-and before turning off any remote access, Account asks the Host of every adopted team it created,
-by the owner check below: a Host naming the creator its only owner lets the team go with the
-Account; otherwise the first person the directory lists whom the Host confirms as an owner takes
-over the team and its Account Deployment. A Host that can't answer, or confirms nobody, refuses the
-deletion, naming the team, since another owner may exist that the directory hasn't caught up with.
-A team never adopted has no owner but its creator and goes without asking.
+whenever its creator's Account is deleted, whichever release deletes it.
+
+## Account deletion and transfer
+
+Account deletion never deletes or hands over a team whose Host Account adopted (with or without a
+receipt): only that Host knows who else owns it, and ownership can change there at any moment, so
+any automatic decision races it. Such a team blocks the deletion until the person deletes it or
+transfers it, and the refusal lists those teams. The check runs first, in one transaction that
+also sets a deletion fence on the Account and cancels its teams still being set up, holding each
+team's origin lock so no adoption lands after. Only then does deletion turn off remote access, so a
+refusal never leaves the person without it; a failure after that point keeps the remote-access
+warning. A fenced Account can't create or retry a team or be handed one, and the final delete
+rechecks under the Account row lock. A deletion that fails clears the fence; one that crashes stops fencing after
+ten minutes.
+
+Transfer moves the team, its Account Deployment, that Deployment's Account sign-in client and the
+recipient's hide marker together, under the origin lock. Only the Account holding the team (its
+creator, or whoever it was last handed to) may transfer it, and only to someone its Host confirms
+as an active owner just before; a Host that can't answer moves nothing.
 
 ## Setup
 
@@ -54,9 +66,10 @@ restarts the Host with a fresh setup window. Self-hosted teams keep `/setup`.
 Its creator may cancel a team only while its Host can't have an owner: before Account adopts that
 Host. Adoption takes the same origin lock as cancelling, so one of them loses. Once a Deployment or
 receipt exists, whatever stage Account shows, only the team's owners may delete it, and only the
-team's Host knows who they are: Account asks it with a one-minute Account-signed question. A Host
-that can't answer, because it predates hosted bootstrap or is down, deletes nothing: ownership may
-have moved on, so there is no creator fallback.
+team's Host knows who they are: Account asks it with a one-minute Account-signed question, which
+also names every owner for transfer. A Host that can't answer, because it predates hosted bootstrap
+or is down, deletes and transfers nothing: ownership may have moved on, so there is no creator
+fallback.
 
 Setup stages move only on provisioner reports judged against the team's current setup generation,
 so a late report about an earlier generation never fails or restarts a retry.

@@ -48,6 +48,7 @@ import {
   accountDeletedBody,
   browserPagePolicyWithScript,
   deleteAccountBody,
+  hostedTeamAnchor,
   differentAccountBody,
   openPhoneBody,
   personalHandoffBody,
@@ -245,11 +246,12 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
   async function renderDeleteAccount(
     reply: FastifyReply,
     session: PortalSession,
-    failed: boolean | string,
+    failed: boolean,
   ): Promise<string> {
     const accountId = ControlPlaneAccountIdSchema.parse(session.accountId);
-    const [owned, hostedTeams] = await Promise.all([
+    const [owned, held, created] = await Promise.all([
       dependencies.store.ownedDeployments(accountId),
+      dependencies.store.heldHostedTeams(accountId),
       dependencies.hostedTeams?.listCreatedBy(accountId) ?? [],
     ]);
     return sendBrowserPage(reply, {
@@ -260,7 +262,12 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
           .map((deployment) => deployment.name),
         email: session.email,
         failed,
-        hostedTeams: hostedTeams.map((team) => new URL(team.origin).host),
+        heldTeams: held.map((team) => ({ ...team, href: `/#${hostedTeamAnchor(team.id)}` })),
+        settingUp: created
+          .filter(
+            (team) => team.stage !== "deleting" && !held.some((holding) => holding.id === team.id),
+          )
+          .map((team) => new URL(team.origin).host),
         servers: owned.filter((deployment) => deployment.reachability !== "routed"),
       }),
       fonts,
@@ -572,8 +579,8 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
           return renderDeleteAccount(
             reply.code(error.status),
             session,
-            // Refused before anything else was undone, so it says only which team to wait for.
-            error.reason === "hosted-team-owner-unconfirmed" ? error.message : true,
+            // Refused before anything was undone, the page lists the teams to settle instead.
+            error.reason !== "hosted-teams-remain",
           );
         }
         // Reading the session refreshed its cookie; only the expiry may reach the browser.

@@ -7,7 +7,6 @@ import { decryptOAuthToken } from "better-auth/oauth2";
 import type { ControlPlaneAuth } from "../auth/auth.js";
 import { appleClientSecret, appleOrigin, type AppleSignInConfig } from "../auth/apple-sign-in.js";
 import type { ControlPlaneStore } from "../database/store.js";
-import type { HostedTeamStore } from "../hosted-teams/hosted-team-store.js";
 import { ControlPlaneError } from "../server/errors.js";
 import type { ConnectLifecycleService } from "./connect-lifecycle.js";
 
@@ -23,7 +22,6 @@ export class AccountDeletionService {
   readonly #auth: ControlPlaneAuth;
   readonly #connectLifecycle: ConnectLifecycleService;
   readonly #fetch: typeof fetch;
-  readonly #hostedTeams: Pick<HostedTeamStore, "accountDeletion"> | undefined;
   readonly #store: ControlPlaneStore;
 
   constructor(dependencies: {
@@ -31,44 +29,48 @@ export class AccountDeletionService {
     readonly auth: ControlPlaneAuth;
     readonly connectLifecycle: ConnectLifecycleService;
     readonly fetch?: typeof fetch;
-    /** Settles each hosted team the Account created with its own Host: hand over, delete or refuse. */
-    readonly hostedTeams?: Pick<HostedTeamStore, "accountDeletion">;
     readonly store: ControlPlaneStore;
   }) {
     this.#apple = dependencies.appleSignIn;
     this.#auth = dependencies.auth;
     this.#connectLifecycle = dependencies.connectLifecycle;
     this.#fetch = dependencies.fetch ?? fetch;
-    this.#hostedTeams = dependencies.hostedTeams;
     this.#store = dependencies.store;
   }
 
   async delete(accountId: ControlPlaneAccountId): Promise<void> {
-    // Asked of each team's own Host first, since ownership lives there and a Host that can't
-    // answer refuses the deletion before anything else is undone.
-    const hostedTeams = await this.#hostedTeams?.accountDeletion(accountId);
-    for (const deployment of await this.#store.ownedDeployments(accountId)) {
-      if (deployment.connectState === null || deployment.connectState === "revoked") continue;
-      try {
-        await this.#connectLifecycle.revoke(accountId, deployment.id, {
-          hostInstanceId: deployment.activeHostInstanceId,
-          // A fresh identity per attempt: a replayed one that another device's
-          // provision superseded would refuse every retry.
-          operationId: ConnectOperationIdSchema.parse(`cop_${randomUUID()}`),
-        });
-      } catch (error) {
-        // The Host unlinked itself first, which is what this step wanted.
-        if (!isNotFound(error)) throw error;
-      }
-    }
-    // The token row goes with the Account, and Apple must only hear of a deletion
-    // that committed.
-    const appleRefreshToken = this.#apple
-      ? await this.#store.oauthRefreshToken(accountId, "apple")
-      : null;
+    // Before anything is undone: a hosted team the Account holds refuses here, and from here on
+    // nothing can give it one.
     try {
-      await this.#store.deleteAccount(accountId, hostedTeams);
+      await this.#store.beginAccountDeletion(accountId);
     } catch (error) {
+      if (isNotFound(error)) return;
+      throw error;
+    }
+    let appleRefreshToken: string | null;
+    try {
+      for (const deployment of await this.#store.ownedDeployments(accountId)) {
+        if (deployment.connectState === null || deployment.connectState === "revoked") continue;
+        try {
+          await this.#connectLifecycle.revoke(accountId, deployment.id, {
+            hostInstanceId: deployment.activeHostInstanceId,
+            // A fresh identity per attempt: a replayed one that another device's
+            // provision superseded would refuse every retry.
+            operationId: ConnectOperationIdSchema.parse(`cop_${randomUUID()}`),
+          });
+        } catch (error) {
+          // The Host unlinked itself first, which is what this step wanted.
+          if (!isNotFound(error)) throw error;
+        }
+      }
+      // The token row goes with the Account, and Apple must only hear of a deletion
+      // that committed.
+      appleRefreshToken = this.#apple
+        ? await this.#store.oauthRefreshToken(accountId, "apple")
+        : null;
+      await this.#store.deleteAccount(accountId);
+    } catch (error) {
+      await this.#store.abandonAccountDeletion(accountId).catch(() => undefined);
       if (isNotFound(error)) return;
       throw error;
     }

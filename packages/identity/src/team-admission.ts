@@ -11,6 +11,7 @@ import {
   HostAccountAdoptionBundleSchema,
   HostedTeamBootstrapReceiptSchema,
   HostedTeamBootstrapSchema,
+  HostedTeamOwnerCheckResponseSchema,
   type HostAccountAdoptionBundle,
   type HostedTeamBootstrap,
   type HostedTeamBootstrapReceipt,
@@ -138,41 +139,31 @@ export class TeamIdentityAdmission {
     return { hostedTeamId: receipt.hostedTeamId, generalChannelId: channel?.id ?? null };
   }
   /**
-   * Whether the Account the signed assertion names is an active owner here, and the only one.
-   * The assertion is Account's, for this exact Host, and lives a minute.
+   * Whether the Account the signed assertion names is an active owner here, and which Accounts
+   * are. The assertion is Account's, for this exact Host, and lives a minute.
    */
   async isOwner(assertion: unknown): Promise<HostedTeamOwnerCheckResponse> {
     requireTeam(this.#hosted, "Hosted teams are unavailable");
     const claims = await this.#hosted.verifyOwnerCheck(assertion);
     requireTeam(sameAuthority(claims.authority, this.#authority), "Assertion is for another team");
-    const database = this.access.database;
-    const [owner, others] = await Promise.all([
-      database
-        .selectFrom("teamMembers as m")
-        .innerJoin("authAccounts as a", "a.userId", "m.userId")
-        .innerJoin("accountDirectoryProvider as p", "p.providerId", "a.providerId")
-        .innerJoin("users as u", "u.id", "m.userId")
-        .select("m.userId")
-        .where("p.issuer", "=", claims.iss)
-        .where("a.accountId", "=", claims.sub)
-        .where("m.role", "=", "owner")
-        .where("m.state", "=", "active")
-        .where("u.disabledAt", "is", null)
-        .executeTakeFirst(),
-      database
-        .selectFrom("teamMembers as m")
-        .innerJoin("users as u", "u.id", "m.userId")
-        .select("m.userId")
-        .where("m.role", "=", "owner")
-        .where("m.state", "=", "active")
-        .where("u.disabledAt", "is", null)
-        .limit(2)
-        .execute(),
+    const owners = this.access.database
+      .selectFrom("teamMembers as m")
+      .innerJoin("authAccounts as a", "a.userId", "m.userId")
+      .innerJoin("accountDirectoryProvider as p", "p.providerId", "a.providerId")
+      .innerJoin("users as u", "u.id", "m.userId")
+      .select("a.accountId")
+      .where("p.issuer", "=", claims.iss)
+      .where("m.role", "=", "owner")
+      .where("m.state", "=", "active")
+      .where("u.disabledAt", "is", null);
+    const [owner, listed] = await Promise.all([
+      owners.where("a.accountId", "=", claims.sub).executeTakeFirst(),
+      owners.orderBy("a.accountId").limit(100).execute(),
     ]);
-    return {
+    return HostedTeamOwnerCheckResponseSchema.parse({
       owner: owner !== undefined,
-      onlyOwner: owner !== undefined && others.every((other) => other.userId === owner.userId),
-    };
+      owners: listed.map((row) => row.accountId),
+    });
   }
   /** Signature, issuer, audience and lifetime, then this exact Host: never a token's own word. */
   async verifyIdentity(assertion: unknown): Promise<TeamIdentityAssertionClaims> {

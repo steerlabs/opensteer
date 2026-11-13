@@ -3,6 +3,7 @@ import {
   type HostedTeamId,
   type HostedTeamSlug,
   type HostedTeamView,
+  type HostedTeamOwner,
 } from "@opensteer/control-plane-protocol/hosted-teams";
 import type { TeamConnectionIntent, TeamSessionSnapshot } from "@opensteer/client/team";
 import { DeploymentIdSchema } from "@opensteer/core";
@@ -661,6 +662,112 @@ export function DeleteTeamScreen(props: StaticScreenProps<{ readonly teamId: str
           onPress={remove}
           tone="danger"
         />
+        <SecondaryButton label="Cancel" onPress={() => navigation.goBack()} />
+      </View>
+    </ScrollView>
+  );
+}
+
+/**
+ * Hand a hosted team to another owner its own Host confirms, so it stays if the person deletes
+ * their Account. Account refuses anyone but the person holding it.
+ */
+export function TransferTeamScreen(
+  props: StaticScreenProps<{ readonly teamId: string }>,
+): ReactNode {
+  const { teamId } = props.route.params;
+  const navigation = useNavigation<Navigation>();
+  const { coordinator } = useTeamEntry();
+  const team = useMobileTeams().team(teamId);
+  const hostedTeamId = team?.session?.getSnapshot().bootstrap?.hostedTeamId ?? null;
+  const insets = useSafeAreaInsets();
+  const [owners, setOwners] = useState<readonly HostedTeamOwner[] | null>(null);
+  const [chosen, setChosen] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+  const name = team?.name ?? "this team";
+  useEffect(() => {
+    if (hostedTeamId === null) return;
+    const controller = new AbortController();
+    void coordinator.hostedTeamOwners(hostedTeamId, controller.signal).then(
+      (found) => {
+        setOwners(found);
+        if (found.length === 1) setChosen(found[0]!.accountId);
+      },
+      (error: unknown) => {
+        if (!controller.signal.aborted)
+          setFailure(failureText(error, "Couldn't ask the team who its owners are."));
+      },
+    );
+    return () => controller.abort();
+  }, [coordinator, hostedTeamId]);
+  const person = owners?.find((owner) => owner.accountId === chosen) ?? null;
+  const transfer = (): void => {
+    if (person === null || hostedTeamId === null) return;
+    setBusy(true);
+    setFailure(null);
+    void coordinator.transferHostedTeam(hostedTeamId, person.accountId).then(
+      () => navigation.goBack(),
+      (error: unknown) => {
+        setBusy(false);
+        setFailure(failureText(error, "The team wasn't transferred."));
+      },
+    );
+  };
+  return (
+    <ScrollView
+      contentContainerStyle={[styles.sheet, { paddingBottom: insets.bottom + space[20] }]}
+    >
+      <View style={styles.heading}>
+        <AppText role="displaySmall">Transfer {name}</AppText>
+        <AppText role="secondary" tone="muted">
+          The owner you choose holds {name} in Opensteer from now on, so it stays if you delete your
+          Account. You stay an owner, and nothing in the team changes.
+        </AppText>
+      </View>
+      {owners === null && failure === null ? <ActivityIndicator color={color.muted} /> : null}
+      {owners !== null && owners.length === 0 ? (
+        <AppText role="secondary">
+          Only another owner can hold {name}. Make someone an owner in People, then come back.
+        </AppText>
+      ) : null}
+      {owners !== null && owners.length > 0 ? (
+        <View accessibilityRole="radiogroup" style={styles.buttons}>
+          {owners.map((owner) => (
+            <Pressable
+              accessibilityRole="radio"
+              accessibilityState={{ checked: chosen === owner.accountId }}
+              key={owner.accountId}
+              onPress={() => setChosen(owner.accountId)}
+              style={({ pressed }) => [styles.setupRow, pressed && styles.pressed]}
+            >
+              <View style={styles.grow}>
+                <AppText numberOfLines={1}>{owner.displayName || owner.email}</AppText>
+                <AppText numberOfLines={1} role="caption" tone="muted">
+                  {owner.email}
+                </AppText>
+              </View>
+              {chosen === owner.accountId ? (
+                <Symbol name="checkmark" size={16} tint={color.ember} />
+              ) : null}
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
+      {failure === null ? null : (
+        <AppText role="secondary" tone="danger">
+          {failure}
+        </AppText>
+      )}
+      <View style={styles.buttons}>
+        {owners !== null && owners.length > 0 ? (
+          <PrimaryButton
+            busy={busy}
+            disabled={person === null}
+            label="Transfer"
+            onPress={transfer}
+          />
+        ) : null}
         <SecondaryButton label="Cancel" onPress={() => navigation.goBack()} />
       </View>
     </ScrollView>

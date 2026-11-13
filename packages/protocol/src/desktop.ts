@@ -43,6 +43,7 @@ import { HostAccountAdoptionAuthoritySchema } from "@opensteer/control-plane-pro
 import {
   CreateHostedTeamRequestSchema,
   HostedTeamIdSchema,
+  TransferHostedTeamRequestSchema,
 } from "@opensteer/control-plane-protocol/hosted-teams";
 import {
   IntegrationAuthorizationAttemptIdSchema,
@@ -1446,6 +1447,12 @@ export const DesktopAccountTeamsCallSchema = z.discriminatedUnion("call", [
   z.strictObject({ call: z.literal("get"), id: HostedTeamIdSchema }),
   z.strictObject({ call: z.literal("retry"), id: HostedTeamIdSchema }),
   z.strictObject({ call: z.literal("delete"), id: HostedTeamIdSchema }),
+  z.strictObject({ call: z.literal("owners"), id: HostedTeamIdSchema }),
+  z.strictObject({
+    call: z.literal("transfer"),
+    id: HostedTeamIdSchema,
+    to: TransferHostedTeamRequestSchema.shape.to,
+  }),
 ]);
 export type DesktopAccountTeamsCall = z.infer<typeof DesktopAccountTeamsCallSchema>;
 export const DesktopAccountTeamsResultSchema = z.discriminatedUnion("ok", [

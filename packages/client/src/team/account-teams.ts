@@ -1,16 +1,24 @@
-import { ControlPlaneErrorResponseSchema } from "@opensteer/control-plane-protocol";
+import {
+  ControlPlaneErrorResponseSchema,
+  type ControlPlaneAccountId,
+} from "@opensteer/control-plane-protocol";
 import {
   CreateHostedTeamRequestSchema,
   HostedTeamAvailabilityResponseSchema,
   HostedTeamResponseSchema,
+  ListHostedTeamOwnersResponseSchema,
   ListHostedTeamsResponseSchema,
+  TransferHostedTeamRequestSchema,
   accountHostedTeamAvailabilityPath,
+  accountHostedTeamOwnersPath,
   accountHostedTeamPath,
   accountHostedTeamRetryPath,
+  accountHostedTeamTransferPath,
   accountHostedTeamsPath,
   type CreateHostedTeamRequest,
   type HostedTeamAvailability,
   type HostedTeamId,
+  type HostedTeamOwner,
   type HostedTeamView,
 } from "@opensteer/control-plane-protocol/hosted-teams";
 import { bareServiceOrigin } from "@opensteer/core";
@@ -35,6 +43,10 @@ export interface AccountTeamsClient {
   retryHostedTeam(id: HostedTeamId): Promise<HostedTeamView>;
   /** Cancels a team still being set up, or deletes one (owners only). Null when already gone. */
   deleteHostedTeam(id: HostedTeamId): Promise<HostedTeamView | null>;
+  /** The team's other owners its Host confirms now; only the team's holder may ask. */
+  hostedTeamOwners(id: HostedTeamId, signal?: AbortSignal): Promise<readonly HostedTeamOwner[]>;
+  /** Hands the team to one of those owners. */
+  transferHostedTeam(id: HostedTeamId, to: ControlPlaneAccountId): Promise<HostedTeamView>;
 }
 
 const timeoutMs = 15_000;
@@ -100,6 +112,27 @@ export class HttpAccountTeamsClient implements AccountTeamsClient {
 
   deleteHostedTeam(id: HostedTeamId) {
     return this.#gone(this.#json(accountHostedTeamPath(id), "DELETE", HostedTeamResponseSchema));
+  }
+
+  async hostedTeamOwners(id: HostedTeamId, signal?: AbortSignal) {
+    return (
+      await this.#json(
+        accountHostedTeamOwnersPath(id),
+        "GET",
+        ListHostedTeamOwnersResponseSchema,
+        undefined,
+        signal,
+      )
+    ).owners;
+  }
+
+  transferHostedTeam(id: HostedTeamId, to: ControlPlaneAccountId) {
+    return this.#json(
+      accountHostedTeamTransferPath(id),
+      "POST",
+      HostedTeamResponseSchema,
+      TransferHostedTeamRequestSchema.parse({ to }),
+    );
   }
 
   async #gone(request: Promise<HostedTeamView>): Promise<HostedTeamView | null> {

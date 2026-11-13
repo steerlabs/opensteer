@@ -465,6 +465,7 @@ const migrationProvider = {
       "0018_hosted_teams": hostedTeamsMigration,
       "0019_hosted_team_bootstrap": hostedTeamBootstrapMigration,
       "0020_team_ready_notifications": teamReadyNotificationsMigration,
+      "0021_account_deletion_fence": accountDeletionFenceMigration,
     };
   },
 };
@@ -608,6 +609,18 @@ export const hostedTeamsMigration: Migration = {
       create index hosted_teams_pending on public.hosted_teams (created_at)
       where state <> 'deleted' or phase <> 'deleted'
     `.execute(database);
+  },
+};
+
+/**
+ * While an Account is being deleted, nothing may give it a hosted team. Add-only: a previous
+ * release never sets it, and deletes the row it sits on.
+ */
+const accountDeletionFenceMigration: Migration = {
+  async up(database) {
+    await sql`alter table public.users add column deletion_started_at timestamptz`.execute(
+      database,
+    );
   },
 };
 

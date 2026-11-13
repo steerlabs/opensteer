@@ -107,7 +107,7 @@ function useReport() {
 
 function ProfilePage({ view }: { readonly view: TeamView }) {
   const { coordination, leave } = useTeams();
-  const { openDelete } = useTeamDialogs();
+  const { openDelete, openTransfer } = useTeamDialogs();
   const navigate = useNavigate();
   const report = useReport();
   const line = useAgentLine(view.team);
@@ -157,7 +157,7 @@ function ProfilePage({ view }: { readonly view: TeamView }) {
           title={line === "connected" ? "Your agent is connected" : "Your agent isn’t connected"}
         />
       </SettingsGroup>
-      <SettingsGroup heading="Leave or delete" headingId="team-leave">
+      <SettingsGroup heading="Leave, transfer or delete" headingId="team-leave">
         <SettingsRow
           action={
             <button
@@ -179,6 +179,21 @@ function ProfilePage({ view }: { readonly view: TeamView }) {
           }
           title={`Leave ${name}`}
         />
+        {owner && hosted && coordination ? (
+          <SettingsRow
+            action={
+              <button
+                className="btn btn--small"
+                onClick={() => openTransfer(view.team.teamId)}
+                type="button"
+              >
+                Transfer
+              </button>
+            }
+            detail="Hand it to another owner, so it stays if you delete your Account."
+            title={`Transfer ${name}`}
+          />
+        ) : null}
         {owner && hosted && coordination ? (
           <SettingsRow
             action={

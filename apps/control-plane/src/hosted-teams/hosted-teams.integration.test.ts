@@ -93,7 +93,7 @@ integration("Hosted teams", () => {
     cipher,
     ownerCheck: async ({ accountId }) => {
       ownerChecks.push(accountId);
-      return ownerAnswer === undefined ? undefined : { owner: ownerAnswer, onlyOwner: false };
+      return ownerAnswer === undefined ? undefined : { owner: ownerAnswer, owners: [] };
     },
   });
   const portalSessions = new PortalSessionStore(database);
@@ -600,17 +600,21 @@ integration("Hosted teams", () => {
     ]);
   });
 
-  it("keeps the Account, and says which team, when a team's Host can't say who else owns it", async () => {
+  it("refuses deleting an Account up front while it holds a set-up team, linking to it", async () => {
     const cookie = await portalCookie(owner);
-    await createTeam("unsettled");
+    const team = await createTeam("unsettled");
     await claim("https://unsettled.teams.opensteer.com");
-    ownerAnswer = undefined;
-    const page = await postForm(cookie, "/account/delete");
-    expect(page.statusCode).toBe(503);
-    expect(page.body).toContain(
-      "Your Account wasn’t deleted: unsettled.teams.opensteer.com couldn’t confirm who else owns it.",
-    );
-    expect(page.body).not.toContain("Remote access may already be off");
+    const page = await server.inject({
+      method: "GET",
+      url: "/account/delete",
+      headers: { host: portalOrigin.host, cookie },
+    });
+    for (const body of [page.body, (await postForm(cookie, "/account/delete")).body]) {
+      expect(body).toContain("Delete or transfer these teams first");
+      expect(body).toContain(`href="/#team-${team.id}"`);
+      expect(body).not.toContain(">Delete Account</button>");
+      expect(body).not.toContain("Remote access may already be off");
+    }
     expect(
       await database.selectFrom("users").select("id").where("id", "=", owner).execute(),
     ).toEqual([{ id: owner }]);
