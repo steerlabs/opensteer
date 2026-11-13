@@ -204,31 +204,35 @@ describe("NativePersonalHostControl bootstrap", () => {
     expect(requests).toBe(2);
   });
 
-  it("waits out a bare server fault but stops at a bootstrap it cannot read", async () => {
-    const deployment = manifest();
-    let requests = 0;
-    const control = new NativePersonalHostControl({
-      fetch: async () => {
-        requests += 1;
-        return requests === 1
-          ? new Response("Bad gateway", { status: 502 })
-          : json({ data: {}, ok: true });
-      },
-      pollIntervalMs: 1,
-      requestTimeoutMs: 1_000,
-    });
+  it.each([
+    ["unreadable", () => json({ data: {}, ok: true }), "incompatible"],
+    ["oversized", () => new Response("x".repeat(17 * 1_024 * 1_024)), "internal"],
+  ] as const)(
+    "waits out a bare server fault but stops at a bootstrap it cannot read: %s",
+    async (_kind, settled, code) => {
+      const deployment = manifest();
+      let requests = 0;
+      const control = new NativePersonalHostControl({
+        fetch: async () => {
+          requests += 1;
+          return requests === 1 ? new Response("Bad gateway", { status: 502 }) : settled();
+        },
+        pollIntervalMs: 1,
+        requestTimeoutMs: 5_000,
+      });
 
-    await expect(
-      control.waitForRunner(
-        hostOrigin,
-        deployment.deploymentId,
-        deployment.environmentId,
-        deployment.runnerId,
-        new AbortController().signal,
-      ),
-    ).rejects.toMatchObject({ code: "incompatible", name: "PersonalHostBootstrapRefusedError" });
-    expect(requests).toBe(2);
-  });
+      await expect(
+        control.waitForRunner(
+          hostOrigin,
+          deployment.deploymentId,
+          deployment.environmentId,
+          deployment.runnerId,
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({ code, name: "PersonalHostBootstrapRefusedError" });
+      expect(requests).toBe(2);
+    },
+  );
 
   it("refuses a malformed claim capability and a Host that remains unclaimed", async () => {
     let localBootstrapReads = 0;

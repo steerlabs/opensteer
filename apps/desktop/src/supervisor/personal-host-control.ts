@@ -819,10 +819,13 @@ function bootstrapRefusal(error: {
   readonly retryable: boolean;
 }): Error {
   const message = `Personal Host refused bootstrap.get (${error.code}): ${error.message}`;
-  if (error.reason === "invalid-response")
-    return new PersonalHostBootstrapRefusedError("incompatible", message);
-  if (error.retryable || error.code === "internal") return new Error(message);
-  return new PersonalHostBootstrapRefusedError(error.code, message);
+  // A bare server fault carries no reason; every named, non-retryable failure is final.
+  if (error.retryable || (error.code === "internal" && error.reason === undefined))
+    return new Error(message);
+  return new PersonalHostBootstrapRefusedError(
+    error.reason === "invalid-response" ? "incompatible" : error.code,
+    message,
+  );
 }
 
 const RuntimeIdSchema = z.string().trim().min(1).max(255);
