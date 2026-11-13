@@ -15,7 +15,7 @@ import {
 } from "@react-navigation/native-stack";
 import { Platform } from "react-native";
 import type { SurfacesRoute } from "./browser/surface-route.js";
-import { AddIphoneScreen } from "./iphone-apps/add-iphone.js";
+import { SetUpPhoneScreen } from "./phone-setup/setup-screen.js";
 import { headerActions, stackScreenOptions } from "./navigation-header.js";
 import { AddDeploymentScreen } from "./screens/add-deployment.js";
 import { AddPersonalScreen } from "./screens/add-personal.js";
@@ -28,6 +28,7 @@ import {
 import { BrowserTabsScreen } from "./screens/browser-tabs.js";
 import { ChromeScreen, type ChromeDestination } from "./screens/chrome.js";
 import { ComputerScreen } from "./screens/computer.js";
+import { DevicePageScreen } from "./screens/device-page.js";
 import { ConversationActivityScreen } from "./screens/conversation-activity.js";
 import { DeploymentsScreen } from "./screens/deployments.js";
 import { HomeScreen } from "./screens/home.js";
@@ -485,7 +486,7 @@ const RootStack = createNativeStackNavigator({
       options: { title: "Plugins", headerShown: Platform.OS !== "ios" },
     },
     SettingsPluginDetail: { screen: SettingsPluginsScreen, options: { title: "Plugin" } },
-    SettingsDeviceDetail: { screen: ComputerScreen, options: { title: "Device" } },
+    SettingsDeviceDetail: { screen: DevicePageScreen, options: { title: "Device" } },
     SettingsSignIns: { screen: SettingsSignInsScreen, options: { title: "Sign-ins" } },
     Settings: {
       screen: SettingsScreen,
@@ -569,15 +570,12 @@ const RootStack = createNativeStackNavigator({
         title: "Connect an agent",
       }),
     },
-    AddIphone: {
-      screen: AddIphoneScreen,
-      // Draws its own bar: Android's form sheet has no native header.
+    SetUpPhone: {
+      screen: SetUpPhoneScreen,
       options: {
+        gestureEnabled: false,
         headerShown: false,
-        presentation: screenPresentations.AddIphone,
-        sheetAllowedDetents: [0.95],
-        sheetGrabberVisible: true,
-        title: `Add this ${thisPhoneNoun}`,
+        title: `Set up this ${thisPhoneNoun}`,
       },
     },
     // Asked once, over Home, the first time this phone reaches a computer. It
@@ -708,7 +706,7 @@ type OpensteerRootParamList = {
   readonly QuietlyMoved: { readonly deploymentId: string };
   readonly TeamHome: { readonly teamId: string };
   readonly AddDeployment: undefined;
-  readonly AddIphone: { readonly deploymentId: string };
+  readonly SetUpPhone: { readonly deploymentId: string };
   readonly AgentAuthorization: { readonly deploymentId: string; readonly requestId: string };
   /** A pairing link or scanned code fills the form; the person still confirms it. */
   readonly AddPersonal:

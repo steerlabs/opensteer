@@ -1,3 +1,4 @@
+import { WebTabNotice } from "../devices/web-tab-notice.js";
 import {
   browserSiteForTab,
   browserSiteLabel,
@@ -786,6 +787,7 @@ export function PlaceBrowserView({
             </>
           }
         />
+        {native ? null : <WebTabNotice hostClient={hostClient} />}
         <BrowserPasskeyBar
           key={passkey?.requestId ?? "notice"}
           state={passkey}

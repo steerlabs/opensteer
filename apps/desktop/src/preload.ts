@@ -861,16 +861,26 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     ),
   signIn: () => invoke<void>(desktopBridgeChannels.signIn),
   signOut: () => invoke<void>(desktopBridgeChannels.signOut),
-  startLocalRunner: (input: DesktopStartLocalRunnerInput) =>
-    invoke<DesktopLocalExecutionStatus>(
-      desktopBridgeChannels.startLocalRunner,
+  signDeviceSessionBinding: (input: { deploymentId: string; sessionId: string }) =>
+    invoke<import("@opensteer/protocol").DeviceSessionBindingProof>(
+      desktopBridgeChannels.signDeviceSessionBinding,
+      input,
+    ),
+  retryDeviceConnection: (input: DesktopLocalExecutionInput) =>
+    invoke<void>(desktopBridgeChannels.retryDeviceConnection, input),
+  leaveDeployment: (input: DesktopLocalExecutionInput) =>
+    invoke<void>(desktopBridgeChannels.leaveDeployment, input),
+  prepareDeviceSetup: (input: DesktopStartLocalRunnerInput) =>
+    invoke<import("@opensteer/protocol").DevicePreparedIdentity>(
+      desktopBridgeChannels.prepareDeviceSetup,
       DesktopStartLocalRunnerInputSchema.parse(input),
     ),
-  stopLocalRunner: (input: DesktopLocalExecutionInput) =>
-    invoke<DesktopLocalExecutionStatus>(
-      desktopBridgeChannels.stopLocalRunner,
-      DesktopLocalExecutionInputSchema.parse(input),
+  accountSignOutPreview: () =>
+    invoke<readonly { deploymentId: string; name: string }[]>(
+      desktopBridgeChannels.accountSignOutPreview,
     ),
+  setUpDevice: (input: DesktopStartLocalRunnerInput) =>
+    invoke<DesktopLocalExecutionStatus>(desktopBridgeChannels.setUpDevice, input),
   unlinkPersonal: () => invoke<void>(desktopBridgeChannels.unlinkPersonal),
 });
 

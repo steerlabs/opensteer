@@ -3,6 +3,9 @@ import {
   DesktopLocalExecutionStatusSchema,
   DesktopStartLocalRunnerInputSchema,
 } from "@opensteer/protocol/desktop";
+import { AuthSessionIdSchema, DeploymentIdSchema } from "@opensteer/core";
+import { DevicePreparedIdentitySchema, DeviceSessionBindingProofSchema } from "@opensteer/protocol";
+import { z } from "zod";
 import {
   assertAuthorizedRenderer,
   trackLocalExecutionRenderer,
@@ -31,11 +34,6 @@ export const handleGetLocalExecutionStatus =
     );
   };
 
-export const handleStartLocalRunner = (context: DesktopBridgeContext): DesktopBridgeHandler =>
-  localExecution(context, (input) =>
-    context.options.runner.start(DesktopStartLocalRunnerInputSchema.parse(input)),
-  );
-
 /**
  * Rechecks right away on the Runners this app runs for other Deployments. The
  * Personal Runner is a separate process with no channel for it, and needs
@@ -48,9 +46,58 @@ export const handleRecheckLocalEngines =
     context.options.runner.recheckEngines();
   };
 
-/** `stopLocalRunner` is the removal call: the web sends it when a person takes
- * this Mac out of the Deployment, so the slot and its identity go with it. */
-export const handleStopLocalRunner = (context: DesktopBridgeContext): DesktopBridgeHandler =>
+export const handleSetUpDevice = (context: DesktopBridgeContext): DesktopBridgeHandler =>
   localExecution(context, (input) =>
-    context.options.runner.remove(DesktopLocalExecutionInputSchema.parse(input).deploymentId),
+    context.options.runner.setUpDevice(DesktopStartLocalRunnerInputSchema.parse(input)),
   );
+
+export const handleLeaveDeployment =
+  (context: DesktopBridgeContext): DesktopBridgeHandler =>
+  async (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    await context.options.runner.leaveDeployment(
+      DesktopLocalExecutionInputSchema.parse(envelope.input),
+    );
+  };
+
+const bindingInput = z.strictObject({
+  deploymentId: DeploymentIdSchema,
+  sessionId: AuthSessionIdSchema,
+});
+export const handleSignDeviceSessionBinding =
+  (context: DesktopBridgeContext): DesktopBridgeHandler =>
+  async (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    return DeviceSessionBindingProofSchema.parse(
+      await context.options.runner.signDeviceSessionBinding(bindingInput.parse(envelope.input)),
+    );
+  };
+
+export const handlePrepareDeviceSetup =
+  (context: DesktopBridgeContext): DesktopBridgeHandler =>
+  async (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    return DevicePreparedIdentitySchema.parse(
+      await context.options.runner.prepareDeviceSetup(
+        DesktopStartLocalRunnerInputSchema.parse(envelope.input),
+      ),
+    );
+  };
+
+export const handleAccountSignOutPreview =
+  (context: DesktopBridgeContext): DesktopBridgeHandler =>
+  async (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    return z
+      .array(z.strictObject({ deploymentId: DeploymentIdSchema, name: z.string().min(1).max(120) }))
+      .parse(await context.options.runner.accountSignOutPreview());
+  };
+
+export const handleRetryDeviceConnection =
+  (context: DesktopBridgeContext): DesktopBridgeHandler =>
+  async (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    await context.options.runner.retryDeviceConnection(
+      DesktopLocalExecutionInputSchema.parse(envelope.input),
+    );
+  };

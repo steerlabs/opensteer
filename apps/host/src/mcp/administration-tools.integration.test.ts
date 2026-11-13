@@ -93,7 +93,18 @@ function fixture() {
       accessMode: "approval-required",
     })),
     listRunners: vi.fn(async () => ({
-      runners: [{ id: machineId, name: "Mac", revokedAt: null }],
+      runners: [
+        {
+          id: machineId,
+          name: "Mac",
+          revokedAt: null,
+          kind: "local",
+          ownerKind: "user",
+          accessPolicy: { reach: "nobody", commands: false, forwarding: false, shares: [] },
+          allowedModules: [],
+          moduleDescriptors: {},
+        },
+      ],
       nextCursor: null,
     })),
     effectiveMachineOwner: vi.fn(async () => ({ effectiveOwner: userId })),

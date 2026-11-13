@@ -4,6 +4,8 @@ import path from "node:path";
 
 const MAX_BYTES = 432 * 1_024;
 const ERRORS = new Set([
+  "device-access-off",
+  "device-offline",
   "unsupported-operation",
   "target-suspended",
   "target-closed",
@@ -31,12 +33,14 @@ const READS = new Set([
 ]);
 
 export class BrowserActionError extends Error {
-  constructor(code, message, dialog) {
+  constructor(code, message, dialog, context) {
     super(
       `${code}: ${message}${dialog ? " Answer with respondDialog({ accept: true or false })." : ""}`,
     );
     this.name = "BrowserActionError";
     this.code = code;
+    if (context?.machineId) this.machineId = context.machineId;
+    if (context?.capability) this.capability = context.capability;
     if (dialog) this.dialog = dialog;
   }
 }
@@ -327,7 +331,12 @@ export class ActionsClient {
     clearTimeout(pending.timer);
     if (message.error)
       pending.reject(
-        new BrowserActionError(message.error.code, message.error.message, message.error.dialog),
+        new BrowserActionError(
+          message.error.code,
+          message.error.message,
+          message.error.dialog,
+          message.error,
+        ),
       );
     else pending.resolve(message.result);
   }

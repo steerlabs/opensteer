@@ -175,43 +175,6 @@ html.electron-shell .setup-frame__foot {
 
 /* Three ways to add a place, each a framed row that opens its own form in
    place — so nothing has to be classified before a field appears. */
-.add-deployment {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-10);
-}
-
-.add-deployment__option {
-  display: flex;
-  flex-direction: column;
-}
-
-.add-deployment__option > .option-row[aria-expanded="true"] {
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
-}
-
-.add-deployment__form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-12);
-  padding: var(--space-14);
-  border: 1px solid var(--line);
-  border-top: 0;
-  border-radius: 0 0 var(--radius-md) var(--radius-md);
-  background: var(--sheen) var(--fill-plate);
-  border-color: var(--rim-plate);
-  box-shadow: var(--edge-plate);
-}
-
-.add-deployment__form .text-input {
-  min-height: 40px;
-  font-variant-numeric: tabular-nums;
-}
-
-.add-deployment__form .btn {
-  align-self: flex-start;
-}
 
 .desktop-verified-identity {
   overflow: hidden;
@@ -403,10 +366,6 @@ html.electron-shell .setup-frame__foot {
 }
 
 @media (max-width: 600px) {
-  .add-deployment__form .btn {
-    align-self: stretch;
-  }
-
   .desktop-verified-identity > div {
     grid-template-columns: 1fr;
     gap: var(--space-4);

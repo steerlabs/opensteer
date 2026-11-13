@@ -182,8 +182,21 @@ tunnel and detached engine helpers. See
 Host identity is the exact Deployment, instance and key-fingerprint tuple. Manual entries pin it and
 must be re-added to change it. Account entries follow only their verified issuer and subject
 directory; sync never deletes or overwrites manual entries or repoints a locally supervised Personal
-Deployment. Membership projections hold no key material
-([`deployment-catalog.ts`](../packages/client/src/connections/deployment-catalog.ts)).
+Deployment. Desktop membership intent pins the verified Host and last route separately from the catalog, so a
+catalog reset cannot remove a device. Compatible older catalog shapes load forward; incompatible
+signed shapes remain disposable because changing their bytes would invalidate Host signatures.
+
+A session-ended notice reaches desktop main before unauthorized recovery. Main fences automatic
+authorization while the Runner reconnects to confirm membership, independently of browser and
+computer-use startup; Retry, signed leave and the chooser stay available after startup retries run
+out. Only 4010 or an explicit Host removal answer confirms removal and starts local erasure; session
+deadlines, route rotation and transport loss never do. After route rotation or transport loss,
+Runner success releases the fence and recovery stays automatic. After natural expiry, success keeps
+the device and its key, but only an explicit Sign in again reopens person authorization. Sign in
+again and Set up again resume authorization in main, awaiting cleanup and generation fences before
+selection; Set up again after confirmed removal needs a fresh identity. Late exchanges clear their
+session artifacts. Other Deployments and the hosting supervisor keep their authority. Leave and
+Account sign-out are in [Runner and desktop](computers.md#runner-and-desktop).
 
 ## The place list
 

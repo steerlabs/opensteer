@@ -338,6 +338,8 @@ export class HostTransport {
       },
       {
         close: (code, reason) => {
+          if (!released && code === 4003 && reason === "Session ended")
+            this.#sessions?.sessionEnded?.({ connection, resolved });
           released = true;
           this.#sockets.delete(socket);
           bound.close(code, reason);
@@ -357,6 +359,12 @@ export class HostTransport {
     if (released) return socket;
     this.#sockets.add(socket);
     return socket;
+  }
+
+  invalidateSession(): void {
+    for (const controller of this.#requestControllers)
+      controller.abort(new HostTransportError("deployment-changed"));
+    this.closeAllSockets();
   }
 
   closeAllSockets(): void {
@@ -454,6 +462,7 @@ export class HostTransport {
    */
   async current(): Promise<SelectedAttachment> {
     const selected = await this.#fence.current();
+    await this.#sessions?.assertSessionAllowed?.(selected.resolved.deploymentId);
     if (
       this.#expectedKind &&
       selected.connection.authority.document.deploymentShape.kind !== this.#expectedKind

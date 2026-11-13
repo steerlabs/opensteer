@@ -94,6 +94,37 @@ export function migrationProvider(): MigrationProvider {
             await sql.raw(TEAM_REUSABLE_INVITES_SQL).execute(database);
           },
         },
+        "0008_devices": {
+          async up(database) {
+            await sql`
+              update runners set access_policy =
+                jsonb_build_object('browser', true, 'apps', true) || access_policy;
+              alter table auth_sessions add column device_id text null references runners(id);
+              create index auth_sessions_device_id_idx on auth_sessions(device_id);
+              alter table runner_enrollments add column initial_access jsonb null;
+              alter table runner_enrollments add column prepared_identity jsonb null;
+            `.execute(database);
+          },
+        },
+        "0009_device_access_requests": {
+          async up(database) {
+            await sql`
+              alter table agent_control_requests drop constraint agent_control_requests_action_check;
+              alter table agent_control_requests add constraint agent_control_requests_action_check check (action in ('assignment.cancel', 'device.access.request', 'machine.full-disk-access.request', 'browser.access.request', 'browser.sign-in', 'browser.profile.create', 'browser.profile.list', 'browser.session.close', 'browser.session.list', 'browser.tab.read', 'browser.tab.write', 'browser.session.open', 'request.list', 'request.withdraw', 'thread.delegate', 'thread.list', 'thread.message', 'person.message', 'person.show', 'thread.read', 'thread.write', 'trigger.read', 'trigger.write', 'environment.list'));
+              alter table agent_control_requests drop constraint agent_control_requests_action_class_check;
+              alter table agent_control_requests add constraint agent_control_requests_action_class_check check (action_class in ('assignment.cancel', 'device.access.request', 'machine.full-disk-access.request', 'browser.access.request', 'browser.sign-in', 'browser.profile.create', 'browser.profile.list', 'browser.session.close', 'browser.session.list', 'browser.tab.read', 'browser.tab.write', 'browser.session.open', 'request.list', 'request.withdraw', 'thread.delegate', 'thread.list', 'thread.message', 'person.show', 'thread.read', 'thread.write', 'trigger.read', 'trigger.write', 'environment.list'));
+            `.execute(database);
+          },
+        },
+        "0010_device_setup_retirement": {
+          async up(database) {
+            await sql`create table device_setup_retirements (
+              runner_id text not null,
+              public_key_pem text not null,
+              primary key (runner_id, public_key_pem)
+            )`.execute(database);
+          },
+        },
       };
     },
   };

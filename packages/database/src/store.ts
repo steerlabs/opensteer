@@ -1,3 +1,4 @@
+import { bindDeviceSession, revokeDeviceSession, leaveDevice } from "./device-store.js";
 import { enqueueNodeStop } from "./node-control.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
 import * as backgroundModelStore from "./background-model-store.js";
@@ -343,6 +344,7 @@ export class OpensteerStore {
       readonly allowOtherOwners?: boolean;
     } = {},
   ): Promise<{
+    readonly endedSessionIds: readonly import("@opensteer/core").AuthSessionId[];
     readonly deletedBrowserProfiles: readonly {
       readonly id: BrowserProfileId;
       readonly ownerId: UserId;
@@ -354,6 +356,15 @@ export class OpensteerStore {
     readonly revokedComputerConnectionIds: readonly IntegrationConnectionId[];
   }> {
     return runnerStore.revokeRunner(this.#database, this.#links, runnerId, ownerId, options);
+  }
+  async bindDeviceSession(input: Parameters<typeof bindDeviceSession>[1]) {
+    return bindDeviceSession(this.#database, input);
+  }
+  async revokeDeviceSession(input: Parameters<typeof revokeDeviceSession>[2]) {
+    return revokeDeviceSession(this.#database, this.#links, input);
+  }
+  async leaveDevice(input: Parameters<typeof leaveDevice>[2]) {
+    return leaveDevice(this.#database, this.#links, input);
   }
   async openPhoneTab(runnerId: RunnerId): Promise<boolean> {
     return runnerStore.openPhoneTab(this.#database, runnerId);
@@ -391,6 +402,12 @@ export class OpensteerStore {
         readonly outcome: "updated";
         readonly replayed: boolean;
         readonly revision: number;
+        readonly requestEvents: readonly AgentEvent[];
+        readonly changed: {
+          readonly shell: boolean;
+          readonly browser: boolean;
+          readonly apps: boolean;
+        };
       }
   > {
     return machineStore.updateMachineAccessPolicy(this.#database, input);
@@ -496,6 +513,8 @@ export class OpensteerStore {
   }
   async createRunnerEnrollment(input: {
     readonly issuanceModules?: readonly RunnerModuleName[];
+    readonly initialAccess?: import("@opensteer/protocol").DeviceInitialAccess;
+    readonly preparedIdentity?: import("@opensteer/protocol").DevicePreparedIdentity;
     readonly deviceProfile?: import("@opensteer/protocol").RunnerDeviceProfile;
     /**
      * The exact modules the computer redeeming this token may advertise.
@@ -971,6 +990,18 @@ export class OpensteerStore {
     return environmentStore.assignEnvironmentRunner(this.#database, environmentId, runnerId);
   }
 
+  /** The name of the computer a personal Deployment runs on; null on a team server. */
+  async homeComputerName(): Promise<string | null> {
+    const row = await this.#database
+      .selectFrom("runners")
+      .select("name")
+      .where("kind", "=", "main")
+      .where("ownerKind", "=", "deployment")
+      .where("revokedAt", "is", null)
+      .executeTakeFirst();
+    return row?.name ?? null;
+  }
+
   async countLiveThreadsByEnvironment(
     environmentIds: readonly EnvironmentId[],
   ): Promise<ReadonlyMap<EnvironmentId, number>> {
@@ -1026,6 +1057,7 @@ export class OpensteerStore {
     return threadStore.getAssignmentForOwner(this.#database, input);
   }
   async listThreadAssignmentsForOwner(input: {
+    readonly deviceAccessRequests?: "include";
     readonly before?: string;
     readonly maxBytes?: number;
     readonly maxItems?: number;
@@ -1514,7 +1546,7 @@ export class OpensteerStore {
   }
   async stopHeldRun(
     claims: Parameters<OpensteerStore["assertActiveGrant"]>[0],
-    reason: "limit" | "queued-input",
+    reason: "limit" | "queued-input" | "device-access",
   ): Promise<BackgroundDeadlineStop | null> {
     const stopped = await executionRecovery.stopHeldRun(
       this.#database,
@@ -1573,6 +1605,7 @@ export class OpensteerStore {
     });
   }
   async taskPageForUser(input: {
+    readonly deviceAccessRequests?: "include";
     readonly active?: boolean;
     readonly before?: string;
     readonly done?: boolean;
@@ -1595,6 +1628,7 @@ export class OpensteerStore {
     return snapshotStore.nodeEventPageForOwner(this.#database, input);
   }
   async threadEventPageForOwner(input: {
+    readonly deviceAccessRequests?: "include";
     readonly view?: "conversation";
     readonly placeEvents?: "include";
     readonly aroundMessageId?: MessageId;

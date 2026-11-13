@@ -32,7 +32,7 @@ import { Icon, type IconName } from "../../icon.js";
 import { LoadingRows } from "../../loading-rows.js";
 import { useDesktopPasswordsStatus } from "../../use-desktop-passwords-status.js";
 import { SettingsError, SettingsRow, type SettingsView } from "../primitives.js";
-import { useHomeComputer } from "./devices.js";
+import { useHomeComputer } from "../../devices/use-home-computer.js";
 
 type PasswordsBridge = Pick<
   OpensteerDesktopBridge,

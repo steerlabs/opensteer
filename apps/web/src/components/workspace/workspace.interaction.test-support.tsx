@@ -15,7 +15,7 @@ import { type HostClient, placeList, type PlaceItem } from "@opensteer/client/ho
 import { AppShell } from "../app-shell.js";
 import { AutomationDetailPage } from "../automations/automation-detail.js";
 import { AutomationsPage } from "../automations/automations-page.js";
-import { ComputersPage } from "../computers-page.js";
+import { DevicePage } from "../devices/device-page.js";
 import { HomeRoute } from "../home/home-route.js";
 import { SettingsRedirect } from "../settings/settings-redirect.js";
 import { SettingsSectionRoute, SettingsShell } from "../settings/settings-shell.js";
@@ -214,9 +214,7 @@ async function mount(
                     <Route path="automations/:triggerId" element={<AutomationDetailPage />} />
                     <Route
                       path="computers/*"
-                      element={
-                        <SettingsRedirect from="/computers" to="/settings/devices/computers" />
-                      }
+                      element={<SettingsRedirect from="/computers" to="/settings/devices" />}
                     />
                     <Route path="settings" element={<SettingsShell />}>
                       <Route
@@ -234,7 +232,8 @@ async function mount(
                         path="plugins/*"
                         element={<SettingsSectionRoute section="plugins" />}
                       />
-                      <Route path="devices/computers" element={<ComputersPage />} />
+                      <Route path="devices" element={<SettingsSectionRoute section="devices" />} />
+                      <Route path="devices/:deviceId" element={<DevicePage />} />
                       <Route path="teams/:teamId/:page" element={<SettingsTeamRoute />} />
                     </Route>
                   </Route>

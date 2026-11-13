@@ -1,3 +1,4 @@
+import { projectDeviceAccessAssignment } from "@opensteer/protocol";
 import {
   lockDeploymentEvents,
   withPersonalReadTransaction,
@@ -694,6 +695,7 @@ export async function listThreadAssignmentsForOwner(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly before?: string;
+    readonly deviceAccessRequests?: "include";
     readonly maxBytes?: number;
     readonly maxItems?: number;
     readonly open?: boolean;
@@ -751,7 +753,14 @@ export async function listThreadAssignmentsForOwner(
         base.select(({ fn }) => fn.countAll<string>().as("count")).executeTakeFirstOrThrow(),
       ]);
       const candidates = await Promise.all(
-        rows.slice(0, maxItems).map((row) => assignmentSummaryInTransaction(transaction, row)),
+        rows
+          .slice(0, maxItems)
+          .map(async (row) =>
+            projectDeviceAccessAssignment(
+              await assignmentSummaryInTransaction(transaction, row),
+              input.deviceAccessRequests === "include",
+            ),
+          ),
       );
       const window = boundedSerializedPrefix(candidates, maxItems, maxBytes);
       if (rows.length > 0 && window.items.length === 0) {

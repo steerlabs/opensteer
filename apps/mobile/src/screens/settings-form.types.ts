@@ -3,8 +3,6 @@ import type { AutomaticModelConfig, AutomaticModelRole, HarnessInstanceId } from
 import type { AutomaticModelsView } from "@opensteer/protocol";
 import type { DeploymentUpdateModel } from "./use-deployment-update.js";
 import type {
-  ComputerSettingsDestination,
-  ComputerSettingsRow,
   DeploymentSettingsModel,
   NotificationSettingsModel,
   PasswordsSettingsModel,
@@ -84,7 +82,6 @@ export interface SignInsSettingsActions {
 
 export interface SettingsFormActionHandlers {
   readonly onChooseModel?: (() => void) | undefined;
-  readonly onComputerAction: (destination: ComputerSettingsDestination) => void;
   readonly onDeploymentAction: () => void;
   readonly onEngineUpdate?: ((environmentId: string, driverKind: string) => void) | undefined;
   readonly onNotificationAction: () => void;
@@ -104,8 +101,6 @@ export interface QuietTasksSetting {
 
 export interface SettingsFormProps extends SettingsFormActionHandlers {
   readonly page?: SettingsPage;
-  /** Where the open Opensteer runs and its computers; empty while none is open. */
-  readonly computers: readonly ComputerSettingsRow[];
   readonly deployment: DeploymentSettingsModel;
   /** Null when there is no open Deployment, or its Host refuses this person. */
   readonly desktopUpdate: DeploymentUpdateModel | null;

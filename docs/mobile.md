@@ -150,16 +150,15 @@ use the store.
 
 The Runner's Ed25519 key and enrollment token live only in the Keychain
 (`WhenUnlockedThisDeviceOnly`, not synchronized); JavaScript never sees the key, the token after
-enrollment, tickets or signatures. Discovery must name the same Deployment and Host instance before
-a token or proof is sent, and redirects are refused. The enrollment marker is excluded from backup;
+enrollment or runner authentication/ticket proofs. Only the scoped session-binding and leave
+signatures cross the native bridge; they never expose the signing key. Discovery must name the
+same Deployment and Host instance before a token or proof is sent, and redirects are refused. The enrollment marker is excluded from backup;
 a missing marker wipes the Keychain items, and removal clears the marker first so a failed Keychain
 delete cannot restore sharing.
 
 Only a live stream with an unexpired lease admits work; a write crosses a second fence right before
 the EventKit save, and a lost write answer is never replayed. Backgrounding closes admission and
-drains admitted work. Sign-out, removal of the enrolled Deployment, Account sign-out and catalog
-removal call native disconnect before their first await, and a failed Host revocation cannot undo
-that stop. Switching the viewed Deployment never moves or stops the enrolled iPhone.
+drains admitted work. Switching the viewed Deployment never moves or stops the enrolled iPhone.
 
 Only a person's action prompts for iOS permission or approves agent access. OS permission and
 Host approval are separate; neither widens the other. Calendar and Reminders need full access,
@@ -170,10 +169,41 @@ Enrollment and OS prompts need the iPhone; the owner can approve from any signed
 Read back uncertain approval outcomes rather than submitting again. Lowering or revocation works
 while the phone is offline, stops future use and cannot undo returned data.
 
+## This phone as a device
+
+A phone becomes one of a personal Opensteer's devices only through Set up, which follows sign-in
+and asks the OS nothing before Continue. Native storage holds one identity, so a phone belongs to
+one Opensteer; moving it to another is an explicit leave there, never automatic.
+
+Sign-out is the device's leave. Native admission stops synchronously, before push cleanup or
+network work. The signed obligation must reach durable storage before key/profile erasure can
+start; a signing or storage failure returns an error and retains the identity in a non-admitting
+leave state. Obligations are keyed by runner identity, so moving to another Opensteer cannot replace
+an earlier offline leave. Each survives restart until removal is confirmed.
+
+Setup records the Host's advertised `devices-v1` support and pinned route before issuance. New
+Hosts receive the prepared runner ID and public key. The durable leave retains that public key
+after private-key erasure, so the Host can retire even an issuance that never committed and reject
+a late mint or redemption. A prepared identity whose issuance never started needs only local
+cleanup. On older Hosts, uncertain issuance replays the original issuance intent to recover its
+receipt before authenticated retirement; enrolled identities use authenticated revoke.
+Older obligations lacking recovery fields stay unconfirmed. An HTTP 404 never selects that
+compatibility path or clears an obligation. Session binding survives viewing another Deployment;
+a confirmed leave accepts an already-ended session and revokes only a still-live unbound session.
+
+Native storage remembers 4010 removal before erasure, carries its Deployment after enrollment
+vanishes, and exposes it before restored attachments may authorize. It stays until Set up again.
+Removal drops the local session, saved views and preview keys without another revoke. Losing a
+session, including cold-start natural expiry, keeps the identity and requires explicit Sign in
+again. A pending or expired enrollment stays unfinished, with resume/remint and cancellation;
+it never counts as ready.
+
 ## Notifications
 
 Alerts are best effort; conversations are durable. Muting suppresses replies and failures, never
-Requests. Provider acceptance proves neither display nor reading, and sent alerts cannot be
+Requests. Off, chosen in setup or by turning every alert off, is a durable preference: the phone
+never asks the OS for permission while it holds, and setup's Ready reports permission and
+registration as they settled. Provider acceptance proves neither display nor reading, and sent alerts cannot be
 recalled.
 
 Phone push needs an Account channel and raw APNs or FCM tokens. The Account gets routing

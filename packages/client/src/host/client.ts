@@ -922,6 +922,8 @@ export interface HostSnapshot {
   browserProfileManageAvailable?: boolean;
   searchSuggestionsAvailable?: boolean;
   iphoneAppsAvailable: boolean;
+  /** The Host serves `devices-v1`: device setup choices, session binding and the Browser and Apps switches. */
+  devicesAvailable?: boolean;
   ownerViewWindowsAvailable?: boolean;
   /** The Host advertises voice-run-v1: a call's agent runs as a Run with Opensteer's tools. */
   voiceAvailable?: boolean;
@@ -1340,6 +1342,10 @@ export interface HostClient {
     selection: Pick<ExecutionSelection, "harnessInstanceId" | "modelSelection">,
     continuation?: { expectedProviderSessionId: string | null },
   ): Promise<ThreadSummary>;
+  bindDeviceSession(input: {
+    readonly machineId: string;
+    readonly proof: import("@opensteer/protocol").DeviceSessionBindingProof;
+  }): Promise<void>;
   updateMachineAccess(input: {
     readonly expectedRevision: number;
     readonly policy: MachineAccessPolicy;

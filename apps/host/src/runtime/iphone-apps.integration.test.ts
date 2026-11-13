@@ -895,9 +895,14 @@ integration.sequential("iPhone integrations Host contract", () => {
       async () =>
         (await machines(host)).find(({ id }) => id === phone.runnerId)?.status === "offline",
     );
-    expect(
-      toolText(await gateway.callRaw("integration_call", { arguments: {}, ...phoneReadAddress })),
-    ).toBe(offline("Test iPhone"));
+    const offlineCall = await gateway.callRaw("integration_call", {
+      arguments: {},
+      ...phoneReadAddress,
+    });
+    expect(offlineCall).toMatchObject({ isError: true });
+    expect(toolText(offlineCall)).toBe(
+      `device-offline: machineId=${phone.runnerId}, capability=apps. Device is offline. Do not request access.`,
+    );
     expect(macCalls).toHaveLength(0);
     await writeFile(
       join(directory, "invocations.json"),

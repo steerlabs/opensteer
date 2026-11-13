@@ -395,6 +395,7 @@ export type HostCapabilityReader = (options?: {
 }) => Promise<readonly HostCapability[]>;
 
 export interface HttpHostClientOptions {
+  readonly deviceAccessRequests?: "include";
   readonly streamCache?: PersonalStreamCache;
   readonly passkeys?: BrowserPasskeyPort;
   /** The viewer's command platform for exact baseline shortcut projection. */
@@ -861,6 +862,9 @@ export class HttpHostClient {
     read: async (input) => {
       const page = unwrapRpcResult(
         await this.rpc["node.events.list"]({
+          ...(this.#supportsDeviceAccessRequests()
+            ? { deviceAccessRequests: "include" as const }
+            : {}),
           ...(this.#capabilities?.includes("tool-output-detail-v1")
             ? { toolOutputs: "preview" as const }
             : {}),
@@ -929,8 +933,10 @@ export class HttpHostClient {
 
   #snapshot: HostSnapshot = emptySnapshot();
 
+  readonly #deviceAccessRequests: boolean;
   readonly #viewerPlatform: "mac" | "pc" | null;
   constructor(options: HttpHostClientOptions) {
+    this.#deviceAccessRequests = options.deviceAccessRequests === "include";
     this.#streamCache = options.streamCache;
     this.browserPasskeys = new BrowserPasskeys(options.passkeys);
     this.#viewerPlatform = options.viewerPlatform ?? null;
@@ -1044,6 +1050,7 @@ export class HttpHostClient {
       searchSuggestionsAvailable:
         this.#capabilities?.includes("browser-search-suggestions-v1") === true,
       iphoneAppsAvailable: this.#capabilities?.includes("iphone-apps-v1") === true,
+      devicesAvailable: this.#capabilities?.includes("devices-v1") === true,
       voiceAvailable: this.#capabilities?.includes("voice-run-v1") === true,
 
       ownerViewWindowsAvailable: this.#capabilities?.includes("ownerViewWindows") === true,
@@ -1156,6 +1163,15 @@ export class HttpHostClient {
     const parsedCommand = hostApi["commands.dispatch"].payload.parse(
       browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes),
     );
+    const needsDevices =
+      parsedCommand.type === "machine.session.bind" ||
+      (parsedCommand.type === "machine.access.update" &&
+        (parsedCommand.policy.browser !== undefined || parsedCommand.policy.apps !== undefined)) ||
+      ((parsedCommand.type === "runner.enrollment.createLocal" ||
+        parsedCommand.type === "runner.enrollment.createPhone") &&
+        parsedCommand.access !== undefined);
+    if (needsDevices && !this.#capabilities?.includes("devices-v1"))
+      throw new Error("Update this Opensteer to use device setup and access switches.");
     if (parsedCommand.type === "thread.icon.set") {
       if (!this.#snapshot.taskMarksAvailable)
         throw new Error("This Host does not support task marks.");
@@ -1865,6 +1881,9 @@ export class HttpHostClient {
       try {
         response = unwrapRpcResult(
           await this.rpc["thread.assignments.list"]({
+            ...(this.#supportsDeviceAccessRequests()
+              ? { deviceAccessRequests: "include" as const }
+              : {}),
             threadId,
             limit: 100,
             ...(open ? { open } : {}),
@@ -2231,6 +2250,9 @@ export class HttpHostClient {
         ...(this.#capabilities?.includes("tool-output-detail-v1")
           ? { toolOutputs: "preview" as const }
           : {}),
+        ...(this.#supportsDeviceAccessRequests()
+          ? { deviceAccessRequests: "include" as const }
+          : {}),
         ...(this.#capabilities?.includes("place-events-v1")
           ? { placeEvents: "include" as const }
           : {}),
@@ -2577,6 +2599,9 @@ export class HttpHostClient {
       await this.rpc["thread.events.list"]({
         ...(this.#capabilities?.includes("tool-output-detail-v1")
           ? { toolOutputs: "preview" as const }
+          : {}),
+        ...(this.#supportsDeviceAccessRequests()
+          ? { deviceAccessRequests: "include" as const }
           : {}),
         ...(this.#capabilities?.includes("place-events-v1")
           ? { placeEvents: "include" as const }
@@ -2989,6 +3014,18 @@ export class HttpHostClient {
    * machines are read back rather than patched: `activeSessions` is the Host's
    * answer about live sessions and this client has no standing to guess it.
    */
+  async bindDeviceSession(input: {
+    readonly machineId: string;
+    readonly proof: import("@opensteer/protocol").DeviceSessionBindingProof;
+  }): Promise<void> {
+    const result = await this.dispatch({
+      ...input,
+      idempotencyKey: globalThis.crypto.randomUUID(),
+      type: "machine.session.bind",
+    });
+    if (result.type !== "machine.session.bind") throw new Error("Device binding command mismatch.");
+  }
+
   async updateMachineAccess(input: {
     readonly expectedRevision: number;
     readonly policy: MachineAccessPolicy;
@@ -3211,7 +3248,13 @@ export class HttpHostClient {
       generation = this.#viewerGeneration;
     if (!held?.window.hasMore || !held.window.nextBefore) return;
     const page = unwrapRpcResult(
-      await this.rpc["needsYou.get"]({ before: held.window.nextBefore, limit: 50 }),
+      await this.rpc["needsYou.get"]({
+        before: held.window.nextBefore,
+        limit: 50,
+        ...(this.#supportsDeviceAccessRequests()
+          ? { deviceAccessRequests: "include" as const }
+          : {}),
+      }),
     );
     if (generation !== this.#viewerGeneration || this.#disposed || this.#snapshot.needsYou !== held)
       return;
@@ -3225,9 +3268,17 @@ export class HttpHostClient {
     });
   }
 
+  #supportsDeviceAccessRequests(): boolean {
+    return this.#deviceAccessRequests && this.#capabilities?.includes("devices-v1") === true;
+  }
+
   async #readWaitingRequests(): Promise<void> {
     const needsGeneration = this.#viewerGeneration;
-    const needsYou = unwrapRpcResult(await this.rpc["needsYou.get"]({}));
+    const needsYou = unwrapRpcResult(
+      await this.rpc["needsYou.get"](
+        this.#supportsDeviceAccessRequests() ? { deviceAccessRequests: "include" } : {},
+      ),
+    );
     if (needsGeneration !== this.#viewerGeneration || this.#disposed) return;
     this.#update({ ...this.#snapshot, needsYou });
     const generation = this.#viewerGeneration;
@@ -3239,7 +3290,13 @@ export class HttpHostClient {
         readonly requests: readonly WaitingRequest[];
         readonly window: DurableWindow;
       } = unwrapRpcResult(
-        await this.rpc["requests.list"]({ ...(before ? { before } : {}), limit: 100 }),
+        await this.rpc["requests.list"]({
+          ...(before ? { before } : {}),
+          limit: 100,
+          ...(this.#supportsDeviceAccessRequests()
+            ? { deviceAccessRequests: "include" as const }
+            : {}),
+        }),
       );
       if (!this.#viewerStillCurrent(generation, userId)) return;
       waitingRequests.push(...page.requests);
@@ -3365,6 +3422,9 @@ export class HttpHostClient {
       for (let pageNumber = 0; pageNumber < 20; pageNumber++) {
         const page = unwrapRpcResult(
           await this.rpc["tasks.list"]({
+            ...(this.#supportsDeviceAccessRequests()
+              ? { deviceAccessRequests: "include" as const }
+              : {}),
             ...(scope === "active" ? { active: true } : scope ? { done: true } : {}),
             ...(before ? { before } : {}),
             limit: threadPageMaxItems,
@@ -3464,6 +3524,7 @@ export class HttpHostClient {
       browserProfileManageAvailable: capabilities.includes("browser-profile-manage-v1"),
       searchSuggestionsAvailable: capabilities.includes("browser-search-suggestions-v1"),
       iphoneAppsAvailable: capabilities.includes("iphone-apps-v1"),
+      devicesAvailable: capabilities.includes("devices-v1"),
       voiceAvailable: capabilities.includes("voice-run-v1"),
       ownerViewWindowsAvailable: capabilities.includes("ownerViewWindows"),
     });
@@ -3995,6 +4056,7 @@ export class HttpHostClient {
             // an upgraded Host refuses the stream before sending an event this
             // app would read with the wrong meaning.
             apiVersion: hostApiVersion,
+            ...(this.#supportsDeviceAccessRequests() ? { deviceAccessRequests: "include" } : {}),
             ...(this.#capabilities?.includes("person-show-v1") ? { personShow: "accept" } : {}),
             ...(this.#capabilities?.includes("tool-output-detail-v1")
               ? { toolOutputs: "preview" }
@@ -5042,6 +5104,9 @@ export class HttpHostClient {
         readonly window: DurableWindow;
       } = unwrapRpcResult(
         await this.rpc["thread.requests.list"]({
+          ...(this.#supportsDeviceAccessRequests()
+            ? { deviceAccessRequests: "include" as const }
+            : {}),
           ...(before ? { before } : {}),
           limit: 100,
           threadId,
@@ -5436,6 +5501,7 @@ export class HttpHostClient {
       searchSuggestionsAvailable:
         this.#capabilities?.includes("browser-search-suggestions-v1") === true,
       iphoneAppsAvailable: this.#capabilities?.includes("iphone-apps-v1") === true,
+      devicesAvailable: this.#capabilities?.includes("devices-v1") === true,
       voiceAvailable: this.#capabilities?.includes("voice-run-v1") === true,
       ownerViewWindowsAvailable: this.#capabilities?.includes("ownerViewWindows") === true,
       threads:

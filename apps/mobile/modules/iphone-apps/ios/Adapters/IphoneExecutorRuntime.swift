@@ -43,6 +43,7 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
   private var browserActive = false
   private var browserErasureInFlight = false
   private var enrollmentStopped = false
+  private var lifecycleReady = false
 
   private init() {
     // The executor exists before JS. A locked phone defers Keychain reads until
@@ -64,19 +65,25 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     let supported = UIDevice.current.userInterfaceIdiom == .phone && !ProcessInfo.processInfo.isiOSAppOnMac
     let unsupportedReason: String? = supported ? nil : "not-iphone"
     let enrollment: [String: Any?]?
-    if let identity, identity.state != .prepared, identity.browserErasurePending != true {
+    if let identity, (identity.state != .prepared || identity.issuanceStarted == true), identity.browserErasurePending != true {
       enrollment = ["deploymentId": identity.deploymentId,
         "deploymentName": identity.deploymentName,
         "runnerId": identity.runnerId, "name": identity.name,
-        "state": identity.state.rawValue, "enrollmentId": identity.enrollmentId,
+        "state": identity.state == .prepared ? "pending" : identity.state.rawValue, "enrollmentId": identity.enrollmentId,
         "hostUrl": identity.hostUrl]
     } else { enrollment = nil }
-    return ["revision": revision, "supported": supported, "unsupportedReason": unsupportedReason,
+    return ["lifecycleReady": lifecycleReady, "revision": revision, "supported": supported, "unsupportedReason": unsupportedReason,
       "deviceName": UIDevice.current.name, "enrollment": enrollment,
       "connection": connection, "retryAt": retryAt, "issue": issue.map(Self.issueCode),
       "issueMessage": issueMessage,
       "permissions": Dictionary(uniqueKeysWithValues: InvokeRules.apps.map { ($0, (permissionStates[$0] ?? .notDetermined).rawValue) }),
       "locationAccuracy": locationAccuracy,
+      "removedFrom": (try? storage?.removedFrom()).flatMap { $0 }.map {
+        ["deploymentId": $0.deploymentId, "deploymentName": $0.deploymentName]
+      },
+      "pendingLeaves": (try? storage?.pendingLeaves()).flatMap { $0 }.map { leaves in
+        leaves.map { $0.publicSnapshot }
+      } ?? [],
       "working": gate?.inFlight ?? 0]
   }
 
@@ -102,11 +109,16 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
 
   private func loadIdentity() {
     do {
-      let storage = try IdentityStore(vault: IphoneKeychainVault(), record: IphoneSandboxRecord())
+      let storage = try IdentityStore(vault: IphoneKeychainVault(), record: IphoneSandboxRecord(),
+        leaveRecord: IphoneSandboxRecord(name: "leave.json"), removedRecord: IphoneSandboxRecord(name: "removed.json"))
+      lock.lock(); self.storage = storage; lock.unlock()
+      _ = try storage.removedFrom()
       let loaded = try storage.load()
       lock.lock()
+      lifecycleReady = true
       self.storage = storage
       identity = loaded
+      enrollmentStopped = loaded?.leaveRequested == true
       if let loaded {
         let authority = AdmissionGate(runnerId: loaded.runnerId, bootId: bootId, clock: clock)
         gate = authority
@@ -129,7 +141,7 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
 
   func becameActive() {
     guard UIDevice.current.userInterfaceIdiom == .phone && !ProcessInfo.processInfo.isiOSAppOnMac else { return }
-    if storage == nil { loadIdentity() }
+    if !lifecycleReady { loadIdentity() }
     lock.lock()
     let browserWasInactive = !browserActive
     browserActive = true
@@ -225,6 +237,9 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     guard let storage else { throw IphoneRuntimeError.busy }
     let prepared = try storage.prepare(deploymentId: deploymentId)
     let loaded = try storage.load()
+    if loaded?.state == .pending {
+      return ["runnerId": prepared.runnerId, "mintKey": prepared.mintKey, "publicKeyPem": try storage.runnerPublicKey()]
+    }
     lock.lock()
     connectionTask?.cancel(); connectionTask = nil
     gate?.disconnect(); dispatcher?.cancelAll()
@@ -238,7 +253,7 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     lock.unlock()
     closeSockets()
     publish()
-    return ["runnerId": prepared.runnerId, "mintKey": prepared.mintKey]
+    return ["runnerId": prepared.runnerId, "mintKey": prepared.mintKey, "publicKeyPem": try storage.runnerPublicKey()]
   }
 
   func enroll(pairing: [String: String], enrollmentId: String, token: String,
@@ -293,6 +308,47 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     reconnect()
   }
 
+  func beginIssuance(pairing: [String: String], devicesV1: Bool, name: String) throws {
+    lock.lock(); defer { lock.unlock() }
+    guard foreground, !enrollmentStopped, let storage else { throw IphoneRuntimeError.notForeground }
+    _ = try HostTarget(pairing["hostUrl"] ?? "")
+    try storage.beginIssuance(deploymentId: pairing["deploymentId"] ?? "",
+      deploymentName: pairing["deploymentName"] ?? "", hostInstanceId: pairing["hostInstanceId"] ?? "",
+      hostUrl: pairing["hostUrl"] ?? "", devicesV1: devicesV1, name: name)
+    identity = try storage.load()
+  }
+
+  func clearRemoved() throws { try storage?.clearRemoved(); publish() }
+
+  func leave() throws -> [String: String?] {
+    lock.lock(); defer { lock.unlock() }
+    guard let storage else { throw IdentityStoreError.missingIdentity }
+    var ids: [String: String?] = [:]
+    let persisted = try storage.leave(issuedAt: ISO8601DateFormatter.leave.string(from: Date()), fence: {
+      enrollmentStopped = true
+      gate?.disconnect(); dispatcher?.cancelAll()
+      connectionTask?.cancel(); connectionTask = nil
+      closeSockets()
+      IphoneBrowserTransport.shared.offline(reason: "leaving")
+    }, erase: { ids = disconnect() })
+    ids["leave"] = persisted ? "persisted" : nil
+    return ids
+  }
+
+  func completeLeave(runnerId: String) throws {
+    lock.lock(); let storage = self.storage; lock.unlock()
+    try storage?.completeLeave(runnerId: runnerId)
+    publish()
+  }
+
+  func signSessionBinding(deploymentId: String, sessionId: String) throws -> [String: String] {
+    lock.lock(); defer { lock.unlock() }
+    guard let storage else { throw IdentityStoreError.missingIdentity }
+    let issuedAt = ISO8601DateFormatter.leave.string(from: Date())
+    let signed = try storage.signSessionBinding(deploymentId: deploymentId, sessionId: sessionId, issuedAt: issuedAt)
+    return ["runnerId": signed.runnerId, "issuedAt": issuedAt, "signature": signed.signature]
+  }
+
   func disconnect() -> [String: String?] {
     IphoneBrowserTransport.shared.offline(reason: "enrollment-removed")
     lock.lock()
@@ -302,7 +358,7 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
     dispatcher?.cancelAll()
     connectionTask?.cancel(); connectionTask = nil
     dispatcher = nil
-    connection = "stopped"; issue = nil
+    connection = "stopped"; if issue != .removed { issue = nil }
     do {
       if identity != nil { identity = try storage?.markBrowserErasurePending() }
     }
@@ -472,10 +528,15 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
           }
         } else { policy.validFrame() }
         if failure.issue == .removed {
-          _ = disconnect()
           lock.lock()
-          if gate === authority {
-            issue = .removed; issueMessage = failure.message; connection = "stopped"
+          do {
+            try storage?.markRemoved()
+            issue = .removed; issueMessage = failure.message
+            _ = disconnect()
+          } catch {
+            enrollmentStopped = true; gate?.disconnect(); dispatcher?.cancelAll()
+            issue = .failed; connection = "stopped"
+            closeSockets()
           }
           lock.unlock(); publish()
           break
@@ -972,4 +1033,12 @@ private final class IphoneHostClock {
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     return formatter.string(from: date)
   }
+}
+
+private extension ISO8601DateFormatter {
+  static let leave: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+  }()
 }

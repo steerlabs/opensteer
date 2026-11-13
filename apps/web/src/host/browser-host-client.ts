@@ -28,6 +28,7 @@ export interface BrowserHostClientOptions {
  */
 export function createBrowserHostClient(options: BrowserHostClientOptions): HttpHostClient {
   return new HttpHostClient({
+    deviceAccessRequests: "include",
     ...(options.passkeys ? { passkeys: options.passkeys } : {}),
     capabilities: options.capabilities ?? null,
     baseUrl: options.baseUrl ?? window.location.origin,

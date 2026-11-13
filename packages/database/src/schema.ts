@@ -192,6 +192,7 @@ export interface NotificationPreviewKeyTable {
 }
 
 export interface AuthSessionTable {
+  deviceId: Generated<RunnerId | null>;
   memberGeneration: ColumnType<string | null, string | null | undefined, string | null>;
   id: AuthSessionId;
   userId: UserId;
@@ -616,6 +617,11 @@ interface ExecutionEnvironmentTable {
 }
 
 interface RunnerEnrollmentTable {
+  initialAccess: Generated<import("@opensteer/protocol").DeviceInitialAccess | null>;
+  preparedIdentity: Generated<{
+    readonly runnerId: RunnerId;
+    readonly publicKeyPem: string;
+  } | null>;
   issuanceModules: Generated<readonly RunnerModuleName[] | null>;
   deviceProfile: Generated<"iphone" | null>;
   id: string;
@@ -1207,6 +1213,7 @@ export interface AgentControlRequestTable {
   sourceThreadId: ThreadId;
   action:
     | "assignment.cancel"
+    | "device.access.request"
     | "machine.full-disk-access.request"
     | "browser.access.request"
     | "browser.profile.create"
@@ -1233,6 +1240,7 @@ export interface AgentControlRequestTable {
   actionClass:
     | "person.show"
     | "assignment.cancel"
+    | "device.access.request"
     | "machine.full-disk-access.request"
     | "browser.access.request"
     | "browser.profile.create"
@@ -1937,6 +1945,7 @@ export interface AgentConnectionTable {
 }
 
 export interface DatabaseSchema {
+  deviceSetupRetirements: { runnerId: RunnerId; publicKeyPem: string };
   agentHomeSkillInventory: {
     computerId: RunnerId;
     environmentId: EnvironmentId;

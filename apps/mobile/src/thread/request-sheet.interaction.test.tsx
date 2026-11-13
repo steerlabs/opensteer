@@ -654,6 +654,126 @@ describe("RequestSheetContent external requests", () => {
     );
   });
 
+  it("turns a device's switch on in the Host change that fulfils it, or leaves it off", async () => {
+    const request = deviceAccessRequest();
+    const policy = {
+      apps: false,
+      browser: true,
+      commands: false,
+      forwarding: false,
+      reach: "owner" as const,
+      shares: [],
+    };
+    const laptop = {
+      access: { activeSessions: [], ownerReachAvailable: true, policy, revision: 7 },
+      id: "rnr_00000000-0000-4000-8000-000000000001",
+      name: "MacBook Pro (2)",
+    } as unknown as MachineSummary;
+    const dispatch = vi.fn(async (command: { type: string }) => ({
+      outcome: "updated",
+      revision: 8,
+      type: command.type,
+    }));
+    await render(surface(request), dispatch, { machines: [laptop] });
+    expect(text()).toContain("Let your agent use Apps on MacBook Pro (2)?");
+    await click("Turn it on");
+    expect(dispatch).toHaveBeenCalledWith({
+      expectedRevision: 7,
+      idempotencyKey: expect.any(String),
+      policy: { reach: policy.reach, commands: false, forwarding: false, shares: [], apps: true },
+      runnerId: laptop.id,
+      type: "machine.access.update",
+    });
+    expect(dispatch).not.toHaveBeenCalledWith(expect.objectContaining({ type: "request.respond" }));
+
+    resetRequestSessionsForTests();
+    const declining = vi.fn(async () => ({ type: "request.respond" }));
+    await render(surface(deviceAccessRequest()), declining, { machines: [laptop] });
+    await click("Not now");
+    expect(declining).toHaveBeenCalledWith({
+      idempotencyKey: expect.any(String),
+      requestId: request.id,
+      response: { kind: "external", value: { decision: "declined" } },
+      type: "request.respond",
+    });
+  });
+
+  it("keeps a stale device Request answerable until a refreshed update succeeds", async () => {
+    const request = deviceAccessRequest();
+    if (request.payload.kind !== "device.access") throw new Error("Expected device Request");
+    const machine = {
+      id: request.payload.machineId,
+      access: {
+        revision: 7,
+        policy: { reach: "nobody", commands: false, forwarding: false, shares: [] },
+      },
+    } as unknown as MachineSummary;
+    let succeeds = false;
+    const dispatch = vi.fn(async () => ({
+      type: "machine.access.update",
+      outcome: succeeds ? "updated" : "conflict",
+      revision: machine.access!.revision + 1,
+    }));
+    const refresh = vi.fn(async () => {
+      machine.access!.revision += 1;
+      machine.access!.policy.shares = [{ path: "/current", mode: "read" }];
+    });
+    await render(surface(request), dispatch, { machines: [machine], refresh });
+    await click("Turn it on");
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(dispatch).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        expectedRevision: 8,
+        policy: expect.objectContaining({ shares: [{ path: "/current", mode: "read" }] }),
+      }),
+    );
+    expect(refresh).toHaveBeenCalled();
+    expect(text()).toContain("Could not confirm your answer was sent.");
+    expect(button("Turn it on").disabled).toBe(false);
+    succeeds = true;
+    await click("Turn it on");
+    expect(dispatch).toHaveBeenLastCalledWith(
+      expect.objectContaining({ expectedRevision: machine.access!.revision }),
+    );
+    expect(text()).not.toContain("Turn it on");
+  });
+
+  it("restores Files without enabling commands or forwarding", async () => {
+    const request = deviceAccessRequest();
+    if (request.payload.kind !== "device.access") throw new Error("Expected device Request");
+    const files = { ...request, payload: { ...request.payload, access: "files" as const } };
+    const laptop = {
+      id: request.payload.machineId,
+      access: {
+        revision: 7,
+        policy: {
+          reach: "nobody",
+          commands: false,
+          forwarding: false,
+          shares: [{ path: "/read-only", mode: "read" }],
+        },
+      },
+    } as unknown as MachineSummary;
+    const dispatch = vi.fn(async () => ({
+      type: "machine.access.update",
+      outcome: "updated",
+      revision: 8,
+    }));
+    await render(surface(files), dispatch, { machines: [laptop] });
+    await click("Turn it on");
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        policy: {
+          reach: "owner",
+          commands: false,
+          forwarding: false,
+          shares: [{ path: "/read-only", mode: "read" }],
+        },
+      }),
+    );
+  });
+
   it("keeps requester-only decline unavailable to another viewer", async () => {
     const dispatch = vi.fn(async () => ({ type: "request.respond" }));
     await render(surface(fullDiskAccessRequest(), "requester"), dispatch);
@@ -818,7 +938,7 @@ async function settle(): Promise<void> {
 
 async function render(
   model: SurfaceModel,
-  dispatch: ReturnType<typeof vi.fn>,
+  dispatch: (command: { readonly type: string; readonly [key: string]: unknown }) => unknown,
   options: {
     readonly root?: Root;
     readonly canRespond?: boolean;
@@ -828,6 +948,7 @@ async function render(
     readonly passwordRead?: ReturnType<typeof vi.fn>;
     readonly reason?: boolean;
     readonly review?: ReturnType<typeof vi.fn>;
+    readonly refresh?: () => Promise<void>;
     readonly snapshot?: object;
   } = {},
 ): Promise<void> {
@@ -838,6 +959,7 @@ async function render(
   // The sheet is a route: closing it unmounts it, and opening it is a new mount.
   latest = () => render(model, dispatch, { ...options, root });
   const snapshot = {
+    machines: options.machines ?? [],
     harnesses: [],
     identityConfig: { deployment: { name: "Alex’s Opensteer" } },
     threads: [],
@@ -854,9 +976,15 @@ async function render(
           {
             dispatch,
             load: async () => undefined,
-            refresh: async () => undefined,
+            refresh: options.refresh ?? (async () => undefined),
             subscribe: () => () => undefined,
             getSnapshot: () => snapshot,
+            updateMachineAccess: async (input: {
+              runnerId: string;
+              expectedRevision: number;
+              policy: object;
+            }) =>
+              dispatch({ ...input, type: "machine.access.update", idempotencyKey: "test-access" }),
             rpc: {
               "browser.sources.inspect": options.inspect ?? vi.fn(),
               "browser.password-sign-in.get":
@@ -1034,6 +1162,26 @@ function fullDiskAccessRequest(): Request {
       kind: "external",
       subject: { id: "rnr_00000000-0000-4000-8000-000000000001", kind: "machine" },
       title: "Allow macOS permission on Build Mac",
+    },
+  } as Request;
+}
+
+function deviceAccessRequest(): Request {
+  return {
+    ...requestBase(),
+    kind: "device.access",
+    payload: {
+      access: "apps",
+      kind: "device.access",
+      machineId: "rnr_00000000-0000-4000-8000-000000000001",
+      machineName: "MacBook Pro (2)",
+      reason: "Open Numbers to update the budget",
+    },
+    presentation: {
+      detail: "Open Numbers to update the budget",
+      kind: "external",
+      subject: { id: "rnr_00000000-0000-4000-8000-000000000001", kind: "device.access" },
+      title: "Let your agent use Apps on MacBook Pro (2)?",
     },
   } as Request;
 }

@@ -32,7 +32,9 @@ it("shows persisted pending administration in the shared client and stops observ
       (session) => session.current,
     )!;
     await removeHostSession(host, own.id);
-    expect(unwrapRpcResult(await host.rpc["sessions.list"]({})).sessions).toEqual([]);
+    expect(
+      unwrapRpcResult(await host.rpc["sessions.list"]({})).sessions.map((session) => session.id),
+    ).not.toContain(own.id);
   } finally {
     stop();
     host.dispose();

@@ -7847,6 +7847,42 @@ describe("HttpHostClient Thread state reconciliation", () => {
     }
   });
 
+  it.each([
+    ["absent", undefined],
+    ["listed without devices-v1", ["task-marks-v1"]],
+  ] as const)(
+    "offers device switches only to a Host that says devices-v1 (capabilities %s)",
+    async (_label, capabilities) => {
+      const workspace = makeDeployment();
+      const dispatched: string[] = [];
+      const client = createHttpHostClient({
+        ...(capabilities ? { capabilities: [...capabilities] } : {}),
+        refreshIntervalMs: 0,
+        webSocketFactory: () => new FakeSocket(),
+        fetch: async (input, init) => {
+          const url = new URL(input instanceof Request ? input.url : String(input));
+          if (url.pathname === "/v1/rpc/commands.dispatch")
+            dispatched.push(String(rpcPayload(url, init).type));
+          return json(bootstrap([workspace]));
+        },
+      });
+      try {
+        await client.load();
+        expect(client.getSnapshot().devicesAvailable).toBe(false);
+        await expect(
+          client.updateMachineAccess({
+            runnerId: "rnr_33333333-3333-4333-8333-333333333333",
+            expectedRevision: 1,
+            policy: { reach: "owner", commands: true, forwarding: true, shares: [], apps: false },
+          }),
+        ).rejects.toThrow("Update this Opensteer");
+        expect(dispatched).toEqual([]);
+      } finally {
+        client.dispose();
+      }
+    },
+  );
+
   it("remembers a hydrated title when a legacy state event arrived before the Thread was loaded", async () => {
     const workspace = makeDeployment();
     const thread = makeThread(workspace.id);

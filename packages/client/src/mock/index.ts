@@ -8,3 +8,4 @@ export * from "./mock-desktop-updates.js";
 
 export { mockSubagentScenes, type MockSubagentScene } from "./mock-subagent-scenes.js";
 export * from "./mock-personal-host.js";
+export { mockDeviceAccessRequest } from "./mock-devices.js";

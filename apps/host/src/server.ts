@@ -1,3 +1,16 @@
+import type { DeviceAccessService } from "./administration/device-access-service.js";
+import { consumeAnonymousRateLimit } from "./identity/anonymous-rate-limit.js";
+import {
+  deviceAccess,
+  isDeviceAccessRequestEvent,
+  projectDeviceAccessRequestEvent,
+} from "@opensteer/protocol";
+import {
+  deviceMembershipTurn,
+  removeSignedDevice,
+  signOutDeviceSession,
+} from "./administration/device-removal.js";
+import { RunnerLeaveRequestSchema, RunnerLeaveResponseSchema } from "@opensteer/protocol";
 import { findPersonalSettings, requirePersonalOwner, needsYouPage } from "@opensteer/database";
 import type { PersonalExecution } from "./runtime/personal-execution.js";
 import type { PersonalTeamLinks } from "./team-links/service.js";
@@ -359,6 +372,7 @@ export interface HostServerDependencies {
   readonly runToolTokens: import("./agents/run-tool-tokens.js").RunToolTokenService;
   readonly agentTools: OpensteerMcpService;
   readonly authenticator: HostAuthenticator;
+  readonly deviceAccess: DeviceAccessService;
   readonly machineFullDiskAccess: MachineFullDiskAccessService;
   readonly browser: BrowserService;
   readonly browserTabs: BrowserTabGroupService;
@@ -939,11 +953,7 @@ export async function createHostServer(
     // owner. They are not a `shell` fact: a computer can lend one app without
     // accepting connections at all, so ownership is resolved for every machine
     // that advertises either module.
-    const manageable = active.filter(
-      (runner) =>
-        runner.moduleDescriptors.shell !== undefined ||
-        runner.moduleDescriptors.integrations !== undefined,
-    );
+    const manageable = active;
     const ownership =
       manageable.length === 0
         ? new Map<RunnerId, MachineOwnershipRecord>()
@@ -996,24 +1006,26 @@ export async function createHostServer(
     }
     const access = new Map<string, MachineAccessView>(
       await Promise.all(
-        managed
-          .filter((runner) => runner.moduleDescriptors.shell !== undefined)
-          .map(async (runner): Promise<[string, MachineAccessView]> => {
-            const stored = await dependencies.store.listActiveShellSessions(runner.id);
-            // The row's counters are zero until a session ends, so the live ones
-            // are overlaid from the hub; a session the hub no longer holds is
-            // one whose final counters are already written.
-            const live = dependencies.shellControl.liveSessionBytes(runner.id);
-            return [
-              runner.id,
-              {
-                activeSessions: stored.map((summary) => ({ ...summary, ...live.get(summary.id) })),
-                ownerReachAvailable: ownership.get(runner.id)?.effectiveOwner !== null,
-                policy: runner.accessPolicy,
-                revision: runner.accessPolicyRevision,
+        managed.map(async (runner): Promise<[string, MachineAccessView]> => {
+          const stored = await dependencies.store.listActiveShellSessions(runner.id);
+          // The row's counters are zero until a session ends, so the live ones
+          // are overlaid from the hub; a session the hub no longer holds is
+          // one whose final counters are already written.
+          const live = dependencies.shellControl.liveSessionBytes(runner.id);
+          return [
+            runner.id,
+            {
+              activeSessions: stored.map((summary) => ({ ...summary, ...live.get(summary.id) })),
+              ownerReachAvailable: ownership.get(runner.id)?.effectiveOwner !== null,
+              policy: {
+                ...runner.accessPolicy,
+                browser: deviceAccess(runner.accessPolicy).browser,
+                apps: deviceAccess(runner.accessPolicy).apps,
               },
-            ];
-          }),
+              revision: runner.accessPolicyRevision,
+            },
+          ];
+        }),
       ),
     );
     return {
@@ -1312,6 +1324,7 @@ export async function createHostServer(
         ...(input.aroundMessageId ? { aroundMessageId: input.aroundMessageId } : {}),
         ...(input.before ? { before: input.before } : {}),
         ...(input.placeEvents ? { placeEvents: input.placeEvents } : {}),
+        ...(input.deviceAccessRequests ? { deviceAccessRequests: input.deviceAccessRequests } : {}),
         ...(input.turns === undefined
           ? { maxItems: Math.min(input.limit ?? eventPageMaxItems, eventPageMaxItems) }
           : { maxTurns: input.turns }),
@@ -1319,9 +1332,20 @@ export async function createHostServer(
         threadId: input.threadId,
       });
       if (!page) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+      const projected = {
+        ...page,
+        events: page.events
+          .filter(
+            (event) =>
+              input.deviceAccessRequests === "include" || !isDeviceAccessRequestEvent(event),
+          )
+          .map((event) =>
+            projectDeviceAccessRequestEvent(event, input.deviceAccessRequests === "include"),
+          ),
+      };
       return rpcSuccess(
         hostApi["thread.events.list"].success.parse(
-          input.toolOutputs === "preview" ? clientToolOutputPage(page) : page,
+          input.toolOutputs === "preview" ? clientToolOutputPage(projected) : projected,
         ),
       );
     },
@@ -1335,9 +1359,20 @@ export async function createHostServer(
         ownerId: requireRpcSession(context).user.id,
       });
       if (!page) throw new OpensteerError({ code: "not_found", message: "Subagent not found" });
+      const projected = {
+        ...page,
+        events: page.events
+          .filter(
+            (event) =>
+              input.deviceAccessRequests === "include" || !isDeviceAccessRequestEvent(event),
+          )
+          .map((event) =>
+            projectDeviceAccessRequestEvent(event, input.deviceAccessRequests === "include"),
+          ),
+      };
       return rpcSuccess(
         hostApi["node.events.list"].success.parse(
-          input.toolOutputs === "preview" ? clientToolOutputPage(page) : page,
+          input.toolOutputs === "preview" ? clientToolOutputPage(projected) : projected,
         ),
       );
     },
@@ -1433,6 +1468,7 @@ export async function createHostServer(
     },
     "thread.assignments.list": async (input, context) => {
       const page = await dependencies.store.listThreadAssignmentsForOwner({
+        ...(input.deviceAccessRequests ? { deviceAccessRequests: input.deviceAccessRequests } : {}),
         threadId: input.threadId,
         ownerId: requireRpcSession(context).user.id,
         maxItems: Math.min(input.limit ?? 25, 100),
@@ -1451,6 +1487,9 @@ export async function createHostServer(
           await dependencies.store.requests.waitingOnUserPage({
             ...(input.before ? { before: input.before } : {}),
             limit: Math.min(input.limit ?? 100, 100),
+            ...(input.deviceAccessRequests
+              ? { deviceAccessRequests: input.deviceAccessRequests }
+              : {}),
             userId: requireRpcSession(context).user.id,
           }),
         ),
@@ -1462,21 +1501,31 @@ export async function createHostServer(
       const page = await dependencies.store.requests.originatingPendingPage({
         ...(input.before ? { before: input.before } : {}),
         limit: Math.min(input.limit ?? threadPageMaxItems, threadPageMaxItems),
+        ...(input.deviceAccessRequests ? { deviceAccessRequests: input.deviceAccessRequests } : {}),
         threadId: input.threadId,
       });
       return rpcSuccess(
         hostApi["thread.requests.list"].success.parse({ ...page, threadId: input.threadId }),
       );
     },
-    "attention.get": async (_input, context) =>
-      rpcSuccess(
-        await dependencies.store.notificationState.attention(requireRpcSession(context).user.id),
-      ),
+    "attention.get": async (input, context) => {
+      const [attention, homeName] = await Promise.all([
+        dependencies.store.notificationState.attention(
+          requireRpcSession(context).user.id,
+          input.deviceAccessRequests ? { deviceAccessRequests: input.deviceAccessRequests } : {},
+        ),
+        dependencies.store.homeComputerName(),
+      ]);
+      return rpcSuccess({ ...attention, homeName });
+    },
     "needsYou.get": async (input, context) =>
       rpcSuccess(
         await needsYouPage(dependencies.store.database, {
           ...(input.before ? { before: input.before } : {}),
           ...(input.limit ? { limit: input.limit } : {}),
+          ...(input.deviceAccessRequests
+            ? { deviceAccessRequests: input.deviceAccessRequests }
+            : {}),
           userId: requireRpcSession(context).user.id,
         }),
       ),
@@ -1496,6 +1545,9 @@ export async function createHostServer(
       rpcSuccess(
         hostApi["tasks.list"].success.parse(
           await dependencies.store.taskPageForUser({
+            ...(input.deviceAccessRequests
+              ? { deviceAccessRequests: input.deviceAccessRequests }
+              : {}),
             ...(input.active === undefined ? {} : { active: input.active }),
             ...(input.before ? { before: input.before } : {}),
             ...(input.done ? { done: true } : {}),
@@ -1565,7 +1617,7 @@ export async function createHostServer(
     const session = requireRpcSession(context);
     const userId = session.user.id;
     if (isAdministrationCommand(command))
-      return administration.execute({ kind: "person", userId }, command);
+      return administration.execute({ kind: "person", userId }, command, context.afterResponse);
     switch (command.type) {
       case "settings.plugin.enabled.set": {
         const result = await dependencies.integrations.platform.store.settings.setEnabled(
@@ -1783,6 +1835,9 @@ export async function createHostServer(
                   dependencies.integrations.continuations.notify();
                 return;
               }
+              case "device.access":
+                await dependencies.deviceAccess.decline(input);
+                return;
               case "machine.full-disk-access":
                 await dependencies.machineFullDiskAccess.decline(input);
                 return;
@@ -2064,6 +2119,16 @@ export async function createHostServer(
         harnessCatalogReconciliations.schedule(target.environment.id, [target.harness.id]);
         return { ...envelope, type: command.type };
       }
+      case "machine.session.bind":
+        await deviceMembershipTurn(dependencies.store, () =>
+          dependencies.store.bindDeviceSession({
+            machineId: command.machineId,
+            sessionId: session.id,
+            userId,
+            proof: command.proof,
+          }),
+        );
+        return { type: command.type };
       case "machine.access.update": {
         await requireMachineAccessManagement(
           dependencies.store,
@@ -2072,36 +2137,36 @@ export async function createHostServer(
           },
           command.runnerId,
         );
-        // Inside this machine's admission turn: an activation that is part-way
-        // through re-reading the policy it was admitted under must either see
-        // the old revision and finish, or see the new one and end — never
-        // commit against a revision this write already replaced.
         const result = await dependencies.shellControl.withMachineAdmission(command.runnerId, () =>
-          dependencies.store.updateMachineAccessPolicy({
-            allowDeployment: true,
-            expectedRevision: command.expectedRevision,
-            idempotency: { key: command.idempotencyKey, requestedBy: userId },
-            ownerId: userId,
-            policy: command.policy,
-            runnerId: command.runnerId,
-          }),
+          dependencies.computerApps.withRunnerAdmission(command.runnerId, () =>
+            dependencies.browser.withRunnerAdmission(command.runnerId, async () => {
+              const result = await dependencies.store.updateMachineAccessPolicy({
+                allowDeployment: true,
+                expectedRevision: command.expectedRevision,
+                idempotency: { key: command.idempotencyKey, requestedBy: userId },
+                ownerId: userId,
+                policy: command.policy,
+                runnerId: command.runnerId,
+              });
+              if (result.outcome === "updated" && !result.replayed) {
+                if (result.changed.shell)
+                  await dependencies.shellControl.endMachineSessions(
+                    command.runnerId,
+                    "policy-changed",
+                  );
+                if (result.changed.browser && !deviceAccess(command.policy).browser)
+                  await dependencies.browser.disableAgentAccess(command.runnerId);
+                if (result.changed.apps && !deviceAccess(command.policy).apps)
+                  await dependencies.computerApps.disableAgentAccess(command.runnerId);
+              }
+              return result;
+            }),
+          ),
         );
-        if (result.outcome === "conflict") {
-          // Nothing was written, so nothing about the live sessions changed.
+        if (result.outcome === "conflict")
           return { outcome: "conflict" as const, type: command.type };
-        }
-        // Every write bumps the revision, an equal-value one included: the
-        // policy a live session is running under is a snapshot taken when it
-        // opened, and the only honest way to apply a new one is to end them
-        // and let the next `ssh` start under it. A replay is not a write: it
-        // committed nothing, and the sessions open now may well have started
-        // after the save it is replaying, under the policy it describes.
-        if (!result.replayed) {
-          await dependencies.shellControl.endMachineSessions(command.runnerId, "policy-changed");
-        }
-        // A replay wrote nothing, but the row it is replaying is what this
-        // caller is about to read back, and the revision it reports is already
-        // live for everybody else.
+        for (const event of result.requestEvents) dependencies.publishDeploymentEvent?.(event);
+        if (result.requestEvents.length) dependencies.integrations.continuations.notify();
         notifyMachinesChanged(dependencies.realtime, "machine.command");
         return { outcome: "updated" as const, revision: result.revision, type: command.type };
       }
@@ -2148,7 +2213,8 @@ export async function createHostServer(
         return { type: command.type, access };
       }
       case "session.revoke":
-        await dependencies.authenticator.identity.revokeSession(
+        await signOutDeviceSession(
+          { ...dependencies, publishDeploymentEvent },
           session,
           command.sessionId,
           context.afterResponse,
@@ -2156,6 +2222,8 @@ export async function createHostServer(
         return { type: command.type };
       case "runner.enrollment.createLocal": {
         const enrollment = await dependencies.runnerAuthenticator.createEnrollment({
+          ...(command.access ? { access: command.access } : {}),
+          ...(command.preparedIdentity ? { preparedIdentity: command.preparedIdentity } : {}),
           allowedModules: command.allowedModules,
           createdBy: userId,
           idempotencyKey: command.idempotencyKey,
@@ -2177,6 +2245,8 @@ export async function createHostServer(
         // redeem, and a Personal Deployment with remote access off has none.
         const pairing = await agentPhoneHostTarget(dependencies);
         const enrollment = await dependencies.runnerAuthenticator.createPhoneEnrollment({
+          ...(command.access ? { access: command.access } : {}),
+          ...(command.preparedIdentity ? { preparedIdentity: command.preparedIdentity } : {}),
           createdBy: userId,
           idempotencyKey: command.idempotencyKey,
           lifetimeSeconds: 600,
@@ -2314,7 +2384,16 @@ export async function createHostServer(
   const handleCoreCommand = async (command: CoreCommand, context: HostApiServerContext) =>
     hostApi["commands.dispatch"].success.parse(await executeCoreCommand(command, context));
 
-  const identityRpcHandlers = createIdentityRpcHandlers(dependencies.authenticator);
+  const identityRpcHandlers = createIdentityRpcHandlers(
+    dependencies.authenticator,
+    (session, sessionId, afterResponse) =>
+      signOutDeviceSession(
+        { ...dependencies, publishDeploymentEvent },
+        session,
+        sessionId,
+        afterResponse,
+      ),
+  );
 
   registerHostApi(app, dependencies.authenticator, {
     ...createHostApiHandlers(
@@ -2363,6 +2442,29 @@ export async function createHostServer(
     },
   });
 
+  app.post(
+    "/v1/runner/leave",
+    { config: unversionedRoute, bodyLimit: 8 * 1024 },
+    async (request, reply) => {
+      if (
+        !(await consumeAnonymousRateLimit(
+          dependencies.store.database,
+          `device-leave:${request.ip}`,
+          30,
+          new Date(),
+        ))
+      )
+        throw new OpensteerError({
+          code: "resource_exhausted",
+          message: "Too many device leave requests",
+        });
+      const proof = RunnerLeaveRequestSchema.parse(request.body);
+      await removeSignedDevice({ ...dependencies, publishDeploymentEvent }, proof);
+      return reply
+        .header("cache-control", "no-store")
+        .send(RunnerLeaveResponseSchema.parse({ outcome: "removed" }));
+    },
+  );
   app.get("/v1/runner/attachments", async (request, reply) => {
     const token = requireBearerToken(request);
     const query = z.strictObject({ after: AttachmentIdSchema.optional() }).parse(request.query);
@@ -2727,6 +2829,7 @@ export function advertisedCapabilities(
   >,
 ): readonly HostCapability[] {
   return [
+    "devices-v1",
     "automatic-models-v1",
     "task-attachments",
     ...(dependencies.notificationPreviews ? ["notification-preview-v1" as const] : []),
@@ -3749,6 +3852,9 @@ function attachRealtimeSocket(
       try {
         const subscription = await realtime.subscribe({
           afterSequence: message.cursor.afterSequence,
+          ...(message.deviceAccessRequests
+            ? { deviceAccessRequests: message.deviceAccessRequests }
+            : {}),
           ...(message.placeEvents ? { placeEvents: message.placeEvents } : {}),
           ...(message.toolOutputs ? { toolOutputs: message.toolOutputs } : {}),
           ...(message.personShow ? { personShow: message.personShow } : {}),

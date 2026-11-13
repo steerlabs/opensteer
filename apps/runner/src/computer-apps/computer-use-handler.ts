@@ -34,7 +34,7 @@ import {
   type ComputerUseSessionId,
   type HostIntegrationsComputerUse,
 } from "@opensteer/protocol";
-import type { z } from "zod";
+import { z } from "zod";
 import {
   ComputerUseBridgeClient,
   ComputerUseBridgeDeadlineError,
@@ -538,26 +538,28 @@ export class ComputerUseHandler {
         }
         const app = this.#target(frame);
         const session = await this.#ensureOpen(frame, deadline);
-        return await this.#onSession(frame.sessionId, session, () =>
-          this.#request(
-            "session.act",
-            {
-              actions: params.data.actions,
-              ...(params.data.loginContext ? { loginContext: params.data.loginContext } : {}),
-              app,
-              window: params.data.window,
-              snapshot: params.data.snapshot,
-              sessionId: frame.sessionId,
-            },
-            options(),
-          ),
-        ).catch((error: unknown) => {
-          if (!saved) throw error;
-          throw new ComputerUseBridgeError(
-            error instanceof ComputerUseBridgeError ? error.code : "failed",
-            "Saved login text could not be typed.",
-          );
-        });
+        return z.json().parse(
+          await this.#onSession(frame.sessionId, session, () =>
+            this.#request(
+              "session.act",
+              {
+                actions: params.data.actions,
+                ...(params.data.loginContext ? { loginContext: params.data.loginContext } : {}),
+                app,
+                window: params.data.window,
+                snapshot: params.data.snapshot,
+                sessionId: frame.sessionId,
+              },
+              options(),
+            ),
+          ).catch((error: unknown) => {
+            if (!saved) throw error;
+            throw new ComputerUseBridgeError(
+              error instanceof ComputerUseBridgeError ? error.code : "failed",
+              "Saved login text could not be typed.",
+            );
+          }),
+        );
       }
       case "close":
         // Fence pending opens before yielding to the bridge. Their late answers

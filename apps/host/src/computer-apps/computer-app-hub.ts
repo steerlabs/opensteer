@@ -242,6 +242,7 @@ export interface PhoneDisplayCapabilityDiagnostic {
 }
 
 export interface ComputerAppHubOptions {
+  readonly requireAgentAccess?: (runnerId: RunnerId) => Promise<void>;
   readonly packageSource?: (
     serverId: IntegrationServerId,
     runnerId: RunnerId,
@@ -1139,6 +1140,7 @@ export class ComputerAppHub {
    */
   async send(input: ComputerAppInvokeInput): Promise<ComputerAppInvokeSend> {
     if (this.#closed) return settled(offline("Opensteer is shutting down."));
+    await this.#options.requireAgentAccess?.(input.runnerId);
     const entry = this.#byRunner.get(input.runnerId);
     if (!entry) return settled(offline("That computer is offline."));
     // No queue: a caller waiting behind three other calls would spend its whole
@@ -1241,7 +1243,7 @@ export class ComputerAppHub {
 
   /** The whole call, for a caller that holds no admission turn of its own. */
   async invoke(input: ComputerAppInvokeInput): Promise<ComputerAppInvokeOutcome> {
-    const sent = await this.send(input);
+    const sent = await this.withRunnerAdmission(input.runnerId, () => this.send(input));
     return sent.outcome;
   }
 
@@ -1255,6 +1257,8 @@ export class ComputerAppHub {
    * nothing and is an ordinary `failed` the caller may try again.
    */
   async sendComputerUse(input: ComputerUseSendInput): Promise<ComputerUseSend> {
+    if (!["installed_apps", "resolve_app", "close"].includes(input.operation))
+      await this.#options.requireAgentAccess?.(input.runnerId);
     const effect: IntegrationToolEffect = input.operation === "act" ? "write" : "read";
     if (this.#closed) return settledComputerUse(computerUseOffline("Opensteer is shutting down."));
     const entry = this.#byRunner.get(input.runnerId);
@@ -1413,6 +1417,33 @@ export class ComputerAppHub {
     } finally {
       turn.waiting -= 1;
       if (turn.waiting === 0 && this.#turns.get(runnerId) === turn) this.#turns.delete(runnerId);
+    }
+  }
+
+  async requireAgentAccess(runnerId: RunnerId): Promise<void> {
+    await this.#options.requireAgentAccess?.(runnerId);
+  }
+  async disableAgentAccess(runnerId: RunnerId): Promise<void> {
+    const entry = this.#byRunner.get(runnerId);
+    if (!entry) return;
+    const message = "Agent access to apps was turned off.";
+    for (const [requestId, pending] of entry.pending) {
+      if (pending.kind === "computer-use")
+        pending.settle(computerUseLoss(pending.effect, message), true);
+      else pending.settle(lossOutcome(pending.effect, message));
+      void this.#cancel(entry, requestId);
+    }
+    for (const [sessionId, session] of entry.mcpSessions) {
+      entry.mcpSessions.delete(sessionId);
+      const error = new ComputerMcpSessionError("offline", message);
+      if (session.opening) session.opening.reject(error);
+      else session.onclose(error);
+      void this.#sendControl(entry, {
+        ...entry.stream.fence,
+        module: "integrations",
+        type: "host.integrations.mcp.close",
+        sessionId,
+      });
     }
   }
 

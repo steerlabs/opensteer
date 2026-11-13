@@ -1,3 +1,4 @@
+import { createId } from "@opensteer/core";
 import { HostBootstrapSchema } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { createHttpHostApiClient } from "@opensteer/client/host";
@@ -5,6 +6,31 @@ import { createDesktopHostFetch } from "./desktop-host-transport.js";
 import { desktopPreviewBridge } from "./desktop-preview-bridge.js";
 
 describe("Desktop preview Host simulation", () => {
+  it("keeps refused leave unconfirmed instead of fabricating Host acknowledgment", async () => {
+    const id = createId("deployment");
+    const bridge = desktopPreviewBridge("?desktop-preview=first-run", true, {
+      attached: {
+        id,
+        name: "Home",
+        origin: "https://home.opensteer.test",
+        hosting: null,
+        runnerId: createId("runner"),
+      },
+      leaveDevice: async () => {
+        throw new Error("Host refused leave");
+      },
+      transitionDelayMs: 0,
+    })!;
+    await bridge.leaveDeployment({ deploymentId: id });
+    expect((await bridge.getLocalExecutionStatus({ deploymentId: id })).membership).toMatchObject({
+      state: "leaving",
+      leaveUnconfirmed: true,
+    });
+    await expect(
+      bridge.setUpDevice({ deploymentId: id, runnerName: "Mac", runAgents: false }),
+    ).rejects.toThrow("unconfirmed");
+  });
+
   it("serves a bootstrap that satisfies the real wire contract", async () => {
     vi.useFakeTimers();
     const bridge = desktopPreviewBridge("?desktop-preview=first-run", true, {

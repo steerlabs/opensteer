@@ -38,6 +38,9 @@ export type PushRegistrationStatus =
   /** Something between here and the Account failed; `detail` says what. */
   | "unavailable";
 
+/** How a person's on/off choice settled: `unavailable` is allowed but unreachable by push. */
+export type NotificationChoice = "on" | "off" | "denied" | "unavailable";
+
 export interface NotificationPreferences {
   readonly approvalsEnabled: boolean;
   readonly runOutcomesEnabled: boolean;
@@ -226,12 +229,31 @@ export class PushRegistration {
     });
   }
 
+  /** Off never asks the operating system, now or later; on asks only if it still can. */
+  async choose(on: boolean): Promise<NotificationChoice> {
+    return this.#queue.run(async () => {
+      const file = await this.#load();
+      await this.#write({ ...file, preferences: { approvalsEnabled: on, runOutcomesEnabled: on } });
+      if (!on || !this.#options.accountConfigured) {
+        await this.#sync();
+        return on ? "unavailable" : "off";
+      }
+      let permission = await this.#options.permissions.current();
+      if (!permission.granted && permission.canAskAgain)
+        permission = await this.#options.permissions.request();
+      await this.#sync();
+      if (!permission.granted) return "denied";
+      return this.#state.status === "registered" ? "on" : "unavailable";
+    });
+  }
+
   /** A successful message is the first moment an alert about its reply is useful. */
   async afterSuccessfulSend(): Promise<void> {
     await this.#queue
       .run(async () => {
         if (!this.#options.accountConfigured || (await this.#options.signedInSubject()) === null)
           return;
+        if (!wantsAlerts((await this.#load()).preferences)) return;
         const permission = await this.#options.permissions.current();
         if (permission.granted || !permission.canAskAgain) return;
         await this.#options.permissions.request();
@@ -423,6 +445,10 @@ export class PushRegistration {
   #emit(): void {
     for (const listener of this.#listeners) listener();
   }
+}
+
+export function wantsAlerts(preferences: NotificationPreferences): boolean {
+  return preferences.approvalsEnabled || preferences.runOutcomesEnabled;
 }
 
 function decodeJson(bytes: Uint8Array): unknown {

@@ -1,4 +1,6 @@
+import { deploymentPolicy } from "@opensteer/core";
 import type { AgentConnectionAuthorizationTarget } from "@opensteer/protocol";
+import type { DesktopLocalExecutionStatus } from "@opensteer/protocol/desktop";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import type {
   DeploymentAccessDeployment,
@@ -7,14 +9,21 @@ import type {
   DesktopNotificationTarget,
   OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
-import { AddDeployment } from "../components/add-deployment.js";
 import {
   DesktopLoadingScreen,
   DesktopPersonalSetup,
   DesktopPersonalLoadFailure,
   DesktopVerifiedDeployment,
 } from "../components/desktop-onboarding.js";
-import { DesktopPlaceChooser, DesktopWelcome } from "../components/places/place-chooser.js";
+import {
+  DesktopChooser,
+  DesktopConnect,
+  DesktopWelcome,
+  type ConnectKind,
+} from "../components/places/desktop-entry.js";
+import { DeviceRemovedScreen, DeviceSignInScreen } from "../components/devices/device-removed.js";
+import { membershipRecord } from "../components/devices/this-device.js";
+import { observeLocalExecutionStatus } from "./local-execution-status.js";
 import { DesktopPlacesProvider, type DesktopPlaces } from "./places-context.js";
 import { thisComputerLabel } from "./places.js";
 import { pendingSetupStep } from "../components/first-run/setup-memory.js";
@@ -44,7 +53,7 @@ const SignedInApp = lazy(async () => {
  * They are renderer-local: the Desktop machine has no idea a person is looking
  * at the Directory or filling in an address, and nothing is persisted.
  */
-type BrowsingScreen = "add-deployment" | null;
+type BrowsingScreen = ConnectKind | null;
 
 type DesktopAccessPresentation =
   "blocked" | "personal" | "picker" | "ready" | "verified" | "waiting";
@@ -113,6 +122,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [screen, setScreen] = useState<BrowsingScreen>(null);
+  const [chooserFor, setChooserFor] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [connectingPrivate, setConnectingPrivate] = useState(false);
   // This window set this computer up, so setup carries on into the app it
@@ -184,6 +194,27 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     ({ id }) => id === snapshot.selectedDeploymentId,
   );
   const selected = selectedConnection ? desktopSummaryFromAccess(selectedConnection) : undefined;
+  // A Mac removed from the Opensteer on screen shows that before anything
+  // signs in again, whichever arrived first: the session ending or the 4010.
+  const [membership, setMembership] = useState<DesktopLocalExecutionStatus | null>(null);
+  const membershipDeploymentId =
+    selected &&
+    deploymentPolicy({ kind: selected.kind }).services.personal &&
+    !selected.onThisComputer
+      ? selected.id
+      : null;
+  useEffect(() => {
+    setMembership(null);
+    if (!membershipDeploymentId) return;
+    return observeLocalExecutionStatus(bridge, membershipDeploymentId, setMembership, () =>
+      setMembership(null),
+    );
+  }, [bridge, membershipDeploymentId]);
+  const removedHere =
+    membershipDeploymentId !== null &&
+    membership?.deploymentId === membershipDeploymentId &&
+    (membershipRecord(membership)?.state === "removed" ||
+      membershipRecord(membership)?.state === "leaving");
   const hostTransportIdentity = JSON.stringify([
     desktopHostTransportIdentity(selected),
     selectedConnection?.attachmentKey,
@@ -215,8 +246,14 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     () =>
       snapshot
         ? {
-            bridge,
-            onAddPlace: () => setScreen("add-deployment"),
+            bridge: {
+              ...bridge,
+              select: async (input) => {
+                setChooserFor(null);
+                await bridge.select(input);
+              },
+            },
+            onAddPlace: () => setScreen("pairing"),
             snapshot,
           }
         : null,
@@ -272,7 +309,8 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   return <DesktopPlacesProvider value={places}>{surface(snapshot, places)}</DesktopPlacesProvider>;
 
   function surface(snapshot: DeploymentAccessSnapshot, places: DesktopPlaces) {
-    const presentation = desktopAccessPresentationFromSnapshot(snapshot);
+    const choosing = chooserFor !== null && chooserFor === selected?.id;
+    const presentation = choosing ? "picker" : desktopAccessPresentationFromSnapshot(snapshot);
     const activeScreen = screen;
     const busy =
       connectingPrivate ||
@@ -307,17 +345,49 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       );
     }
 
+    if (selected && removedHere && !choosing) {
+      return (
+        <DeviceRemovedScreen
+          bridge={bridge}
+          deploymentId={selected.id}
+          name={selected.name}
+          onSetUpAgain={async () => {
+            setMembership(await bridge.getLocalExecutionStatus({ deploymentId: selected.id }));
+          }}
+          unconfirmed={membership?.membership?.leaveUnconfirmed === true}
+          detail={membership?.runner.detail}
+          onChoose={() => setChooserFor(selected.id)}
+        />
+      );
+    }
+
     if (
-      personalLoadFailure &&
-      screen !== "add-deployment" &&
-      snapshot.account.status !== "signed-in"
+      selected &&
+      !choosing &&
+      membership?.membership?.state === "active" &&
+      (membership.membership.sessionState === "confirming" ||
+        membership.membership.sessionState === "sign-in-again" ||
+        selectedConnection?.status === "needs-sign-in")
     ) {
+      return (
+        <DeviceSignInScreen
+          bridge={bridge}
+          deploymentId={selected.id}
+          name={selected.name}
+          confirming={membership.membership.sessionState === "confirming"}
+          detail={membership.runner.detail}
+          onChoose={() => setChooserFor(selected.id)}
+        />
+      );
+    }
+
+    if (personalLoadFailure && screen === null && snapshot.account.status !== "signed-in") {
       return (
         <DesktopPersonalLoadFailure
           accountAvailable={snapshot.account.available}
           detail={personalLoadFailure}
           onAccount={() => runBridgeOperation(bridge.signIn())}
-          onAddDeployment={() => setScreen("add-deployment")}
+          onAddDeployment={() => setScreen("pairing")}
         />
       );
     }
@@ -384,12 +454,12 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       );
     }
 
-    if (activeScreen === "add-deployment") {
+    if (activeScreen !== null) {
       return (
-        <AddDeployment
-          accountEmail={snapshot.account.email ?? null}
+        <DesktopConnect
           busy={busy}
           error={operationError}
+          kind={activeScreen}
           onBack={() => setScreen(null)}
           onConnect={(input) => {
             setConnectingPrivate(true);
@@ -406,22 +476,6 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
               )
               .finally(() => setConnectingPrivate(false));
           }}
-          onCreatePersonal={
-            snapshot.personalSetup?.deploymentId === null &&
-            snapshot.personalSetup.state === "stopped" &&
-            snapshot.personalSetup.canStart
-              ? () => {
-                  setScreen(null);
-                  setSettingUpHere(true);
-                  runBridgeOperation(bridge.createPersonalDeployment());
-                }
-              : null
-          }
-          onSignIn={
-            snapshot.account.available && snapshot.account.status !== "signed-in"
-              ? () => runBridgeOperation(bridge.signIn())
-              : null
-          }
         />
       );
     }
@@ -441,20 +495,21 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
         return (
           <DesktopWelcome
             error={operationError ?? directoryError ?? personalLoadFailure}
-            onAdd={() => setScreen("add-deployment")}
-            onStart={setUpHere}
+            onConnect={setScreen}
+            onSetUpHere={setUpHere}
             places={places}
           />
         );
       }
       const notice = chooserNotice(selectedConnection, snapshot.account, bridge);
       return (
-        <DesktopPlaceChooser
+        <DesktopChooser
           // A notice already says why the place it names could not open; its
           // attempt's own failure would only say it again.
           error={notice ? formError : (operationError ?? directoryError ?? personalLoadFailure)}
           notice={notice}
-          onSetUpThisComputer={setUpHere}
+          onConnect={setScreen}
+          onSetUpHere={setUpHere}
           places={places}
         />
       );

@@ -1,17 +1,47 @@
-# Computers: enrollment and machine access
+# Devices: enrollment and access
 
 ## Enrollment
 
-A computer is one Runner identity in a Deployment. Enrollment caps its modules on every reconnect;
+A device is one Runner identity in a personal Deployment. Enrollment caps its modules on every reconnect;
 advertising fewer does not reduce the grant, and presentation shape never grants authority.
 Execution policy changes preserve identity. Personal Opensteer executes tasks only on its hosting
 computer, which cannot be removed; phones never offer shell. Enrollment profiles live in
 [the grant policy](../apps/host/src/agents/runner-enrollment-grant.ts).
 
+Browser and Apps are live Host policy, separate from the immutable module ceiling and per-app
+approvals. Turning them off preserves capability descriptors and saved approvals. Browser gates
+only agents: profile homes, person browsing and the shared browser transport stay available.
+Apps gates agent computer use, phone data apps and computer-hosted MCP; a write already sent may
+have an unknown outcome when access is withdrawn. Files and commands uses the existing shell policy.
+Legacy policy edits preserve omitted switches inside the revision transaction.
+
+When an owned online device has access off, the agent can ask in Needs you. Turning it on changes
+the device's persistent policy; Not now suppresses the same ask for that task. An offline device
+never opens a Request. Fulfillment resumes through a continuation Run with rebuilt routes; it does
+not add routes to the Run that asked. Which readers see it, and why push still carries it, is in
+[Compatibility](host-boundaries.md#compatibility). The `computer_list` tool includes
+disabled devices and phones without making them shell targets. Per-app, profile and OS
+authorization still apply.
+
+Initial setup choices apply only at first redemption. A new Files policy starts with commands and
+forwarding enabled underneath either switch position; Off changes only reach to nobody. Later
+toggles preserve saved folders and restrictions. Replaying enrollment cannot reset later access
+edits. Desktop main persists the prepared key and Account provenance before the renderer requests
+its enrollment, marks issuance durably before sending, then saves the pending receipt before handing
+its token to the worker. Issuance serializes with cancellation and Account sign-out. A preparation
+that never began issuance needs local cleanup only. Once issuance may have reached the Host, signed
+leave carries the prepared public key; the Host retains its retirement and fences late issuance as
+well as pending redemption. Tokens minted for other computers are independent. A prepared identity is not
+an enrolled device: after a crash, Finish setup obtains a fresh enrollment for the same key, even
+if the prior enrollment expired.
+
 Remote route changes disconnect route-admitted computers without deleting enrollment. The hosting
 computer and supervised services are not remote computers to sweep. Revocation is terminal and
 stops reconnecting; network and lease failures preserve identity. Loopback in an endpoint means
-the executing computer, never the viewer's.
+the executing computer, never the viewer's. Server connection commands resolve the Host-approved
+remote route before minting enrollment, as Agent Phone setup does; a desktop Host's canonical
+loopback origin cannot be used from the new server or its container. With no route, setup asks the
+person to turn on remote access.
 
 ## Runner and desktop
 
@@ -21,14 +51,44 @@ reuses that identity; the environment binding is immutable after its first adver
 device shape is presentation, never authority or routing. Android phones offer no shell. Windows
 shell endpoints remain unsupported, but this does not prevent a browser-only connection.
 
-Desktop persists enrollment before starting the Runner so an exit during join cannot strand a Host
-row. Turning execution off restarts the same identity, data directory and SSH host key. Removal
-deletes the enrollment slot and every browser profile homed there; adding again creates a new computer.
-The removed device erases its profile storage when it learns of removal. If it never returns, erasure
-is unconfirmed, not claimed complete ([profile state](browser-sessions.md#profile-state)). The owner-session Host chooses the enrollment grant and
-origin, never the desktop. Only the supervising desktop can establish that a computer is local; a
-browser cannot claim it. Team administrators cannot enroll, remove or inspect another person's
-computer through team authority.
+Apps bind their authenticated session to a device by proving possession of its runner key. Desktop
+replays accepted bindings through main and reconciles the current session at startup, so a lost
+binding receipt cannot disable session-loss fencing. Explicit
+removal, signed self-leave and sign-out of a bound non-Home session share one removal operation:
+tombstone the device and delete all bound sessions in the same transaction, then end live work.
+Home and unbound web or legacy sessions sign out only that session. Expiry, refresh and route
+rotation never remove a device. Old apps that do not bind remain independently signed in after
+removal until they update. Removing bound sessions also retires their Host notification preview
+keys; Account-side generic push registration is separate.
+
+Desktop main owns remote device membership independently of its disposable route catalog; session
+loss and the catalog are in [Catalog authority](connections.md#catalog-authority). A missing route
+suspends the slot; offline state never removes it. Enrollment intent precedes worker startup, and a
+surviving enrolled key can heal a missing legacy preference unless removal or profile-erasure intent
+forbids it. Unknown membership formats stop recovery and report an error.
+
+Leave and removal persist terminal intent before stopping workers. The persisted leave signature can
+remove only that runner on that Host, so delivery needs neither an Account credential nor a normal
+Runner connection, and it survives key and profile erasure so main never restarts browser or
+computer use to deliver it. Local erasure and Host confirmation are separate obligations across
+restarts: erasure waits for every worker to exit, and an unreachable Host leaves removal
+unconfirmed. Rejoining requires an explicit setup action and a new identity. Against a Host without
+affirmative `devices-v1` support, main attempts authenticated runner removal and enrollment
+retirement before discarding the session. Unconfirmed legacy removal remains a durable obligation,
+retried after sign-in; it does not wait forever on an unsupported signed-leave endpoint or prevent
+rejoining.
+
+Account sign-out and replacement persist leave obligations for the memberships whose saved
+provenance names the outgoing Account before credentials change; manual memberships survive and Home
+keeps running. Legacy preferences have no source or Host pin until a verified catalog entry returns,
+so Account sign-out refuses to guess which waiting memberships to remove. Its confirmation reads
+main's durable membership inventory, including parked devices absent from the catalog; an
+unreadable inventory blocks confirmation instead of promising that nothing is deleted.
+
+The Host chooses the enrollment grant; main resolves the origin and holds signing keys, and the
+renderer receives only session-binding signatures. Only the supervising desktop can establish that
+a computer is local. Team administrators cannot enroll, remove or inspect another person's computer
+through team authority.
 
 ## Machine access
 
@@ -38,8 +98,8 @@ audited and ends with the session. Thread access mode decides harness confirmati
 policy decides permission: never intersect them or treat running agents on the target as SSH
 permission. See the [shell wire](../packages/protocol/src/shell.ts).
 
-Each SSH session has its own WebSocket so its bytes never block the serial control inbox. Policy
-changes end existing sessions. Sessions live under the admitting Run attempt's grant, not the
+Each SSH session has its own WebSocket so its bytes never block the serial control inbox. Shell policy
+changes end existing SSH sessions; Browser or Apps edits and command replays do not. Sessions live under the admitting Run attempt's grant, not the
 presented token: token refresh ends nothing, withdrawing the grant ends them before the Runner
 reports completion, and a late end from an old attempt cannot stop replacement sessions. Relay
 sockets live outside `privateStateRoot`; warm engines carry one Run's authority at a time and refuse

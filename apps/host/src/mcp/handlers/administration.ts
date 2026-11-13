@@ -1,3 +1,4 @@
+import { deviceAccessStates } from "@opensteer/database";
 import { harnessView } from "../../administration/authority.js";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import type { IntegrationConnectionSummary } from "@opensteer/integration-core";
@@ -243,15 +244,23 @@ export class AdministrationToolHandlers {
     return {
       nextCursor: page.nextCursor,
       machines: await Promise.all(
-        page.runners.map(async (runner) => {
-          return {
-            id: runner.id,
-            name: runner.name,
-            connected: runners.isRunnerConnected(runner.id),
-            revoked: runner.revokedAt !== null,
-            sessions: await store.listActiveShellSessions(runner.id),
-          };
-        }),
+        page.runners
+          .filter((runner) => runner.kind !== "managed")
+          .map(async (runner) => {
+            return {
+              id: runner.id,
+              name: runner.name,
+              connected: runners.isRunnerConnected(runner.id),
+              revoked: runner.revokedAt !== null,
+              access: deviceAccessStates(
+                runner.accessPolicy,
+                runner.allowedModules,
+                runner.moduleDescriptors,
+                runner.kind === "main" && runner.ownerKind === "deployment",
+              ),
+              sessions: await store.listActiveShellSessions(runner.id),
+            };
+          }),
       ),
     };
   }

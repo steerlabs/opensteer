@@ -96,8 +96,19 @@ export const DesktopRunnerStateSchema = z.enum([
   "failed",
 ]);
 
+export const DesktopDeviceMembershipSchema = z.strictObject({
+  state: z.enum(["none", "active", "waiting", "leaving", "removed"]),
+  runnerId: RunnerIdSchema.nullable(),
+  generation: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  leaveUnconfirmed: z.boolean().optional(),
+  enrolled: z.boolean().optional(),
+  sessionState: z.enum(["ready", "confirming", "sign-in-again"]).optional(),
+});
+export type DesktopDeviceMembership = z.infer<typeof DesktopDeviceMembershipSchema>;
+
 export const DesktopLocalExecutionStatusSchema = z
   .strictObject({
+    membership: DesktopDeviceMembershipSchema.optional(),
     available: z.boolean(),
     /** The operating system's name for this computer; the default machine name. */
     computerName: z.string().trim().min(1).max(120),
@@ -2029,7 +2040,18 @@ export interface OpensteerDesktopBridge {
   sendHostWebSocket(input: DesktopHostWebSocketCommand): Promise<void>;
   signIn(): Promise<void>;
   signOut(): Promise<void>;
-  startLocalRunner(input: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus>;
-  stopLocalRunner(input: DesktopLocalExecutionInput): Promise<DesktopLocalExecutionStatus>;
+  signDeviceSessionBinding(input: {
+    deploymentId: string;
+    sessionId: string;
+  }): Promise<import("./devices.js").DeviceSessionBindingProof>;
+  prepareDeviceSetup(
+    input: DesktopStartLocalRunnerInput,
+  ): Promise<import("./devices.js").DevicePreparedIdentity>;
+  accountSignOutPreview(): Promise<
+    readonly { readonly deploymentId: string; readonly name: string }[]
+  >;
+  leaveDeployment(input: DesktopLocalExecutionInput): Promise<void>;
+  retryDeviceConnection(input: DesktopLocalExecutionInput): Promise<void>;
+  setUpDevice(input: DesktopStartLocalRunnerInput): Promise<DesktopLocalExecutionStatus>;
   unlinkPersonal(): Promise<void>;
 }

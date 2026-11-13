@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { startHeldRequest } from "../integrations/held-request.test-support.js";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -348,6 +349,54 @@ integration("computer apps", () => {
       await gateway.call("integration_search", { query: "Messages" }),
       "send_message",
     );
+    provider.holdNextWrite();
+    const appsOffWrite = gateway.callRaw("integration_call", {
+      arguments: { text: "apps off", to: { address: "friend@example.test" } },
+      ...currentSend.address,
+    });
+    await withTimeout(provider.writeStarted, 3000, {
+      timeoutError: () => new Error("Apps-off write was not admitted"),
+    });
+    const beforeSwitch = await host.store.database
+      .selectFrom("runners")
+      .select(["accessPolicy", "accessPolicyRevision"])
+      .where("id", "=", computer.runnerId)
+      .executeTakeFirstOrThrow();
+    const updateSwitch = (apps: boolean, revision: number, key: string) =>
+      testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "machine.access.update",
+          idempotencyKey: key,
+          runnerId: computer.runnerId,
+          expectedRevision: revision,
+          policy: { ...beforeSwitch.accessPolicy, apps },
+        },
+        { headers: host.ownerHeaders },
+      );
+    await updateSwitch(false, beforeSwitch.accessPolicyRevision, "apps-off-during-write");
+    expect(toolText(await appsOffWrite)).toBe(
+      "Studio Mac did not confirm this. Check whether it happened before trying again.",
+    );
+    const offRefusal = await gateway.callRaw("integration_call", {
+      arguments: { text: "not admitted", to: { address: "friend@example.test" } },
+      ...currentSend.address,
+    });
+    expect(offRefusal).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: { reason: "device-access-off", machineId: computer.runnerId, capability: "apps" },
+      },
+    });
+    const connectionAfterOff = await host.store.database
+      .selectFrom("integrationConnections")
+      .select("status")
+      .where("id", "=", enabled.connection.id)
+      .executeTakeFirstOrThrow();
+    expect(connectionAfterOff.status).toBe("connected");
+    await updateSwitch(true, beforeSwitch.accessPolicyRevision + 1, "apps-on-after-write");
+
     provider.holdNextWrite();
     const uncertain = gateway.callRaw("integration_call", {
       arguments: { text: "uncertain", to: { address: "friend@example.test" } },

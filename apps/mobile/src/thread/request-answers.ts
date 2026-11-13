@@ -123,6 +123,7 @@ function externalAnswerable(request: Request): boolean {
     case "browser.sign-in":
     case "browser.password-sign-in":
     case "browser.access":
+    case "device.access":
       return true;
     default:
       return false;

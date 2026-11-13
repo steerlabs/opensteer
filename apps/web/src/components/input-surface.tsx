@@ -18,6 +18,7 @@ import { Icon, type IconName } from "./icon.js";
 import { IntegrationInstallReview } from "./integration-install-review.js";
 import { AgentProposedChip } from "./integrations/agent-proposed-chip.js";
 import { AreaLink } from "./workspace/area-link.js";
+import { DeviceGrantDock } from "./workspace/device-grant-follow-ups.js";
 import { useComposerContext } from "./workspace/composer-context.js";
 import { useOptionalWorkspace } from "./workspace/workspace-context.js";
 import { TaskMark, TaskBadge } from "./workspace/task-mark.js";
@@ -27,6 +28,11 @@ import { ThreadBrowserRequestAction } from "./thread-browser-access-action.js";
 import { ThreadBrowserSignInAction } from "./thread-browser-sign-in-action.js";
 import { ThreadComputerAppAccessAction } from "./thread-computer-app-access-action.js";
 import { ThreadFullDiskAccessAction } from "./thread-full-disk-access-action.js";
+import {
+  ThreadDeviceAccessAction,
+  deviceAccessRequestTitle,
+  useDeviceGrantFollowUps,
+} from "./thread-device-access-action.js";
 import { ThreadPasswordSignInAction } from "./thread-password-sign-in-action.js";
 import { ThreadIntegrationAction } from "./thread-integration-action.js";
 import {
@@ -303,6 +309,7 @@ export function RequestStack({
   onOpen,
   onUnfold,
   openId,
+  subagentNodeId,
   threadId,
 }: {
   /** Names the subagent that asked; its own view already is that subagent. */
@@ -316,14 +323,21 @@ export function RequestStack({
   readonly onUnfold?: () => void;
   /** The request the reader opened, or was sent to; the first one otherwise. */
   readonly openId: string | null;
+  /** This is that subagent's own view: only the follow-ups it asked for. */
+  readonly subagentNodeId?: string;
   readonly threadId: string;
 }) {
+  const followUps = useDeviceGrantFollowUps({
+    liveRequestIds: items.map((item) => item.surface.request.id),
+    nodeId: subagentNodeId,
+    threadId,
+  });
   const index = Math.max(
     0,
     items.findIndex((item) => item.surface.request.id === openId),
   );
   const open = items[index];
-  if (!open) return null;
+  if (!open) return followUps ? <div className="request-stack">{followUps}</div> : null;
   if (folded)
     return (
       <div className="request-stack">
@@ -343,6 +357,7 @@ export function RequestStack({
     ) : null;
   return (
     <div className="request-stack">
+      {followUps}
       <div
         className={`${inputSurfaceClass(open.surface)} request-card`}
         key={open.surface.request.id}
@@ -367,11 +382,13 @@ export function RequestStack({
         ) : pager ? (
           <div className="request-card__by">{pager}</div>
         ) : null}
-        <RequestPanel
-          disabled={disabled}
-          surface={open.surface}
-          threadId={open.source ? open.surface.request.originatingThreadId : threadId}
-        />
+        <DeviceGrantDock value={threadId}>
+          <RequestPanel
+            disabled={disabled}
+            surface={open.surface}
+            threadId={open.source ? open.surface.request.originatingThreadId : threadId}
+          />
+        </DeviceGrantDock>
       </div>
     </div>
   );
@@ -500,6 +517,7 @@ function inputSurfaceClass(surface: SurfaceModel | null): string {
 function requestTitle(request: Request): string {
   if (request.payload.kind === "browser.password-sign-in" && request.payload.credential === "card")
     return cardUseTitle(request.payload.site);
+  if (request.payload.kind === "device.access") return deviceAccessRequestTitle(request.payload);
   return request.payload.kind === "browser.sign-in" ||
     request.payload.kind === "browser.password-sign-in"
     ? `Sign in to ${browserSiteLabel(request.payload.site)}`
@@ -527,7 +545,9 @@ function RequestPanel({
   const detail =
     request.payload.kind === "browser.password-sign-in"
       ? undefined
-      : request.payload.kind === "computer.app.access" || request.payload.kind === "browser.sign-in"
+      : request.payload.kind === "computer.app.access" ||
+          request.payload.kind === "browser.sign-in" ||
+          request.payload.kind === "device.access"
         ? request.payload.reason
         : request.presentation.detail;
   const title = requestTitle(request);
@@ -591,6 +611,9 @@ function ActionBody({
   }
   if (request.kind === "machine.full-disk-access") {
     return <ThreadFullDiskAccessAction disabled={disabled} request={request} />;
+  }
+  if (request.kind === "device.access") {
+    return <ThreadDeviceAccessAction disabled={disabled} request={request} />;
   }
   if (request.kind === "computer.app.access") {
     return <ThreadComputerAppAccessAction disabled={disabled} request={request} />;
@@ -684,7 +707,11 @@ function requestIcon(request: Request): IconName {
   )
     return "phone";
   // Both name one enrolled computer, so both read as one.
-  if (request.kind === "machine.full-disk-access" || request.kind === "computer.app.access")
+  if (
+    request.kind === "machine.full-disk-access" ||
+    request.kind === "computer.app.access" ||
+    request.kind === "device.access"
+  )
     return "laptop";
   if (
     request.kind === "browser.sign-in" ||

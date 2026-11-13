@@ -23,7 +23,6 @@ export const screenPresentations = {
   ConnectedApps: "modal",
   Plugins: "modal",
   Computer: "modal",
-  AddIphone: "formSheet",
   DeploymentSwitcher: "modal",
   Add: "modal",
 } as const satisfies Readonly<Record<string, NativeStackNavigationOptions["presentation"]>>;

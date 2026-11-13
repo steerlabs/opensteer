@@ -4,6 +4,7 @@ import type { Request } from "@opensteer/core";
 import { ShellScope, useShell, type ShellSharedContext } from "./app-shell.js";
 import { RequestStack, useRequestDock } from "./input-surface.js";
 import { PasswordsSuggestion } from "./passwords-suggestion.js";
+import { useDeviceGrantFollowUps } from "./thread-device-access-action.js";
 
 const noRequests: readonly Request[] = [];
 const selectAsk = ({ ask }: VoiceSnapshot) => ask;
@@ -11,13 +12,13 @@ const selectAsk = ({ ask }: VoiceSnapshot) => ask;
 /**
  * What needs the person on this call: the same cards a conversation docks. The
  * call follows them onto pages with a stable shell, so the cards read it live.
+ * A macOS grant a request left to finish stays after the ask ends.
  */
 export function VoiceAsk({ shell }: { readonly shell: ShellSharedContext }) {
   const ask = useVoiceValue(selectAsk);
-  if (!ask) return null;
   return (
-    <ShellScope context={shell} live>
-      <VoiceAskCards ask={ask} />
+    <ShellScope context={shell} live={ask !== null}>
+      {ask ? <VoiceAskCards ask={ask} /> : <VoiceFollowUps />}
     </ShellScope>
   );
 }
@@ -46,4 +47,14 @@ function VoiceRequests({ threadId }: { readonly threadId: string }) {
       threadId={threadId}
     />
   );
+}
+
+function VoiceFollowUps() {
+  const { voiceThreadId } = useShell().snapshot;
+  return voiceThreadId ? <VoiceFollowUpCards threadId={voiceThreadId} /> : null;
+}
+
+function VoiceFollowUpCards({ threadId }: { readonly threadId: string }) {
+  const followUps = useDeviceGrantFollowUps({ threadId });
+  return followUps ? <div className="request-stack">{followUps}</div> : null;
 }

@@ -210,6 +210,9 @@ const OAuthTokenResponseSchema = z
   .passthrough();
 
 export class NativeOAuthManager implements HostCredentialProvider {
+  readonly #beforeAccountIdentityChange: (
+    next: AccountDeploymentConnectionSource | null,
+  ) => Promise<void>;
   readonly #beforeAccountChange: () => Promise<void>;
   readonly #beforeHostChange: (connection: DeploymentConnection) => Promise<void>;
   readonly #accountOrigin: string | null;
@@ -245,6 +248,9 @@ export class NativeOAuthManager implements HostCredentialProvider {
   #storageError: string | null = null;
 
   constructor(options: {
+    readonly beforeAccountIdentityChange?: (
+      next: AccountDeploymentConnectionSource | null,
+    ) => Promise<void>;
     readonly beforeAccountChange?: () => Promise<void>;
     readonly beforeHostChange?: (connection: DeploymentConnection) => Promise<void>;
     readonly accountOrigin: URL | string | null;
@@ -262,6 +268,8 @@ export class NativeOAuthManager implements HostCredentialProvider {
     readonly scheduleExpiry?: (callback: () => void, delayMilliseconds: number) => () => void;
     readonly store: ProtectedAuthStore;
   }) {
+    this.#beforeAccountIdentityChange =
+      options.beforeAccountIdentityChange ?? (async () => undefined);
     this.#beforeAccountChange = options.beforeAccountChange ?? (async () => undefined);
     this.#beforeHostChange = options.beforeHostChange ?? (async () => undefined);
     this.#accountOrigin =
@@ -781,6 +789,15 @@ export class NativeOAuthManager implements HostCredentialProvider {
         const previousCredential = this.#accountSession?.credential ?? null;
         const committed = await this.#mutateCredentials(async () => {
           if (!this.#isFlowCurrent(flow)) return false;
+          if (
+            !previousCredential ||
+            previousCredential.issuerOrigin !== credential.issuerOrigin ||
+            previousCredential.subject !== credential.subject
+          ) {
+            this.#accountSession?.controller.abort(new Error("The Account identity changed."));
+            await this.#beforeAccountIdentityChange(accountSource(credential));
+            if (!this.#isFlowCurrent(flow)) return false;
+          }
           await this.#accountSessions.removeOtherAccountIdentities(accountSource(credential));
           this.#adoptHostCredentials((await this.#store.setAccount(credential)).hosts);
           // Committing the new identity is what ends the previous one.
@@ -1053,7 +1070,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     this.#assertStorageReady();
     await this.#retryCredentialWrite();
     const session = this.#accountSession;
-    if (!session) return null;
+    if (!session || session.controller.signal.aborted) return null;
     if (
       Date.parse(session.credential.accessTokenExpiresAt) >
       this.#now().getTime() + accessTokenRefreshSkewMs
@@ -1143,6 +1160,17 @@ export class NativeOAuthManager implements HostCredentialProvider {
     await this.#expireAccountSession(session, accountAuthorizationExpiredDetail);
   }
 
+  assertAccountSource(source: AccountDeploymentConnectionSource): void {
+    const session = this.#accountSession;
+    if (
+      !session ||
+      session.controller.signal.aborted ||
+      session.credential.issuerOrigin !== source.issuer ||
+      session.credential.subject !== source.subject
+    )
+      throw new Error("Sign in to this Account before setting up this Mac.");
+  }
+
   async signOutAccount(): Promise<DesktopAccountAuthState> {
     this.#assertStorageReady();
     this.#removePending((flow) => flow.kind === "account");
@@ -1151,9 +1179,12 @@ export class NativeOAuthManager implements HostCredentialProvider {
     // The capability dies before any cleanup awaits, so nothing issued during
     // sign-out can outlive the identity it was issued for.
     const invalidation = this.#beforeAccountChange();
+    this.#accountSession?.controller.abort(new Error("The Account signed out."));
+    await invalidation;
+    await this.#beforeAccountIdentityChange(null);
+    if (this.#accountFlowGeneration !== flowGeneration) return this.state();
     this.#replaceAccountSession(null);
     this.#accountDetail = null;
-    await invalidation;
     await this.#emitAccount();
     let detail: string | null = null;
     try {

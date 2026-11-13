@@ -78,7 +78,8 @@
         "scripts/install.sh",
         "apps/desktop/native/computer-use/Tests/Fixtures/helper-wire.json",
         "apps/desktop/native/passwords/Tests/Fixtures/passwords-wire.json",
-        "packages/core/src/fixtures/notification-preview-v1.json"
+        "packages/core/src/fixtures/notification-preview-v1.json",
+        "packages/runner-auth/fixtures/device-proofs.v1.json"
       ],
       "lane": true
     },

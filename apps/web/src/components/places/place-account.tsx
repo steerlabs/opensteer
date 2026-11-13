@@ -1,7 +1,7 @@
 import { discardAllStagedFiles } from "../attachments/use-staged-attachments.js";
 import { composerDrafts } from "../composer-drafts.js";
-import { useId, useState } from "react";
-import type { DeploymentAccessSnapshot } from "@opensteer/protocol/desktop";
+import { useEffect, useId, useState } from "react";
+import type { DeploymentAccessSnapshot, OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { Dialog } from "../dialog.js";
 import { ErrorNotice } from "../onboarding-card.js";
 
@@ -80,20 +80,76 @@ export function PlaceAccountFooter({
   );
 }
 
+type AccountLeaves =
+  | { readonly state: "loading" }
+  | { readonly state: "error"; readonly message: string }
+  | { readonly state: "ready"; readonly names: readonly string[] };
+
+function useAccountLeaves(
+  bridge: Pick<OpensteerDesktopBridge, "accountSignOutPreview"> | null,
+): AccountLeaves {
+  const [result, setResult] = useState<AccountLeaves>({ state: "loading" });
+  useEffect(() => {
+    let live = true;
+    setResult({ state: "loading" });
+    if (!bridge || typeof bridge.accountSignOutPreview !== "function") {
+      setResult({
+        state: "error",
+        message:
+          "This app cannot read this Mac’s device memberships. Update it before signing out.",
+      });
+      return;
+    }
+    void bridge.accountSignOutPreview().then(
+      (memberships) => {
+        if (live) setResult({ state: "ready", names: memberships.map(({ name }) => name) });
+      },
+      (reason: unknown) => {
+        if (live)
+          setResult({
+            state: "error",
+            message:
+              reason instanceof Error
+                ? reason.message
+                : "This Mac’s device memberships could not be read.",
+          });
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [bridge]);
+  return result;
+}
+
+/** "Home", "Home and Studio", "Home, Studio and Lab". */
+function namesInWords(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? "";
+  return `${names.slice(0, -1).join(", ")} and ${names.at(-1)!}`;
+}
+
 /**
- * Signing out is the one move here that hides things, so it says exactly what
- * it hides, and that nothing stops or is deleted, before it does it.
+ * Signing out of the Account leaves every Opensteer this Mac joined through
+ * it, so it names each one, and what is deleted, before it does it.
  */
 export function SignOutDialog({
+  bridge = null,
   onClose,
   onConfirm,
+  snapshot = null,
 }: {
+  readonly bridge?: Pick<OpensteerDesktopBridge, "accountSignOutPreview"> | null;
   readonly onClose: () => void;
   readonly onConfirm: () => Promise<void>;
+  readonly snapshot?: DeploymentAccessSnapshot | null;
 }) {
   const titleId = useId();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const inventory = useAccountLeaves(bridge);
+  const leaves = inventory.state === "ready" ? inventory.names : null;
+  const email = snapshot?.account.email ?? null;
+  const hosts = snapshot?.personalSetup?.deploymentId != null;
   return (
     <Dialog
       footer={
@@ -102,8 +158,8 @@ export function SignOutDialog({
             Cancel
           </button>
           <button
-            className="btn btn--primary"
-            disabled={pending}
+            className={leaves && leaves.length > 0 ? "btn btn--danger" : "btn btn--primary"}
+            disabled={pending || inventory.state !== "ready"}
             onClick={() => {
               setPending(true);
               setError(null);
@@ -130,12 +186,23 @@ export function SignOutDialog({
       }
       labelledBy={titleId}
       onClose={onClose}
-      title="Sign out on this computer?"
+      title={
+        <span id={titleId}>{email ? `Sign out of ${email}?` : "Sign out on this computer?"}</span>
+      }
     >
-      <p>
-        Your other computers and servers will be hidden here until you sign in again. They keep
-        running, and nothing is deleted.
-      </p>
+      {inventory.state === "loading" ? (
+        <p role="status">Checking this Mac’s device memberships…</p>
+      ) : inventory.state === "error" ? (
+        <ErrorNotice message={inventory.message} />
+      ) : leaves && leaves.length > 0 ? (
+        <p>
+          This Mac is removed from {namesInWords(leaves)}. Browser profiles kept on this Mac for{" "}
+          {leaves.length === 1 ? "it" : "them"} are deleted.
+          {hosts ? " The Opensteer this Mac runs keeps running." : ""}
+        </p>
+      ) : (
+        <p>Your other Opensteers will be hidden here until you sign in again. They keep running.</p>
+      )}
       <ErrorNotice message={error} />
     </Dialog>
   );

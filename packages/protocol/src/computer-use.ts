@@ -1,3 +1,4 @@
+import { DeviceRefusalContextSchema } from "./devices.js";
 import {
   macWindowVideoParams,
   macWindowVideoResults,
@@ -372,6 +373,8 @@ function utf8ByteLength(value: string): number {
  * answer was lost may already have happened in the app.
  */
 export const ComputerUseErrorCodeSchema = z.enum([
+  "device-access-off",
+  "device-offline",
   "permission-required",
   "app-not-allowed",
   "app-not-found",
@@ -400,6 +403,8 @@ export type ComputerUseErrorCode = z.infer<typeof ComputerUseErrorCodeSchema>;
 export const ComputerUseErrorSchema = z.strictObject({
   error: z.strictObject({
     code: ComputerUseErrorCodeSchema,
+    machineId: DeviceRefusalContextSchema.shape.machineId.optional(),
+    capability: DeviceRefusalContextSchema.shape.capability.optional(),
     message: z.string().min(1).max(1_000),
   }),
 });

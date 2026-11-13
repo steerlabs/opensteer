@@ -49,6 +49,7 @@ import { AppMark } from "../computer-apps/computer-use-section.js";
 import { computerIcon } from "../computers/device-art.js";
 import { DeviceLabel } from "../computers/device-label.js";
 import { useHereId } from "../computers/here.js";
+import { WebTabNotice } from "../devices/web-tab-notice.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { SiteMark } from "../site-mark.js";
@@ -201,7 +202,7 @@ const appsShown = { first: 5, other: 3 } as const;
 
 /** A computer's own page: its apps, and the steps when it needs its owner. */
 function computerPage(machineId: string): string {
-  return `/settings/devices/computers/${encodeURIComponent(machineId)}`;
+  return `/settings/devices/${encodeURIComponent(machineId)}`;
 }
 
 /**
@@ -531,6 +532,7 @@ export const StartPage = memo(function StartPage({
         <span className="launcher__spacer" />
         {trailing}
       </div>
+      <WebTabNotice hostClient={hostClient} />
       <div className="start-page" onKeyDown={onPageKey} ref={stageRef}>
         <div className="start-page__column">
           <form
@@ -654,10 +656,10 @@ export const StartPage = memo(function StartPage({
                   No computer can browse right now.{" "}
                   <button
                     className="start-page__link"
-                    onClick={() => void navigate("/settings/devices/computers")}
+                    onClick={() => void navigate("/settings/devices")}
                     type="button"
                   >
-                    Computers
+                    Devices
                   </button>
                 </p>
               ) : null}

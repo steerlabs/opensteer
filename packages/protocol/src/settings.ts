@@ -178,7 +178,15 @@ export const DevicesOverviewViewSchema = z.object({
         ownership: true,
         status: true,
         allowedModules: true,
+        kind: true,
+        access: true,
         revocable: true,
+      }).extend({
+        access: MachineSummarySchema.shape.access
+          .unwrap()
+          .pick({ policy: true, revision: true })
+          .nullable()
+          .optional(),
       }),
     )
     .max(400),

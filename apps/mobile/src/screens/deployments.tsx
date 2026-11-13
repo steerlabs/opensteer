@@ -1,7 +1,6 @@
-import { useHeaderHeight } from "@react-navigation/elements";
 import { useNavigation, useRoute } from "@react-navigation/native";
+import { hostsDeployment } from "@opensteer/client/computers";
 import type { AccountDeploymentDirectoryUnavailable } from "@opensteer/client/connections";
-import type { DesktopAccountAuthState } from "@opensteer/protocol/desktop";
 import {
   memo,
   useCallback,
@@ -15,6 +14,7 @@ import {
 import {
   AccessibilityInfo,
   Alert,
+  AppState,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -22,6 +22,8 @@ import {
   View,
 } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
+import { thisPhoneNoun } from "../computers/phone-noun.js";
+import { useIphoneApps, useIphoneAppsState } from "../iphone-apps/context.js";
 import {
   deploymentStatusDetail,
   deploymentStatusLabel,
@@ -48,6 +50,8 @@ import { UnreadDot } from "../threads/task-row.js";
 import {
   attentionReads,
   computerBadge,
+  homeLine,
+  sameAttention,
   type AttentionBadge,
   type ComputerAttention,
 } from "./computer-signals.js";
@@ -59,10 +63,10 @@ import {
   useMobileState,
   useSelectedHostClient,
 } from "../ui/mobile-client-context.js";
-import { AppText, Notice, RowGroup, SecondaryButton, StatusDot } from "../ui/primitives.js";
+import { AppText, Notice, RowGroup, StatusDot } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
-import { AccountIdentityRow, ManualDeploymentDoors } from "./add-deployment.js";
+import { AccountIdentityRow } from "./add-deployment.js";
 import {
   accountDirectoryUnavailablePresentation,
   accountIdentityLabel,
@@ -76,6 +80,7 @@ import {
 import { deploymentInitial, deploymentTone, statusTone } from "./deployment-row.js";
 import { deploymentRecoveryLabel, runDeploymentRecovery } from "./deployment-recovery.js";
 import { DeploymentMenu } from "./deployment-menu.js";
+import { phoneLeaves } from "./device-page-model.js";
 import { useSetupScanner } from "./setup-scanner.js";
 import { Welcome } from "./welcome.js";
 
@@ -147,9 +152,12 @@ const DeploymentListRow = memo(function DeploymentListRow(props: {
             <AppText role="caption" tone="muted">
               ·
             </AppText>
-            <AppText numberOfLines={1} role="caption" style={styles.kind} tone="muted">
-              {row.kindLabel}
-            </AppText>
+            <RowKind
+              current={props.current}
+              kindLabel={row.kindLabel}
+              name={row.name}
+              read={props.attention}
+            />
           </View>
           {detail === null ? null : (
             <AppText numberOfLines={2} role="caption" tone="muted">
@@ -235,22 +243,53 @@ function ShownBadge(props: { readonly host: HostClient }): ReactNode {
   return <Badge badge={computerBadge({ current: true, shown, read: undefined })} />;
 }
 
+function RowKind(props: {
+  readonly current: boolean;
+  readonly kindLabel: string;
+  readonly name: string;
+  readonly read: ComputerAttention | null | undefined;
+}): ReactNode {
+  const host = useSelectedHostClient();
+  if (props.current && host !== null) return <ShownKind {...props} host={host} />;
+  return <KindText text={homeLine(props.read, props.name) ?? props.kindLabel} />;
+}
+
+function ShownKind(props: {
+  readonly host: HostClient;
+  readonly kindLabel: string;
+  readonly name: string;
+}): ReactNode {
+  const shown = useHostSelector(props.host, shownAttention, sameAttention);
+  return <KindText text={homeLine(shown, props.name) ?? props.kindLabel} />;
+}
+
+function KindText(props: { readonly text: string }): ReactNode {
+  return (
+    <AppText numberOfLines={1} role="caption" style={styles.kind} tone="muted">
+      {props.text}
+    </AppText>
+  );
+}
+
 let shownHeld: { readonly source: HostSnapshot; readonly value: ComputerAttention } | null = null;
 function shownAttention(snapshot: HostSnapshot): ComputerAttention {
-  if (shownHeld !== null && sameTaskListSource(shownHeld.source, snapshot)) {
-    const needsYou = snapshot.needsYou?.count ?? 0;
-    if (needsYou === shownHeld.value.needsYou) return shownHeld.value;
-  }
+  const needsYou = snapshot.needsYou?.count ?? 0;
+  const homeName = snapshot.machines.find(hostsDeployment)?.name ?? null;
+  if (
+    shownHeld !== null &&
+    sameTaskListSource(shownHeld.source, snapshot) &&
+    needsYou === shownHeld.value.needsYou &&
+    homeName === shownHeld.value.homeName
+  )
+    return shownHeld.value;
   const value = {
-    needsYou: snapshot.needsYou?.count ?? 0,
+    homeName,
+    needsYou,
     unread: taskList(snapshot).ready.some((row) => row.unread),
   };
   shownHeld = { source: snapshot, value };
   return value;
 }
-
-const sameAttention = (left: ComputerAttention, right: ComputerAttention): boolean =>
-  left.needsYou === right.needsYou && left.unread === right.unread;
 
 function Badge(props: { readonly badge: AttentionBadge }): ReactNode {
   const { badge } = props;
@@ -359,11 +398,11 @@ export function DeploymentsScreen(): ReactNode {
   const navigation = useNavigation();
   const route = useRoute();
   const { account, directory, rows, selection } = useMobileState();
+  const enrolledIn = useIphoneAppsState(useIphoneApps()).snapshot.enrollment?.deploymentId ?? null;
   const attention = useOtherComputersAttention(rows, selection.deploymentId);
   const switching = route.name === "DeploymentSwitcher";
   const listInsets = useListContentInsets(space[32]);
   const column = useReadingColumn();
-  const headerHeight = useHeaderHeight();
   const [refreshing, setRefreshing] = useState(false);
   const [startingAccountSignIn, setStartingAccountSignIn] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -518,32 +557,40 @@ export function DeploymentsScreen(): ReactNode {
 
   const confirmRemove = useCallback(
     (row: DeploymentRow) => {
-      Alert.alert(`Remove ${row.name}?`, "This phone forgets its address and your sign-in.", [
-        { style: "cancel", text: "Keep" },
-        {
-          onPress: () => {
-            void client
-              .remove(row.deploymentId)
-              .then(() => {
-                if (client.getSnapshot().selection.deploymentId === null) resetToDeployments();
-              })
-              .catch((error: unknown) => {
-                setFailure(operationDetail(error, "That deployment could not be removed."));
-              });
+      Alert.alert(
+        `Remove ${row.name}?`,
+        row.deploymentId === enrolledIn
+          ? `${phoneLeaves(thisPhoneNoun, row.name)} It also forgets the address and your sign-in.`
+          : `This ${thisPhoneNoun} forgets its address and your sign-in.`,
+        [
+          { style: "cancel", text: "Keep" },
+          {
+            onPress: () => {
+              void client
+                .remove(row.deploymentId)
+                .then(() => {
+                  if (client.getSnapshot().selection.deploymentId === null) resetToDeployments();
+                })
+                .catch((error: unknown) => {
+                  setFailure(operationDetail(error, "That deployment could not be removed."));
+                });
+            },
+            style: "destructive",
+            text: "Remove",
           },
-          style: "destructive",
-          text: "Remove",
-        },
-      ]);
+        ],
+      );
     },
-    [client],
+    [client, enrolledIn],
   );
 
   const confirmSignOut = useCallback(
     (row: DeploymentRow) => {
       Alert.alert(
         `Sign out of ${row.name}?`,
-        "This phone ends its session there and forgets the sign-in. The deployment stays in this list.",
+        row.deploymentId === enrolledIn
+          ? `${phoneLeaves(thisPhoneNoun, row.name)} It stays in this list.`
+          : `This ${thisPhoneNoun} ends its session there and forgets the sign-in. It stays in this list.`,
         [
           { style: "cancel", text: "Stay signed in" },
           {
@@ -561,7 +608,7 @@ export function DeploymentsScreen(): ReactNode {
         ],
       );
     },
-    [client],
+    [client, enrolledIn],
   );
 
   const showDetails = useCallback((row: DeploymentRow): void => {
@@ -586,7 +633,7 @@ export function DeploymentsScreen(): ReactNode {
 
   const identity = account.account.identity;
   const presentation = deploymentsPresentation(rows.length, identity !== null);
-  const welcome = presentation === "welcome" && !switching;
+  const welcome = presentation !== "list" && !switching;
 
   // The first run titles itself; a bar title above it would say it twice.
   useLayoutEffect(() => {
@@ -620,30 +667,24 @@ export function DeploymentsScreen(): ReactNode {
   }
 
   if (presentation === "signed-in-empty") {
+    const listed = signedInDirectoryPresentation({
+      detail: directory.detail,
+      status: directory.status,
+      unavailableCount: directory.unavailable.length,
+    });
     return (
-      <Screen>
-        <ScrollView
-          // The bar's height is stated as padding rather than left to the
-          // automatic inset: the inset would add it to a container that is
-          // already the viewport's height, and centre the column in a box
-          // taller than the screen — visibly low on every phone.
-          contentContainerStyle={[styles.empty, column, { paddingTop: headerHeight }]}
-          contentInsetAdjustmentBehavior="never"
-        >
-          <SignedInEmptyDeployments
-            directoryDetail={directory.detail}
-            directoryStatus={directory.status}
-            failure={failure}
-            identity={identity!}
-            onPersonal={() => navigation.navigate("AddPersonal")}
-            onRefresh={refresh}
-            onScan={scan}
-            onServer={() => navigation.navigate("AddServer")}
-            refreshing={refreshing}
-            unavailable={directory.unavailable}
-          />
-        </ScrollView>
-      </Screen>
+      <SignedInWaiting onRefresh={refresh}>
+        <Welcome
+          account={account.account}
+          failure={directory.status === "error" ? listed.detail : failure}
+          onAccount={signInAccount}
+          onAddress={enterAddress}
+          onScan={scan}
+          portalOrigin={client.portalOrigin}
+          signedInAs={accountIdentityLabel(identity!)}
+          signingIn={false}
+        />
+      </SignedInWaiting>
     );
   }
 
@@ -693,59 +734,23 @@ export function DeploymentsScreen(): ReactNode {
   );
 }
 
-function SignedInEmptyDeployments(props: {
-  readonly directoryDetail: string | null;
-  readonly directoryStatus: "error" | "idle" | "loading" | "ready";
-  readonly failure: string | null;
-  readonly identity: NonNullable<DesktopAccountAuthState["account"]["identity"]>;
-  readonly onPersonal: () => void;
+/** The Account is read again while this is on screen and on return, so it advances by itself. */
+function SignedInWaiting(props: {
+  readonly children: ReactNode;
   readonly onRefresh: () => void;
-  readonly onScan: () => void;
-  readonly onServer: () => void;
-  readonly refreshing: boolean;
-  readonly unavailable: readonly AccountDeploymentDirectoryUnavailable[];
 }): ReactNode {
-  const presentation = signedInDirectoryPresentation({
-    detail: props.directoryDetail,
-    status: props.directoryStatus,
-    unavailableCount: props.unavailable.length,
-  });
-  const refreshing = props.refreshing || presentation.refreshDisabled;
-  return (
-    <>
-      {props.failure === null ? null : (
-        <Notice detail={props.failure} title="Your Account list could not be refreshed" />
-      )}
-      <RowGroup>
-        {[
-          <AccountIdentityRow
-            email={accountIdentityLabel(props.identity)}
-            issuer={props.identity.issuer}
-            key="account"
-          />,
-        ]}
-      </RowGroup>
-      <AppText role="displayLarge">{presentation.title}</AppText>
-      <AppText role="secondary" tone="muted">
-        {presentation.detail}
-      </AppText>
-      <UnavailableAccountDeployments entries={props.unavailable} hasAvailableRows={false} />
-      <View style={styles.refreshAction}>
-        <SecondaryButton
-          disabled={refreshing}
-          label={refreshing ? "Refreshing…" : presentation.refreshLabel}
-          onPress={props.onRefresh}
-        />
-      </View>
-      <View style={styles.emptyActions}>
-        <ManualDeploymentDoors
-          onPersonal={props.onPersonal}
-          onScan={props.onScan}
-          onServer={props.onServer}
-        />
-      </View>
-    </>
-  );
+  const { onRefresh } = props;
+  useEffect(() => {
+    const timer = setInterval(onRefresh, 20_000);
+    const foreground = AppState.addEventListener("change", (state) => {
+      if (state === "active") onRefresh();
+    });
+    return () => {
+      clearInterval(timer);
+      foreground.remove();
+    };
+  }, [onRefresh]);
+  return props.children;
 }
 
 function UnavailableAccountDeployments(props: {
@@ -778,8 +783,6 @@ function UnavailableAccountDeployments(props: {
 
 const styles = StyleSheet.create({
   copy: { flex: 1, gap: space[2], minWidth: 0 },
-  empty: { flexGrow: 1, gap: space[16], justifyContent: "center" },
-  emptyActions: { paddingTop: space[8] },
   indicator: { alignItems: "center", justifyContent: "center", width: space[20] },
   kind: { flexShrink: 1 },
   list: { gap: space[12], paddingTop: space[12] },
@@ -808,7 +811,6 @@ const styles = StyleSheet.create({
     paddingLeft: space[12],
     paddingVertical: space[10],
   },
-  refreshAction: { alignItems: "flex-start", paddingTop: space[4] },
   row: {
     alignItems: "center",
     flexDirection: "row",

@@ -1,6 +1,7 @@
+import { assertDeviceSessionAllowed } from "@opensteer/client/computers";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import type { PasswordSignInAccount } from "@opensteer/client/host";
-import { createId } from "@opensteer/core";
+import { createId, DeploymentIdSchema, RunnerIdSchema } from "@opensteer/core";
 import { hostApi } from "@opensteer/protocol";
 import {
   DesktopDownloadSchema,
@@ -59,6 +60,21 @@ interface DesktopPreviewBridgeOptions {
   /** Delay between observable simulator phases. Browser previews use the
    * default; focused tests can shorten it without changing the state model. */
   readonly transitionDelayMs?: number;
+  readonly leaveDevice?: (deploymentId: string) => Promise<void>;
+  readonly confirmDevice?: (deploymentId: string) => Promise<void>;
+  /** A mock Host the setup's enrollment token belongs to: its Runner connects there. */
+  readonly connectRunner?: (token: string) => string;
+  /**
+   * Opens already attached to one Deployment, as the mock build does: this
+   * Mac either hosts it, is a device of it (`runnerId`), or is new to it.
+   */
+  readonly attached?: {
+    readonly id: string;
+    readonly name: string;
+    readonly origin: string;
+    readonly hosting: { readonly environmentId: string } | null;
+    readonly runnerId: string | null;
+  };
 }
 
 /** The setup panel's preview: Messages, with this app switched on as the wrong row. */
@@ -91,6 +107,12 @@ export function desktopPreviewBridge(
   if (!enabled || new URLSearchParams(search).get(previewParameter) !== "first-run") return null;
 
   const transitionDelayMs = Math.max(0, options.transitionDelayMs ?? 280);
+  const query = new URLSearchParams(search);
+  // `&desktop-preview-account=one|several` lists Opensteers on the Account once
+  // signed in; `&desktop-preview-membership=removed` starts them removed.
+  const accountListing = previewAccountListing(query.get("desktop-preview-account"));
+  const startRemoved = query.get("desktop-preview-membership") === "removed";
+  const accountDeploymentIds = new Set<string>();
   const personalDeploymentId = createId("deployment");
   const privateDeploymentId = createId("deployment");
   const previewEnvironmentId = createId("environment");
@@ -124,10 +146,81 @@ export function desktopPreviewBridge(
     const { deploymentId } = DesktopLocalExecutionInputSchema.parse(input);
     const existing = localExecutions.get(deploymentId);
     if (existing) return existing;
-    const created = initialLocalExecutionStatus(deploymentId);
+    const created = initialLocalExecutionStatus(
+      deploymentId,
+      startRemoved && accountDeploymentIds.has(deploymentId) ? "removed" : "none",
+    );
     localExecutions.set(deploymentId, created);
     return created;
   };
+
+  if (options.attached) {
+    const attached = options.attached;
+    const summary = deployment({
+      id: DeploymentIdSchema.parse(attached.id),
+      kind: "personal",
+      name: attached.name,
+      onThisComputer: attached.hosting !== null,
+      origin: attached.origin,
+    });
+    if (!attached.hosting) accountDeploymentIds.add(summary.id);
+    selection = DesktopDeploymentSelectionSchema.parse({
+      deployments: [summary],
+      revision: 1,
+      schemaVersion: 1,
+      selectedDeploymentId: summary.id,
+    });
+    signedInDeployments.add(summary.id);
+    hostAuth = { deploymentId: summary.id, status: "signed-in" };
+    accountAuth = DesktopAccountAuthStateSchema.parse({
+      ...accountAuth,
+      account: {
+        available: true,
+        detail: null,
+        identity: previewAccountIdentity(),
+        status: "signed-in",
+      },
+    });
+    if (attached.hosting) {
+      personal = DesktopPersonalDeploymentStatusSchema.parse({
+        ...stoppedPersonalStatus(),
+        canStart: false,
+        components: {
+          browser: { state: "ready", version: null },
+          host: { state: "ready", version: "preview" },
+          messaging: { state: "ready", version: null },
+          postgresql: { state: "ready", version: "18" },
+          runner: { state: "ready", version: "preview" },
+        },
+        deploymentId: summary.id,
+        environmentId: attached.hosting.environmentId,
+        state: "ready",
+        step: "ready",
+      });
+    } else {
+      const runnerId = attached.runnerId ? RunnerIdSchema.parse(attached.runnerId) : null;
+      const status = initialLocalExecutionStatus(
+        summary.id,
+        runnerId ? "active" : "none",
+        runnerId,
+      );
+      localExecutions.set(
+        summary.id,
+        runnerId
+          ? DesktopLocalExecutionStatusSchema.parse({
+              ...status,
+              runner: {
+                detail: "This Mac is one of your devices.",
+                enrolled: true,
+                environmentId: null,
+                runnerId,
+                state: "running",
+              },
+            })
+          : status,
+      );
+    }
+  }
 
   const passwordsListeners = new Set<(status: DesktopPasswordsStatus) => void>();
   const passwords = previewPasswordsStatus(search);
@@ -179,8 +272,7 @@ export function desktopPreviewBridge(
                 : "idle";
         return {
           ...candidate,
-          // The preview has no Account behind it, so no row is an Account listing.
-          accountAccess: null,
+          accountAccess: accountDeploymentIds.has(candidate.id) ? "owner" : null,
           availableActions: selected
             ? status === "connecting"
               ? (["cancel"] as const)
@@ -204,7 +296,12 @@ export function desktopPreviewBridge(
                     retryable: true,
                   }
                 : null,
-          source: candidate.onThisComputer ? "this-device" : "manual",
+          source: candidate.onThisComputer
+            ? "this-device"
+            : accountDeploymentIds.has(candidate.id)
+              ? "account"
+              : "manual",
+          ...(candidate.onThisComputer ? {} : { capabilities: ["devices-v1"] }),
           status,
           statusInfo:
             candidate.onThisComputer && personal.state !== "ready"
@@ -277,6 +374,26 @@ export function desktopPreviewBridge(
     selectHost(deployment);
   }
 
+  function listAccountDeployments() {
+    if (accountDeploymentIds.size > 0 || accountListing.length === 0) return;
+    const listed = accountListing.map((name, index) => {
+      const id = createId("deployment");
+      accountDeploymentIds.add(id);
+      return deployment({
+        id,
+        kind: "personal",
+        name,
+        onThisComputer: false,
+        origin: `https://${["home", "studio"][index] ?? "home"}.connect.opensteer.invalid`,
+      });
+    });
+    selection = DesktopDeploymentSelectionSchema.parse({
+      ...selection,
+      deployments: [...selection.deployments, ...listed],
+      revision: selection.revision + 1,
+    });
+  }
+
   const bridge = {
     downloads: desktopPreviewDownloads(),
     onPersonalTabCommand: () => () => undefined,
@@ -301,6 +418,7 @@ export function desktopPreviewBridge(
     addDirect: async (input) => {
       const parsed = DesktopAddDirectRouteInputSchema.parse(input);
       const target = deploymentById(selection, parsed.deploymentId);
+      assertDeviceSessionAllowed(localExecutionFor({ deploymentId: target.id }).membership);
       const routes = [
         ...target.routes
           .filter(({ origin }) => origin !== parsed.origin)
@@ -324,6 +442,7 @@ export function desktopPreviewBridge(
     signIn: async () => {
       updateAuthAccount("authorizing", "Complete authorization in your browser.");
       schedule(1, () => {
+        listAccountDeployments();
         updateAuthAccount("signed-in", null);
       });
     },
@@ -361,6 +480,25 @@ export function desktopPreviewBridge(
 
     hostRequest: async (input) => {
       const request = DesktopHostHttpRequestSchema.parse(input);
+      // The summaries main lets the chooser read from an Opensteer it hasn't opened.
+      const summaryOf =
+        request.method === "POST" && request.expectedDeploymentId
+          ? selection.deployments.find(({ id }) => id === request.expectedDeploymentId)
+          : undefined;
+      if (summaryOf && accountDeploymentIds.has(summaryOf.id)) {
+        const path = new URL(request.path, previewRequestBase).pathname;
+        if (path === "/v1/rpc/attention.get")
+          return jsonResponse(200, {
+            data: {
+              homeName: previewHomeNames[summaryOf.name] ?? null,
+              needsYou: 0,
+              unread: false,
+            },
+            ok: true,
+          });
+        if (path === "/v1/rpc/teams.links.list")
+          return jsonResponse(200, { data: { links: [] }, ok: true });
+      }
       const selected = selectedDeployment(selection);
       if (!selected || hostAuth.deploymentId !== selected.id || hostAuth.status !== "signed-in") {
         return jsonResponse(401, {
@@ -497,6 +635,7 @@ export function desktopPreviewBridge(
     select: async (input) => {
       const parsed = DesktopSelectDeploymentInputSchema.parse(input);
       const target = deploymentById(selection, parsed.deploymentId);
+      assertDeviceSessionAllowed(localExecutionFor({ deploymentId: target.id }).membership);
       selection = DesktopDeploymentSelectionSchema.parse({
         ...selection,
         deployments: selection.deployments.map((candidate) =>
@@ -546,6 +685,22 @@ export function desktopPreviewBridge(
     },
 
     signOut: async () => {
+      // Account sign-out leaves every Account-sourced Opensteer this Mac joined.
+      for (const id of accountDeploymentIds) {
+        const status = localExecutions.get(id);
+        if (status?.membership?.state === "active")
+          void bridge.leaveDeployment({ deploymentId: status.deploymentId });
+      }
+      selection = DesktopDeploymentSelectionSchema.parse({
+        ...selection,
+        deployments: selection.deployments.filter(({ id }) => !accountDeploymentIds.has(id)),
+        revision: selection.revision + 1,
+        selectedDeploymentId:
+          selection.selectedDeploymentId && accountDeploymentIds.has(selection.selectedDeploymentId)
+            ? null
+            : selection.selectedDeploymentId,
+      });
+      accountDeploymentIds.clear();
       updateAuthAccount("signed-out", null);
     },
 
@@ -560,26 +715,137 @@ export function desktopPreviewBridge(
       emitAccess();
     },
 
-    startLocalRunner: async (input) => {
-      const parsed = DesktopStartLocalRunnerInputSchema.parse(input);
-      if (selection.selectedDeploymentId !== parsed.deploymentId) {
-        throw new Error("The selected deployment changed before local agents could start.");
+    signDeviceSessionBinding: async (input) => {
+      const status = localExecutionFor({ deploymentId: input.deploymentId });
+      if (status.membership?.state !== "active")
+        throw new Error("This Mac is not a device of that Opensteer.");
+      return { issuedAt: new Date().toISOString(), signature: "p".repeat(86) };
+    },
+    retryDeviceConnection: async (input) => {
+      const current = localExecutionFor(input);
+      if (current.membership?.sessionState !== "confirming")
+        throw new Error("No membership confirmation is pending.");
+      await options.confirmDevice?.(current.deploymentId);
+    },
+    leaveDeployment: async (input) => {
+      const current = localExecutionFor(input);
+      const leaving = DesktopLocalExecutionStatusSchema.parse({
+        ...current,
+        membership: {
+          generation: (current.membership?.generation ?? 0) + 1,
+          leaveUnconfirmed: true,
+          runnerId: current.membership?.runnerId ?? null,
+          state: "leaving",
+        },
+        runner: inertRunner("Signed out of this Opensteer."),
+      });
+      updateLocalExecution(leaving);
+      if (hostAuth.deploymentId === leaving.deploymentId) {
+        signedInDeployments.delete(leaving.deploymentId);
+        hostAuth = { deploymentId: leaving.deploymentId, status: "signed-out" };
+        emitAuth();
       }
-      const localExecution = DesktopLocalExecutionStatusSchema.parse({
-        ...localExecutionFor({ deploymentId: parsed.deploymentId }),
-        runAgents: parsed.runAgents,
-        runner: {
-          detail: "Local agents are ready in this development preview.",
+      try {
+        if (!options.leaveDevice)
+          throw new Error("Removal is unconfirmed: the preview Host has not acknowledged it.");
+        await options.leaveDevice(leaving.deploymentId);
+        const latest = localExecutionFor(input);
+        if (latest.membership?.state === "leaving")
+          updateLocalExecution(
+            DesktopLocalExecutionStatusSchema.parse({
+              ...latest,
+              membership: { ...latest.membership, leaveUnconfirmed: false, state: "removed" },
+            }),
+          );
+      } catch (error) {
+        updateLocalExecution({
+          ...localExecutionFor(input),
+          runner: inertRunner(
+            `Signed out here. Removal from the Host is unconfirmed. ${error instanceof Error ? error.message : ""}`,
+          ),
+        });
+      }
+    },
+    prepareDeviceSetup: async (input) => {
+      const parsed = DesktopStartLocalRunnerInputSchema.parse(input);
+      if (parsed.enrollmentToken)
+        throw new Error("Prepare this Mac before requesting its enrollment.");
+      const status = localExecutionFor({ deploymentId: parsed.deploymentId });
+      assertDeviceSessionAllowed(status.membership);
+      const runnerId = status.membership?.runnerId ?? createId("runner");
+      updateLocalExecution({
+        ...status,
+        membership: {
+          generation: status.membership?.generation ?? 1,
+          state: "active",
+          runnerId,
+          enrolled: status.runner.enrolled,
+          sessionState: "ready",
+        },
+      });
+      return { runnerId, publicKeyPem: "preview-device-public-key" };
+    },
+    accountSignOutPreview: async () =>
+      [...localExecutions.values()]
+        .filter(
+          (status) =>
+            accountDeploymentIds.has(status.deploymentId) &&
+            (status.membership?.state === "active" || status.membership?.state === "waiting"),
+        )
+        .map((status) => ({
+          deploymentId: status.deploymentId,
+          name:
+            selection.deployments.find(({ id }) => id === status.deploymentId)?.name ??
+            "an Opensteer",
+        })),
+    setUpDevice: async (input) => {
+      const parsed = DesktopStartLocalRunnerInputSchema.parse(input);
+      const current = localExecutionFor({ deploymentId: parsed.deploymentId });
+      if (current.membership?.state === "leaving")
+        throw new Error("This Mac’s leave is still unconfirmed.");
+      if (current.membership?.sessionState === "confirming")
+        throw new Error("Waiting for the Runner to confirm this Mac is still a device.");
+      if (!parsed.enrollmentToken) {
+        const removed = current.membership?.state === "removed";
+        const resumed = DesktopLocalExecutionStatusSchema.parse({
+          ...current,
+          membership: {
+            generation: (current.membership?.generation ?? 0) + (removed ? 1 : 0),
+            state: "active",
+            runnerId: removed ? null : (current.membership?.runnerId ?? null),
+            enrolled: removed ? false : current.runner.enrolled,
+            sessionState: "ready",
+          },
+          ...(removed ? { runner: inertRunner("Finish setting up this Mac.") } : {}),
+        });
+        updateLocalExecution(resumed);
+        return resumed;
+      }
+      assertDeviceSessionAllowed(current.membership);
+      const runnerId = RunnerIdSchema.parse(
+        options.connectRunner?.(parsed.enrollmentToken) ?? previewRunnerId,
+      );
+      const joined = DesktopLocalExecutionStatusSchema.parse({
+        ...current,
+        membership: {
+          generation: (current.membership?.generation ?? 0) + 1,
+          runnerId,
+          state: "active",
           enrolled: true,
-          environmentId: previewEnvironmentId,
-          runnerId: previewRunnerId,
+          sessionState: "ready",
+        },
+        runAgents: false,
+        runner: {
+          detail: "This Mac is one of your devices.",
+          enrolled: true,
+          environmentId: null,
+          runnerId,
           state: "running",
         },
       });
-      updateLocalExecution(localExecution);
-      return localExecution;
+      updateLocalExecution(joined);
+      return joined;
     },
-
     createPersonalDeployment: async () => {
       const generation = ++personalGeneration;
       personal = DesktopPersonalDeploymentStatusSchema.parse({
@@ -689,22 +955,6 @@ export function desktopPreviewBridge(
         emitPersonal();
         selectHost(created, "signed-in");
       });
-    },
-
-    stopLocalRunner: async (input) => {
-      const parsed = DesktopLocalExecutionInputSchema.parse(input);
-      const localExecution = DesktopLocalExecutionStatusSchema.parse({
-        ...localExecutionFor(parsed),
-        runner: {
-          detail: "Local agents are off.",
-          enrolled: false,
-          environmentId: null,
-          runnerId: null,
-          state: "disabled",
-        },
-      });
-      updateLocalExecution(localExecution);
-      return localExecution;
     },
 
     // Every place the preview lists is on this computer or answers at once.
@@ -973,8 +1223,17 @@ function stoppedPersonalStatus(): DesktopPersonalDeploymentStatus {
 
 function initialLocalExecutionStatus(
   deploymentId: DesktopLocalExecutionStatus["deploymentId"],
+  membership: "none" | "active" | "removed" = "none",
+  runnerId: DesktopLocalExecutionStatus["runner"]["runnerId"] = null,
 ): DesktopLocalExecutionStatus {
   return DesktopLocalExecutionStatusSchema.parse({
+    membership: {
+      generation: 0,
+      runnerId,
+      state: membership,
+      enrolled: runnerId !== null,
+      sessionState: "ready",
+    },
     available: true,
     computerName: "Preview MacBook",
     deploymentId,
@@ -990,6 +1249,22 @@ function initialLocalExecutionStatus(
     },
     schemaVersion: 4,
   });
+}
+
+function inertRunner(detail: string): DesktopLocalExecutionStatus["runner"] {
+  return { detail, enrolled: false, environmentId: null, runnerId: null, state: "disabled" };
+}
+
+const previewHomeNames: Readonly<Record<string, string>> = {
+  "Tim’s Opensteer": "Mac mini",
+  Home: "Mac mini",
+  Studio: "Studio",
+};
+
+function previewAccountListing(value: string | null): readonly string[] {
+  if (value === "one") return ["Tim’s Opensteer"];
+  if (value === "several") return ["Home", "Studio"];
+  return [];
 }
 
 function signedOutAccountAuth(): DesktopAccountAuthState {

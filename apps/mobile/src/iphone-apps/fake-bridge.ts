@@ -9,17 +9,9 @@ import type {
   IphoneAppsSnapshot,
   IphonePairingTarget,
   IphonePermission,
-} from "../platform/iphone-apps.js";
+} from "../platform/iphone-apps-types.js";
 import { iphonePermissionOf } from "./controller.js";
 
-/**
- * A JS stand-in for the native iPhone apps module, for tests and mock mode
- * only. It keeps the bridge's contract — one Deployment at a time, a mint key
- * stable until discarded, signatures only for listed requests — and nothing
- * else: it holds no keys, opens no socket, prompts nothing and runs no app.
- * Production never constructs it; the composition root picks it only when the
- * build runs against the in-memory Host.
- */
 export interface FakeIphoneApps {
   readonly bridge: IphoneAppsBridge;
   /** What iOS, the native executor and the Host would do on their own. */
@@ -65,6 +57,7 @@ const iphoneAppIds: readonly IphoneAppId[] = [
 export function createFakeIphoneApps(
   options: {
     /** Connects as soon as an enrollment is stored, as a reachable Host would let it. */
+    readonly devicesV1?: boolean;
     readonly autoConnect?: boolean;
     readonly deviceName?: string;
     /** Mock mode: the in-memory Host for a Deployment, which this phone joins and answers. */
@@ -189,6 +182,8 @@ export function createFakeIphoneApps(
     }, 3_000);
   };
 
+  let issuance:
+    (IphonePairingTarget & { readonly devicesV1: boolean; readonly name: string }) | null = null;
   const bridge: IphoneAppsBridge = {
     getSnapshot: () => snapshot,
 
@@ -200,9 +195,13 @@ export function createFakeIphoneApps(
     async prepare({ deploymentId }) {
       calls.push("prepare");
       const held = snapshot.enrollment?.deploymentId ?? prepared?.deploymentId ?? null;
-      if (held !== null && held !== deploymentId) throw bridgeError("enrolled-elsewhere");
+      if (held !== null && held !== deploymentId) {
+        if (snapshot.enrollment !== null || issuance !== null)
+          throw bridgeError("enrolled-elsewhere");
+        prepared = null;
+      }
       prepared ??= { deploymentId, mintKey: fakeMintKey() };
-      return { mintKey: prepared.mintKey, runnerId };
+      return { mintKey: prepared.mintKey, runnerId, publicKeyPem: "fake-public-key" };
     },
 
     async enroll(input) {
@@ -238,6 +237,12 @@ export function createFakeIphoneApps(
       }
     },
 
+    async beginIssuance({ pairing, devicesV1, name }) {
+      issuance = { ...pairing, devicesV1, name };
+    },
+    async clearRemoved() {
+      set({ removedFrom: null });
+    },
     async discardPendingEnrollment() {
       calls.push("discardPendingEnrollment");
       if (prepared === null) throw bridgeError("not-prepared");
@@ -272,6 +277,57 @@ export function createFakeIphoneApps(
       if (options.erasesOnRestart === true && stopped.runnerId !== null)
         set({ pendingErasure: true });
       return stopped;
+    },
+
+    leave() {
+      calls.push("leave");
+      const held = snapshot.enrollment;
+      const pendingLeave =
+        held === null && issuance === null
+          ? null
+          : {
+              deploymentId: held?.deploymentId ?? issuance!.deploymentId,
+              hostUrl: held?.hostUrl ?? issuance!.hostUrl,
+              issuedAt: new Date().toISOString(),
+              runnerId: held?.runnerId ?? runnerId,
+              hostInstanceId: issuance?.hostInstanceId ?? hostInstanceId,
+              devicesV1: issuance?.devicesV1 ?? options.devicesV1 ?? true,
+              enrolled: held?.state === "enrolled",
+              mintKey: prepared?.mintKey ?? null,
+              ...(options.platform !== "android" ? { profile: "iphone" as const } : {}),
+              name: held?.name ?? issuance?.name ?? null,
+              ...(issuance?.devicesV1 && held?.state !== "enrolled"
+                ? { preparedIdentity: { runnerId, publicKeyPem: "fake-public-key" } }
+                : {}),
+              enrollmentId: held?.enrollmentId ?? null,
+              signature: "L".repeat(86),
+            };
+      const stopped = bridge.disconnect();
+      if (pendingLeave === null) return stopped;
+      const pendingLeaves = [...(snapshot.pendingLeaves ?? []), pendingLeave];
+      set({ pendingLeave: pendingLeaves[0] ?? null, pendingLeaves });
+      issuance = null;
+      return { ...stopped, leave: "persisted" as const };
+    },
+
+    async completeLeave({ runnerId: left }) {
+      calls.push("completeLeave");
+      const pendingLeaves = (snapshot.pendingLeaves ?? []).filter(
+        ({ runnerId }) => runnerId !== left,
+      );
+      set({ pendingLeaves, pendingLeave: pendingLeaves[0] ?? null });
+    },
+
+    async signSessionBinding({ deploymentId, sessionId }) {
+      calls.push(`signSessionBinding:${sessionId}`);
+      const held = snapshot.enrollment;
+      if (held?.state !== "enrolled") throw bridgeError("not-prepared");
+      if (held.deploymentId !== deploymentId) throw bridgeError("wrong-deployment");
+      return {
+        issuedAt: new Date().toISOString(),
+        runnerId: held.runnerId,
+        signature: "B".repeat(86),
+      };
     },
 
     async requestPermission(app) {
@@ -353,7 +409,13 @@ export function createFakeIphoneApps(
     },
 
     removedByHost() {
+      const held = snapshot.enrollment;
+      const removedFrom =
+        held === null
+          ? null
+          : { deploymentId: held.deploymentId, deploymentName: held.deploymentName };
       wipe("removed");
+      set({ removedFrom });
     },
     runnerId: () => runnerId,
     setLocationAccuracy(accuracy) {

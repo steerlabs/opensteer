@@ -5,6 +5,18 @@ import UIKit
 private struct PrepareInput: Record {
   @Field var deploymentId: String = ""
 }
+private struct IssuanceInput: Record {
+  @Field var name: String = ""
+  @Field var pairing: PairingInput = PairingInput()
+  @Field var devicesV1: Bool = false
+}
+private struct CompleteLeaveInput: Record {
+  @Field var runnerId: String = ""
+}
+private struct SessionBindingInput: Record {
+  @Field var deploymentId: String = ""
+  @Field var sessionId: String = ""
+}
 private struct PairingInput: Record {
   @Field var deploymentId: String = ""
   @Field var deploymentName: String = ""
@@ -56,6 +68,29 @@ public final class IphoneAppsModule: Module {
     Function("disconnect") { () -> [String: String?] in
       guard #available(iOS 17, *) else { return ["deploymentId": nil, "runnerId": nil] }
       return IphoneExecutorRuntime.shared.disconnect()
+    }
+    Function("leave") { () throws -> [String: String?] in
+      guard #available(iOS 17, *) else { return ["deploymentId": nil, "runnerId": nil] }
+      do { return try IphoneExecutorRuntime.shared.leave() } catch { throw Self.map(error) }
+    }
+    AsyncFunction("beginIssuance") { (input: IssuanceInput) throws -> Void in
+      guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }
+      do { try IphoneExecutorRuntime.shared.beginIssuance(pairing: input.pairing.dictionary, devicesV1: input.devicesV1, name: input.name) }
+      catch { throw Self.map(error) }
+    }
+    AsyncFunction("clearRemoved") { () throws -> Void in
+      guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }
+      do { try IphoneExecutorRuntime.shared.clearRemoved() } catch { throw Self.map(error) }
+    }
+    AsyncFunction("completeLeave") { (input: CompleteLeaveInput) throws -> Void in
+      guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }
+      do { try IphoneExecutorRuntime.shared.completeLeave(runnerId: input.runnerId) }
+      catch { throw Self.map(error) }
+    }
+    AsyncFunction("signSessionBinding") { (input: SessionBindingInput) throws -> [String: String] in
+      guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }
+      do { return try IphoneExecutorRuntime.shared.signSessionBinding(deploymentId: input.deploymentId, sessionId: input.sessionId) }
+      catch { throw Self.map(error) }
     }
     AsyncFunction("prepare") { (input: PrepareInput) throws -> [String: String] in
       guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }

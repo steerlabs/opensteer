@@ -217,6 +217,44 @@ describe("PushRegistration", () => {
     },
   );
 
+  it("applies Off durably and never asks for it, even after a send", async () => {
+    const granted = open();
+    await expect(granted.registration.choose(false)).resolves.toBe("off");
+    expect(granted.registry.registrations.at(-1)?.request).toMatchObject({
+      approvalsEnabled: false,
+      runOutcomesEnabled: false,
+    });
+
+    const undetermined = open({ permission: { canAskAgain: true, granted: false } });
+    await expect(undetermined.registration.choose(false)).resolves.toBe("off");
+    await undetermined.registration.afterSuccessfulSend();
+    expect(undetermined.state.requested).toBe(0);
+    expect(undetermined.registration.getSnapshot().preferences).toEqual({
+      approvalsEnabled: false,
+      runOutcomesEnabled: false,
+    });
+  });
+
+  it("reads On back as it settled: allowed, refused, or allowed but unreachable", async () => {
+    const asked = open({ permission: { canAskAgain: true, granted: false } });
+    await expect(asked.registration.choose(true)).resolves.toBe("on");
+    expect(asked.state.requested).toBe(1);
+
+    const refused = open({ permission: { canAskAgain: false, granted: false } });
+    await expect(refused.registration.choose(true)).resolves.toBe("denied");
+
+    const unreachable = open();
+    unreachable.registry.failure = new PushNotConfiguredError();
+    await expect(unreachable.registration.choose(true)).resolves.toBe("unavailable");
+
+    const unconfigured = open({
+      accountConfigured: false,
+      permission: { canAskAgain: true, granted: false },
+    });
+    await expect(unconfigured.registration.choose(true)).resolves.toBe("unavailable");
+    expect(unconfigured.state.requested).toBe(0);
+  });
+
   it("preserves the installation id from the previous registration file", async () => {
     const fixture = open();
     const installationId = "install-upgrade-0001";

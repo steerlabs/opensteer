@@ -1,3 +1,5 @@
+import type { SFSymbolName } from "../ui/symbol.js";
+
 /** Meaning colours only: green working, red broken, amber needs you, grey off. */
 export type NativeSettingsTone = "neutral" | "good" | "attention" | "bad";
 
@@ -55,6 +57,8 @@ export type NativeSettingsRow =
       readonly opens?: boolean;
       /** The integration whose mark leads the row. */
       readonly mark?: { readonly definitionId: string; readonly name: string };
+      /** The system symbol on a quiet tile that leads the row, where the platform draws one. */
+      readonly symbol?: SFSymbolName;
       readonly disabled?: boolean;
       readonly destructive?: boolean;
       readonly onPress: () => void;
@@ -76,6 +80,8 @@ export type NativeSettingsRow =
       readonly secure?: boolean;
       readonly value: string;
       readonly onChange: (value: string) => void;
+      /** Return on the keyboard, where the platform reports it. */
+      readonly onSubmit?: () => void;
     };
 export interface NativeSettingsSection {
   readonly key: string;

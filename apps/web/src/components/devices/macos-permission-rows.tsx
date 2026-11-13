@@ -1,0 +1,135 @@
+import { useCallback, useEffect, useState } from "react";
+import type {
+  DesktopComputerUsePermissionsResult,
+  OpensteerDesktopBridge,
+} from "@opensteer/protocol/desktop";
+import { Icon } from "../icon.js";
+import { SetupRow } from "../first-run/setup-list.js";
+
+export type MacosGrants = {
+  readonly accessibility: boolean;
+  readonly screenRecording: boolean;
+  readonly fullDiskAccess: boolean;
+} | null;
+
+/** Grants change in System Settings, so they are read again whenever this window regains focus. */
+export function useMacosGrants(bridge: OpensteerDesktopBridge | null): {
+  readonly grants: MacosGrants;
+  readonly reload: () => void;
+} {
+  const [grants, setGrants] = useState<MacosGrants>(null);
+  const reload = useCallback(() => {
+    if (bridge) void readMacosGrants(bridge).then(setGrants);
+  }, [bridge]);
+  useEffect(() => {
+    reload();
+    window.addEventListener("focus", reload);
+    return () => window.removeEventListener("focus", reload);
+  }, [reload]);
+  return { grants, reload };
+}
+
+export async function readMacosGrants(bridge: OpensteerDesktopBridge): Promise<MacosGrants> {
+  const [apps, disk]: [DesktopComputerUsePermissionsResult | null, { granted: boolean } | null] =
+    await Promise.all([
+      bridge.computerUsePermissionsGet().catch(() => null),
+      bridge.checkFullDiskAccess().catch(() => null),
+    ]);
+  return {
+    accessibility: apps?.accessibility === "granted",
+    screenRecording: apps?.screenRecording === "granted",
+    fullDiskAccess: disk?.granted === true,
+  };
+}
+
+export function missingMacosGrant(
+  grants: MacosGrants,
+  capability: "browser" | "apps" | "files",
+): boolean {
+  if (!grants) return false;
+  if (capability === "apps") return !grants.accessibility || !grants.screenRecording;
+  if (capability === "files") return !grants.fullDiskAccess;
+  return false;
+}
+
+export function MacosPermissionRows({
+  apps,
+  bridge,
+  files,
+  grants,
+  onAsked,
+}: {
+  readonly apps: boolean;
+  readonly bridge: OpensteerDesktopBridge;
+  readonly files: boolean;
+  readonly grants: MacosGrants;
+  readonly onAsked: () => void;
+}) {
+  const ask = (operation: () => Promise<unknown>) => void operation().then(onAsked, onAsked);
+  return (
+    <>
+      {apps ? (
+        <>
+          <GrantRow
+            allowed={grants?.accessibility ?? null}
+            detail="For Apps · lets your agent click and type"
+            onOpen={() =>
+              ask(() => bridge.computerUsePermissionsRequest({ pane: "accessibility" }))
+            }
+            title="Accessibility"
+          />
+          <GrantRow
+            allowed={grants?.screenRecording ?? null}
+            detail="For Apps · lets your agent and your phone see its windows"
+            onOpen={() =>
+              ask(() => bridge.computerUsePermissionsRequest({ pane: "screen-recording" }))
+            }
+            title="Screen Recording"
+          />
+        </>
+      ) : null}
+      {files ? (
+        <GrantRow
+          allowed={grants?.fullDiskAccess ?? null}
+          detail="For Files and commands · reach folders like Documents and Desktop"
+          onOpen={() => ask(() => bridge.requestFullDiskAccess())}
+          title="Full Disk Access"
+        />
+      ) : null}
+    </>
+  );
+}
+
+function GrantRow({
+  allowed,
+  detail,
+  onOpen,
+  title,
+}: {
+  readonly allowed: boolean | null;
+  readonly detail: string;
+  readonly onOpen: () => void;
+  readonly title: string;
+}) {
+  return (
+    <SetupRow
+      detail={detail}
+      title={title}
+      tone={allowed ? "ready" : "idle"}
+      trailing={
+        allowed === null ? (
+          <span aria-label="Checking" className="spinner" role="status" />
+        ) : allowed ? (
+          <span className="setup-done">
+            <Icon name="check" />
+            Allowed
+          </span>
+        ) : (
+          <button className="btn btn--small" onClick={onOpen} type="button">
+            Open System Settings
+          </button>
+        )
+      }
+    />
+  );
+}

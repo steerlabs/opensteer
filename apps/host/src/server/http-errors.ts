@@ -1,3 +1,4 @@
+import { DeviceAccessRefusal } from "../administration/device-access.js";
 import { HostApiErrorSchema } from "@opensteer/protocol";
 import { OpensteerError } from "@opensteer/core";
 import { formatIssues } from "@opensteer/shared/validationIssues";
@@ -42,6 +43,9 @@ export function normalizeHostError(error: unknown): NormalizedHostError {
     return {
       error: {
         code: error.code,
+        ...(error instanceof DeviceAccessRefusal
+          ? { machineId: error.machineId, capability: error.capability }
+          : {}),
         message: error.message,
         ...(error.reason === undefined ? {} : { reason: error.reason }),
         retryable: error.retryable,

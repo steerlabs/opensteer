@@ -1,3 +1,5 @@
+import { createId } from "@opensteer/core";
+import { DeviceAccessRefusal } from "../../administration/device-access.js";
 import { Worker } from "node:worker_threads";
 import { computerReplLimits } from "./messages.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -51,6 +53,17 @@ describe("computer REPL worker boundary", () => {
     expect(
       output(await service.execute({ runId: runId(), generation: 1 }, "return typeof n")),
     ).toBe('"undefined"');
+  });
+  it("preserves a device refusal through the worker and its strict result envelope", async () => {
+    const machineId = createId("runner");
+    const { run } = setup(async () => {
+      throw new DeviceAccessRefusal("device-access-off", machineId, "apps");
+    });
+    const result = await run("await apps()");
+    expect(result).toMatchObject({
+      isError: true,
+      structuredContent: { error: { code: "device-access-off", machineId, capability: "apps" } },
+    });
   });
   it("has no Node, network, filesystem or ambient timer capabilities", async () => {
     const { run } = setup();

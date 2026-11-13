@@ -287,18 +287,6 @@
 }
 
 /* The welcome's way back in for someone who already uses Opensteer elsewhere. */
-.desktop-welcome__account {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-8);
-  margin-top: var(--space-18);
-}
-
-.desktop-welcome__account .place-card {
-  width: 100%;
-  text-align: left;
-}
 
 .start-app-windows {
   width: 260px;

@@ -993,7 +993,7 @@ export async function stopRunsPastBackgroundDeadline(
 export async function stopHeldRun(
   database: Kysely<DatabaseSchema>,
   claims: Parameters<typeof assertActiveGrant>[1],
-  reason: "limit" | "queued-input",
+  reason: "limit" | "queued-input" | "device-access",
   links: ChannelLinks,
   executionNow: () => number = Date.now,
 ): Promise<BackgroundDeadlineStop | null> {

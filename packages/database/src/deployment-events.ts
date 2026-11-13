@@ -46,9 +46,24 @@ export async function appendHostDeploymentEvent(
       data: { ...input.data, latestRunCompletedAt: row.completedAt?.toISOString() ?? null },
     };
   }
+  // Replay needs the excluded count at this sequence, even after its Requests settle.
+  const deviceRequestCount =
+    input.type === "thread.state-changed" || input.type === "thread.listed"
+      ? await transaction
+          .selectFrom("requests")
+          .select(({ fn }) => fn.countAll<string>().as("count"))
+          .where("originatingThreadId", "=", input.threadId)
+          .where("status", "=", "pending")
+          .where("kind", "=", "device.access")
+          .executeTakeFirstOrThrow()
+      : null;
+  const data = await stampRunContext(transaction, input.type, input.runId, input.data);
   const event = AgentEventSchema.parse({
     ...input,
-    data: await stampRunContext(transaction, input.type, input.runId, input.data),
+    data:
+      deviceRequestCount && Number(deviceRequestCount.count) > 0
+        ? { ...data, pendingDeviceAccessRequests: Number(deviceRequestCount.count) }
+        : data,
     createdAt: createdAt.toISOString(),
     eventId: createId("event"),
     sequence: state.sequence,

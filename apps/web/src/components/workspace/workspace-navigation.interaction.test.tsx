@@ -99,7 +99,7 @@ describe("Settings returns to the workspace exactly as it was", () => {
     await settle();
     expect(history.slice(-2)).toEqual([
       { path: "/computers", search: "", type: "PUSH" },
-      { path: "/settings/devices/computers", search: "", type: "REPLACE" },
+      { path: "/settings/devices", search: "", type: "REPLACE" },
     ]);
     expect(element(".settings-layout")).toBeTruthy();
 

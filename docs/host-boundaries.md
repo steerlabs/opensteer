@@ -117,6 +117,19 @@ boundary. Older personal database lineages require Start fresh. Within an epoch:
 - Ignore unknown capabilities, never let one gate mandatory behavior, and never rely on an optional
   feature a peer did not advertise.
 
+Released Needs you readers require known Request kinds. A surface opts into `device.access` only
+when its UI can render and answer it; Host support alone is insufficient. Web, desktop and mobile
+declare `deviceAccessRequests: "include"` in their `HttpHostClient` options, and the shared client
+sends it only to a Host advertising `devices-v1`; raw `attention.get` callers must check that
+capability themselves. Legacy lists, snapshots, history, counts and live notifications omit it. Event
+counts retain their excluded-kind count at the original sequence so replay remains consistent after
+settlement. The durable Request still holds its Run, and filtering advances the event cursor.
+
+Account push installations do not negotiate Request kinds, so device-access Requests still push to
+every installation: a notification names only its task and Request, and a legacy phone that cannot
+render the kind opens the task instead. Withholding the alert would hide time-sensitive questions
+from current phones too.
+
 Runner proof format 2 is its own security boundary, separate from the epoch. The Host authenticates
 the complete raw descriptor JSON before one domain parse, so defaults, trimming and filtering cannot
 change what was signed. Mixed or missing proof formats get an update refusal; there is no v1
