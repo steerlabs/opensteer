@@ -895,6 +895,20 @@ describe("native browser picture presenter", () => {
     expect(hostClient.browserFrames.claim).toHaveBeenCalledOnce();
   });
 
+  it("draws its picture again when the view drops it and can show again in one batch", async () => {
+    const { container, decode, emit, render } = setup();
+    render("synchronized", true, { held: true });
+    emit();
+    await decode();
+    act(() => {
+      native.cleared?.({ nativeEvent: { generation: native.generation } });
+      native.shown?.({ nativeEvent: { generation: native.generation } });
+    });
+    expect(native.presented.map(({ bytes }) => [...bytes])).toEqual([[0xff, 0xd8, 0xff]]);
+    await decode();
+    expect(container.querySelector("img")).not.toBeNull();
+  });
+
   it("does not restore a cleared picture when its presented promise arrives late", async () => {
     const { container, decode, emit, hostClient, render } = setup();
     render("synchronized");

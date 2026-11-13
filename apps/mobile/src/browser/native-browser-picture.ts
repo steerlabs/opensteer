@@ -190,6 +190,8 @@ export function useNativeBrowserPicture(input: {
   const cleared = useCallback((event: { nativeEvent: { generation: number } }) => {
     if (event.nativeEvent.generation === generation.current) {
       clearVersion.current++;
+      // Read before the next render: the view may say it can draw again in the same batch.
+      drawnNow.current = null;
       setDrawn(null);
     }
   }, []);
