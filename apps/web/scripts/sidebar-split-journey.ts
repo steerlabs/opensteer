@@ -193,7 +193,10 @@ async function layout(page: Page): Promise<Layout> {
             fixed: line!.hasAttribute("data-fixed"),
           }
         : null,
-      valueNow: line ? Number(line.getAttribute("aria-valuenow")) : null,
+      valueNow:
+        line?.getAttribute("aria-valuenow") == null
+          ? null
+          : Number(line.getAttribute("aria-valuenow")),
       room,
       unused: room - tasksHeight - tabsOuter,
       tasksHeight,
@@ -544,6 +547,16 @@ function keptAsShown(state: Layout, step: string) {
   );
 }
 
+/** The line's value is the part of the room Tabs takes now, whether or not it can move. */
+function describedAsShown(state: Layout, step: string) {
+  const percent = Math.round((state.tabsHeight / (state.tasksHeight + state.tabsHeight)) * 100);
+  expectThat(
+    { step, valueNow: state.valueNow, percent },
+    state.valueNow === percent,
+    `${step}: the line's value is not the part Tabs takes`,
+  );
+}
+
 /** Tabs stands exactly where it stood. */
 function tabsStill(before: Layout, after: Layout, step: string) {
   expectThat(
@@ -610,9 +623,10 @@ try {
         "this journey needs both lists longer than their room",
       );
       noParts(state, "opening");
+      describedAsShown(opened, "opening, before the line is reached for");
       expectThat(
         { fixed: state.line?.fixed, cursor, valueNow: state.valueNow },
-        state.line?.fixed === false && cursor === "row-resize" && (state.valueNow ?? 0) > 0,
+        state.line?.fixed === false && cursor === "row-resize",
         "the line does not offer to move",
       );
       return { state, cursor };
@@ -823,6 +837,7 @@ try {
       "the double-click did not restore the default",
     );
     noParts(state, "after the reset");
+    describedAsShown(state, "after the reset");
     return { height: state.tabsHeight };
   });
 
@@ -901,6 +916,35 @@ try {
       keptAsShown(state, "after turning back");
       noParts(state, "after turning back");
       return { stored: state.stored, stats };
+    },
+  );
+
+  await check(
+    "in a window that holds Tabs under its kept height, a drag back to its start keeps what Tabs shows",
+    async () => {
+      await page.evaluate((key) => localStorage.setItem(key, "600"), heightKey);
+      await page.setViewportSize({ width: 1440, height: 720 });
+      await page.reload();
+      await ready(page);
+      const held = await layout(page);
+      await holdLine(page, [40, 0]);
+      const back = await layout(page);
+      await page.setViewportSize({ width: 1440, height: 1000 });
+      await settle(page);
+      const tall = await layout(page);
+      expectThat(
+        { stored: held.stored, height: held.tabsHeight },
+        held.stored === 600 && held.tabsHeight < 599.5,
+        "this check needs the window to hold Tabs under its kept height",
+      );
+      keptAsShown(back, "back at the start");
+      expectThat(
+        { back: back.tabsHeight, tall: tall.tabsHeight, stored: tall.stored },
+        Math.abs(tall.tabsHeight - back.tabsHeight) < 0.5,
+        "the taller window gave Tabs another height than the one it showed",
+      );
+      noParts(tall, "in the taller window");
+      return { held: held.tabsHeight, stored: back.stored };
     },
   );
 
@@ -1035,6 +1079,7 @@ try {
       );
       tabsStill(before, back, "back at full height");
       noParts(short, "in the shorter window");
+      describedAsShown(short, "in the shorter window");
       noParts(back, "back at full height");
       return { short: short.tabsHeight, before: before.tabsHeight };
     },
@@ -1104,6 +1149,7 @@ try {
         "Tabs did not shrink",
       );
       keptAsShown(shrunk, "shrunk");
+      describedAsShown(state, "with every tab in view");
       expectThat({ errors: tall.errors }, tall.errors.length === 0, "page errors");
       return { before: state.tabsHeight, shrunk: shrunk.tabsHeight };
     } finally {

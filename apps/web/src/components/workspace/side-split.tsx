@@ -36,8 +36,6 @@ function readTabsHeight(): number | null {
 interface Reach {
   /** The sections' container, which carries `--side-tabs-height`. */
   readonly lists: HTMLElement;
-  /** The height the pane above and Tabs divide. */
-  readonly room: number;
   /** Where the line stands: Tabs' height. */
   readonly start: number;
   /** Tabs' least height, its floor, and its most: all its rows, or what the pane above's floor leaves. */
@@ -68,15 +66,34 @@ export function SideSplit({ onCommit }: { readonly onCommit: (height: number | n
     if (!current) return;
     cancelAnimationFrame(current.frame);
     if (ref.current) follow(ref.current, current);
-    if (current.latest !== current.from) commit.current(current.latest);
+    // Once it has moved Tabs, what it shows is kept, even back where it started: a window
+    // that holds Tabs under the height kept is no start to return to.
+    if (current.moved) commit.current(current.latest);
   }, []);
   useEffect(() => finish, [finish]);
-  // Reached for, it says where it stands and whether it can move; a line that cannot never lights.
-  const probe = (divider: HTMLDivElement) => {
-    const reach = reachOf(divider);
-    divider.toggleAttribute("data-fixed", reach === null);
-    if (reach) describe(divider, reach.start, reach.room);
-  };
+  // Its value follows Tabs and the pane above as they are laid out, however they change.
+  useEffect(() => {
+    const divider = ref.current;
+    const above = divider?.previousElementSibling;
+    const tabs = divider?.nextElementSibling;
+    if (!divider || !(above instanceof HTMLElement) || !(tabs instanceof HTMLElement)) return;
+    const describe = () => {
+      const height = tabs.getBoundingClientRect().height;
+      const room = above.getBoundingClientRect().height + height;
+      const percent = room > 0 ? Math.round((height / room) * 100) : 0;
+      divider.setAttribute("aria-valuenow", String(percent));
+      divider.setAttribute("aria-valuetext", `Tabs ${percent}%`);
+    };
+    describe();
+    if (typeof ResizeObserver === "undefined") return;
+    const resize = new ResizeObserver(describe);
+    resize.observe(above);
+    resize.observe(tabs);
+    return () => resize.disconnect();
+  }, []);
+  // Reached for, it says whether it can move; a line that cannot never lights.
+  const probe = (divider: HTMLDivElement) =>
+    divider.toggleAttribute("data-fixed", reachOf(divider) === null);
 
   return (
     <div
@@ -97,7 +114,7 @@ export function SideSplit({ onCommit }: { readonly onCommit: (height: number | n
         const height = reach ? keyedHeight(reach, event.key) : null;
         if (!reach || height === null) return;
         event.preventDefault();
-        place(event.currentTarget, reach, height);
+        place(reach, height);
         onCommit(height);
       }}
       onLostPointerCapture={finish}
@@ -113,8 +130,8 @@ export function SideSplit({ onCommit }: { readonly onCommit: (height: number | n
         drag.current = {
           anchor: reach.start + event.clientY,
           frame: 0,
-          from: reach.start,
           latest: reach.start,
+          moved: false,
           pointerId: event.pointerId,
           y: event.clientY,
         };
@@ -143,14 +160,15 @@ export function SideSplit({ onCommit }: { readonly onCommit: (height: number | n
   );
 }
 
-/** A held line: Tabs' height where it was pressed and the one it keeps now. */
+/** A held line and the height it keeps now. */
 interface Drag {
   readonly pointerId: number;
   /** Tabs' height where the line was pressed, plus the pointer's height then. */
   readonly anchor: number;
-  readonly from: number;
   frame: number;
   latest: number;
+  /** Whether it has moved Tabs. */
+  moved: boolean;
   y: number;
 }
 
@@ -160,22 +178,15 @@ function follow(divider: HTMLElement, drag: Drag): void {
   if (!reach) return;
   const height = within(reach, drag.anchor - drag.y);
   if (height === reach.start) return;
-  place(divider, reach, height);
+  place(reach, height);
   drag.latest = height;
+  drag.moved = true;
 }
 
-function place(divider: HTMLElement, reach: Reach, height: number): void {
+function place(reach: Reach, height: number): void {
   fitWholeRows(reach.lists, () =>
     reach.lists.style.setProperty("--side-tabs-height", `${height}px`),
   );
-  describe(divider, height, reach.room);
-}
-
-/** The line's value for assistive technology: the part of the room Tabs takes. */
-function describe(divider: HTMLElement, height: number, room: number): void {
-  const percent = Math.round((height / room) * 100);
-  divider.setAttribute("aria-valuenow", String(percent));
-  divider.setAttribute("aria-valuetext", `Tabs ${percent}%`);
 }
 
 function within({ least, most }: Reach, height: number): number {
@@ -211,7 +222,7 @@ function reachOf(divider: HTMLElement): Reach | null {
   const least = floorOf(tabs);
   const most = Math.max(least, Math.min(fullHeightOf(tabs), room - floorOf(above)));
   if (most - least < 1) return null;
-  return { lists, room, start, least, most, row: rowOf(list) };
+  return { lists, start, least, most, row: rowOf(list) };
 }
 
 /** The first drawn row's height and the gap after it. */
