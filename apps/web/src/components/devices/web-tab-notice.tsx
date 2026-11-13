@@ -2,7 +2,7 @@ import { useState } from "react";
 import { hostsDeployment } from "@opensteer/client/computers";
 import type { HostClient, HostSnapshot } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
-import { useOptionalShell } from "../app-shell.js";
+import { useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
 
 const dismissedKey = "opensteer.web-tab-notice.v1";
@@ -23,7 +23,7 @@ function dismissed(): boolean {
 export function WebTabNotice({ hostClient }: { readonly hostClient: HostClient }) {
   const homeName = useHostSelector(hostClient, selectHomeName);
   const [hidden, setHidden] = useState(dismissed);
-  const inDesktopApp = useOptionalShell()?.desktopBridge != null;
+  const inDesktopApp = useShell().desktopBridge !== null;
   if (hidden || inDesktopApp) return null;
   return (
     <div className="web-tab-notice" role="note">
