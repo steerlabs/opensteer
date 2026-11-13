@@ -109,6 +109,11 @@ const closingOnce = process.argv.includes("--closing-once");
 let closingOnceUsed = false;
 // Opt-in: each root turn starts a background terminal of its thread.
 const backgroundTerminal = process.argv.includes("--background-terminal");
+/** How long `thread/read` takes to answer: a parent lookup still in flight. */
+const threadReadDelayMs = Number(
+  process.argv.find((argument) => argument.startsWith("--thread-read-delay-ms="))?.split("=")[1] ??
+    0,
+);
 const diffBytes = Number(
   process.argv.find((argument) => argument.startsWith("--diff-bytes="))?.slice(13) ??
     9 * 1024 * 1024,
@@ -864,12 +869,15 @@ function handleClientMethod(message) {
       const parentThreadId = known
         ? (known.parent?.id ?? null)
         : (recordedParents.get(id) ?? (id.startsWith("codex-child-thread") ? current().id : null));
-      send({
-        id: message.id,
-        result: {
-          thread: { id, model: "gpt-6-luna", parentThreadId, reasoningEffort: "high" },
-        },
-      });
+      const answer = () =>
+        send({
+          id: message.id,
+          result: {
+            thread: { id, model: "gpt-6-luna", parentThreadId, reasoningEffort: "high" },
+          },
+        });
+      if (threadReadDelayMs > 0) setTimeout(answer, threadReadDelayMs);
+      else answer();
       break;
     }
     case "turn/interrupt":
@@ -1310,6 +1318,28 @@ function handleTurnStart(message) {
   }
   if (scenario === "malformed-turn-completed") {
     send({ method: "turn/completed", params: { threadId, turn: "not a turn" } });
+    return;
+  }
+  if (scenario === "late-child") {
+    finishTurnWith("Done.");
+    // A subagent's first frame arrives after its root's turn ended.
+    send({
+      method: "turn/started",
+      params: {
+        threadId: "codex-child-thread-late",
+        turn: { error: null, id: "late-turn", items: [], status: "inProgress" },
+      },
+    });
+    return;
+  }
+  if (scenario === "queued-flood") {
+    // A conversation nobody named holds routing while its parent is asked for;
+    // what follows must not wait on it without bound.
+    send({
+      method: "item/agentMessage/delta",
+      params: { delta: "?", itemId: "unknown", threadId: "foreign-thread", turnId: "x" },
+    });
+    finishTurnWith("f".repeat(9 * 1024 * 1024));
     return;
   }
 

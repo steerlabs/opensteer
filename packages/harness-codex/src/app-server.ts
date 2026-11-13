@@ -100,7 +100,10 @@ export class CodexAppServer {
   readonly #discovering = new Map<string, Promise<void>>();
   /** Frames that arrived while Codex was asked whose a conversation is, in wire order. */
   readonly #queued: { readonly bytes: number; readonly message: CodexMethodMessage }[] = [];
+  #queuedBytes = 0;
   #pausedBy = 0;
+  /** Discoveries started before the last forced resume no longer hold routing. */
+  #pauseGeneration = 0;
   readonly #held = new Map<string, HeldFrames>();
   readonly #lifetime: AbortController;
   readonly #log: HarnessLog | undefined;
@@ -394,17 +397,39 @@ export class CodexAppServer {
   #route(message: CodexMethodMessage, bytes: number): void {
     if (this.#pausedBy > 0) {
       this.#queued.push({ bytes, message });
+      this.#queuedBytes += bytes;
+      // Routing waits for an answer only as long as what waits stays small;
+      // past that, the frames go on and the unclaimed conversation stays held.
+      if (this.#queuedBytes > heldFramesMaxBytes) {
+        this.#log?.("warn", "codex.app-server.discovery-overflow", {
+          frames: this.#queued.length,
+        });
+        this.#pauseGeneration += 1;
+        this.#pausedBy = 0;
+        this.#drainQueued();
+      }
       return;
     }
     this.#dispatch(message, bytes);
   }
 
-  #resume(): void {
+  #resume(generation: number): void {
+    if (generation !== this.#pauseGeneration) return;
     this.#pausedBy -= 1;
+    this.#drainQueued();
+  }
+
+  #drainQueued(): void {
     while (this.#pausedBy === 0 && this.#queued.length > 0) {
       const next = this.#queued.shift()!;
+      this.#queuedBytes -= next.bytes;
       this.#dispatch(next.message, next.bytes);
     }
+  }
+
+  /** Settles once every parent Codex is being asked about has answered or failed. */
+  async discoveries(): Promise<void> {
+    while (this.#discovering.size > 0) await Promise.allSettled(this.#discovering.values());
   }
 
   #dispatch(message: CodexMethodMessage, bytes: number): void {
@@ -485,7 +510,8 @@ export class CodexAppServer {
     this.#held.set(threadId, held);
     if (this.#discovering.has(threadId)) return;
     this.#pausedBy += 1;
-    void this.#discover(threadId, 0).finally(() => this.#resume());
+    const generation = this.#pauseGeneration;
+    void this.#discover(threadId, 0).finally(() => this.#resume(generation));
   }
 
   /**

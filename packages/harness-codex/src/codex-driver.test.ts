@@ -3134,6 +3134,53 @@ describe("one Codex app-server per account", () => {
     }
   });
 
+  it("unloads a subagent conversation a parent lookup hands it while it stops", async () => {
+    const fixture = await setup("late-child", { serverArguments: ["--thread-read-delay-ms=300"] });
+    try {
+      const session = await fixture.adapter.startSession(fixture.context);
+      const observer = observe(session.events);
+      await session.execute(fixture.turn("Go"));
+      await observer.waitFor("run.completed");
+      await vi.waitFor(
+        async () => {
+          expect(
+            (await fixture.capture()).some(
+              (message) =>
+                message.method === "thread/read" &&
+                (message.params as JsonRecord).threadId === "codex-child-thread-late",
+            ),
+          ).toBe(true);
+        },
+        { timeout: 2_000 },
+      );
+      await session.stop();
+      expect(
+        (await fixture.capture())
+          .filter((message) => message.method === "thread/unsubscribe")
+          .map((message) => (message.params as JsonRecord).threadId),
+      ).toContain("codex-child-thread-late");
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("stops holding every conversation's frames for a parent lookup once they grow large", async () => {
+    const fixture = await setup("queued-flood", {
+      serverArguments: ["--thread-read-delay-ms=60000"],
+    });
+    try {
+      const session = await fixture.adapter.startSession(fixture.context);
+      const observer = observe(session.events);
+      await session.execute(fixture.turn("Go"));
+      const message = await observer.waitFor("assistant.message");
+      expect(JSON.stringify(message.data.content).length).toBeGreaterThan(9 * 1024 * 1024);
+      await observer.waitFor("run.completed");
+      await session.stop();
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
   it("refuses a request on a conversation no session claims once it is stale", async () => {
     const fixture = await setup("foreign-request");
     vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setTimeout", "clearTimeout"] });

@@ -1928,16 +1928,26 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         ),
       ]);
     }
-    // What the router gave this session, its subagents however they were found included.
-    const owned = server.threadsOf(this);
-    const threads = [
-      ...owned.filter((threadId) => threadId !== root),
-      ...owned.filter((threadId) => threadId === root),
-    ];
-    const unloaded = await Promise.all(
-      threads.map((threadId) => server.unload(threadId, this, closeTimeoutMs)),
-    );
-    if (unloaded.every(Boolean)) return;
+    // What the router gave this session, its subagents however they were found
+    // included, and any a parent lookup still in flight gives it meanwhile.
+    const unloaded = new Set<string>();
+    let closed = true;
+    for (let round = 0; round < 4; round += 1) {
+      await server.discoveries();
+      const owned = server.threadsOf(this).filter((threadId) => !unloaded.has(threadId));
+      if (owned.length === 0) break;
+      const results = await Promise.all(
+        [
+          ...owned.filter((threadId) => threadId !== root),
+          ...owned.filter((threadId) => threadId === root),
+        ].map(async (threadId) => {
+          unloaded.add(threadId);
+          return server.unload(threadId, this, closeTimeoutMs);
+        }),
+      );
+      closed &&= results.every(Boolean);
+    }
+    if (closed && server.threadsOf(this).length === 0) return;
     await server.retire(
       new OpensteerError({
         code: "harness_error",
