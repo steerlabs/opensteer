@@ -176,7 +176,7 @@ func run(arguments []string, stdin io.Reader, stdout io.Writer, stderr io.Writer
 			isEmpty, emptyError := containment.empty()
 			if emptyError != nil {
 				fmt.Fprintf(stderr, "opensteer-process-supervisor: containment verification failed: %v\n", emptyError)
-				return 70
+				return undrainedExitCode
 			}
 			if isEmpty {
 				return targetExitCode(targetResult)

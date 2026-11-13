@@ -27,6 +27,7 @@ const (
 	targetModeEnvironment = "OPENSTEER_PROCESS_SUPERVISOR_TEST_TARGET_MODE"
 	wrapperMarker         = "--opensteer-wrapper"
 	exitDeadline          = 10 * time.Second
+	rootExitCode          = 3
 )
 
 var procedureGetHandleInformation = kernel32.NewProc("GetHandleInformation")
@@ -128,7 +129,7 @@ func TestWindowsGracefulStopReachesTheWholeTargetGroup(t *testing.T) {
 	if code := process.wait(t); code != 0 {
 		t.Fatalf("supervisor exited %d after a graceful tree exit; want 0; stderr %q", code, process.stderr.String())
 	}
-	tree.requireGone(t)
+	tree.requireAlreadyGone(t)
 }
 
 func TestWindowsForceStopsTheCompleteTree(t *testing.T) {
@@ -139,7 +140,7 @@ func TestWindowsForceStopsTheCompleteTree(t *testing.T) {
 	if code := process.wait(t); code != forcedExitCode {
 		t.Fatalf("supervisor exited %d after force; want %d", code, forcedExitCode)
 	}
-	tree.requireGone(t)
+	tree.requireAlreadyGone(t)
 }
 
 func TestWindowsControlEndOfFileStopsTheCompleteTree(t *testing.T) {
@@ -151,7 +152,7 @@ func TestWindowsControlEndOfFileStopsTheCompleteTree(t *testing.T) {
 	if code := process.wait(t); code != forcedExitCode {
 		t.Fatalf("supervisor exited %d after owner death; want %d", code, forcedExitCode)
 	}
-	tree.requireGone(t)
+	tree.requireAlreadyGone(t)
 }
 
 func TestWindowsRootExitStopsResidualDescendants(t *testing.T) {
@@ -160,8 +161,10 @@ func TestWindowsRootExitStopsResidualDescendants(t *testing.T) {
 	if _, err := io.WriteString(process.stdin, "exit\n"); err != nil {
 		t.Fatalf("ask the root to exit: %v", err)
 	}
-	process.wait(t)
-	tree.requireGone(t)
+	if code := process.wait(t); code != rootExitCode {
+		t.Fatalf("supervisor exited %d after its root exited %d; stderr %q", code, rootExitCode, process.stderr.String())
+	}
+	tree.requireAlreadyGone(t)
 }
 
 func TestWindowsCommandLineReachesTheTargetVerbatim(t *testing.T) {
@@ -198,11 +201,13 @@ type windowsTree struct {
 	handles    []windows.Handle
 }
 
-func (tree windowsTree) requireGone(t *testing.T) {
+// requireAlreadyGone checks without waiting: the supervisor's exit must itself
+// mean every process of its tree has finished terminating.
+func (tree windowsTree) requireAlreadyGone(t *testing.T) {
 	t.Helper()
 	for _, handle := range tree.handles {
-		if event, err := windows.WaitForSingleObject(handle, uint32(exitDeadline/time.Millisecond)); event != windows.WAIT_OBJECT_0 {
-			t.Fatalf("tree process %#v still running (%v)", tree, err)
+		if event, err := windows.WaitForSingleObject(handle, 0); event != windows.WAIT_OBJECT_0 {
+			t.Fatalf("tree process %#v was still terminating when the supervisor exited (%v)", tree, err)
 		}
 	}
 }
@@ -237,7 +242,7 @@ func runWindowsTreeRoot(graceful bool) {
 		os.Exit(0)
 	}
 	_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
-	os.Exit(0)
+	os.Exit(rootExitCode)
 }
 
 func runWindowsTreeDescendant(graceful bool) {

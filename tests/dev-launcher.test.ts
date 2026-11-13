@@ -32,7 +32,11 @@ const { spawn } = require("node:child_process");
 const { writeFileSync } = require("node:fs");
 const [ids, marker] = process.argv.slice(1);
 const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
-const stop = () => { writeFileSync(marker, "graceful"); process.exit(0); };
+const stop = () => {
+  writeFileSync(marker, "graceful");
+  if (descendant.exitCode !== null || descendant.signalCode !== null) process.exit(0);
+  descendant.once("exit", () => process.exit(0));
+};
 process.on("SIGTERM", stop);
 if (process.platform === "win32") process.on("SIGBREAK", stop);
 writeFileSync(ids, JSON.stringify([process.pid, descendant.pid]));

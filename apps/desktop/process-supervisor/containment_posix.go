@@ -9,6 +9,8 @@ import (
 	"syscall"
 )
 
+const undrainedExitCode = 70
+
 type posixProcessContainment struct {
 	processGroupID int
 }
