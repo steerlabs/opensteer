@@ -244,7 +244,7 @@ export function TeamSideFor({
   const teamName = useTeamSessionValue(client, selectTeamName);
   const canCreate = useTeamSessionValue(client, selectCanCreate);
   const canInvite = useTeamSessionValue(client, selectCanInvite);
-  const { openInvite } = useTeamDialogs();
+  const { openInvite, openNewChannel, openNewMessage } = useTeamDialogs();
   const connection = useTeamSessionValue(client, selectConnection);
   const ended = useTeamSessionValue(client, (snapshot) => snapshot?.ended ?? null);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -258,8 +258,16 @@ export function TeamSideFor({
   const actions = useStableActions({
     onOpenChannel: (channelId: string) => go(channelPath(teamId, channelId)),
     onBrowseChannels: () => go(teamPath(teamId, "browse")),
-    onNewChannel: canCreate ? () => go(teamPath(teamId, "browse?new=1")) : undefined,
-    onNewMessage: () => go(teamPath(teamId, "people")),
+    onNewChannel: canCreate
+      ? () => {
+          onNavigate();
+          openNewChannel(teamId);
+        }
+      : undefined,
+    onNewMessage: () => {
+      onNavigate();
+      openNewMessage(teamId);
+    },
     onInvite: canInvite
       ? () => {
           onNavigate();

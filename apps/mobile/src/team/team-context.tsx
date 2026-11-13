@@ -139,21 +139,26 @@ export function useTeamSession(teamId: string): {
 export function useTeamMembers(teamId: string): {
   readonly members: readonly TeamMember[];
   readonly directory: MemberDirectory;
+  /** Whether `members` has been read yet, so an empty list can be told from one not read. */
+  readonly status: "reading" | "read" | "failed";
 } {
   const teams = useMobileTeams();
-  const [members, setMembers] = useState<readonly TeamMember[]>([]);
+  const [read, setRead] = useState<{
+    readonly members: readonly TeamMember[];
+    readonly status: "reading" | "read" | "failed";
+  }>({ members: [], status: "reading" });
   useEffect(() => {
     let current = true;
     void teams.members(teamId).then(
-      (people) => current && setMembers(people),
-      () => undefined,
+      (people) => current && setRead({ members: people, status: "read" }),
+      () => current && setRead((held) => ({ ...held, status: "failed" })),
     );
     return () => {
       current = false;
     };
   }, [teamId, teams]);
-  const directory = useMemo(() => memberDirectory(members), [members]);
-  return { members, directory };
+  const directory = useMemo(() => memberDirectory(read.members), [read.members]);
+  return { members: read.members, directory, status: read.status };
 }
 
 /**

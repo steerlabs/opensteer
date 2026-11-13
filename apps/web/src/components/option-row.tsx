@@ -8,8 +8,9 @@ import type { ReactNode } from "react";
  * directory — so a choice is the same size, rhythm and target wherever a
  * reader meets one.
  *
- * Four shapes, one row:
+ * Five shapes, one row:
  *   radio   — one answer among several, and the row is its label
+ *   switch  — a choice that is on or off, and the row is its label
  *   button  — the row goes somewhere or does something
  *   content — neutral layout for controls contained inside the row
  *   static  — an answer that exists but cannot be taken right now
@@ -47,6 +48,12 @@ type OptionRowProps = OptionRowBase &
         readonly onSelect: () => void;
         readonly value: string;
       }
+    | {
+        readonly as: "switch";
+        readonly checked: boolean;
+        readonly disabled?: boolean;
+        readonly onChange: (checked: boolean) => void;
+      }
     | { readonly as: "content" }
     | { readonly as: "static" }
   );
@@ -64,6 +71,17 @@ export function OptionRow(props: OptionRowProps) {
     .filter(Boolean)
     .join(" ");
 
+  const control =
+    props.as === "switch" ? (
+      <input
+        checked={props.checked}
+        className="switch"
+        disabled={props.disabled}
+        onChange={(event) => props.onChange(event.currentTarget.checked)}
+        role="switch"
+        type="checkbox"
+      />
+    ) : null;
   const body = (
     <>
       {leading}
@@ -72,7 +90,12 @@ export function OptionRow(props: OptionRowProps) {
         {detail ? <span className="option-row__detail">{detail}</span> : null}
         {note ? <span className="option-row__note">{note}</span> : null}
       </span>
-      {trailing ? <span className="option-row__trailing">{trailing}</span> : null}
+      {trailing || control ? (
+        <span className="option-row__trailing">
+          {trailing}
+          {control}
+        </span>
+      ) : null}
     </>
   );
 
@@ -92,6 +115,8 @@ export function OptionRow(props: OptionRowProps) {
       </label>
     );
   }
+
+  if (props.as === "switch") return <label className={classes}>{body}</label>;
 
   if (props.as === "static") {
     return (

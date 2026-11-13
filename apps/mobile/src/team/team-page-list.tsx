@@ -7,7 +7,6 @@ import {
   View,
   type ListRenderItemInfo,
 } from "react-native";
-import { NativeMenu } from "../thread/composer-menu.js";
 import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
@@ -24,7 +23,9 @@ import type { ChannelRowView, DmRowView, TeamDrawerSectionView } from "./team-mo
 
 type PageRow =
   | { readonly kind: "channels" }
+  | { readonly kind: "browse" }
   | { readonly kind: "dms" }
+  | { readonly kind: "message-someone" }
   | { readonly kind: "channel"; readonly channel: ChannelRowView }
   | { readonly kind: "dm"; readonly dm: DmRowView };
 
@@ -32,7 +33,7 @@ type PageRow =
  * A team's own page: its channels (alphabetical), then its direct messages
  * (newest first). Unread is bold; mentions of the reader are an ember count;
  * a DM never shows an unread total. The team's menu is the page's title menu.
- * Each heading carries its way in: browse or make a channel, start a message.
+ * Each heading's + makes one; Browse channels closes the channel list.
  */
 export function TeamPageList(props: {
   readonly section: TeamDrawerSectionView;
@@ -53,8 +54,11 @@ export function TeamPageList(props: {
     (): readonly PageRow[] => [
       { kind: "channels" },
       ...section.channels.map((channel) => ({ kind: "channel" as const, channel })),
+      { kind: "browse" },
       { kind: "dms" },
-      ...section.dms.map((dm) => ({ kind: "dm" as const, dm })),
+      ...(section.dms.length === 0
+        ? [{ kind: "message-someone" as const }]
+        : section.dms.map((dm) => ({ kind: "dm" as const, dm }))),
     ],
     [section.channels, section.dms],
   );
@@ -65,32 +69,23 @@ export function TeamPageList(props: {
         case "channels":
           return (
             <Subhead label="Channels">
-              <NativeMenu
-                accessibilityLabel="Add channels"
-                options={[
-                  {
-                    icon: "magnifyingglass",
-                    id: "browse",
-                    label: "Browse channels",
-                    onPress: onBrowseChannels,
-                  },
-                  ...(canCreateChannel
-                    ? [
-                        {
-                          icon: "plus.square.on.square" as const,
-                          id: "new",
-                          label: "New channel",
-                          onPress: onNewChannel,
-                        },
-                      ]
-                    : []),
-                ]}
-                style={styles.headAction}
+              <Pressable
+                accessibilityLabel={canCreateChannel ? "New channel" : "Browse channels"}
+                accessibilityRole="button"
+                hitSlop={6}
+                onPress={canCreateChannel ? onNewChannel : onBrowseChannels}
+                style={({ pressed }) => [styles.headAction, pressed && styles.pressed]}
               >
                 <Symbol name="plus" size={15} tint={color.muted} weight="semibold" />
-              </NativeMenu>
+              </Pressable>
             </Subhead>
           );
+        case "browse":
+          return (
+            <QuietRow icon="magnifyingglass" label="Browse channels" onPress={onBrowseChannels} />
+          );
+        case "message-someone":
+          return <QuietRow icon="plus" label="Message someone" onPress={onNewMessage} />;
         case "dms":
           return (
             <Subhead label="Direct messages">
@@ -169,6 +164,34 @@ function rowKey(row: PageRow): string {
       return row.kind;
   }
 }
+
+/** A way in under a list, quieter than the rows it sits under. */
+const QuietRow = memo(function QuietRow(props: {
+  readonly icon: "magnifyingglass" | "plus";
+  readonly label: string;
+  readonly onPress: () => void;
+}): ReactNode {
+  return (
+    <Pressable
+      accessibilityLabel={props.label}
+      accessibilityRole="button"
+      onPress={props.onPress}
+      style={({ pressed }) => [styles.row, pressed && styles.pressed]}
+    >
+      <View style={styles.mark}>
+        <Symbol name={props.icon} size={15} tint={color.muted} weight="medium" />
+      </View>
+      <AppText
+        maxFontSizeMultiplier={controlFontScaleLimit}
+        numberOfLines={1}
+        role="secondary"
+        style={[styles.label, styles.muted]}
+      >
+        {props.label}
+      </AppText>
+    </Pressable>
+  );
+});
 
 function Subhead(props: { readonly label: string; readonly children: ReactNode }): ReactNode {
   return (

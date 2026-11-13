@@ -79,7 +79,6 @@ import {
 } from "./team/team-shelf-screens.js";
 import {
   TeamAuditScreen,
-  TeamChannelsScreen,
   TeamGroupScreen,
   TeamGroupsScreen,
   TeamPeopleScreen,
@@ -94,7 +93,11 @@ import {
   TransferTeamScreen,
 } from "./team/team-entry-screens.js";
 import { ConnectOpensteerScreen, JoinTeamScreen } from "./team/team-join-screens.js";
-import { TeamNewChannelScreen, TeamNewMessageScreen } from "./team/team-create-screens.js";
+import {
+  TeamChannelsScreen,
+  TeamNewChannelScreen,
+  TeamNewMessageScreen,
+} from "./team/team-directory-screens.js";
 import {
   TeamKnowledgeScreen,
   TeamNoteHistoryScreen,
@@ -444,8 +447,27 @@ const RootStack = createNativeStackNavigator({
       },
     },
     TeamChannels: { screen: TeamChannelsScreen, options: { title: "Channels" } },
-    TeamNewChannel: { screen: TeamNewChannelScreen, options: { title: "New channel" } },
-    TeamNewMessage: { screen: TeamNewMessageScreen, options: { title: "New message" } },
+    // Making a channel or starting a message: sheets over the team, their action in the bar.
+    TeamNewChannel: {
+      screen: TeamNewChannelScreen,
+      options: {
+        headerShown: false,
+        presentation: screenPresentations.TeamNewChannel,
+        sheetAllowedDetents: [0.95],
+        sheetGrabberVisible: true,
+        title: "New channel",
+      },
+    },
+    TeamNewMessage: {
+      screen: TeamNewMessageScreen,
+      options: {
+        headerShown: false,
+        presentation: screenPresentations.TeamNewMessage,
+        sheetAllowedDetents: [0.95],
+        sheetGrabberVisible: true,
+        title: "New message",
+      },
+    },
     TeamAudit: { screen: TeamAuditScreen, options: { title: "Audit log" } },
     // Joining from a link, a pasted link or a notification: a sheet over Home.
     JoinTeam: {
@@ -696,7 +718,8 @@ type OpensteerRootParamList = {
   readonly DeleteTeam: { readonly teamId: string };
   readonly TransferTeam: { readonly teamId: string };
   readonly TeamChannels: { readonly teamId: string };
-  readonly TeamNewChannel: { readonly teamId: string };
+  /** `name` is what the person searched Browse for and didn't find. */
+  readonly TeamNewChannel: { readonly teamId: string; readonly name?: string | undefined };
   readonly TeamNewMessage: { readonly teamId: string };
   readonly TeamAudit: { readonly teamId: string };
   /** A team page link the person opened or pasted, or none for the paste field. */

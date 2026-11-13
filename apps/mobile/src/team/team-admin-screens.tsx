@@ -7,10 +7,10 @@ import type { z } from "zod";
 import { useIsFocused, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useEffect, useState, type ReactNode } from "react";
-import { ActivityIndicator, Alert, FlatList, ScrollView, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Alert, ScrollView, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootParamList } from "../navigation.js";
-import { color, material, radius, space } from "../theme.js";
+import { color, space } from "../theme.js";
 import { Notice, RowGroup } from "../ui/primitives.js";
 import { LinkRow } from "./settings-rows.js";
 import { Screen } from "../ui/screen.js";
@@ -332,89 +332,6 @@ export function TeamGroupScreen(
   );
 }
 
-/** Every channel the reader can see in the team, to open or join, a page at a time. */
-export function TeamChannelsScreen(props: TeamParams): ReactNode {
-  const { teamId } = props.route.params;
-  const navigation = useNavigation<Navigation>();
-  const { session, failure } = useTeamSession(teamId);
-  const [page, setPage] = useState<{
-    readonly channels: readonly TeamChannelSummary[];
-    readonly hasMore: boolean;
-  } | null>(null);
-  const [loading, setLoading] = useState(false);
-  const read = (after: TeamChannelSummary["id"] | null): void => {
-    if (session === null) return;
-    setLoading(true);
-    void session.rpc["team.channels.list"](after === null ? {} : { after })
-      .then(unwrapRpcResult)
-      .then((next) =>
-        setPage((held) => {
-          const kept = after === null ? [] : (held?.channels ?? []);
-          const known = new Set(kept.map((channel) => channel.id));
-          return {
-            channels: [...kept, ...next.channels.filter((channel) => !known.has(channel.id))],
-            hasMore: next.hasMore,
-          };
-        }),
-      )
-      .catch(failed)
-      .finally(() => setLoading(false));
-  };
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- one first page per session
-  useEffect(() => read(null), [session]);
-  if (session === null || page === null) return <Waiting failure={failure} />;
-  const last = page.channels.at(-1)?.id ?? null;
-  const rows = page.channels.filter(
-    (channel) => channel.kind === "public" || channel.kind === "private",
-  );
-  const open = (channel: TeamChannelSummary): void => {
-    const go = () => navigation.navigate("TeamChannel", { teamId, channelId: channel.id });
-    if (channel.can.read) go();
-    else if (channel.can.join)
-      void command(session, { type: "team.channel.join", channelId: channel.id }).then(go, failed);
-  };
-  return (
-    <Screen edgeToEdge>
-      <View style={styles.browse}>
-        {/* One framed list, drawing only the rows on screen; its end asks for the next page. */}
-        <FlatList
-          data={rows}
-          initialNumToRender={16}
-          ItemSeparatorComponent={RowSeparator}
-          keyExtractor={(channel) => channel.id}
-          {...(page.hasMore
-            ? { ListFooterComponent: <ActivityIndicator color={color.muted} style={styles.more} /> }
-            : {})}
-          onEndReached={() => {
-            if (page.hasMore && !loading && last !== null) read(last);
-          }}
-          onEndReachedThreshold={0.6}
-          renderItem={({ item: channel }) => (
-            <LinkRow
-              detail={
-                channel.archivedAt === null
-                  ? channel.peopleOnly
-                    ? "People only"
-                    : null
-                  : "Archived"
-              }
-              icon={channel.kind === "private" ? "lock" : "number"}
-              label={channel.name}
-              onPress={() => open(channel)}
-            />
-          )}
-          style={styles.framed}
-          windowSize={9}
-        />
-      </View>
-    </Screen>
-  );
-}
-
-function RowSeparator(): ReactNode {
-  return <View style={styles.separator} />;
-}
-
 /** What admins did and what agents read, searched and posted. Never a private transcript. */
 export function TeamAuditScreen(props: TeamParams): ReactNode {
   const { teamId } = props.route.params;
@@ -461,16 +378,9 @@ export function TeamAuditScreen(props: TeamParams): ReactNode {
   );
 }
 
-type TeamChannelSummary = import("zod").infer<
-  typeof import("@opensteer/protocol").TeamChannelSummarySchema
->;
 type TeamAuditRow = import("zod").infer<typeof import("@opensteer/protocol").TeamAuditSchema>;
 
 const styles = StyleSheet.create({
-  framed: { ...material.plate, borderRadius: radius.lg, flexGrow: 0 },
-  more: { paddingVertical: space[12] },
-  browse: { flex: 1, padding: space[16] },
   page: { gap: space[16], padding: space[16] },
-  separator: { backgroundColor: color.line, height: StyleSheet.hairlineWidth },
   center: { alignItems: "center", flex: 1, justifyContent: "center", padding: space[16] },
 });

@@ -45,6 +45,7 @@ import { actionErrorMessage } from "../ui-utils.js";
 import { useTeamSessionValue, useTeams, type TeamAttachment } from "./team-attachments.js";
 import { teamTile } from "./team-people.js";
 import { teamPath } from "./team-paths.js";
+import { NewChannelDialog, NewMessageDialog } from "./team-create-dialogs.js";
 
 export const selfHostGuide = "https://github.com/steerlabs/opensteer/tree/main/deploy/team";
 
@@ -55,7 +56,9 @@ type OpenDialog =
   | { readonly kind: "join"; readonly url: string }
   | { readonly kind: "invite"; readonly teamId: string }
   | { readonly kind: "delete"; readonly teamId: string }
-  | { readonly kind: "transfer"; readonly teamId: string };
+  | { readonly kind: "transfer"; readonly teamId: string }
+  | { readonly kind: "new-channel"; readonly teamId: string; readonly name: string }
+  | { readonly kind: "new-message"; readonly teamId: string };
 
 interface TeamDialogs {
   readonly openCreate: () => void;
@@ -63,6 +66,9 @@ interface TeamDialogs {
   readonly openInvite: (teamId: string) => void;
   readonly openDelete: (teamId: string) => void;
   readonly openTransfer: (teamId: string) => void;
+  /** A new channel in a team, already named when the person searched for one that isn't there. */
+  readonly openNewChannel: (teamId: string, name?: string) => void;
+  readonly openNewMessage: (teamId: string) => void;
   /** Counts transfers made here, so what reads who holds a team reads it again. */
   readonly transfers: number;
 }
@@ -73,6 +79,8 @@ const TeamDialogsContext = createContext<TeamDialogs>({
   openInvite: () => undefined,
   openDelete: () => undefined,
   openTransfer: () => undefined,
+  openNewChannel: () => undefined,
+  openNewMessage: () => undefined,
   transfers: 0,
 });
 
@@ -121,7 +129,7 @@ export function useHoldsHostedTeam(hostedTeamId: HostedTeamId | null): boolean {
  * navigates and where a team that became ready in the background is announced.
  */
 export function TeamDialogsProvider({ children }: { readonly children: ReactNode }) {
-  const { coordination, navigator } = useTeams();
+  const { coordination, navigator, teams } = useTeams();
   const navigate = useNavigate();
   const toast = useToast();
   const [open, setOpen] = useState<OpenDialog | null>(null);
@@ -160,11 +168,17 @@ export function TeamDialogsProvider({ children }: { readonly children: ReactNode
       openInvite: (teamId) => setOpen({ kind: "invite", teamId }),
       openDelete: (teamId) => setOpen({ kind: "delete", teamId }),
       openTransfer: (teamId) => setOpen({ kind: "transfer", teamId }),
+      openNewChannel: (teamId, name = "") => setOpen({ kind: "new-channel", teamId, name }),
+      openNewMessage: (teamId) => setOpen({ kind: "new-message", teamId }),
       transfers,
     }),
     [transfers],
   );
   const close = () => setOpen(null);
+  const inviteFrom = (teamId: string) =>
+    teams.find((team) => team.teamId === teamId)?.client?.getSnapshot().bootstrap?.can.manageInvites
+      ? () => setOpen({ kind: "invite", teamId })
+      : undefined;
   const watched = snapshot.hostedTeams.find((team) => team.id === snapshot.watching) ?? null;
   return (
     <TeamDialogsContext value={dialogs}>
@@ -180,6 +194,17 @@ export function TeamDialogsProvider({ children }: { readonly children: ReactNode
           onTransferred={() => setTransfers((count) => count + 1)}
           teamId={open.teamId}
         />
+      ) : null}
+      {open?.kind === "new-channel" ? (
+        <NewChannelDialog
+          initialName={open.name}
+          onClose={close}
+          onInvite={inviteFrom(open.teamId)}
+          teamId={open.teamId}
+        />
+      ) : null}
+      {open?.kind === "new-message" ? (
+        <NewMessageDialog onClose={close} onInvite={inviteFrom(open.teamId)} teamId={open.teamId} />
       ) : null}
     </TeamDialogsContext>
   );
