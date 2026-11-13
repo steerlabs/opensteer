@@ -15,6 +15,7 @@ import { QrCode } from "../first-run/qr-code.js";
 import { Icon, type IconName } from "../icon.js";
 import { OptionRow } from "../option-row.js";
 import { SettingsError } from "../settings/primitives.js";
+import { cancelDeviceSetup } from "./device-access.js";
 import { localEnrollmentModules } from "./this-device.js";
 
 type Choice = "sign-in" | "agent-phone" | "server";
@@ -204,6 +205,7 @@ function AddServer() {
   } | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [cancelled, setCancelled] = useState(false);
   const nameId = useId();
   const revision = import.meta.env.OPENSTEER_RUNNER_SOURCE_REVISION || undefined;
   const commands =
@@ -236,6 +238,25 @@ function AddServer() {
       if (result.type !== "runner.enrollment.createLocal")
         throw new Error("The command couldn’t be created.");
       setIssued({ ...result, hostOrigin: target.hostUrl });
+      setCancelled(false);
+    } catch (reason) {
+      setError(actionErrorMessage(reason));
+    } finally {
+      setPending(false);
+    }
+  }
+  async function cancel() {
+    if (pending || !issued) return;
+    setPending(true);
+    setError(null);
+    try {
+      const outcome = await cancelDeviceSetup(hostClient, issued.enrollmentId);
+      if (outcome === "joined")
+        setError(`${name.trim()} already joined. Remove it from Devices instead.`);
+      else {
+        setIssued(null);
+        setCancelled(true);
+      }
     } catch (reason) {
       setError(actionErrorMessage(reason));
     } finally {
@@ -245,6 +266,11 @@ function AddServer() {
   if (!commands)
     return (
       <div className="add-device__panel">
+        {cancelled ? (
+          <p className="notice" role="status">
+            That command no longer works.
+          </p>
+        ) : null}
         <label className="field" htmlFor={nameId}>
           <span className="field__label">Name</span>
           <input
@@ -273,6 +299,17 @@ function AddServer() {
       {commands.bareHost ? (
         <CommandBlock command={commands.bareHost} label="Without Docker" />
       ) : null}
+      <div>
+        <button
+          className="btn btn--small"
+          disabled={pending}
+          onClick={() => void cancel()}
+          type="button"
+        >
+          {pending ? "Cancelling…" : "Cancel setup"}
+        </button>
+      </div>
+      <SettingsError message={error} />
     </div>
   );
 }
