@@ -74,6 +74,8 @@ export function Timeline(props: {
   const newestFirst = useMemo(() => [...props.items].reverse(), [props.items]);
   const list = useRef<FlatList<TimelineItem>>(null);
   const following = useRef(true);
+  // The keyboard's inset over the newest messages while it is up.
+  const inset = useRef(0);
   const anchorId = props.anchorId ?? null;
   const anchorIndex =
     anchorId === null
@@ -97,7 +99,7 @@ export function Timeline(props: {
   );
   const onScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-      const near = event.nativeEvent.contentOffset.y <= followDistance;
+      const near = event.nativeEvent.contentOffset.y + inset.current <= followDistance;
       if (near !== following.current) {
         following.current = near;
         actions.onFollowingChange(near);
@@ -107,7 +109,6 @@ export function Timeline(props: {
   );
   // The newest message is the inverted list's top, past the keyboard's inset
   // while it is up; reaching it is what follows and reads.
-  const inset = useRef(0);
   const jumpToNewest = useCallback(
     () => list.current?.scrollToOffset({ offset: 0 - inset.current, animated: true }),
     [],

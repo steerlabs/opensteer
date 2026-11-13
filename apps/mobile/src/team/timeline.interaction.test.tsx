@@ -106,13 +106,20 @@ it("scrolls to the newest message on 'N new', and follows only once the list is 
   expect(harness.scrollToOffset).toHaveBeenCalledWith({ offset: 0, animated: true });
   // Pressing alone says nothing about where the reader is.
   expect(onFollowingChange).not.toHaveBeenCalled();
-  // With the keyboard up the newest message is past its inset, not under it.
-  act(() => harness.inset!(300));
-  act(() => host.querySelector<HTMLButtonElement>("button[aria-label^='3 new']")!.click());
-  expect(harness.scrollToOffset).toHaveBeenLastCalledWith({ offset: -300, animated: true });
 
   act(() => harness.scroll!(0));
   expect(onFollowingChange).toHaveBeenCalledExactlyOnceWith(true);
+  onFollowingChange.mockClear();
+
+  // With the keyboard up the newest message is past its inset: where it stood
+  // before leaves it behind the keyboard, which is not following.
+  act(() => harness.inset!(300));
+  act(() => harness.scroll!(0));
+  expect(onFollowingChange).toHaveBeenCalledExactlyOnceWith(false);
+  act(() => host.querySelector<HTMLButtonElement>("button[aria-label^='3 new']")!.click());
+  expect(harness.scrollToOffset).toHaveBeenLastCalledWith({ offset: -300, animated: true });
+  act(() => harness.scroll!(-300));
+  expect(onFollowingChange).toHaveBeenLastCalledWith(true);
 });
 
 it("brings a linked message into view once it has loaded, and only once", () => {

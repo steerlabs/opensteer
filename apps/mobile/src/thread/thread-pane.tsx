@@ -1058,7 +1058,8 @@ function ThreadPaneForUser(
 
   const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>): void => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-    const fromTail = contentSize.height - contentOffset.y - layoutMeasurement.height;
+    const fromTail =
+      contentSize.height + extent.current.inset - contentOffset.y - layoutMeasurement.height;
     const tail = fromTail < tailThreshold;
     // Only the reader's own finger takes them off the newest entry. The list
     // also moves by itself — rows measured after the jump to the end, a page

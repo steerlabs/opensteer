@@ -3462,6 +3462,25 @@ describe("a conversation in a pane that changes shape", () => {
       list().onContentSizeChange?.(390, 2100);
     });
     expect(harness.scrollToOffset).toHaveBeenLastCalledWith({ animated: false, offset: 1800 });
+    // Where the end was before the keyboard leaves the newest entry under it:
+    // a reader who stops there is reading back, and is not pulled down.
+    const drag = (y: number) =>
+      act(() => {
+        list().onScrollBeginDrag?.();
+        list().onScroll?.({
+          nativeEvent: {
+            contentOffset: { x: 0, y },
+            contentSize: { height: 2100, width: 390 },
+            layoutMeasurement: { height: 600, width: 390 },
+          },
+        });
+        list().onScrollEndDrag?.();
+      });
+    drag(1500);
+    harness.scrollToOffset.mockReset();
+    act(() => list().onContentSizeChange?.(390, 2200));
+    expect(harness.scrollToOffset).not.toHaveBeenCalled();
+    drag(1800);
     act(() => inset(0));
 
     // Unfolded: the same text, wider, is shorter.
