@@ -84,6 +84,7 @@ export interface DeploymentSnapshotReadOptions {
   /** Skip message history and its counts; clients must read durable history on open. */
   readonly omitMessages?: boolean;
   readonly placeEvents?: "include";
+  readonly deviceAccessRequests?: "include";
   readonly viewerId?: UserId;
   readonly maxMessages?: number;
   readonly maxSerializedBytes?: number;
@@ -240,7 +241,14 @@ export async function deploymentSnapshot(
           maxItems: 25,
           maxBytes: 48 * 1024,
         }),
-        needsYouPage(transaction, { userId: ownerId, limit: 20, maxBytes: 64 * 1024 }),
+        needsYouPage(transaction, {
+          userId: ownerId,
+          limit: 20,
+          maxBytes: 64 * 1024,
+          ...(options.deviceAccessRequests
+            ? { deviceAccessRequests: options.deviceAccessRequests }
+            : {}),
+        }),
         options.readResources({ database: transaction, ownerId, maxBytes: 128 * 1024 }),
       ]);
       const tasks = { recent, active, done };
@@ -337,6 +345,9 @@ export async function deploymentSnapshot(
             .selectFrom("requests")
             .selectAll()
             .where("status", "=", "pending")
+            .$if(options.deviceAccessRequests !== "include", (query) =>
+              query.where("kind", "!=", "device.access"),
+            )
             .orderBy("createdAt", "desc")
             .orderBy("id", "desc")
             .limit(deploymentSnapshotMaxPendingRequests + 1)
@@ -345,6 +356,9 @@ export async function deploymentSnapshot(
             .selectFrom("requests")
             .select(({ fn }) => fn.countAll<string>().as("count"))
             .where("status", "=", "pending")
+            .$if(options.deviceAccessRequests !== "include", (query) =>
+              query.where("kind", "!=", "device.access"),
+            )
             .executeTakeFirstOrThrow(),
           threadIds.length === 0
             ? []

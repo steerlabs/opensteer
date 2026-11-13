@@ -117,6 +117,12 @@ boundary. Older personal database lineages require Start fresh. Within an epoch:
 - Ignore unknown capabilities, never let one gate mandatory behavior, and never rely on an optional
   feature a peer did not advertise.
 
+Released Needs you readers require known Request kinds. Device-access Requests therefore need
+explicit reader opt-in through the [client contract](../packages/protocol/src/client.ts), negotiated
+only with a Host advertising `devices-v1`. Legacy pages, snapshots and event delivery omit them;
+the device remains visible and the durable Request still holds its Run. Filtering never prevents
+the event cursor from advancing.
+
 Runner proof format 2 is its own security boundary, separate from the epoch. The Host authenticates
 the complete raw descriptor JSON before one domain parse, so defaults, trimming and filtering cannot
 change what was signed. Mixed or missing proof formats get an update refusal; there is no v1

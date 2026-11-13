@@ -15,6 +15,108 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { LiveRunRegistry, RealtimeHub, type RealtimeSink } from "./index.js";
 describe("snapshot-before-live synchronization", () => {
+  it.each([false, true])(
+    "projects device access events through replay and live delivery (support %s)",
+    async (supported) => {
+      const deploymentId = createId("deployment");
+      const userId = createId("user");
+      const base = event(deploymentId, "1");
+      const request = {
+        cancellationReason: null,
+        callId: "device-access",
+        createdAt: base.createdAt,
+        id: createId("request"),
+        kind: "device.access" as const,
+        mode: "durable" as const,
+        originatingOccurrenceId: null,
+        originatingRunId: base.runId!,
+        originatingThreadId: base.threadId,
+        payload: {
+          kind: "device.access" as const,
+          machineId: createId("runner"),
+          machineName: "Laptop",
+          access: "browser" as const,
+          reason: "Read the task",
+        },
+        presentation: {
+          kind: "external" as const,
+          title: "Turn on Browser",
+          subject: { kind: "machine" as const, id: createId("runner") },
+        },
+        requestedBy: userId,
+        requiredActor: "owner" as const,
+        resolvedAt: null,
+        resolvedBy: null,
+        response: null,
+        status: "pending" as const,
+      };
+      const opened: AgentEvent = {
+        ...base,
+        sequence: sequence("2"),
+        type: "request.opened",
+        data: { request },
+      };
+      const resolved: AgentEvent = {
+        ...base,
+        eventId: createId("event"),
+        sequence: sequence("3"),
+        type: "request.resolved",
+        data: {
+          request: {
+            ...request,
+            status: "fulfilled",
+            resolvedAt: base.createdAt,
+            resolvedBy: userId,
+            response: { kind: "external", value: { decision: "fulfilled" } },
+          },
+        },
+      };
+      const store = {
+        notificationState: viewerState(),
+        database: personalDatabase(deploymentId, userId),
+        deploymentHead: async () => sequence("2"),
+        eventsAfterWindow: async () => ({
+          events: [opened],
+          hasMore: false,
+          scannedThrough: sequence("2"),
+          byteCount: JSON.stringify(opened).length,
+        }),
+      } as unknown as OpensteerStore;
+      const hub = new RealtimeHub({ store });
+      const sink = new MemorySink();
+      const stop = await hub.subscribe({
+        deploymentId,
+        userId,
+        sink,
+        afterSequence: sequence("1"),
+        ...(supported ? { deviceAccessRequests: "include" as const } : {}),
+      });
+      try {
+        hub.publish(resolved);
+        await vi.waitFor(
+          () =>
+            expect(
+              sink.messages.some(
+                (message) => message.type === "host.events" && message.throughSequence === "3",
+              ),
+              "live Request resolution never arrived",
+            ).toBe(true),
+          { timeout: 1000 },
+        );
+        expect(
+          sink.messages.flatMap((message) =>
+            message.type === "host.events" ? message.events : [],
+          ),
+        ).toEqual(supported ? [opened, resolved] : []);
+        expect(sink.messages.find((message) => message.type === "host.synchronized")).toMatchObject(
+          { sequence: "2" },
+        );
+      } finally {
+        stop();
+      }
+    },
+  );
+
   it("sends show once only to opted-in subscriptions of the personal owner, without replay", async () => {
     const deploymentId = createId("deployment");
     const userId = createId("user");

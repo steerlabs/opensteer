@@ -1,5 +1,10 @@
 import { SequenceSchema, type AgentEventView } from "@opensteer/core";
-import { ClientToHostMessageSchema, hostApi, type HostToClientMessage } from "@opensteer/protocol";
+import {
+  ClientToHostMessageSchema,
+  hostApi,
+  isDeviceAccessRequestEvent,
+  type HostToClientMessage,
+} from "@opensteer/protocol";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import type { WebSocketClient } from "../host/host-session-client.js";
 import { MockHostClient } from "./mock-host-client.js";
@@ -44,7 +49,7 @@ export class MockPersonalSocket implements WebSocketClient {
 export class MockPersonalHost {
   readonly client: MockHostClient;
   readonly sockets = new Set<MockPersonalSocket>();
-  readonly #subscribed = new Set<MockPersonalSocket>();
+  readonly #subscribed = new Map<MockPersonalSocket, boolean>();
   readonly #release: () => void;
   #through = SequenceSchema.parse("0");
   #rows: AgentEventView[] = [];
@@ -54,7 +59,7 @@ export class MockPersonalHost {
     this.#release = client.subscribe(() => {
       this.#through = this.#highWater(SequenceSchema.parse(String(BigInt(this.#through) + 1n)));
       this.#rows = [];
-      for (const socket of this.#subscribed) this.#snapshot(socket);
+      for (const socket of this.#subscribed.keys()) this.#snapshot(socket);
     });
   }
   #highWater(minimum = SequenceSchema.parse("0")) {
@@ -85,7 +90,7 @@ export class MockPersonalHost {
         socket.close();
         return;
       }
-      this.#subscribed.add(socket);
+      this.#subscribed.set(socket, frame.deviceAccessRequests === "include");
       const rows = this.#rows.filter(
         (row) => BigInt(row.sequence) > BigInt(frame.cursor.afterSequence),
       );
@@ -95,7 +100,13 @@ export class MockPersonalHost {
         this.#rows.length > 0 &&
         BigInt(frame.cursor.afterSequence) >= BigInt(this.#rows[0]!.sequence) - 1n
       )
-        socket.deliver({ type: "host.events", events: rows, throughSequence: this.#through });
+        socket.deliver({
+          type: "host.events",
+          events: rows.filter(
+            (event) => this.#subscribed.get(socket) || !isDeviceAccessRequestEvent(event),
+          ),
+          throughSequence: this.#through,
+        });
       else this.#snapshot(socket);
       socket.deliver({ type: "host.synchronized", sequence: this.#through });
     });
@@ -109,7 +120,10 @@ export class MockPersonalHost {
   #snapshot(socket: MockPersonalSocket): void {
     socket.deliver({
       type: "host.snapshot",
-      snapshot: this.client.deploymentSnapshot(this.#through),
+      snapshot: this.client.deploymentSnapshot(
+        this.#through,
+        this.#subscribed.get(socket) ? "include" : "omit",
+      ),
     });
   }
   publish(events: readonly AgentEventView[], throughSequence: string): void {
@@ -121,8 +135,14 @@ export class MockPersonalHost {
       throw new Error("Invalid stream cut.");
     this.#through = through;
     this.#rows = [...this.#rows, ...events].slice(-1000);
-    for (const socket of this.#subscribed)
-      socket.deliver({ type: "host.events", events: [...events], throughSequence: through });
+    for (const [socket, supportsDeviceAccess] of this.#subscribed)
+      socket.deliver({
+        type: "host.events",
+        events: events.filter(
+          (event) => supportsDeviceAccess || !isDeviceAccessRequestEvent(event),
+        ),
+        throughSequence: through,
+      });
   }
   dispose(): void {
     this.#release();

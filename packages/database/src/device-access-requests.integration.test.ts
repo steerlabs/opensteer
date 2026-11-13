@@ -3,6 +3,8 @@ import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { createId, type RunnerId } from "@opensteer/core";
 import { RunnerBootIdSchema, machineAccessPolicyDefault } from "@opensteer/protocol";
 import { expect } from "vitest";
+import { devicesLegacyReaders } from "./device-request-legacy-readers.test-support.js";
+import { needsYouPage } from "./needs-you-store.js";
 import {
   describeStore,
   enrollTestRunner,
@@ -107,6 +109,75 @@ function ask(
 }
 const decline = { kind: "external", value: { decision: "declined" } } as const;
 describeStore("device access Requests", (it) => {
+  it("projects new Requests out of legacy pages and snapshots without settling the durable wait", async ({
+    storeFixture: f,
+  }) => {
+    const old = await devicesLegacyReaders();
+    const run = await f.startRunFixture("device-legacy-reader");
+    const target = await device(f, run);
+    const ordinary = await f.store.requests.create({
+      callId: "legacy-browser",
+      kind: "browser.access",
+      mode: "durable",
+      originatingRunId: run.run.id,
+      originatingThreadId: run.thread.id,
+      requestedBy: run.userId,
+      requiredActor: "requester",
+      payload: {
+        kind: "browser.access",
+        reason: "Read a source",
+        suggestion: { kind: "user_choice" },
+      },
+      presentation: {
+        kind: "external",
+        title: "Choose a profile",
+        subject: { kind: "task", id: run.thread.id },
+      },
+    });
+    const opened = await ask(f, run, target);
+    expect(old.PendingRequestViewSchema.safeParse(opened.request).success).toBe(false);
+    const legacy = await needsYouPage(f.database, { userId: run.userId, limit: 1 });
+    expect(old.NeedsYouPageSchema.safeParse(legacy).success).toBe(true);
+    expect(legacy).toMatchObject({
+      count: 1,
+      entries: [{ request: { id: ordinary.request.id } }],
+      window: { hasMore: false, itemCount: 1, totalItems: 1 },
+    });
+    const snapshot = await f.store.deploymentSnapshot({ viewerId: run.userId });
+    expect(old.DeploymentSnapshotSchema.safeParse(snapshot).success).toBe(true);
+    expect(snapshot.pendingRequests.map(({ id }) => id)).toEqual([ordinary.request.id]);
+    expect(snapshot.pendingRequestWindow).toMatchObject({ itemCount: 1, totalItems: 1 });
+    const supported = await needsYouPage(f.database, {
+      userId: run.userId,
+      deviceAccessRequests: "include",
+    });
+    expect(supported.entries.map(({ request }) => request.id)).toContain(opened.request.id);
+    const modern = await f.store.deploymentSnapshot({
+      viewerId: run.userId,
+      deviceAccessRequests: "include",
+    });
+    expect(modern.pendingRequests.map(({ id }) => id)).toContain(opened.request.id);
+    expect(old.DeploymentSnapshotSchema.safeParse(modern).success).toBe(false);
+    expect(await f.store.requests.get(opened.request.id)).toMatchObject({ status: "pending" });
+    expect(await f.store.listOwnedDevices(run.userId)).toContainEqual(
+      expect.objectContaining({
+        machineId: target,
+        access: expect.objectContaining({ browser: "disabled" }),
+      }),
+    );
+    await f.store.updateMachineAccessPolicy({
+      runnerId: target,
+      ownerId: run.userId,
+      allowDeployment: true,
+      expectedRevision: 2,
+      policy: { ...machineAccessPolicyDefault, browser: true },
+    });
+    expect(await f.store.requests.get(opened.request.id)).toMatchObject({ status: "fulfilled" });
+    expect(await f.database.selectFrom("requestContinuations").selectAll().execute()).toHaveLength(
+      1,
+    );
+  });
+
   it("deduplicates an owned off phone and never adds it to reachable shell routes", async ({
     storeFixture: f,
   }) => {
