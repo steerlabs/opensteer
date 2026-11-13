@@ -15,7 +15,7 @@ from anywhere.
   their own.
 - **It knows what your team knows.** One knowledge base for the whole team. Each
   person and agent sees only what they're allowed to.
-- **Open source and self-hostable.** MIT licensed. It runs on your Mac, and your
+- **Open source and self-hostable.** MIT licensed. It runs on your computer, and your
   work and data stay with you.
 
 ## Get started
@@ -24,6 +24,8 @@ from anywhere.
 [Releases](https://github.com/steerlabs/opensteer/releases) (macOS 13 or later,
 Apple silicon). Open it, connect Chrome and sign in to an agent. Your phone
 pairs in one scan.
+
+**On Windows.** There's no download yet, so run it from source for now.
 
 **For your team.** Run a team server on a spare Mac or your own Linux server.
 Everyone joins from their own Opensteer. See [Run a team](deploy/team/README.md).
