@@ -25,6 +25,8 @@ from anywhere.
 Apple silicon). Open it, connect Chrome and sign in to an agent. Your phone
 pairs in one scan.
 
+**On Windows.** There's no download yet, so run it from source for now.
+
 **For your team.** Run a team server on a spare Mac or your own Linux server.
 Everyone joins from their own Opensteer. See [Run a team](deploy/team/README.md).
 
