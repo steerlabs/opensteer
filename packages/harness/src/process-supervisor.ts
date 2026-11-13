@@ -8,6 +8,7 @@ import {
 } from "@opensteer/shared/command";
 import {
   processSupervisorExecutableVariable,
+  processSupervisorUndrainedExitCode,
   writeProcessControl,
 } from "@opensteer/shared/processControl";
 import { delay } from "@opensteer/shared/delay";
@@ -52,7 +53,7 @@ export interface SupervisedProcess {
   terminate(graceMs?: number): Promise<void>;
 }
 
-/** A supervised process that has not exited: while it runs, its whole tree is its own. */
+/** A supervised process whose tree is not proven gone: while it runs, its whole tree is its own. */
 export interface RunningSupervisedProcess {
   readonly environment: Readonly<Record<string, string>>;
   /** The supervisor's pid, with when it started: a reused pid is another process. */
@@ -64,7 +65,10 @@ export interface RunningSupervisedProcess {
 
 const running = new Set<RunningSupervisedProcess>();
 
-/** Every supervised process this process started that has not exited yet. */
+/**
+ * Every supervised process this process started whose tree is not proven gone:
+ * those still running, and those that exited without proving it.
+ */
 export function runningSupervisedProcesses(): readonly RunningSupervisedProcess[] {
   return [...running];
 }
@@ -148,7 +152,7 @@ export function spawnSupervised(options: SupervisedProcessOptions): SupervisedPr
       reject(error);
     });
     child.once("exit", (code, signal) => {
-      running.delete(entry);
+      if (code !== processSupervisorUndrainedExitCode) running.delete(entry);
       resolve({ code, signal });
     });
   });

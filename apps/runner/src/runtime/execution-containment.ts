@@ -274,10 +274,11 @@ function processListerFor(platform: NodeJS.Platform): ProcessLister | undefined 
 }
 
 /**
- * The supervisors this Runner started that have not exited. A Job lets
- * nothing out, and its supervisor exits only once the Job is empty, so a tree
- * is gone exactly when its supervisor is. One a dead Runner started ends with
- * the Runner, because its control pipe closes; so no earlier boot survives.
+ * The supervisors this Runner started whose trees are not proven gone. A Job
+ * lets nothing out, and its supervisor exits only once it has waited out every
+ * other member, so a tree is gone exactly when its supervisor is; one that
+ * exits without that proof stays listed, and its execution stays unknown. One
+ * a dead Runner started ends with the Runner, because its control pipe closes.
  */
 async function listSupervisedProcesses(variable: string): Promise<readonly ListedProcess[]> {
   return runningSupervisedProcesses().map((running) => ({

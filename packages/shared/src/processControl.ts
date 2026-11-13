@@ -9,6 +9,12 @@ export const processSupervisorExecutableVariable = "OPENSTEER_PROCESS_SUPERVISOR
  */
 export const shutdownSignals = ["SIGINT", "SIGBREAK", "SIGTERM"] as const;
 
+/**
+ * The Windows supervisor's status when it ended its Job without proving every
+ * member finished terminating. Every other status it exits with means the tree is gone.
+ */
+export const processSupervisorUndrainedExitCode = 256;
+
 /** A child's own stop budgets derive from this, so none can outlast the supervisor's kill. */
 export const processStopTimeoutMs = 5_000;
 
