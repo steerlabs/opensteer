@@ -50,6 +50,9 @@ const state = vi.hoisted(() => ({
   hostClient: {} as Record<string, unknown>,
   dispatch: vi.fn(),
   goBack: vi.fn(),
+  openSidebar: vi.fn(),
+  /** Opened from the sidebar, so the page is top-level and its bar leads with the Menu. */
+  topLevel: false,
   pinch: null as null | {
     readonly onActivate: (event: { focalX: number; focalY: number }) => void;
     readonly onDeactivate: () => void;
@@ -102,6 +105,20 @@ vi.mock("@react-navigation/native", () => ({
     setOptions: state.setOptions,
     setParams: state.setParams,
   }),
+  // This page, top-level only when a test opens it straight from the sidebar.
+  useNavigationState: (select: (value: object) => unknown) =>
+    select(
+      state.topLevel
+        ? {
+            index: 1,
+            routes: [
+              { key: "home", name: "Home" },
+              { key: "page", name: "WorkspaceBrowser" },
+            ],
+          }
+        : { index: 0, routes: [] },
+    ),
+  useRoute: () => ({ key: "page" }),
 }));
 vi.mock("@react-navigation/elements", () => ({ useHeaderHeight: () => 88 }));
 vi.mock("expo-haptics", () => ({
@@ -180,10 +197,16 @@ vi.mock("@opensteer/client/react", async () => {
   };
 });
 vi.mock("../ui/mobile-client-context.js", () => ({
+  useHostValue: () => 0,
   useMobileClient: () => ({ drafts: state.drafts }),
   useMobileState: () => ({
     selection: { deploymentId: state.deploymentId, hostClient: state.hostClient },
   }),
+  useSelectedHostClient: () => null,
+}));
+vi.mock("../sidebar/sidebar-context.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../sidebar/sidebar-context.js")>()),
+  useSidebarControl: () => ({ close: vi.fn(), open: state.openSidebar }),
 }));
 vi.mock("../phone-browser/runtime.js", () => ({ usePhoneBrowserManager: () => null }));
 vi.mock("react-native", () => ({
@@ -622,6 +645,8 @@ afterEach(() => {
   state.hostClient = {};
   state.dispatch.mockReset();
   state.goBack.mockReset();
+  state.openSidebar.mockReset();
+  state.topLevel = false;
   state.setOptions.mockReset();
   state.safeArea = { bottom: 0, left: 0, right: 0, top: 0 };
   state.setParams.mockReset();
@@ -2313,6 +2338,15 @@ describe("a page beside its agent's thread", () => {
     expect(menu().textContent).toContain("New task");
     press(container, "Back");
     expect(state.goBack).toHaveBeenCalledTimes(2);
+  });
+
+  it("leads with the Menu where the page was chosen from the sidebar, which has nothing to go back to", () => {
+    state.topLevel = true;
+    const { container } = openPage();
+    expect(element(container, "Back")).toBeNull();
+    press(container, "Menu");
+    expect(state.openSidebar).toHaveBeenCalledOnce();
+    expect(state.goBack).not.toHaveBeenCalled();
   });
 
   it("leaves Back and Ask to the vertical bar, with no row over the page, and only there", () => {

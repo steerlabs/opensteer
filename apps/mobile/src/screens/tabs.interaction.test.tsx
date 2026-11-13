@@ -15,14 +15,7 @@ import {
 } from "@opensteer/client/host";
 import { MockHostClient, mockBrowserSignInRequest } from "@opensteer/client/mock";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
-import {
-  act,
-  createContext,
-  useContext,
-  useSyncExternalStore,
-  type ReactNode,
-  type Ref,
-} from "react";
+import { act, createContext, useSyncExternalStore, type ReactNode, type Ref } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import type { MobileClient } from "../client/mobile-client.js";
@@ -109,7 +102,13 @@ const harness = vi.hoisted(() => ({
   /** Made by the mocks below, from the one React the screens use. */
   contexts: {
     inPair: null as import("react").Context<boolean> | null,
-    screen: null as import("react").Context<{ focused: boolean; navigation: never }> | null,
+    screen: null as
+      | import("react").Context<{
+          focused: boolean;
+          navigation: never;
+          routeKey?: string;
+        }>
+      | null,
   },
 }));
 
@@ -409,6 +408,7 @@ vi.mock("@react-navigation/native", async () => {
   const ScreenContext = (harness.contexts.screen ??= React.createContext<{
     focused: boolean;
     navigation: never;
+    routeKey?: string;
   }>({ focused: false, navigation: null as never }));
   const action = (type: string) => (name?: string, params?: object) => ({
     payload: { name, params },
@@ -430,8 +430,14 @@ vi.mock("@react-navigation/native", async () => {
     },
     useIsFocused: () => React.useContext(ScreenContext).focused,
     useNavigation: () => React.useContext(ScreenContext).navigation,
-    useNavigationState: (select: (state: object) => unknown) =>
-      select({ index: 0, routes: [{ key: "home", name: "Home", params: {} }] }),
+    useNavigationState: (select: (state: object) => unknown) => {
+      const { navigation } = React.useContext(ScreenContext);
+      const held = navigation as { getState?: () => object } | null;
+      return select(
+        held?.getState?.() ?? { index: 0, routes: [{ key: "home", name: "Home", params: {} }] },
+      );
+    },
+    useRoute: () => ({ key: React.useContext(ScreenContext).routeKey }),
   };
 });
 vi.mock("expo", async () => {
@@ -691,7 +697,7 @@ vi.mock("../browser/browser-page.js", async () => {
 
 const { MobileClientProvider } = await import("../ui/mobile-client-context.js");
 const { SidebarShell } = await import("../sidebar/sidebar-shell.js");
-const { useSidebarMenu } = await import("../navigation-header.js");
+const { TopLevelMenu } = await import("../navigation-header.js");
 const { ThreadScreen } = await import("./thread.js");
 const { TabsScreen } = await import("./tabs.js");
 const { WorkspaceBrowserScreen } = await import("./workspace-browser.js");
@@ -836,11 +842,9 @@ class TestStack {
 
 function HomeStandIn(): ReactNode {
   // Home's composer is not under test here: it is the root, with the Menu.
-  useSidebarMenu(useContext(HostContext));
   return <p>Home</p>;
 }
 function SchedulesStandIn(): ReactNode {
-  useSidebarMenu(useContext(HostContext));
   return <p>Automations</p>;
 }
 const HostContext = createContext<HostClient>(null as never);
@@ -881,10 +885,16 @@ function StackView(props: { readonly stack: TestStack }): ReactNode {
         return (
           <section data-focused={focused} data-route={route.key} key={route.key}>
             <ScreenContext.Provider
-              value={{ focused, navigation: stack.navigation(route.key) as never }}
+              value={{
+                focused,
+                navigation: stack.navigation(route.key) as never,
+                routeKey: route.key,
+              }}
             >
               <Header routeKey={route.key} stack={stack} />
               <Screen route={{ key: route.key, name: route.name, params: route.params } as never} />
+              {/* What the route table's screen layout adds to every screen. */}
+              <TopLevelMenu />
             </ScreenContext.Provider>
           </section>
         );
@@ -1293,13 +1303,11 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     expect(find(sidebar(w), "New task")).toBeDefined();
     expect(find(sidebar(w), "All tabs")).toBeDefined();
 
-    // From Home: pushed over Home.
+    // From Home: top-level, directly on the same Home.
+    const home = w.stack.routes[0]!;
     await openSidebarTabs(w);
-    expect(w.stack.trace.at(-1)).toEqual({
-      action: "PUSH",
-      detail: { name: "Tabs", params: { deploymentId } },
-      from: "sidebar",
-    });
+    expect(w.stack.trace.at(-1)).toMatchObject({ action: "RESET", from: "sidebar" });
+    expect(w.stack.routes[0]).toBe(home);
     expect(w.stack.routes.map(({ name }) => name)).toEqual(["Home", "Tabs"]);
     // The Menu, carrying any questions waiting, where Back would be.
     const bar = front(w).querySelector<HTMLElement>("[data-header-left]")!;
@@ -1307,14 +1315,11 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
       buttons(bar).some((button) => button.getAttribute("aria-label")?.startsWith("Menu")),
     ).toBe(true);
 
-    // From Tabs to Automations and back: one destination replaces the other.
+    // From Tabs to Automations and back: one replaces the other over the same Home.
     await press(control(sidebar(w), "Automations"));
+    expect(w.stack.routes.map(({ name }) => name)).toEqual(["Home", "Schedules"]);
     await openSidebarTabs(w);
-    expect(w.stack.trace.at(-1)).toEqual({
-      action: "REPLACE",
-      detail: { name: "Tabs", params: { deploymentId } },
-      from: "sidebar",
-    });
+    expect(w.stack.routes[0]).toBe(home);
     expect(w.stack.routes.map(({ name }) => name)).toEqual(["Home", "Tabs"]);
     w.record("J1 sidebar destination from Home and Automations");
   });

@@ -15,8 +15,10 @@ import type { ReservedRegion } from "react-native-reserved-regions";
  *   markers stop and alerts about what is on screen interrupt;
  * - an unmeasured fold is straddled because the column showed before the
  *   regions arrived;
- * - choosing a task or a tab from the docked sidebar piles screens up behind
- *   Back, or rebuilds Home instead of returning to the mounted one;
+ * - choosing a task or a tab from the sidebar piles screens up behind Back,
+ *   or rebuilds Home instead of returning to the mounted one;
+ * - the edge swipe opens the drawer over a drill-in, taking its swipe back,
+ *   or stays locked on a task chosen from the sidebar;
  * - a page in front keeps the docked sidebar, so the page and its agent's
  *   Thread make three panes;
  * - a page is handed different folds depending on how it was reached, so one
@@ -78,6 +80,7 @@ vi.mock("@react-navigation/native", () => ({
     reset: (payload: object) => ({ payload, type: "RESET" }),
   },
   StackActions: {
+    pop: (count: number) => ({ payload: { count }, type: "POP" }),
     popToTop: () => ({ type: "POP_TO_TOP" }),
     push: (name: string, params?: object) => ({ payload: { name, params }, type: "PUSH" }),
     replace: (name: string, params?: object) => ({ payload: { name, params }, type: "REPLACE" }),
@@ -289,35 +292,48 @@ function stackStyle(container: HTMLElement): Record<string, unknown> {
 }
 
 describe("the sidebar as the window changes shape", () => {
-  it("allows drawer drag on Schedules and replaces sidebar destinations without growing the stack", async () => {
+  it("lets the edge swipe open the drawer on a top-level screen and leaves a drill-in's to its Back", async () => {
+    const { render } = await mount([home, threadA]);
+    // A task chosen from the sidebar: its swipe is the sidebar's, and it is marked open.
+    expect(harness.drawer.lock).toBe("unlocked");
+    expect(lastPanel().selectedThreadId).toBe("thread-a");
+    // A subagent drilled into over it keeps the native swipe back, and its task marked.
+    await render([home, threadA, { key: "subagent", name: "Subagent" }]);
+    expect(harness.drawer.lock).toBe("locked-closed");
+    expect(lastPanel().selectedThreadId).toBe("thread-a");
+    // A sheet over the task leaves it in charge.
+    await render([home, threadA, { key: "sheet", name: "ThreadAround" }]);
+    expect(harness.drawer.lock).toBe("unlocked");
+    // Phone setup over Home is a step to finish, not somewhere to be.
+    await render([home, { key: "setup", name: "SetUpPhone" }]);
+    expect(harness.drawer.lock).toBe("locked-closed");
+    // A streamed page owns its edges: the Menu in its bar opens the sidebar.
+    await render([home, { key: "tab", name: "WorkspaceBrowser", params: tabBRoute }]);
+    expect(harness.drawer.lock).toBe("locked-closed");
+    await render([home]);
+    expect(harness.drawer.lock).toBe("unlocked");
+    expect(mounts).toEqual({ count: 1, unmounts: 0 });
+  });
+
+  it("makes a row top-level over the same mounted Home, from wherever the reader is", async () => {
     const schedules = {
       key: "schedules",
       name: "Schedules",
       params: { deploymentId: "deployment-a" },
     };
     const { container } = await mount([home, schedules]);
-    expect(harness.drawer.lock).toBe("unlocked");
     press(container, "Schedules");
     expect(harness.dispatch).not.toHaveBeenCalled();
     press(container, "Tabs");
     expect(harness.dispatch).toHaveBeenLastCalledWith({
-      type: "REPLACE",
-      payload: { name: "Tabs", params: { deploymentId: "deployment-a" } },
+      type: "RESET",
+      payload: {
+        index: 1,
+        routes: [home, { name: "Tabs", params: { deploymentId: "deployment-a" } }],
+      },
     });
     press(container, "Home");
     expect(harness.dispatch).toHaveBeenLastCalledWith({ type: "POP_TO_TOP" });
-  });
-
-  it("replaces Tabs with Schedules and resets deep screens to Home plus Schedules", async () => {
-    const { container } = await mount([
-      home,
-      { key: "tabs", name: "Tabs", params: { deploymentId: "deployment-a" } },
-    ]);
-    press(container, "Schedules");
-    expect(harness.dispatch).toHaveBeenLastCalledWith({
-      type: "REPLACE",
-      payload: { name: "Schedules", params: { deploymentId: "deployment-a" } },
-    });
     const deep = await mount([home, threadA, { key: "detail", name: "Schedule" }]);
     press(deep.container, "Schedules");
     expect(harness.dispatch).toHaveBeenLastCalledWith({
@@ -497,19 +513,6 @@ describe("the sidebar as the window changes shape", () => {
     expect(action.payload.routes[1]).toEqual({
       name: "WorkspaceBrowser",
       params: tabBRoute,
-    });
-  });
-
-  it("pushes a tab chosen over Tabs, so Back returns to Tabs", async () => {
-    const tabs = { key: "tabs-key", name: "Tabs", params: { deploymentId: "deployment-a" } };
-    const { container } = await mount([home, tabs]);
-    press(container, "Tab B");
-    expect(harness.dispatch).toHaveBeenCalledExactlyOnceWith({
-      payload: {
-        name: "WorkspaceBrowser",
-        params: tabBRoute,
-      },
-      type: "PUSH",
     });
   });
 

@@ -1,14 +1,15 @@
-import { attentionCount, type HostClient, type HostSnapshot } from "@opensteer/client/host";
-import { useNavigation } from "@react-navigation/native";
+import { attentionCount, type HostSnapshot } from "@opensteer/client/host";
+import { useNavigation, useNavigationState, useRoute } from "@react-navigation/native";
 import type {
   NativeStackHeaderItem,
   NativeStackNavigationOptions,
 } from "@react-navigation/native-stack";
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { Platform, Pressable, StyleSheet, Text, View, type HostInstance } from "react-native";
+import { isTopLevel } from "./top-level.js";
 import { useSidebarControl, useSidebarDocked } from "./sidebar/sidebar-context.js";
 import { color, headerFontScaleLimit, radius, space, touchTarget } from "./theme.js";
-import { useHostValue } from "./ui/mobile-client-context.js";
+import { useHostValue, useSelectedHostClient } from "./ui/mobile-client-context.js";
 import { AppText } from "./ui/primitives.js";
 import { Symbol } from "./ui/symbol.js";
 
@@ -120,49 +121,67 @@ function nativeHeaderItem(action: HeaderActionSpec): NativeStackHeaderItem {
 const selectAttention = (snapshot: HostSnapshot): number =>
   attentionCount(snapshot.waitingRequests);
 
+/** Whether this screen is top-level: the Menu leads its bar and its edge swipe opens the sidebar. */
+export function useIsTopLevel(): boolean {
+  const { key } = useRoute();
+  return useNavigationState((state) => isTopLevel(state, key));
+}
+
 /**
- * Puts the Menu in the leading slot of a sidebar destination's bar, where the
- * sidebar is a drawer.
- *
- * iOS draws it as a native bar item; Android draws the same symbol as a
- * 48-point React control, which is also a view the sidebar can hand
- * TalkBack's focus back to when it closes.
- *
- * It carries the number of questions waiting on the reader, in the amber the
- * sidebar marks each of their tasks with: a question asked in some task is
- * otherwise invisible from Home until the sidebar happens to be opened.
- * Docked, the sidebar is in view with those marks on its rows, so the slot is
- * empty: there is nothing to open, and the destination has no Back.
+ * The Menu in a top-level screen's bar, for every one alike. No screen asks
+ * for it: where the screen stands in the stack decides (`top-level.ts`), so the
+ * same task has the Menu from the sidebar and Back from the task that started it.
  */
-export function useSidebarMenu(hostClient: HostClient | null): void {
+export function TopLevelMenu(): ReactNode {
+  return useIsTopLevel() ? <InstallMenu /> : null;
+}
+
+function InstallMenu(): null {
   const navigation = useNavigation();
   const sidebar = useSidebarControl();
   const docked = useSidebarDocked();
-  const attention = useHostValue(hostClient, selectAttention, 0);
+  const attention = useMenuAttention();
   useLayoutEffect(() => {
     if (sidebar === null) return;
+    // Docked, the sidebar is in view with its marks on its rows: there is
+    // nothing to open, and a top-level screen has no Back.
     if (docked) {
       navigation.setOptions({
-        headerBackVisible: false,
         headerLeft: () => null,
         unstable_headerLeftItems: () => [],
       });
       return;
     }
     const menu: HeaderActionSpec = {
-      accessibilityHint: "Shows your tasks, teams, Tabs, Automations and Settings",
-      accessibilityLabel: attention === 0 ? "Menu" : `Menu, ${attentionPhrase(attention)}`,
+      accessibilityHint: menuHint,
+      accessibilityLabel: menuLabel(attention),
       ...(attention === 0 ? {} : { badge: attentionBadge(attention) }),
       icon: "line.3.horizontal",
       label: "Menu",
       onPress: () => sidebar.open(),
     };
     navigation.setOptions({
-      headerBackVisible: false,
       headerLeft: () => <MenuHeaderButton {...menu} onOpen={sidebar.open} />,
       unstable_headerLeftItems: () => [nativeHeaderItem(menu)],
     });
   }, [attention, docked, navigation, sidebar]);
+  return null;
+}
+
+export const menuHint = "Shows your tasks, teams, Tabs, Automations and Settings";
+
+/**
+ * The questions waiting on the reader, which the Menu carries in the amber the
+ * sidebar marks each of their tasks with: a question asked in another task is
+ * otherwise invisible until the sidebar happens to be opened.
+ */
+export function useMenuAttention(): number {
+  return useHostValue(useSelectedHostClient(), selectAttention, 0);
+}
+
+/** The Menu's name for a screen reader, saying what its badge says. */
+export function menuLabel(attention: number): string {
+  return attention === 0 ? "Menu" : `Menu, ${attentionPhrase(attention)}`;
 }
 
 /** The count in words, for a screen reader: what the badge says by its number. */
@@ -171,7 +190,7 @@ function attentionPhrase(count: number): string {
 }
 
 /** The count as the badge draws it: past two digits the exact number stops helping. */
-function attentionBadge(count: number): string {
+export function attentionBadge(count: number): string {
   return count > 99 ? "99+" : String(count);
 }
 
