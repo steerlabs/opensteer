@@ -1165,7 +1165,7 @@ function toolEntryId(runId: string | null, callId: string): string {
 
 /** The receipt a resolved Request leaves in its Thread, wherever it was resolved. */
 export function requestReceipt(
-  request: Extract<Request, { status: "declined" | "fulfilled" | "withdrawn" }>,
+  request: Exclude<Request, { status: "pending" }>,
 ): RequestReceiptEntry {
   const passwordsOffer = browserSignInPasswordsOffer(request);
   return {

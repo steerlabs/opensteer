@@ -259,7 +259,10 @@ const eventDataSchemas = {
    * of its person's tasks. It carries the whole Thread because a client that
    * listed only tasks has never held it.
    */
-  "thread.listed": z.object({ thread: ThreadSchema }),
+  "thread.listed": z.object({
+    thread: ThreadSchema,
+    pendingDeviceAccessRequests: z.number().int().nonnegative().optional(),
+  }),
   "thread-input.updated": z.object({ input: ThreadInputSchema }),
   "thread.input-queue-updated": z.strictObject({ paused: z.boolean() }),
   /**
@@ -275,6 +278,7 @@ const eventDataSchemas = {
     status: ThreadStatusSchema,
     inputQueuePaused: z.boolean(),
     pendingRequests: z.number().int().nonnegative(),
+    pendingDeviceAccessRequests: z.number().int().nonnegative().optional(),
     title: ThreadTitleSchema.optional(),
     icon: IconNameSchema.nullable().optional(),
     doneAt: IsoDateTimeSchema.nullable().optional(),
@@ -513,7 +517,10 @@ const eventDataViewSchemas = {
     voice: z.literal(true).optional(),
   }),
   "thread.execution-updated": z.object({ thread: ThreadViewSchema }),
-  "thread.listed": z.object({ thread: ThreadViewSchema }),
+  "thread.listed": z.object({
+    ...eventDataSchemas["thread.listed"].shape,
+    thread: ThreadViewSchema,
+  }),
   "thread-input.updated": z.object({ input: ThreadInputViewSchema }),
   "thread.input-queue-updated": z.object(eventDataSchemas["thread.input-queue-updated"].shape),
   "thread.state-changed": z.object({

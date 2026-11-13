@@ -1224,8 +1224,13 @@ export async function createHostRuntime(
             }),
           }
         : {}),
-      onLive: ({ userId, view }) =>
-        realtime.sendToUsers([userId], { notification: view, type: "host.notification" }),
+      onLive: ({ userId, view, deviceAccessRequests }) =>
+        realtime.sendToUsers(
+          [userId],
+          { notification: view, type: "host.notification" },
+          "unspecified",
+          deviceAccessRequests ? { deviceAccessRequests } : undefined,
+        ),
       onError: (failure) => reportNotification("error", failure),
       onWarning: (failure) => reportNotification("warn", failure),
       ready: notificationAuthorityReady,

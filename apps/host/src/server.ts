@@ -1,6 +1,10 @@
 import type { DeviceAccessService } from "./administration/device-access-service.js";
 import { consumeAnonymousRateLimit } from "./identity/anonymous-rate-limit.js";
-import { deviceAccess, isDeviceAccessRequestEvent } from "@opensteer/protocol";
+import {
+  deviceAccess,
+  isDeviceAccessRequestEvent,
+  projectDeviceAccessRequestEvent,
+} from "@opensteer/protocol";
 import {
   deviceMembershipTurn,
   removeSignedDevice,
@@ -1320,6 +1324,7 @@ export async function createHostServer(
         ...(input.aroundMessageId ? { aroundMessageId: input.aroundMessageId } : {}),
         ...(input.before ? { before: input.before } : {}),
         ...(input.placeEvents ? { placeEvents: input.placeEvents } : {}),
+        ...(input.deviceAccessRequests ? { deviceAccessRequests: input.deviceAccessRequests } : {}),
         ...(input.turns === undefined
           ? { maxItems: Math.min(input.limit ?? eventPageMaxItems, eventPageMaxItems) }
           : { maxTurns: input.turns }),
@@ -1329,9 +1334,14 @@ export async function createHostServer(
       if (!page) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
       const projected = {
         ...page,
-        events: page.events.filter(
-          (event) => input.deviceAccessRequests === "include" || !isDeviceAccessRequestEvent(event),
-        ),
+        events: page.events
+          .filter(
+            (event) =>
+              input.deviceAccessRequests === "include" || !isDeviceAccessRequestEvent(event),
+          )
+          .map((event) =>
+            projectDeviceAccessRequestEvent(event, input.deviceAccessRequests === "include"),
+          ),
       };
       return rpcSuccess(
         hostApi["thread.events.list"].success.parse(
@@ -1351,9 +1361,14 @@ export async function createHostServer(
       if (!page) throw new OpensteerError({ code: "not_found", message: "Subagent not found" });
       const projected = {
         ...page,
-        events: page.events.filter(
-          (event) => input.deviceAccessRequests === "include" || !isDeviceAccessRequestEvent(event),
-        ),
+        events: page.events
+          .filter(
+            (event) =>
+              input.deviceAccessRequests === "include" || !isDeviceAccessRequestEvent(event),
+          )
+          .map((event) =>
+            projectDeviceAccessRequestEvent(event, input.deviceAccessRequests === "include"),
+          ),
       };
       return rpcSuccess(
         hostApi["node.events.list"].success.parse(
@@ -1460,6 +1475,7 @@ export async function createHostServer(
     },
     "thread.assignments.list": async (input, context) => {
       const page = await dependencies.store.listThreadAssignmentsForOwner({
+        ...(input.deviceAccessRequests ? { deviceAccessRequests: input.deviceAccessRequests } : {}),
         threadId: input.threadId,
         ownerId: requireRpcSession(context).user.id,
         maxItems: Math.min(input.limit ?? 25, 100),
@@ -1478,6 +1494,9 @@ export async function createHostServer(
           await dependencies.store.requests.waitingOnUserPage({
             ...(input.before ? { before: input.before } : {}),
             limit: Math.min(input.limit ?? 100, 100),
+            ...(input.deviceAccessRequests
+              ? { deviceAccessRequests: input.deviceAccessRequests }
+              : {}),
             userId: requireRpcSession(context).user.id,
           }),
         ),
@@ -1489,15 +1508,19 @@ export async function createHostServer(
       const page = await dependencies.store.requests.originatingPendingPage({
         ...(input.before ? { before: input.before } : {}),
         limit: Math.min(input.limit ?? threadPageMaxItems, threadPageMaxItems),
+        ...(input.deviceAccessRequests ? { deviceAccessRequests: input.deviceAccessRequests } : {}),
         threadId: input.threadId,
       });
       return rpcSuccess(
         hostApi["thread.requests.list"].success.parse({ ...page, threadId: input.threadId }),
       );
     },
-    "attention.get": async (_input, context) =>
+    "attention.get": async (input, context) =>
       rpcSuccess(
-        await dependencies.store.notificationState.attention(requireRpcSession(context).user.id),
+        await dependencies.store.notificationState.attention(
+          requireRpcSession(context).user.id,
+          input.deviceAccessRequests ? { deviceAccessRequests: input.deviceAccessRequests } : {},
+        ),
       ),
     "needsYou.get": async (input, context) =>
       rpcSuccess(
@@ -1526,6 +1549,9 @@ export async function createHostServer(
       rpcSuccess(
         hostApi["tasks.list"].success.parse(
           await dependencies.store.taskPageForUser({
+            ...(input.deviceAccessRequests
+              ? { deviceAccessRequests: input.deviceAccessRequests }
+              : {}),
             ...(input.active === undefined ? {} : { active: input.active }),
             ...(input.before ? { before: input.before } : {}),
             ...(input.done ? { done: true } : {}),

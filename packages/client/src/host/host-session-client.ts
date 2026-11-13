@@ -394,6 +394,7 @@ export type HostCapabilityReader = (options?: {
 }) => Promise<readonly HostCapability[]>;
 
 export interface HttpHostClientOptions {
+  readonly deviceAccessRequests?: "include";
   readonly streamCache?: PersonalStreamCache;
   readonly passkeys?: BrowserPasskeyPort;
   /** The viewer's command platform for exact baseline shortcut projection. */
@@ -861,7 +862,7 @@ export class HttpHostClient {
     read: async (input) => {
       const page = unwrapRpcResult(
         await this.rpc["node.events.list"]({
-          ...(this.#capabilities?.includes("devices-v1")
+          ...(this.#supportsDeviceAccessRequests()
             ? { deviceAccessRequests: "include" as const }
             : {}),
           ...(this.#capabilities?.includes("tool-output-detail-v1")
@@ -932,8 +933,10 @@ export class HttpHostClient {
 
   #snapshot: HostSnapshot = emptySnapshot();
 
+  readonly #deviceAccessRequests: boolean;
   readonly #viewerPlatform: "mac" | "pc" | null;
   constructor(options: HttpHostClientOptions) {
+    this.#deviceAccessRequests = options.deviceAccessRequests === "include";
     this.#streamCache = options.streamCache;
     this.browserPasskeys = new BrowserPasskeys(options.passkeys);
     this.#viewerPlatform = options.viewerPlatform ?? null;
@@ -1888,6 +1891,9 @@ export class HttpHostClient {
       try {
         response = unwrapRpcResult(
           await this.rpc["thread.assignments.list"]({
+            ...(this.#supportsDeviceAccessRequests()
+              ? { deviceAccessRequests: "include" as const }
+              : {}),
             threadId,
             limit: 100,
             ...(open ? { open } : {}),
@@ -2254,7 +2260,7 @@ export class HttpHostClient {
         ...(this.#capabilities?.includes("tool-output-detail-v1")
           ? { toolOutputs: "preview" as const }
           : {}),
-        ...(this.#capabilities?.includes("devices-v1")
+        ...(this.#supportsDeviceAccessRequests()
           ? { deviceAccessRequests: "include" as const }
           : {}),
         ...(this.#capabilities?.includes("place-events-v1")
@@ -2623,7 +2629,7 @@ export class HttpHostClient {
         ...(this.#capabilities?.includes("tool-output-detail-v1")
           ? { toolOutputs: "preview" as const }
           : {}),
-        ...(this.#capabilities?.includes("devices-v1")
+        ...(this.#supportsDeviceAccessRequests()
           ? { deviceAccessRequests: "include" as const }
           : {}),
         ...(this.#capabilities?.includes("place-events-v1")
@@ -3274,7 +3280,7 @@ export class HttpHostClient {
       await this.rpc["needsYou.get"]({
         before: held.window.nextBefore,
         limit: 50,
-        ...(this.#capabilities?.includes("devices-v1")
+        ...(this.#supportsDeviceAccessRequests()
           ? { deviceAccessRequests: "include" as const }
           : {}),
       }),
@@ -3291,11 +3297,15 @@ export class HttpHostClient {
     });
   }
 
+  #supportsDeviceAccessRequests(): boolean {
+    return this.#deviceAccessRequests && this.#capabilities?.includes("devices-v1") === true;
+  }
+
   async #readWaitingRequests(): Promise<void> {
     const needsGeneration = this.#viewerGeneration;
     const needsYou = unwrapRpcResult(
       await this.rpc["needsYou.get"](
-        this.#capabilities?.includes("devices-v1") ? { deviceAccessRequests: "include" } : {},
+        this.#supportsDeviceAccessRequests() ? { deviceAccessRequests: "include" } : {},
       ),
     );
     if (needsGeneration !== this.#viewerGeneration || this.#disposed) return;
@@ -3309,7 +3319,13 @@ export class HttpHostClient {
         readonly requests: readonly WaitingRequest[];
         readonly window: DurableWindow;
       } = unwrapRpcResult(
-        await this.rpc["requests.list"]({ ...(before ? { before } : {}), limit: 100 }),
+        await this.rpc["requests.list"]({
+          ...(before ? { before } : {}),
+          limit: 100,
+          ...(this.#supportsDeviceAccessRequests()
+            ? { deviceAccessRequests: "include" as const }
+            : {}),
+        }),
       );
       if (!this.#viewerStillCurrent(generation, userId)) return;
       waitingRequests.push(...page.requests);
@@ -3438,6 +3454,9 @@ export class HttpHostClient {
       for (let pageNumber = 0; pageNumber < 20; pageNumber++) {
         const page = unwrapRpcResult(
           await this.rpc["tasks.list"]({
+            ...(this.#supportsDeviceAccessRequests()
+              ? { deviceAccessRequests: "include" as const }
+              : {}),
             ...(scope === "active" ? { active: true } : scope ? { done: true } : {}),
             ...(before ? { before } : {}),
             limit: threadPageMaxItems,
@@ -4064,9 +4083,7 @@ export class HttpHostClient {
             // an upgraded Host refuses the stream before sending an event this
             // app would read with the wrong meaning.
             apiVersion: hostApiVersion,
-            ...(this.#capabilities?.includes("devices-v1")
-              ? { deviceAccessRequests: "include" }
-              : {}),
+            ...(this.#supportsDeviceAccessRequests() ? { deviceAccessRequests: "include" } : {}),
             ...(this.#capabilities?.includes("person-show-v1") ? { personShow: "accept" } : {}),
             ...(this.#capabilities?.includes("tool-output-detail-v1")
               ? { toolOutputs: "preview" }
@@ -5116,6 +5133,9 @@ export class HttpHostClient {
         readonly window: DurableWindow;
       } = unwrapRpcResult(
         await this.rpc["thread.requests.list"]({
+          ...(this.#supportsDeviceAccessRequests()
+            ? { deviceAccessRequests: "include" as const }
+            : {}),
           ...(before ? { before } : {}),
           limit: 100,
           threadId,

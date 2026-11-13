@@ -1843,9 +1843,9 @@ export async function enrollRunnerConnection(
                   ...machineAccessPolicyDefault,
                   browser: enrollment.initialAccess.browser,
                   apps: enrollment.initialAccess.apps,
-                  ...(enrollment.initialAccess.files
-                    ? { reach: "owner" as const, commands: true, forwarding: true }
-                    : { reach: "nobody" as const }),
+                  reach: enrollment.initialAccess.files ? "owner" : "nobody",
+                  commands: true,
+                  forwarding: true,
                 }
               : machineAccessPolicyDefault,
           ),

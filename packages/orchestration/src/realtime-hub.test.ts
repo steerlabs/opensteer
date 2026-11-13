@@ -84,6 +84,7 @@ describe("snapshot-before-live synchronization", () => {
       } as unknown as OpensteerStore;
       const hub = new RealtimeHub({ store });
       const sink = new MemorySink();
+      const disconnect = hub.registerConnection(userId, createId("authSession"), sink);
       const stop = await hub.subscribe({
         deploymentId,
         userId,
@@ -93,11 +94,42 @@ describe("snapshot-before-live synchronization", () => {
       });
       try {
         hub.publish(resolved);
+        const state: AgentEvent = {
+          ...base,
+          sequence: sequence("4"),
+          type: "thread.state-changed",
+          data: {
+            status: "waiting",
+            inputQueuePaused: false,
+            pendingRequests: 2,
+            pendingDeviceAccessRequests: 1,
+          },
+        };
+        hub.publish(state);
+        hub.sendToUsers(
+          [userId],
+          {
+            type: "host.notification",
+            notification: {
+              id: createId("notification"),
+              threadId: base.threadId,
+              kind: "request-opened",
+              requestId: request.id,
+              messageId: null,
+              runId: null,
+              title: "Turn on Browser",
+              body: "Read the task",
+              occurredAt: base.createdAt,
+            },
+          },
+          "unspecified",
+          { deviceAccessRequests: "include" },
+        );
         await vi.waitFor(
           () =>
             expect(
               sink.messages.some(
-                (message) => message.type === "host.events" && message.throughSequence === "3",
+                (message) => message.type === "host.events" && message.throughSequence === "4",
               ),
               "live Request resolution never arrived",
             ).toBe(true),
@@ -107,12 +139,20 @@ describe("snapshot-before-live synchronization", () => {
           sink.messages.flatMap((message) =>
             message.type === "host.events" ? message.events : [],
           ),
-        ).toEqual(supported ? [opened, resolved] : []);
+        ).toEqual(
+          supported
+            ? [opened, resolved, state]
+            : [{ ...state, data: { ...state.data, pendingRequests: 1 } }],
+        );
+        expect(sink.messages.filter(({ type }) => type === "host.notification")).toHaveLength(
+          supported ? 1 : 0,
+        );
         expect(sink.messages.find((message) => message.type === "host.synchronized")).toMatchObject(
           { sequence: "2" },
         );
       } finally {
         stop();
+        disconnect();
       }
     },
   );

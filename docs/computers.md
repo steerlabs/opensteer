@@ -18,10 +18,14 @@ Legacy policy edits preserve omitted switches inside the revision transaction.
 When an owned online device has access off, the agent can ask in Needs you. Turning it on changes
 the device's persistent policy; Not now suppresses the same ask for that task. An offline device
 never opens a Request. Fulfillment resumes through a continuation Run with rebuilt routes; it does
-not add routes to the Run that asked. The separate owned-device inventory includes disabled devices
+not add routes to the Run that asked. Only surfaces that can answer this Request opt into its lists,
+counts and live notifications; Account push omits it while installed phones cannot declare support.
+The separate owned-device inventory includes disabled devices
 and phones without making them shell targets. Per-app, profile and OS authorization still apply.
 
-Initial setup choices apply only at first redemption. Replaying enrollment cannot reset later access
+Initial setup choices apply only at first redemption. A new Files policy starts with commands and
+forwarding enabled underneath either switch position; Off changes only reach to nobody. Later
+toggles preserve saved folders and restrictions. Replaying enrollment cannot reset later access
 edits. Desktop main persists the prepared key and Account provenance before the renderer requests
 its enrollment, then saves the pending receipt before handing its token to the worker. Issuance
 serializes with Account sign-out; signed leave retires the prepared identity’s pending enrollments

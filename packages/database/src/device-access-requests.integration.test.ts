@@ -1,9 +1,14 @@
 import { startPersonalQueuedRunFixture } from "./personal-run-fixture.test-support.js";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { createId, type RunnerId } from "@opensteer/core";
-import { RunnerBootIdSchema, machineAccessPolicyDefault } from "@opensteer/protocol";
+import {
+  RunnerBootIdSchema,
+  machineAccessPolicyDefault,
+  projectDeviceAccessRequestEvent,
+} from "@opensteer/protocol";
 import { expect } from "vitest";
 import { devicesLegacyReaders } from "./device-request-legacy-readers.test-support.js";
+import { NotificationStore } from "./notification-store.js";
 import { needsYouPage } from "./needs-you-store.js";
 import {
   describeStore,
@@ -136,6 +141,21 @@ describeStore("device access Requests", (it) => {
     });
     const opened = await ask(f, run, target);
     expect(old.PendingRequestViewSchema.safeParse(opened.request).success).toBe(false);
+    const notifications = new NotificationStore(f.database);
+    const event = opened.events.find(({ type }) => type === "request.opened")!;
+    const [notification] = await notifications.decide(event);
+    expect(notification).toMatchObject({ deviceAccessRequests: "include" });
+    expect(
+      await notifications.publicationSkipReason({
+        ...notification!.view,
+        userId: run.userId,
+        eventId: event.eventId,
+        sequence: event.sequence,
+        occurredAt: new Date(event.createdAt),
+        expiresAt: new Date(Date.parse(event.createdAt) + 60_000),
+      }),
+    ).toBe("Device access Requests require a supported live reader");
+
     const legacy = await needsYouPage(f.database, { userId: run.userId, limit: 1 });
     expect(old.NeedsYouPageSchema.safeParse(legacy).success).toBe(true);
     expect(legacy).toMatchObject({
@@ -143,10 +163,69 @@ describeStore("device access Requests", (it) => {
       entries: [{ request: { id: ordinary.request.id } }],
       window: { hasMore: false, itemCount: 1, totalItems: 1 },
     });
+    const listed = await f.store.requests.waitingOnUserPage({ userId: run.userId, limit: 1 });
+    expect(listed.requests.map(({ request }) => request.id)).toEqual([ordinary.request.id]);
+    expect(listed.window).toMatchObject({ itemCount: 1, totalItems: 1, hasMore: false });
+    const threadRequests = await f.store.requests.originatingPendingPage({
+      threadId: run.thread.id,
+      limit: 1,
+    });
+    expect(threadRequests.requests.map(({ id }) => id)).toEqual([ordinary.request.id]);
+    expect(threadRequests.window).toMatchObject({ itemCount: 1, totalItems: 1, hasMore: false });
+    for (const { request } of listed.requests)
+      expect(old.PendingRequestViewSchema.safeParse(request).success).toBe(true);
+    const modernListed = await f.store.requests.waitingOnUserPage({
+      userId: run.userId,
+      limit: 100,
+      deviceAccessRequests: "include",
+    });
+    expect(modernListed.requests.map(({ request }) => request.id)).toContain(opened.request.id);
+    expect(modernListed.window.totalItems).toBe(2);
+    expect(
+      (
+        await f.store.requests.originatingPendingPage({
+          threadId: run.thread.id,
+          limit: 100,
+          deviceAccessRequests: "include",
+        })
+      ).requests.map(({ id }) => id),
+    ).toContain(opened.request.id);
+    expect(
+      await f.store.notificationState.attention(run.userId, { deviceAccessRequests: "include" }),
+    ).toMatchObject({ needsYou: 2 });
+    const states = await f.store.drainPendingThreadStates();
+    const state = states.find(({ type }) => type === "thread.state-changed")!;
+    expect(state.data).toMatchObject({ pendingRequests: 2, pendingDeviceAccessRequests: 1 });
+    expect(projectDeviceAccessRequestEvent(state, false).data).toMatchObject({
+      pendingRequests: 1,
+    });
+    expect(projectDeviceAccessRequestEvent(state, true).data).toMatchObject({ pendingRequests: 2 });
+    const historyInput = { threadId: run.thread.id, ownerId: run.userId };
+    expect((await f.store.threadEventPageForOwner(historyInput))?.thread.pendingRequests).toBe(1);
+    expect(
+      (await f.store.threadEventPageForOwner({ ...historyInput, deviceAccessRequests: "include" }))
+        ?.thread.pendingRequests,
+    ).toBe(2);
+    expect(await f.store.notificationState.attention(run.userId)).toMatchObject({ needsYou: 1 });
     const snapshot = await f.store.deploymentSnapshot({ viewerId: run.userId });
     expect(old.DeploymentSnapshotSchema.safeParse(snapshot).success).toBe(true);
+    expect(snapshot.threads.find(({ id }) => id === run.thread.id)?.pendingRequests).toBe(1);
     expect(snapshot.pendingRequests.map(({ id }) => id)).toEqual([ordinary.request.id]);
     expect(snapshot.pendingRequestWindow).toMatchObject({ itemCount: 1, totalItems: 1 });
+    expect(
+      snapshot.tasks!.recent.tasks.find(({ thread }) => thread.id === run.thread.id)?.thread
+        .pendingRequests,
+    ).toBe(1);
+    expect(
+      (await f.store.taskPageForUser({ userId: run.userId })).tasks.find(
+        ({ thread }) => thread.id === run.thread.id,
+      )?.thread.pendingRequests,
+    ).toBe(1);
+    expect(
+      (
+        await f.store.taskPageForUser({ userId: run.userId, deviceAccessRequests: "include" })
+      ).tasks.find(({ thread }) => thread.id === run.thread.id)?.thread.pendingRequests,
+    ).toBe(2);
     const supported = await needsYouPage(f.database, {
       userId: run.userId,
       deviceAccessRequests: "include",
@@ -156,6 +235,7 @@ describeStore("device access Requests", (it) => {
       viewerId: run.userId,
       deviceAccessRequests: "include",
     });
+    expect(modern.threads.find(({ id }) => id === run.thread.id)?.pendingRequests).toBe(2);
     expect(modern.pendingRequests.map(({ id }) => id)).toContain(opened.request.id);
     expect(old.DeploymentSnapshotSchema.safeParse(modern).success).toBe(false);
     expect(await f.store.requests.get(opened.request.id)).toMatchObject({ status: "pending" });

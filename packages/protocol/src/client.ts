@@ -7,6 +7,7 @@ import { ComputerViewChangedSchema, ComputerViewRemovedSchema } from "./computer
 import {
   AgentEventViewSchema,
   type AgentEventView,
+  type AssignmentSummary,
   PlaceEnteredEventViewSchema,
   LiveRunProgressViewSchema,
   MessageViewSchema,
@@ -489,4 +490,63 @@ export function isDeviceAccessRequestEvent(event: AgentEventView): boolean {
       event.type === "request.resolved") &&
     event.data.request.kind === "device.access"
   );
+}
+
+export function projectDeviceAccessRequestEvent<Event extends AgentEventView>(
+  event: Event,
+  include: boolean,
+): Event {
+  if (include) return event;
+  if (event.type === "assignment.created" || event.type === "assignment.updated")
+    return {
+      ...event,
+      data: {
+        ...event.data,
+        assignment: projectDeviceAccessAssignment(event.data.assignment, false),
+      },
+    };
+  if (event.type === "thread.state-changed")
+    return {
+      ...event,
+      data: {
+        ...event.data,
+        pendingRequests: Math.max(
+          0,
+          event.data.pendingRequests - (event.data.pendingDeviceAccessRequests ?? 0),
+        ),
+      },
+    };
+  if (event.type === "thread.listed")
+    return {
+      ...event,
+      data: {
+        ...event.data,
+        thread: {
+          ...event.data.thread,
+          pendingRequests: Math.max(
+            0,
+            event.data.thread.pendingRequests - (event.data.pendingDeviceAccessRequests ?? 0),
+          ),
+        },
+      },
+    };
+  return event;
+}
+
+export function projectDeviceAccessAssignment(
+  assignment: AssignmentSummary,
+  include: boolean,
+): AssignmentSummary {
+  if (include) return assignment;
+  return {
+    ...assignment,
+    workerThread: {
+      ...assignment.workerThread,
+      pendingRequests: Math.max(
+        0,
+        assignment.workerThread.pendingRequests -
+          (assignment.workerThread.pendingDeviceAccessRequests ?? 0),
+      ),
+    },
+  };
 }

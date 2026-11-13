@@ -154,3 +154,84 @@ it("turns Files on while preserving saved folders, commands and forwarding", asy
     client.dispose();
   }
 });
+
+it("retains new shell defaults underneath an initially off Files switch", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    const enrollment = await client.dispatch({
+      type: "runner.enrollment.createLocal",
+      name: "Laptop",
+      allowedModules: ["browser", "integrations", "messaging", "shell"],
+      access: { browser: true, apps: true, files: false },
+      idempotencyKey: crypto.randomUUID(),
+    });
+    if (enrollment.type !== "runner.enrollment.createLocal") throw new Error("Expected enrollment");
+    const runnerId = client.connectLocalRunner(enrollment.token);
+    const machine = client.getSnapshot().machines.find(({ id }) => id === runnerId)!;
+    expect(machine.access!.policy).toMatchObject({
+      reach: "nobody",
+      commands: true,
+      forwarding: true,
+    });
+    await client.updateMachineAccess({
+      runnerId: machine.id,
+      expectedRevision: 1,
+      policy: { ...machine.access!.policy, reach: "owner" },
+    });
+    expect(
+      client.getSnapshot().machines.find(({ id }) => id === machine.id)!.access!.policy,
+    ).toMatchObject({ reach: "owner", commands: true, forwarding: true });
+  } finally {
+    client.dispose();
+  }
+});
+
+it("cancels pending device Requests atomically with removal as resource-deleted", async () => {
+  const client = new MockHostClient({ latencyMs: 0, devices: "seeded" });
+  try {
+    const request = Object.values(client.getSnapshot().requests)
+      .flat()
+      .find(({ kind }) => kind === "device.access")!;
+    if (request.payload.kind !== "device.access") throw new Error("Expected device Request");
+    const machineId = request.payload.machineId;
+    const beforeCount = client
+      .getSnapshot()
+      .threads.find(({ id }) => id === request.originatingThreadId)!.pendingRequests;
+    const observed: boolean[] = [];
+    const stop = client.subscribe(() => {
+      const snapshot = client.getSnapshot();
+      observed.push(
+        snapshot.machines.some(({ id }) => id === machineId) ||
+          !Object.values(snapshot.requests)
+            .flat()
+            .some(({ id }) => id === request.id),
+      );
+    });
+    await client.dispatch({
+      type: "machine.revoke",
+      machineId,
+      idempotencyKey: crypto.randomUUID(),
+    });
+    stop();
+    const snapshot = client.getSnapshot();
+    expect(snapshot.machines.some(({ id }) => id === machineId)).toBe(false);
+    expect(
+      Object.values(snapshot.requests)
+        .flat()
+        .some(({ id }) => id === request.id),
+    ).toBe(false);
+    expect(snapshot.transcripts[request.originatingThreadId]).toContainEqual(
+      expect.objectContaining({
+        kind: "request",
+        requestId: request.id,
+        outcome: "Cancelled · resource-deleted",
+      }),
+    );
+    expect(observed.every(Boolean)).toBe(true);
+    expect(
+      snapshot.threads.find(({ id }) => id === request.originatingThreadId)?.pendingRequests,
+    ).toBe(beforeCount - 1);
+  } finally {
+    client.dispose();
+  }
+});

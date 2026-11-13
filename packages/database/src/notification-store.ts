@@ -53,6 +53,7 @@ export interface NotificationPublication {
 
 /** A notification as it was decided, for the recipient's connected clients. */
 export interface DecidedNotification {
+  readonly deviceAccessRequests?: "include";
   readonly userId: UserId;
   readonly view: NotificationView;
 }
@@ -136,6 +137,9 @@ export class NotificationStore {
           `ntf_${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
         );
         return {
+          ...(event.type === "request.opened" && event.data.request.kind === "device.access"
+            ? { deviceAccessRequests: "include" as const }
+            : {}),
           userId: candidate.userId,
           view: NotificationViewSchema.parse({
             ...candidate,
@@ -170,9 +174,12 @@ export class NotificationStore {
         if (!entry.requestId) return "Notification names no Request";
         const request = await this.#database
           .selectFrom("requests")
-          .select("status")
+          .select(["status", "kind"])
           .where("id", "=", entry.requestId)
           .executeTakeFirst();
+        // Account installations do not negotiate Request kinds; suppress before generic push or previews.
+        if (request?.kind === "device.access")
+          return "Device access Requests require a supported live reader";
         return request?.status === "pending"
           ? null
           : "Request was answered before the notification was published";
