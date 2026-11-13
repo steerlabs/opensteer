@@ -44,7 +44,7 @@ export class PersonalTeamToolAdapter implements TeamToolPort {
       ...(input.after ? { after: TeamMessageIdSchema.parse(input.after) } : {}),
     });
     signal?.throwIfAborted();
-    return boundTeamReadPage(result);
+    return boundTeamReadPage(result, input.after ? "after" : input.before ? "before" : "newest");
   }
 
   async search(

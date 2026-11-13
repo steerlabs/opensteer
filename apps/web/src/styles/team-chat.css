@@ -3293,7 +3293,7 @@ a.team-input-source:hover {
   display: block;
   margin-top: 4px;
 }
-.turn--conversation > .team-run-delivery {
+.turn > .team-run-delivery {
   margin-top: calc(4px - var(--space-6));
 }
 .team-composer__recipient {

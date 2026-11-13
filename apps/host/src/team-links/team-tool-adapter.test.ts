@@ -85,7 +85,11 @@ function fixture() {
     async read(_run, _teamId, input) {
       const selected =
         input.channelId === source.channelId && input.threadRootId === source.threadRootId
-          ? messages.filter((m) => !input.before || BigInt(m.id) < BigInt(input.before))
+          ? messages.filter(
+              (m) =>
+                (!input.before || BigInt(m.id) < BigInt(input.before)) &&
+                (!input.after || BigInt(m.id) > BigInt(input.after)),
+            )
           : [];
       return { page: { ...page, messages: selected }, source };
     },
@@ -195,6 +199,27 @@ describe("Run-bound team tool adapter", () => {
     const file = await f.adapter.read(f.run, { fileId: createId("teamBlob") });
     expect(file).toEqual({ path: "/private/attachment-cache/public.txt", source: f.source });
     expect(JSON.stringify(file)).not.toMatch(/sha256|artifactId|Bearer|https:/);
+  });
+
+  it("keeps the messages nearest a forward cursor when bounding a page", async () => {
+    const f = fixture();
+    const seen: string[] = [];
+    let after = TeamMessageIdSchema.parse("1");
+    for (let index = 0; index < 50; index++) {
+      const result = team_read.output.parse(
+        await f.adapter.read(f.run, {
+          channelId: f.source.channelId,
+          threadRootId: f.source.threadRootId!,
+          after,
+        }),
+      );
+      if (!("page" in result)) throw new Error("Expected page");
+      expect(result.page.throughSeq).toBe("91");
+      seen.push(...result.page.messages.map((m) => m.id));
+      if (!result.page.hasMore) break;
+      after = result.page.messages.at(-1)!.id;
+    }
+    expect(seen).toEqual(f.messages.filter((m) => BigInt(m.id) > 1n).map((m) => m.id));
   });
 
   it("uploads only explicit admitted paths and recovers an uncertain reply before any repeated upload", async () => {

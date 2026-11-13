@@ -702,6 +702,7 @@ function conversationTurnShows(turn: Turn, { atComputer, live }: ConversationRow
       : hasRunOutcome(turn.run) || (turn.run.attempt ?? 1) > 1);
   return (
     reply !== null ||
+    (!turn.continued && turn.run?.delivery != null) ||
     turn.assignments.length > 0 ||
     ended ||
     (live && (composing || startHold !== null || atComputer(turn)))
@@ -3143,4 +3144,14 @@ export function activityFeedPresentation(entry: ActivityFeedEntry): ActivityFeed
     label: head.label,
     marker: head.tone,
   };
+}
+
+export function teamDeliveryLabel(
+  delivery: NonNullable<RunEntry["delivery"]>,
+  channelName: string,
+): string {
+  if (delivery.state === "sent")
+    return `${delivery.via === "tool" ? "Replied in" : "Sent to"} #${channelName}`;
+  if (delivery.state === "sending") return "Sending…";
+  return `Not sent: ${delivery.reason ?? "Unavailable"}`;
 }

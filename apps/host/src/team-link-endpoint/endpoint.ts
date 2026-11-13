@@ -379,7 +379,10 @@ export class TeamLinkEndpoint {
         case "read":
           result = {
             kind: "read",
-            result: boundTeamReadPage(await data.read(actor, linkId, frame)),
+            result: boundTeamReadPage(
+              await data.read(actor, linkId, frame),
+              frame.after ? "after" : frame.before ? "before" : "newest",
+            ),
           };
           break;
         case "search":

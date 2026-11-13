@@ -272,7 +272,7 @@ export class PersonalTeamRequestsStore {
             .onRef("r.threadId", "=", "p.localTaskId")
             .onRef("r.seedInputId", "=", "p.localInputId")
             .on(
-              sql<boolean>`r.reply_target->>'requestId' = p.request_id and r.reply_target->>'teamId' = p.team_deployment_id and r.reply_target->>'kind' = 'team'`,
+              sql<boolean>`r.reply_target->>'requestId' = p.request_id and r.reply_target->>'teamId' = p.team_deployment_id and r.reply_target->>'kind' = 'team-thread'`,
             ),
         )
         .select(["t.id as taskId", "r.id as runId", "r.completedAt"])

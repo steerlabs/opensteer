@@ -3,6 +3,7 @@ import { useTeamsSnapshot } from "../team/team-context.js";
 import type { TeamSource } from "@opensteer/core";
 import {
   incomingMessageAction,
+  teamDeliveryLabel,
   activityStepHead,
   conversationActivities,
   conversationTurn,
@@ -131,21 +132,10 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
   readonly voiceThread?: boolean;
 }): ReactNode {
   const { group } = props;
-  const caption =
-    group.kind === "turn" &&
-    group.turn.reply &&
-    !group.turn.continued &&
-    group.turn.run?.delivery ? (
-      <AppText
-        role="caption"
-        tone="muted"
-        style={{ marginTop: props.conversation === true ? space[4] : space[2] }}
-      >
-        {group.turn.run.delivery.state === "sent"
-          ? `Sent to #${props.deliveryChannelName ?? "channel"}`
-          : group.turn.run.delivery.state === "sending"
-            ? "Sending…"
-            : `Not sent: ${group.turn.run.delivery.reason ?? "Unavailable"}`}
+  const deliveryLine =
+    group.kind === "turn" && !group.turn.continued && group.turn.run?.delivery ? (
+      <AppText role="caption" tone="muted">
+        {teamDeliveryLabel(group.turn.run.delivery, props.deliveryChannelName ?? "channel")}
       </AppText>
     ) : null;
   return (
@@ -160,6 +150,7 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
       ) : group.kind === "turn" ? (
         props.conversation === true ? (
           <ConversationTurn
+            deliveryLine={deliveryLine}
             activityKey={props.activityKey ?? null}
             continued={props.continued === true}
             live={props.live ?? true}
@@ -172,7 +163,7 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
           />
         ) : (
           <TurnView
-            replyCaption={caption}
+            deliveryLine={deliveryLine}
             reveal={props.reveal ?? null}
             highlightRequestId={props.highlightRequestId}
             onOpenStep={props.onOpenStep}
@@ -204,7 +195,6 @@ export const TranscriptGroupRow = memo(function TranscriptGroupRow(props: {
           viewerUserId={props.viewerUserId}
         />
       )}
-      {props.conversation === true ? caption : null}
     </View>
   );
 });
@@ -222,7 +212,7 @@ export function transcriptSpacing(previous: TranscriptVoice | null, next: Transc
 
 function TurnView(props: {
   readonly reveal?: string | null;
-  readonly replyCaption?: ReactNode;
+  readonly deliveryLine?: ReactNode;
   readonly highlightRequestId: string | null;
   readonly onOpenStep: (entryId: string) => void;
   readonly onToggle: (turnKey: string, open: boolean) => void;
@@ -237,7 +227,6 @@ function TurnView(props: {
   return (
     <View style={styles.turn}>
       <TurnContent
-        replyCaption={props.replyCaption}
         {...(folds ? { fold: { onToggle: () => onToggle(turnKey, open), open } } : {})}
         reveal={props.reveal ?? null}
         highlightRequestId={props.highlightRequestId}
@@ -245,6 +234,7 @@ function TurnView(props: {
         turn={turn}
         live={props.live ?? true}
       />
+      {props.deliveryLine}
       {/* A Run split by a message that joined it shows its pages once, on its latest
           stretch, and only once it is done: while it works, its stops are in the trace. */}
       {turn.continued === true || turnState(turn) !== "settled" ? null : (
@@ -352,6 +342,7 @@ export function replyActivityKeys(groups: readonly TranscriptGroup[]): ReadonlyM
  * reads as what was said.
  */
 function ConversationTurn(props: {
+  readonly deliveryLine?: ReactNode;
   readonly onOpenThread: (threadId: string) => void;
   readonly activityKey: string | null;
   readonly continued: boolean;
@@ -417,6 +408,7 @@ function ConversationTurn(props: {
       ) : view.startHold !== null ? (
         <WorkingIndicator indicator={{ kind: "status", label: view.startHold }} live={props.live} />
       ) : null}
+      {props.deliveryLine}
       {/* Typing alone would not say the reader's steered message is why it began again. */}
       {composing && restarting(turn.run) ? (
         <Animated.View accessibilityLiveRegion="polite" entering={appear}>
@@ -634,7 +626,6 @@ export function ConversationSteps(props: {
 }
 
 interface TurnContentProps {
-  readonly replyCaption?: ReactNode;
   /** What of the turn to draw; all of its work unless a conversation keeps its reply apart. */
   readonly entries?: readonly WorkEntry[];
   /** Given, the turn's steps fold behind its status line, which opens and closes them (`turnFolds`). */
@@ -766,9 +757,6 @@ function TurnRows(
           }
           const content = (
             <WorkRowView
-              caption={
-                row.kind === "note" && row.entry.id === turn.reply?.id ? props.replyCaption : null
-              }
               active={active}
               answer={row === lastWord}
               highlightRequestId={props.highlightRequestId}
@@ -986,7 +974,6 @@ export function SubagentSteps(props: {
 
 /** One row of a turn's work; a helper's progress redraws its own row, never these. */
 const WorkRowView = memo(function WorkRowView(props: {
-  readonly caption?: ReactNode;
   readonly active: boolean;
   readonly answer?: boolean;
   readonly highlightRequestId: string | null;
@@ -998,13 +985,7 @@ const WorkRowView = memo(function WorkRowView(props: {
   const { row } = props;
   switch (row.kind) {
     case "note":
-      return (
-        <AssistantMessage
-          caption={props.caption}
-          answer={props.answer === true}
-          message={row.entry}
-        />
-      );
+      return <AssistantMessage answer={props.answer === true} message={row.entry} />;
     case "reasoning":
       return <ReasoningRow active={props.active} reasoning={row.entry} />;
     // A subagent is drawn as its row, by the turn; a background task is one step.
@@ -1264,7 +1245,6 @@ function toneColor(tone: ActivityTone): string {
 /* ---- Messages ---- */
 
 function AssistantMessage(props: {
-  readonly caption?: ReactNode;
   /** The turn's finished last word, which is what a person came to copy. */
   readonly answer: boolean;
   readonly message: MessageEntry;
@@ -1278,7 +1258,6 @@ function AssistantMessage(props: {
     <View style={styles.assistant}>
       {body ? <Markdown streaming={props.message.streaming === true} text={body} /> : null}
       <MessageAttachments attachments={props.message.attachments ?? []} />
-      {props.caption}
       {props.message.streaming === true ? null : (
         <View style={styles.marks}>
           {props.answer && body ? (

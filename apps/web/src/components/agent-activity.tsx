@@ -39,6 +39,7 @@ import {
   groupTranscriptEntries,
   hasRunOutcome,
   silentRunLabel,
+  teamDeliveryLabel,
   isTerminalRunEntryStatus,
   incomingMessagePreview,
   justSent,
@@ -534,6 +535,7 @@ function TurnView({
         reveal={reveal?.id ?? null}
         live={live}
       />
+      {!turn.continued && turn.run?.delivery ? <TeamDelivery run={turn.run} /> : null}
       {placesShown && !placesUnderOutcome ? <ReplySurfaces turn={turn} turnKey={turnKey} /> : null}
       {renderTask?.(turn.assignments)}
       {turn.run && outcome ? <RunOutcome run={turn.run} /> : null}
@@ -869,6 +871,7 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
     !startHold &&
     !view.reply &&
     !outcome &&
+    !(!turn.continued && turn.run?.delivery) &&
     tasks.length === 0 &&
     !helpers?.length
   )
@@ -900,7 +903,7 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
       ) : startHold !== null ? (
         <WorkingIndicator label={startHold} />
       ) : null}
-      {view.reply && !turn.continued && turn.run?.delivery ? <TeamDelivery run={turn.run} /> : null}
+      {!turn.continued && turn.run?.delivery ? <TeamDelivery run={turn.run} /> : null}
       {view.reply && settled && !placesUnderOutcome ? (
         <ReplySurfaces turn={turn} turnKey={turnKey} />
       ) : null}
@@ -1525,11 +1528,6 @@ function WorkRowView({
       return (
         <Reply
           copyable={answer}
-          caption={
-            row.entry.id === turn.reply?.id && !turn.continued && turn.run?.delivery ? (
-              <TeamDelivery run={turn.run} />
-            ) : null
-          }
           message={row.entry}
           streaming={live && row.entry.streaming === true}
         />
@@ -2028,12 +2026,10 @@ function ErrorCount({ count }: { count: number }) {
 
 function Reply({
   copyable = false,
-  caption,
   message,
   streaming,
 }: {
   copyable?: boolean;
-  caption?: ReactNode;
   message: MessageEntry;
   streaming: boolean;
 }) {
@@ -2046,7 +2042,6 @@ function Reply({
       ) : null}
       {streaming ? <span aria-hidden className="stream-caret" /> : null}
       <MessageAttachments attachments={message.attachments ?? []} />
-      {caption}
       {copyable && message.body ? (
         <div className="msg--assistant__marks">
           <CopyMark label="Copy reply" text={message.body} />
@@ -2614,13 +2609,5 @@ function TeamDelivery({ run }: { readonly run: RunEntry }) {
   const channelName = useContext(Speakers).teamChannelName ?? "channel";
   const delivery = run.delivery;
   if (!delivery) return null;
-  return (
-    <small className="team-run-delivery">
-      {delivery.state === "sent"
-        ? `Sent to #${channelName}`
-        : delivery.state === "sending"
-          ? "Sending…"
-          : `Not sent: ${delivery.reason ?? "Unavailable"}`}
-    </small>
-  );
+  return <small className="team-run-delivery">{teamDeliveryLabel(delivery, channelName)}</small>;
 }
