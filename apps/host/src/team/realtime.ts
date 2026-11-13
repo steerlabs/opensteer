@@ -288,7 +288,7 @@ export class TeamRealtimeHub {
           }
           for (const subscription of peer.subscriptions.values()) {
             if (!subscription.scope || !dirty.includes(subscription.scope.channelId)) continue;
-            const key = JSON.stringify([subscription.scope, subscription.since]);
+            const key = JSON.stringify([peer.actor, subscription.scope, subscription.since]);
             const list = groups.get(key) ?? [];
             list.push({ peer, subscription });
             groups.set(key, list);

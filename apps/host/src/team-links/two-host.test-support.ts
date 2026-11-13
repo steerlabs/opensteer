@@ -337,6 +337,75 @@ export async function createTwoHostLinkFixture() {
         .where("id", "=", id)
         .execute();
     },
+    async post(currentLink, input) {
+      const link = await links.assertActive(currentLink);
+      return access.contentWrite(
+        { kind: "agent", userId: link.ownerUserId },
+        input.channelId,
+        async (tx, rights) => {
+          if (!rights.post || rights.peopleOnly) throw linkError();
+          const request = input.requestId
+            ? await tx
+                .selectFrom("teamAgentRequests")
+                .selectAll()
+                .where("id", "=", input.requestId)
+                .where("linkId", "=", currentLink)
+                .executeTakeFirst()
+            : undefined;
+          if (
+            input.requestId &&
+            (!request ||
+              request.channelId !== input.channelId ||
+              request.threadRootId !== input.threadRootId)
+          )
+            throw linkError();
+          if (input.publication && request?.replyMessageId) return request.replyMessageId;
+          const existing = await tx
+            .selectFrom("teamMessages")
+            .select("id")
+            .where("channelId", "=", input.channelId)
+            .where("authorUserId", "=", link.ownerUserId)
+            .where("authorKind", "=", "agent")
+            .where("clientMessageId", "=", input.clientMessageId)
+            .executeTakeFirst();
+          if (existing) return existing.id;
+          const channel = await tx
+            .updateTable("teamChannels")
+            .set({ changeSeq: sql`change_seq+1` })
+            .where("id", "=", input.channelId)
+            .returning("changeSeq")
+            .executeTakeFirstOrThrow();
+          const message = await tx
+            .insertInto("teamMessages")
+            .values({
+              channelId: input.channelId,
+              threadRootId: input.threadRootId ?? null,
+              authorUserId: link.ownerUserId,
+              authorKind: "agent",
+              agentRequestId: request && !request.replyMessageId ? request.id : null,
+              clientMessageId: input.clientMessageId,
+              bodyMarkdown: input.bodyMarkdown,
+              plainText: input.bodyMarkdown,
+              changeSeq: channel.changeSeq,
+              createdAt: new Date(),
+              editedAt: null,
+              deletedAt: null,
+            })
+            .returning("id")
+            .executeTakeFirstOrThrow();
+          if (request && !request.replyMessageId)
+            await tx
+              .updateTable("teamAgentRequests")
+              .set({
+                replyMessageId: message.id,
+                ...(input.publication ? { state: "done" as const, finishedAt: new Date() } : {}),
+              })
+              .where("id", "=", request.id)
+              .execute();
+          return message.id;
+        },
+      );
+    },
     async reply(currentLink, id, input) {
       const request = await authorize(id, currentLink);
       return access.contentWrite(

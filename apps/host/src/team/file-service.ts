@@ -6,7 +6,7 @@ import { Readable } from "node:stream";
 import type { TeamActor, TeamAgentRequestId, TeamBlobId, TeamChannelId } from "@opensteer/core";
 import type { TeamUploadMetadataSchema } from "@opensteer/protocol";
 import { teamPreviewMaxBytes, teamUploadMaxBytes } from "@opensteer/protocol";
-import { TeamFilesStore } from "@opensteer/database/team-files";
+import { TeamFilesStore, type TeamFileAgent } from "@opensteer/database/team-files";
 import { requireTeam, type TeamAccessStore } from "@opensteer/database/team-access";
 import type { z } from "zod";
 import sharp from "sharp";
@@ -49,8 +49,9 @@ export class TeamFileService {
     parts: { original: AsyncIterable<Uint8Array>; preview?: AsyncIterable<Uint8Array> },
     requestId?: TeamAgentRequestId,
     signal?: AbortSignal,
+    agent?: TeamFileAgent,
   ) {
-    const row = await this.store.begin(actor, channelId, metadata, requestId);
+    const row = await this.store.begin(actor, channelId, metadata, requestId, agent);
     requireTeam(row.state !== "deleting");
     requireTeam(!this.#uploads.has(row.id), "Upload already in progress");
     this.#uploads.add(row.id);
@@ -58,17 +59,10 @@ export class TeamFileService {
     const authorize = () =>
       this.access.database.transaction().execute(async (t) => {
         if (!(await this.access.channel(t, actor, channelId)).post) return false;
-        if (requestId)
-          return !!(await t
-            .selectFrom("teamAgentRequests as r")
-            .innerJoin("teamLinks as l", "l.id", "r.linkId")
-            .select("r.id")
-            .where("r.id", "=", requestId)
-            .where("r.ownerUserId", "=", actor.userId)
-            .where("r.state", "in", ["working", "needs_you"])
-            .where("r.expiresAt", ">", new Date())
-            .where("l.state", "=", "active")
-            .executeTakeFirst());
+        if (actor.kind === "agent") {
+          requireTeam(agent);
+          await this.access.link(t, actor, agent.linkId);
+        }
         return true;
       });
     const transfer: ActiveFileTransfer = {
@@ -207,9 +201,10 @@ export class TeamFileService {
     part: "original" | "preview",
     requestId?: TeamAgentRequestId,
     signal?: AbortSignal,
+    agent?: TeamFileAgent,
   ): Promise<{ body: Readable; sizeBytes: number; headers: Record<string, string> }> {
     const revision = this.access.revision;
-    const row = await this.store.authorized(actor, id, requestId);
+    const row = await this.store.authorized(actor, id, agent);
     requireTeam(part === "original" || row.previewStorageKey, "No image preview");
     const controller = new AbortController();
     let stream: Readable | undefined;
@@ -219,7 +214,7 @@ export class TeamFileService {
       ...(requestId ? { requestId } : {}),
       controller,
       authorize: async () => {
-        await this.store.authorized(actor, id, requestId);
+        await this.store.authorized(actor, id, agent);
         return true;
       },
     };

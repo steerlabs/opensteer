@@ -5,6 +5,8 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
+import { TeamRealtimeHub } from "./realtime.js";
+import type { TeamConsistentCut } from "@opensteer/protocol";
 import { TeamLinkService } from "./link-service.js";
 import { parseTeamLinkOffer } from "@opensteer/protocol";
 import { TeamFileService } from "./file-service.js";
@@ -505,6 +507,30 @@ describe("team transaction authority", () => {
     expect(
       (await chat.resume(owner, { ...input, sinceSeq: snapshot.throughSeq })).agentRecipients,
     ).toEqual([{ channelId: c.id, rootId: root.message.id, enabled: false }]);
+    await chat.setAgentRecipient(owner, c.id, root.message.id, true);
+    const hub = new TeamRealtimeHub(access, chat);
+    const cuts: [TeamConsistentCut[], TeamConsistentCut[]] = [[], []];
+    const peers = [owner, member].map((actor, index) =>
+      hub.connect(actor, {
+        send(frame) {
+          if (frame.type === "team.cut") cuts[index]!.push(frame.cut);
+          return true;
+        },
+        close() {},
+      }),
+    );
+    try {
+      for (const peer of peers)
+        await peer.receive({ type: "team.subscribe", ...input, teamApiVersion, sidebar: false });
+      await send(c.id, "new reply", owner, [], root.message.id);
+      await vi.waitFor(() => expect(cuts[1].length).toBeGreaterThan(1), { timeout: 3000 });
+      expect(cuts[0].at(-1)!.agentRecipients).toEqual([
+        { channelId: c.id, rootId: root.message.id, enabled: true },
+      ]);
+      expect(cuts[1].at(-1)!.agentRecipients).toEqual([]);
+    } finally {
+      hub.close();
+    }
   });
   it("keeps history out of context and carries the original ask on request frames", async () => {
     const c = await channel();
@@ -1027,6 +1053,51 @@ describe("team transaction authority", () => {
     ).toHaveLength(1);
   });
 
+  it("wakes only the sender's sticky agent and keeps retries and new roots independent", async () => {
+    const other = await person("StickyOther");
+    const c = await channel();
+    await chat.setAccess(owner, c.id, access.revision, [
+      { subject: { kind: "person", userId: owner.userId }, level: "post", manage: true },
+      { subject: { kind: "person", userId: other.userId }, level: "post", manage: false },
+    ]);
+    const l = await link();
+    const first = await send(c.id, "ask", owner, [{ kind: "agent", userId: owner.userId }]);
+    expect(first.wake).toBe("queued");
+    expect(await chat.agentRecipient(owner, c.id, first.message.id)).toMatchObject({
+      enabled: true,
+    });
+    expect((await send(c.id, "follow up", owner, [], first.message.id)).wake).toBe("queued");
+    expect((await send(c.id, "someone else", other, [], first.message.id)).wake).toBe(
+      "not-requested",
+    );
+    expect((await send(c.id, "new root")).wake).toBe("not-requested");
+    const retry = {
+      channelId: c.id,
+      threadRootId: first.message.id,
+      clientMessageId: randomUUID(),
+      bodyMarkdown: "retry",
+      mentions: [],
+      attachmentIds: [],
+    };
+    const sent = await chat.send(owner, retry);
+    expect(sent.wake).toBe("queued");
+    expect((await chat.send(owner, retry)).message.id).toBe(sent.message.id);
+    expect(await requests.pending(l)).toHaveLength(3);
+    await chat.setAgentRecipient(owner, c.id, first.message.id, false);
+    await chat.setAgentRecipient(owner, c.id, first.message.id, false);
+    expect((await send(c.id, "off", owner, [], first.message.id)).wake).toBe("not-requested");
+    const cut = await chat.resume(other, {
+      subscriptionId: "other",
+      generation: 1,
+      scope: { kind: "thread", channelId: c.id, rootId: first.message.id },
+      sinceSeq: null,
+    });
+    expect(cut.agentRecipients).toEqual([]);
+    await chat.setAgentRecipient(owner, c.id, first.message.id, true);
+    await chat.update(owner, c.id, { peopleOnly: true });
+    expect((await send(c.id, "people only", owner, [], first.message.id)).wake).toBe("people-only");
+  });
+
   it("keeps other-agent references inert and leaves refused rate-limit asks as stored messages", async () => {
     const member = await person("Mentioned");
     const c = await channel();
@@ -1038,11 +1109,11 @@ describe("team transaction authority", () => {
     expect(
       (await send(c.id, "other agent", owner, [{ kind: "agent", userId: member.userId }])).wake,
     ).toBe("not-requested");
-    for (let i = 0; i < 10; i++)
-      expect(
-        (await send(c.id, "own ask", owner, [{ kind: "agent", userId: owner.userId }])).wake,
-      ).toBe("queued");
-    const refused = await send(c.id, "limited", owner, [{ kind: "agent", userId: owner.userId }]);
+    const root = await send(c.id, "own ask", owner, [{ kind: "agent", userId: owner.userId }]);
+    expect(root.wake).toBe("queued");
+    for (let i = 0; i < 9; i++)
+      expect((await send(c.id, "own reply", owner, [], root.message.id)).wake).toBe("queued");
+    const refused = await send(c.id, "limited", owner, [], root.message.id);
     expect(refused.wake).toBe("rate-limited");
     expect((await chat.message(owner, c.id, refused.message.id)).bodyMarkdown).toBe("limited");
     const request = (await requests.pending(l))[0]!.request;
@@ -1059,13 +1130,9 @@ describe("team transaction authority", () => {
         .updateTable("teamAgentRequests")
         .set({ createdAt: new Date(Date.now() - 120000) })
         .execute();
-      expect(
-        (await send(c.id, "queued", owner, [{ kind: "agent", userId: owner.userId }])).wake,
-      ).toBe("queued");
+      expect((await send(c.id, "queued", owner, [], root.message.id)).wake).toBe("queued");
     }
-    expect(
-      (await send(c.id, "queue full", owner, [{ kind: "agent", userId: owner.userId }])).wake,
-    ).toBe("rate-limited");
+    expect((await send(c.id, "queue full", owner, [], root.message.id)).wake).toBe("rate-limited");
   });
 
   it("snapshots over 200 changed rows, resumes compacted rows, and carries request and metadata updates", async () => {
@@ -1262,13 +1329,24 @@ describe("team transaction authority", () => {
       });
       const request = (await requests.pending(l))[0]!.request;
       await requests.accept(l, request!.id);
+      const additional = await textUpload(files, owner, c.id);
+      await chat.send(owner, {
+        channelId: c.id,
+        threadRootId: request.threadRootId,
+        clientMessageId: randomUUID(),
+        bodyMarkdown: "another ask with an attachment",
+        mentions: [{ kind: "agent", userId: owner.userId }],
+        attachmentIds: [additional.id],
+      });
       const stranger = await person("Stranger");
       await expect(files.download(stranger, file.id, "original")).rejects.toThrow();
       const download = await files.download(
         { ...owner, kind: "agent" },
         file.id,
         "original",
-        request!.id,
+        undefined,
+        undefined,
+        { linkId: l, runId: createId("run"), operationId: randomUUID() },
       );
       download.body.on("error", () => {});
       const closed = once(download.body, "close").catch(() => undefined);
