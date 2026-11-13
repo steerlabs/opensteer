@@ -3,7 +3,7 @@ import { act, useEffect, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, expect, it, vi } from "vitest";
-import { AuthSessionIdSchema } from "@opensteer/core";
+import { AuthSessionIdSchema, DeploymentIdSchema } from "@opensteer/core";
 import { MockHostClient } from "@opensteer/client/mock";
 import { useHostSnapshot } from "@opensteer/client/react";
 import type { DesktopLocalExecutionStatus } from "@opensteer/protocol/desktop";
@@ -13,8 +13,10 @@ import { observeLocalExecutionStatus } from "../../desktop/local-execution-statu
 import { turnOnDeviceAccess } from "../thread-device-access-action.js";
 import { accessConflictNotice, useAccessSwitch } from "./device-access-switches.js";
 import { DeviceRemovedScreen } from "./device-removed.js";
-import { SetUpThisMac } from "./set-up-this-mac.js";
+import { FinishSetupBar, SetUpThisMac } from "./set-up-this-mac.js";
 import { useThisDeviceLifecycle } from "./this-device.js";
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const deploymentId = "dep_00000000-0000-4000-8000-000000000001";
 const laptopId = "rnr_33333333-3333-4333-8333-333333333333";
@@ -92,7 +94,6 @@ function Shell({ setup }: { readonly setup: Awaited<ReturnType<typeof attach>> }
   const device = useThisDeviceLifecycle({
     bridge: setup.bridge,
     deployment: setup.deployment,
-    deploymentAccess: setup.access,
     hostClient: setup.host,
     hostingRunnerId: null,
     localStatus: status,
@@ -113,8 +114,10 @@ function Shell({ setup }: { readonly setup: Awaited<ReturnType<typeof attach>> }
   if (device.step) return <SetUpThisMac bridge={setup.bridge} device={device} />;
   return (
     <div>
+      <FinishSetupBar device={device} homeId={null} onNavigate={() => undefined} />
       <p data-testid="membership">{device.membership.state}</p>
       <p data-testid="cause">{device.cause?.kind ?? "none"}</p>
+      <p>{device.cause && "detail" in device.cause ? device.cause.detail : null}</p>
       <button onClick={() => void device.leave()} type="button">
         Sign out and remove this Mac
       </button>
@@ -139,7 +142,7 @@ async function waitForText(text: string | RegExp, what: string) {
     () => {
       const content = container().textContent ?? "";
       if (typeof text === "string" ? !content.includes(text) : !text.test(content))
-        throw new Error(`Never showed ${what}`);
+        throw new Error(`Never showed ${what}: ${content}`);
     },
     { timeout: 3_000 },
   );
@@ -189,6 +192,33 @@ it("opens the workspace with the fix when Home's Use from anywhere is off, minti
   await waitForText("use-from-anywhere", "the remembered cause");
 });
 
+it("finishes a prepared attempt after renderer restart through enrollment instead of bind-only retries", async () => {
+  const setup = await attach({ remote: "connect", runnerId: null });
+  const prepared = await setup.bridge.prepareDeviceSetup({
+    deploymentId: DeploymentIdSchema.parse(deploymentId),
+    runnerName: "Prepared Mac",
+    runAgents: false,
+  });
+  const before = setup.host.getSnapshot().machines.length;
+  await render(setup);
+  await waitForText("Finish setting up this Mac", "the recovered setup bar");
+  expect(setup.host.getSnapshot().machines).toHaveLength(before);
+  await act(async () => button("Finish setup").click());
+  await waitForText("Set up this Mac", "the setup form");
+  await act(async () => button("Continue").click());
+  await waitForText("Let macOS allow it", "real enrollment followed by macOS setup");
+  expect(
+    setup.host.getSnapshot().machines.find((machine) => machine.id === prepared.runnerId)?.status,
+  ).toBe("online");
+  expect(
+    (
+      await setup.bridge.getLocalExecutionStatus({
+        deploymentId: DeploymentIdSchema.parse(deploymentId),
+      })
+    ).runner.enrolled,
+  ).toBe(true);
+});
+
 it("leaves through desktop main and shows the removed screen, which never signs back in by itself", async () => {
   const setup = await attach({ remote: "connect", runnerId: laptopId });
   await render(setup);
@@ -196,7 +226,11 @@ it("leaves through desktop main and shows the removed screen, which never signs 
   await act(async () => button("Sign out and remove this Mac").click());
   expect(setup.bridge.leaveDeployment).toHaveBeenCalledWith({ deploymentId });
   await waitForText("This Mac was removed from", "the removed screen");
-  // "Set up again" is the person's choice, and it opens setup rather than rejoining.
+  localStorage.setItem(`opensteer.device-set-up-again.v1:${deploymentId}`, "1");
+  await expect(
+    setup.bridge.select({ deploymentId: DeploymentIdSchema.parse(deploymentId) }),
+  ).rejects.toThrow("removed");
+  // Main must resume authorization before selection can open setup.
   await act(async () => button("Set up again").click());
   await waitForText("Set up this Mac", "setup after Set up again");
 });

@@ -1,4 +1,9 @@
-import type { DeviceInitialAccess, DeviceSessionBindingProof } from "@opensteer/protocol";
+import { DeploymentIdSchema } from "@opensteer/core";
+import type {
+  DevicePreparedIdentity,
+  DeviceInitialAccess,
+  DeviceSessionBindingProof,
+} from "@opensteer/protocol";
 import { actionErrorMessage } from "../../ui-utils.js";
 
 /**
@@ -31,7 +36,9 @@ export function finishSetupLine(cause: FinishSetupCause): {
 export interface DeviceSetupPorts {
   /** Home's Use from anywhere, or null when it can't be read from here. */
   readonly remoteAccessMode: () => Promise<"off" | "connect" | "private" | null>;
+  readonly prepare: (name: string) => Promise<DevicePreparedIdentity>;
   readonly mint: (input: {
+    readonly preparedIdentity?: DevicePreparedIdentity;
     readonly name: string;
     readonly access: DeviceInitialAccess | null;
   }) => Promise<{ readonly token: string }>;
@@ -74,7 +81,9 @@ export async function setUpThisDevice(
   let runnerId: string | null;
   try {
     onStage("joining");
+    const preparedIdentity = input.devicesAvailable ? await ports.prepare(input.name) : undefined;
     const { token } = await ports.mint({
+      ...(preparedIdentity ? { preparedIdentity } : {}),
       name: input.name,
       access: input.devicesAvailable ? input.access : null,
     });
@@ -103,8 +112,7 @@ export async function setUpThisDevice(
 }
 
 /**
- * Binds the current session to this Mac's device unless the Host already has
- * it so; each new sign-in on an existing device is bound again this way.
+ * Replays accepted bindings through main so its durable record survives a lost receipt.
  */
 export async function bindSessionToDevice(
   ports: {
@@ -119,7 +127,18 @@ export async function bindSessionToDevice(
 ): Promise<"bound" | "already-bound"> {
   const session = await ports.currentSession();
   if (!session) throw new Error("This window has no Opensteer session to bind.");
-  if (session.deviceId === runnerId) return "already-bound";
   await ports.bind(runnerId, await ports.sign(session.id));
-  return "bound";
+  return session.deviceId === runnerId ? "already-bound" : "bound";
+}
+
+export async function resumeDeviceSignIn(
+  bridge: Pick<
+    import("@opensteer/protocol/desktop").OpensteerDesktopBridge,
+    "setUpDevice" | "select"
+  >,
+  deploymentId: string,
+): Promise<void> {
+  const id = DeploymentIdSchema.parse(deploymentId);
+  await bridge.setUpDevice({ deploymentId: id, runnerName: "This Mac", runAgents: false });
+  await bridge.select({ deploymentId: id });
 }

@@ -1396,6 +1396,10 @@ function bridgeOptions(
     tailscale: { share: unavailable, status: unavailable },
     portal: { openExternal: unavailable, pickFolder: unavailable },
     runner: {
+      prepareDeviceSetup: () => {
+        throw new Error("Device setup is unavailable in this fixture");
+      },
+      accountSignOutPreview: async () => [],
       setUpDevice: unavailable,
       signDeviceSessionBinding: unavailable,
       leaveDeployment: unavailable,

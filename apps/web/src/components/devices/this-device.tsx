@@ -9,7 +9,6 @@ import {
 } from "react";
 import type { DeviceInitialAccess, MachineSummary } from "@opensteer/protocol";
 import type {
-  DeploymentAccessSnapshot,
   DesktopDeploymentSummary,
   DesktopDeviceMembership,
   DesktopLocalExecutionStatus,
@@ -33,13 +32,11 @@ import {
   type FinishSetupCause,
 } from "./device-setup.js";
 import {
-  chooseSetUpAgain,
   deferredSetup,
   rememberDeferredSetup,
   rememberSetupStep,
   rememberedSetupStep,
   setDeviceNotifications,
-  setUpAgainChosen,
   type DeviceSetupStep,
 } from "./device-preferences.js";
 
@@ -89,8 +86,9 @@ export function membershipRecord(
   status: DesktopLocalExecutionStatus | null,
 ): DesktopDeviceMembership | null {
   if (!status) return null;
-  if (status.membership) return status.membership;
+  if (status.membership) return { ...status.membership, enrolled: status.runner.enrolled };
   return {
+    enrolled: status.runner.enrolled,
     generation: 0,
     runnerId: status.runner.runnerId,
     state: status.runner.enrolled ? "active" : "none",
@@ -100,7 +98,6 @@ export function membershipRecord(
 export function useThisDeviceLifecycle(input: {
   readonly bridge: OpensteerDesktopBridge | null;
   readonly deployment: DesktopDeploymentSummary | null;
-  readonly deploymentAccess: DeploymentAccessSnapshot | null;
   readonly hostClient: HostClient;
   readonly hostingRunnerId: string | null;
   readonly localStatus: DesktopLocalExecutionStatus | null;
@@ -117,12 +114,9 @@ export function useThisDeviceLifecycle(input: {
     (hosting || (localStatus !== null && localStatus.platform !== "windows"));
   const devicesAvailable = snapshot.devicesAvailable === true;
   const record = membershipRecord(localStatus);
-  const againChosen = deploymentId !== null && setUpAgainChosen(deploymentId);
-  const effectiveRecord =
-    record?.state === "removed" && againChosen ? { ...record, state: "none" as const } : record;
   const machineId = hosting
     ? input.hostingRunnerId
-    : (effectiveRecord?.runnerId ?? localStatus?.runner.runnerId ?? null);
+    : (record?.runnerId ?? localStatus?.runner.runnerId ?? null);
   const machine = snapshot.machines.find((entry) => entry.id === machineId) ?? null;
   const home = snapshot.machines.find(hostsDeployment) ?? null;
   const opensteerName = snapshot.identityConfig?.deployment.name ?? deployment?.name ?? "Opensteer";
@@ -138,7 +132,7 @@ export function useThisDeviceLifecycle(input: {
     applicable,
     hosting,
     authenticated: snapshot.session === "authenticated",
-    membership: effectiveRecord,
+    membership: record,
     settingUp: stage !== null,
     finishSetupReason: cause ? cause.kind : null,
   });
@@ -189,6 +183,7 @@ export function useThisDeviceLifecycle(input: {
 
   // Every new sign-in on an existing device binds that session to it.
   const boundFor = useRef<string | null>(null);
+  if (snapshot.session !== "authenticated") boundFor.current = null;
   useEffect(() => {
     if (!bindPorts || !devicesAvailable || hosting || membership.state !== "ready") return;
     if (!machineId || boundFor.current === machineId) return;
@@ -220,12 +215,15 @@ export function useThisDeviceLifecycle(input: {
         {
           remoteAccessMode: async () =>
             unwrapRpcResult(await hostClient.rpc["personal.remoteAccess.get"]({})).access.mode,
-          mint: async ({ name, access }) => {
+          prepare: (name) =>
+            bridge.prepareDeviceSetup({ deploymentId, runnerName: name, runAgents: false }),
+          mint: async ({ name, access, preparedIdentity }) => {
             const enrollment = await hostClient.dispatch({
               allowedModules: [...localEnrollmentModules],
               idempotencyKey: mutationIdempotencyKey("local-runner"),
               name,
               ...(access ? { access } : {}),
+              ...(preparedIdentity ? { preparedIdentity } : {}),
               type: "runner.enrollment.createLocal",
             });
             if (enrollment.type !== "runner.enrollment.createLocal")
@@ -259,7 +257,6 @@ export function useThisDeviceLifecycle(input: {
         goTo(null);
         return;
       }
-      chooseSetUpAgain(deploymentId, false);
       rememberDeferredSetup(deploymentId, null);
       if (next.notifications) void bridge.testNotification().catch(() => undefined);
       const macos = localStatus?.platform === "macos" && (next.access.apps || next.access.files);
@@ -279,6 +276,10 @@ export function useThisDeviceLifecycle(input: {
   );
 
   const retryBind = useCallback(async () => {
+    if (record?.enrolled === false) {
+      goTo("choose");
+      return;
+    }
     if (!bindPorts || !machineId || !deploymentId) return;
     try {
       await bindSessionToDevice(bindPorts, machineId);
@@ -287,7 +288,7 @@ export function useThisDeviceLifecycle(input: {
     } catch (reason) {
       setCause({ kind: "bind", detail: reason instanceof Error ? reason.message : "" });
     }
-  }, [bindPorts, deploymentId, machineId]);
+  }, [bindPorts, deploymentId, machineId, record?.enrolled, goTo]);
 
   const leave = useCallback(async () => {
     if (!bridge || !deploymentId) return;
@@ -316,7 +317,13 @@ export function useThisDeviceLifecycle(input: {
     devicesAvailable,
     step,
     stage,
-    cause,
+    cause:
+      record?.state === "active" &&
+      record.enrolled === false &&
+      !cause &&
+      membership.state === "finish-setup"
+        ? { kind: "failed", detail: membership.reason }
+        : cause,
     choice,
     openSetup,
     goTo,

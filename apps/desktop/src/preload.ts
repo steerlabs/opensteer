@@ -856,6 +856,15 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     ),
   leaveDeployment: (input: DesktopLocalExecutionInput) =>
     invoke<void>(desktopBridgeChannels.leaveDeployment, input),
+  prepareDeviceSetup: (input: DesktopStartLocalRunnerInput) =>
+    invoke<import("@opensteer/protocol").DevicePreparedIdentity>(
+      desktopBridgeChannels.prepareDeviceSetup,
+      DesktopStartLocalRunnerInputSchema.parse(input),
+    ),
+  accountSignOutPreview: () =>
+    invoke<readonly { deploymentId: string; name: string }[]>(
+      desktopBridgeChannels.accountSignOutPreview,
+    ),
   setUpDevice: (input: DesktopStartLocalRunnerInput) =>
     invoke<DesktopLocalExecutionStatus>(desktopBridgeChannels.setUpDevice, input),
   startLocalRunner: (input: DesktopStartLocalRunnerInput) =>

@@ -1,3 +1,4 @@
+import { assertDeviceSessionAllowed } from "@opensteer/client/computers";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import type { PasswordSignInAccount } from "@opensteer/client/host";
 import { createId, DeploymentIdSchema, RunnerIdSchema } from "@opensteer/core";
@@ -415,6 +416,7 @@ export function desktopPreviewBridge(
     addDirect: async (input) => {
       const parsed = DesktopAddDirectRouteInputSchema.parse(input);
       const target = deploymentById(selection, parsed.deploymentId);
+      assertDeviceSessionAllowed(localExecutionFor({ deploymentId: target.id }).membership);
       const routes = [
         ...target.routes
           .filter(({ origin }) => origin !== parsed.origin)
@@ -612,6 +614,7 @@ export function desktopPreviewBridge(
     select: async (input) => {
       const parsed = DesktopSelectDeploymentInputSchema.parse(input);
       const target = deploymentById(selection, parsed.deploymentId);
+      assertDeviceSessionAllowed(localExecutionFor({ deploymentId: target.id }).membership);
       selection = DesktopDeploymentSelectionSchema.parse({
         ...selection,
         deployments: selection.deployments.map((candidate) =>
@@ -727,10 +730,62 @@ export function desktopPreviewBridge(
         );
       });
     },
+    prepareDeviceSetup: async (input) => {
+      const parsed = DesktopStartLocalRunnerInputSchema.parse(input);
+      if (parsed.enrollmentToken)
+        throw new Error("Prepare this Mac before requesting its enrollment.");
+      const status = localExecutionFor({ deploymentId: parsed.deploymentId });
+      assertDeviceSessionAllowed(status.membership);
+      const runnerId = status.membership?.runnerId ?? createId("runner");
+      updateLocalExecution({
+        ...status,
+        membership: {
+          generation: status.membership?.generation ?? 1,
+          state: "active",
+          runnerId,
+          enrolled: status.runner.enrolled,
+          sessionState: "ready",
+        },
+      });
+      return { runnerId, publicKeyPem: "preview-device-public-key" };
+    },
+    accountSignOutPreview: async () =>
+      [...localExecutions.values()]
+        .filter(
+          (status) =>
+            accountDeploymentIds.has(status.deploymentId) &&
+            (status.membership?.state === "active" || status.membership?.state === "waiting"),
+        )
+        .map((status) => ({
+          deploymentId: status.deploymentId,
+          name:
+            selection.deployments.find(({ id }) => id === status.deploymentId)?.name ??
+            "an Opensteer",
+        })),
     setUpDevice: async (input) => {
       const parsed = DesktopStartLocalRunnerInputSchema.parse(input);
-      if (!parsed.enrollmentToken) throw new Error("Setting up this Mac needs an enrollment.");
       const current = localExecutionFor({ deploymentId: parsed.deploymentId });
+      if (current.membership?.state === "leaving")
+        throw new Error("This Mac’s leave is still unconfirmed.");
+      if (current.membership?.sessionState === "confirming")
+        throw new Error("Waiting for the Runner to confirm this Mac is still a device.");
+      if (!parsed.enrollmentToken) {
+        const removed = current.membership?.state === "removed";
+        const resumed = DesktopLocalExecutionStatusSchema.parse({
+          ...current,
+          membership: {
+            generation: (current.membership?.generation ?? 0) + (removed ? 1 : 0),
+            state: "active",
+            runnerId: removed ? null : (current.membership?.runnerId ?? null),
+            enrolled: removed ? false : current.runner.enrolled,
+            sessionState: "ready",
+          },
+          ...(removed ? { runner: inertRunner("Finish setting up this Mac.") } : {}),
+        });
+        updateLocalExecution(resumed);
+        return resumed;
+      }
+      assertDeviceSessionAllowed(current.membership);
       const runnerId = RunnerIdSchema.parse(
         options.connectRunner?.(parsed.enrollmentToken) ?? previewRunnerId,
       );
@@ -740,6 +795,8 @@ export function desktopPreviewBridge(
           generation: (current.membership?.generation ?? 0) + 1,
           runnerId,
           state: "active",
+          enrolled: true,
+          sessionState: "ready",
         },
         runAgents: false,
         runner: {
@@ -1170,7 +1227,13 @@ function initialLocalExecutionStatus(
   runnerId: DesktopLocalExecutionStatus["runner"]["runnerId"] = null,
 ): DesktopLocalExecutionStatus {
   return DesktopLocalExecutionStatusSchema.parse({
-    membership: { generation: 0, runnerId, state: membership },
+    membership: {
+      generation: 0,
+      runnerId,
+      state: membership,
+      enrolled: runnerId !== null,
+      sessionState: "ready",
+    },
     available: true,
     computerName: "Preview MacBook",
     deploymentId,

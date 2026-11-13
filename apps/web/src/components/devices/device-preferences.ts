@@ -1,7 +1,6 @@
 /**
  * What this window keeps about this device per Opensteer: whether it shows
- * notifications, where an unfinished setup stands, and a removed device's
- * explicit "Set up again". None of it is authority; the Host and desktop main
+ * notifications and where an unfinished setup stands. The Host and desktop main
  * own the device itself.
  */
 export type DeviceSetupStep = "choose" | "macos" | "ready";
@@ -11,7 +10,6 @@ const notificationsKey = (deploymentId: string) =>
   `opensteer.device-notifications.v1:${deploymentId}`;
 const setupKey = (deploymentId: string) => `opensteer.device-setup.v1:${deploymentId}`;
 const deferredKey = (deploymentId: string) => `opensteer.device-setup-deferred.v1:${deploymentId}`;
-const againKey = (deploymentId: string) => `opensteer.device-set-up-again.v1:${deploymentId}`;
 
 function read(key: string): string | null {
   try {
@@ -54,12 +52,4 @@ export function deferredSetup(deploymentId: string): DeferredSetup | null {
 
 export function rememberDeferredSetup(deploymentId: string, cause: DeferredSetup | null): void {
   write(deferredKey(deploymentId), cause);
-}
-
-export function setUpAgainChosen(deploymentId: string): boolean {
-  return read(againKey(deploymentId)) === "1";
-}
-
-export function chooseSetUpAgain(deploymentId: string, chosen: boolean): void {
-  write(againKey(deploymentId), chosen ? "1" : null);
 }

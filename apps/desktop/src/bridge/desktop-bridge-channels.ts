@@ -130,6 +130,8 @@ export const desktopBridgeChannels = {
   signOut: "opensteer.desktop.access.sign-out",
   signDeviceSessionBinding: "opensteer.desktop.device.sign-session-binding",
   leaveDeployment: "opensteer.desktop.device.leave",
+  prepareDeviceSetup: "opensteer.desktop.device.prepare-setup",
+  accountSignOutPreview: "opensteer.desktop.device.account-sign-out-preview",
   setUpDevice: "opensteer.desktop.device.set-up",
   startLocalRunner: "opensteer.desktop.local-execution.start",
   stopLocalRunner: "opensteer.desktop.local-execution.stop",

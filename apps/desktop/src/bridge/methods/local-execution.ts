@@ -4,7 +4,7 @@ import {
   DesktopStartLocalRunnerInputSchema,
 } from "@opensteer/protocol/desktop";
 import { AuthSessionIdSchema, DeploymentIdSchema } from "@opensteer/core";
-import { DeviceSessionBindingProofSchema } from "@opensteer/protocol";
+import { DevicePreparedIdentitySchema, DeviceSessionBindingProofSchema } from "@opensteer/protocol";
 import { z } from "zod";
 import {
   assertAuthorizedRenderer,
@@ -83,4 +83,24 @@ export const handleSignDeviceSessionBinding =
     return DeviceSessionBindingProofSchema.parse(
       await context.options.runner.signDeviceSessionBinding(bindingInput.parse(envelope.input)),
     );
+  };
+
+export const handlePrepareDeviceSetup =
+  (context: DesktopBridgeContext): DesktopBridgeHandler =>
+  async (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    return DevicePreparedIdentitySchema.parse(
+      await context.options.runner.prepareDeviceSetup(
+        DesktopStartLocalRunnerInputSchema.parse(envelope.input),
+      ),
+    );
+  };
+
+export const handleAccountSignOutPreview =
+  (context: DesktopBridgeContext): DesktopBridgeHandler =>
+  async (event, envelope) => {
+    assertAuthorizedRenderer(context, event, envelope);
+    return z
+      .array(z.strictObject({ deploymentId: DeploymentIdSchema, name: z.string().min(1).max(120) }))
+      .parse(await context.options.runner.accountSignOutPreview());
   };

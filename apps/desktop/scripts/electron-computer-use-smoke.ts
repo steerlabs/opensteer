@@ -228,6 +228,10 @@ async function run(): Promise<void> {
     tailscale: { share: unused, status: unused },
     portal: { openExternal: unused, pickFolder: unused },
     runner: {
+      prepareDeviceSetup: () => {
+        throw new Error("Device setup is unavailable in this fixture");
+      },
+      accountSignOutPreview: async () => [],
       setUpDevice: unused,
       signDeviceSessionBinding: unused,
       leaveDeployment: unused,

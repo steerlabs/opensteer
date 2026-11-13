@@ -762,6 +762,11 @@ function runnerController() {
     schemaVersion: 4 as const,
   });
   return {
+    prepareDeviceSetup: vi.fn(async () => ({
+      runnerId: createId("runner"),
+      publicKeyPem: "preview-key",
+    })),
+    accountSignOutPreview: vi.fn(async () => []),
     setUpDevice: vi.fn(async (input) => status(input.deploymentId)),
     signDeviceSessionBinding: vi.fn(async () => ({
       issuedAt: new Date().toISOString(),

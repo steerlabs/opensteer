@@ -26,9 +26,14 @@ export const DeviceMembershipSchema = z.strictObject({
     })
     .nullable(),
   runnerName: z.string().trim().min(1).max(120),
+  deploymentName: z.string().trim().min(1).max(120).nullable().default(null),
   runAgents: z.boolean(),
   pendingEnrollment: z
-    .strictObject({ id: z.string().min(1).max(256), expiresAt: z.iso.datetime({ offset: true }) })
+    .strictObject({
+      id: z.string().min(1).max(256),
+      expiresAt: z.iso.datetime({ offset: true }),
+      tokenHash: z.string().optional(),
+    })
     .nullable()
     .default(null),
   boundSession: z
@@ -40,6 +45,8 @@ export const DeviceMembershipSchema = z.strictObject({
     .nullable()
     .default(null),
   needsSignIn: z.boolean().default(false),
+  confirmingSession: z.boolean().default(false),
+  prepared: z.boolean().default(false),
   erasePending: z.boolean(),
   leaveProof: RunnerLeaveRequestSchema.nullable(),
 });
@@ -97,10 +104,13 @@ export function membershipIntent(runnerName: string, runAgents: boolean): Device
     hostAuthority: null,
     lastVerifiedRoute: null,
     runnerName,
+    deploymentName: null,
     runAgents,
     pendingEnrollment: null,
     boundSession: null,
     needsSignIn: false,
+    confirmingSession: false,
+    prepared: false,
     erasePending: false,
     leaveProof: null,
   };

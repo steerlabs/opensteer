@@ -106,6 +106,8 @@ import {
   handleRecheckLocalEngines,
   handleStartLocalRunner,
   handleSetUpDevice,
+  handlePrepareDeviceSetup,
+  handleAccountSignOutPreview,
   handleLeaveDeployment,
   handleSignDeviceSessionBinding,
   handleStopLocalRunner,
@@ -451,6 +453,8 @@ export function registerDesktopBridge(options: DesktopBridgeOptions): () => void
   register(desktopBridgeChannels.sendHostWebSocket, handleSendHostWebSocket(context));
   register(desktopBridgeChannels.signIn, handleSignIn(context));
   register(desktopBridgeChannels.signOut, handleSignOut(context));
+  register(desktopBridgeChannels.prepareDeviceSetup, handlePrepareDeviceSetup(context));
+  register(desktopBridgeChannels.accountSignOutPreview, handleAccountSignOutPreview(context));
   register(desktopBridgeChannels.setUpDevice, handleSetUpDevice(context));
   register(desktopBridgeChannels.leaveDeployment, handleLeaveDeployment(context));
   register(desktopBridgeChannels.signDeviceSessionBinding, handleSignDeviceSessionBinding(context));

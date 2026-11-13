@@ -28,6 +28,25 @@ describe("device membership", () => {
       }),
     ).toEqual({ state: "sign-in-again" });
   });
+  it("requires enrollment after a prepared attempt survives restart", () => {
+    expect(
+      deviceMembership({
+        ...base,
+        membership: { state: "active", runnerId: null, generation: 3, enrolled: false },
+      }),
+    ).toEqual({ state: "needs-setup" });
+    expect(
+      deviceMembership({
+        ...base,
+        membership: {
+          state: "active",
+          runnerId: createId("runner"),
+          generation: 2,
+          enrolled: false,
+        },
+      }),
+    ).toEqual({ state: "finish-setup", reason: "This Mac has not finished joining" });
+  });
   it("derives setup, blockers and applicability without storing state", () => {
     expect(deviceMembership(base)).toEqual({ state: "needs-setup" });
     expect(deviceMembership({ ...base, settingUp: true })).toEqual({ state: "setting-up" });

@@ -790,7 +790,6 @@ export function AppShell({
   const thisDevice = useThisDeviceLifecycle({
     bridge: localBridge,
     deployment: desktopDeployment,
-    deploymentAccess,
     hostClient,
     hostingRunnerId,
     localStatus: viewedLocalExecutionStatus,

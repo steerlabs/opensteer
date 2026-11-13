@@ -912,6 +912,17 @@ export class NativeOAuthManager implements HostCredentialProvider {
     await this.#expireAccountSession(session, accountAuthorizationExpiredDetail);
   }
 
+  assertAccountSource(source: AccountDeploymentConnectionSource): void {
+    const session = this.#accountSession;
+    if (
+      !session ||
+      session.controller.signal.aborted ||
+      session.credential.issuerOrigin !== source.issuer ||
+      session.credential.subject !== source.subject
+    )
+      throw new Error("Sign in to this Account before setting up this Mac.");
+  }
+
   async signOutAccount(): Promise<DesktopAccountAuthState> {
     this.#assertStorageReady();
     this.#removePending((flow) => flow.kind === "account");

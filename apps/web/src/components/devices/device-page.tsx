@@ -79,7 +79,7 @@ export function deviceRemovalCopy(input: {
     body: [
       "It is signed out and your agent can’t use it.",
       input.machine.status === "online" ? null : "It finishes the next time it connects.",
-      input.machine.status === "online" ? profiles : null,
+      profiles ?? "Browser profiles kept on it are deleted.",
     ]
       .filter((part): part is string => part !== null)
       .join(" "),

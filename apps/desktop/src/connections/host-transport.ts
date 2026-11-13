@@ -134,6 +134,13 @@ type OutboundSocketEvent = DesktopHostWebSocketEvent extends infer Event
  * renderers, so a socket belongs to exactly one of them and dies with it.
  */
 export class DesktopHostTransport extends HostTransport {
+  readonly #withPreparedEnrollment:
+    | (<T>(
+        deploymentId: DeploymentId,
+        command: HostApiCommandInput,
+        operation: () => Promise<T>,
+      ) => Promise<T>)
+    | undefined;
   readonly #observeCommand:
     | ((
         deploymentId: DeploymentId,
@@ -172,6 +179,11 @@ export class DesktopHostTransport extends HostTransport {
     readonly log?: (event: string, fields: Record<string, string | number | boolean>) => void;
     readonly projection: Pick<DesktopAccessProjection, "read">;
     readonly sessions?: HostSessionRecovery;
+    readonly withPreparedEnrollment?: <T>(
+      deploymentId: DeploymentId,
+      command: HostApiCommandInput,
+      operation: () => Promise<T>,
+    ) => Promise<T>;
     readonly observeCommand?: (
       deploymentId: DeploymentId,
       command: HostApiCommandInput,
@@ -188,6 +200,7 @@ export class DesktopHostTransport extends HostTransport {
       ...(options.sessions === undefined ? {} : { sessions: options.sessions }),
     });
     this.#observeCommand = options.observeCommand;
+    this.#withPreparedEnrollment = options.withPreparedEnrollment;
     this.#teamOptions = {
       catalog: options.catalog,
       ...(options.credentials === undefined ? {} : { credentials: options.credentials }),
@@ -288,37 +301,44 @@ export class DesktopHostTransport extends HostTransport {
           expectedAttachmentKey: selected.resolved.key,
         }
       : request;
-    const result = await transport.exchange(fencedRequest, async (response, progress) =>
-      DesktopHostHttpResponseSchema.parse({
-        body: await readBoundedText(response, {
-          ...progress,
-          fatalUtf8: true,
-          invalidContentLengthError: () =>
-            new Error("The Host returned an invalid content length."),
-          maximumBytes: summary ? 512 * 1024 : maximumHostResponseBytes,
-          sizeError: () => new HostTransportError("response-too-large"),
+    const exchange = async () => {
+      const result = await transport.exchange(fencedRequest, async (response, progress) =>
+        DesktopHostHttpResponseSchema.parse({
+          body: await readBoundedText(response, {
+            ...progress,
+            fatalUtf8: true,
+            invalidContentLengthError: () =>
+              new Error("The Host returned an invalid content length."),
+            maximumBytes: summary ? 512 * 1024 : maximumHostResponseBytes,
+            sizeError: () => new HostTransportError("response-too-large"),
+          }),
+          headers: { contentType: response.headers.get("content-type") },
+          status: response.status,
         }),
-        headers: { contentType: response.headers.get("content-type") },
-        status: response.status,
-      }),
-    );
-    if (
-      selected &&
-      this.#observeCommand &&
-      result.status === 200 &&
-      typeof request.body === "string" &&
-      (request.body.includes("machine.session.bind") ||
-        request.body.includes("runner.enrollment.createLocal"))
-    ) {
+      );
+      if (
+        selected &&
+        this.#observeCommand &&
+        result.status === 200 &&
+        typeof request.body === "string" &&
+        (request.body.includes("machine.session.bind") ||
+          request.body.includes("runner.enrollment.createLocal"))
+      ) {
+        const command = hostApi["commands.dispatch"].payload.parse(JSON.parse(request.body));
+        const response: unknown = JSON.parse(result.body);
+        const envelope = z
+          .object({ ok: z.literal(true), data: hostApi["commands.dispatch"].success })
+          .safeParse(response);
+        if (envelope.success)
+          await this.#observeCommand(selected.resolved.deploymentId, command, envelope.data.data);
+      }
+      return result;
+    };
+    if (selected && this.#withPreparedEnrollment && typeof request.body === "string") {
       const command = hostApi["commands.dispatch"].payload.parse(JSON.parse(request.body));
-      const response: unknown = JSON.parse(result.body);
-      const envelope = z
-        .object({ ok: z.literal(true), data: hostApi["commands.dispatch"].success })
-        .safeParse(response);
-      if (envelope.success)
-        await this.#observeCommand(selected.resolved.deploymentId, command, envelope.data.data);
+      return this.#withPreparedEnrollment(selected.resolved.deploymentId, command, exchange);
     }
-    return result;
+    return exchange();
   }
 
   /** Main-process app traffic keeps the attachment fence until its streamed body ends. */

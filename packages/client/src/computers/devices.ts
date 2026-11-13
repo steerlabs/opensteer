@@ -31,6 +31,10 @@ export function deviceMembership(input: DeviceMembershipInput): DeviceMembership
     return { state: "removed" };
   if (!input.authenticated) return { state: "sign-in-again" };
   if (input.settingUp) return { state: "setting-up" };
+  if (input.membership?.state === "active" && input.membership.enrolled === false)
+    return input.membership.runnerId
+      ? { state: "finish-setup", reason: "This Mac has not finished joining" }
+      : { state: "needs-setup" };
   if (input.finishSetupReason) return { state: "finish-setup", reason: input.finishSetupReason };
   if (input.membership?.state === "waiting")
     return { state: "finish-setup", reason: "Waiting for this Opensteer" };
@@ -98,4 +102,15 @@ export function devicesView(input: {
     alsoSignedInCaption: "These run nothing. Your agent can't use them.",
     otherDevices: input.otherDevices ?? [],
   };
+}
+
+export function assertDeviceSessionAllowed(
+  membership: DesktopDeviceMembership | null | undefined,
+): void {
+  if (membership?.state === "removed" || membership?.state === "leaving")
+    throw new Error("This Mac was removed. Choose Set up again to reconnect.");
+  if (membership?.sessionState === "confirming")
+    throw new Error("Waiting for the Runner to confirm this Mac is still a device.");
+  if (membership?.sessionState === "sign-in-again")
+    throw new Error("Sign in again to this Deployment.");
 }
