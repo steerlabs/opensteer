@@ -105,6 +105,16 @@ function setup() {
 }
 
 describe("NativeTeamEntry", () => {
+  it("uses an explicit invite to re-admit a viewer with a stale saved credential", async () => {
+    const { entry, oauth } = setup();
+    const verified = team();
+    await entry.enter(verified, null);
+    oauth.exchangeTeamSession.mockClear();
+    const invite = { selector: "s".repeat(32), verifier: "v".repeat(43) };
+    await entry.enter(verified, invite);
+    expect(oauth.exchangeTeamSession).toHaveBeenCalledWith(expect.anything(), invite);
+  });
+
   it("keeps an entered team as a pending Account entry, and nothing of one that refused", async () => {
     const { catalog, entry, ids, oauth, signOut } = setup();
     const joined = team();
@@ -224,7 +234,7 @@ describe("NativeTeamEntry", () => {
     const older = { ...team(), capabilities: ["native-oauth"] as const };
     const settled = vi.fn();
     const invite = { selector: "s".repeat(32), verifier: "v".repeat(43) };
-    const signingIn = entry.signIn(older, invite).then(settled, settled);
+    const signingIn = entry.ensureAuthorized(older, invite).then(settled, settled);
     await vi.waitFor(() => expect(oauth.beginHostSignIn).toHaveBeenCalledOnce());
     const [kept] = (await catalog.load()).deployments;
     // The invite goes to the browser sign-in, which proves it before the team's callback.
@@ -235,13 +245,13 @@ describe("NativeTeamEntry", () => {
     expect(settled).not.toHaveBeenCalled();
     callback(kept!, "signed-in");
     await signingIn;
-    expect(settled).toHaveBeenCalledWith(undefined);
+    expect(settled).toHaveBeenCalledWith(null);
     expect(listeners.size).toBe(0);
 
     // Stopped or expired in the browser: an error, and nothing kept of a team never entered.
     signOut();
     const stopped = { ...team(), capabilities: ["native-oauth"] as const };
-    const failing = entry.signIn(stopped, null);
+    const failing = entry.ensureAuthorized(stopped, null);
     await vi.waitFor(() => expect(oauth.beginHostSignIn).toHaveBeenCalledTimes(2));
     const held = (await catalog.load()).deployments.find(
       ({ authority }) => authority.document.deploymentId === stopped.discovery.deploymentId,

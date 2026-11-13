@@ -23,6 +23,84 @@ import { NativeOAuthManager, TeamIdentityGrantUnsupportedError } from "./native-
 import type { ProtectedAuthStore } from "./protected-auth-store.js";
 
 describe("NativeOAuthManager", () => {
+  it("invalidates team readers synchronously before failed identity cleanup", async () => {
+    const f = await managerFixture();
+    await f.manager.initialize();
+    await f.signInAccount();
+    await f.manager.beginHostSignIn(f.connection);
+    await f.manager.handleCallback(
+      callbackUrl("host", new URL(f.opened.at(-1)!).searchParams.get("state")!, "code"),
+    );
+    const retired = vi.fn();
+    f.manager.subscribeAccountIdentityChanges(retired);
+    vi.spyOn(f.store, "clearHosts").mockRejectedValue(new Error("storage unavailable"));
+    const signingOut = f.manager.signOutAccount();
+    expect(retired).toHaveBeenCalledWith([f.connection.authority.document.deploymentId]);
+    await signingOut;
+    f.manager.dispose();
+  });
+
+  it("keeps passive establishment suppressed without opening the browser", async () => {
+    const f = await managerFixture();
+    await f.manager.initialize();
+    await f.manager.signOutHost(f.connection);
+    await f.manager.signInTeam(f.connection, undefined, false);
+    expect(f.manager.isTeamSignInSuppressed(f.connection)).toBe(true);
+    expect(f.opened).toEqual([]);
+    f.manager.dispose();
+  });
+
+  it("never adopts the outgoing Account's browser credential when cleanup fails", async () => {
+    const fixture = await managerFixture();
+    await fixture.manager.initialize();
+    await fixture.signInAccount();
+    await fixture.manager.beginHostSignIn(fixture.connection);
+    await fixture.manager.handleCallback(
+      callbackUrl("host", new URL(fixture.opened.at(-1)!).searchParams.get("state")!, "host-code"),
+    );
+    vi.spyOn(fixture.store, "clearHosts").mockRejectedValue(new Error("storage unavailable"));
+    await fixture.manager.signOutAccount();
+    expect(await fixture.manager.authorizationHeader(fixture.connection)).toBeNull();
+    fixture.manager.dispose();
+  });
+
+  it("hydrates the saved Account without retiring its browser credential", async () => {
+    const fixture = await managerFixture();
+    await fixture.manager.initialize();
+    await fixture.signInAccount();
+    await fixture.manager.beginHostSignIn(fixture.connection);
+    await fixture.manager.handleCallback(
+      callbackUrl("host", new URL(fixture.opened.at(-1)!).searchParams.get("state")!, "host-code"),
+    );
+    const saved = await fixture.store.load();
+    const manager = new NativeOAuthManager({
+      accountOrigin: "https://accounts.opensteer.test",
+      accountSessions: fixture.accountSessions,
+      catalog: fixture.catalog,
+      fetch: async () => {
+        throw new Error("Unexpected network");
+      },
+      now: () => fixture.clock.now,
+      oauth: {
+        accountCallback: "com.opensteer.opensteer:/oauth/account-callback",
+        application: "desktop",
+        clientId: "opensteer-desktop",
+        hostCallback: "com.opensteer.opensteer:/oauth/host-callback",
+      },
+      openExternal: async () => {
+        throw new Error("Unexpected browser");
+      },
+      store: fixture.store,
+    });
+    await manager.initialize();
+    expect(await manager.authorizationHeader(fixture.connection)).toBe(
+      `Bearer ${saved.hosts[0]!.accessToken}`,
+    );
+    expect((await fixture.store.load()).hosts).toEqual(saved.hosts);
+    manager.dispose();
+    fixture.manager.dispose();
+  });
+
   it("persists Account leave obligations before changing the saved credential on sign-out", async () => {
     const gate = deferred<void>();
     const leaving = vi
@@ -1018,6 +1096,61 @@ describe("NativeOAuthManager team session exchange", () => {
     generation: "1",
     joinedAt: "2026-08-11T19:00:00.000Z",
   };
+
+  it("retains a fresh invite when refused refresh recovers through Account exchange", async () => {
+    const invite = { selector: "s".repeat(32), verifier: "v".repeat(43) };
+    const exchanges: unknown[] = [];
+    const f = await managerFixture({
+      capabilities: exchangeCapability,
+      tokenLifetimeSeconds: 600,
+      refreshStatuses: [400],
+      route: (url, init) => {
+        if (url.includes("/team-identity-grants"))
+          return Response.json({ assertion, expiresAt: "2026-08-11T19:11:00.000Z" });
+        if (!url.endsWith("/v1/team/session/exchange")) return undefined;
+        const body = JSON.parse(String(init?.body));
+        exchanges.push(body);
+        if (!body.invite)
+          return Response.json(
+            {
+              error: {
+                code: "forbidden",
+                reason: "not-a-member",
+                message: "Ask for an invite",
+                retryable: false,
+              },
+            },
+            { status: 403 },
+          );
+        return Response.json({
+          admitted: true,
+          member,
+          tokens: {
+            access_token: "a".repeat(32),
+            refresh_token: "r".repeat(32),
+            expires_in: 600,
+            scope: "openid profile email offline_access host:access",
+            token_type: "Bearer",
+          },
+        });
+      },
+    });
+    try {
+      await f.manager.initialize();
+      await f.signInAccount();
+      await f.manager.beginHostSignIn(f.connection);
+      await f.manager.handleCallback(
+        callbackUrl("host", new URL(f.opened.at(-1)!).searchParams.get("state")!, "code"),
+      );
+      f.clock.now = new Date(f.clock.now.getTime() + 600_000);
+      await expect(f.manager.authorizationHeader(f.connection, invite)).resolves.toBe(
+        `Bearer ${"a".repeat(32)}`,
+      );
+      expect(exchanges).toEqual([{ assertion, invite }]);
+    } finally {
+      f.manager.dispose();
+    }
+  });
 
   it("drops unbound browser credentials and fences browser flows on Account identity changes", async () => {
     const f = await managerFixture();

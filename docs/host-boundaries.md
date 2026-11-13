@@ -159,6 +159,7 @@ device, and only the Host admits local MCP launches against current owner consen
 
 Account team identity assertions travel only to the verified team authority through the existing
 team session exchange. Account access and refresh tokens stay on the device and Account service.
-The team decides membership; the assertion grants no personal Host access. Exchanged credentials
-are bound to their originating Account identity. Browser-issued and legacy credentials are
-unbound and cannot survive an Account identity change.
+The team decides membership; the assertion grants no personal Host access. All native team credentials
+are bound to the device Account identity at issuance (browser flows pin their starting identity),
+or explicitly to no Account. Legacy credentials without a binding cannot authorize requests. The binding is enforced even
+when local deletion or remote revocation fails.

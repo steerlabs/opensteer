@@ -216,6 +216,27 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
     });
     expect(sockets[0]?.deploymentId).toBe(teamId);
     expect(sockets[0]?.headers).toEqual({ [teamApiVersionHeader]: String(teamApiVersion) });
+    const resolving = vi.fn();
+    const release = Promise.withResolvers<void>();
+    const delayed = new HostTransport({
+      ...options,
+      credentials: {
+        authorizationHeader: async () => {
+          resolving();
+          await release.promise;
+          return "Bearer outgoing";
+        },
+      },
+    });
+    const stale = delayed.exchange(
+      { path: "/old-identity", method: "GET", headers: {} },
+      async (response) => response.text(),
+    );
+    await vi.waitFor(() => expect(resolving).toHaveBeenCalledOnce(), { timeout: 1000 });
+    delayed.invalidateSession();
+    release.resolve();
+    await expect(stale).rejects.toMatchObject({ code: "deployment-changed" });
+    expect(http.some((call) => call.request.path === "/old-identity")).toBe(false);
     rejectCredentials = true;
     const request = () =>
       pinned.transport.exchange(

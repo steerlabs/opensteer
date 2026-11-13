@@ -31,6 +31,7 @@ export type AccountCredential = z.infer<typeof AccountCredentialSchema>;
 export const HostCredentialSchema = OAuthCredentialSchema.extend({
   accountIdentity: z
     .strictObject({ issuer: CanonicalOriginSchema, subject: ControlPlaneAccountIdSchema })
+    .nullable()
     .optional(),
   canonicalOrigin: CanonicalOriginSchema,
   deploymentId: DeploymentIdSchema,

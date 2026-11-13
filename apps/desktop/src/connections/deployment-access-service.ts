@@ -66,7 +66,7 @@ interface CatalogPort {
 interface HostSessionPort {
   abandonAuthorization(deploymentId: string): void;
   closeCurrent(): Promise<void>;
-  establish(deploymentId: string): Promise<HostSessionObservation>;
+  establish(deploymentId: string, interactive?: boolean): Promise<HostSessionObservation>;
   subscribe(listener: (observation: HostSessionObservation) => void): () => void;
 }
 
@@ -158,6 +158,7 @@ export class DeploymentAccessService {
   #initialized = false;
   #operation: { readonly kind: ForegroundOperationKind } | null = null;
   #operationId = 0;
+  #interactiveAttachment = false;
   #pendingAttachmentDeploymentId: string | null = null;
   #personal: DesktopPersonalDeploymentStatus | null = null;
   #personalLink: DesktopPersonalAccountLinkStatus = unavailablePersonalAccountLink();
@@ -728,7 +729,11 @@ export class DeploymentAccessService {
       attachmentKey: selected.key,
       close: () => this.#ports.hostSession.closeCurrent(),
       deploymentId: selected.id,
-      establish: (deploymentId) => this.#ports.hostSession.establish(deploymentId),
+      establish: (deploymentId) => {
+        const interactive = this.#interactiveAttachment;
+        this.#interactiveAttachment = false;
+        return this.#ports.hostSession.establish(deploymentId, interactive);
+      },
       schedule: this.#schedule,
     });
     this.#supervisor = supervisor;
@@ -763,7 +768,7 @@ export class DeploymentAccessService {
     if (selected.source === "account" && this.#account.status !== "signed-in") return;
     const status = this.#supervisor?.snapshot().status;
     if (status === "connected" || status === "connecting" || status === "authorizing") return;
-    this.#requestSelectedAttachment();
+    this.#requestSelectedAttachment(false);
   }
 
   /**
@@ -772,7 +777,8 @@ export class DeploymentAccessService {
    * intent pending while the local stack is being established, then cross the
    * attachment boundary once the supervisor has published its settled route.
    */
-  #requestSelectedAttachment(): void {
+  #requestSelectedAttachment(interactive = true): void {
+    this.#interactiveAttachment = interactive;
     const selected = this.#selectedDeployment();
     if (!selected || !this.#supervisor) return;
     if (!this.#selectedAttachmentIsReady()) {
@@ -788,7 +794,7 @@ export class DeploymentAccessService {
     if (this.#disposed) return;
     if (this.#pendingAttachmentDeploymentId !== this.#catalog.selectedDeploymentId) return;
     if (!this.#selectedAttachmentIsReady()) return;
-    this.#requestSelectedAttachment();
+    this.#requestSelectedAttachment(this.#interactiveAttachment);
   }
 
   #selectedAttachmentIsReady(): boolean {

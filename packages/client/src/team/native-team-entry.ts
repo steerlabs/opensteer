@@ -114,7 +114,8 @@ export async function authorizeTeamCredential(
 ): Promise<Pick<TeamSessionExchangeResponse, "admitted" | "member"> | null | false> {
   if (interactive) await oauth.resumeTeamSignIn(connection);
   else if (oauth.isTeamSignInSuppressed(connection)) return null;
-  if (await oauth.authorizationHeader(connection)) return null;
+  const existing = await oauth.authorizationHeader(connection, invite ?? undefined);
+  if (existing && !invite) return null;
   if (
     connection.capabilities?.includes("team-session-exchange-v1") &&
     (await oauth.accountAuthorizationLease())
@@ -156,16 +157,6 @@ export class NativeTeamEntry {
     if (entered) return entered;
     const connection = (await this.#held(verified.discovery.deploymentId))!;
     return { admitted: false, member: await this.#bootstrap(connection) };
-  }
-
-  /**
-   * A team whose server predates native team sessions, or whose Account can't vouch yet: kept as
-   * if added by hand, then its own sign-in in the system browser, through `invite` when given so
-   * the team admits the person there. Settles once the callback lands, or the flow is stopped or
-   * expires.
-   */
-  async signIn(verified: VerifiedHostEndpoint, invite: TeamInviteSecret | null): Promise<void> {
-    await this.ensureAuthorized(verified, invite);
   }
 
   async ensureAuthorized(

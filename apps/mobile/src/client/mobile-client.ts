@@ -451,6 +451,9 @@ export class MobileClient {
       },
     });
     this.oauth = new NativeOAuthManager({
+      onAccountIdentityChange: (ids) => {
+        for (const id of ids) void this.#invalidateSavedView(id);
+      },
       // Previews end with the login itself (sign-out, removal, a replaced session),
       // not when a sign-in flow starts: a cancelled flow keeps the live login.
       beforeAccountIdentityChange: () => this.#leaveAccountIphoneApps(),

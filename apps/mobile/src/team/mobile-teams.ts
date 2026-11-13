@@ -204,6 +204,7 @@ export class MobileTeams {
   #foreground = true;
   #linksFor: HostClient | null = null;
   #snapshot: MobileTeamsSnapshot = { computerId: null, teams: [], unlinked: [], selected: null };
+  #detachIdentity: (() => void) | null = null;
   #detachClient: (() => void) | null = null;
 
   constructor(options: {
@@ -253,17 +254,21 @@ export class MobileTeams {
 
   start(): void {
     if (this.#detachClient !== null) return;
-    let identity = this.#client.oauth.accountIdentity();
+    this.#detachIdentity = this.#client.oauth.subscribeAccountIdentityChanges((ids) => {
+      for (const id of ids) {
+        const session = this.#sessions.get(id);
+        if (session) {
+          void session.remove("sign-in");
+          session.dispose();
+          this.#drop(id);
+        }
+      }
+    });
     this.#detachClient = this.#client.subscribe(() => {
-      const nextIdentity = this.#client.oauth.accountIdentity();
-      const identityChanged =
-        identity?.issuer !== nextIdentity?.issuer || identity?.subject !== nextIdentity?.subject;
-      identity = nextIdentity;
       const shown = this.#snapshot.computerId;
       // Signed out of a team, here or by its own screen: its session and partition go.
       for (const teamId of this.#sessions.keys())
         if (
-          identityChanged ||
           !this.#connection(teamId) ||
           this.#client.oauth.isTeamSignInSuppressed(this.#connection(teamId)!)
         )
@@ -335,6 +340,7 @@ export class MobileTeams {
     this.#detachClient = null;
     for (const detach of this.#detachSessions.values()) detach();
     this.#detachSessions.clear();
+    this.#detachIdentity?.();
     this.registry.dispose();
   }
 
@@ -735,7 +741,15 @@ export class MobileTeams {
       void this.#forgetUser(teamId).then(() => this.select(this.#selected));
       return;
     }
-    this.#setState(teamId, ended === "removed" ? "removed" : "signed-out", null);
+    this.#setState(
+      teamId,
+      session.getSnapshot().refusalReason === "not-a-member"
+        ? "join"
+        : ended === "removed"
+          ? "removed"
+          : "signed-out",
+      null,
+    );
   }
 
   /** Signed out of the team on this phone: its drafts and unsent messages go with it. */
@@ -895,7 +909,10 @@ export class MobileTeams {
       name: this.#names.get(team.teamId) ?? team.teamName,
       origin: team.origin,
       state,
-      detail: held?.detail ?? null,
+      detail:
+        held?.detail ??
+        (entry ? this.#client.oauth.hostCredentialState(entry.connection).detail : null) ??
+        null,
       session,
       userId: this.#memo?.users[team.teamId] ?? null,
     };

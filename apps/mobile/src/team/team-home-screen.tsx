@@ -155,7 +155,10 @@ export function TeamHomeScreen(props: StaticScreenProps<{ readonly teamId: strin
       <Screen>
         <View style={styles.center}>
           <Notice
-            detail={`${name} is one of your teams. Sign in with your Opensteer Account to read it here; it keeps working when your computer is off.`}
+            detail={
+              team.detail ??
+              `${name} is one of your teams. Sign in with your Opensteer Account to read it here; it keeps working when your computer is off.`
+            }
             title={`Sign in to ${name}`}
             tone="neutral"
           />

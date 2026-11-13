@@ -247,6 +247,7 @@ export function TeamSideFor({
   const { openInvite } = useTeamDialogs();
   const connection = useTeamSessionValue(client, selectConnection);
   const ended = useTeamSessionValue(client, (snapshot) => snapshot?.ended ?? null);
+  const refusal = useTeamSessionValue(client, (snapshot) => snapshot?.refusalReason ?? null);
   const [loadingMore, setLoadingMore] = useState(false);
   const navigate = useNavigate();
   const { pathname } = useLocation();
@@ -279,26 +280,28 @@ export function TeamSideFor({
   });
   const hrefFor = useCallback((channelId: string) => channelPath(teamId, channelId), [teamId]);
   if (!team) return null;
-  if (!team.client)
+  if (!team.client || refusal === "not-a-member")
     return (
       <div className="team-left">
         <TeamTile tile={teamTile(team.teamId, team.name)} />
         <div className="team-left__text">
           <p className="team-left__title">{team.name}</p>
           <p className="team-left__detail">
-            {team.failure === "unavailable"
-              ? "Team temporarily unavailable. Try again."
-              : team.failure === "join"
-                ? "Ask a team member for an invite."
-                : enter
-                  ? "Not signed in on this computer"
-                  : `Opens at ${new URL(team.origin).host}`}
+            {team.failure === "pending"
+              ? "Opening team…"
+              : team.failure === "unavailable"
+                ? "Team temporarily unavailable. Try again."
+                : team.failure === "join" || refusal === "not-a-member"
+                  ? "Ask a team member for an invite."
+                  : enter
+                    ? "Not signed in on this computer"
+                    : `Opens at ${new URL(team.origin).host}`}
           </p>
         </div>
         {enter ? (
           <button
             className="btn btn--small"
-            disabled={entering}
+            disabled={entering || team.failure === "pending"}
             onClick={() => {
               setEntering(true);
               void enter(team.teamId)
@@ -307,11 +310,11 @@ export function TeamSideFor({
             }}
             type="button"
           >
-            {entering
+            {entering || team.failure === "pending"
               ? "Opening…"
               : team.failure === "unavailable"
                 ? "Retry"
-                : team.failure === "join"
+                : team.failure === "join" || refusal === "not-a-member"
                   ? "Join"
                   : "Sign in"}
           </button>

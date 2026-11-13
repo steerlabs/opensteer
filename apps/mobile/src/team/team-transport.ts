@@ -57,6 +57,10 @@ export function networkTeamTransport(options: {
         new URL(connection.authority.document.canonicalOrigin),
       );
       transports.set(deploymentId, pinned);
+      const transport = pinned.transport;
+      options.oauth.subscribeAccountIdentityChanges((ids) => {
+        if (ids.includes(deploymentId)) transport.invalidateSession();
+      });
     }
     const held = pinned;
     return {

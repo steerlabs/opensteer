@@ -258,6 +258,7 @@ describe("HostSession", () => {
       outcome: "authorizing",
     });
     expect(fixture.oauth.beginHostSignIn).toHaveBeenCalledWith(connection);
+    expect(fixture.oauth.signInTeam).toHaveBeenCalledWith(connection, undefined, true);
 
     fixture.oauth.emit(connection, "signed-in");
     await vi.waitFor(() =>
@@ -268,6 +269,13 @@ describe("HostSession", () => {
         }),
       ),
     );
+  });
+
+  it("marks returning attachment authorization as passive", async () => {
+    const connection = connectionOfKind("team");
+    const fixture = hostSessionFixture(connection);
+    await fixture.sessions.establish(connection.authority.document.deploymentId, false);
+    expect(fixture.oauth.signInTeam).toHaveBeenCalledWith(connection, undefined, false);
   });
 
   it("reports a team that turns the person away as blocked, not as a sign-in to retry", async () => {

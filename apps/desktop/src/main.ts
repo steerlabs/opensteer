@@ -544,6 +544,12 @@ async function runDesktop(
     clearDeploymentSession: (deploymentId) => hostNetwork.clearDeploymentSession(deploymentId),
   });
   const nativeAuth = new NativeOAuthManager({
+    onAccountIdentityChange: (ids) => {
+      for (const id of ids) hostTransport.closeDeploymentConnections(id);
+    },
+    beforeHostChange: async (connection) => {
+      hostTransport.closeDeploymentConnections(connection.authority.document.deploymentId);
+    },
     beforeAccountIdentityChange: async (next) => {
       if (!deviceLifecycle) throw new Error("Device membership is still loading.");
       await deviceLifecycle.leaveAccountMemberships(next ?? undefined);
@@ -1058,7 +1064,7 @@ async function runDesktop(
     hostSession: {
       abandonAuthorization: (deploymentId) => hostSessions.abandonAuthorization(deploymentId),
       closeCurrent: async () => hostTransport.closeAllConnections(),
-      establish: (deploymentId) => hostSessions.establish(deploymentId),
+      establish: (deploymentId, interactive) => hostSessions.establish(deploymentId, interactive),
       subscribe: (listener) => hostSessions.subscribe(listener),
     },
     personal: {

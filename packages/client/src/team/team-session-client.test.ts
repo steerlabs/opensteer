@@ -36,6 +36,43 @@ function fixture() {
   return { host, persistence, client };
 }
 describe("team synchronization", () => {
+  it("preserves not-a-member through live session teardown", async () => {
+    const host = new MockTeamHost();
+    let removed = false;
+    const client = new TeamSessionClient({
+      scope,
+      persistence: createMemoryTeamPersistence(),
+      connect: host.connect,
+      rpc: new Proxy(host.rpc, {
+        get(target, key, receiver) {
+          if (key === "team.bootstrap.get" && removed)
+            return async () => ({
+              ok: false,
+              error: {
+                code: "forbidden",
+                reason: "not-a-member",
+                message: "Ask for an invite",
+                retryable: false,
+              },
+            });
+          return Reflect.get(target, key, receiver);
+        },
+      }),
+    });
+    try {
+      await client.load(false);
+      removed = true;
+      await expect(client.load(false)).rejects.toMatchObject({ reason: "not-a-member" });
+      expect(client.getSnapshot()).toMatchObject({
+        ended: "removed",
+        refusalReason: "not-a-member",
+      });
+    } finally {
+      client.dispose();
+      host.dispose();
+    }
+  });
+
   it("keeps synchronizing through a newer team server's fields and frame types", async () => {
     const host = new MockTeamHost(),
       sockets: MockTeamSocket[] = [];

@@ -59,6 +59,7 @@ export interface TeamSessionSnapshot {
   readonly presence: Readonly<Record<string, boolean>>;
   readonly search: SearchPage | null;
   readonly error: string | null;
+  readonly refusalReason?: string | undefined;
   readonly ended: "removed" | "sign-in" | "viewer-changed" | null;
   readonly contentGeneration: number;
 }
@@ -278,7 +279,10 @@ export class TeamSessionClient {
   async #authorizationFailure(error: unknown): Promise<void> {
     if (!(error instanceof OpensteerError)) return;
     if (error.code === "unauthorized") await this.remove("sign-in");
-    else if (error.code === "forbidden" || error.code === "not_found") await this.remove("removed");
+    else if (error.code === "forbidden" || error.code === "not_found") {
+      this.#update({ refusalReason: error.reason });
+      await this.remove("removed");
+    }
   }
   /** Whether the viewer still belongs here; a failed check settles false. */
   async #revalidate(): Promise<boolean> {

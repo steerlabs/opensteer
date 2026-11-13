@@ -83,7 +83,12 @@ function fixture(
     ],
   };
   const client = {
-    oauth: { accountIdentity: () => null, isTeamSignInSuppressed: () => false },
+    oauth: {
+      subscribeAccountIdentityChanges: () => () => undefined,
+      accountIdentity: () => null,
+      hostCredentialState: () => ({ detail: null }),
+      isTeamSignInSuppressed: () => false,
+    },
     subscribe: (listener: () => void) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -337,6 +342,7 @@ describe("adding a computer's team to the phone", () => {
       const client = {
         catalog,
         oauth: {
+          subscribeAccountIdentityChanges: () => () => undefined,
           accountIdentity: () => null,
           accountAuthorizationLease: async () => (mode === "no-account" ? null : lease),
           authorizationHeader: async () => null,

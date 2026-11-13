@@ -949,7 +949,8 @@ export class DesktopHostTransport extends HostTransport {
 
   closeDeploymentConnections(deploymentId: DeploymentId): void {
     // The selected transport caches its identity; do not resolve a different route during fencing.
-    if (this.#selectedDeploymentId === deploymentId) this.invalidateSession();
+    if (this.#selectedDeploymentId === null || this.#selectedDeploymentId === deploymentId)
+      this.invalidateSession();
     const summary = this.#summaries.get(deploymentId);
     if (summary) {
       this.#closeTransportSockets(summary);

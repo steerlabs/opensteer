@@ -109,6 +109,7 @@ export class HostTransport {
   readonly #sessions: HostSessionRecovery | null;
   readonly #requestControllers = new Set<AbortController>();
   readonly #sockets = new Set<HostNetworkSocket>();
+  #sessionGeneration = 0;
   #activeRequests = 0;
   #activeAppStreams = 0;
 
@@ -180,6 +181,7 @@ export class HostTransport {
     ) => Promise<Result>,
     kind: "request" | "app-stream" = "request",
   ): Promise<Result> {
+    const sessionGeneration = this.#sessionGeneration;
     const appStream = kind === "app-stream";
     if (
       appStream
@@ -194,6 +196,8 @@ export class HostTransport {
     else this.#activeRequests += 1;
     try {
       const selected = await this.current();
+      if (sessionGeneration !== this.#sessionGeneration)
+        throw new HostTransportError("deployment-changed");
       const { resolved, connection } = selected;
       const deploymentKind = connection.authority.document.deploymentShape.kind;
       const negotiatesVersion =
@@ -302,7 +306,10 @@ export class HostTransport {
     if (this.#sockets.size >= maximumOpenSockets) {
       throw new Error("The Host WebSocket limit is full.");
     }
+    const sessionGeneration = this.#sessionGeneration;
     const { connection, resolved } = await this.current();
+    if (sessionGeneration !== this.#sessionGeneration)
+      throw new HostTransportError("deployment-changed");
     const selectionGeneration = this.#fence.generation;
     let network: HostNetworkSocket | null = null;
     let released = false;
@@ -373,6 +380,7 @@ export class HostTransport {
   }
 
   invalidateSession(): void {
+    this.#sessionGeneration += 1;
     for (const controller of this.#requestControllers)
       controller.abort(new HostTransportError("deployment-changed"));
     this.closeAllSockets();
@@ -486,6 +494,7 @@ export class HostTransport {
    * requests, sockets, and the local Runner target exactly once.
    */
   async current(): Promise<SelectedAttachment> {
+    const generation = this.#sessionGeneration;
     const selected = await this.#fence.current();
     await this.#sessions?.assertSessionAllowed?.(selected.resolved.deploymentId);
     if (
@@ -493,6 +502,7 @@ export class HostTransport {
       selected.connection.authority.document.deploymentShape.kind !== this.#expectedKind
     )
       throw new HostTransportError("deployment-changed");
+    if (generation !== this.#sessionGeneration) throw new HostTransportError("deployment-changed");
     return selected;
   }
 

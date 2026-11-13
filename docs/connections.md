@@ -214,4 +214,5 @@ its session; network failure, rate limiting and outage stay retryable
 Native team entry reuses or refreshes a credential before the Account identity exchange, then
 falls back to browser sign-in only when interactive authorization is needed. An Account outage
 leaves entry retryable. Explicit team sign-out survives restart and suppresses silent entry
-until explicit sign-in.
+until explicit sign-in. Passive attachment never opens a browser. Real Account identity changes
+fence team sockets and in-flight responses before asynchronous credential cleanup.

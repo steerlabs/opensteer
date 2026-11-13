@@ -48,6 +48,7 @@ it("forces one team refresh for concurrent 401s on a phone", async () => {
     return true;
   });
   const oauth = {
+    subscribeAccountIdentityChanges: () => () => undefined,
     recoverHostAuthorization,
     subscribe: () => () => undefined,
     subscribeHostCredentials: () => () => undefined,

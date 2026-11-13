@@ -313,7 +313,7 @@ export class HostSession implements HostSessionRecovery {
     return controller.signal;
   }
 
-  async establish(deploymentId: string): Promise<HostSessionObservation> {
+  async establish(deploymentId: string, interactive = true): Promise<HostSessionObservation> {
     this.#assertActive();
     const epoch = this.#abandonEpoch(deploymentId);
     await this.#assertAuthorization(deploymentId, epoch);
@@ -329,7 +329,7 @@ export class HostSession implements HostSessionRecovery {
     const establishment = (
       activeRecovery
         ? activeRecovery.then((outcome) => observationFromRecovery(attachment.resolved, outcome))
-        : this.#establishExact(attachment, epoch)
+        : this.#establishExact(attachment, epoch, interactive)
     ).then(async (observation) => {
       await this.#assertAuthorization(deploymentId, epoch);
       this.#assertCurrent(key);
@@ -438,6 +438,7 @@ export class HostSession implements HostSessionRecovery {
   async #establishExact(
     attachment: SelectedAttachment,
     epoch: number,
+    interactive: boolean,
   ): Promise<HostSessionObservation> {
     const { connection, resolved } = attachment;
     if (resolved.access === "owner") {
@@ -488,7 +489,7 @@ export class HostSession implements HostSessionRecovery {
         );
       }
       try {
-        return oauthObservation(await this.#oauth.signInTeam(connection));
+        return oauthObservation(await this.#oauth.signInTeam(connection, undefined, interactive));
       } catch (error) {
         if (error instanceof TeamEntryRefusedError)
           return observation(resolved, "blocked", error.message);

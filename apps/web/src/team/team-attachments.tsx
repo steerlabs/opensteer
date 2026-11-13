@@ -55,7 +55,7 @@ export interface TeamAttachment {
   readonly origin: string;
   /** Its live session; null where this surface only links to it (the personal web app). */
   readonly client: TeamSessionClient | null;
-  readonly failure?: "sign-in" | "join" | "unavailable" | undefined;
+  readonly failure?: "sign-in" | "join" | "unavailable" | "pending" | undefined;
   /** The personal Host's link to it, where there is a personal Host. */
   readonly link: PersonalTeamLink | null;
 }
@@ -179,9 +179,9 @@ export function TeamsProvider({
     [hostClient],
   );
   const [linked, setLinked] = useState<readonly PersonalTeamLink[]>([]);
-  const [failures, setFailures] = useState<ReadonlyMap<string, "sign-in" | "join" | "unavailable">>(
-    new Map(),
-  );
+  const [failures, setFailures] = useState<
+    ReadonlyMap<string, "sign-in" | "join" | "unavailable" | "pending">
+  >(new Map());
   const [clients, setClients] = useState<ReadonlyMap<string, TeamSessionClient>>(new Map());
   const navigator = useRef<((path: string) => void) | null>(null);
   const [forgotten, setForgotten] = useState<ReadonlySet<string>>(new Set());
@@ -250,9 +250,12 @@ export function TeamsProvider({
             });
           })
         : null,
-    [bridge],
+    [bridge, accountSubject],
   );
-  useEffect(() => () => registry?.dispose(), [registry]);
+  useEffect(() => {
+    setClients(new Map());
+    return () => registry?.dispose();
+  }, [registry]);
   // A team's own web app and the mock build hold their sessions directly.
   const heldTeam = surface.kind === "team-web" ? surface.attachment : null;
   const heldTeams = surface.kind === "preview" ? surface.teams : null;
@@ -279,10 +282,10 @@ export function TeamsProvider({
   useEffect(() => {
     if (!registry || !bridge) return;
     let live = true;
-    const next = new Map<string, TeamSessionClient>();
-    const failed = new Map<string, "sign-in" | "join" | "unavailable">();
-    void Promise.all(
-      [...members].map(async ([teamId, team]) => {
+    setFailures(new Map([...members.keys()].map((id) => [id, "pending" as const])));
+    setClients((previous) => new Map([...previous].filter(([id]) => members.has(id))));
+    for (const [teamId, team] of members) {
+      void (async () => {
         try {
           const userId = await readTeamUser(
             desktopTeamSession({
@@ -291,28 +294,33 @@ export function TeamsProvider({
               scope: { teamDeploymentId: teamId, userId: "pending" },
             }),
           );
-          next.set(teamId, await registry.join({ teamDeploymentId: teamId, userId }));
+          if (!live) return;
+          const client = await registry.join({ teamDeploymentId: teamId, userId });
+          if (!live) return;
+          setClients((previous) => new Map(previous).set(teamId, client));
+          setFailures((previous) => {
+            const updated = new Map(previous);
+            updated.delete(teamId);
+            return updated;
+          });
         } catch (error) {
-          failed.set(
-            teamId,
-            error instanceof HostClientRequestError && error.code === "unauthorized"
-              ? "sign-in"
-              : error instanceof HostClientRequestError && error.reason === "not-a-member"
-                ? "join"
-                : "unavailable",
-          );
+          if (!live) return;
+          const failure =
+            error instanceof HostClientRequestError && error.reason === "not-a-member"
+              ? "join"
+              : error instanceof HostClientRequestError && error.code === "unauthorized"
+                ? "sign-in"
+                : "unavailable";
+          setFailures((previous) => new Map(previous).set(teamId, failure));
+          if (failure !== "unavailable")
+            setClients((previous) => {
+              const updated = new Map(previous);
+              updated.delete(teamId);
+              return updated;
+            });
         }
-      }),
-    ).then(() => {
-      if (live) {
-        setFailures(failed);
-        setClients((previous) => {
-          for (const [id, client] of previous)
-            if (members.has(id) && failed.get(id) === "unavailable") next.set(id, client);
-          return next;
-        });
-      }
-    });
+      })();
+    }
     return () => {
       live = false;
     };
@@ -387,7 +395,8 @@ export function TeamsProvider({
               name: team.name,
               origin: team.origin,
               client: clients.get(teamId) ?? null,
-              failure: failures.get(teamId),
+              failure:
+                failures.get(teamId) ?? (bridge && !clients.has(teamId) ? "pending" : undefined),
               link: linked.find((link) => link.teamId === teamId) ?? null,
             }));
     return {

@@ -39,11 +39,12 @@ browser. Account signs a single-use assertion, valid for one minute, of who the 
 that exact team Host and app; it proves identity, never membership. The team Host verifies it
 against Account's published keys and, in one transaction, spends it and either signs in an active
 member or admits a newcomer through the invite sent beside it. It then issues the same native
-tokens a browser sign-in would. Exchanges record the Account issuer and subject; Account
-identity changes fence pending browser and exchange flows and revoke every team credential
-not bound to the incoming identity. Browser-issued and legacy credentials have unverifiable
-Account provenance and are dropped on any Account identity change, including sign-in from none.
-Reauthorizing the same Account preserves its team credentials. Explicit team
+tokens a browser sign-in would. Every team credential is bound to the device's Account issuer and subject, or explicitly to
+no Account. Browser flows capture that binding when they start and discard and revoke callbacks
+after an identity change. Legacy credentials without a binding never authorize a request.
+Credential reads and refreshes enforce the binding even if deletion or revocation fails. Real
+identity changes synchronously fence transports and retire viewer clients before best-effort
+cleanup; loading the same saved Account is hydration and preserves its credentials. Explicit team
 sign-out suppresses silent entry until an explicit sign-in. Account or JWKS outages remain
 retryable; membership refusals ask for an invite without a browser loop. Silent entry sends no
 invite unless the person explicitly joins with one. Older teams keep the browser sign-in; the

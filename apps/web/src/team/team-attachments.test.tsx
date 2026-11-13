@@ -111,3 +111,80 @@ it("scopes desktop team state to the authenticated viewer rather than the person
     host.dispose();
   }
 });
+
+it("publishes an authorized team while another team's silent entry is pending", async () => {
+  const ready = new MockTeamHost();
+  const pendingId = createId("deployment");
+  const gate = Promise.withResolvers<void>();
+  transport.create.mockImplementation((options: TeamSessionOptions) => ({
+    ...options,
+    rpc: new Proxy(ready.rpc, {
+      get(target, key, receiver) {
+        if (options.scope.teamDeploymentId === pendingId && key === "team.bootstrap.get")
+          return async () => {
+            await gate.promise;
+            return {
+              ok: false,
+              error: { code: "unauthorized", message: "Sign in", retryable: false },
+            };
+          };
+        return Reflect.get(target, key, receiver);
+      },
+    }),
+    connect: ready.connect,
+    persistence: createMemoryTeamPersistence(),
+  }));
+  const hostClient = {
+    rpc: {
+      "teams.links.list": async () => ({
+        ok: true,
+        data: {
+          links: [ready.teamId, pendingId].map((teamId) => ({
+            teamId,
+            hostInstanceId: createId("hostInstance"),
+            origin: ready.origin,
+            teamName: "Team",
+            ownerUserId: ready.userId,
+            state: "active",
+            remoteLinkId: null,
+            updateRequiredBy: null,
+            lastContactAt: null,
+          })),
+        },
+      }),
+    },
+  } as unknown as HostClient;
+  let teams: readonly TeamAttachment[] = [];
+  function Read() {
+    teams = useTeams().teams;
+    return null;
+  }
+  const root = createRoot(document.createElement("div"));
+  try {
+    await act(async () =>
+      root.render(
+        <TeamsProvider
+          surface={{ kind: "desktop", bridge: {} as OpensteerDesktopBridge, hostClient }}
+        >
+          <Read />
+        </TeamsProvider>,
+      ),
+    );
+    await vi.waitFor(
+      () =>
+        expect(
+          teams.find((team) => team.teamId === ready.teamId)?.client,
+          "ready team waited for unrelated authorization",
+        ).toBeTruthy(),
+      { timeout: 1000 },
+    );
+    expect(teams.find((team) => team.teamId === pendingId)?.failure).toBe("pending");
+  } finally {
+    await act(async () => {
+      gate.resolve();
+      await gate.promise;
+      root.unmount();
+    });
+    ready.dispose();
+  }
+});
