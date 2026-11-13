@@ -13,9 +13,9 @@ import {
   Deferred,
   type HarnessSession,
   type HarnessVoiceCall,
-  findExecutableOnPath,
   nativeUserHarnessRuntimeBoundary,
 } from "@opensteer/harness";
+import { hostCommandPlatform, resolveCommand } from "@opensteer/shared/command";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { CodexHarnessDriver } from "./codex-driver.js";
 import { ModelSelectionSchema } from "@opensteer/core";
@@ -25,7 +25,11 @@ const signedIn = await access(join(codexHome, "auth.json")).then(
   () => true,
   () => false,
 );
-const executable = findExecutableOnPath("codex", process.env.PATH);
+const executable = resolveCommand("codex", {
+  cwd: process.cwd(),
+  environment: process.env,
+  platform: hostCommandPlatform(),
+})?.path;
 const qualify = process.platform === "darwin" && signedIn && executable !== undefined;
 
 /** The one fact only the stand-in Opensteer tool knows, so a spoken answer proves the tool ran. */

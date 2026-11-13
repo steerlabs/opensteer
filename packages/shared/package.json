@@ -21,6 +21,7 @@
     "./clock": "./src/clock.ts",
     "./clipboard": "./src/clipboard.ts",
     "./coalescedWake": "./src/coalescedWake.ts",
+    "./command": "./src/command.ts",
     "./test-support/captureJsonl": "./src/captureJsonl.test-support.ts",
     "./test-support/observation": "./src/observation.test-support.ts",
     "./test-support/clock": "./src/clock.test-support.ts",

@@ -56,15 +56,30 @@ describe("EngineInstallationResolver", () => {
       path: "brew/Cellar/node/24.0.0/lib/node_modules/@openai/codex/bin/codex",
       expected: ["install", "--global", "@openai/codex@latest"],
       managers: ["npm", "brew"],
-      npmPrefix: "brew/Cellar/node/24.0.0",
+      npmRoot: "brew/Cellar/node/24.0.0/lib/node_modules",
     },
-  ])("detects $name", async ({ path, expected, managers, npmPrefix }) => {
+    {
+      name: "npm global whose root has no lib directory, as on Windows",
+      path: "npm/node_modules/@openai/codex/bin/codex",
+      expected: ["install", "--global", "@openai/codex@latest"],
+      managers: ["npm"],
+      npmRoot: "npm/node_modules",
+    },
+    {
+      name: "npm's Windows command shim beside its root",
+      path: "npm/codex.cmd",
+      expected: ["install", "--global", "@openai/codex@latest"],
+      managers: ["npm"],
+      npmRoot: "npm/node_modules",
+    },
+  ])("detects $name", async ({ path, expected, managers, npmRoot }) => {
     const { executable, root, PATH } = await installedCodex(path, managers);
+    if (npmRoot) await mkdir(join(root, npmRoot, "@openai", "codex"), { recursive: true });
     const resolver = new EngineInstallationResolver({
       environment: { PATH },
       run: async (_command, args) => {
         if (args[0] === "--version") return result("codex-cli 0.160.0");
-        if (args[0] === "prefix") return result(join(root, npmPrefix ?? "npm-prefix"));
+        if (args[0] === "root") return result(join(root, npmRoot ?? "npm-prefix/lib/node_modules"));
         if (args[0] === "view") return result('"0.166.0"');
         if (args[0] === "info") return result('{"casks":[{"version":"0.166.0"}],"formulae":[]}');
         if (args[0] === "--prefix") return result(join(root, "brew"));
@@ -128,7 +143,7 @@ describe("EngineInstallationResolver", () => {
             );
           }
           if (args[0] === "--version") return result("codex-cli 0.160.0");
-          if (args[0] === "prefix") return result(join(root, "npm-prefix"));
+          if (args[0] === "root") return result(join(root, "npm-prefix/lib/node_modules"));
           if (args[0] === "--prefix") return result(join(root, "brew"));
           return result("");
         },

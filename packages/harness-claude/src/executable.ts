@@ -1,47 +1,49 @@
 import { execFile } from "node:child_process";
-import { statSync } from "node:fs";
-import { isAbsolute, win32 } from "node:path";
+import { posix, win32 } from "node:path";
 import { promisify } from "node:util";
-import { findExecutableOnPath, meetsMinimumVersion } from "@opensteer/harness";
+import { meetsMinimumVersion } from "@opensteer/harness";
+import {
+  hostCommandPlatform,
+  nodeCommandProbes,
+  resolveCommand,
+  type CommandPlatform,
+  type CommandProbes,
+} from "@opensteer/shared/command";
 import { MINIMUM_CLAUDE_CODE_VERSION } from "./config.js";
 export const claudeInstallGuidance =
   "Install Claude Code from https://code.claude.com/docs/en/setup. Opensteer finds it within a minute; if it doesn't, restart Opensteer.";
 
-interface ClaudeExecutablePorts {
-  readonly locate: typeof findExecutableOnPath;
-  readonly isFile: (path: string) => boolean;
-}
-const executablePorts: ClaudeExecutablePorts = {
-  locate: findExecutableOnPath,
-  isFile: (path) => {
-    try {
-      return statSync(path).isFile();
-    } catch {
-      return false;
-    }
-  },
-};
-
-/** The Runner supplies its login-shell environment; never consult an SDK platform package. */
+/**
+ * The Runner supplies its login-shell environment; never consult an SDK
+ * platform package. npm's Windows launchers are scripts, so Claude runs the
+ * package's own entry beside them instead.
+ */
 export function resolveClaudeExecutable(
   executable = "claude",
   environment: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform,
-  ports: ClaudeExecutablePorts = executablePorts,
+  platform: CommandPlatform = hostCommandPlatform(),
+  probes: CommandProbes = nodeCommandProbes,
 ): string | undefined {
-  const absolute = platform === "win32" ? win32.isAbsolute(executable) : isAbsolute(executable);
-  const resolved = absolute ? executable : ports.locate(executable, environment.PATH, platform);
-  if (!resolved || platform !== "win32") return resolved;
-  if (![".cmd", ".bat", ".ps1"].includes(win32.extname(resolved).toLowerCase())) return resolved;
+  // A legacy JavaScript CLI runs through Node, so it needs no execute permission.
+  const absolute = (platform === "win32" ? win32 : posix).isAbsolute(executable);
+  if (absolute && executable.endsWith(".js"))
+    return probes.isFile(executable) ? executable : undefined;
+  const resolved = resolveCommand(executable, {
+    cwd: process.cwd(),
+    environment,
+    platform,
+    probes,
+  });
+  if (!resolved || resolved.kind === "native") return resolved?.path;
   for (const entry of [["bin", "claude.exe"], ["cli.js"]]) {
     const candidate = win32.join(
-      win32.dirname(resolved),
+      win32.dirname(resolved.path),
       "node_modules",
       "@anthropic-ai",
       "claude-code",
       ...entry,
     );
-    if (ports.isFile(candidate)) return candidate;
+    if (probes.isFile(candidate)) return candidate;
   }
   return undefined;
 }

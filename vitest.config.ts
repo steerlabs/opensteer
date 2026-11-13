@@ -35,6 +35,7 @@ export default defineConfig({
     // Other work and agents run beside these workers; leave cores for them.
     maxWorkers: Math.max(2, Math.floor(availableParallelism() / 3)),
     sequence: { sequencer: CiSequencer },
+    setupFiles: ["./tests/process-supervisor-setup.test-support.ts"],
     pool: "forks",
     restoreMocks: true,
   },
