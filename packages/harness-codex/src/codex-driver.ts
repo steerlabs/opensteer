@@ -853,6 +853,10 @@ class CodexHarnessAdapter implements HarnessAdapter {
   readonly #sessions = new HarnessSessionRegistry<CodexHarnessSession>("Codex");
   /** Every app-server this adapter started that has not ended. */
   readonly #servers = new Set<CodexAppServer>();
+  /** Starts in flight, which closing the adapter cancels and waits out. */
+  readonly #starting = new Set<Promise<unknown>>();
+  /** Ends every process the adapter starts, the account's shared one included. */
+  readonly #lifetime = new AbortController();
   /** The account's shared app-server, or its start in flight, and what it was started with. */
   #shared: { readonly key: string; readonly server: Promise<CodexAppServer> } | undefined;
 
@@ -1064,6 +1068,8 @@ class CodexHarnessAdapter implements HarnessAdapter {
   async close(): Promise<void> {
     await this.#sessions.close();
     this.#shared = undefined;
+    this.#lifetime.abort(new Error("Codex adapter closed"));
+    await Promise.allSettled([...this.#starting]);
     await Promise.allSettled([...this.#servers].map((server) => server.close()));
   }
 
@@ -1088,7 +1094,11 @@ class CodexHarnessAdapter implements HarnessAdapter {
     this.#sessions.assertOpen();
     const shared = context.sharedEngine;
     if (!shared || context.voiceCall || context.runtimeBoundary.kind !== "native-user") {
-      return this.#startServer(context, undefined, lifetime);
+      return this.#startServer(
+        context,
+        undefined,
+        AbortSignal.any([lifetime, this.#lifetime.signal]),
+      );
     }
     const key = JSON.stringify([
       shared.environment,
@@ -1106,7 +1116,8 @@ class CodexHarnessAdapter implements HarnessAdapter {
       this.#shared = undefined;
       void current.server.then((server) => server.recycle()).catch(() => undefined);
     }
-    const started = this.#startServer(context, shared, lifetime);
+    // The account's process outlives the session that asked for it.
+    const started = this.#startServer(context, shared, this.#lifetime.signal);
     const entry = { key, server: started };
     this.#shared = entry;
     started.catch(() => {
@@ -1115,7 +1126,21 @@ class CodexHarnessAdapter implements HarnessAdapter {
     return started;
   }
 
-  async #startServer(
+  #startServer(
+    context: HarnessSessionContext,
+    shared: HarnessSharedEngineLaunch | undefined,
+    lifetime: AbortSignal,
+  ): Promise<CodexAppServer> {
+    const starting = this.#launchServer(context, shared, lifetime);
+    this.#starting.add(starting);
+    void starting.then(
+      () => this.#starting.delete(starting),
+      () => this.#starting.delete(starting),
+    );
+    return starting;
+  }
+
+  async #launchServer(
     context: HarnessSessionContext,
     shared: HarnessSharedEngineLaunch | undefined,
     lifetime: AbortSignal,
@@ -1158,7 +1183,8 @@ class CodexHarnessAdapter implements HarnessAdapter {
       ...(this.#log ? { log: this.#log } : {}),
       onEnded: (ended) => this.#servers.delete(ended),
       wrapProcessLaunch: shared?.wrapProcessLaunch ?? context.wrapProcessLaunch,
-      ...(shared ? {} : { dedicated: true as const, signal: lifetime }),
+      signal: lifetime,
+      ...(shared ? {} : { dedicated: true as const }),
     });
     this.#servers.add(server);
     if (callLog) {
@@ -1216,8 +1242,6 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
   readonly #tokenLedger = new CodexTokenLedger();
   /** Subagent threads used since the last release, which can hold background terminals too. */
   readonly #childThreads = new Set<string>();
-  /** Every subagent conversation this session has held; each unloads when it stops. */
-  readonly #ownedChildThreads = new Set<string>();
   readonly #childParents = new Map<string, { parentKey: string | null; title: string | null }>();
   readonly #abortListener: () => void;
   #activeTurn: ActiveTurn | undefined;
@@ -1904,7 +1928,12 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         ),
       ]);
     }
-    const threads = [...this.#ownedChildThreads, ...(root ? [root] : [])];
+    // What the router gave this session, its subagents however they were found included.
+    const owned = server.threadsOf(this);
+    const threads = [
+      ...owned.filter((threadId) => threadId !== root),
+      ...owned.filter((threadId) => threadId === root),
+    ];
     const unloaded = await Promise.all(
       threads.map((threadId) => server.unload(threadId, this, closeTimeoutMs)),
     );
@@ -1947,10 +1976,8 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
           : [];
     for (const threadId of named) {
       if (typeof threadId !== "string" || !threadId || threadId === this.#codexThreadId) continue;
-      if (this.#ownedChildThreads.has(threadId)) continue;
       try {
         this.#server?.claim(threadId, this);
-        this.#ownedChildThreads.add(threadId);
       } catch {
         // Another session's conversation is never this one's subagent.
       }
@@ -1977,8 +2004,8 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     if (!this.#unreadable.has(kind) && this.#unreadable.size < 64) {
       this.#unreadable.add(kind);
       this.#log?.("warn", "codex.frame.unreadable", {
+        detail: failure.message,
         method: message.method,
-        message: failure.message,
       });
     }
     if (message.id !== undefined) {

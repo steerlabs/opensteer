@@ -3115,6 +3115,87 @@ describe("one Codex app-server per account", () => {
     }
   });
 
+  it("unloads a subagent conversation it was handed without anything naming it", async () => {
+    const fixture = await setup("recorded-subagent_v2_unseen_spawn");
+    try {
+      const session = await fixture.adapter.startSession(fixture.context);
+      const observer = observe(session.events);
+      await session.execute(fixture.turn("Replay"));
+      await observer.waitFor("run.completed");
+      await session.stop();
+      const unloaded = (await fixture.capture())
+        .filter((message) => message.method === "thread/unsubscribe")
+        .map((message) => (message.params as JsonRecord).threadId);
+      expect(unloaded).toEqual(
+        expect.arrayContaining(["unnamed-child", session.providerSessionReference]),
+      );
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
+  it("refuses a request on a conversation no session claims once it is stale", async () => {
+    const fixture = await setup("foreign-request");
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const session = await fixture.adapter.startSession(fixture.context);
+      const observer = observe(session.events);
+      void session.execute(fixture.turn("Go"));
+      await observer.waitFor("run.started");
+      await vi.waitFor(
+        async () => {
+          expect(
+            (await fixture.capture()).some(
+              (message) =>
+                message.method === "thread/read" &&
+                (message.params as JsonRecord).threadId === "foreign-thread",
+            ),
+          ).toBe(true);
+        },
+        { timeout: 2_000 },
+      );
+      await vi.advanceTimersByTimeAsync(60_000);
+      vi.useRealTimers();
+      await vi.waitFor(
+        async () => {
+          expect(await fixture.capture()).toContainEqual(
+            expect.objectContaining({ error: expect.anything(), id: "foreign-rpc" }),
+          );
+        },
+        { timeout: 2_000 },
+      );
+      expect(normalizedTypes(observer.events)).not.toContain("request.opened");
+      await session.stop();
+    } finally {
+      vi.useRealTimers();
+      await fixture.adapter.close();
+    }
+  });
+
+  it("ends an account's app-server still starting when the adapter closes", async () => {
+    const fixture = await setup("delayed-handshake", {
+      environmentOverrides: { FAKE_CODEX_INITIALIZE_DELAY_MS: "60000" },
+    });
+    const lifetime = new AbortController();
+    const starting = fixture.adapter.startSession({ ...fixture.context, signal: lifetime.signal });
+    let pid: number | undefined;
+    await vi.waitFor(
+      async () => {
+        pid = (
+          (await fixture.capture()).find((message) => message.fakeCodexProcess)
+            ?.fakeCodexProcess as { pid?: number } | undefined
+        )?.pid;
+        expect(pid).toBeTypeOf("number");
+      },
+      { timeout: 5_000 },
+    );
+    lifetime.abort(new Error("The Run was stopped"));
+    await expect(starting).rejects.toMatchObject({ code: "harness_error" });
+    await fixture.adapter.close();
+    await waitForProcessExit(pid!);
+    expect(processExists(pid!)).toBe(false);
+  });
+
   it("is never sent the turn's cumulative diff, however much a turn writes", async () => {
     const fixture = await setup("huge-diff", {
       maxProtocolLineBytes: 64 * 1024,

@@ -136,6 +136,23 @@ describe("Codex stdio process", () => {
     }
   });
 
+  it("fails a process that stops reading its input within a request's deadline", async () => {
+    const fixture = await startLifecycleClient("no-read");
+    try {
+      // Larger than a pipe holds, so the write itself cannot finish.
+      const request = fixture.client.request(
+        "test/large",
+        { payload: "x".repeat(1024 * 1024) },
+        100,
+      );
+      await expect(request).rejects.toMatchObject({ code: "timeout" });
+      expect(fixture.client.failed).toBe(true);
+      await expect(fixture.failure.promise).resolves.toMatchObject({ code: "timeout" });
+    } finally {
+      await fixture.close();
+    }
+  });
+
   it("rejects a request without its own deadline when the process lifetime is aborted", async () => {
     const fixture = await startLifecycleClient("timeout");
     try {
@@ -167,7 +184,7 @@ describe("Codex stdio process", () => {
 });
 
 async function startLifecycleClient(
-  scenario: "exit" | "timeout",
+  scenario: "exit" | "no-read" | "timeout",
   agentToolsToken = "agent-tools-secret",
 ): Promise<{
   readonly client: CodexStdioClient;

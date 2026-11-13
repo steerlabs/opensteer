@@ -1767,6 +1767,21 @@ function handleTurnStart(message) {
     });
     return;
   }
+  if (scenario === "foreign-request") {
+    // A request on a conversation no Opensteer session holds or spawned.
+    send({
+      id: "foreign-rpc",
+      method: "item/commandExecution/requestApproval",
+      params: {
+        command: "ls",
+        itemId: "foreign-item",
+        reason: "Not this Run's",
+        threadId: "foreign-thread",
+        turnId: "foreign-turn",
+      },
+    });
+    return;
+  }
   if (scenario === "unknown-request") {
     send({ id: "unknown-rpc", method: "fake/unsupported", params: { threadId, turnId } });
     return;

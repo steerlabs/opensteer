@@ -33,6 +33,9 @@ const heldFramesMaxAgeMs = 60_000;
 const parentDiscoveryMaxDepth = 8;
 const parentDiscoveryTimeoutMs = 2_000;
 
+/** Every capability a process's sessions held, kept out of its stderr for its whole life. */
+const redactionsMax = 4_096;
+
 /** How long an account's process waits for its next session once its last has ended. */
 const codexAppServerIdleMs = 5 * 60_000;
 
@@ -70,6 +73,7 @@ interface HeldFrames {
   bytes: number;
   readonly firstAt: number;
   readonly frames: CodexMethodMessage[];
+  expiry?: NodeJS.Timeout;
 }
 
 /**
@@ -88,7 +92,9 @@ export class CodexAppServer {
   readonly features: CodexFeatureBoundary;
   readonly #after: { readonly message: CodexMethodMessage; readonly owner: CodexThreadOwner }[] =
     [];
-  readonly #attached = new Map<CodexThreadOwner, readonly string[]>();
+  readonly #attached = new Set<CodexThreadOwner>();
+  /** Its stderr tail outlives a session, so what a session held is redacted for the process's life. */
+  readonly #redactions = new Set<string>();
   readonly #closeWaiters = new Map<string, Deferred<void>>();
   /** Conversations whose spawning conversation is being asked of Codex. */
   readonly #discovering = new Map<string, Promise<void>>();
@@ -148,7 +154,7 @@ export class CodexAppServer {
         const owner = threadId ? server.#owners.get(threadId) : undefined;
         owner?.requestTimedOut(error);
       },
-      redactions: () => (server ? [...server.#attached.values()].flat() : []),
+      redactions: () => (server ? [...server.#redactions] : []),
       signal: lifetime.signal,
       ...(options.wrapProcessLaunch ? { wrapProcessLaunch: options.wrapProcessLaunch } : {}),
     });
@@ -176,6 +182,8 @@ export class CodexAppServer {
       );
       await client.notify("initialized", {});
       await assertCodexFeatureBoundary(client, options.features, options.config.startupTimeoutMs);
+      // A start whose session gave up still ends unless another session comes.
+      if (!server.dedicated) server.#idleUnlessAttached();
       return server;
     } catch (error) {
       await server.close();
@@ -194,7 +202,7 @@ export class CodexAppServer {
 
   /**
    * Holds the process for a session. `redactions` are the session's
-   * capabilities, kept out of stderr diagnostics while it is attached.
+   * capabilities, kept out of the process's stderr diagnostics.
    */
   attach(owner: CodexThreadOwner, redactions: readonly string[]): void {
     if (!this.usable) {
@@ -212,7 +220,22 @@ export class CodexAppServer {
     }
     clearTimeout(this.#idleTimer);
     this.#idleTimer = undefined;
-    this.#attached.set(owner, redactions);
+    this.#attached.add(owner);
+    for (const value of redactions) {
+      if (value.length < 4) continue;
+      this.#redactions.delete(value);
+      this.#redactions.add(value);
+      if (this.#redactions.size > redactionsMax) {
+        this.#redactions.delete(this.#redactions.values().next().value!);
+      }
+    }
+  }
+
+  /** Every conversation `owner` holds, its subagents' before its own. */
+  threadsOf(owner: CodexThreadOwner): string[] {
+    return [...this.#owners]
+      .filter(([, current]) => current === owner)
+      .map(([threadId]) => threadId);
   }
 
   /** Ends a session's hold: its conversations no longer route to it. */
@@ -226,6 +249,12 @@ export class CodexAppServer {
       void this.close();
       return;
     }
+    this.#idleUnlessAttached();
+  }
+
+  #idleUnlessAttached(): void {
+    if (this.#attached.size > 0 || this.#ended) return;
+    clearTimeout(this.#idleTimer);
     this.#idleTimer = setTimeout(() => {
       if (this.#attached.size === 0) void this.close();
     }, codexAppServerIdleMs);
@@ -248,6 +277,7 @@ export class CodexAppServer {
     this.#owners.set(threadId, owner);
     const held = this.#held.get(threadId);
     if (!held) return;
+    clearTimeout(held.expiry);
     this.#held.delete(threadId);
     this.#heldBytes -= held.bytes;
     for (const message of held.frames) {
@@ -331,10 +361,10 @@ export class CodexAppServer {
     if (this.#failure) return;
     this.#failure = error;
     this.#log?.("warn", "codex.app-server.failed", {
-      message: error.message,
+      detail: error.message,
       sessions: this.#attached.size,
     });
-    const owners = [...this.#attached.keys()];
+    const owners = [...this.#attached];
     this.#end();
     for (const owner of owners) {
       try {
@@ -422,7 +452,7 @@ export class CodexAppServer {
       owner.receive(message);
     } catch (error) {
       this.#log?.("warn", "codex.app-server.frame-failed", {
-        message: error instanceof Error ? error.message : "unknown",
+        detail: error instanceof Error ? error.message : "unknown",
         method: message.method,
       });
     }
@@ -439,7 +469,16 @@ export class CodexAppServer {
       this.#drop(threadId, { bytes: 0, firstAt: now, frames: [message] });
       return;
     }
-    const held = this.#held.get(threadId) ?? { bytes: 0, firstAt: now, frames: [] };
+    let held = this.#held.get(threadId);
+    if (!held) {
+      const entry: HeldFrames = { bytes: 0, firstAt: now, frames: [] };
+      // A request among them must not wait on a claim that never comes.
+      entry.expiry = setTimeout(() => {
+        if (this.#held.get(threadId) === entry) this.#drop(threadId, entry);
+      }, heldFramesMaxAgeMs);
+      entry.expiry.unref();
+      held = entry;
+    }
     held.frames.push(message);
     held.bytes += bytes;
     this.#heldBytes += bytes;
@@ -484,7 +523,8 @@ export class CodexAppServer {
 
   /** Frames no session claimed in time belong to no Run; a request among them is refused. */
   #drop(threadId: string, held: HeldFrames): void {
-    this.#held.delete(threadId);
+    clearTimeout(held.expiry);
+    if (this.#held.get(threadId) === held) this.#held.delete(threadId);
     this.#heldBytes -= held.bytes;
     this.#log?.("warn", "codex.app-server.unclaimed-frames", { frames: held.frames.length });
     for (const frame of held.frames) {

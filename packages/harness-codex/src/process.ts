@@ -142,6 +142,11 @@ export class CodexStdioClient {
     this.#child.on("error", (error) => {
       this.#fail(toCodexProcessError(error, "Codex app-server process error"));
     });
+    // A write to a process that has gone fails its write; the pipe's own
+    // error must not reach the Runner as an unhandled event.
+    this.#child.stdin.on("error", (error) => {
+      if (!this.#closing) this.#fail(toCodexProcessError(error, "Codex app-server input failed"));
+    });
     this.#stdoutTask = this.#readStdout();
     this.#stderrTask = this.#readStderr();
     if (options.signal.aborted) void this.close(0);
@@ -204,6 +209,7 @@ export class CodexStdioClient {
     this.#nextRequestId += 1;
     const key = requestKey(id);
     let pending: PendingRequest | undefined;
+    let written = false;
     const response = new Promise<unknown>((resolve, reject) => {
       const timeout =
         timeoutMs === undefined || timeoutMs === null
@@ -211,8 +217,6 @@ export class CodexStdioClient {
           : setTimeout(() => {
               const current = this.#pending.get(key);
               if (current !== pending || !current) return;
-              this.#pending.delete(key);
-              this.#timedOut.add(key);
               const stderr = this.#stderrDiagnostic();
               const error = new OpensteerError({
                 code: "timeout",
@@ -220,6 +224,14 @@ export class CodexStdioClient {
                 message: `Codex app-server request ${method} timed out after ${timeoutMs}ms`,
                 retryable: true,
               });
+              // A process that has not read a request in all that time
+              // reads nothing more: every conversation on it has ended.
+              if (!written) {
+                this.#fail(error);
+                return;
+              }
+              this.#pending.delete(key);
+              this.#timedOut.add(key);
               current.reject(error);
               this.#onRequestTimeout?.(method, params, error);
             }, timeoutMs);
@@ -227,17 +239,20 @@ export class CodexStdioClient {
       pending = { method, reject, resolve, ...(timeout ? { timeout } : {}) };
       this.#pending.set(key, pending);
     });
-
-    try {
-      await this.#write({ id, method, params });
-    } catch (error) {
-      const current = this.#pending.get(key);
-      if (current) {
-        if (current.timeout) clearTimeout(current.timeout);
-        this.#pending.delete(key);
-        current.reject(error);
-      }
-    }
+    // The deadline covers the write as well as the answer.
+    this.#write({ id, method, params }).then(
+      () => {
+        written = true;
+      },
+      (error: unknown) => {
+        const current = this.#pending.get(key);
+        if (current) {
+          if (current.timeout) clearTimeout(current.timeout);
+          this.#pending.delete(key);
+          current.reject(error);
+        }
+      },
+    );
     return response;
   }
 

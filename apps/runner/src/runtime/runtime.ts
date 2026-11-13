@@ -3002,11 +3002,12 @@ export class RunnerRuntime {
       if (active.interrupted)
         terminal = { data: { status: "interrupted" }, type: "run.interrupted" };
       if (terminal.type === "run.failed") {
+        // The logger names the line `message`; the reason is `detail`.
         this.#logger?.error("run.failed", {
           code: terminal.data.code,
+          detail: terminal.data.message,
           driverKind: context.harness.driverKind,
           harnessInstanceId: context.harnessInstanceId,
-          message: terminal.data.message,
           runId: context.runId,
           threadId: context.threadId,
         });

@@ -3820,9 +3820,9 @@ describe("RunnerRuntime", () => {
             "run.failed",
             {
               code: "runner_execution_error",
+              detail: "AI engine resumed a different provider session",
               driverKind: command.context.harness.driverKind,
               harnessInstanceId: command.context.harnessInstanceId,
-              message: "AI engine resumed a different provider session",
               runId: command.context.runId,
               threadId: command.context.threadId,
             },
