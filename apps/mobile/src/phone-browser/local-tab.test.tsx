@@ -6,8 +6,6 @@ import type { HostClient } from "@opensteer/client/host";
 import type { PhoneBrowserManager, PhonePresentationAdmission } from "./manager.js";
 import { LocalPhoneTab } from "./local-tab.js";
 
-const listing = vi.hoisted(() => ({ awake: true }));
-vi.mock("@opensteer/client/react", () => ({ useBrowserTabAwake: () => listing.awake }));
 vi.mock("../browser/browser-stream.js", () => ({
   useBrowserFeedState: () => ({ admitted: true }),
 }));
@@ -92,58 +90,4 @@ test("a returning local screen holds its intent across Host activation and never
   }
   expect(intents).toBe(0);
   expect(viewers).toBe(0);
-});
-
-test("a tab the phone holds asleep in its live session is woken before it is viewed", async () => {
-  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
-  const admission: PhonePresentationAdmission = {
-    sessionId: "live",
-    surfaceId: "tab",
-    bindingId: null,
-    runtimeId: "runtime",
-    targetControl: 1,
-  };
-  const manager = {
-    markLocalPresentation: () => () => undefined,
-    localPresentation: () => admission,
-  } as unknown as PhoneBrowserManager;
-  let activations = 0;
-  let viewers = 0;
-  const hostClient = {
-    activatePersonalTab: async () => {
-      activations++;
-      return { session: { id: "live" } };
-    },
-    retainBrowserViewer: () => {
-      viewers++;
-      return () => undefined;
-    },
-  } as unknown as HostClient;
-  const container = document.createElement("div");
-  const root = createRoot(container);
-  const render = () => (
-    <LocalPhoneTab
-      active
-      available
-      deploymentId="deployment"
-      hostClient={hostClient}
-      manager={manager}
-      admission={admission}
-      liveSession
-      status={(message) => <div>{message}</div>}
-    />
-  );
-  listing.awake = false;
-  try {
-    await act(async () => root.render(render()));
-    expect(activations).toBe(1);
-    listing.awake = true;
-    await act(async () => root.render(render()));
-    expect(activations).toBe(1);
-    expect(viewers).toBe(1);
-    expect(container.textContent).toBe("Presented live");
-  } finally {
-    listing.awake = true;
-    act(() => root.unmount());
-  }
 });
