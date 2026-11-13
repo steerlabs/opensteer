@@ -284,7 +284,7 @@ integration("local Runner startup with a real credentialed worker", () => {
         await withTimeout(identityReadReached.promise, 5_000, {
           timeoutError: () => new Error("The status observer never read the Runner identity."),
         });
-        await service.remove(input.deploymentId);
+        await service.markRemoved(input.deploymentId);
         events.push("slot-removed-before-observer-open");
         unsubscribe();
         resumeIdentityRead.resolve();
