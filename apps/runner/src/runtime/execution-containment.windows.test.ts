@@ -58,8 +58,9 @@ async function supervisedTree(
 
 const nodeDescendant = `process.execPath,["-e","console.log(1);setInterval(()=>{},1000)"],{stdio:["ignore","pipe","ignore"]}`;
 
-// Gives itself an empty DACL and ignores CTRL_BREAK, so the supervisor can neither
-// open it to end it nor see it leave on its own: its drain fails.
+// Gives itself an empty DACL, so the supervisor cannot open it to end it, and starts in
+// its own process group, so the graceful CTRL_BREAK never reaches it: its drain fails.
+// libuv starts a detached child without breaking away, so it stays in the Job.
 const unopenableDescendant = `${JSON.stringify(
   join(
     process.env.SystemRoot ?? "C:\\Windows",
@@ -94,7 +95,7 @@ if ([Unopenable]::Become() -ne 0) { exit 72 }
 Start-Sleep -Seconds 600`,
     "utf16le",
   ).toString("base64"),
-)}],{stdio:["ignore","pipe","ignore"]}`;
+)}],{detached:true,stdio:["ignore","pipe","ignore"]}`;
 
 describe("ExecutionContainment of supervised Job trees", () => {
   it("proves a tree gone once its supervisor reports the drain, with the target's own status", async () => {

@@ -168,7 +168,6 @@ export function spawnSupervised(options: SupervisedProcessOptions): SupervisedPr
     if (termination) return termination;
     if (childClosed || child.exitCode !== null || child.signalCode !== null)
       return Promise.resolve();
-    if (controlError) return Promise.reject(controlError);
     termination = stopSupervised(control as Writable, exited, graceMs);
     return termination;
   };
@@ -206,14 +205,24 @@ async function stopSupervised(
   exited: Promise<unknown>,
   graceMs: number,
 ): Promise<void> {
-  await writeProcessControl(control, "graceful");
-  const graceful = await Promise.race([
-    exited.then(() => true),
-    delay(Math.max(graceMs, 0)).then(() => false),
-  ]);
+  const ended = exited.then(
+    () => true,
+    () => true,
+  );
+  // A supervisor that closed its control pipe is already ending its tree; its exit is the answer.
+  const send = (mode: "force" | "graceful") =>
+    writeProcessControl(control, mode).then(
+      () => true,
+      () => false,
+    );
+  if (!(await send("graceful"))) {
+    await Promise.race([ended, delay(Math.max(graceMs, 0) + 2_000)]);
+    return;
+  }
+  const graceful = await Promise.race([ended, delay(Math.max(graceMs, 0)).then(() => false)]);
   if (graceful) return;
-  await writeProcessControl(control, "force");
-  await Promise.race([exited, delay(2_000)]);
+  await send("force");
+  await Promise.race([ended, delay(2_000)]);
 }
 
 /**
@@ -252,4 +261,43 @@ export async function collectStreamText(stream: AsyncIterable<Buffer>): Promise<
   const chunks: Buffer[] = [];
   for await (const chunk of stream) chunks.push(chunk);
   return Buffer.concat(chunks).toString("utf8");
+}
+
+export interface SupervisedCommandResult {
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+  readonly stderr: string;
+  readonly stdout: string;
+}
+
+/**
+ * Runs a short command to completion under the supervisor, with stdin closed,
+ * and ends its whole tree if it outlives `timeoutMs`.
+ */
+export async function runSupervisedCommand(options: {
+  readonly executable: string;
+  readonly args: readonly string[];
+  readonly cwd: string;
+  readonly environment: Readonly<Record<string, string>>;
+  readonly timeoutMs: number;
+  readonly maxOutputBytes?: number;
+}): Promise<SupervisedCommandResult> {
+  const timeout = AbortSignal.timeout(options.timeoutMs);
+  const child = spawnSupervised({
+    args: options.args,
+    cwd: options.cwd,
+    environment: options.environment,
+    executable: options.executable,
+    maxOutputBytes: options.maxOutputBytes ?? 1_048_576,
+    signal: timeout,
+    stdin: "closed",
+  });
+  const [stdout, stderr, exit] = await Promise.all([
+    collectStreamText(child.stdout),
+    collectStreamText(child.stderr),
+    child.exited,
+  ]);
+  if (timeout.aborted)
+    throw new Error(`${options.executable} did not finish within ${options.timeoutMs} ms`);
+  return { ...exit, stderr, stdout };
 }

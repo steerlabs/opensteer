@@ -405,9 +405,10 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
       kind: 3,
       deploymentShape: 2,
       "environment.OPENSTEER_DEPLOYMENT_KIND": 2,
+      "arguments_[0]": 1,
     },
     reason:
-      "Configuration admits only the supported deployment kind and selects the services that can start.",
+      "Configuration admits only the supported deployment kind, `pnpm dev:team` selects it by argument, and the services that can start follow.",
   },
   "scripts/setup-local.ts": {
     counts: {

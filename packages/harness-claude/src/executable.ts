@@ -1,5 +1,5 @@
 import { posix, win32 } from "node:path";
-import { collectStreamText, meetsMinimumVersion, spawnSupervised } from "@opensteer/harness";
+import { meetsMinimumVersion, runSupervisedCommand } from "@opensteer/harness";
 import {
   hostCommandPlatform,
   nodeCommandProbes,
@@ -96,8 +96,7 @@ async function claudeVersionOutput(
   args: readonly string[],
   environment: NodeJS.ProcessEnv,
 ): Promise<string> {
-  const timeout = AbortSignal.timeout(versionTimeoutMs);
-  const child = spawnSupervised({
+  const { code, signal, stderr, stdout } = await runSupervisedCommand({
     args,
     cwd: process.cwd(),
     environment: Object.fromEntries(
@@ -105,19 +104,12 @@ async function claudeVersionOutput(
     ),
     executable,
     maxOutputBytes: 64 * 1_024,
-    signal: timeout,
-    stdin: "closed",
+    timeoutMs: versionTimeoutMs,
   });
-  const [stdout, stderr, exit] = await Promise.all([
-    collectStreamText(child.stdout),
-    collectStreamText(child.stderr),
-    child.exited,
-  ]);
-  if (timeout.aborted) throw new Error(`--version did not finish within ${versionTimeoutMs} ms`);
-  if (exit.code !== 0) {
+  if (code !== 0) {
     const detail = stderr.trim().slice(-1_024);
     throw new Error(
-      `--version exited with ${exit.signal ?? `code ${exit.code}`}${detail ? `: ${detail}` : ""}`,
+      `--version exited with ${signal ?? `code ${code}`}${detail ? `: ${detail}` : ""}`,
     );
   }
   return stdout;

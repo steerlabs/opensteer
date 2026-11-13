@@ -1,10 +1,10 @@
-import { execFile } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { OpensteerError } from "@opensteer/core";
+import { runSupervisedCommand } from "@opensteer/harness";
+import { selectEnvironment } from "@opensteer/shared/userEnvironment";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import type { CodexLaunch } from "./codex-driver.js";
 import type { CodexStdioClient } from "./process.js";
@@ -144,15 +144,21 @@ function executableIdentity(executable: string): string {
 async function readConfigurableFeatures(launch: CodexLaunch): Promise<readonly string[]> {
   const home = await mkdtemp(join(tmpdir(), "opensteer-codex-features-"));
   try {
-    const { stdout } = await promisify(execFile)(
-      launch.executable,
-      [...launch.arguments, "features", "list"],
-      {
-        env: { CODEX_HOME: home, HOME: home, PATH: process.env.PATH ?? "" },
-        maxBuffer: 1024 * 1024,
-        timeout: featureListTimeoutMs,
+    const { code, signal, stderr, stdout } = await runSupervisedCommand({
+      args: [...launch.arguments, "features", "list"],
+      cwd: home,
+      environment: {
+        ...selectEnvironment(process.env, ["PATH"], process.platform),
+        CODEX_HOME: home,
+        HOME: home,
       },
-    );
+      executable: launch.executable,
+      timeoutMs: featureListTimeoutMs,
+    });
+    if (code !== 0)
+      throw new Error(
+        `features list exited with ${signal ?? `code ${code}`}: ${stderr.trim().slice(-1_024)}`,
+      );
     return parseFeatureTable(stdout);
   } catch (error) {
     if (error instanceof OpensteerError) throw error;
