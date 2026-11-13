@@ -34,12 +34,24 @@ export interface TeamRequestStorePort {
       readonly steps: readonly z.infer<typeof TeamStatusStepSchema>[];
     },
   ): Promise<void>;
+  post(
+    linkId: TeamLinkId,
+    input: {
+      readonly channelId: import("@opensteer/core").TeamChannelId;
+      readonly threadRootId?: TeamMessageId | undefined;
+      readonly clientMessageId: string;
+      readonly bodyMarkdown: string;
+      readonly attachmentIds: readonly TeamBlobId[];
+      readonly requestId?: TeamAgentRequestId | undefined;
+      readonly publication?: boolean | undefined;
+    },
+  ): Promise<TeamMessageId>;
   reply(
     linkId: TeamLinkId,
     requestId: TeamAgentRequestId,
     input: { readonly bodyMarkdown: string; readonly attachmentIds: readonly TeamBlobId[] },
   ): Promise<TeamMessageId>;
-  /** A completed request permits receipt retrieval only, never new content authority. */
+  /** A reply claim is readable while its request is still running. */
   receipt(linkId: TeamLinkId, requestId: TeamAgentRequestId): Promise<TeamMessageId | null>;
   cancel(linkId: TeamLinkId, requestId: TeamAgentRequestId): Promise<void>;
 }

@@ -12465,6 +12465,9 @@
               "type": "string",
               "const": "post"
             },
+            "publication": {
+              "type": "boolean"
+            },
             "clientMessageId": {
               "type": "string",
               "format": "uuid",

@@ -16,7 +16,7 @@ export async function auditTeamMachineCall(
 ): Promise<void> {
   const link = await database
     .selectFrom("teamLinks")
-    .select("ownerUserId")
+    .select(["ownerUserId", "personalDeploymentId"])
     .where("id", "=", input.linkId)
     .executeTakeFirstOrThrow();
   const request = input.requestId
@@ -44,11 +44,11 @@ export async function auditTeamMachineCall(
       linkId: input.linkId,
       agentRequestId: request?.id ?? null,
       action: input.action,
-      resourceKind: "request",
-      resourceId: request?.id ?? null,
+      resourceKind: request ? "request" : channel ? "channel" : "team",
+      resourceId: request?.id ?? channel?.id ?? null,
       channelId: channel?.id ?? null,
       outcome: input.outcome,
-      metadata: {},
+      metadata: { personalDeploymentId: link.personalDeploymentId },
       occurredAt: new Date().toISOString(),
     })
     .execute();

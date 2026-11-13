@@ -164,6 +164,7 @@ export const TeamLinkClientFrameSchema = z.discriminatedUnion("type", [
     ...optionalRequest,
     ...attribution,
     type: z.literal("post"),
+    publication: z.boolean().optional(),
     clientMessageId: z.uuid(),
     channelId: TeamChannelIdSchema,
     threadRootId: TeamMessageIdSchema.optional(),

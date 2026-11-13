@@ -5,7 +5,7 @@ import {
   type TeamLinkId,
   type TeamMessageId,
 } from "@opensteer/core";
-import { TeamMarkdownSchema, TeamRequestContextSchema } from "@opensteer/protocol";
+import { TeamRequestContextSchema } from "@opensteer/protocol";
 import { sql, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import type { TeamRequestStorePort } from "./team-requests-port.js";
@@ -28,7 +28,6 @@ export class TeamRequestsStore implements TeamRequestStorePort {
     transaction: Transaction<DatabaseSchema>,
     linkId: TeamLinkId,
     id: TeamAgentRequestId,
-    receipt = false,
     queued = false,
   ) {
     const row = await transaction
@@ -42,10 +41,6 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       .where("m.state", "=", "active")
       .executeTakeFirst();
     requireTeam(row, "Request unavailable");
-    if (receipt) {
-      requireTeam(row.state === "done" && row.replyMessageId !== null, "No completed reply");
-      return row;
-    }
     requireTeam(
       (queued && row.state === "queued") || row.state === "working" || row.state === "needs_you",
       "Request is terminal or has not been accepted",
@@ -90,7 +85,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         .where("state", "=", "active")
         .executeTakeFirst();
       requireTeam(link);
-      await this.access.member(t, link.ownerUserId);
+      await this.access.link(t, { kind: "agent", userId: link.ownerUserId }, linkId);
       const rows = await t
         .selectFrom("teamAgentRequests")
         .select("id")
@@ -102,7 +97,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         .execute();
       const requests = [];
       for (const { id } of rows) {
-        const row = await this.#record(t, linkId, id, false, true);
+        const row = await this.#record(t, linkId, id, true);
         const triggerRow = await t
           .selectFrom("teamMessages")
           .selectAll()
@@ -129,7 +124,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       revision,
       () =>
         this.access.database.transaction().execute(async (t) => {
-          for (const { request } of result) await this.#record(t, linkId, request.id, false, true);
+          for (const { request } of result) await this.#record(t, linkId, request.id, true);
           return true;
         }),
       () => result,
@@ -145,7 +140,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       { kind: "agent", userId: observed.ownerUserId },
       observed.channelId,
       async (t) => {
-        const row = await this.#record(t, linkId, id, false, true);
+        const row = await this.#record(t, linkId, id, true);
         if (row.acceptedAt) return teamRequestView(row);
         await lockTeamMessages(t, [row.threadRootId]);
         const { changeSeq } = await bumpTeamChannel(t, row.channelId);
@@ -174,24 +169,30 @@ export class TeamRequestsStore implements TeamRequestStorePort {
   async context(linkId: TeamLinkId, id: TeamAgentRequestId) {
     const request = await this.authorize(linkId, id, "read");
     const actor = { kind: "agent" as const, userId: request.ownerUserId };
-    return this.chat.read(actor, "context", request.channelId, async (t) => {
-      await this.#record(t, linkId, id);
-      const channel = await this.chat.channelView(t, actor, request.channelId);
-      const source = await this.chat.source(
-        t,
-        actor,
-        request.channelId,
-        request.threadRootId,
-        request.triggerMessageId,
-      );
-      return TeamRequestContextSchema.parse({
-        request,
-        instructionsMarkdown: channel.instructionsMarkdown,
-        instructionsRevision: channel.instructionsRevision,
-        source,
-        audience: source.audience,
-      });
-    });
+    return this.chat.read(
+      actor,
+      "context",
+      request.channelId,
+      async (t) => {
+        await this.#record(t, linkId, id);
+        const channel = await this.chat.channelView(t, actor, request.channelId);
+        const source = await this.chat.source(
+          t,
+          actor,
+          request.channelId,
+          request.threadRootId,
+          request.triggerMessageId,
+        );
+        return TeamRequestContextSchema.parse({
+          request,
+          instructionsMarkdown: channel.instructionsMarkdown,
+          instructionsRevision: channel.instructionsRevision,
+          source,
+          audience: source.audience,
+        });
+      },
+      linkId,
+    );
   }
   async status(
     linkId: TeamLinkId,
@@ -229,7 +230,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
           );
           return;
         }
-        const row = await this.#record(t, linkId, id, false, input.state === "cancelled");
+        const row = await this.#record(t, linkId, id, input.state === "cancelled");
         await lockTeamMessages(t, [row.threadRootId]);
         const { changeSeq } = await bumpTeamChannel(t, row.channelId);
         const terminal = ["failed", "stopped", "cancelled"].includes(input.state);
@@ -266,60 +267,115 @@ export class TeamRequestsStore implements TeamRequestStorePort {
     if (["failed", "stopped", "cancelled"].includes(input.state))
       await this.chat.requestChanged({ kind: "cancelled", linkId, requestId: id });
   }
+  async post(linkId: TeamLinkId, input: Parameters<TeamRequestStorePort["post"]>[1]) {
+    requireTeam(!input.publication || input.requestId, "Publication requires a request");
+    const link = await this.access.database
+      .selectFrom("teamLinks")
+      .selectAll()
+      .where("id", "=", linkId)
+      .executeTakeFirstOrThrow();
+    const actor = { kind: "agent" as const, userId: link.ownerUserId };
+    const result = await this.access.contentWrite(actor, input.channelId, async (t, authority) => {
+      await this.access.link(t, actor, linkId);
+      requireTeam(authority.post);
+      const request = input.requestId
+        ? await t
+            .selectFrom("teamAgentRequests")
+            .selectAll()
+            .where("id", "=", input.requestId)
+            .where("linkId", "=", linkId)
+            .where("ownerUserId", "=", actor.userId)
+            .executeTakeFirst()
+        : undefined;
+      if (input.requestId) {
+        requireTeam(
+          request &&
+            request.channelId === input.channelId &&
+            request.threadRootId === input.threadRootId,
+          "Reply destination does not match request",
+        );
+        if (input.publication && request.replyMessageId) {
+          if (request.state === "working" || request.state === "needs_you") {
+            await lockTeamMessages(t, [request.threadRootId]);
+            const { changeSeq } = await bumpTeamChannel(t, request.channelId);
+            await t
+              .updateTable("teamAgentRequests")
+              .set({ state: "done", finishedAt: new Date(), changeSeq })
+              .where("id", "=", request.id)
+              .execute();
+            await t
+              .updateTable("teamMessages")
+              .set({ changeSeq })
+              .where("id", "=", request.threadRootId)
+              .execute();
+          }
+          return request.replyMessageId;
+        }
+        if (!request.replyMessageId) await this.#record(t, linkId, request.id);
+      }
+      const existing = await t
+        .selectFrom("teamMessages")
+        .selectAll()
+        .where("channelId", "=", input.channelId)
+        .where("authorUserId", "=", actor.userId)
+        .where("authorKind", "=", "agent")
+        .where("clientMessageId", "=", input.clientMessageId)
+        .executeTakeFirst();
+      if (existing) {
+        requireTeam(
+          existing.threadRootId === (input.threadRootId ?? null) &&
+            (existing.agentRequestId === null ||
+              existing.agentRequestId === (input.requestId ?? null)),
+          "Post identity names another destination",
+        );
+        return existing.id;
+      }
+      const sent = await this.chat.insert(t, actor, {
+        channelId: input.channelId,
+        threadRootId: input.threadRootId ?? null,
+        clientMessageId: input.clientMessageId,
+        bodyMarkdown: input.bodyMarkdown,
+        attachmentIds: input.attachmentIds,
+        mentions: [],
+        linkId,
+        ...(request && request.replyMessageId === null ? { agentRequestId: request.id } : {}),
+      });
+      if (request && request.replyMessageId === null) {
+        await t
+          .updateTable("teamAgentRequests")
+          .set({
+            replyMessageId: sent.message.id,
+            changeSeq: sent.message.changeSeq,
+            ...(input.publication ? { state: "done" as const, finishedAt: new Date() } : {}),
+          })
+          .where("id", "=", request.id)
+          .where("replyMessageId", "is", null)
+          .execute();
+      }
+      return sent.message.id;
+    });
+    this.chat.changed(input.channelId);
+    return result;
+  }
   async reply(
     linkId: TeamLinkId,
     id: TeamAgentRequestId,
     input: Parameters<TeamRequestStorePort["reply"]>[2],
   ) {
-    const receipt = await this.receipt(linkId, id);
-    if (receipt) return receipt;
-    TeamMarkdownSchema.parse(input.bodyMarkdown);
-    requireTeam(input.attachmentIds.length <= 10);
-    const observed = await this.access.database
+    const request = await this.access.database
       .selectFrom("teamAgentRequests")
       .selectAll()
       .where("id", "=", id)
+      .where("linkId", "=", linkId)
       .executeTakeFirstOrThrow();
-    const result = await this.access.contentWrite(
-      { kind: "agent", userId: observed.ownerUserId },
-      observed.channelId,
-      async (t) => {
-        const current = await t
-          .selectFrom("teamAgentRequests")
-          .selectAll()
-          .where("id", "=", id)
-          .executeTakeFirstOrThrow();
-        if (current.state === "done")
-          return (await this.#record(t, linkId, id, true)).replyMessageId!;
-        const row = await this.#record(t, linkId, id);
-        const sent = await this.chat.insert(
-          t,
-          { kind: "agent", userId: row.ownerUserId },
-          {
-            channelId: row.channelId,
-            threadRootId: row.threadRootId,
-            clientMessageId: randomUUID(),
-            bodyMarkdown: input.bodyMarkdown,
-            mentions: [],
-            attachmentIds: input.attachmentIds,
-            agentRequestId: id,
-          },
-        );
-        await t
-          .updateTable("teamAgentRequests")
-          .set({
-            state: "done",
-            replyMessageId: sent.message.id,
-            finishedAt: new Date(),
-            changeSeq: sent.message.changeSeq,
-          })
-          .where("id", "=", id)
-          .execute();
-        return sent.message.id;
-      },
-    );
-    this.chat.changed(observed.channelId);
-    return result;
+    return this.post(linkId, {
+      ...input,
+      requestId: id,
+      channelId: request.channelId,
+      threadRootId: request.threadRootId,
+      clientMessageId: randomUUID(),
+      publication: true,
+    });
   }
   async receipt(linkId: TeamLinkId, id: TeamAgentRequestId): Promise<TeamMessageId | null> {
     const revision = this.access.revision;
@@ -339,13 +395,20 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         .executeTakeFirst();
       requireTeam(link);
       await this.access.member(t, row.ownerUserId);
-      return row.state === "done" ? (await this.#record(t, linkId, id, true)).replyMessageId : null;
+      return row.replyMessageId;
     });
     return this.access.handoff(
       revision,
       () =>
         this.access.database.transaction().execute(async (t) => {
-          await this.#record(t, linkId, id, receipt !== null);
+          const link = await t
+            .selectFrom("teamLinks")
+            .select("ownerUserId")
+            .where("id", "=", linkId)
+            .where("state", "=", "active")
+            .executeTakeFirst();
+          requireTeam(link);
+          await this.access.member(t, link.ownerUserId);
           return true;
         }),
       () => receipt,
