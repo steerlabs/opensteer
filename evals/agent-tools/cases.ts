@@ -64,6 +64,42 @@ const fileRules = z
     }),
   )
   .default([]);
+export const BrowserFixtureSchema = z.strictObject({
+  profiles: z
+    .array(
+      z.looseObject({
+        id: z.string(),
+        name: z.string(),
+        computer: z.string().nullable().optional(),
+      }),
+    )
+    .default([]),
+  tabs: z
+    .array(
+      z.strictObject({
+        tabId: z.string(),
+        title: z.string(),
+        url: z.string(),
+        profile: z.strictObject({ id: z.string(), name: z.string() }).nullable(),
+        computer: z.string().nullable(),
+        state: z.enum(["open", "asleep", "opening"]),
+        usedByThisTask: z.boolean(),
+        usedByOtherTask: z.boolean(),
+        groupId: z.string().nullable(),
+        current: z.boolean().optional(),
+        pageText: z.string().optional(),
+        pageTitle: z.string().optional(),
+      }),
+    )
+    .default([]),
+  offlineComputers: z.array(z.string()).default([]),
+  personActiveTab: z.string().optional(),
+  accessRequiredComputers: z.array(z.string()).default([]),
+});
+const harnessCall = z.strictObject({
+  call: z.string().min(1),
+  args: z.record(z.string(), z.json()).default({}),
+});
 export const CaseSchema = z.strictObject({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/u),
   after: z.string().optional(),
@@ -87,11 +123,14 @@ export const CaseSchema = z.strictObject({
     .array(z.enum(["claude", "codex", "cursor", "opencode", "pi"]))
     .min(1)
     .optional(),
+  browser: BrowserFixtureSchema.optional(),
   fixtures: z.record(fixturePath, z.string()).default({}),
   gitRepository: z.boolean().default(false),
   turns: z.array(z.union([z.string().min(1), structuredTurn])).min(1),
   mocks: z.record(z.string(), z.json()).default({}),
   expect: z.strictObject({
+    harness: z.array(harnessCall).default([]),
+    notHarness: z.array(z.union([z.string(), harnessCall])).default([]),
     files: fileRules,
     /** Snapshot before matching calls, until ordered groups of successful results complete. */
     boundaries: z
