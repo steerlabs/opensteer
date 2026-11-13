@@ -1551,7 +1551,7 @@ const TabRow = memo(function TabRow({
           ) : null}
         </span>
         <span className="side-tab__title">{place.title}</span>
-        {device ? <DeviceLabel className="side-tab__device" device={device} /> : null}
+        {device ? <DeviceLabel className="side-tab__device" device={device} iconOnly /> : null}
       </button>
       <OccupantMarks
         className="side-tab__marks"

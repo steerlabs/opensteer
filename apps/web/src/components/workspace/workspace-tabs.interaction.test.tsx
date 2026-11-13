@@ -420,10 +420,10 @@ describe("tabs that read like a browser's", () => {
     expect(rowKeys()).toEqual(places.map(({ key }) => key));
     expect(document.querySelector(".side-section--tabs .sidebar__empty")).toBeNull();
     expect(filter().getAttribute("aria-label")).toBe("Filter tabs");
-    // One list across devices: a row elsewhere names where it runs. A browser is at no device,
-    // so it is home at the Mac mini that runs the Deployment, whose rows name nothing.
+    // One list across devices: a row elsewhere marks where it runs, named on hover. Home is
+    // the Mac mini that runs the Deployment, whose rows mark nothing.
     const deviceOf = (key: string) =>
-      row(key).querySelector(".side-tab__device .device-label__name")?.textContent ?? null;
+      row(key).querySelector(".side-tab__device")?.getAttribute("title") ?? null;
     const studio = places.filter((place) => place.device?.name === "Studio Mac");
     const phone = places.find((place) => place.kind === "phone")!;
     expect(studio.length).toBeGreaterThan(0);

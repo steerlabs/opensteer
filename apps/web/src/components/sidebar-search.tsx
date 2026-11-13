@@ -577,7 +577,7 @@ function TabResult({
             <Lit ranges={hint.ranges} text={result.fields[hint.field]!.text.source} />
           </span>
         ) : !profileMatch && device ? (
-          <DeviceLabel className="side-tab__device" device={device} />
+          <DeviceLabel className="side-tab__device" device={device} iconOnly />
         ) : null}
       </span>
     </div>

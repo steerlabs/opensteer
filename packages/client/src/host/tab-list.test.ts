@@ -74,7 +74,7 @@ describe("the device each row names", () => {
     expect(sameDevicesElsewhere(before, devicesElsewhere(woke, "mini"))).toBe(false);
   });
 
-  it("is home, for a reader at no device, at the computer that runs the Deployment", () => {
+  it("is home at the computer that runs the Deployment, wherever the reader is", () => {
     const main = {
       ...machine("mini", "Mac mini"),
       ownership: "deployment",
@@ -86,7 +86,9 @@ describe("the device each row names", () => {
       machines: [main, ...machines.slice(1)],
     };
     expect(tabListHomeId(snapshot, null)).toBe("mini");
-    expect(tabListHomeId(snapshot, "studio")).toBe("studio");
+    // Read from another Mac, its rows are the ones named, so one list reads the same everywhere.
+    expect(tabListHomeId(snapshot, "studio")).toBe("mini");
+    expect(tabListHomeId({ ...snapshot, machines: machines.slice(1) }, "studio")).toBe("studio");
     expect(tabListHomeId({ ...snapshot, machines: [] }, null)).toBeNull();
     const home = tabListHomeId(snapshot, null);
     expect([

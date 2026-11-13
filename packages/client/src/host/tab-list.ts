@@ -138,16 +138,15 @@ export function tabFilterEmptyWords(filter: TabFilter, deviceName: string | null
 }
 
 /**
- * The device the reader's rows never name: the one they are at, or, at none
- * (a browser, or a phone that is not one of the devices), the computer that
- * runs the Deployment, where most of its tabs live.
+ * The device rows never name: the computer that runs the Deployment, where
+ * most tabs live, so the list marks the same rows from every device. With no
+ * such computer, the one the reader is at.
  */
 export function tabListHomeId(
   snapshot: Pick<HostSnapshot, "can" | "deploymentShape" | "machines">,
   hereId: string | null,
 ): string | null {
-  if (hereId !== null) return hereId;
-  return snapshot.machines.find((machine) => hostsDeployment(machine))?.id ?? null;
+  return snapshot.machines.find((machine) => hostsDeployment(machine))?.id ?? hereId;
 }
 
 /**
