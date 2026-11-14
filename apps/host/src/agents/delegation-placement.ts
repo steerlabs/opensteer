@@ -83,7 +83,7 @@ export async function delegationPlacement(
       throw badRequest("Choose an engine and model for independent work");
     const harness = await store.getHarnessInstance(request.harnessInstanceId);
     if (!harness?.enabled || harness.environmentId !== environment.id)
-      throw badRequest("Selected harness is disabled or unavailable");
+      throw badRequest("Selected AI account is disabled or unavailable");
     const wanted: Wanted = { selection: request.model, unlisted: "refuse" };
     const catalog = await store.getHarnessCatalog(environment.id, harness.id);
     const match =
@@ -102,7 +102,7 @@ export async function delegationPlacement(
     return { harnessInstanceId: parent.harnessInstanceId, modelSelection: parent.modelSelection };
   }
   const parentHarness = await store.getHarnessInstance(parent.harnessInstanceId);
-  if (!parentHarness) throw badRequest("This Thread's AI engine no longer exists");
+  if (!parentHarness) throw badRequest("This task's AI account no longer exists");
   // A named model is admitted as the caller wrote it. The delegating Thread's
   // own selection may carry options its engine has since stopped listing.
   const wanted: Wanted = request.model
@@ -152,7 +152,7 @@ export async function delegationPlacement(
   ) {
     const choices = inspected.map(({ harness }) => `${harness.name} (${harness.id})`).join(", ");
     throw badRequest(
-      `Choose the model server account on ${environment.name} explicitly with harnessInstanceId: ${choices}.`,
+      `Choose the model server account on ${environment.name} explicitly with aiAccountId: ${choices}.`,
     );
   }
   const preferred =
@@ -163,7 +163,7 @@ export async function delegationPlacement(
   if (eligible.length > 1) {
     const choices = eligible.map(({ harness }) => `${harness.name} (${harness.id})`).join(", ");
     throw badRequest(
-      `${environment.name} has multiple ${parentHarness.driverKind} AI engines that offer ${modelName(wanted)}: ${choices}. Retry with harnessInstanceId.`,
+      `${environment.name} has multiple ${parentHarness.driverKind} AI accounts that offer ${modelName(wanted)}: ${choices}. Retry with aiAccountId.`,
     );
   }
   if (inspected.length === 1) {
@@ -174,7 +174,7 @@ export async function delegationPlacement(
     .map(({ catalog, harness }) => `${harness.name}: ${catalogDescription(catalog, wanted)}`)
     .join("; ");
   throw badRequest(
-    `${environment.name} has no ready ${parentHarness.driverKind} AI engine that offers ${modelName(wanted)}; it offers ${offered}`,
+    `${environment.name} has no ready ${parentHarness.driverKind} AI account that offers ${modelName(wanted)}; it offers ${offered}`,
   );
 }
 

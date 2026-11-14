@@ -137,7 +137,7 @@ export class TriggerService {
     if (!detail)
       throw new OpensteerError({
         code: "not_found",
-        message: "Trigger not found",
+        message: "Automation not found",
       });
     return detail;
   }
@@ -359,7 +359,7 @@ export class TriggerService {
     if (!anchor)
       throw new OpensteerError({
         code: "not_found",
-        message: "Anchor Thread not found",
+        message: "Task not found",
       });
     const reason = await triggerProgramCompatibilityReason(
       this.#runnerStore,

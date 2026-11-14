@@ -9,7 +9,7 @@ export const opensteer_app_publish = defineAgentTool({
   name: "opensteer_app_publish",
   title: "Publish an app",
   description:
-    "Publish an HTML file or server app from the agent home folder. Server apps require full access and listen on the assigned local port. Use opensteer_app_list to find published apps.",
+    "Show a self-contained UTF-8 HTML file, or a server app folder with start, from the agent home folder inline and full-screen. Read opensteer:tasks references/apps.md first. A server app requires full access, listens on 127.0.0.1 at process.env.PORT and uses relative URLs. Publish again with the returned appId to update its cards; publishing HTML there stops its server. Do not repeat the app in prose.",
   input: AppPublishInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: AppPublishOutputSchema,
   access: "write",
@@ -31,7 +31,7 @@ export const opensteer_app_call = defineAgentTool({
   name: "opensteer_app_call",
   title: "Call an app",
   description:
-    "Call a server app by appId and a relative path. This requires a full-access Run and may change data.",
+    "Call a server app by appId and a relative path starting with /. This requires a full-access Run and may change data. Responses come back within 30 seconds and 256 KiB, non-2xx statuses included. The app's README documents its API.",
   input: AppFetchInputSchema,
   output: AppFetchOutputSchema,
   access: "write",

@@ -8,7 +8,7 @@ export function write(caller: AgentCaller, targets: readonly Thread[]): void {
   read(caller, targets);
   for (const target of targets) {
     if (!threadAccessModeAtMost(target.accessMode, caller.accessMode))
-      throw forbidden("Target Thread has a stronger access mode than this caller");
+      throw forbidden("Target task has a stronger access mode than this caller");
   }
 }
 export function settings(caller: AgentCaller, targets: readonly Thread[]): void {

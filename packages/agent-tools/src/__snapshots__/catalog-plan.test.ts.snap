@@ -1429,29 +1429,34 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "additionalProperties": false,
       "properties": {
         "cursor": {
+          "description": "nextCursor from the previous page; keep view and query.",
           "maxLength": 2048,
           "minLength": 1,
           "type": "string",
         },
         "itemId": {
+          "description": "Read this one item.",
           "maxLength": 255,
           "minLength": 1,
           "type": "string",
         },
         "limit": {
           "default": 20,
+          "description": "Max items.",
           "maximum": 100,
           "minimum": 1,
           "type": "integer",
         },
         "maxCharsPerItem": {
           "default": 20000,
+          "description": "Max characters per item.",
           "maximum": 50000,
           "minimum": 1,
           "type": "integer",
         },
         "runLimit": {
           "default": 10,
+          "description": "Max recent Runs.",
           "maximum": 50,
           "minimum": 1,
           "type": "integer",
@@ -1461,6 +1466,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "type": "string",
         },
         "textOffset": {
+          "description": "nextTextOffset of a cut-off item, with its itemId.",
           "maximum": 9007199254740991,
           "minimum": 0,
           "type": "integer",
@@ -1534,38 +1540,45 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "additionalProperties": false,
       "properties": {
         "aroundMessageId": {
+          "description": "Messages around this one; excludes query and cursor.",
           "pattern": "^msg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
         "cursor": {
+          "description": "nextCursor from the previous page; keep view and query.",
           "maxLength": 2048,
           "minLength": 1,
           "type": "string",
         },
         "itemId": {
+          "description": "Read this one item.",
           "maxLength": 255,
           "minLength": 1,
           "type": "string",
         },
         "limit": {
           "default": 20,
+          "description": "Max items.",
           "maximum": 100,
           "minimum": 1,
           "type": "integer",
         },
         "maxCharsPerItem": {
           "default": 20000,
+          "description": "Max characters per item.",
           "maximum": 50000,
           "minimum": 1,
           "type": "integer",
         },
         "query": {
+          "description": "Search message text.",
           "maxLength": 256,
           "minLength": 1,
           "type": "string",
         },
         "runLimit": {
           "default": 10,
+          "description": "Max recent Runs.",
           "maximum": 50,
           "minimum": 1,
           "type": "integer",
@@ -1575,6 +1588,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "type": "string",
         },
         "textOffset": {
+          "description": "nextTextOffset of a cut-off item, with its itemId.",
           "maximum": 9007199254740991,
           "minimum": 0,
           "type": "integer",
@@ -2141,6 +2155,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "additionalProperties": false,
       "properties": {
         "afterMessageId": {
+          "description": "Return published messages after this ID; omit to wait for the Run to settle.",
           "pattern": "^msg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
@@ -2387,7 +2402,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
         },
         "source": {
           "additionalProperties": false,
-          "description": "Trigger source. kind "schedule" requires exactly one of at (a one-shot UTC ISO-8601 instant) or cron (a recurring expression), and cron additionally requires timezone as an IANA name; payload is the constant event payload each occurrence receives. kind "webhook" and kind "watch" accept none of at, cron, timezone, or payload.",
+          "description": "Automation source. kind "schedule" requires exactly one of at (a one-shot UTC ISO-8601 instant) or cron (a recurring expression), and cron additionally requires timezone as an IANA name; payload is the constant event payload each occurrence receives. kind "webhook" and kind "watch" accept none of at, cron, timezone, or payload.",
           "properties": {
             "at": {
               "format": "date-time",
@@ -2557,7 +2572,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
         },
         "source": {
           "additionalProperties": false,
-          "description": "Trigger source. kind "schedule" requires exactly one of at (a one-shot UTC ISO-8601 instant) or cron (a recurring expression), and cron additionally requires timezone as an IANA name; payload is the constant event payload each occurrence receives. kind "webhook" and kind "watch" accept none of at, cron, timezone, or payload.",
+          "description": "Automation source. kind "schedule" requires exactly one of at (a one-shot UTC ISO-8601 instant) or cron (a recurring expression), and cron additionally requires timezone as an IANA name; payload is the constant event payload each occurrence receives. kind "webhook" and kind "watch" accept none of at, cron, timezone, or payload.",
           "properties": {
             "at": {
               "format": "date-time",

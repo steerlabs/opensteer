@@ -134,7 +134,7 @@ export function computerAppDiscovery(facts: ComputerAppDiscoveryFacts): {
     return {
       status,
       inUse: true,
-      nextAction: `This app is already being used by another task.${title ? ` (Thread: ${title})` : ""} ${computerUseBusyNextStep}`,
+      nextAction: `This app is already being used by another task.${title ? ` (Task: ${title})` : ""} ${computerUseBusyNextStep}`,
     };
   }
   if (facts.callable)
@@ -199,7 +199,7 @@ export function phoneDiscovery(facts: PhoneDiscoveryFacts): {
     return {
       approval,
       inUse,
-      nextAction: `${facts.phone.name} is already being used by another task.${title ? ` (Thread: ${title})` : ""} ${computerUseBusyNextStep}`,
+      nextAction: `${facts.phone.name} is already being used by another task.${title ? ` (Task: ${title})` : ""} ${computerUseBusyNextStep}`,
     };
   }
   if (facts.callable)

@@ -6,7 +6,8 @@ import { RequestListOutputSchema, RequestWithdrawOutputSchema } from "./outputs.
 export const opensteer_request_list = defineAgentTool({
   name: "opensteer_request_list",
   title: "List Requests",
-  description: "List visible Requests. A pending Request is not permission.",
+  description:
+    "List Requests from tasks and background jobs, newest first. A pending Request is not permission.",
   input: z.strictObject({
     cursor: CursorSchema.optional(),
     limit: z.number().int().min(1).max(100).default(50),
@@ -18,7 +19,8 @@ export const opensteer_request_list = defineAgentTool({
 export const opensteer_request_read = defineAgentTool({
   name: "opensteer_request_read",
   title: "Read a Request",
-  description: "Read a Request and its revision before answering an ordinary question.",
+  description:
+    "Read one Request's status, its ordinary question details and its revision before answering it.",
   input: z.strictObject({ requestId: RequestIdSchema }),
   output: RequestWithdrawOutputSchema,
   access: "read",
@@ -28,7 +30,7 @@ export const opensteer_request_answer = defineAgentTool({
   name: "opensteer_request_answer",
   title: "Answer a Request",
   description:
-    "Answer an ordinary question using the revision you read. Permission approvals require the person.",
+    "Answer an ordinary question with its response shape and the expectedRevision you read; this needs write access to the task that asked. It never approves a permission Request; approvals are the person's.",
   input: z.strictObject({
     requestId: RequestIdSchema,
     response: RequestResponseSchema,
@@ -41,7 +43,8 @@ export const opensteer_request_answer = defineAgentTool({
 export const opensteer_request_withdraw = defineAgentTool({
   name: "opensteer_request_withdraw",
   title: "Withdraw a Request",
-  description: "Withdraw a pending Request this task originated.",
+  description:
+    "Withdraw a pending Request this task originated and no longer needs. Finished Requests and Requests from other tasks are refused.",
   input: z.strictObject({ requestId: RequestIdSchema }),
   output: RequestWithdrawOutputSchema,
   access: "write",

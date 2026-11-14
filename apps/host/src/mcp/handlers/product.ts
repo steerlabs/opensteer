@@ -1077,7 +1077,7 @@ export class ProductToolHandlers {
     if (existingThread) {
       assertMutableTarget(caller, existingThread);
       if (existingThread.purpose !== "task" || existingThread.id === currentThread.id) {
-        throw badRequest("Choose another work task for the assignment");
+        throw badRequest("Choose another task for this delegation");
       }
     }
     const environmentId = await this.#execution.environmentFor(claims.requestedBy);
@@ -1351,16 +1351,16 @@ export class ProductToolHandlers {
           });
         }
         if (!this.#isEnvironmentConnected(environment.id))
-          throw conflict("Selected execution environment is not connected", true);
+          throw conflict("Selected computer is not connected", true);
         const harness = await this.#store.getHarnessInstance(delegateInput.harnessInstanceId);
         if (!harness?.enabled)
-          throw badRequest("Selected harness is disabled or unavailable", chooseExecutionNext);
+          throw badRequest("Selected AI account is disabled or unavailable", chooseExecutionNext);
         if (
           this.#isEnvironmentConnected(environment.id) &&
           !this.#canRunHarness(environment.id, harness.driverKind)
         ) {
           throw badRequest(
-            `Selected execution environment cannot run harness driver ${harness.driverKind}`,
+            `Selected computer cannot run ${harness.driverKind} AI accounts`,
           );
         }
         const delegated = await this.#commands.delegateAdmittedThread({

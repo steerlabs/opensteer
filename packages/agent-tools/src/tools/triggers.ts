@@ -17,7 +17,8 @@ import { TriggerOutputSchema, TriggerWriteOutputSchema } from "./outputs.js";
 export const opensteer_automation_list = defineAgentTool({
   name: "opensteer_automation_list",
   title: "List automations",
-  description: "List reachable schedule, reminder, cron, webhook and watch automations.",
+  description:
+    "List reachable schedule, reminder, cron, webhook and watch automations. Seeing one is not authority to change it.",
   input: z.strictObject({
     systemRole: TriggerSystemRoleSchema.optional(),
     limit: z.number().int().min(1).max(100).default(50),
@@ -29,7 +30,8 @@ export const opensteer_automation_list = defineAgentTool({
 export const opensteer_automation_read = defineAgentTool({
   name: "opensteer_automation_read",
   title: "Read an automation",
-  description: "Read an automation's current revision and recent occurrences.",
+  description:
+    "Read an automation's current revision and recent occurrences. Seeing one is not authority to change it.",
   input: z.strictObject({
     automationId: TriggerIdSchema,
     occurrenceLimit: z.number().int().min(1).max(100).default(25),
@@ -42,7 +44,7 @@ export const opensteer_automation_create = defineAgentTool({
   name: "opensteer_automation_create",
   title: "Create an automation",
   description:
-    "Create a schedule, reminder, cron, webhook or watch on a task. Programs require full access and tool contract version 4.",
+    "Create a schedule, reminder, cron, webhook or watch on a task; this requires full access and a program with tool contract version 4. Connections must name taskId. ownTask: true runs it in a new task linked under that task and kept off the task list: it keeps running after that task is Done, its failures and Requests reach that task, and nothing returns automatically.",
   targetFields: ["taskId"],
   input: z.strictObject({
     taskId: ThreadIdSchema.optional(),
@@ -59,7 +61,8 @@ export const opensteer_automation_create = defineAgentTool({
 export const opensteer_automation_update = defineAgentTool({
   name: "opensteer_automation_update",
   title: "Update an automation",
-  description: "Change an automation name, program or source using the revision you read.",
+  description:
+    "Change an automation's name, program or source with the expectedRevisionId you read; program changes require full access. Opensteer's memory passes refuse name and program changes and sources other than cron.",
   input: z
     .strictObject({
       automationId: TriggerIdSchema,
@@ -80,7 +83,7 @@ export const opensteer_automation_control = defineAgentTool({
   name: "opensteer_automation_control",
   title: "Control an automation",
   description:
-    "Pause, resume, archive, reschedule, run now or cancel pending occurrences. Started work keeps running.",
+    "Pause, resume, archive, reschedule, run now or cancel pending occurrences. These timing controls need the automation's task access mode to be no higher than yours; run_now and archive also require full access. reschedule moves the next unclaimed cron run to a future nextFireAt, then the cadence resumes. run_now works on a non-archived schedule or webhook and has real effects. cancel_pending without occurrenceId cancels every pending occurrence. Started work keeps running. Opensteer's memory passes refuse archive and run_now.",
   input: z
     .strictObject({
       automationId: TriggerIdSchema,

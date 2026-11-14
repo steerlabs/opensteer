@@ -120,7 +120,7 @@ export function delegationOrigin(caller: AgentCaller, observationId: string) {
   if (caller.kind === "connection")
     throw new OpensteerError({
       code: "forbidden",
-      message: "Delegation requires an anchor Thread",
+      message: "Delegation requires a task",
     });
   const p = caller.program;
   return p.kind === "trigger"

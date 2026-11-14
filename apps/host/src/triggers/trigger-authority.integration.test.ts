@@ -2922,7 +2922,7 @@ async function denied(
       if (!(caught instanceof OpensteerError)) throw new Error("Expected an Opensteer error");
       expect(caught.code).toBe(code);
       expect(caught.message.trim().length).toBeGreaterThan(0);
-      if (code === "not_found") expect(caught.message).toBe("Trigger not found");
+      if (code === "not_found") expect(caught.message).toBe("Automation not found");
       return {
         code: caught.code,
         message: caught.message,

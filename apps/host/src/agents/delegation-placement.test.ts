@@ -39,7 +39,7 @@ describe("delegationPlacement on another machine", () => {
       ),
     ).rejects.toMatchObject({
       code: "bad_request",
-      message: expect.stringContaining("harnessInstanceId"),
+      message: expect.stringContaining("aiAccountId"),
     });
     await expect(
       place(

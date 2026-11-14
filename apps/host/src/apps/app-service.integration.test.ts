@@ -399,7 +399,7 @@ describeStore("published app HTML", (it) => {
       });
       expect(first).toMatchObject({
         version: 1,
-        message: expect.stringContaining("shown inline in this Thread"),
+        message: expect.stringContaining("shown inline in this task"),
       });
       expect(files.download).toHaveBeenCalledWith("opaque_html_key", expect.any(AbortSignal));
       expect(events).toHaveLength(1);

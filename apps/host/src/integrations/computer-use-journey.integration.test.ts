@@ -2311,7 +2311,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     });
     expect(await b.call("computer_use", { code: 'await (await app("Notes")).window()' })).toEqual(
       refusal(
-        `busy: This app is already being used by another task. (Thread: Shopping list) ${computerUseBusyNextStep}`,
+        `busy: This app is already being used by another task. (Task: Shopping list) ${computerUseBusyNextStep}`,
       ),
     );
 
@@ -3304,7 +3304,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const refused = await phoneCode(gatewayB, "await p.observe()");
     expect(refused).toEqual(
       refusal(
-        `busy: ${phone} is already being used by another task. (Thread: First display holder) ${computerUseBusyNextStep}`,
+        `busy: ${phone} is already being used by another task. (Task: First display holder) ${computerUseBusyNextStep}`,
       ),
     );
     expect(fakePhone.received("observe")).toBe(1);
@@ -3540,7 +3540,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const framesBefore = fakePhone.frames.length;
     expect(await phoneCode(b, "await p.observe()")).toEqual(
       refusal(
-        `busy: ${phone} is already being used by another task. (Thread: Text the driver) ${computerUseBusyNextStep}`,
+        `busy: ${phone} is already being used by another task. (Task: Text the driver) ${computerUseBusyNextStep}`,
       ),
     );
     expect(fakePhone.frames).toHaveLength(framesBefore);

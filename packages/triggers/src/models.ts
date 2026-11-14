@@ -332,7 +332,7 @@ export const TriggerSourceInputSchema = z
     timezone: z.string().trim().min(1).max(255).optional(),
   })
   .describe(
-    'Trigger source. kind "schedule" requires exactly one of at (a one-shot UTC ISO-8601 instant) or cron (a recurring expression), and cron additionally requires timezone as an IANA name; payload is the constant event payload each occurrence receives. kind "webhook" and kind "watch" accept none of at, cron, timezone, or payload.',
+    'Automation source. kind "schedule" requires exactly one of at (a one-shot UTC ISO-8601 instant) or cron (a recurring expression), and cron additionally requires timezone as an IANA name; payload is the constant event payload each occurrence receives. kind "webhook" and kind "watch" accept none of at, cron, timezone, or payload.',
   );
 export type TriggerSourceInput = z.infer<typeof TriggerSourceInputSchema>;
 

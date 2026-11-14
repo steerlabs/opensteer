@@ -166,7 +166,7 @@ export async function assertActiveTriggerExecutionBinding(
   if (!row || !(await triggerExecutionAuthorityAvailable(database, row))) {
     throw new OpensteerError({
       code: "forbidden",
-      message: "Trigger execution is no longer active",
+      message: "Automation execution is no longer active",
     });
   }
 }
@@ -375,7 +375,7 @@ async function createOwnTask(
     .select(["accessMode", "environmentId", "harnessInstanceId", "modelSelection", "specialistId"])
     .where("id", "=", input.anchorThreadId)
     .executeTakeFirst();
-  if (!parent) throw notFound("Anchor Thread not found");
+  if (!parent) throw notFound("Task not found");
   // Refuse before creating anything; the locked checks below decide.
   await assertOwnTaskParent(transaction, input, false);
   await assertDelegationDepth(transaction, input.anchorThreadId);
@@ -467,7 +467,7 @@ export class TriggerStore {
     if (input.name === undefined && input.program === undefined && input.source === undefined) {
       throw new OpensteerError({
         code: "bad_request",
-        message: "Trigger update requires at least one of name, program, or source",
+        message: "Automation update requires at least one of name, program, or source",
       });
     }
     return withPersonalTransaction(this.#database, async (transaction) => {
@@ -489,9 +489,9 @@ export class TriggerStore {
         throw conflict(MANAGED_MEMORY_REFUSAL);
       }
       if (trigger.status === "archived" && !systemProgram)
-        throw conflict("Archived Triggers cannot be changed");
+        throw conflict("Archived automations cannot be changed");
       if (trigger.currentRevisionId !== input.expectedRevisionId) {
-        throw conflict("Trigger revision changed; read it again before updating");
+        throw conflict("Automation revision changed; read it again before updating");
       }
       const current = await transaction
         .selectFrom("triggerRevisions")
@@ -502,7 +502,7 @@ export class TriggerStore {
       if (source.kind !== trigger.kind) {
         throw new OpensteerError({
           code: "bad_request",
-          message: "A Trigger cannot change between schedule, webhook, and watch ingress",
+          message: "An automation cannot change between schedule, webhook, and watch sources",
         });
       }
       validateSource(source);
@@ -602,7 +602,7 @@ export class TriggerStore {
       // its reason and an active one keeps its failure count.
       if (trigger.status === input.status) return triggerFromRow(trigger);
       if (trigger.status === "archived") {
-        throw conflict("Archived Triggers cannot be reactivated");
+        throw conflict("Archived automations cannot be reactivated");
       }
       if (input.status === "paused") {
         return triggerFromRow(await pauseTriggerInTransaction(transaction, trigger));
@@ -683,7 +683,7 @@ export class TriggerStore {
         });
       }
       if (trigger.status !== "active" || trigger.kind !== "schedule") {
-        throw conflict("Only active cron schedule Triggers can reschedule their next run");
+        throw conflict("Only active cron schedule automations can reschedule their next run");
       }
       const revision = await transaction
         .selectFrom("triggerRevisions")
@@ -692,7 +692,7 @@ export class TriggerStore {
         .executeTakeFirstOrThrow();
       const source = TriggerSourceSchema.parse(revision.source);
       if (source.kind !== "schedule" || source.schedule.kind !== "cron") {
-        throw conflict("Only active cron schedule Triggers can reschedule their next run");
+        throw conflict("Only active cron schedule automations can reschedule their next run");
       }
       const updated = await transaction
         .updateTable("triggers")
@@ -1254,7 +1254,7 @@ export class TriggerStore {
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (!trigger) throw notFound();
-      if (trigger.status !== "active") throw conflict("Webhook Trigger is not active");
+      if (trigger.status !== "active") throw conflict("Webhook automation is not active");
       await requireTriggerExecutionAuthority(transaction, trigger);
       const sourceKey = input.deliveryId
         ? `webhook:${input.deliveryId}`
@@ -1286,9 +1286,9 @@ export class TriggerStore {
   }): Promise<TriggerOccurrence> {
     return withPersonalTransaction(this.#database, async (transaction) => {
       const trigger = await lockTriggerForMutation(transaction, input, "define");
-      if (trigger.status === "archived") throw conflict("Archived Trigger cannot run");
+      if (trigger.status === "archived") throw conflict("Archived automation cannot run");
       if (trigger.kind === "watch") {
-        throw conflict("Watch Triggers run continuously and cannot create occurrences");
+        throw conflict("Watch automations run continuously and cannot create occurrences");
       }
       await requireTriggerExecutionAuthority(transaction, trigger);
       if (trigger.systemRole) throw conflict(MANAGED_MEMORY_REFUSAL);
@@ -1356,7 +1356,7 @@ export class TriggerStore {
             .where("id", "=", input.occurrenceId)
             .where("triggerId", "=", trigger.id)
             .executeTakeFirst();
-          if (!target) throw notFound("Trigger occurrence not found");
+          if (!target) throw notFound("Automation occurrence not found");
         }
         let query = transaction
           .selectFrom("triggerOccurrences")
@@ -1373,7 +1373,7 @@ export class TriggerStore {
         const now = new Date();
         const cancellation = {
           code: "canceled_by_owner",
-          message: "Trigger occurrence was canceled before it reached a Runner",
+          message: "Automation occurrence was canceled before it reached its computer",
         };
         const canceledOccurrenceIds: TriggerOccurrenceId[] = [];
         for (const row of pending) {
@@ -1616,7 +1616,7 @@ export class TriggerStore {
         .where("id", "=", input.output.occurrenceId)
         .forNoKeyUpdate()
         .executeTakeFirst();
-      if (!occurrence) throw notFound("Trigger occurrence not found");
+      if (!occurrence) throw notFound("Automation occurrence not found");
       const trigger = await transaction
         .selectFrom("triggers")
         .selectAll()
@@ -1728,7 +1728,7 @@ export class TriggerStore {
   failActiveAfterHostRestart(): Promise<number> {
     return this.#failActive({
       code: "host_restarted",
-      message: "Host restarted before the Trigger program finished",
+      message: "Host restarted before the automation program finished",
     });
   }
   failActiveForRunnerDisconnect(input: {
@@ -1740,7 +1740,7 @@ export class TriggerStore {
     return this.#failActive({
       activeOccurrenceIds: input.activeOccurrenceIds,
       code: "runner_disconnected",
-      message: "Runner disconnected before the Trigger program finished",
+      message: "The computer disconnected before the automation program finished",
       runnerBootId: input.runnerBootId,
       runnerId: input.runnerId,
     });
@@ -1901,7 +1901,7 @@ async function enqueueOccurrence(
         pendingLimit: MAX_PENDING_TRIGGER_OCCURRENCES,
         triggerId: trigger.id,
       },
-      message: `Trigger already has ${MAX_PENDING_TRIGGER_OCCURRENCES} pending Occurrences, its durable limit`,
+      message: `Automation already has ${MAX_PENDING_TRIGGER_OCCURRENCES} pending occurrences, its durable limit`,
     });
   }
   const admission = await requireTriggerExecutionAuthority(transaction, trigger);
@@ -2069,13 +2069,13 @@ async function requireAnchorThread(
   )
     throw new OpensteerError({
       code: "bad_request",
-      message: "Choose an open task as the Trigger anchor.",
+      message: "Choose an open task for the automation.",
     });
   const admission = await admitThreadExecution(transaction, threadId, userId);
   if (!admission)
     throw new OpensteerError({
       code: "forbidden",
-      message: "Anchor Thread is unavailable",
+      message: "Task is unavailable",
     });
   return {
     environmentId: admission.environmentId,
@@ -2231,7 +2231,7 @@ async function createWatchActivation(
         environmentId: input.environmentId,
         limit: MAX_ACTIVE_WATCHES_PER_ENVIRONMENT,
       },
-      message: `Execution environment already has ${MAX_ACTIVE_WATCHES_PER_ENVIRONMENT} active watches, its concurrent limit`,
+      message: `This computer already has ${MAX_ACTIVE_WATCHES_PER_ENVIRONMENT} active watches, its concurrent limit`,
     });
   }
   const now = new Date();
@@ -2297,7 +2297,7 @@ async function requireTriggerExecutionAuthority(
   if (!admission) {
     throw new OpensteerError({
       code: "forbidden",
-      message: "Trigger execution authority is no longer active",
+      message: "Automation execution authority is no longer active",
     });
   }
   return admission;
@@ -2422,7 +2422,7 @@ function conflict(message: string): OpensteerError {
   });
 }
 function idempotencyConflict(): OpensteerError {
-  return conflict("Idempotency key was already used with different Trigger input");
+  return conflict("Idempotency key was already used with different automation input");
 }
 
 /** The Trigger and watch activation rows are reserved before Request settlement. */
