@@ -1,13 +1,14 @@
 import { channelShareView, pendingSendView, type TeamPerson } from "@opensteer/client/team";
-import { teamAskStatuses } from "@opensteer/client/team";
+import { teamAskOwnerControl, teamAskStatuses } from "@opensteer/client/team";
 import type { PendingTeamSend, TeamSidebar, TeamTimeline } from "@opensteer/client/team";
 import { teamAgentHandle } from "@opensteer/core";
-import type { TeamAgentRequest, TeamMember, TeamMessage } from "@opensteer/protocol";
+import type { NeedsYouPage, TeamAgentRequest, TeamMember, TeamMessage } from "@opensteer/protocol";
 import type {
   AgentCardView,
   AgentReach,
   AgentStatusView,
   AgentView,
+  AskStatusView,
   AttachmentView,
   ChannelHeaderView,
   ChannelKind,
@@ -351,6 +352,8 @@ export function messageView(
     readonly previous: TeamMessage | null;
     readonly requests: readonly TeamAgentRequest[];
     readonly inThread: boolean;
+    /** The team and the reader's own Needs you, for the owner's control on an ask. */
+    readonly asks?: AskOwnerFacts;
   },
 ): MessageView {
   const { viewerId, members } = input;
@@ -366,12 +369,9 @@ export function messageView(
     ? input.requests.find((request) => request.replyMessageId === message.id)
     : undefined;
   const deleted = message.deletedAt !== null;
+  const requests = [...input.requests, ...message.requests];
   return {
-    askStatuses: teamAskStatuses(
-      [...input.requests, ...message.requests],
-      message.id,
-      (id) => personView(id, members).name,
-    ),
+    askStatuses: askStatusViews(requests, message.id, viewerId, members, input.asks),
     id: message.id,
     version: Number(BigInt(message.changeSeq) % BigInt(Number.MAX_SAFE_INTEGER)),
     author: agent
@@ -396,6 +396,39 @@ export function messageView(
     thread: input.inThread ? null : threadSummary(message, viewerId, members),
     agentRun: answered === undefined ? null : { summary: workedSummary(answered) },
   };
+}
+
+/** What the owner's control needs beyond the team's own rows. */
+export interface AskOwnerFacts {
+  readonly teamId: string;
+  /** The reader's personal Needs you, which knows each ask's task and version; null offline. */
+  readonly needsYou: NeedsYouPage | null;
+}
+
+function askStatusViews(
+  requests: readonly TeamAgentRequest[],
+  messageId: string,
+  viewerId: string,
+  members: MemberDirectory,
+  asks: AskOwnerFacts | undefined,
+): AskStatusView[] {
+  return teamAskStatuses(requests, messageId, (id) => personView(id, members).name).map(
+    (status) => {
+      const [request] = uniqueRequests(requests.filter(({ id }) => id === status.id));
+      return {
+        ...status,
+        control:
+          request === undefined || asks === undefined
+            ? { kind: "none" }
+            : teamAskOwnerControl({
+                needsYou: asks.needsYou,
+                request,
+                teamId: asks.teamId,
+                viewerUserId: viewerId,
+              }),
+      };
+    },
+  );
 }
 
 function workedSummary(request: TeamAgentRequest): string {
@@ -475,6 +508,7 @@ export function timelineItems(input: {
   readonly now: Date;
   /** In a thread the root is drawn above the list, not in it. */
   readonly skipId?: string;
+  readonly asks?: AskOwnerFacts;
 }): TimelineItem[] {
   const { timeline, viewerId, members } = input;
   const items: TimelineItem[] = [];
@@ -517,6 +551,7 @@ export function timelineItems(input: {
         previous,
         requests,
         inThread,
+        ...(input.asks === undefined ? {} : { asks: input.asks }),
       }),
     });
     previous = message;

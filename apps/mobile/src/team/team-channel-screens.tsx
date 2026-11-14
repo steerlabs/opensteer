@@ -33,11 +33,14 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { ActivityIndicator, Alert, AppState, Pressable, StyleSheet, View } from "react-native";
 import type { RootParamList } from "../navigation.js";
+import * as Haptics from "expo-haptics";
 import { color, space } from "../theme.js";
+import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { BarControl } from "../ui/bar-control.js";
 import { useCopy } from "../ui/copy-mark.js";
 import { useMobileClient, useSelectedHostClient } from "../ui/mobile-client-context.js";
@@ -82,6 +85,7 @@ import {
   ownReplyInView,
   timelineItems,
   typingLine,
+  type AskOwnerFacts,
   type MemberDirectory,
 } from "./team-views.js";
 
@@ -260,7 +264,7 @@ export function TeamThreadScreen(props: StaticScreenProps<TeamThreadRoute>): Rea
             {...place}
             anchorId={landing.anchorId}
             replyCount={root.replySummary.count}
-            root={rootView(root, place.viewerId, people.directory)}
+            root={rootView(root, place.viewerId, people.directory, place.asks)}
           />
         )}
       </Place>
@@ -307,7 +311,12 @@ function useLanding(
     : { anchorId: null, settled: false };
 }
 
-function rootView(root: TeamMessage, viewerId: string, directory: MemberDirectory): MessageView {
+function rootView(
+  root: TeamMessage,
+  viewerId: string,
+  directory: MemberDirectory,
+  asks: AskOwnerFacts,
+): MessageView {
   return messageView(root, {
     viewerId,
     members: directory,
@@ -315,6 +324,7 @@ function rootView(root: TeamMessage, viewerId: string, directory: MemberDirector
     previous: null,
     requests: root.requests,
     inThread: true,
+    asks,
   });
 }
 
@@ -356,6 +366,7 @@ function useChannelMemberCount(
 
 interface PlaceProps {
   readonly actions: Parameters<typeof ChannelScreenBody>[0]["actions"];
+  readonly asks: AskOwnerFacts;
   readonly banner: ConnectionBannerView | null;
   readonly composer: TeamComposerProps;
   /** Why the reader can't post here, in the composer's place; null when they can. */
@@ -385,6 +396,14 @@ function Place(props: {
   const navigation = useNavigation<Navigation>();
   const mobile = useMobileClient();
   const personal = useSelectedHostClient();
+  const aiSharing = useAiSharing();
+  // The reader's own Needs you knows which asks of their agent wait in a task, and at
+  // which version, which is what answering one from here approves.
+  const needsYou = useSyncExternalStore(
+    useCallback((notify: () => void) => personal?.subscribe(notify) ?? (() => {}), [personal]),
+    useCallback(() => personal?.getSnapshot().needsYou ?? null, [personal]),
+  );
+  const asks = useMemo(() => ({ needsYou, teamId }), [needsYou, teamId]);
   const snapshot = session.getSnapshot();
   const viewerId = snapshot.bootstrap?.member.userId ?? "";
   const channel = view.channel!;
@@ -409,8 +428,10 @@ function Place(props: {
         connected: snapshot.connection === "connected",
         now: new Date(),
         ...(rootId === null ? {} : { skipId: rootId }),
+        asks,
       }),
     [
+      asks,
       directory,
       newLineAt,
       previews,
@@ -903,6 +924,31 @@ function Place(props: {
           onOpenThread: (id) =>
             navigation.navigate("TeamThread", { teamId, channelId, rootId: id }),
           onOpenTask: (messageId) => void openTask(null, messageId).catch(report),
+          onDecideAsk: async (control, decision) => {
+            if (personal === null) return;
+            // Answering starts the reader's agent on the ask, with their AI companies.
+            if (decision === "approve" && !(await authorizeAiSharing(aiSharing, personal))) return;
+            void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            await personal
+              .decideTeamAsk(
+                decision === "approve"
+                  ? {
+                      decision,
+                      expectedRevision: control.expectedRevision,
+                      requestId: control.requestId,
+                      teamId: control.teamId,
+                    }
+                  : { decision, requestId: control.requestId, teamId: control.teamId },
+              )
+              .catch((error: unknown) => {
+                void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+                report(error);
+              });
+          },
+          onOpenAskTask: (threadId) => {
+            const deploymentId = mobile.getSnapshot().selection.deploymentId;
+            if (deploymentId !== null) navigation.navigate("Thread", { deploymentId, threadId });
+          },
           onUnsent: (messageId, choice) => {
             const clientMessageId = messageId.replace(/^pending:/, "");
             const pending = snapshot.pending.find(
@@ -935,6 +981,7 @@ function Place(props: {
           onFollowingChange: setFollowing,
           onVisibleMessages: setVisible,
         },
+        asks,
         banner,
         closed,
         composer,
