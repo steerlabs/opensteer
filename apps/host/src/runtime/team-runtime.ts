@@ -325,6 +325,12 @@ export async function createTeamHostRuntime(input: {
       if (!request.url.startsWith("/v1/rpc/")) await rejectDuplicateCredentialHeaders(request);
     });
     await app.register(websocket, { options: { maxPayload: 512 * 1024 } });
+    // Native OAuth token, revocation and logout requests carry form-encoded bodies.
+    app.addContentTypeParser(
+      "application/x-www-form-urlencoded",
+      { parseAs: "buffer" },
+      (_request, body, done) => done(null, body),
+    );
     app.get("/healthz", () => ({ ok: true }));
     app.get("/.well-known/opensteer", () =>
       HostDescriptorSchema.parse({

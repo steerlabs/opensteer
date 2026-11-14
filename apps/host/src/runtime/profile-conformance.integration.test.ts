@@ -1,5 +1,5 @@
 import { slackChannelProviderManifest } from "@opensteer/channel-core";
-import { createId } from "@opensteer/core";
+import { createId, opensteerDesktopOAuthClientId } from "@opensteer/core";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -301,4 +301,32 @@ integration("team configuration conformance", () => {
       error: { code: "conflict", reason: "api-version-mismatch", retryable: false },
     });
   });
+
+  it.each([
+    {
+      path: "token",
+      form: { grant_type: "refresh_token", refresh_token: "unknown-refresh-token" },
+      error: "invalid_grant",
+    },
+    { path: "revoke", form: { token: "unknown-refresh-token" }, error: "invalid_request" },
+    { path: "end-session", form: {}, error: "invalid_request" },
+  ])(
+    "parses native OAuth $path forms before validating credentials",
+    async ({ path, form, error }) => {
+      const response = await runtime.app.inject({
+        method: "POST",
+        url: `/v1/auth/native/oauth2/${path}`,
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          [teamApiVersionHeader]: String(teamApiVersion),
+        },
+        payload: new URLSearchParams({
+          client_id: opensteerDesktopOAuthClientId,
+          ...form,
+        }).toString(),
+      });
+      expect(response.statusCode, response.body).toBe(400);
+      expect(response.json()).toMatchObject({ error });
+    },
+  );
 });
