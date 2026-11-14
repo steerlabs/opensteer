@@ -1,7 +1,5 @@
 # Agent orchestration
 
-Personal installs require the Host and its hosting Runner to share filesystem read access for image files; the development stack and desktop bundle provide this. Tool-result images live in the Runner data directory’s validated `images` subtree, outside private harness state.
-
 ## One MCP, live caller authority
 
 Runs, Trigger and Watch programs and connected agents share one `opensteer` MCP server.
@@ -68,9 +66,10 @@ unknown support refuses rather than converting or switching models. Downloads re
 ownership or the Run's binding. Runner caches are disposable, hash-verified and outside private
 state and Agent home.
 
-Image files are served by path from the hosting computer; the personal Host and its hosting
-Runner must share filesystem read access. Media tokens are bearer capabilities and must never
-be logged.
+Agent-produced images are files on the hosting computer, served by path; tool-result images go
+to the Runner data directory's `images` subtree, outside private state. The personal Host and its
+hosting Runner must share filesystem read access. Media tokens are bearer capabilities and must
+never be logged.
 
 ## Runs across connection loss and restarts
 
