@@ -756,7 +756,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
       unsubscribeMachine();
       await shares?.close();
       realtime.close();
-      fileService.close();
+      await fileService.close();
       await Promise.all([pushing, maintaining]);
     },
   };

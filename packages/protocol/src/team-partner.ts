@@ -15,6 +15,7 @@ export const teamPartnerProtocolVersion = 3;
 export const teamPartnerCapability = "team-partner-links-v1";
 export const teamPartnerSocketPath = "/internal/v1/team/partner";
 export const teamPartnerMaxFrameBytes = 300 * 1024;
+export const teamPartnerMaxQueueBytes = 1024 * 1024;
 export const TeamSharingPolicySchema = z.enum(["off", "admins", "members-propose", "members"]);
 export type TeamSharingPolicy = z.infer<typeof TeamSharingPolicySchema>;
 export const TeamPartnerOfferSchema = z.strictObject({

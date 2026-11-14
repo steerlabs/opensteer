@@ -2450,6 +2450,8 @@ export interface TeamMessagePinTable {
   pinnedAt: Timestamp;
 }
 export interface TeamBlobTable {
+  cacheOriginalReserved: Generated<boolean>;
+  cachePreviewReserved: Generated<boolean>;
   publicId: Generated<string>;
   remoteShareId: Generated<string | null>;
   previewSha256: Generated<string | null>;

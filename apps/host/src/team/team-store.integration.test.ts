@@ -927,7 +927,7 @@ describe("team transaction authority", () => {
       expect(await readdir(join(directory, "team-files"))).toContain(file.id);
     } finally {
       release.resolve();
-      files.close();
+      await files.close();
       await rm(directory, { recursive: true, force: true });
     }
   });
@@ -954,7 +954,7 @@ describe("team transaction authority", () => {
       expect(stored).not.toContain(unsent.id);
       expect(stored).toContain(kept.id);
     } finally {
-      files.close();
+      await files.close();
       await rm(directory, { recursive: true, force: true });
     }
   });
@@ -1589,7 +1589,7 @@ describe("team transaction authority", () => {
       ).toBe(false);
     } finally {
       blocked.resolve();
-      files.close();
+      await files.close();
       await rm(directory, { recursive: true, force: true });
     }
   });

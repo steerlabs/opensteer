@@ -1029,7 +1029,7 @@ export class TeamSharesStore {
     advance = true,
   ) {
     TeamShareBatchSchema.parse(batch);
-    await this.access.mutate(async (t) => {
+    const removedFiles = await this.access.mutate(async (t) => {
       const s = await this.scoped(t, linkId, id, generation, "follower");
       if (
         advance &&
@@ -1299,7 +1299,7 @@ export class TeamSharesStore {
           .execute();
       // Message locks precede all mention and pin changes; each relation is changed in key order.
       const savedIds = saved.map((r) => r.id).sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
-      await bindTeamShareFiles(
+      const removedFiles = await bindTeamShareFiles(
         t,
         this.chat.identity.teamId,
         s.channelId!,
@@ -1473,7 +1473,7 @@ export class TeamSharesStore {
         .where("id", "=", s.id)
         .execute();
       return {
-        value: undefined,
+        value: removedFiles,
         accessChanged,
         effects: { ...emptyTeamAccessEffects, channels: [s.channelId!] },
       };
@@ -1501,6 +1501,7 @@ export class TeamSharesStore {
             : "cancelled",
         });
     }
+    return removedFiles;
   }
   async relayAdmission(actor: TeamActor, s: Share, messageId: TeamMessageId) {
     const result = await this.access.contentWrite(actor, s.channelId!, async (t, authority) => {

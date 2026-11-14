@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { readdir } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { sql } from "kysely";
@@ -22,6 +22,8 @@ import {
   teamApiVersionHeader,
 } from "../packages/deployment-authority/src/index.js";
 import { withTimeout } from "../packages/shared/src/withTimeout.js";
+import { TeamFilesStore } from "../packages/database/src/team-files-store.js";
+import { TeamFileService } from "../apps/host/src/team/file-service.js";
 
 type Fixture = Awaited<ReturnType<typeof sharedFixture>>;
 type Host = Fixture["a"];
@@ -104,7 +106,134 @@ async function agent(host: Host, owner: Fixture["aUser"]) {
   };
 }
 
-it("serves bidirectional attachments and previews to people and agents through their own Host, with no remote cache", async () => {
+it("pipelines a bounded chunk window, coalesces first downloads, and serves verified cached bytes without partner requests", async () => {
+  const f = await sharedFixture();
+  const release = Promise.withResolvers<void>();
+  const downloads: Promise<unknown>[] = [];
+  try {
+    const bytes = Buffer.alloc(teamShareFileChunkBytes * 9 + 7, 42);
+    const file = await upload(f.b, f.bSession, f.bid, bytes);
+    await post(f.bSession, f.bid, [file.id]);
+    const remote = (await page(f.aSession, f.aid))[0]!.attachments[0]!;
+    const actor = { kind: "human" as const, userId: f.aUser };
+    const service = f.b.host.team.shares!.files!;
+    const receive = service.receive.bind(service);
+    const entered = Promise.withResolvers<void>();
+    let active = 0,
+      peak = 0;
+    vi.spyOn(service, "receive").mockImplementation(async (link, op) => {
+      active++;
+      peak = Math.max(peak, active);
+      if (active === 2) entered.resolve();
+      try {
+        await withTimeout(release.promise, 3000, {
+          timeoutError: () => new Error("Chunk window never released"),
+        });
+        return await receive(link, op);
+      } finally {
+        active--;
+      }
+    });
+    const request = vi.spyOn(f.a.host.team.partners!, "request");
+    const allocated = vi.spyOn(Buffer, "alloc");
+    const first = f.a.host.team.files.download(actor, remote.id, "original");
+    const second = f.a.host.team.files.download(actor, remote.id, "original");
+    downloads.push(first, second);
+    const results = Promise.all([first, second]);
+    void results.catch(() => {});
+    await withTimeout(entered.promise, 2000, {
+      timeoutError: () => new Error("File transfer never pipelined two chunks"),
+    });
+    expect(allocated.mock.calls.every(([size]) => size < bytes.length)).toBe(true);
+    release.resolve();
+    for (const result of await results) {
+      const chunks = [];
+      for await (const chunk of result.body) chunks.push(chunk);
+      expect(Buffer.concat(chunks)).toEqual(bytes);
+    }
+    expect(peak).toBe(2);
+    expect(request.mock.calls.filter(([, op]) => op.op === "file")).toHaveLength(10);
+    request.mockClear();
+    expect(Buffer.from(await (await download(f.a, f.aSession, remote.id)).arrayBuffer())).toEqual(
+      bytes,
+    );
+    expect(request).not.toHaveBeenCalled();
+    expect(await readdir(join(f.a.directory, "team-files"))).toEqual([remote.id]);
+  } finally {
+    release.resolve();
+    await Promise.allSettled(downloads);
+    vi.restoreAllMocks();
+    await f.close();
+  }
+});
+
+it("reserves cache space before fetching, charges cached bytes to local uploads, and frees the reservation on disconnect", async () => {
+  const f = await sharedFixture();
+  const release = Promise.withResolvers<void>();
+  const quota = new TeamFilesStore(f.a.host.team.access, { storageLimitBytes: 64 });
+  const files = new TeamFileService(quota, f.a.host.team.access, f.a.directory);
+  files.remote = f.a.host.team.shares!.files;
+  const transfers: Promise<unknown>[] = [];
+  try {
+    const bytes = Buffer.alloc(64, 42);
+    const uploaded = await upload(f.b, f.bSession, f.bid, bytes);
+    const another = await upload(f.b, f.bSession, f.bid, bytes);
+    await post(f.bSession, f.bid, [uploaded.id, another.id]);
+    const attachments = (await page(f.aSession, f.aid))[0]!.attachments;
+    const remote = attachments[0]!;
+    const peer = f.b.host.team.shares!.files!;
+    const receive = peer.receive.bind(peer),
+      entered = Promise.withResolvers<void>();
+    vi.spyOn(peer, "receive").mockImplementation(async (link, op) => {
+      entered.resolve();
+      await withTimeout(release.promise, 3000, {
+        timeoutError: () => new Error("Cache quota transfer gate never released"),
+      });
+      return receive(link, op);
+    });
+    const actor = { kind: "human" as const, userId: f.aUser };
+    const metadata = {
+      clientUploadId: randomUUID(),
+      filename: "one.txt",
+      mediaType: "text/plain",
+      sizeBytes: 1,
+      sha256: hash("x"),
+      previewSizeBytes: 0,
+    };
+    const fetching = files.download(actor, remote.id, "original");
+    transfers.push(fetching);
+    void fetching.catch(() => {});
+    await withTimeout(entered.promise, 1000, {
+      timeoutError: () => new Error("Cache never reserved space and requested bytes"),
+    });
+    await expect(quota.begin(actor, f.aid, metadata)).rejects.toMatchObject({
+      reason: "team-storage-full",
+    });
+    await expect(files.download(actor, attachments[1]!.id, "original")).rejects.toMatchObject({
+      reason: "team-storage-full",
+    });
+    expect(peer.receive).toHaveBeenCalledTimes(1);
+    release.resolve();
+    const result = await fetching;
+    const chunks = [];
+    for await (const chunk of result.body) chunks.push(chunk);
+    expect(Buffer.concat(chunks)).toEqual(bytes);
+    await expect(quota.begin(actor, f.aid, metadata)).rejects.toMatchObject({
+      reason: "team-storage-full",
+    });
+    await command(f.aSession, { type: "team.share.end", shareId: f.shareId });
+    expect(await readdir(join(f.a.directory, "team-files"))).toEqual([]);
+    await expect(quota.begin(actor, f.aid, metadata)).resolves.toBeDefined();
+  } finally {
+    release.resolve();
+    await Promise.allSettled(transfers);
+    await files.close();
+    vi.restoreAllMocks();
+    await f.close();
+  }
+});
+
+it("serves bidirectional attachments and previews to people and agents through their own Host", async () => {
   const f = await sharedFixture();
   try {
     const wire = vi.spyOn(f.b.host.team.partners!, "request");
@@ -118,7 +247,7 @@ it("serves bidirectional attachments and previews to people and agents through t
     const response = await download(f.a, f.aSession, remote.id);
     expect(response.status, await response.clone().text()).toBe(200);
     expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
-    expect(await readdir(join(f.a.directory, "team-files"))).toEqual([]);
+    expect(await readdir(join(f.a.directory, "team-files"))).toEqual([remote.id]);
     const aAgent = await agent(f.a, f.aUser);
     const agentResponse = await fetch(new URL(teamBinaryRoutes.download, f.a.origin), {
       headers: {
@@ -300,6 +429,8 @@ it("refuses internal, guessed, other-channel, deleted and disconnected files wit
         message: "Team partner connection refused",
       }),
     );
+    await (await download(f.a, f.aSession, remote.id)).arrayBuffer();
+    expect(await readdir(join(f.a.directory, "team-files"))).toEqual([remote.id]);
     await command(f.bSession, {
       type: "team.message.delete",
       channelId: f.bid,
@@ -311,6 +442,7 @@ it("refuses internal, guessed, other-channel, deleted and disconnected files wit
     ] as const)
       expect((await download(host, session, id)).status).toBe(404);
     await expect(request(peerRow.publicId)).rejects.toMatchObject({ reason: "not-found" });
+    expect(await readdir(join(f.a.directory, "team-files"))).toEqual([]);
     const keep = await upload(f.b, f.bSession, f.bid, bytes);
     await post(f.bSession, f.bid, [keep.id]);
     const keepRemote = (await page(f.aSession, f.aid)).find((m) => !m.deletedAt)!.attachments[0]!;
@@ -353,6 +485,13 @@ it("verifies size and digest before delivering partner bytes and reports peer ou
       const response = await download(f.a, f.aSession, remote.id);
       expect(response.status).toBe(404);
       expect(await readdir(join(f.a.directory, "team-files"))).toEqual([]);
+      expect(
+        await f.a.database
+          .selectFrom("teamBlobs")
+          .select(["cacheOriginalReserved", "cachePreviewReserved"])
+          .where("id", "=", remote.id)
+          .executeTakeFirst(),
+      ).toEqual({ cacheOriginalReserved: false, cachePreviewReserved: false });
     }
     spy.mockRestore();
     const request = vi.spyOn(f.a.host.team.partners!, "request");
@@ -383,10 +522,26 @@ it.each(["receiver", "uploader"] as const)(
       const actor = { kind: "human" as const, userId: f.aUser };
       const paused = await f.a.host.team.files.download(actor, remote.id, "original");
       paused.body.on("error", () => {});
+      const incoming: TeamBlobId[] = [];
+      for (let index = 0; index < 3; index++) {
+        const next = await upload(f.b, f.bSession, f.bid, bytes);
+        const message = await post(f.bSession, f.bid, [next.id]);
+        const attachment = (await page(f.aSession, f.aid)).find(
+          (m) => m.clientMessageId === message.clientMessageId,
+        )!.attachments[0]!;
+        incoming.push(attachment.id);
+      }
       const service = f.b.host.team.shares!.files!;
       const original = service.receive.bind(service),
-        entered = Promise.withResolvers<void>();
+        entered = Promise.withResolvers<void>(),
+        secondEntered = Promise.withResolvers<void>();
+      const secondRow = await f.a.database
+        .selectFrom("teamBlobs")
+        .select("publicId")
+        .where("id", "=", incoming[1]!)
+        .executeTakeFirstOrThrow();
       vi.spyOn(service, "receive").mockImplementation(async (link, op) => {
+        if (op.publicId === secondRow.publicId) secondEntered.resolve();
         if (op.offset) {
           entered.resolve();
           await withTimeout(release.promise, 3000, {
@@ -395,7 +550,10 @@ it.each(["receiver", "uploader"] as const)(
         }
         return original(link, op);
       });
-      const fetching = f.a.host.team.files.download(actor, remote.id, "original");
+      const fetching = Promise.all([
+        f.a.host.team.files.download(actor, incoming[0]!, "original"),
+        f.a.host.team.files.download(actor, incoming[0]!, "original"),
+      ]);
       const settled = fetching.then(
         () => "delivered",
         () => "aborted",
@@ -403,8 +561,25 @@ it.each(["receiver", "uploader"] as const)(
       await withTimeout(entered.promise, 2000, {
         timeoutError: () => new Error("Partner never read the second chunk"),
       });
+      await vi.waitFor(
+        async () => {
+          const pending = (await readdir(join(f.a.directory, "team-files"))).find((name) =>
+            name.startsWith("pending-"),
+          );
+          expect(pending, "Transfer never wrote a partial file").toBeDefined();
+          expect(
+            (await stat(join(f.a.directory, "team-files", pending!))).size,
+            "First chunk never reached the temporary file",
+          ).toBeGreaterThanOrEqual(teamShareFileChunkBytes);
+        },
+        { timeout: 1000 },
+      );
+      const second = f.a.host.team.files.download(actor, incoming[1]!, "original").catch(() => {});
+      await withTimeout(secondEntered.promise, 1000, {
+        timeoutError: () => new Error("Second transfer never occupied its concurrency slot"),
+      });
       await expect(
-        f.a.host.team.files.download(actor, remote.id, "original"),
+        f.a.host.team.files.download(actor, incoming[2]!, "original"),
       ).rejects.toMatchObject({
         code: "resource_exhausted",
         reason: "shared-channel-file-limit",
@@ -413,6 +588,7 @@ it.each(["receiver", "uploader"] as const)(
         type: "team.share.end",
         shareId: f.shareId,
       });
+      await second;
       expect(paused.body.destroyed).toBe(true);
       expect(
         await withTimeout(settled, 1000, {
@@ -472,8 +648,9 @@ it("re-shares files into a fresh follower channel while preserving uploader owne
     expect(
       Buffer.from(await (await download(f.a, f.aSession, ownerRemote.id)).arrayBuffer()),
     ).toEqual(bytes);
-    const { TeamFilesStore } = await import("../packages/database/src/team-files-store.js");
-    const quota = new TeamFilesStore(f.b.host.team.access, { storageLimitBytes: bytes.length + 1 });
+    const quota = new TeamFilesStore(f.b.host.team.access, {
+      storageLimitBytes: bytes.length + aBytes.length + 1,
+    });
     await expect(
       quota.begin({ kind: "human", userId: f.bUser }, newChannel, {
         clientUploadId: randomUUID(),

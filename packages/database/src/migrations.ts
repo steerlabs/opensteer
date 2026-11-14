@@ -5,6 +5,7 @@ import { migrateTeamAgents } from "./team-agent-migration.js";
 import { migrateTeamSharedAgents } from "./team-shared-agents-migration.js";
 import { migrateTeamChannelShares } from "./team-shares-migration.js";
 import { migrateTeamShareFiles } from "./team-share-files-migration.js";
+import { migrateTeamShareFileCache } from "./team-share-file-cache-migration.js";
 import { migrateTeamPartnerLinks } from "./team-partner-links-migration.js";
 import { migrateTeamPrincipals } from "./team-principals-migration.js";
 import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
@@ -170,6 +171,7 @@ export function migrationProvider(): MigrationProvider {
         "0016_team_channel_shares": { up: migrateTeamChannelShares },
         "0017_team_share_files": { up: migrateTeamShareFiles },
         "0018_team_shared_agents": { up: migrateTeamSharedAgents },
+        "0019_team_share_file_cache": { up: migrateTeamShareFileCache },
       };
     },
   };
