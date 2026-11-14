@@ -605,6 +605,19 @@
   background-color: var(--fill-quiet);
 }
 
+/* Beside a sent message's copy mark, at its height. */
+.reply__marks .waiting__edited {
+  height: 24px;
+}
+
+/* Inside a card's sender line it reads as the end of that sentence. */
+.input-card__action .waiting__edited {
+  height: auto;
+  margin: 0 calc(-1 * var(--space-4));
+  color: inherit;
+  font-size: inherit;
+}
+
 /* ---- A teammate's ask, awaiting its answer ----
 
    One line under the card: where the answer goes and who reads it, then

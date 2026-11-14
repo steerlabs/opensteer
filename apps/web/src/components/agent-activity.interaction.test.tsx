@@ -1044,3 +1044,76 @@ it("loads output only on expansion, retries a failure, and reuses it when reopen
   expect(container.textContent).toContain("whole lazy output");
   expect(read).toHaveBeenCalledTimes(2);
 });
+
+it("keeps an edited message's history a click away after a Run took it", async () => {
+  const listMessageRevisions = vi.fn(async () => ({
+    hasMore: false,
+    revisions: [
+      {
+        author: { displayName: "Me", kind: "human" as const, userId: "me" },
+        content: [{ text: "Check the integration shard", type: "text" as const }],
+        createdAt: "2026-08-16T10:00:01.000Z",
+        deviceLabel: "Chrome on Mac",
+        revision: 1,
+      },
+      {
+        author: { displayName: "Me", kind: "human" as const, userId: "me" },
+        content: [{ text: "Check the shard", type: "text" as const }],
+        createdAt: "2026-08-16T10:00:00.000Z",
+        deviceLabel: null,
+        revision: 0,
+      },
+    ],
+  }));
+  const client = { listMessageRevisions } as unknown as MockHostClient;
+  const edit = { editedAt: "2026-08-16T10:00:01.000Z", revision: 1 };
+  const own = {
+    author: { displayName: "Me", kind: "human", userId: "me" },
+    body: "Check the integration shard",
+    createdAt: "2026-08-16T10:00:00.000Z",
+    edit,
+    id: "message-own",
+    kind: "message",
+    messageKind: "input",
+    runId: "run-a",
+  } as MessageEntry;
+  const asked: MessageEntry = {
+    author: {
+      actor: "human",
+      displayName: "Maya Chen",
+      kind: "team-member",
+      teamId: "dep_00000000-0000-4000-8000-000000000001",
+      teamUserId: "usr_maya",
+    },
+    body: "Is CI green on main?",
+    createdAt: "2026-08-16T10:00:00.000Z",
+    edit: { ...edit, ownerEdited: true },
+    id: "message-asked",
+    kind: "message",
+    messageKind: "input",
+    runId: "run-a",
+  } as MessageEntry;
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  roots.push(root);
+  await act(async () =>
+    root.render(
+      <MemoryRouter>
+        <AgentTranscript
+          attachmentReader={client}
+          entries={[own, asked]}
+          threadId="thread-1"
+          viewerUserId="me"
+        />
+      </MemoryRouter>,
+    ),
+  );
+  const marks = [...container.querySelectorAll<HTMLButtonElement>(".waiting__edited")];
+  expect(marks.map((mark) => mark.textContent)).toEqual(["Edited", "edited by you"]);
+  await act(async () => click(marks[0]));
+  expect(listMessageRevisions).toHaveBeenCalledWith("thread-1", "message-own", undefined);
+  expect(document.body.textContent).toContain("Check the shard");
+  await act(async () => click(marks[1]));
+  expect(listMessageRevisions).toHaveBeenLastCalledWith("thread-1", "message-asked", undefined);
+});
