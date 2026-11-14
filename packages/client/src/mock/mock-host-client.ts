@@ -1,5 +1,5 @@
 import { AssetUrlStore } from "../host/asset-urls.js";
-import { settleTeamAsk } from "../host/needs-you.js";
+import { openWaitingMessageEditor } from "../host/waiting-message-editor.js";
 import { isDeviceAccessRequestEvent } from "@opensteer/protocol";
 import { deviceAccess } from "@opensteer/protocol";
 import { hostsDeployment } from "../computers/computers.js";
@@ -94,6 +94,8 @@ import {
   BrowserTabGroupIdSchema,
   DEFAULT_THREAD_ACCESS_MODE,
   DeploymentIdSchema,
+  MessageIdSchema,
+  TeamAgentRequestIdSchema,
   MessageAuthorSchema,
   MessageSchema,
   ModelSelectionSchema,
@@ -153,10 +155,14 @@ import {
   type Thread,
   type ThreadAccessMode,
   type ThreadInput,
+  type ThreadInputEditLeaseView,
   type ThreadInputQueue,
   type ThreadVisit,
   type WaitingRequest,
   type IconName,
+  type MessageEdit,
+  type MessageRevisionView,
+  threadInputEditLeaseMs,
 } from "@opensteer/core";
 import type {
   ComputerAppIdentity,
@@ -189,6 +195,7 @@ import {
   browserUsageSessionsPerRead,
   computerAppIdentityKey,
   hostApi,
+  messageRevisionsPageSize,
   machineAccessPolicyDefault,
   previousReleaseEligibility,
   rpcSuccess,
@@ -265,6 +272,8 @@ import type {
   TranscriptEntry,
   UpdateThreadAccessModeInput,
   UpdateThreadExecutionInput,
+  TeamAskDecision,
+  WaitingMessageEditor,
 } from "../host/client.js";
 import { HostClientRequestError, mainDoneTasks } from "../host/client.js";
 import { computerViewMethods } from "../host/computer-views.js";
@@ -295,6 +304,8 @@ import {
   isTerminalRunEntryStatus,
   requestReceipt,
   threadInputDelivery,
+  toMessageEntry,
+  withEditedMessage,
 } from "../host/transcript.js";
 import { ViewerScope, viewerScopeOf } from "../host/viewer-scope.js";
 import { PersonalTabActivations } from "../host/personal-tab-activations.js";
@@ -1394,9 +1405,14 @@ interface ActiveMockRun {
 /** One queued message no Run has picked up yet, as the mock Host holds it. */
 interface PendingMockInput {
   body: string;
+  /** Set once a person edited it while it waited; `message` already holds the edit. */
+  edit?: MessageEdit;
   input: ThreadInput;
   message: Message;
 }
+
+/** The device a lease taken through this mock's own commands is named for. */
+const mockThisDeviceLabel = "Chrome on Mac";
 
 interface MockTaskScript {
   readonly accepted: string;
@@ -1439,6 +1455,23 @@ function sameMockApp(
 
 function mockConflict(message: string): HostClientRequestError {
   return new HostClientRequestError({ code: "conflict", message, status: 409 });
+}
+
+function mockNotFound(message: string): HostClientRequestError {
+  return new HostClientRequestError({ code: "not_found", message, status: 404 });
+}
+
+function mockBadRequest(message: string): HostClientRequestError {
+  return new HostClientRequestError({ code: "bad_request", message, status: 400 });
+}
+
+/** Only a person's own words and a teammate's ask are theirs to edit; generated work never is. */
+function mockEditable(item: PendingMockInput): boolean {
+  return (
+    item.input.policy === "queue" &&
+    (item.message.author.kind === "human" ||
+      (item.message.author.kind === "team-member" && item.input.teamRequestId !== null))
+  );
 }
 
 /**
@@ -2534,6 +2567,8 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     },
     "thread.inputQueue.get": async (input) =>
       rpcSuccess(client.loadThreadInputQueue(input.threadId)),
+    "thread.message.revisions.list": async (input) =>
+      rpcSuccess(client.messageRevisionPage(input.messageId, input.before)),
     "thread.live.get": async (input) => rpcSuccess(client.liveStreams(input.threadId)),
     "thread.requests.list": async (input) => {
       const requests = (client.getSnapshot().requests[input.threadId] ?? []).filter(
@@ -2616,39 +2651,9 @@ async function executeMockCommand(
       client.teamLinks.set(link.teamId, link);
       return rpcSuccess({ type: command.type, link });
     }
-    case "teams.ask.decide": {
-      const page = client.getSnapshot().needsYou;
-      const failed = page?.entries.find(
-        (entry) =>
-          entry.kind === "team-ask" &&
-          entry.teamId === command.teamId &&
-          entry.requestId === command.requestId,
-      );
-      if (command.decision === "approve" && failed?.kind === "team-ask" && failed.failureReason)
-        return {
-          ok: false,
-          error: HostApiErrorSchema.parse({
-            code: "conflict",
-            message: failed.failureReason,
-            retryable: false,
-          }),
-        };
-      const next = settleTeamAsk(page, command.teamId, command.requestId);
-      if (next === page)
-        return {
-          ok: false,
-          error: HostApiErrorSchema.parse({
-            code: "not_found",
-            message: "Pending team ask not found.",
-            retryable: false,
-          }),
-        };
-      client.teamAsks = client.teamAsks.filter(
-        (entry) => entry.teamId !== command.teamId || entry.requestId !== command.requestId,
-      );
-      client.updatePlaces({ ...client.getSnapshot(), needsYou: next });
+    case "teams.ask.decide":
+      client.decideTeamAsk(command);
       return rpcSuccess({ type: command.type });
-    }
     case "teams.link.leave":
       client.teamLinks.delete(command.teamId);
       return rpcSuccess({ type: command.type });
@@ -2841,6 +2846,15 @@ async function executeMockCommand(
     case "thread.input.move":
       client.moveThreadInput(command.threadId, command.messageId, command.beforeMessageId);
       return rpcSuccess({ type: command.type });
+    case "thread.input.lease.take":
+      return rpcSuccess({ ...client.takeEditLease(command), type: command.type });
+    case "thread.input.lease.renew":
+      return rpcSuccess({ lease: client.renewEditLease(command), type: command.type });
+    case "thread.input.lease.release":
+      client.releaseEditLease(command);
+      return rpcSuccess({ type: command.type });
+    case "thread.input.edit":
+      return rpcSuccess({ ...client.editWaitingInput(command), type: command.type });
     case "automaticModels.set":
       client.automaticModelConfig = AutomaticModelConfigSchema.parse(command.config);
       client.applyAutomaticEligibility();
@@ -4646,6 +4660,73 @@ export class MockHostClient implements HostClient {
     this.#state.mockSubagentProgress(threadId, nodeId, progress);
   }
 
+  readonly #editLeases = new Set<string>();
+
+  editWaitingMessage(
+    threadId: string,
+    messageId: string,
+    options?: { readonly takeOver?: boolean },
+  ): Promise<WaitingMessageEditor> {
+    return openWaitingMessageEditor(
+      {
+        dispatch: (command) => this.dispatch(command),
+        leases: this.#editLeases,
+        // The mock's snapshot is its Host, so it always holds the version taken.
+        holdsRevision: async () => undefined,
+        now: () => Date.now(),
+      },
+      threadId,
+      messageId,
+      options?.takeOver ?? false,
+    );
+  }
+
+  async releaseWaitingMessage(threadId: string, messageId: string): Promise<void> {
+    await this.dispatch({
+      messageId: MessageIdSchema.parse(messageId),
+      threadId: ThreadIdSchema.parse(threadId),
+      type: "thread.input.lease.release",
+    });
+  }
+
+  ownsEditLease(leaseId: string): boolean {
+    return this.#editLeases.has(leaseId);
+  }
+
+  async listMessageRevisions(
+    threadId: string,
+    messageId: string,
+    before?: number,
+  ): Promise<{ readonly revisions: readonly MessageRevisionView[]; readonly hasMore: boolean }> {
+    return unwrapRpcResult(
+      await this.rpc["thread.message.revisions.list"]({
+        messageId: MessageIdSchema.parse(messageId),
+        threadId: ThreadIdSchema.parse(threadId),
+        ...(before === undefined ? {} : { before }),
+      }),
+    );
+  }
+
+  async decideTeamAsk(input: TeamAskDecision): Promise<void> {
+    await this.dispatch({
+      decision: input.decision,
+      requestId: TeamAgentRequestIdSchema.parse(input.requestId),
+      teamId: DeploymentIdSchema.parse(input.teamId),
+      type: "teams.ask.decide",
+      ...(input.decision === "approve" ? { expectedRevision: input.expectedRevision } : {}),
+    });
+  }
+
+  /** Scripted: a teammate mentions the person's agent, and the Host admits the ask into a task. */
+  mockTeamAsk(entry: import("@opensteer/protocol").NeedsYouTeamAskEntry): void {
+    this.#state.receiveTeamAsk(entry);
+  }
+
+  /** Scripted: another of the person's devices opens a waiting message to edit it. */
+  mockOtherDeviceEdit(threadId: string, messageId: string, deviceLabel = "Alex's iPad"): void {
+    this.#state.mockOtherDeviceEdit(threadId, messageId, deviceLabel);
+  }
+
   async cancelThreadInput(threadId: string, messageId: string): Promise<void> {
     await this.dispatch({
       idempotencyKey: `mock-input-cancel:${crypto.randomUUID()}`,
@@ -6019,6 +6100,30 @@ class MockHostState {
   private readonly nextRunOrdinals = new Map<string, number>();
   /** Queued messages per Thread in send order; a Run's seed is never here. */
   private readonly threadInputQueues = new Map<string, PendingMockInput[]>();
+  /**
+   * Teammates' asks waiting in their tasks for the person's answer, per task
+   * in arrival order. No Run takes one before approval puts it in line.
+   */
+  private readonly awaitingAsks = new Map<string, PendingMockInput[]>();
+  /** Asks approved here whose team confirmation the mock is still playing out. */
+  private readonly approvingAsks = new Set<string>();
+  /** Tasks an ask made, which a decline removes while the ask is all they ever held. */
+  private readonly askTasks = new Set<string>();
+  /**
+   * Each waiting message's edit lease by message id. `here` marks a lease
+   * this client took, as opposed to one a scripted other device holds.
+   */
+  private readonly editLeases = new Map<
+    string,
+    { readonly here: boolean; readonly view: ThreadInputEditLeaseView }
+  >();
+  /** Each edited message's versions, oldest first; the original is kept on the first edit. */
+  private readonly messageRevisions = new Map<string, MessageRevisionView[]>();
+  /** A saved edit per idempotency key, replayed when the same edit is sent again. */
+  private readonly editReceipts = new Map<
+    string,
+    { readonly edit: MessageEdit; readonly fingerprint: string; readonly message: Message }
+  >();
   private readonly withdrawnThreadInputs = new Map<string, ThreadInput>();
   private readonly triggers = new Map<string, MockTriggerRecord>();
   /**
@@ -6086,7 +6191,6 @@ class MockHostState {
   }
 
   constructor(options: MockHostClientOptions = {}) {
-    this.teamAsks = [...(options.teamAsks ?? [])];
     this.automaticModels = options.automaticModels ?? "seeded";
     if (this.automaticModels === "edited")
       this.automaticModelConfig.roles.deep = [
@@ -6405,6 +6509,7 @@ class MockHostState {
         ),
       ),
     };
+    for (const ask of options.teamAsks ?? []) this.snapshot = this.withTeamAsk(this.snapshot, ask);
     const tasks = this.taskList(null);
     this.snapshot = { ...this.snapshot, tasks, activeTasks: this.activeTaskEntries(tasks) };
     this.snapshot = {
@@ -6892,6 +6997,440 @@ class MockHostState {
     this.update(this.withInputQueue(this.snapshot, threadId));
   }
 
+  /**
+   * A teammate's ask arriving as the Host admits it: a waiting message in the
+   * task for that team thread, or in a new task named for the asker, gated
+   * until the person answers. An ask the Host could not admit keeps no task.
+   */
+  receiveTeamAsk(entry: import("@opensteer/protocol").NeedsYouTeamAskEntry): void {
+    this.update(this.withTeamAsk(this.snapshot, entry));
+  }
+
+  private withTeamAsk(
+    snapshot: HostSnapshot,
+    entry: import("@opensteer/protocol").NeedsYouTeamAskEntry,
+  ): HostSnapshot {
+    if (entry.failureReason) {
+      this.teamAsks = [...this.teamAsks, entry];
+      return snapshot;
+    }
+    const { asker, audience, bodyMarkdown, destination } = entry.presentation;
+    const timestamp = entry.createdAt;
+    let thread = snapshot.threads.find(
+      ({ teamOrigin }) =>
+        teamOrigin?.teamId === destination.teamId &&
+        teamOrigin.channelId === destination.channelId &&
+        teamOrigin.threadRootId === destination.threadRootId,
+    );
+    if (!thread) {
+      const placement = resolveThreadPlacement(snapshot.environments, snapshot.harnesses, {});
+      thread = {
+        lastVisitedAt: null,
+        latestRunCompletedAt: null,
+        id: this.nextId("thread"),
+        askedAt: timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        doneAt: null,
+        doneReason: null,
+        accessMode: "approval-required",
+        continuationIdentity: null,
+        providerSessionId: createId("providerSession"),
+        environmentId: placement.environmentId,
+        harnessInstanceId: placement.harnessInstanceId,
+        harnessLabel: placement.accountName,
+        modelLabel: placement.modelSelection.modelId,
+        modelSelection: placement.modelSelection,
+        listed: true,
+        parentThreadId: null,
+        inputQueuePaused: false,
+        pendingRequests: 0,
+        purpose: "task",
+        teamOrigin: { ...destination },
+        status: "idle",
+        // No model names a task before the person consents to the ask.
+        title:
+          audience.channelKind === "dm" || audience.channelKind === "group_dm"
+            ? asker.displayName
+            : `${asker.displayName} · #${audience.channelName}`,
+        icon: null,
+        color: this.allocateMarkColor("thread"),
+        unread: true,
+        runnerLabel: placement.whereLabel,
+      };
+      this.askTasks.add(thread.id);
+      snapshot = {
+        ...snapshot,
+        threads: [thread, ...snapshot.threads],
+        requests: { ...snapshot.requests, [thread.id]: [] },
+        transcripts: { ...snapshot.transcripts, [thread.id]: [] },
+      };
+    }
+    const message = MessageSchema.parse({
+      author: {
+        actor: asker.actor,
+        displayName: asker.displayName,
+        kind: "team-member",
+        teamId: entry.teamId,
+        teamUserId: asker.teamUserId,
+      },
+      content: [{ text: bodyMarkdown, type: "text" }],
+      createdAt: timestamp,
+      id: this.nextId("message"),
+      kind: "input",
+      runId: null,
+      sequence: String(++this.sequence),
+      threadId: thread.id,
+    });
+    const input = ThreadInputSchema.parse({
+      assignmentId: null,
+      cancelReason: null,
+      causalChainId: createId("causalChain"),
+      createdAt: timestamp,
+      deliveredAt: null,
+      messageId: message.id,
+      policy: "queue",
+      replyTarget: null,
+      runId: null,
+      state: "awaiting-approval",
+      teamRequestId: entry.requestId,
+      teamSource: { ...destination, messageId: null, audience },
+      threadId: thread.id,
+      updatedAt: timestamp,
+    });
+    this.awaitingAsks.set(thread.id, [
+      ...(this.awaitingAsks.get(thread.id) ?? []),
+      { body: bodyMarkdown, input, message },
+    ]);
+    this.teamAsks = [
+      ...this.teamAsks,
+      {
+        ...entry,
+        task: { threadId: ThreadIdSchema.parse(thread.id), messageId: message.id, revision: 0 },
+      },
+    ];
+    const drawn = toMessageEntry(message, "queue", input);
+    const threadId = thread.id;
+    return this.withInputQueue(
+      {
+        ...snapshot,
+        threads: snapshot.threads.map((item) =>
+          item.id === threadId ? { ...item, askedAt: timestamp, updatedAt: timestamp } : item,
+        ),
+        transcripts: drawn
+          ? {
+              ...snapshot.transcripts,
+              [threadId]: [...(snapshot.transcripts[threadId] ?? []), drawn],
+            }
+          : snapshot.transcripts,
+      },
+      threadId,
+    );
+  }
+
+  /**
+   * The person's answer to an ask, as the Host takes it: approval names the
+   * version they saw and waits for the team before the ask joins the line; a
+   * decline cancels it, and takes along a task the ask made that holds nothing else.
+   */
+  decideTeamAsk(command: Extract<HostApiCommand, { readonly type: "teams.ask.decide" }>): void {
+    const entry = this.teamAsks.find(
+      (ask) => ask.teamId === command.teamId && ask.requestId === command.requestId,
+    );
+    if (!entry) throw mockNotFound("Pending team ask not found.");
+    if (command.decision === "approve" && entry.failureReason)
+      throw mockConflict(entry.failureReason);
+    const task = entry.task;
+    const item = task
+      ? this.awaitingAsks.get(task.threadId)?.find(({ message }) => message.id === task.messageId)
+      : undefined;
+    if (command.decision === "approve" && item && task) {
+      if (command.expectedRevision === undefined)
+        throw mockBadRequest("Approving an ask names the version you saw.");
+      if (command.expectedRevision !== (item.edit?.revision ?? 0))
+        throw mockConflict("This ask changed since you saw it. Review it again.");
+      const lease = this.liveLease(task.messageId);
+      if (lease && !lease.here)
+        throw mockConflict(`This ask is being edited on ${lease.view.deviceLabel}.`);
+      this.editLeases.delete(task.messageId);
+      this.approvingAsks.add(task.messageId);
+      void delay(this.latencyMs).then(() => this.releaseTeamAsk(task.threadId, task.messageId));
+    }
+    this.teamAsks = this.teamAsks.filter((ask) => ask !== entry);
+    if (command.decision === "decline" && item && task) {
+      this.awaitingAsks.set(
+        task.threadId,
+        (this.awaitingAsks.get(task.threadId) ?? []).filter((held) => held !== item),
+      );
+      this.editLeases.delete(task.messageId);
+      if (this.removeAskTask(task.threadId)) return;
+      this.update(
+        this.withInputQueue(
+          {
+            ...this.snapshot,
+            transcripts: {
+              ...this.snapshot.transcripts,
+              [task.threadId]: (this.snapshot.transcripts[task.threadId] ?? []).filter(
+                (drawn) => drawn.id !== task.messageId,
+              ),
+            },
+          },
+          task.threadId,
+        ),
+      );
+      return;
+    }
+    this.update(task ? this.withInputQueue(this.snapshot, task.threadId) : this.snapshot);
+  }
+
+  /** The team confirmed an approval: the ask joins the back of the line and may start a Run. */
+  private releaseTeamAsk(threadId: string, messageId: string): void {
+    if (!this.approvingAsks.delete(messageId)) return;
+    const waiting = this.awaitingAsks.get(threadId) ?? [];
+    const item = waiting.find(({ message }) => message.id === messageId);
+    if (!item || !this.snapshot.threads.some(({ id }) => id === threadId)) return;
+    this.awaitingAsks.set(
+      threadId,
+      waiting.filter((held) => held !== item),
+    );
+    const released: PendingMockInput = {
+      ...item,
+      input: ThreadInputSchema.parse({
+        ...item.input,
+        state: "pending",
+        updatedAt: this.now().toISOString(),
+      }),
+    };
+    this.threadInputQueues.set(threadId, [
+      ...(this.threadInputQueues.get(threadId) ?? []),
+      released,
+    ]);
+    this.update(this.withInputQueue(this.snapshot, threadId));
+    this.admitNextInput(threadId);
+  }
+
+  /**
+   * Removes a task an ask made once the ask ended, while the ask is all it
+   * ever held. A view still open on it reads it as missing.
+   */
+  private removeAskTask(threadId: string): boolean {
+    const asks = new Set(
+      [...(this.awaitingAsks.get(threadId) ?? [])].map(({ message }) => message.id),
+    );
+    const untouched =
+      this.askTasks.has(threadId) &&
+      asks.size === 0 &&
+      !this.threadInputQueues.has(threadId) &&
+      !this.snapshot.runQueue.some((run) => run.threadId === threadId) &&
+      (this.snapshot.transcripts[threadId] ?? []).every(
+        (entry) => entry.kind === "message" && entry.author.kind === "team-member",
+      );
+    if (!untouched) return false;
+    this.askTasks.delete(threadId);
+    this.awaitingAsks.delete(threadId);
+    const without = <Value>(record: Readonly<Record<string, Value>>): Record<string, Value> => {
+      const { [threadId]: _removed, ...rest } = record;
+      return rest;
+    };
+    this.update({
+      ...this.snapshot,
+      inputQueues: without(this.snapshot.inputQueues),
+      requests: without(this.snapshot.requests),
+      threadLookups: { ...this.snapshot.threadLookups, [threadId]: "missing" },
+      threads: this.snapshot.threads.filter(({ id }) => id !== threadId),
+      transcripts: without(this.snapshot.transcripts),
+    });
+    return true;
+  }
+
+  /** The waiting message, in line or awaiting its owner, that a lease or an edit acts on. */
+  private waitingInput(threadId: string, messageId: string): PendingMockInput {
+    const item = [
+      ...(this.threadInputQueues.get(threadId) ?? []),
+      ...(this.awaitingAsks.get(threadId) ?? []),
+    ].find(({ message }) => message.id === messageId);
+    if (!item) throw mockConflict("This message is no longer waiting.");
+    if (!mockEditable(item)) throw mockConflict("This message can’t be edited.");
+    if (this.approvingAsks.has(messageId)) throw mockConflict("Approving…");
+    return item;
+  }
+
+  private liveLease(messageId: string) {
+    const lease = this.editLeases.get(messageId);
+    if (lease && Date.parse(lease.view.expiresAt) > this.now().getTime()) return lease;
+    return undefined;
+  }
+
+  takeEditLease(command: Extract<HostApiCommand, { readonly type: "thread.input.lease.take" }>): {
+    readonly lease: ThreadInputEditLeaseView;
+    readonly revision: number;
+  } {
+    const item = this.waitingInput(command.threadId, command.messageId);
+    const held = this.liveLease(command.messageId);
+    if (held && held.view.leaseId !== command.leaseId && !command.takeOver)
+      throw mockConflict(`Being edited on ${held.view.deviceLabel}.`);
+    return {
+      lease: this.setEditLease(command.threadId, command.messageId, command.leaseId, true),
+      revision: item.edit?.revision ?? 0,
+    };
+  }
+
+  renewEditLease(
+    command: Extract<HostApiCommand, { readonly type: "thread.input.lease.renew" }>,
+  ): ThreadInputEditLeaseView {
+    const held = this.liveLease(command.messageId);
+    if (held?.view.leaseId !== command.leaseId)
+      throw mockConflict("This edit is no longer held here.");
+    const view = { ...held.view, expiresAt: this.leaseExpiry() };
+    // Renewals are silent: nothing a reader draws changes.
+    this.editLeases.set(command.messageId, { ...held, view });
+    return view;
+  }
+
+  releaseEditLease(
+    command: Extract<HostApiCommand, { readonly type: "thread.input.lease.release" }>,
+  ): void {
+    const held = this.editLeases.get(command.messageId);
+    if (!held || (command.leaseId !== undefined && held.view.leaseId !== command.leaseId)) return;
+    this.editLeases.delete(command.messageId);
+    this.update(this.withInputQueue(this.snapshot, command.threadId));
+  }
+
+  /** Another of the person's devices opens a waiting message to edit it, as journeys script. */
+  mockOtherDeviceEdit(threadId: string, messageId: string, deviceLabel: string): void {
+    this.waitingInput(threadId, messageId);
+    this.setEditLease(
+      threadId,
+      messageId,
+      crypto.randomUUID().replaceAll("-", ""),
+      false,
+      deviceLabel,
+    );
+  }
+
+  private setEditLease(
+    threadId: string,
+    messageId: string,
+    leaseId: string,
+    here: boolean,
+    deviceLabel = mockThisDeviceLabel,
+  ): ThreadInputEditLeaseView {
+    const view = { deviceLabel, expiresAt: this.leaseExpiry(), leaseId };
+    this.editLeases.set(messageId, { here, view });
+    this.update(this.withInputQueue(this.snapshot, threadId));
+    return view;
+  }
+
+  private leaseExpiry(): string {
+    return new Date(this.now().getTime() + threadInputEditLeaseMs).toISOString();
+  }
+
+  /**
+   * Replaces a waiting message in place as the Host does: under this edit's
+   * lease or none, from the version the person started on, keeping or
+   * dropping its files but adding none. Every version stays in its history.
+   */
+  editWaitingInput(command: Extract<HostApiCommand, { readonly type: "thread.input.edit" }>): {
+    readonly edit: MessageEdit;
+    readonly message: Message;
+  } {
+    const fingerprint = JSON.stringify([
+      command.threadId,
+      command.messageId,
+      command.expectedRevision,
+      command.content,
+    ]);
+    const receipt = this.editReceipts.get(command.idempotencyKey);
+    if (receipt) {
+      if (receipt.fingerprint !== fingerprint)
+        throw mockConflict("This edit key was already used for a different edit.");
+      return receipt;
+    }
+    const item = this.waitingInput(command.threadId, command.messageId);
+    const held = this.liveLease(command.messageId);
+    if (held && held.view.leaseId !== command.leaseId)
+      throw mockConflict(`Being edited on ${held.view.deviceLabel}.`);
+    const revision = item.edit?.revision ?? 0;
+    if (command.expectedRevision !== revision)
+      throw mockConflict("This message changed since you opened it.");
+    const kept = new Set(
+      item.message.content
+        .filter((part) => part.type !== "text")
+        .map((part) => JSON.stringify(part)),
+    );
+    if (command.content.some((part) => part.type !== "text" && !kept.has(JSON.stringify(part))))
+      throw mockBadRequest("An edit can keep or remove files and places, not add them.");
+    const timestamp = this.now().toISOString();
+    const history = this.messageRevisions.get(command.messageId) ?? [
+      {
+        author: item.message.author,
+        content: item.message.content,
+        createdAt: item.message.createdAt,
+        deviceLabel: null,
+        revision: 0,
+      },
+    ];
+    const edit: MessageEdit = {
+      editedAt: timestamp,
+      revision: revision + 1,
+      ...(item.message.author.kind === "team-member" ? { ownerEdited: true as const } : {}),
+    };
+    this.messageRevisions.set(command.messageId, [
+      ...history,
+      {
+        author: mockHumanAuthor(),
+        content: command.content,
+        createdAt: timestamp,
+        deviceLabel: held?.view.deviceLabel ?? mockThisDeviceLabel,
+        revision: edit.revision,
+      },
+    ]);
+    const message = MessageSchema.parse({ ...item.message, content: command.content });
+    item.message = message;
+    item.body = command.content
+      .flatMap((part) => (part.type === "text" ? [part.text] : []))
+      .join("\n");
+    item.edit = edit;
+    this.teamAsks = this.teamAsks.map((ask) =>
+      ask.task?.messageId === command.messageId
+        ? { ...ask, task: { ...ask.task, revision: edit.revision } }
+        : ask,
+    );
+    this.editLeases.delete(command.messageId);
+    const transcript = this.snapshot.transcripts[command.threadId];
+    this.update(
+      this.withInputQueue(
+        transcript
+          ? {
+              ...this.snapshot,
+              transcripts: {
+                ...this.snapshot.transcripts,
+                [command.threadId]: withEditedMessage(transcript, { ...message, edit }, edit),
+              },
+            }
+          : this.snapshot,
+        command.threadId,
+      ),
+    );
+    const saved = { edit, fingerprint, message };
+    this.editReceipts.set(command.idempotencyKey, saved);
+    return saved;
+  }
+
+  /** A message's versions, newest first, a page at a time; none until it is first edited. */
+  messageRevisionPage(
+    messageId: string,
+    before: number | undefined,
+  ): { readonly revisions: MessageRevisionView[]; readonly hasMore: boolean } {
+    const newest = [...(this.messageRevisions.get(messageId) ?? [])]
+      .reverse()
+      .filter((row) => before === undefined || row.revision < before);
+    return {
+      revisions: newest.slice(0, messageRevisionsPageSize),
+      hasMore: newest.length > messageRevisionsPageSize,
+    };
+  }
+
   /** Lifts the pause an explicit stop left behind and lets the oldest queued message start. */
   resumeThreadInputQueue(threadId: string): ThreadSummary {
     const thread = this.snapshot.threads.find((candidate) => candidate.id === threadId);
@@ -6940,7 +7479,9 @@ class MockHostState {
   /**
    * The queue as the Host would answer it from this snapshot: only the running
    * Run of an unpaused Thread accepts promotions, and every queued message is
-   * the viewer's own, so all of them can be withdrawn. Null for an unknown Thread.
+   * the viewer's own, so all of them can be withdrawn, except a teammate's ask,
+   * which only an answer ends. Asks awaiting that answer follow the line.
+   * Null for an unknown Thread.
    */
   private inputQueueView(snapshot: HostSnapshot, threadId: string): ThreadInputQueue | null {
     const thread = snapshot.threads.find((candidate) => candidate.id === threadId);
@@ -6953,13 +7494,23 @@ class MockHostState {
       threadId,
       paused: thread.inputQueuePaused,
       steerRunId,
-      items: (this.threadInputQueues.get(threadId) ?? []).map((item) => ({
-        message: item.message,
-        input: item.input,
-        canCancel: true,
-        canMove: true,
-        canSteer: steerRunId !== null && !item.input.freshContext,
-      })),
+      items: [
+        ...(this.threadInputQueues.get(threadId) ?? []),
+        ...(this.awaitingAsks.get(threadId) ?? []),
+      ]
+        .slice(0, 100)
+        .map((item) => {
+          const ask = item.input.teamRequestId !== null;
+          return {
+            message: item.edit ? { ...item.message, edit: item.edit } : item.message,
+            input: item.input,
+            canCancel: !ask,
+            canEdit: mockEditable(item) && !this.approvingAsks.has(item.message.id),
+            canMove: !ask,
+            canSteer: !ask && steerRunId !== null && !item.input.freshContext,
+            lease: this.liveLease(item.message.id)?.view ?? null,
+          };
+        }),
     });
   }
 

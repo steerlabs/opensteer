@@ -1,11 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
-import { NeedsYouTeamAskEntrySchema, TeamAgentRequestSchema } from "@opensteer/protocol";
+import {
+  NeedsYouTeamAskEntrySchema,
+  TeamAgentRequestSchema,
+  type NeedsYouPage,
+  type NeedsYouTeamAskEntry,
+  type TeamAgentRequest,
+} from "@opensteer/protocol";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { MockPersonalHost } from "../mock/mock-personal-host.js";
 import { HttpHostClient } from "./host-session-client.js";
-import { needsYouIndex, settleTeamAsk } from "./needs-you.js";
-import { teamAskStatuses } from "../team/ask-status.js";
+import { taskList } from "./task-list.js";
+import { waitingInputs } from "./waiting-inputs.js";
+import { teamAskOwnerControl, teamAskStatuses } from "../team/ask-status.js";
 
 const teamId = createId("deployment");
 const ownerUserId = createId("user");
@@ -32,18 +39,57 @@ const ask = NeedsYouTeamAskEntrySchema.parse({
   },
 });
 
-it("projects consent without inventing a local task, and settles only the acknowledged ask", () => {
+/** The same ask from another team thread, which the Host admits into a task of its own. */
+function askIn(threadRootId: string) {
+  return NeedsYouTeamAskEntrySchema.parse({
+    ...ask,
+    requestId: createId("teamAgentRequest"),
+    presentation: {
+      ...ask.presentation,
+      destination: { ...ask.presentation.destination, threadRootId },
+    },
+  });
+}
+
+function listed(page: NeedsYouPage | null | undefined, requestId: string) {
+  const entry = page?.entries.find((row) => row.kind === "team-ask" && row.requestId === requestId);
+  return entry?.kind === "team-ask" ? entry : undefined;
+}
+
+it("admits an ask into a task of its own as a gated waiting input that Needs you opens", () => {
   const mock = new MockHostClient({ latencyMs: 0, teamAsks: [ask] });
   try {
     const page = mock.getSnapshot().needsYou!;
-    const index = needsYouIndex(page);
-    expect(index.entries).toContainEqual(ask);
-    expect([...index.byTask.values()].flat().every((entry) => entry.kind === "request")).toBe(true);
-    const settled = settleTeamAsk(page, teamId, ask.requestId)!;
-    expect(settled.count).toBe(page.count - 1);
-    expect(settled.entries).toEqual(page.entries.filter((entry) => entry.kind !== "team-ask"));
-    expect(settleTeamAsk(settled, teamId, ask.requestId)).toBe(settled);
-    expect(settleTeamAsk(page, createId("deployment"), ask.requestId)).toBe(page);
+    const entry = listed(page, ask.requestId)!;
+    expect(entry.task).toMatchObject({ revision: 0 });
+    const threadId = entry.task!.threadId;
+    expect(mock.getSnapshot().threads.find(({ id }) => id === threadId)).toMatchObject({
+      teamOrigin: ask.presentation.destination,
+      title: "Tim · #general",
+    });
+    expect(
+      taskList(mock.getSnapshot()).working.find((row) => row.threadId === threadId),
+    ).toMatchObject({ line: "Tim's agent: Please review this proposal", tone: "needs-you" });
+    mock.activateThread(threadId);
+    expect(
+      waitingInputs(mock.getSnapshot().inputQueues[threadId]!, {
+        needsYou: page,
+        ownsLease: () => false,
+      }),
+    ).toMatchObject([
+      {
+        approving: false,
+        asker: "Tim's agent",
+        canEdit: true,
+        consent: { line: "Replies in #general · 2 people", sharedWith: [] },
+        consentExpiresAt: ask.consentExpiresAt,
+        kind: "ask",
+        requestId: ask.requestId,
+        revision: 0,
+        teamId,
+        text: "Please review this proposal",
+      },
+    ]);
   } finally {
     mock.dispose();
   }
@@ -97,8 +143,8 @@ it("folds status updates by sequence and keeps multiple targets beside their tri
 });
 
 describe.each(["approve", "decline"] as const)("%s decision", (decision) => {
-  it("reconciles an acknowledgement without removing another card or double-counting a later refusal", async () => {
-    const second = { ...ask, requestId: createId("teamAgentRequest") };
+  it("settles only the answered ask at once, carries it out in its task, and refuses a repeat without double-counting", async () => {
+    const second = askIn("2");
     const mock = new MockHostClient({ latencyMs: 0, teamAsks: [ask, second] });
     const transport = new MockPersonalHost(mock);
     const client = new HttpHostClient({
@@ -109,33 +155,91 @@ describe.each(["approve", "decline"] as const)("%s decision", (decision) => {
     });
     try {
       await client.load();
-      await vi.waitFor(() => expect(client.getSnapshot().needsYou?.entries).toContainEqual(ask), {
-        timeout: 1000,
-      });
-      await client.dispatch({
-        type: "teams.ask.decide",
-        teamId,
-        requestId: ask.requestId,
-        decision,
-      });
-      expect(client.getSnapshot().needsYou?.entries).not.toContainEqual(ask);
-      expect(client.getSnapshot().needsYou?.entries).toContainEqual(second);
+      await vi.waitFor(
+        () => expect(listed(client.getSnapshot().needsYou, ask.requestId)?.task).toBeDefined(),
+        { timeout: 1000 },
+      );
+      const threadId = listed(client.getSnapshot().needsYou, ask.requestId)!.task!.threadId;
+      client.activateThread(threadId);
+      await vi.waitFor(
+        () => expect(client.getSnapshot().inputQueues[threadId]?.items).toHaveLength(1),
+        { timeout: 1000 },
+      );
+      await client.decideTeamAsk(
+        decision === "approve"
+          ? { decision, expectedRevision: 0, requestId: ask.requestId, teamId }
+          : { decision, requestId: ask.requestId, teamId },
+      );
+      const snapshot = client.getSnapshot();
+      expect(listed(snapshot.needsYou, ask.requestId)).toBeUndefined();
+      expect(listed(snapshot.needsYou, second.requestId)).toBeDefined();
+      const waiting = waitingInputs(snapshot.inputQueues[threadId]!, { ownsLease: () => false });
+      if (decision === "approve") {
+        // Approving until the team confirms; then it joins the line and a Run takes it.
+        expect(waiting).toMatchObject([{ approving: true, canEdit: false, kind: "ask" }]);
+        await vi.waitFor(
+          () =>
+            expect(
+              mock.getSnapshot().transcripts[threadId]?.some((entry) => entry.kind === "run"),
+              "the approved ask never started a Run",
+            ).toBe(true),
+          { timeout: 1000 },
+        );
+      } else {
+        expect(waiting).toEqual([]);
+        // The ask was all its task ever held, so the task goes with it.
+        expect(mock.getSnapshot().threads.some(({ id }) => id === threadId)).toBe(false);
+        expect(mock.getSnapshot().threadLookups[threadId]).toBe("missing");
+      }
       const count = client.getSnapshot().needsYou!.count;
       await expect(
-        client.dispatch({ type: "teams.ask.decide", teamId, requestId: ask.requestId, decision }),
+        client.decideTeamAsk(
+          decision === "approve"
+            ? { decision, expectedRevision: 0, requestId: ask.requestId, teamId }
+            : { decision, requestId: ask.requestId, teamId },
+        ),
       ).rejects.toThrow();
       expect(client.getSnapshot().needsYou!.count).toBe(count);
     } finally {
       client.dispose();
+      transport.dispose();
       mock.dispose();
     }
   });
 });
 
+it("approves only the version of the ask the person saw", async () => {
+  const mock = new MockHostClient({ latencyMs: 0, teamAsks: [ask] });
+  try {
+    const threadId = listed(mock.getSnapshot().needsYou, ask.requestId)!.task!.threadId;
+    const messageId = listed(mock.getSnapshot().needsYou, ask.requestId)!.task!.messageId;
+    const editor = await mock.editWaitingMessage(threadId, messageId);
+    await editor.save([{ type: "text", text: "Please review the pricing section only" }]);
+    expect(listed(mock.getSnapshot().needsYou, ask.requestId)?.task?.revision).toBe(1);
+    await expect(
+      mock.decideTeamAsk({
+        decision: "approve",
+        expectedRevision: 0,
+        requestId: ask.requestId,
+        teamId,
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(listed(mock.getSnapshot().needsYou, ask.requestId)).toBeDefined();
+    await mock.decideTeamAsk({
+      decision: "approve",
+      expectedRevision: 1,
+      requestId: ask.requestId,
+      teamId,
+    });
+    expect(listed(mock.getSnapshot().needsYou, ask.requestId)).toBeUndefined();
+  } finally {
+    mock.dispose();
+  }
+});
+
 it("refreshes the loaded Needs you range without losing an older review or retaining settled cards", async () => {
   const asks = Array.from({ length: 105 }, (_, i) => ({
-    ...ask,
-    requestId: createId("teamAgentRequest"),
+    ...askIn(String(i + 1)),
     createdAt: new Date(Date.parse(at) - i * 1000).toISOString(),
   }));
   let rows = [...asks];
@@ -226,4 +330,70 @@ it("refreshes the loaded Needs you range without losing an older review or retai
     transport.dispose();
     mock.dispose();
   }
+});
+
+it("gives an ask's owner the chat control only for the copy they would approve", () => {
+  const waiting = TeamAgentRequestSchema.parse({
+    id: ask.requestId,
+    kind: "ask",
+    consentExpiresAt: ask.consentExpiresAt,
+    ownerUserId,
+    channelId,
+    threadRootId: "1",
+    triggerMessageId: "2",
+    state: "awaiting_approval",
+    steps: [],
+    createdAt: at,
+    acceptedAt: null,
+    expiresAt: null,
+    finishedAt: null,
+    replyMessageId: null,
+    failureCode: null,
+    changeSeq: "1",
+  });
+  const threadId = createId("thread");
+  const messageId = createId("message");
+  const page = (entry: NeedsYouTeamAskEntry): NeedsYouPage => ({
+    count: 1,
+    entries: [entry],
+    window: {
+      byteCount: 1,
+      hasMore: false,
+      itemCount: 1,
+      nextBefore: null,
+      totalItems: 1,
+    },
+  });
+  const control = (
+    request: TeamAgentRequest,
+    entry: NeedsYouTeamAskEntry | null,
+    viewerUserId: string = ownerUserId,
+  ) =>
+    teamAskOwnerControl({
+      needsYou: entry ? page(entry) : null,
+      request,
+      teamId,
+      viewerUserId,
+    });
+  const unedited = { ...ask, task: { threadId, messageId, revision: 0 } };
+  expect(control(waiting, unedited)).toEqual({
+    expectedRevision: 0,
+    kind: "decide",
+    requestId: ask.requestId,
+    teamId,
+    threadId,
+  });
+  expect(control(waiting, { ...ask, task: { threadId, messageId, revision: 2 } })).toEqual({
+    kind: "review-edited",
+    messageId,
+    threadId,
+  });
+  // Everyone else, an ask not yet admitted, a failed one and a settled one keep the status line.
+  expect(control(waiting, unedited, createId("user"))).toEqual({ kind: "none" });
+  expect(control(waiting, null)).toEqual({ kind: "none" });
+  expect(control(waiting, { ...ask, failureReason: "The task could not start." })).toEqual({
+    kind: "none",
+  });
+  expect(control({ ...waiting, state: "working" }, unedited)).toEqual({ kind: "none" });
+  expect(control({ ...waiting, pendingRemote: true }, unedited)).toEqual({ kind: "none" });
 });
