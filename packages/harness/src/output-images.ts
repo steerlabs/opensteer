@@ -54,9 +54,10 @@ export function createToolImageStore(
   maxBytes = 1024 ** 3,
 ): ToolImageStore & { prune(): void } {
   const directory = join(dataDirectory, "images");
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  // Nothing touches the disk until the first image, so Runner start stays fast.
   let writes = 0;
   const prune = (): void => {
+    if (!existsSync(directory)) return;
     const files = readdirSync(directory)
       .filter((name) => /^[a-f0-9]{64}\.(png|jpg|webp|gif|avif|svg)$/.test(name))
       .map((name) => {
@@ -72,8 +73,8 @@ export function createToolImageStore(
       total -= file.size;
     }
   };
-  prune();
   const save = (bytes: Buffer, type: [ToolOutputImageMediaType, string]): ToolOutputImage => {
+    if (writes === 0) mkdirSync(directory, { recursive: true, mode: 0o700 });
     const path = join(directory, `${createHash("sha256").update(bytes).digest("hex")}.${type[1]}`);
     if (!existsSync(path)) {
       const temporary = join(directory, `.${randomUUID()}.tmp`);
@@ -83,7 +84,7 @@ export function createToolImageStore(
       } finally {
         if (existsSync(temporary)) unlinkSync(temporary);
       }
-      if (++writes % 16 === 0) prune();
+      if (writes++ % 16 === 0) prune();
     }
     return { path, mediaType: type[0] };
   };
