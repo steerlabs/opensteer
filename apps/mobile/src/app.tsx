@@ -601,7 +601,7 @@ export function App(): ReactNode {
         const result = await client.handleIntegrationAuthorizationCallback(url);
         if (result === null) return;
         if (result.status === "completed") {
-          await client.getSnapshot().selection.hostClient?.load();
+          await client.getSnapshot().selection.hostClient?.refresh();
           setIntegrationNotice({
             detail: "The provider account is ready to use.",
             title: "Integration connected",
