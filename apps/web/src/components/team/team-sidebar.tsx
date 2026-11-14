@@ -8,6 +8,7 @@ import type { ChannelRowView, TeamSidebarView, TeamTileView } from "./team-model
 
 export interface TeamSideActions {
   readonly onOpenChannel: (channelId: string) => void;
+  readonly onKnowledge?: (() => void) | undefined;
   readonly onNewChannel?: (() => void) | undefined;
   readonly onNewMessage?: (() => void) | undefined;
   readonly onBrowseChannels?: (() => void) | undefined;
@@ -17,7 +18,6 @@ export interface TeamSideActions {
 }
 
 export interface TeamMenuActions {
-  readonly onKnowledge?: (() => void) | undefined;
   readonly onInvite?: (() => void) | undefined;
   readonly onSettings?: (() => void) | undefined;
   readonly onLeave?: (() => void) | undefined;
@@ -180,7 +180,6 @@ function TeamMenu({
     ) : null;
   return (
     <Popover anchor={anchor} below label={`${name} menu`} onClose={onClose}>
-      {item("Knowledge", actions.onKnowledge)}
       {item("Invite people", actions.onInvite)}
       {item("Team settings", actions.onSettings)}
       {actions.onCreateTeam || actions.onJoinTeam ? <hr className="picker__divider" /> : null}
@@ -199,6 +198,7 @@ function TeamMenu({
 export function TeamSide({
   actions,
   hrefFor,
+  knowledgeOpen = false,
   openChannelId = null,
   team,
   hasMore = false,
@@ -209,6 +209,8 @@ export function TeamSide({
   readonly actions: TeamSideActions;
   /** Gives rows real addresses, so a modified click opens a new window. */
   readonly hrefFor?: ((channelId: string) => string) | undefined;
+  /** The team's knowledge is the page open. */
+  readonly knowledgeOpen?: boolean;
   readonly openChannelId?: string | null;
   readonly team: TeamSidebarView;
   readonly hasMore?: boolean;
@@ -271,6 +273,23 @@ export function TeamSide({
             </button>
           ) : null}
         </p>
+      ) : null}
+      {actions.onKnowledge ? (
+        <ul aria-label={`${name} pages`} className="team-rows team-side__pages">
+          <li className={knowledgeOpen ? "team-row is-filled" : "team-row"}>
+            <button
+              aria-current={knowledgeOpen ? "page" : undefined}
+              className="team-row__main"
+              onClick={actions.onKnowledge}
+              type="button"
+            >
+              <span className="team-row__glyph">
+                <Icon name="brain" />
+              </span>
+              <span className="team-row__name">Knowledge</span>
+            </button>
+          </li>
+        </ul>
       ) : null}
       <SideLabel
         action={

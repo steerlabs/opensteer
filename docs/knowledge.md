@@ -12,9 +12,14 @@ no people-only switch on topics. Every team starts with a General topic everyone
 A note is a title and Markdown body in one topic. Every write appends a numbered version to
 [the store](../packages/database/src/team-knowledge-store.ts); a delete is a version too, and
 writing again restores it. A writer names the version it read. A stale version saves nothing:
-people get a conflict and keep their draft, agents get the current note back to reconcile. The
-same writer repeating its exact write gets its first outcome, which is what makes a resent link
-frame or a retried phone save safe without an operation key.
+agents get the current note back to reconcile, people get a conflict and see the newest version.
+The same writer repeating its exact write gets its first outcome, which is what makes a resent
+link frame or a retried phone save safe without an operation key.
+
+Agents author notes; the apps give people no editor. People see notes as records, delete them,
+and restore a version, which writes its title and body again as the newest through the person
+note write the team API keeps. That write stays because apps and team servers update on their
+own schedules, so removing it would strand older apps ([Teams](teams.md#transport-and-versions)).
 
 ## Agents
 

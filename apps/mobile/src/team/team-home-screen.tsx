@@ -40,19 +40,11 @@ export function TeamHomeScreen(props: StaticScreenProps<{ readonly teamId: strin
       headerTitle: () => (
         <NativeMenu
           accessibilityHint={
-            canInvite
-              ? "Knowledge, invite people, team settings and leaving"
-              : "Knowledge, team settings and leaving"
+            canInvite ? "Invite people, team settings and leaving" : "Team settings and leaving"
           }
           accessibilityLabel={`${name} menu`}
           options={[
             [
-              {
-                icon: "lightbulb",
-                id: "knowledge",
-                label: "Knowledge",
-                onPress: () => navigation.navigate("TeamKnowledge", { teamId }),
-              },
               ...(canInvite
                 ? [
                     {
@@ -119,6 +111,7 @@ export function TeamHomeScreen(props: StaticScreenProps<{ readonly teamId: strin
       <TeamPageList
         canCreateChannel={session.getSnapshot().bootstrap?.can.createChannel === true}
         onBrowseChannels={() => navigation.navigate("TeamChannels", { teamId })}
+        onKnowledge={() => navigation.navigate("TeamKnowledge", { teamId })}
         onLoadMore={() => {
           if (sidebar.nextCursor !== null) void session.loadMoreSidebar().catch(() => undefined);
         }}
