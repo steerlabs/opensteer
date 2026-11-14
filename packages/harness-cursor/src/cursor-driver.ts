@@ -542,6 +542,7 @@ class CursorHarnessSession implements HarnessSession {
   #process: SupervisedProcess | undefined;
   #hookEndpoint: CursorHookEndpoint | undefined;
   #skillCatalog: string | undefined;
+  #guidanceDelivered = false;
   #reasoningBlocks = 0;
   /** The open reasoning block's text, which Cursor's completion frame omits. */
   #reasoningText = "";
@@ -586,6 +587,7 @@ class CursorHarnessSession implements HarnessSession {
     const session = new CursorHarnessSession(config, dependencies, context, reference, onClose);
     try {
       if (resume) await assertCursorTranscriptExists(context, reference);
+      session.#guidanceDelivered = resume;
       await session.#materialize();
       return session;
     } catch (error) {
@@ -692,8 +694,7 @@ class CursorHarnessSession implements HarnessSession {
    * The plugin carries the MCP servers and the hooks and nothing else: a
    * `rules/` directory inside a `--plugin-dir` does not reach the model in
    * print mode, verified 2026-09-17 with a rule carrying a codeword the model
-   * then said it could not find. Every instruction travels on the turn's
-   * prompt instead, which is what a resumed conversation needs anyway.
+   * then said it could not find. Stable instructions travel on the first turn's prompt.
    */
   async #materialize(): Promise<void> {
     this.#skillCatalog = await renderHarnessSkillCatalog(this.#context.skills);
@@ -1171,12 +1172,6 @@ class CursorHarnessSession implements HarnessSession {
     };
   }
 
-  /**
-   * Every instruction travels on the turn, because a `--plugin-dir`'s `rules/`
-   * never reached the model in print mode and because the machine-access
-   * notice changes from Run to Run and must be in front of the model on a
-   * resumed conversation too (`HarnessAdapter`, X9).
-   */
   #turnPrompt(
     inputs: readonly HarnessInput[],
     turn: Pick<HarnessRunInput, "context" | "reports">,
@@ -1189,12 +1184,16 @@ class CursorHarnessSession implements HarnessSession {
       });
     }
     const notices = [
-      this.#context.platformGuide,
-      this.#context.instructions,
+      ...(!this.#guidanceDelivered
+        ? [
+            this.#context.platformGuide,
+            this.#context.instructions,
+            this.#skillCatalog,
+            cursorToolsNotice(this.#context),
+          ]
+        : []),
       durableHistoryWindowNotice(this.#context),
-      this.#skillCatalog,
       this.#context.machineAccessNotice,
-      cursorToolsNotice(this.#context),
     ].filter((value): value is string => Boolean(value));
     const reportPrompt = harnessTurnPreamble(turn, (input) => cursorInputBody(input, attachments));
     const prompt = [
@@ -1224,7 +1223,10 @@ class CursorHarnessSession implements HarnessSession {
   #publishTerminal(active: ActiveTurn, status: "completed" | "interrupted"): void {
     if (!this.#publisher.claimTerminal(active)) return;
     this.#cancelPendingApprovals("run-ended");
-    if (status === "completed") this.#ensureRunStarted(active);
+    if (status === "completed") {
+      this.#guidanceDelivered = true;
+      this.#ensureRunStarted(active);
+    }
     this.#publish(runEndedEvent(status));
   }
 

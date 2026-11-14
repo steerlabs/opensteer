@@ -530,13 +530,24 @@ function serve() {
     delta("message-1", "from Muse", "text");
   }
 
+  let finishedTurns = 0;
   function finishTurn() {
+    finishedTurns++;
+    if (scenario === "guidance-compaction" && finishedTurns === 2) {
+      notification("session/compactionCompleted", { sessionId });
+    }
     notification("session/tokenUsage", {
       promptTokens: 11,
       sessionId,
       totalTokens: 15,
       turnId,
-      usage: { cachedTokens: 2, inputTokens: 10, outputTokens: 4, reasoningTokens: 1 },
+      usage: {
+        cachedTokens: 2,
+        cacheWriteTokens: 3,
+        inputTokens: 10,
+        outputTokens: 4,
+        reasoningTokens: 1,
+      },
     });
     notification("item/completed", {
       item: {
@@ -552,10 +563,28 @@ function serve() {
     notification("turn/completed", {
       sessionId,
       sourceRange: { first: "2", last: "3" },
-      terminal: "completed",
+      terminal:
+        scenario === "guidance-cancelled" && finishedTurns === 1 ? "cancelled" : "completed",
       turnId,
-      usage: { cachedTokens: 2, inputTokens: 10, outputTokens: 4, reasoningTokens: 1 },
+      usage: {
+        cachedTokens: 2,
+        cacheWriteTokens: 3,
+        inputTokens: 10,
+        outputTokens: 4,
+        reasoningTokens: 1,
+      },
       viewCursor: "v4",
     });
+    if (scenario === "guidance-compaction-item" && finishedTurns === 2) {
+      notification("item/completed", {
+        item: {
+          itemId: "guidance-compaction",
+          kind: "compaction",
+          revision: 1,
+          status: "completed",
+          turnId,
+        },
+      });
+    }
   }
 }

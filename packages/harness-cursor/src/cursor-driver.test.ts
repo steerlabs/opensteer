@@ -614,7 +614,7 @@ describe("Cursor turns", () => {
     await fixture.adapter.close();
   });
 
-  it("prefixes the machine-access notice and the tools notice onto a resumed Run's prompt", async () => {
+  it("sends stable guidance once and keeps computers notices on later turns", async () => {
     const fixture = await setup({
       machineAccessNotice: "You can reach example-mac over SSH.",
       skills: [
@@ -622,9 +622,9 @@ describe("Cursor turns", () => {
         { description: "Inspect production logs", name: "inspect-logs" },
       ],
     });
-    await seedTranscript(fixture);
-    const session = await fixture.adapter.resumeSession(fixture.reference, fixture.context);
+    const session = await fixture.adapter.startSession(fixture.context);
     await session.execute(fixture.turn("Check the other computer"));
+    await session.execute(fixture.turn("Check again"));
     await session.stop();
 
     const prompt = (await fixture.prompts())[0] ?? "";
@@ -643,7 +643,28 @@ describe("Cursor turns", () => {
     expect(prompt).not.toContain("PRIVATE release-notes BODY");
     expect(prompt).toContain("[Opensteer input]");
     expect(prompt).toContain("Check the other computer");
+    const second = (await fixture.prompts())[1] ?? "";
+    expect(second).not.toContain("Opensteer platform guide.");
+    expect(second).not.toContain("Follow the workspace instructions.");
+    expect(second).toContain("You can reach example-mac over SSH.");
     await fixture.adapter.close();
+  });
+
+  it("assumes resumed conversations already received stable guidance", async () => {
+    const fixture = await setup({ machineAccessNotice: "Computer offline 4m" });
+    await seedTranscript(fixture);
+    const session = await fixture.adapter.resumeSession(fixture.reference, fixture.context);
+    try {
+      await session.execute(fixture.turn("Continue"));
+      const prompt = (await fixture.prompts())[0] ?? "";
+      expect(prompt).not.toContain("Opensteer platform guide.");
+      expect(prompt).not.toContain("Follow the workspace instructions.");
+      expect(prompt).toContain("Computer offline 4m");
+      expect(prompt).not.toContain("[Opensteer tools]");
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
   });
 
   it("sends the exact composed --model argument and the resumed chat id", async () => {
