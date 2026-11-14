@@ -27,17 +27,17 @@ describe("harnessThreadContextPrompt", () => {
     const prompt = harnessThreadContextPrompt(context("America/New_York"), started);
 
     expect(prompt.split("\n")).toEqual([
-      "[Opensteer thread context]",
+      "[Opensteer task context]",
       "Person's time zone: America/New_York. Their local time when this Run started: Thursday, October 8, 2026, 2:13 PM EDT (2026-10-08T14:13-04:00).",
-      "[End Opensteer thread context]",
+      "[End Opensteer task context]",
     ]);
   });
 
   it("tells the agent to ask when the person's zone is unknown", () => {
     expect(harnessThreadContextPrompt(context(null), started).split("\n")).toEqual([
-      "[Opensteer thread context]",
+      "[Opensteer task context]",
       "Person's time zone: unknown. Ask before scheduling anything for a clock time.",
-      "[End Opensteer thread context]",
+      "[End Opensteer task context]",
     ]);
   });
 
@@ -65,7 +65,7 @@ describe("harnessThreadContextPrompt", () => {
     expect(prompt).toContain(
       "Person's time zone: Mars/Olympus_Mons, which this computer's time zone data does not recognize. Ask before scheduling anything for a clock time.",
     );
-    expect(prompt.match(/\[End Opensteer thread context\]/gu)).toHaveLength(1);
+    expect(prompt.match(/\[End Opensteer task context\]/gu)).toHaveLength(1);
   });
 
   it("keeps the task and history facts alongside the time line", () => {
@@ -82,12 +82,12 @@ describe("harnessThreadContextPrompt", () => {
     );
     const lines = prompt.split("\n");
 
-    expect(lines[0]).toBe("[Opensteer thread context]");
+    expect(lines[0]).toBe("[Opensteer task context]");
     expect(lines[1]).toMatch(/^Person's time zone: America\/New_York\./u);
     expect(lines[2]).toBe(
-      `Task: ${assignmentId}, assigned by Thread ${parentThreadId}. Its final reply returns there when the task closes.`,
+      `Delegation: ${assignmentId}, from task ${parentThreadId}. Its final reply returns there when the delegation closes.`,
     );
-    expect(lines.at(-1)).toBe("[End Opensteer thread context]");
+    expect(lines.at(-1)).toBe("[End Opensteer task context]");
   });
 
   it("does not claim a settled return necessarily sent a result message", () => {
@@ -162,7 +162,7 @@ describe("harnessReportsPrompt", () => {
     expect(prompt).toContain(`Report-ID: ${messageId}`);
     expect(prompt).toContain("Created: 2026-09-19T12:00:00.000Z");
     expect(prompt).toContain("additional report(s)");
-    expect(prompt).toContain("pass nextBefore as before");
+    expect(prompt).toContain("pass nextCursor as cursor");
     expect(prompt).not.toContain("beforeSequence");
     expect(prompt).toContain("not necessarily one contiguous slice");
     expect(prompt).toContain("same Report-ID");
@@ -327,7 +327,7 @@ describe("team turn preamble", () => {
       '"memberCount":12',
       "External team data",
       "final answer posts",
-      "team_read",
+      "opensteer_team_read",
     ])
       expect(prompt).toContain(value);
     expect(prompt.match(/\[End Opensteer team turn context\]/g)).toHaveLength(1);

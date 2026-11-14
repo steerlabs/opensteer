@@ -185,13 +185,13 @@ export function harnessInputAuthorLabel(input: HarnessInput): string {
     case "human":
       return `the user ${headerText(author.displayName)}`;
     case "agent":
-      return `agent ${headerText(author.displayName)} (Opensteer Thread ${author.threadId}; not the user)`;
+      return `agent ${headerText(author.displayName)} (Opensteer task ${author.threadId}; not the user)`;
     case "team-member":
       return `team ${author.actor === "agent" ? "agent" : "member"} ${escapeOpensteerPromptMarkers(headerText(author.displayName))} (team ${author.teamId}; member ${author.teamUserId}; not the user)`;
     case "connection":
       return `connected agent ${headerText(author.displayName)} (connection ${author.connectionId}; not the user)`;
     case "trigger":
-      return `Trigger ${headerText(author.displayName)} (occurrence ${author.occurrenceId}; not the user)`;
+      return `Automation ${headerText(author.displayName)} (occurrence ${author.occurrenceId}; not the user)`;
     case "watch":
       return `Watch ${headerText(author.displayName)} (activation ${author.activationId}; not the user)`;
     case "platform":
@@ -217,7 +217,7 @@ export function harnessInputHeader(input: HarnessInput, body: string): string {
 
 export function escapeOpensteerPromptMarkers(body: string): string {
   return body.replace(
-    /\[(?:End )?Opensteer (?:input|report(?: context)?|earlier conversation|thread context|team turn context)\]/giu,
+    /\[(?:End )?Opensteer (?:input|report(?: context)?|earlier conversation|task context|team turn context)\]/giu,
     (marker) => `［${marker.slice(1, -1)}］`,
   );
 }
@@ -266,7 +266,7 @@ export function harnessTeamTurnContextPrompt(
           "Your owner approved this ask. You may use your normal personal context and resources; consider the thread audience before sharing.",
         ]
       : []),
-    "Your final answer posts to this team thread unless you team_post there yourself. Use team_read for thread history.",
+    "Your final answer posts to this team thread unless you opensteer_team_post there yourself. Use opensteer_team_read for thread history.",
     "[End Opensteer team turn context]",
   ].join("\n");
 }
@@ -282,12 +282,12 @@ export function harnessThreadContextPrompt(context: HarnessRunContext, now = new
   const { assignment } = context;
   const { previousAssignment, previousRun } = context.threadState;
   return [
-    "[Opensteer thread context]",
+    "[Opensteer task context]",
     requesterTimeLine(context.requesterTimeZone, now),
     ...(assignment || previousAssignment ? [currentTaskLine(assignment)] : []),
     ...(previousRun ? [previousRunLine(previousRun)] : []),
     ...(previousAssignment ? [previousTaskLine(previousAssignment)] : []),
-    "[End Opensteer thread context]",
+    "[End Opensteer task context]",
   ].join("\n");
 }
 
@@ -343,12 +343,12 @@ function requesterTimeLine(timeZone: string | null, now: Date): string {
 
 function currentTaskLine(assignment: AssignmentRunContext | null): string {
   return assignment
-    ? `Task: ${assignment.id}, assigned by ${assigner(assignment.origin, assignment.parentThreadId)}. Its final reply returns there when the task closes.`
-    : "Task: none. This Run's final reply is shown in this Thread.";
+    ? `Delegation: ${assignment.id}, from ${delegator(assignment.origin, assignment.parentThreadId)}. Its final reply returns there when the delegation closes.`
+    : "Delegation: none. This Run's final reply is shown in this task.";
 }
 
 function previousRunLine(run: NonNullable<RunThreadState["previousRun"]>): string {
-  const started = `Previous Run in this Thread, started by message ${run.seedMessageId}:`;
+  const started = `Previous Run in this task, started by message ${run.seedMessageId}:`;
   if (run.status === "interrupted") {
     return `${started} was stopped at ${run.endedAt} before it finished.`;
   }
@@ -360,24 +360,24 @@ function previousRunLine(run: NonNullable<RunThreadState["previousRun"]>): strin
 
 const taskReturns = {
   delivered: "its return is settled; a result message was sent only if it had something to return",
-  pending: "its outcome has not reached that Thread yet",
-  undeliverable: "its outcome could not be sent to that Thread",
+  pending: "its outcome has not reached that task yet",
+  undeliverable: "its outcome could not be sent to that task",
 } as const;
 
 function previousTaskLine(task: NonNullable<RunThreadState["previousAssignment"]>): string {
   const ended = task.status === "cancelled" ? "was stopped" : task.status;
-  return `Previous task in this Thread: ${task.id}, assigned by ${assigner(task.origin, task.parentThreadId)}, ${ended} at ${task.finishedAt}; ${taskReturns[task.returnStatus]}.`;
+  return `Previous delegation in this task: ${task.id}, from ${delegator(task.origin, task.parentThreadId)}, ${ended} at ${task.finishedAt}; ${taskReturns[task.returnStatus]}.`;
 }
 
-function assigner(origin: AssignmentOrigin, parentThreadId: ThreadId | null): string {
-  const thread = parentThreadId ? `Thread ${parentThreadId}` : "a Thread this Run cannot read";
+function delegator(origin: AssignmentOrigin, parentThreadId: ThreadId | null): string {
+  const task = parentThreadId ? `task ${parentThreadId}` : "a task this Run cannot read";
   switch (origin) {
     case "run":
-      return thread;
+      return task;
     case "trigger":
-      return `a Trigger on ${thread}`;
+      return `an automation on ${task}`;
     case "watch":
-      return `a watch on ${thread}`;
+      return `a watch on ${task}`;
   }
 }
 
@@ -395,8 +395,8 @@ export function harnessReportsPrompt(
       ? [
           `${reports.omittedCount} additional report(s) in this snapshot were omitted by the context bound.`,
           reports.throughSequence === null
-            ? "Use thread_read to inspect the Thread and compare Report-IDs; the omitted reports are not necessarily one contiguous slice."
-            : `The snapshot ends at Thread sequence ${reports.throughSequence}. Use thread_read for this Thread, pass nextBefore as before for earlier messages, and compare Report-IDs; the omitted reports are not necessarily one contiguous slice.`,
+            ? "Use opensteer_task_read to inspect this task and compare Report-IDs; the omitted reports are not necessarily one contiguous slice."
+            : `The snapshot ends at task sequence ${reports.throughSequence}. Use opensteer_task_read for this task, pass nextCursor as cursor for earlier messages, and compare Report-IDs; the omitted reports are not necessarily one contiguous slice.`,
         ]
       : []),
   ].join("\n");

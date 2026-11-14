@@ -781,7 +781,7 @@ describe("Pi sessions", () => {
     expect((await stat(extensionPath)).mode & 0o777).toBe(0o600);
     const extension = await readFile(extensionPath, "utf8");
     expect(extension).not.toContain(noComputersNotice);
-    expect(extension).toContain("thread_read");
+    expect(extension).toContain("opensteer_task_read");
     // No credential ever reaches the file the model's own commands could read.
     expect(extension).not.toContain(fixture.context.agentTools.token);
 
@@ -791,7 +791,7 @@ describe("Pi sessions", () => {
     );
     expect(instructions).toContain("Opensteer platform guide.");
     expect(instructions).toContain("Follow the workspace instructions.");
-    expect(instructions).toContain("thread_read");
+    expect(instructions).toContain("opensteer_task_read");
     await fixture.adapter.close();
   });
 
@@ -915,13 +915,13 @@ describe("Pi sessions", () => {
     const session = await fixture.adapter.startSession(fixture.context);
     const observer = observe(session.events);
     await session.execute(fixture.turn("Read the Thread"));
-    expect(calls).toEqual([{ args: { query: "recent" }, name: "thread_read" }]);
+    expect(calls).toEqual([{ args: { query: "recent" }, name: "opensteer_task_read" }]);
     const started = observer.events.find((event) => event.type === "tool.started");
     expect(started).toMatchObject({
-      data: { tool: { name: "thread_read", namespace: "opensteer" } },
+      data: { tool: { name: "opensteer_task_read", namespace: "opensteer" } },
     });
     expect(observer.events.find((event) => event.type === "tool.completed")).toMatchObject({
-      data: { isError: false, output: expect.objectContaining({ text: "served thread_read" }) },
+      data: { isError: false, output: expect.objectContaining({ text: "served opensteer_task_read" }) },
     });
     await session.stop();
     await fixture.adapter.close();
@@ -950,32 +950,32 @@ describe("Pi sessions", () => {
   it("reads Opensteer's tools from a real MCP server over Streamable HTTP", async () => {
     const directory = await temporaryDirectory();
     const token = "os_secret_test_token";
-    const url = await startFakeMcpServer(directory, token, ["thread_read", "workspace_list"]);
+    const url = await startFakeMcpServer(directory, token, ["opensteer_task_read", "workspace_list"]);
     const connectOptions = { signal: new AbortController().signal, timeoutMs: 10_000 };
     expect(piToolCallTimeoutMs).toBe(heldToolCallTimeoutMs);
     const connection = await connectPiMcpServer(
-      { name: "opensteer", token, toolNames: ["thread_read"], url },
+      { name: "opensteer", token, toolNames: ["opensteer_task_read"], url },
       connectOptions,
     );
     try {
       const tools = await connection.listTools(connectOptions);
       // Only the declared tool is offered onward, whatever the server listed.
-      expect(tools.map((tool) => tool.name)).toEqual(["thread_read"]);
+      expect(tools.map((tool) => tool.name)).toEqual(["opensteer_task_read"]);
       expect(tools[0]?.inputSchema).toMatchObject({ required: ["query"], type: "object" });
       const result = await connection.callTool(
-        "thread_read",
+        "opensteer_task_read",
         { query: "hello" },
         new AbortController().signal,
       );
       expect(result).toEqual({
-        content: [{ text: "thread_read:hello", type: "text" }],
+        content: [{ text: "opensteer_task_read:hello", type: "text" }],
         isError: false,
       });
       await expect(
         connection.callTool("workspace_list", {}, new AbortController().signal),
       ).rejects.toThrow(/does not offer the tool/);
       const failure = await connection.callTool(
-        "thread_read",
+        "opensteer_task_read",
         { query: "fail" },
         new AbortController().signal,
       );
@@ -984,13 +984,13 @@ describe("Pi sessions", () => {
       // and images in exactly these shapes. The audio block has no place in
       // one, so it is left out rather than handed to a provider blind.
       const picture = await connection.callTool(
-        "thread_read",
+        "opensteer_task_read",
         { query: "picture" },
         new AbortController().signal,
       );
       expect(picture).toEqual({
         content: [
-          { text: "thread_read:observed", type: "text" },
+          { text: "opensteer_task_read:observed", type: "text" },
           { data: "aW1hZ2UtYnl0ZXM=", mimeType: "image/png", type: "image" },
         ],
         isError: false,
@@ -1427,7 +1427,7 @@ describe("Pi tool servers", () => {
       // The real connector, pointed at a server that answers the bearer and
       // then says nothing.
       const token = fixture.context.agentTools.token;
-      const url = await startFakeMcpServer(directory, token, ["thread_read"], stall);
+      const url = await startFakeMcpServer(directory, token, ["opensteer_task_read"], stall);
       fixture.connectMcpServer.value = (plan, options) =>
         connectPiMcpServer({ ...plan, url }, options);
       // The Host accepted the socket and said nothing; only Opensteer's own
@@ -1649,7 +1649,7 @@ describe("Pi inputs and instructions", () => {
       platformGuide: "Platform guide.",
     } as unknown as HarnessSessionContext;
     const tools: PiExtensionToolDefinition[] = [
-      { description: "d", inputSchema: {}, name: "thread_read", server: "opensteer" },
+      { description: "d", inputSchema: {}, name: "opensteer_task_read", server: "opensteer" },
     ];
     const text = piInstructions(context, tools);
     expect(text).toContain("Platform guide.");
@@ -1665,7 +1665,7 @@ describe("Pi inputs and instructions", () => {
         tools,
       ),
     ).toBe(text);
-    expect(text).toContain("thread_read");
+    expect(text).toContain("opensteer_task_read");
   });
 });
 
@@ -1735,7 +1735,7 @@ function testDriver(
 
 function fakeMcp(
   call: (name: string, args: unknown) => PiToolAnswer,
-  toolNames: readonly string[] = ["thread_read"],
+  toolNames: readonly string[] = ["opensteer_task_read"],
 ): PiMcpConnect {
   return async (plan) => {
     const connection: PiMcpConnection = {

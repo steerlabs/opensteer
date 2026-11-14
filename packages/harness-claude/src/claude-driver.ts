@@ -2793,7 +2793,7 @@ class ClaudeHarnessSession implements HarnessSession {
       return;
     }
     // A subagent's messages are its own steps and result: they never become
-    // Opensteer Thread messages or the root answer's text.
+    // Opensteer task messages or the root answer's text.
     if ("parent_tool_use_id" in message && message.parent_tool_use_id) {
       await this.#handleSubagentMessage(message, message.parent_tool_use_id, active);
       return;

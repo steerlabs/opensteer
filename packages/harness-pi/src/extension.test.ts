@@ -36,7 +36,7 @@ const threadRead: PiExtensionToolDefinition = {
     required: ["query"],
     type: "object",
   },
-  name: "thread_read",
+  name: "opensteer_task_read",
   server: "opensteer",
 };
 
@@ -124,7 +124,7 @@ describe("the generated Opensteer extension", () => {
   it("never gates a read-only tool or one of Opensteer's own", async () => {
     const extension = await loadExtension({ accessMode: "approval-required" });
     const asked: string[] = [];
-    for (const toolName of [...piReadOnlyTools, "thread_read"]) {
+    for (const toolName of [...piReadOnlyTools, "opensteer_task_read"]) {
       expect(
         await extension.toolCall(
           { input: {}, toolCallId: "c", toolName },
@@ -188,13 +188,13 @@ describe("the generated Opensteer extension", () => {
     expect(JSON.parse(message.slice(piHandshakePrefix.length))).toEqual({
       hasUi: true,
       nonce: "nonce-42",
-      tools: ["thread_read"],
+      tools: ["opensteer_task_read"],
     });
   });
 
   it("registers Opensteer's tools and runs one through the driver", async () => {
     const extension = await loadExtension({ accessMode: "approval-required" });
-    expect(extension.tools.map((tool) => tool.name)).toEqual(["thread_read"]);
+    expect(extension.tools.map((tool) => tool.name)).toEqual(["opensteer_task_read"]);
     expect(extension.tools[0]?.description).toBe("Read a Thread");
 
     const asked: string[] = [];
@@ -214,7 +214,7 @@ describe("the generated Opensteer extension", () => {
     expect(JSON.parse(asked[0] ?? "{}")).toEqual({
       arguments: { query: "recent" },
       kind: "tool",
-      name: "thread_read",
+      name: "opensteer_task_read",
       server: "opensteer",
       toolCallId: "call_9",
       v: 1,
@@ -242,7 +242,7 @@ describe("the generated Opensteer extension", () => {
     ).rejects.toThrow("the Host refused");
     await expect(
       tool.execute("c", {}, undefined, undefined, stubContext({ answer: undefined })),
-    ).rejects.toThrow(/did not answer the thread_read call/u);
+    ).rejects.toThrow(/did not answer the opensteer_task_read call/u);
   });
 
   it("registers and validates the advertised schema through pinned Pi", async () => {
@@ -275,13 +275,13 @@ describe("the generated Opensteer extension", () => {
     );
     const loaded = await loadExtensions([path], directory);
     expect(loaded.errors).toEqual([]);
-    const tool = loaded.extensions[0]?.tools.get("thread_read")?.definition;
-    if (!tool) throw new Error("Pi did not register thread_read");
+    const tool = loaded.extensions[0]?.tools.get("opensteer_task_read")?.definition;
+    if (!tool) throw new Error("Pi did not register opensteer_task_read");
     expect(tool.parameters).toEqual(threadRead.inputSchema);
     const validate = (args: unknown) =>
       validateToolArguments(tool, {
         id: "call",
-        name: "thread_read",
+        name: "opensteer_task_read",
         arguments: args,
         type: "toolCall",
       });

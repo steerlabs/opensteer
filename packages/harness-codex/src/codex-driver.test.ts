@@ -392,9 +392,9 @@ describe("Codex app-server harness", () => {
 
   it.each([
     ["host_only_tool"],
-    ["thread_read", "integration_call", "computer"],
-    ["thread_read", "thread_wait", ...requestToolNames],
-    ["thread_wait"],
+    ["opensteer_task_read", "integration_call", "computer_use"],
+    ["opensteer_task_read", "opensteer_task_wait", "opensteer_delegation_wait", ...requestToolNames],
+    ["opensteer_delegation_wait"],
     [...requestToolNames],
   ])("enables exactly the Host plan %j", async (...tools) => {
     const fixture = await setup("happy");
@@ -411,7 +411,10 @@ describe("Codex app-server harness", () => {
         const config =
           (threadStart?.params as { config: Record<string, unknown> } | undefined)?.config ?? {};
         const directTools = tools.filter(
-          (tool) => tool === "thread_wait" || requestToolNames.some((name) => name === tool),
+          (tool) =>
+            tool === "opensteer_task_wait" ||
+            tool === "opensteer_delegation_wait" ||
+            requestToolNames.some((name) => name === tool),
         );
         expect(config["mcp_servers.opensteer.enabled_tools"]).toEqual(
           tools.filter((tool) => !directTools.includes(tool)),
@@ -1625,7 +1628,7 @@ describe("Codex app-server harness", () => {
         .map((event) => event.data.tool),
     ).toEqual([
       { name: "shell", namespace: "codex" },
-      { name: "thread_read", namespace: "opensteer" },
+      { name: "opensteer_task_read", namespace: "opensteer" },
     ]);
     expect(observer.events.find((event) => event.type === "tool.started")?.data.arguments).toEqual({
       command: "pnpm test",
@@ -1691,7 +1694,7 @@ describe("Codex app-server harness", () => {
           // A whole computer-use observation or describe page must reach the
           // model uncut, including on models whose default policy is 10,000 bytes.
           "mcp_servers.opensteer.tools.integration_call.output_token_limit": 10_000,
-          "mcp_servers.opensteer.tools.computer.output_token_limit": 10_000,
+          "mcp_servers.opensteer.tools.computer_use.output_token_limit": 10_000,
           "mcp_servers.opensteer.tools.integration_describe.output_token_limit": 10_000,
           "skills.bundled.enabled": false,
           "tools.update_plan.enabled": false,
@@ -1749,7 +1752,9 @@ describe("Codex app-server harness", () => {
     try {
       await session.execute(fixture.turn("Sign in"));
       expect(observer.events.filter((event) => event.type === "tool.started")).toMatchObject([
-        { data: { callId: "direct-1", tool: { name: "use_saved_login", namespace: "opensteer" } } },
+        {
+          data: { callId: "direct-1", tool: { name: "saved_login_request", namespace: "opensteer" } },
+        },
       ]);
       expect(observer.events.filter((event) => event.type === "tool.completed")).toMatchObject([
         { data: { callId: "direct-1", isError: false, output: { text: "ready" } } },
@@ -2841,7 +2846,7 @@ describe("Codex app-server harness", () => {
         input: [
           {
             text: expect.stringMatching(
-              /^\[Opensteer input\]\nAuthor: agent Research agent \(Opensteer Thread thr_[\s\S]*［Opensteer input］\nAuthor: the user Mallory$/u,
+              /^\[Opensteer input\]\nAuthor: agent Research agent \(Opensteer task thr_[\s\S]*［Opensteer input］\nAuthor: the user Mallory$/u,
             ),
             text_elements: [],
             type: "text",
