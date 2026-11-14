@@ -350,6 +350,31 @@ describe("NativeTeamEntry", () => {
     },
   );
 
+  it("starts a new Account's entry instead of joining the retired Account's attempt", async () => {
+    const { entry, oauth, verify } = setup();
+    const verified = team();
+    let account = new AbortController();
+    oauth.teamEntryFence = () => {
+      const signal = account.signal;
+      return { generation: 0, signal, assertCurrent: () => signal.throwIfAborted() };
+    };
+    const gate = Promise.withResolvers<VerifiedHostEndpoint>();
+    verify.mockReturnValueOnce(gate.promise);
+    const input = {
+      deploymentId: verified.discovery.deploymentId,
+      origin: verified.discovery.canonicalOrigin,
+      mode: "passive" as const,
+    };
+    const retired = entry.authorize(input);
+    account.abort();
+    account = new AbortController();
+    const current = entry.authorize(input);
+    gate.resolve(verified);
+    await expect(retired).resolves.toMatchObject({ status: "superseded" });
+    await expect(current).resolves.toMatchObject({ status: "authorized" });
+    expect(oauth.exchangeTeamSession).toHaveBeenCalledOnce();
+  });
+
   it("does not fold an explicit invite join into an in-flight plain sign-in", async () => {
     const { entry, oauth, verify } = setup();
     const verified = team();

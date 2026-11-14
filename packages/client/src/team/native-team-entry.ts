@@ -127,6 +127,7 @@ const entryAttempts = new WeakMap<
     {
       mode: "passive" | "interactive";
       invite: TeamInviteSecret | null;
+      fence: AbortSignal;
       promise: Promise<TeamEntryOutcome>;
     }
   >
@@ -168,7 +169,9 @@ export class NativeTeamEntry {
       lease.assertCurrent();
       let attempts = entryAttempts.get(this.#oauth);
       if (!attempts) entryAttempts.set(this.#oauth, (attempts = new Map()));
-      const held = attempts.get(input.deploymentId);
+      const pending = attempts.get(input.deploymentId);
+      // An attempt from a retired Account or superseded fence never answers a newer caller.
+      const held = pending?.fence.aborted ? undefined : pending;
       if (held) {
         if (input.mode === "passive" && held.mode === "interactive")
           return this.#passiveDuringBrowser(input, held.promise, lease);
@@ -197,7 +200,12 @@ export class NativeTeamEntry {
         if (attempts.get(input.deploymentId)?.promise === promise)
           attempts.delete(input.deploymentId);
       });
-      attempts.set(input.deploymentId, { mode: input.mode, invite: input.invite ?? null, promise });
+      attempts.set(input.deploymentId, {
+        mode: input.mode,
+        invite: input.invite ?? null,
+        fence: lease.signal,
+        promise,
+      });
       return promise;
     } catch (error) {
       try {

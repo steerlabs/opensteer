@@ -24,7 +24,11 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { headers: { "content-type": "application/json" }, status });
 
 /** The team server at this origin: the mock team behind its HTTP routes. */
-function serveTeam(options: { readonly signedIn: boolean; readonly consentError?: string }) {
+function serveTeam(options: {
+  readonly signedIn: boolean;
+  readonly consentError?: string;
+  readonly refusedReason?: string | null;
+}) {
   const team = new MockTeamHost();
   seedBusyTeam(team, { name: "Acme", index: 1 });
   const requests: { readonly path: string; readonly init: RequestInit | undefined }[] = [];
@@ -50,6 +54,19 @@ function serveTeam(options: { readonly signedIn: boolean; readonly consentError?
               ok: true,
               data: { url: "com.opensteer.opensteer:/oauth/callback?code=returned" },
             });
+      if (url.pathname === "/v1/rpc/team.bootstrap.get" && options.refusedReason !== undefined)
+        return json(
+          {
+            ok: false,
+            error: {
+              code: "forbidden",
+              message: "Active team membership required",
+              retryable: false,
+              ...(options.refusedReason ? { reason: options.refusedReason } : {}),
+            },
+          },
+          403,
+        );
       const name = url.pathname.replace("/v1/rpc/", "") as keyof MockTeamHost["rpc"];
       if (!options.signedIn)
         return json({ ok: false, error: { code: "unauthenticated", message: "Sign in." } }, 401);
@@ -99,6 +116,16 @@ const nativeQuery = new URLSearchParams({
 }).toString();
 
 describe("a team's own web app", () => {
+  it.each(["removed", null])(
+    "gives a refused reader invite guidance on first load (reason %s)",
+    async (refusedReason) => {
+      serveTeam({ signedIn: true, refusedReason });
+      const node = await render();
+      expect(node.textContent).toContain("Ask a team member for a new invite");
+      expect(node.textContent).not.toContain("Active team membership required");
+    },
+  );
+
   it("signs a signed-out member in through the team server", async () => {
     const { requests } = serveTeam({ signedIn: false });
     const assign = vi.spyOn(window.location, "assign").mockImplementation(() => undefined);

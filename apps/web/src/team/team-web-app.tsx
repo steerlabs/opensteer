@@ -3,6 +3,7 @@ import { BrowserRouter, Link, Navigate, Route, Routes, useParams } from "react-r
 import { parseTeamPageLink, teamPageAppLink, type TeamPageLink } from "@opensteer/core";
 import { createHttpHostApiClient } from "@opensteer/client/host";
 import {
+  teamEntryRefusalOutcome,
   teamApiVersion,
   teamApiVersionHeader,
   type TeamBootstrapSchema,
@@ -29,7 +30,8 @@ type Entry =
   | { readonly kind: "loading" }
   | { readonly kind: "signed-out"; readonly setUp: boolean }
   | { readonly kind: "ready"; readonly bootstrap: TeamBootstrap }
-  | { readonly kind: "failed"; readonly message: string };
+  | { readonly kind: "failed"; readonly message: string }
+  | { readonly kind: "not-member" };
 
 const versionHeaders = { [teamApiVersionHeader]: String(teamApiVersion) };
 
@@ -51,6 +53,12 @@ async function readEntry(): Promise<Entry> {
   });
   const result = await rpc["team.bootstrap.get"]({});
   if (result.ok) return { kind: "ready", bootstrap: result.data };
+  // Older team servers refuse a removed member with a reasonless `forbidden`.
+  if (
+    teamEntryRefusalOutcome(result.error.reason) === "membership" ||
+    (result.error.code === "forbidden" && !result.error.reason)
+  )
+    return { kind: "not-member" };
   if (!signedOut) return { kind: "failed", message: result.error.message };
   const state = await fetch("/v1/team/setup/state", { headers: versionHeaders });
   const setUp = state.ok && ((await state.json()) as { complete?: unknown }).complete === true;
@@ -107,6 +115,19 @@ export function TeamWebApp() {
     );
   if (entry.kind === "signed-out")
     return <TeamSignIn setUp={entry.setUp} oauthQuery={nativeOAuthQuery} rpc={rpc} />;
+  if (entry.kind === "not-member")
+    return (
+      <OnboardingCard
+        title="You aren’t in this team"
+        description="Ask a team member for a new invite, then open it here."
+      >
+        <div className="onboarding__actions">
+          <button className="btn" onClick={() => window.location.reload()} type="button">
+            Try again
+          </button>
+        </div>
+      </OnboardingCard>
+    );
   if (entry.kind === "failed")
     return (
       <OnboardingCard title="This team can’t open">

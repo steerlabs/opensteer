@@ -300,11 +300,15 @@ export function TeamSideFor({
               ? "Opening team…"
               : team.failure === "unavailable"
                 ? "Team temporarily unavailable. Try again."
-                : team.failure === "join" || teamEntryRefusalOutcome(refusal) === "membership"
-                  ? "Ask a team member for an invite."
-                  : enter
-                    ? "Not signed in on this computer"
-                    : `Opens at ${new URL(team.origin).host}`}
+                : team.failure === "update-app"
+                  ? "Update Opensteer to open this team."
+                  : team.failure === "update-server"
+                    ? "This team's server needs an update."
+                    : team.failure === "join" || teamEntryRefusalOutcome(refusal) === "membership"
+                      ? "Ask a team member for an invite."
+                      : enter
+                        ? "Not signed in on this computer"
+                        : `Opens at ${new URL(team.origin).host}`}
           </p>
         </div>
         {enter ? (
@@ -321,7 +325,9 @@ export function TeamSideFor({
           >
             {entering || team.failure === "pending"
               ? "Opening…"
-              : team.failure === "unavailable"
+              : team.failure === "unavailable" ||
+                  team.failure === "update-app" ||
+                  team.failure === "update-server"
                 ? "Retry"
                 : team.failure === "join" || teamEntryRefusalOutcome(refusal) === "membership"
                   ? "Join"
