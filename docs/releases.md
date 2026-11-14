@@ -11,11 +11,12 @@ a new Deployment identity; it never deletes the old data or touches `~/Opensteer
 pair again, and the old Account/Connect entry remains removable. Test reset only in disposable
 fixtures or a VM.
 
-Team servers update through the [deploy/team recipe](../deploy/team/README.md), with hourly
+Self-hosted team servers update through the [deploy/team recipe](../deploy/team/README.md), with hourly
 scheduler-driven pull-before-replace updates. A failed pull leaves the running stack in place;
 there is no desktop team supervisor. Stable and Beta select the corresponding published tags,
 and each tag's version names the images it runs. Personal Host epoch and team API version
 advance independently.
+Hosted teams use the [hosted release policy](hosted-teams.md#releases) instead.
 
 ## Build inputs and local proof
 

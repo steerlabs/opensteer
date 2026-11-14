@@ -17,7 +17,7 @@ def trace(phase, deadline=None, **fields):
 trace('import.end', executable=sys.executable, version=sys.version.split()[0])
 
 
-def has_visible_window(pid, deadline=None):
+def load_frameworks(pid=None, deadline=None):
     trace('dlopen.start', deadline, pid=pid, framework='CoreGraphics')
     cg = c.CDLL('/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics')
     trace('dlopen.end', deadline, pid=pid, framework='CoreGraphics')
@@ -36,6 +36,18 @@ def has_visible_window(pid, deadline=None):
     cf.CFNumberGetValue.restype = c.c_bool
     cf.CFRelease.argtypes = [c.c_void_p]
     cf.CFRelease.restype = None
+    return cg, cf
+
+
+def probe():
+    load_frameworks()
+    queue = select.kqueue()
+    queue.close()
+    trace('probe.ready')
+
+
+def has_visible_window(pid, deadline=None):
+    cg, cf = load_frameworks(pid, deadline)
 
     def number(window, key, kind, storage):
         value = cf.CFDictionaryGetValue(window, c.c_void_p.in_dll(cg, key).value)
@@ -112,9 +124,11 @@ def wait_for_exits(pids):
 
 
 if __name__ == '__main__':
-    if sys.argv[1] == 'window':
+    if sys.argv[1] == 'probe':
+        probe()
+    elif sys.argv[1] == 'window':
         wait_for_window(int(sys.argv[2]), float(sys.argv[3]))
     elif sys.argv[1] == 'exit':
         wait_for_exits(map(int, sys.argv[2:]))
     else:
-        raise ValueError('Expected window PID or exit PIDs')
+        raise ValueError('Expected probe, window PID or exit PIDs')

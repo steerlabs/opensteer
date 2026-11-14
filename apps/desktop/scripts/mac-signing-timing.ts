@@ -15,9 +15,11 @@ export async function withMacSigningTimings<T>(
     return work(environment);
   const directory = await mkdtemp(path.join(tmpdir(), "opensteer-codesign-timing-"));
   try {
-    const shim = path.join(directory, "codesign");
-    await copyFile(fileURLToPath(new URL("./codesign-timing.cjs", import.meta.url)), shim);
-    await setPrivateFileMode(shim, 0o700);
+    for (const tool of ["codesign", "xcrun"]) {
+      const shim = path.join(directory, tool);
+      await copyFile(fileURLToPath(new URL("./codesign-timing.cjs", import.meta.url)), shim);
+      await setPrivateFileMode(shim, 0o700);
+    }
     return await work({
       ...environment,
       PATH: directory + path.delimiter + (environment.PATH ?? "/usr/bin:/bin"),

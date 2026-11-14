@@ -34,6 +34,7 @@ kubectl kustomize "$root/deploy/team-provisioner" |
   kubectl apply -f -
 
 if ! kubectl -n "$namespace" rollout status deployment/team-provisioner --timeout=10m; then
-  kubectl -n "$namespace" rollout undo deployment/team-provisioner
+  # A reconcile pass may already have migrated teams; restoring old images is unsafe.
+  echo "Provisioner readiness failed; holding $source for a forward fix." >&2
   exit 1
 fi

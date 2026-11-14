@@ -53,7 +53,7 @@ spec:
           ports:
             - { name: readiness, containerPort: 8081 }
           # Ready only after a whole reconcile pass succeeds, so a release that cannot reach
-          # Account or list teams fails its rollout and is rolled back.
+          # Account or list teams fails its rollout and holds for a forward fix.
           readinessProbe:
             httpGet: { path: /readyz, port: readiness }
             periodSeconds: 5
