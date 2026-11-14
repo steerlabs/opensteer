@@ -500,8 +500,9 @@ jobs:
         run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG" --source-sha "$SOURCE_SHA"
   team-provisioner:
     # Stable may reuse older images after teams have migrated; only Beta advances the fleet.
-    needs: [preflight, team-images, publish-insider]
-    if: ${{ !cancelled() && needs.preflight.outputs.channel == 'beta' && needs['publish-insider'].result == 'success' && needs['team-images'].result == 'success' }}
+    # A rerun finds its Beta already published (discover verified it) and still deploys.
+    needs: [preflight, discover, team-images, publish-insider]
+    if: ${{ !cancelled() && needs.preflight.outputs.channel == 'beta' && needs['team-images'].result == 'success' && (needs['publish-insider'].result == 'success' || (needs.discover.result == 'success' && needs.discover.outputs.skip == 'true')) }}
     runs-on: ubuntu-latest
     environment: teams
     timeout-minutes: 30
