@@ -1,3 +1,4 @@
+import { promptCacheExpiresAt } from "@opensteer/core";
 import { dispatchNodeStop, NodeStopAuthoritySchema } from "@opensteer/database";
 import { agentToolsPlanForRun } from "./agent-tools-plan.js";
 import { SpecialistStore } from "@opensteer/database";
@@ -301,6 +302,8 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     // for rather than taken for one that cannot run this engine.
     const identity = this.#runners.identityForEnvironment(command.environmentId);
     if (!identity) throw new CommandDispatchError("Runner is offline", "retry");
+    if (context.run.maintenance && !identity.capabilities.includes("claude-compaction-v1"))
+      throw new CommandDispatchError("Update this Runner to support Claude compaction.", "failed");
     if (context.voiceCall && !identity.capabilities.includes("voice-run-v1"))
       throw new OpensteerError({
         code: "conflict",
@@ -588,9 +591,25 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       knowledge,
       accessMode: context.thread.accessMode,
     });
+    const maintenanceSnapshot = context.run.maintenance
+      ? await this.#store.database
+          .selectFrom("providerSessions")
+          .select("contextSnapshot")
+          .where("id", "=", context.run.maintenance.providerSessionId)
+          .executeTakeFirst()
+      : null;
+    const maintenanceExpiresAt = maintenanceSnapshot?.contextSnapshot
+      ? promptCacheExpiresAt(maintenanceSnapshot.contextSnapshot)
+      : null;
     const runnerCommandFor = (machineAccess: MachineAccessRunContext): RunnerCommand => ({
       commandId: command.id,
       context: {
+        ...(context.run.maintenance
+          ? {
+              maintenance: context.run.maintenance,
+              ...(maintenanceExpiresAt === null ? {} : { maintenanceExpiresAt }),
+            }
+          : {}),
         ...(context.voiceCall
           ? {
               voiceCall: context.voiceCall,

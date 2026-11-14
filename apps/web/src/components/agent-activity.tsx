@@ -1,3 +1,4 @@
+import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
 import { TeamInputSource } from "../team/task-source-chip.js";
 import { useToolOutput } from "@opensteer/client/react";
 import { copyText } from "@opensteer/shared/clipboard";
@@ -520,6 +521,11 @@ function TurnView({
     handledReveal.current = reveal;
     if (hiddenTarget) setChosen(true);
   }, [conversation, reveal, hiddenTarget, targetInWork]);
+  if (
+    turn.run?.compaction &&
+    (turn.run.compaction.reason === "idle" || turn.run.compaction.reason === "before-send")
+  )
+    return <CompactionDivider run={turn.run} />;
   if (conversation) return <ConversationTurn turn={turn} turnKey={turnKey} />;
   const spoken = turn.reply ?? turn.work.find((entry) => entry.kind === "message");
   const outcome = turn.run !== null && showsRunOutcome(turn.run);
@@ -528,6 +534,7 @@ function TurnView({
   const placesUnderOutcome = placesShown && outcome && turn.reply === null;
   return (
     <div className="turn" data-run-id={turn.runId ?? undefined}>
+      {turn.run?.compaction ? <CompactionDivider run={turn.run} /> : null}
       <AgentByline author={spoken?.kind === "message" ? spoken.author : null} />
       <TurnContent
         fold={turnFolds(turn) ? { open, onToggle: () => setChosen(!open) } : undefined}
@@ -865,6 +872,7 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
   // only this screen knows: a Mac session it is not shown, or tasks it has no
   // card for.
   if (
+    !turn.run?.compaction &&
     !now &&
     !kept &&
     !composing &&
@@ -878,6 +886,7 @@ function ConversationTurn({ turn, turnKey }: { turn: Turn; turnKey: string }) {
     return null;
   return (
     <div className="turn turn--conversation">
+      {turn.run?.compaction ? <CompactionDivider run={turn.run} /> : null}
       {now ? (
         <ComputerUseLine key={now.session.sessionId} now={now} />
       ) : kept ? (
@@ -2612,4 +2621,39 @@ function TeamDelivery({ run }: { readonly run: RunEntry }) {
   const delivery = run.delivery;
   if (!delivery) return null;
   return <small className="team-run-delivery">{teamDeliveryLabel(delivery, channelName)}</small>;
+}
+
+function CompactionDivider({ run }: { run: RunEntry }) {
+  const client = useContext(TranscriptHostClientContext);
+  const { threadId } = useContext(Speakers);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!run.compaction) return null;
+  return (
+    <div className="run-restart" role="status">
+      <details>
+        <summary title={compactionDisclosure}>{compactionLabel(run.compaction)}</summary>
+        <p>{compactionDisclosure}</p>
+      </details>
+      {run.compaction.status === "running" && client && threadId ? (
+        <button
+          className="btn btn--small btn--ghost"
+          disabled={busy}
+          type="button"
+          onClick={() => {
+            setBusy(true);
+            void client
+              .stopRun(threadId)
+              .catch((e: unknown) =>
+                setError(e instanceof Error ? e.message : "Could not stop summary."),
+              )
+              .finally(() => setBusy(false));
+          }}
+        >
+          Stop
+        </button>
+      ) : null}
+      {error ? <span role="alert">{error}</span> : null}
+    </div>
+  );
 }

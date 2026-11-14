@@ -240,6 +240,7 @@
     "apps/host/src/agents/dispatcher.ts",
     "apps/host/src/agents/environment-discovery.ts",
     "apps/host/src/agents/harness-catalogs.ts",
+    "apps/host/src/agents/idle-compaction-service.ts",
     "apps/host/src/agents/memory-pass-program.ts",
     "apps/host/src/agents/memory-pass-service.ts",
     "apps/host/src/agents/model-selection.ts",

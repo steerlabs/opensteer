@@ -1,5 +1,10 @@
 import { TeamCommandResultViewSchema, teamReadViews } from "./team-views.js";
 import { NeedsYouPageSchema } from "./needs-you.js";
+import {
+  CompactionSendChoiceSchema,
+  IdleCompactionPolicySchema,
+  IdleCompactionPolicyViewSchema,
+} from "@opensteer/core";
 import { ToolOutputViewSchema } from "@opensteer/core";
 import { AutomaticModelsViewSchema } from "./automatic-models.js";
 import { TeamCommandSchema, teamReadSchemas } from "./team-api.js";
@@ -419,6 +424,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     .strictObject({
       content: MessageContentSchema,
       delivery: ThreadInputPolicySchema.extract(["queue", "steer"]).optional().default("queue"),
+      compaction: CompactionSendChoiceSchema.optional(),
       freshContext: z.boolean().optional(),
       idempotencyKey: idempotencyKeySchema,
       threadId: ThreadIdSchema,
@@ -490,6 +496,11 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("viewer.timeZone.update"),
     idempotencyKey: idempotencyKeySchema,
     timeZone: TimeZoneSchema,
+  }),
+  z.strictObject({
+    type: z.literal("settings.idleCompaction.set"),
+    idempotencyKey: idempotencyKeySchema,
+    policy: IdleCompactionPolicySchema,
   }),
   // How many untouched days move the reader's tasks to Done. Needs `quiet-tasks-v1`.
   z.strictObject({
@@ -1186,6 +1197,10 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     registered: z.literal(true),
   }),
   z.object({ timeZone: TimeZoneSchema, type: z.literal("viewer.timeZone.update") }),
+  z.object({
+    policy: IdleCompactionPolicyViewSchema,
+    type: z.literal("settings.idleCompaction.set"),
+  }),
   z.object({ quietTaskDays: QuietTaskDaysSchema, type: z.literal("viewer.quietTasks.update") }),
   z.object({
     asOfSequence: SequenceSchema,

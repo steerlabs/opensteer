@@ -10,6 +10,7 @@ import { workflowSessionRoot } from "./workflow-transcript.js";
 import { type ClaudeExecutableInspection } from "./executable.js";
 import { claudeSdkProcess } from "./sdk-process.js";
 import { isRecord } from "@opensteer/shared/isRecord";
+import { ClaudeContextMeasurement } from "./context-measurement.js";
 import { mergeEnvironment } from "@opensteer/shared/userEnvironment";
 import { randomUUID } from "node:crypto";
 import { rmSync, writeFileSync } from "node:fs";
@@ -407,6 +408,11 @@ interface ActiveTurn {
   /** The last result said more of the person's sends wait to run as turns. */
   queuedTurns: boolean;
   /** What the Run consumed, as of its latest turn; stated once, when it ends. */
+  readonly contextMeasurement: ClaudeContextMeasurement;
+  readonly compactionReason: "manual" | "automatic" | "idle" | "before-send";
+  readonly maintenance: boolean;
+  /** Claude reported a failed compaction, even if the command's own result says success. */
+  compactionFailed?: boolean;
   usage?: RunUsage;
   usageBaseline?: SDKResultMessage | undefined;
   usageBaselineKnown?: boolean;
@@ -1620,6 +1626,11 @@ class ClaudeHarnessSession implements HarnessSession {
         message: "Claude session already has an active turn",
       });
     }
+    if (run.maintenance && !this.#hasProviderTranscript && !this.#live)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Compaction requires an existing native session",
+      });
     const environment = mergeEnvironments(this.#context.environment, run.environment);
     const nodes = new SubagentNodes((event) => {
       if (event.type === "node.completed") {
@@ -1650,6 +1661,17 @@ class ClaudeHarnessSession implements HarnessSession {
       },
     );
     const active: ActiveTurn = {
+      contextMeasurement: new ClaudeContextMeasurement(),
+      maintenance: run.maintenance !== undefined,
+      compactionReason:
+        run.maintenance?.reason ??
+        (run.inputs.some((input) =>
+          input.content.some(
+            (part) => part.type === "text" && part.text.trim().toLowerCase() === "/compact",
+          ),
+        )
+          ? "manual"
+          : "automatic"),
       abortController: new AbortController(),
       agentCalls: new Map(),
       knownNodes: new Set(),
@@ -1926,7 +1948,12 @@ class ClaudeHarnessSession implements HarnessSession {
     let startupTimer: NodeJS.Timeout | undefined;
     let turnTimer: NodeJS.Timeout | undefined;
     try {
-      await this.#pushTurnInputs(active, run.inputs, run, run.attachments);
+      if (run.maintenance) {
+        const seed = run.inputs[0];
+        if (!seed)
+          throw new OpensteerError({ code: "bad_request", message: "Compaction seed is missing" });
+        await this.#pushInput(active, seed, { prompt: "/compact", shouldQuery: true });
+      } else await this.#pushTurnInputs(active, run.inputs, run, run.attachments);
       await this.#applySelection();
       active.sawInit = this.#live !== undefined;
       active.usageBaseline = this.#ledger;
@@ -2328,6 +2355,11 @@ class ClaudeHarnessSession implements HarnessSession {
 
   #canUseTool(active: ActiveTurn): CanUseTool {
     return async (toolName, input, options) => {
+      if (active.maintenance) {
+        active.transportError = new Error("Unexpected tool use during compaction");
+        this.#abortActive(active, active.transportError);
+        return { behavior: "deny", interrupt: true, message: "Compaction cannot use tools" };
+      }
       if (
         active.terminal ||
         active.interrupted ||
@@ -2582,6 +2614,19 @@ class ClaudeHarnessSession implements HarnessSession {
   }
 
   async #handleMessage(message: SDKMessage, active: ActiveTurn): Promise<void> {
+    if (
+      active.maintenance &&
+      ((message.type === "assistant" &&
+        message.message.content.some((block) => block.type === "tool_use")) ||
+        (message.type === "stream_event" &&
+          message.event.type === "content_block_start" &&
+          message.event.content_block.type === "tool_use"))
+    ) {
+      active.transportError = new Error("Unexpected tool use during compaction");
+      this.#abortActive(active, active.transportError);
+      return;
+    }
+
     if (active.terminal || active.interrupted) return;
     this.#assertMessageSession(message);
     // Claude reports where each uuid-stamped message is in its queue in a frame
@@ -2749,6 +2794,27 @@ class ClaudeHarnessSession implements HarnessSession {
       return;
     }
 
+    active.contextMeasurement.accept(message, Date.now());
+    if (message.type === "system") {
+      const result: unknown = Reflect.get(message, "compact_result");
+      const status =
+        subtype === "compact_boundary" || result === "success"
+          ? "created"
+          : result === "failed"
+            ? "failed"
+            : subtype === "status" && Reflect.get(message, "status") === "compacting"
+              ? "running"
+              : null;
+      if (status) {
+        // A native /compact can report progress before anything else of the Run.
+        this.#ensureRunStarted(active);
+        if (status === "failed") active.compactionFailed = true;
+        this.#publish({
+          type: "run.compaction",
+          data: { status, reason: active.compactionReason },
+        });
+      }
+    }
     if (active.idle && (message.type === "stream_event" || message.type === "assistant")) {
       active.idle = false;
       active.wakePending = false;
@@ -2808,6 +2874,21 @@ class ClaudeHarnessSession implements HarnessSession {
         consumed.every((uuid) => active.contextOnly.has(uuid))
       )
         return;
+      if (
+        message.subtype === "success" &&
+        !message.is_error &&
+        active.maintenance &&
+        active.compactionFailed
+      ) {
+        this.#publishFailure(
+          active,
+          new OpensteerError({
+            code: "harness_error",
+            message: "Claude could not create a summary",
+          }),
+        );
+        return;
+      }
       if (message.subtype === "success" && !message.is_error) {
         const text = message.result || this.#latestAssistantText;
         this.#publish({
@@ -2959,6 +3040,8 @@ class ClaudeHarnessSession implements HarnessSession {
 
   /** What the Run consumed, stated once and always before its terminal event. */
   #publishUsage(active: ActiveTurn): void {
+    const measurement = active.contextMeasurement.snapshot();
+    if (measurement) this.#publish({ data: measurement, type: "run.context-measured" });
     const usage = active.usage;
     if (!usage) return;
     delete active.usage;
@@ -3411,6 +3494,11 @@ class ClaudeHarnessSession implements HarnessSession {
   }
 
   #publish(event: HarnessEvent, delivery: "must-deliver" | "disposable" = "must-deliver"): void {
+    if (
+      this.#activeTurn?.maintenance &&
+      (event.type === "assistant.message" || event.type === "assistant.delta")
+    )
+      return;
     this.#publisher.publish(event, delivery);
     if (
       event.type === "run.completed" ||

@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+import { compactionReturnHint } from "./compaction-eligibility.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import "./connection.js";
 import {
@@ -48,13 +50,14 @@ export async function projectThreadState(
     .selectFrom("runs")
     .select("status")
     .where("threadId", "=", threadId)
+    .where("maintenance", "is", null)
     .where("status", "in", nonTerminalRunStatuses)
     .orderBy("runOrdinal", "asc")
     .limit(1)
     .executeTakeFirst();
   const last = await transaction
     .selectFrom("runs")
-    .select("status")
+    .select(["status", "maintenance"])
     .where("threadId", "=", threadId)
     .orderBy("runOrdinal", "desc")
     .limit(1)
@@ -65,7 +68,7 @@ export async function projectThreadState(
       : deriveThreadStatus({
           earliestActiveRunStatus: active?.status ?? null,
           inputQueuePaused: thread.inputQueuePaused,
-          lastRunFailed: last?.status === "failed",
+          lastRunFailed: !last?.maintenance && last?.status === "failed",
         });
   const pending = await transaction
     .selectFrom("requests")
@@ -84,14 +87,28 @@ export async function projectThreadState(
       status,
       pendingRequestCount: pendingRequests,
       projectedInputQueuePaused: thread.inputQueuePaused,
-      updatedAt,
+      ...(last?.maintenance || (!changed && !force) ? {} : { updatedAt }),
     })
     .where("id", "=", threadId)
     .executeTakeFirstOrThrow();
-  if (!changed && !force) return [];
+  const returnHint = await compactionReturnHint(transaction, threadId);
+  const previous = await transaction
+    .selectFrom("deploymentEvents")
+    .select("data")
+    .where("threadId", "=", threadId)
+    .where("type", "=", "thread.state-changed")
+    .orderBy("sequence", "desc")
+    .limit(1)
+    .executeTakeFirst();
+  const priorHint =
+    previous?.data && typeof previous.data === "object" && "returnHint" in previous.data
+      ? previous.data.returnHint
+      : null;
+  if (!changed && !force && isDeepStrictEqual(priorHint, returnHint)) return [];
   return [
     await appendHostDeploymentEvent(transaction, {
       data: {
+        returnHint,
         status,
         title: thread.title,
         icon: thread.icon,

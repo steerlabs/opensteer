@@ -1,3 +1,8 @@
+import {
+  idleCompactionTitle,
+  idleCompactionChoices,
+  idleCompactionHelp,
+} from "@opensteer/client/host";
 import { parseAutomaticModelConfig } from "@opensteer/client/host";
 import {
   useNativeState,
@@ -15,6 +20,7 @@ import {
 } from "@expo/ui/swift-ui";
 import {
   accessibilityLabel,
+  accessibilityAddTraits,
   buttonStyle,
   disabled,
   frame,
@@ -48,7 +54,13 @@ const footnote = font({ textStyle: "footnote" });
 export function AiSettingsForm(
   props: Pick<
     SettingsFormProps,
-    "aiAccounts" | "page" | "engineUpdates" | "onEngineUpdate" | "onChooseModel" | "automatic"
+    | "idleCompaction"
+    | "aiAccounts"
+    | "page"
+    | "engineUpdates"
+    | "onEngineUpdate"
+    | "onChooseModel"
+    | "automatic"
   >,
 ): ReactNode {
   const engineUpdates = props.engineUpdates ?? [];
@@ -78,6 +90,27 @@ export function AiSettingsForm(
           ))}
         </Section>
       )}
+      {props.idleCompaction ? (
+        <Section title={idleCompactionTitle}>
+          {idleCompactionChoices.map((choice) => (
+            <VStack key={choice.value} alignment="leading" spacing={2}>
+              <Button
+                label={`${props.idleCompaction?.policy.mode === choice.value ? "✓ " : ""}${choice.label}`}
+                modifiers={[
+                  disabled(props.idleCompaction!.pending),
+                  ...(props.idleCompaction?.policy.mode === choice.value
+                    ? [accessibilityAddTraits(["isSelected"])]
+                    : []),
+                ]}
+                onPress={() => props.idleCompaction?.save({ mode: choice.value })}
+              />
+              <Text modifiers={[secondary, footnote]}>{choice.description}</Text>
+            </VStack>
+          ))}
+          <Text modifiers={[secondary, footnote]}>{idleCompactionHelp}</Text>
+          {props.idleCompaction.error ? <ErrorText detail={props.idleCompaction.error} /> : null}
+        </Section>
+      ) : null}
       {props.automatic ? <AutomaticModels form={props.automatic} /> : null}
     </>
   );

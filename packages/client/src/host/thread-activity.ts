@@ -52,13 +52,16 @@ export interface ThreadStopTargetInput {
 }
 
 /**
- * The Run a Stop interrupts, while the Host says the Thread is at work: its
- * earliest executing Run, else the one waiting to start, which the Host ends
- * at once. Null exactly when no surface offers a Stop.
+ * Maintenance remains stoppable while the Host keeps its Thread idle.
  */
 export function threadStopTarget(input: ThreadStopTargetInput): RunQueueEntry | null {
   const { status } = input.thread;
-  if (status !== "running" && status !== "waiting") return null;
+  if (status !== "running" && status !== "waiting")
+    return status === "idle"
+      ? (threadRuns(input.runQueue, input.thread.id).find(
+          (run) => run.maintenance && (run.status !== "queued" || !input.thread.inputQueuePaused),
+        ) ?? null)
+      : null;
   return (
     threadRuns(input.runQueue, input.thread.id).find((run) => run.status !== "queued") ??
     nextQueuedRun(input)
@@ -117,6 +120,7 @@ export function threadWatch(
 ): ThreadWatch | null {
   if (requestsWaitingOn(input.waitingRequests, input.thread.id).length > 0)
     return { kind: "needs-you" };
+  if (input.thread.status !== "running" && input.thread.status !== "waiting") return null;
   const target = threadStopTarget(input);
   if (target === null) return null;
   const activity = threadActivity(input);

@@ -227,6 +227,7 @@ export interface HarnessSummary {
 }
 
 export interface ThreadSummary {
+  returnHint?: import("@opensteer/core").CompactionReturnHint | null | undefined;
   lastVisitedAt: string | null;
   latestRunCompletedAt: string | null;
   /** When a person last asked for work; task lists order by this time. */
@@ -296,6 +297,7 @@ export interface TaskListState {
 }
 
 export interface RunQueueEntry {
+  maintenance?: Run["maintenance"];
   createdAt: string;
   id: string;
   status: "queued" | "starting" | "running" | "waiting";
@@ -486,6 +488,7 @@ export type RunEntryStatus =
   "completed" | "failed" | "interrupted" | "queued" | "running" | "starting" | "waiting";
 
 export interface RunEntry {
+  compaction?: import("@opensteer/core").NativeCompactionActivity;
   delivery?: TeamRunDelivery | null;
   /** Absent on an older Host: its waking input is unknown. */
   startedBy?: MessageAuthor;
@@ -980,6 +983,7 @@ export interface CreateHarnessInstanceInput {
 }
 
 export interface SendMessageInput {
+  compaction?: import("@opensteer/core").CompactionSendChoice;
   body: string;
   content?: readonly ContentPart[];
   quotedMessageId?: string;
@@ -1178,6 +1182,7 @@ export interface HostClient {
 
   loadDoneTasks(deploymentId?: string): Promise<void>;
   loadEarlierDoneTasks(deploymentId?: string): Promise<void>;
+  setIdleCompactionPolicy(policy: import("@opensteer/core").IdleCompactionPolicy): Promise<void>;
   setQuietTaskDays(days: QuietTaskDays): Promise<void>;
 
   dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput>;

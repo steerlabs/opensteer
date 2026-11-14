@@ -1,3 +1,5 @@
+import { harnessMinimumVersion } from "@opensteer/core";
+import { meetsMinimumVersion } from "@opensteer/harness";
 import { join } from "node:path";
 import { RunFiles, RunFileError, type RunFilePort } from "../attachments/run-files.js";
 import type { HostRunFileRequest } from "@opensteer/protocol";
@@ -704,7 +706,7 @@ export class ReconnectingHostConnection {
     return {
       bootId: this.#bootId,
       capabilities: [
-        ...runnerCapabilities(),
+        ...runnerCapabilities(harnessDrivers),
         ...(harnessDrivers.some((driver) => driver.driverKind === "codex")
           ? ["voice-run-v1" as const]
           : []),
@@ -2204,8 +2206,20 @@ function hostMessageFence(message: PostAuthenticationHostMessage): RunnerConnect
   }
 }
 
-function runnerCapabilities(): RunnerCapability[] {
+export function runnerCapabilities(
+  harnessDrivers: readonly RunnerHarnessDriver[] = [],
+): RunnerCapability[] {
   return [
+    ...(harnessDrivers.some(
+      (driver) =>
+        driver.driverKind === "claude" &&
+        driver.readiness !== "unavailable" &&
+        driver.installation &&
+        meetsMinimumVersion(driver.installation.version, harnessMinimumVersion("claude")),
+    )
+      ? ["claude-compaction-v1" as const]
+      : []),
+
     "settings-plugin-policy-v1",
     "assignments-v1",
     "attempts-v1",

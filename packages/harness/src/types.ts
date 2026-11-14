@@ -229,6 +229,8 @@ export type HarnessDurableEventType = Extract<
   | "run.phase"
   | "run.started"
   | "run.status"
+  | "run.context-measured"
+  | "run.compaction"
   | "run.usage"
   | "tool.completed"
   | "tool.started"
@@ -408,6 +410,7 @@ export interface HarnessRunContext {
 }
 
 export interface HarnessRunInput {
+  readonly maintenance?: import("@opensteer/core").RunMaintenance;
   readonly attachments?: ReadonlyMap<string, ResolvedAttachment>;
   readonly context: HarnessRunContext;
   readonly environment: Readonly<Record<string, string>>;

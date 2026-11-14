@@ -2748,6 +2748,7 @@ async function executeMockCommand(
       }
       const result = await client.sendMessage({
         body,
+        ...(command.compaction ? { compaction: command.compaction } : {}),
         content: command.content,
         ...(command.freshContext !== undefined ? { freshContext: command.freshContext } : {}),
         threadId: command.threadId,
@@ -2799,6 +2800,9 @@ async function executeMockCommand(
     // The preview's agents have no clock of the person's to keep.
     case "viewer.timeZone.update":
       return rpcSuccess({ timeZone: command.timeZone, type: command.type });
+    case "settings.idleCompaction.set":
+      client.setIdleCompactionPolicy(command.policy);
+      return rpcSuccess({ type: command.type, policy: command.policy });
     case "viewer.quietTasks.update":
       client.setQuietTaskDays(command.quietTaskDays);
       return rpcSuccess({ quietTaskDays: command.quietTaskDays, type: command.type });
@@ -3536,6 +3540,7 @@ function mockAuthenticatedSession(snapshot: HostSnapshot) {
 
 function mockThread(thread: ThreadSummary): Thread {
   return ThreadSchema.parse({
+    returnHint: thread.returnHint ?? null,
     lastVisitedAt: thread.lastVisitedAt,
     latestRunCompletedAt: thread.latestRunCompletedAt,
     providerSessionId: thread.providerSessionId,
@@ -4848,6 +4853,15 @@ export class MockHostClient implements HostClient {
     await this.rememberExecution(choice).catch(() => undefined);
   }
 
+  async setIdleCompactionPolicy(
+    policy: import("@opensteer/core").IdleCompactionPolicy,
+  ): Promise<void> {
+    await this.dispatch({
+      type: "settings.idleCompaction.set",
+      policy,
+      idempotencyKey: `idle-compaction:${Date.now()}`,
+    });
+  }
   async dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput> {
     const result = await this.rpc["commands.dispatch"](
       browserProfileHomeCommand(command, this.#state.getSnapshot().browserProfileHomes),
@@ -10014,6 +10028,7 @@ class MockHostState {
       sequence: String(this.sequence),
       createdAt: this.now().toISOString(),
       data: {
+        returnHint: thread.returnHint ?? null,
         title: name.title ?? thread.title,
         icon: name.icon ?? thread.icon,
         doneAt: thread.doneAt,
@@ -10309,6 +10324,38 @@ class MockHostState {
       : null;
 
     const timestamp = this.now().toISOString();
+    if (
+      input.compaction === "compactFirst" &&
+      thread.returnHint?.eligible &&
+      this.snapshot.personalSettings?.idleCompactionPolicy?.mode !== "off" &&
+      this.now().getTime() >= thread.returnHint.eligibleAt &&
+      !thread.inputQueuePaused &&
+      !this.snapshot.runQueue.some((run) => run.threadId === input.threadId)
+    ) {
+      const compactionRunId = this.nextId("run");
+      const marker: TranscriptEntry = {
+        error: null,
+        replyMessageId: null,
+        kind: "run",
+        id: `run:${compactionRunId}`,
+        runId: compactionRunId,
+        createdAt: timestamp,
+        status: "completed",
+        compaction: { status: "created", reason: "before-send" },
+      };
+      const compactedThread = { ...thread, returnHint: null };
+      thread = compactedThread;
+      this.update({
+        ...this.snapshot,
+        threads: this.snapshot.threads.map((item) =>
+          item.id === input.threadId ? compactedThread : item,
+        ),
+        transcripts: {
+          ...this.snapshot.transcripts,
+          [thread.id]: [...(this.snapshot.transcripts[thread.id] ?? []), marker],
+        },
+      });
+    }
     const userEntry: TranscriptEntry = {
       author: mockHumanAuthor(),
       attachments: input.content?.filter((part) => part.type === "artifact") ?? [],
@@ -11857,6 +11904,13 @@ class MockHostState {
     this.update(this.snapshot);
   }
 
+  setIdleCompactionPolicy(policy: import("@opensteer/core").IdleCompactionPolicy): void {
+    if (this.snapshot.personalSettings)
+      this.update({
+        ...this.snapshot,
+        personalSettings: { ...this.snapshot.personalSettings, idleCompactionPolicy: policy },
+      });
+  }
   setQuietTaskDays(days: QuietTaskDays): void {
     this.update({ ...this.snapshot, quietTaskDays: days });
   }

@@ -64,6 +64,7 @@ export async function findPersonalSettings(database: Kysely<DatabaseSchema>) {
     .executeTakeFirst();
   return row
     ? PersonalSettingsSchema.parse({
+        idleCompactionPolicy: row.idleCompactionPolicy,
         ownerId: row.ownerId,
         agentHome: { computerId: row.agentHomeComputerId, path: row.agentHomePath },
         voiceThreadId: row.voiceThreadId,

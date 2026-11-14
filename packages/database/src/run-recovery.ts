@@ -89,7 +89,7 @@ export async function recoverLostRunTransaction(
     }),
     revokedGrants: [],
   });
-  if (run.voiceSessionId) return fail("failed");
+  if (run.voiceSessionId || run.maintenance) return fail("failed");
   if (await runWasStopped(transaction, run.id)) return fail("interrupted");
   if (
     run.phase === "background" &&

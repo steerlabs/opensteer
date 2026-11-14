@@ -830,3 +830,22 @@ describe("a draft file from the release that steered approvals", () => {
     });
   });
 });
+
+it.each(["compactFirst", "keepFullHistory"] as const)(
+  "preserves %s through a device restart and refuses changing it under the same key",
+  async (compaction) => {
+    const { drafts, privateFiles } = open();
+    await drafts.load();
+    const command = { text: "Continue", threadId, idempotencyKey: "compaction-choice", compaction };
+    await drafts.claimPending(deploymentId, userId, threadId, command);
+    const restored = open(privateFiles).drafts;
+    await restored.load();
+    expect(restored.readPending(deploymentId, userId, threadId)).toMatchObject(command);
+    await expect(
+      restored.claimPending(deploymentId, userId, threadId, {
+        ...command,
+        compaction: compaction === "compactFirst" ? "keepFullHistory" : "compactFirst",
+      }),
+    ).rejects.toThrow(/awaiting acknowledgement/);
+  },
+);

@@ -1,3 +1,4 @@
+import { compactionIsEligible } from "./compaction-eligibility.js";
 import { runDeliverySelection } from "./thread-row-mappers.js";
 import { freshContextBoundary } from "./fresh-context.js";
 import { runAllowsPersonalContext } from "./run-personal-context.js";
@@ -573,6 +574,7 @@ export async function acquireExecutionBinding(
       .selectFrom("runs")
       .innerJoin("threads", "threads.id", "runs.threadId")
       .select([
+        "runs.maintenance",
         "runs.environmentId",
         "runs.harnessInstanceId",
         "runs.modelSelection",
@@ -692,6 +694,17 @@ export async function acquireExecutionBinding(
         message: "Run's selected provider session is no longer current",
       });
     }
+    if (
+      run.maintenance &&
+      !(await compactionIsEligible(
+        transaction,
+        input.threadId,
+        run.maintenance,
+        Date.now(),
+        input.runId,
+      ))
+    )
+      throw new OpensteerError({ code: "conflict", message: "Compaction is no longer eligible" });
     const personalContext = await runAllowsPersonalContext(transaction, input.runId);
     if (
       (input.personalContext !== undefined && input.personalContext !== personalContext) ||

@@ -1,3 +1,6 @@
+import { lockThreadProviderSessions } from "./run-projection-locks.js";
+import { markThreadStatePending } from "./thread-state-pending.js";
+import { compactionReturnHint } from "./compaction-eligibility.js";
 import { projectDeviceAccessAssignment } from "@opensteer/protocol";
 import {
   lockDeploymentEvents,
@@ -132,6 +135,7 @@ import {
   drainAssignmentReturn as drainAssignmentReturnInStore,
   ensureQueuedRun,
   enqueueThreadInputInTransaction,
+  lockThreadInputIdempotency,
   steerThreadInputInTransaction,
   cancelThreadInputInTransaction,
   moveThreadInputInTransaction,
@@ -227,6 +231,9 @@ export type ThreadInputSource =
       readonly principalId: string;
     };
 export interface EnqueueThreadInputRequest {
+  readonly compaction?: import("@opensteer/core").CompactionSendChoice;
+  readonly maintenance?: import("@opensteer/core").RunMaintenance;
+  readonly maintenanceNowMs?: number;
   readonly freshContext?: boolean;
   readonly teamRequest?: {
     readonly id: import("@opensteer/core").TeamAgentRequestId;
@@ -957,7 +964,9 @@ export async function getThreadForOwner(
     .where("threads.id", "=", threadId)
     .where("threads.createdBy", "=", ownerId)
     .executeTakeFirst();
-  return row ? threadFromRow(row) : null;
+  return row
+    ? { ...threadFromRow(row), returnHint: await compactionReturnHint(database, threadId) }
+    : null;
 }
 export function admitRunToolCall(
   database: Kysely<DatabaseSchema>,
@@ -1006,7 +1015,10 @@ export async function readThreadForOwner(
         .execute();
       return {
         messages: messagesFromRows(messageRows.reverse()),
-        thread: threadFromRow(threadRow),
+        thread: {
+          ...threadFromRow(threadRow),
+          returnHint: await compactionReturnHint(transaction, threadId),
+        },
       };
     },
     "repeatable read",
@@ -1390,13 +1402,9 @@ export async function updateThreadExecutionSelection(
       });
     }
     const selected =
-      (await transaction
-        .selectFrom("providerSessions")
-        .selectAll()
-        .where("threadId", "=", thread.id)
-        .where("active", "=", true)
-        .forNoKeyUpdate()
-        .executeTakeFirst()) ?? null;
+      (await lockThreadProviderSessions(transaction, thread.id)).find(
+        (session) => session.active,
+      ) ?? null;
     const compatible =
       selected !== null &&
       (selected.continuationIdentity
@@ -1416,6 +1424,17 @@ export async function updateThreadExecutionSelection(
         code: "conflict",
         message: "The selected provider session changed before this AI engine update",
       });
+    }
+    const selectionChanged =
+      thread.harnessInstanceId !== input.harnessInstanceId ||
+      !isDeepStrictEqual(thread.modelSelection, modelSelection);
+    if (selectionChanged) {
+      await transaction
+        .updateTable("providerSessions")
+        .set({ contextSnapshot: null })
+        .where("threadId", "=", thread.id)
+        .execute();
+      await markThreadStatePending(transaction, thread.id);
     }
     let providerSessionId = selected?.id ?? null;
     if (compatible && selected && input.continuation === undefined) {
@@ -1470,12 +1489,15 @@ export async function updateThreadExecutionSelection(
       .where("id", "=", thread.id)
       .returningAll()
       .executeTakeFirstOrThrow();
-    const parsedThread = threadFromRow({
-      ...thread,
-      ...row,
-      continuationIdentity,
-      providerSessionId,
-    });
+    const parsedThread = {
+      ...threadFromRow({
+        ...thread,
+        ...row,
+        continuationIdentity,
+        providerSessionId,
+      }),
+      returnHint: await compactionReturnHint(transaction, thread.id),
+    };
     await transaction
       .insertInto("commands")
       .values({
@@ -2131,7 +2153,7 @@ export async function enqueueThreadInput(
   input: EnqueueThreadInputRequest,
 ): Promise<EnqueuedThreadInput> {
   return withPersonalTransaction(database, async (transaction) => {
-    await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
+    await lockThreadInputIdempotency(transaction, input);
     await lockThreadCaller(transaction, input.authority);
     const result = await enqueueThreadInputInTransaction(transaction, input);
     await assertThreadCaller(transaction, input.authority, {

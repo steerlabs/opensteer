@@ -2006,3 +2006,56 @@ it("projects history without changing stored output and keeps whole live output 
     outputPreview: { cut: true },
   });
 });
+
+it("folds native compaction activity into the Run and preserves it through completion", () => {
+  const entries = fold([
+    event("run.compaction", { status: "running", reason: "automatic" }),
+    event("run.compaction", { status: "created", reason: "automatic" }),
+    event("run.completed", { status: "completed", replyMessageId: null }),
+  ]);
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({
+    kind: "run",
+    status: "completed",
+    compaction: { status: "created", reason: "automatic" },
+  });
+});
+
+it.each(["completed", "failed", "interrupted"] as const)(
+  "folds maintenance into one %s marker",
+  (status) => {
+    const maintenance = {
+      kind: "claude-compaction",
+      reason: "idle",
+      sourceRunId: createId("run"),
+      providerSessionId: createId("providerSession"),
+    } as const;
+    const entries = fold([
+      event("run.queued", {
+        run: { id: runId, threadId, createdAt: now, runOrdinal: 1, status: "queued", maintenance },
+      }),
+      event("run.status", { status: "running" }),
+      ...(status === "completed"
+        ? [event("run.completed", { status: "completed", replyMessageId: null })]
+        : status === "interrupted"
+          ? [event("run.interrupted", { status: "interrupted" })]
+          : [
+              event("run.failed", {
+                status: "failed",
+                code: "test",
+                message: "Failed",
+                retryable: false,
+              }),
+            ]),
+    ]);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: "run",
+      compaction: {
+        reason: "idle",
+        status:
+          status === "completed" ? "created" : status === "interrupted" ? "stopped" : "failed",
+      },
+    });
+  },
+);

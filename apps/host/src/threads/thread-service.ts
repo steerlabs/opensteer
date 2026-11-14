@@ -217,6 +217,7 @@ export class ThreadService {
                 quotedMessageId: command.quotedMessageId,
               }
             : {}),
+          ...(command.compaction ? { compaction: command.compaction } : {}),
           content: command.content,
           idempotencyKey: command.idempotencyKey,
           policy: command.delivery ?? "queue",

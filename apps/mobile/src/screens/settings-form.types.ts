@@ -100,6 +100,7 @@ export interface QuietTasksSetting {
 }
 
 export interface SettingsFormProps extends SettingsFormActionHandlers {
+  readonly idleCompaction?: import("@opensteer/client/react").IdleCompactionSettings;
   readonly page?: SettingsPage;
   readonly deployment: DeploymentSettingsModel;
   /** Null when there is no open Deployment, or its Host refuses this person. */

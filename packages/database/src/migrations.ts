@@ -158,6 +158,18 @@ export function migrationProvider(): MigrationProvider {
             );
           },
         },
+        "0014_claude_idle_compaction": {
+          async up(database) {
+            await sql`
+              alter table personal_settings add column idle_compaction_policy jsonb not null default '{"mode":"onReturn"}'::jsonb;
+              alter table provider_sessions add column context_snapshot jsonb null;
+              alter table runs add column maintenance jsonb null;
+              create unique index runs_compaction_source_idx on runs (
+                thread_id, (maintenance->>'providerSessionId'), (maintenance->>'sourceRunId')
+              ) where maintenance is not null;
+            `.execute(database);
+          },
+        },
       };
     },
   };
