@@ -1,9 +1,10 @@
 import { slackChannelProviderManifest } from "@opensteer/channel-core";
-import { createId } from "@opensteer/core";
+import { createId, opensteerDesktopOAuthClientId } from "@opensteer/core";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { parseHostConfig } from "@opensteer/config";
@@ -65,6 +66,12 @@ integration("Personal configuration conformance", () => {
     expect(descriptor.apiVersion).toBe(hostApiVersion);
     expect(descriptor.authority.document.deploymentShape).toEqual({ kind: "personal" });
     expect(descriptor.authority.document.deploymentId).toBe(host.runtime.deployment.id);
+  });
+
+  it("refuses malformed requests at the shared boundary", async () => {
+    await expectSharedHttpBoundary(host.runtime.app, {
+      [hostApiVersionHeader]: String(hostApiVersion),
+    });
   });
 
   it("requires a session and projects one owner, hosting computer, folder and current session", async () => {
@@ -274,6 +281,44 @@ integration("team configuration conformance", () => {
       expect(runtime.app.hasRoute({ method: "GET", url })).toBe(false);
   });
 
+  it("answers native OAuth forms and refuses malformed requests at the shared boundary", async () => {
+    const version = { [teamApiVersionHeader]: String(teamApiVersion) };
+    for (const { path, form, error } of [
+      {
+        path: "token",
+        form: { grant_type: "refresh_token", refresh_token: "unknown-refresh-token" },
+        error: "invalid_grant",
+      },
+      { path: "revoke", form: { token: "unknown-refresh-token" }, error: "invalid_request" },
+      { path: "end-session", form: {}, error: "invalid_request" },
+    ]) {
+      const response = await runtime.app.inject({
+        method: "POST",
+        url: `/v1/auth/native/oauth2/${path}`,
+        headers: { ...version, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({
+          client_id: opensteerDesktopOAuthClientId,
+          ...form,
+        }).toString(),
+      });
+      expect(response.statusCode, `${path}: ${response.body}`).toBe(400);
+      expect(response.json()).toMatchObject({ error });
+    }
+    // The OAuth routes live in their own plugin scope; a refusal there must
+    // still reach the Host's handler rather than Fastify's default one.
+    const oversized = await runtime.app.inject({
+      method: "POST",
+      url: "/v1/auth/native/oauth2/token",
+      headers: { ...version, "content-type": "application/x-www-form-urlencoded" },
+      payload: `refresh_token=${"r".repeat(32 * 1_024)}`,
+    });
+    expect(oversized.statusCode, oversized.body).toBe(413);
+    expect(oversized.json()).toEqual({
+      error: { code: "bad_request", message: "Request body is too large", retryable: false },
+    });
+    await expectSharedHttpBoundary(runtime.app, version);
+  });
+
   it("gates team bootstrap before authentication and ignores the personal epoch", async () => {
     const url = "/v1/rpc/team.bootstrap.get?input=%7B%7D";
     expect(
@@ -302,3 +347,31 @@ integration("team configuration conformance", () => {
     });
   });
 });
+
+/** Both Host kinds answer a caller's malformed request as one, never as their own fault. */
+async function expectSharedHttpBoundary(app: FastifyInstance, version: Record<string, string>) {
+  const consume = `/v1/auth/account-adoption/proofs/${createId("authAdmission")}/consume`;
+  for (const [contentType, payload, status] of [
+    ["application/xml", "<proof/>", 415],
+    ["application/json", "{", 400],
+  ] as const) {
+    const response = await app.inject({
+      method: "POST",
+      url: consume,
+      headers: { ...version, "content-type": contentType },
+      payload,
+    });
+    expect(response.statusCode, response.body).toBe(status);
+    expect(response.json()).toEqual({
+      error: { code: "bad_request", message: expect.any(String), retryable: false },
+    });
+  }
+  const rpc = await app.inject({
+    method: "POST",
+    url: "/v1/rpc/commands.dispatch",
+    headers: { ...version, "content-type": "application/json" },
+    payload: "{",
+  });
+  expect(rpc.statusCode, rpc.body).toBe(400);
+  expect(rpc.json()).toMatchObject({ ok: false, error: { code: "bad_request" } });
+}
