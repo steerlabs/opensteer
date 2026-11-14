@@ -34,7 +34,7 @@ const threadId = (index: number) =>
   `thr_00000000-0000-4000-8000-${String(900 + index).padStart(12, "0")}`;
 
 const base = new MockHostClient({ latencyMs: 0 }).getSnapshot();
-const template = base.threads[0]!;
+const template = { ...base.threads[0]!, pendingRequests: 0 };
 const pending = Object.values(base.requests)
   .flat()
   .find((request) => request.status === "pending")!;
@@ -52,7 +52,6 @@ function entry(
     lastReply: lines.lastReply ?? null,
     thread: {
       ...template,
-
       askedAt: hoursAgo(created),
       createdAt: hoursAgo(created),
       id: threadId(index),
@@ -572,4 +571,14 @@ describe("doneTaskList", () => {
     ]);
     expect(titles(taskList(state).ready)).toEqual(["Reported after Done"]);
   });
+});
+
+it("keeps Needs you visible when its decision is outside the loaded page", () => {
+  const task = entry(999, "Waiting for approval", "idle", 1, 1);
+  const state = snapshot([{ ...task, thread: { ...task.thread, pendingRequests: 1 } }]);
+  const rows = taskList({ ...state, needsYou: { ...base.needsYou!, entries: [] } });
+  expect(
+    [...rows.working, ...rows.ready, ...rows.done].find((row) => row.threadId === task.thread.id)
+      ?.tone,
+  ).toBe("needs-you");
 });

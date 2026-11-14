@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, onTestFinished } from "vitest";
 import { createId } from "@opensteer/core";
 import {
   NeedsYouTeamAskEntrySchema,
@@ -397,3 +397,26 @@ it("gives an ask's owner the chat control only for the copy they would approve",
   expect(control({ ...waiting, state: "working" }, unedited)).toEqual({ kind: "none" });
   expect(control({ ...waiting, pendingRemote: true }, unedited)).toEqual({ kind: "none" });
 });
+
+it.each(["rename", "done", "done-and-reopen", "message"] as const)(
+  "preserves a mock ask task adopted by %s",
+  async (adoption) => {
+    const mock = new MockHostClient({ latencyMs: 0, teamAsks: [ask] });
+    onTestFinished(() => mock.dispose());
+    const task = listed(mock.getSnapshot().needsYou, ask.requestId)!.task!;
+    if (adoption === "rename") await mock.renameThread(task.threadId, "My adopted task");
+    if (adoption === "done" || adoption === "done-and-reopen")
+      await mock.setTaskDone(task.threadId, true);
+    if (adoption === "done-and-reopen") await mock.setTaskDone(task.threadId, false);
+    if (adoption === "message")
+      await mock.dispatch({
+        type: "thread.sendMessage",
+        threadId: task.threadId,
+        content: [{ type: "text", text: "Keep this task" }],
+        delivery: "queue",
+        idempotencyKey: "adopt-message",
+      });
+    await mock.decideTeamAsk({ decision: "decline", teamId: ask.teamId, requestId: ask.requestId });
+    expect(mock.getSnapshot().threads.some((thread) => thread.id === task.threadId)).toBe(true);
+  },
+);

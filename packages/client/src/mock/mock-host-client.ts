@@ -5771,6 +5771,7 @@ class MockHostState {
     const thread = this.snapshot.threads.find((item) => item.id === threadId);
     if (!thread) throw new Error("Task not found.");
     if (thread.purpose !== "task") throw new Error("Only tasks can be Done.");
+    this.askTasks.delete(threadId);
     const affected = new Set([threadId]);
     if (done) {
       // Discover descendants before cancellation ends their assignments.
@@ -5826,7 +5827,9 @@ class MockHostState {
           doneAt: done ? this.now().toISOString() : null,
           doneReason: null,
           inputQueuePaused: false,
-          ...(done ? { status: "idle", pendingRequests: 0 } : {}),
+          ...(done
+            ? { status: "idle", pendingRequests: this.awaitingAsks.get(id)?.length ?? 0 }
+            : {}),
         },
         {},
       );
@@ -7219,6 +7222,14 @@ class MockHostState {
     );
     const untouched =
       this.askTasks.has(threadId) &&
+      !this.snapshot.threads.some((thread) => thread.parentThreadId === threadId) &&
+      ![...this.triggers.values()].some(({ trigger }) => trigger.anchorThreadId === threadId) &&
+      ![...this.assignments.values()].some(
+        (assignment) =>
+          assignment.parentThreadId === threadId || assignment.workerThreadId === threadId,
+      ) &&
+      !this.snapshot.requests[threadId]?.length &&
+      this.snapshot.voiceThreadId !== threadId &&
       asks.size === 0 &&
       !this.threadInputQueues.has(threadId) &&
       !this.snapshot.runQueue.some((run) => run.threadId === threadId) &&
@@ -7518,7 +7529,21 @@ class MockHostState {
   private withInputQueue(snapshot: HostSnapshot, threadId: string): HostSnapshot {
     const queue = this.inputQueueView(snapshot, threadId);
     if (!queue) return snapshot;
-    return { ...snapshot, inputQueues: { ...snapshot.inputQueues, [threadId]: queue } };
+    return {
+      ...snapshot,
+      threads: snapshot.threads.map((thread) =>
+        thread.id === threadId
+          ? {
+              ...thread,
+              pendingRequests:
+                (snapshot.requests[threadId] ?? []).filter(
+                  (request) => request.status === "pending",
+                ).length + (this.awaitingAsks.get(threadId)?.length ?? 0),
+            }
+          : thread,
+      ),
+      inputQueues: { ...snapshot.inputQueues, [threadId]: queue },
+    };
   }
 
   private takePendingInput(threadId: string, messageId: string): PendingMockInput {
@@ -10534,6 +10559,7 @@ class MockHostState {
   renameThread(threadId: string, title: string): ThreadSummary {
     const thread = this.snapshot.threads.find((thread) => thread.id === threadId);
     if (!thread) throw new Error("Task not found.");
+    this.askTasks.delete(threadId);
     this.#provisionalTitles.delete(threadId);
     this.publishThreadName(thread, { title: ThreadTitleSchema.parse(title) });
     return this.snapshot.threads.find((thread) => thread.id === threadId)!;
@@ -10919,6 +10945,7 @@ class MockHostState {
         },
       });
     }
+    this.askTasks.delete(thread.id);
     const userEntry: TranscriptEntry = {
       author: mockHumanAuthor(),
       attachments: input.content?.filter((part) => part.type === "artifact") ?? [],

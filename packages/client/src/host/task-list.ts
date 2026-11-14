@@ -311,7 +311,7 @@ function rowOf(
 ): TaskRow {
   const { thread } = entry;
   const held = snapshot.threads.find(({ id }) => id === thread.id) ?? thread;
-  const tone = asks.length + teamAsks.length > 0 ? "needs-you" : taskTone(thread);
+  const tone = thread.pendingRequests > 0 || asks.length > 0 ? "needs-you" : taskTone(thread);
   const surface = tone === "working" ? workingSurface(snapshot, thread.id) : null;
   return {
     threadId: thread.id,
@@ -324,7 +324,7 @@ function rowOf(
       tone === "waiting"
         ? (taskWaitingReason(snapshot, thread.id)?.label ?? "Waiting")
         : tone === "needs-you" && asks.length === 0
-          ? teamAskLine(teamAsks)
+          ? teamAskLine(teamAsks) || "Needs you"
           : taskLine(entry, tone, asks, surface),
     place: surface === null ? null : placeName(surface),
     done: thread.doneAt !== null,
