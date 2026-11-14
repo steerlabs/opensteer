@@ -54,7 +54,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         !!row.presentation?.audience.externalTeams?.length ||
         !!row.returnPayload?.author?.homeTeamName,
     );
-    const authority = await this.access.channel(
+    const authority = await this.access.peerChannel(
       transaction,
       { kind: "agent", userId: row.ownerUserId },
       row.channelId,
@@ -252,7 +252,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       .where("id", "=", id)
       .executeTakeFirstOrThrow();
     let changed = false;
-    const result = await this.access.contentWrite(
+    const result = await this.access.writeForPeer(
       { kind: "agent", userId: observed.ownerUserId },
       observed.channelId,
       async (t) => {
@@ -406,7 +406,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       .selectAll()
       .where("id", "=", id)
       .executeTakeFirstOrThrow();
-    await this.access.contentWrite(
+    await this.access.writeForPeer(
       { kind: "agent", userId: observed.ownerUserId },
       observed.channelId,
       async (t) => {
@@ -489,7 +489,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       .executeTakeFirstOrThrow();
     const actor = { kind: "agent" as const, userId: link.ownerUserId };
     if (input.requestId) {
-      const alreadyPublished = await this.access.contentWrite(actor, input.channelId, async (t) => {
+      const alreadyPublished = await this.access.writeForPeer(actor, input.channelId, async (t) => {
         const request = await t
           .selectFrom("teamAgentRequests")
           .selectAll()
@@ -520,7 +520,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       ...(input.requestId ? { agentRequestId: input.requestId } : {}),
     });
     if (relayed) {
-      await this.access.contentWrite(actor, input.channelId, async (t, a) => {
+      await this.access.writeForPeer(actor, input.channelId, async (t, a) => {
         requireTeam(a.post);
         await this.access.link(t, actor, linkId);
         const request = input.requestId ? await this.#record(t, linkId, input.requestId) : null;
@@ -577,7 +577,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       }
       return { messageId: relayed.message.id, askOutcomes: relayed.askOutcomes };
     }
-    const result = await this.access.contentWrite(actor, input.channelId, async (t, authority) => {
+    const result = await this.access.writeForPeer(actor, input.channelId, async (t, authority) => {
       await this.access.link(t, actor, linkId);
       requireTeam(authority.post);
       const request = input.requestId
@@ -615,7 +615,10 @@ export class TeamRequestsStore implements TeamRequestStorePort {
               existing.agentRequestId === (input.requestId ?? null)),
           "Post identity names another destination",
         );
-        return { messageId: existing.id, askOutcomes: await this.chat.askOutcomes(t, existing.id) };
+        return {
+          messageId: existing.id,
+          askOutcomes: await this.chat.askOutcomes(t, existing.id),
+        };
       }
       const sent = await this.chat.insert(t, actor, {
         channelId: input.channelId,

@@ -1043,7 +1043,7 @@ it("a write receipt must preserve the owner's current people-only policy", async
   }
 });
 
-it.each(["before-send", "refused"] as const)(
+it.each(["before-send", "refused", "ambiguous", "lost-receipt"] as const)(
   "an edit that is %s keeps committed authorship available to sync",
   async (failureKind) => {
     const f = await sharedFixture();
@@ -1061,19 +1061,43 @@ it.each(["before-send", "refused"] as const)(
       await f.b.host.team.shares!.sync(await f.b.host.team.shares!.store.get(f.shareId));
       const partners = f.b.host.team.partners!;
       const request = partners.request.bind(partners);
+      vi.spyOn(f.b.host.team.shares!, "sync").mockResolvedValue(undefined);
+      const snapshot = await f.a.host.team.shares!.store.pull(f.aLink, {
+        op: "pull",
+        shareId: f.shareId,
+        generation: 1,
+        cursor: {
+          created: SequenceSchema.parse("0"),
+          sequence: SequenceSchema.parse("0"),
+          publicId: "",
+        },
+      });
       const failure = vi
         .spyOn(partners, "request")
         .mockImplementation((id, op, signal, handoff) => {
-          if (op.op === "write" && op.write.action === "edit")
-            return Promise.reject(
-              failureKind === "refused"
-                ? new OpensteerError({
-                    code: "not_found",
-                    reason: "not-found",
-                    message: "Shared channel not found",
-                  })
-                : Error("Before send"),
-            );
+          if (op.op === "write" && op.write.action === "edit") {
+            if (failureKind === "lost-receipt")
+              return request(id, op, signal, handoff).then(() => {
+                throw Error("Receipt lost");
+              });
+            if (failureKind === "before-send") return Promise.reject(Error("Before send"));
+            return handoff!(async () => {
+              if (failureKind === "refused")
+                throw new OpensteerError({
+                  code: "not_found",
+                  reason: "not-found",
+                  message: "Shared channel not found",
+                });
+              await f.b.host.team.shares!.store.apply(f.bLink, f.shareId, 1, snapshot, false);
+              const proof = await f.b.database
+                .selectFrom("teamShareRelays")
+                .select("pendingBodies")
+                .where("shareId", "=", f.shareId)
+                .executeTakeFirstOrThrow();
+              expect(proof.pendingBodies).toEqual(["edited"]);
+              throw Error("Connection lost after submission");
+            });
+          }
           return request(id, op, signal, handoff);
         });
       await expect(
@@ -1086,6 +1110,26 @@ it.each(["before-send", "refused"] as const)(
         }),
       ).rejects.toThrow();
       failure.mockRestore();
+      const unconfirmed = await f.b.database
+        .selectFrom("teamShareRelays")
+        .select("pendingBodies")
+        .where("shareId", "=", f.shareId)
+        .executeTakeFirstOrThrow();
+      expect(unconfirmed.pendingBodies).toEqual(
+        failureKind === "ambiguous" || failureKind === "lost-receipt" ? ["edited"] : [],
+      );
+      if (failureKind === "ambiguous") {
+        await f.b.host.team.shares!.store.apply(f.bLink, f.shareId, 1, snapshot, false);
+        expect(
+          (
+            await f.b.database
+              .selectFrom("teamShareRelays")
+              .select("pendingBodies")
+              .where("shareId", "=", f.shareId)
+              .executeTakeFirstOrThrow()
+          ).pendingBodies,
+        ).toEqual([]);
+      }
       const ownerRow = await f.a.database
         .selectFrom("teamMessages")
         .select("id")
@@ -1122,10 +1166,12 @@ it.each(["before-send", "refused"] as const)(
       expect(
         await f.b.database
           .selectFrom("teamShareRelays")
-          .select("bodyMarkdown")
+          .select(["bodyMarkdown", "pendingBodies"])
           .where("shareId", "=", f.shareId)
           .execute(),
-      ).toEqual([{ bodyMarkdown: "original" }]);
+      ).toEqual([
+        { bodyMarkdown: failureKind === "lost-receipt" ? "edited" : "original", pendingBodies: [] },
+      ]);
     } finally {
       await f.close();
     }
@@ -1673,6 +1719,139 @@ it("keeps every offer reachable across bounded pages while newer offers arrive",
       after = page.data.nextCursor ?? undefined;
     } while (after);
     for (const row of rows) expect(seen.has(row.id), row.name + " became unreachable").toBe(true);
+  } finally {
+    await f.close();
+  }
+});
+
+it("v5 can mutate an internal channel while unrelated shared requests are pending", async () => {
+  const f = await sharedFixture();
+  try {
+    const linkId = createId("teamLink");
+    await f.b.database
+      .insertInto("teamLinks")
+      .values({
+        id: linkId,
+        ownerUserId: f.bUser,
+        personalDeploymentId: createId("deployment"),
+        state: "active",
+        codeHash: randomUUID(),
+        codeExpiresAt: new Date(),
+        credentialHash: randomUUID(),
+      })
+      .execute();
+    await command(f.bSession, {
+      type: "team.message.send",
+      channelId: f.bid,
+      threadRootId: null,
+      clientMessageId: randomUUID(),
+      bodyMarkdown: "@maya-2-agent Help me",
+      mentions: [],
+      attachmentIds: [],
+    });
+    expect(await f.b.host.team.requests.pending(linkId)).toHaveLength(1);
+    const response = await f.b.host.app.inject({
+      method: "POST",
+      url: "/v1/rpc/commands.dispatch",
+      headers: { ...f.bSession.headers, "x-opensteer-team-api-version": "5" },
+      payload: {
+        type: "team.channel.create",
+        id: createId("teamChannel"),
+        kind: "private",
+        name: "internal",
+        peopleOnly: false,
+        access: [],
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    const pending = await f.b.host.team.requests.pending(linkId);
+    expect(pending).toHaveLength(1);
+    await f.b.database
+      .updateTable("teamAgentRequests")
+      .set({
+        state: "working",
+        acceptedAt: sql`now()-interval '8 days'`,
+        expiresAt: sql`now()-interval '1 day'`,
+      })
+      .where("linkId", "=", linkId)
+      .execute();
+    expect(await withTeamPeerVersion(5, () => f.b.host.team.requests.pending(linkId))).toEqual([]);
+    await command(f.bSession, {
+      type: "team.message.send",
+      channelId: f.bid,
+      threadRootId: null,
+      clientMessageId: randomUUID(),
+      bodyMarkdown: "@maya-2-agent Another request",
+      mentions: [],
+      attachmentIds: [],
+    });
+    expect(await f.b.host.team.requests.pending(linkId)).toHaveLength(1);
+    const revoke = await f.b.host.app.inject({
+      method: "POST",
+      url: "/v1/rpc/commands.dispatch",
+      headers: { ...f.bSession.headers, "x-opensteer-team-api-version": "5" },
+      payload: { type: "team.link.revoke", linkId },
+    });
+    expect(revoke.statusCode).toBe(200);
+    expect(
+      await f.b.database
+        .selectFrom("teamAgentRequests")
+        .select(["state", "failureCode"])
+        .where("linkId", "=", linkId)
+        .orderBy("id")
+        .execute(),
+    ).toEqual(
+      expect.arrayContaining([
+        { state: "failed", failureCode: "expired" },
+        { state: "cancelled", failureCode: "link_revoked" },
+      ]),
+    );
+  } finally {
+    await f.close();
+  }
+});
+
+it("failed edits do not permanently exhaust authorship proof capacity", async () => {
+  const f = await sharedFixture();
+  try {
+    const sent = await command(f.bSession, {
+      type: "team.message.send",
+      channelId: f.bid,
+      threadRootId: null,
+      clientMessageId: randomUUID(),
+      bodyMarkdown: "original",
+      mentions: [],
+      attachmentIds: [],
+    });
+    if (sent.type !== "team.message.send") throw Error("No message");
+    await f.b.host.team.shares!.sync(await f.b.host.team.shares!.store.get(f.shareId));
+    const partners = f.b.host.team.partners!;
+    const request = partners.request.bind(partners);
+    const failure = vi.spyOn(partners, "request").mockImplementation((id, op, signal, handoff) => {
+      if (op.op === "write" && op.write.action === "edit")
+        return Promise.reject(Error("Before send"));
+      return request(id, op, signal, handoff);
+    });
+    for (let i = 0; i < 32; i++)
+      await expect(
+        command(f.bSession, {
+          type: "team.message.edit",
+          channelId: f.bid,
+          messageId: sent.message.id,
+          bodyMarkdown: "failed edit " + i,
+          mentions: [],
+        }),
+      ).rejects.toThrow();
+    failure.mockRestore();
+    await f.b.host.team.shares!.sync(await f.b.host.team.shares!.store.get(f.shareId));
+    const edited = await f.bSession.rpc["commands.dispatch"]({
+      type: "team.message.edit",
+      channelId: f.bid,
+      messageId: sent.message.id,
+      bodyMarkdown: "a new valid edit after recovery",
+      mentions: [],
+    });
+    expect(edited.ok).toBe(true);
   } finally {
     await f.close();
   }

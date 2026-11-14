@@ -1,3 +1,4 @@
+import { PartnerSocket } from "../apps/host/src/team-partners/socket.js";
 import { generateKeyPairSync } from "node:crypto";
 import { expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
@@ -223,7 +224,7 @@ it("enforces members-propose independently on both teams and closes sockets when
   }
 });
 
-it("refuses expired, revoked and reused invites without consuming a refused invite", async () => {
+it("refuses expired, revoked and foreign redemptions while acknowledging the verified dialer again", async () => {
   const f = await pairFixture();
   try {
     const partners = f.a.host.team.partners!;
@@ -255,8 +256,12 @@ it("refuses expired, revoked and reused invites without consuming a refused invi
       .where("id", "=", offer.selector)
       .execute();
     const results = await Promise.allSettled([accept(), accept()]);
-    expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
-    await expect(accept()).rejects.toMatchObject({ code: "forbidden" });
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
+    const accepted = await accept();
+    expect(accepted.id).toBe(offer.selector);
+    await expect(
+      partners.store.accept(offer.selector, offer.verifier, partners.authority, "Other", true),
+    ).rejects.toMatchObject({ reason: "identity-mismatch" });
     const revoked = parseTeamPartnerOffer(await invite(f.aSession));
     await command(f.aSession, { type: "team.partner.invite.revoke", inviteId: revoked.selector });
     await expect(
@@ -397,10 +402,48 @@ it("allows a freshly verified pairing retry after an incorrect invite verifier",
     await expect(
       redeem(f.bSession, serializeTeamPartnerOffer({ ...offer, verifier: "A".repeat(43) })),
     ).rejects.toThrow();
+    expect(await list(f.bSession)).toMatchObject([{ state: "revoked" }]);
     await expect(redeem(f.bSession, serializeTeamPartnerOffer(offer))).resolves.toMatchObject({
       role: "dialer",
       state: "pending",
     });
+  } finally {
+    await f.close();
+  }
+});
+
+it("a lost ready response must not abandon an already-consumed pairing", async () => {
+  const f = await pairFixture();
+  try {
+    const offer = await invite(f.aSession);
+    const send = PartnerSocket.prototype.send;
+    let dropped = false;
+    const fault = vi.spyOn(PartnerSocket.prototype, "send").mockImplementation(function (
+      this: PartnerSocket,
+      frame: unknown,
+    ) {
+      if (
+        !dropped &&
+        typeof frame === "object" &&
+        frame !== null &&
+        "type" in frame &&
+        frame.type === "ready"
+      ) {
+        dropped = true;
+        return Promise.reject(Error("Lost ready response"));
+      }
+      return send.call(this, frame);
+    });
+    await expect(redeem(f.bSession, offer)).rejects.toThrow();
+    fault.mockRestore();
+    expect(dropped).toBe(true);
+    await expect(redeem(f.bSession, offer)).resolves.toMatchObject({
+      role: "dialer",
+      state: "pending",
+    });
+    const aLink = (await list(f.aSession)).find((link) => link.state !== "revoked")!;
+    await command(f.aSession, { type: "team.partner.approve", linkId: aLink.id });
+    await active(f.aSession, f.bSession);
   } finally {
     await f.close();
   }

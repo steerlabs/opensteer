@@ -536,6 +536,11 @@ export class TeamShares implements TeamChatRelay {
       return true;
     };
     let receipt;
+    let submitted = false;
+    const releaseEdit =
+      write.action === "edit"
+        ? this.store.holdEdit(actor, s, write.publicId, write.bodyMarkdown)
+        : () => {};
     try {
       s = await this.store.recordRelay(actor, s, write, provenance);
       receipt = TeamShareReceiptSchema.parse(
@@ -552,11 +557,25 @@ export class TeamShares implements TeamChatRelay {
           async (send) => {
             const revision = this.chat.access.revision;
             await authorize();
-            return this.chat.access.handoff(revision, authorize, send);
+            return this.chat.access.handoff(revision, authorize, () => {
+              submitted = true;
+              return send();
+            });
           },
         ),
       );
     } catch (error) {
+      releaseEdit();
+      if (
+        write.action === "edit" &&
+        (!submitted ||
+          (error instanceof OpensteerError &&
+            (error.reason === "not-found" ||
+              error.reason === "partner-retry-later" ||
+              error.reason === "partner-disconnected" ||
+              error.reason === "partner-frame-too-large")))
+      )
+        await this.store.discardEdit(actor, s, write.publicId, write.bodyMarkdown);
       controller.signal.throwIfAborted();
       if (error instanceof OpensteerError && error.code === "forbidden") throw error;
       if (error instanceof OpensteerError && error.reason === "not-found")
@@ -570,17 +589,21 @@ export class TeamShares implements TeamChatRelay {
     } finally {
       unregister();
     }
-    if (await this.store.apply(s.partnerLinkId, s.id, s.generation, receipt.batch, false))
-      await this.files?.files.collectGarbage();
-    return this.store.db.transaction().execute(async (t) => {
-      const stored = await t
-        .selectFrom("teamMessages")
-        .selectAll()
-        .where("channelId", "=", s.channelId!)
-        .where("publicId", "=", receipt.publicId)
-        .executeTakeFirstOrThrow();
-      return (await teamMessageViews(t, [stored]))[0]!;
-    });
+    try {
+      if (await this.store.apply(s.partnerLinkId, s.id, s.generation, receipt.batch, false))
+        await this.files?.files.collectGarbage();
+      return await this.store.db.transaction().execute(async (t) => {
+        const stored = await t
+          .selectFrom("teamMessages")
+          .selectAll()
+          .where("channelId", "=", s.channelId!)
+          .where("publicId", "=", receipt.publicId)
+          .executeTakeFirstOrThrow();
+        return (await teamMessageViews(t, [stored]))[0]!;
+      });
+    } finally {
+      releaseEdit();
+    }
   }
   async send(actor: TeamActor, input: Parameters<TeamChatStore["send"]>[1]) {
     const s = await this.store.local(actor, input.channelId);

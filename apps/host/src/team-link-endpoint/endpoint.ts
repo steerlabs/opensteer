@@ -359,7 +359,7 @@ export class TeamLinkEndpoint {
       if (result.kind === "channels")
         await links.database.transaction().execute(async (tx) => {
           for (const channel of result.result.channels) {
-            const rights = await this.options.resolver.channel(
+            const rights = await this.options.resolver.peerChannel(
               tx,
               { kind: "agent", userId: link.ownerUserId },
               channel.id,
@@ -383,7 +383,7 @@ export class TeamLinkEndpoint {
 
   async #source(userId: TeamActor["userId"], source: TeamSource): Promise<void> {
     await this.options.links.database.transaction().execute(async (tx) => {
-      const rights = await this.options.resolver.channel(
+      const rights = await this.options.resolver.peerChannel(
         tx,
         { kind: "agent", userId },
         source.channelId,

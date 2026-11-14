@@ -221,7 +221,9 @@ export class TeamRealtimeHub {
           const allowed = await withTeamPeerVersion(peer.version, () =>
             this.access.database
               .transaction()
-              .execute(async (t) => (await this.access.channel(t, actor, frame.channelId)).read),
+              .execute(
+                async (t) => (await this.access.peerChannel(t, actor, frame.channelId)).read,
+              ),
           );
           if (!allowed) return;
           const key = `${actor.userId}:${frame.channelId}:${frame.rootId}`;
@@ -284,7 +286,7 @@ export class TeamRealtimeHub {
                   .filter((s) => s.scope)
                   .map(
                     async (s) =>
-                      (await this.access.channel(t, peer.actor, s.scope!.channelId)).read,
+                      (await this.access.peerChannel(t, peer.actor, s.scope!.channelId)).read,
                   ),
               )
             ).every(Boolean);
@@ -420,7 +422,7 @@ export class TeamRealtimeHub {
           for (const subscription of peer.subscriptions.values())
             if (
               subscription.scope &&
-              !(await this.access.channel(t, peer.actor, subscription.scope.channelId)).read
+              !(await this.access.peerChannel(t, peer.actor, subscription.scope.channelId)).read
             )
               throw new OpensteerError({ code: "forbidden", message: "Team access changed" });
         });

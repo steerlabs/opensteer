@@ -203,7 +203,7 @@ export class TeamFilesStore {
       image === metadata.previewSizeBytes > 0,
       "Only images carry a preview, and need one",
     );
-    return this.access.contentWrite(actor, channelId, async (t, a) => {
+    return this.access.writeForPeer(actor, channelId, async (t, a) => {
       requireTeam(a.post);
       if (actor.kind === "agent") requireTeam(agent);
       else requireTeam(!requestId && !agent);
@@ -289,7 +289,7 @@ export class TeamFilesStore {
       .selectAll()
       .where("id", "=", id)
       .executeTakeFirstOrThrow();
-    return this.access.contentWrite(actor, observed.channelId, async (t, a) => {
+    return this.access.writeForPeer(actor, observed.channelId, async (t, a) => {
       requireTeam(a.post);
       let link;
       if (actor.kind === "agent") {
@@ -352,7 +352,7 @@ export class TeamFilesStore {
       .selectAll()
       .where("id", "=", id)
       .executeTakeFirstOrThrow();
-    await this.access.contentWrite(actor, row.channelId, async (t, a) => {
+    await this.access.writeForPeer(actor, row.channelId, async (t, a) => {
       requireTeam(a.post && row.uploaderUserId === actor.userId && row.uploaderKind === actor.kind);
       const bound = await t
         .selectFrom("teamMessageAttachments")
@@ -426,7 +426,7 @@ export class TeamFilesStore {
         .where("state", "=", "ready")
         .executeTakeFirst();
       if (!row) shareNotFound();
-      requireTeam((await this.access.channel(t, actor, row.channelId)).read);
+      requireTeam((await this.access.peerChannel(t, actor, row.channelId)).read);
       let remoteShareId = row.remoteShareId;
       if (remoteShareId) {
         const share = await remoteFileShare(t, row);
@@ -457,7 +457,7 @@ export class TeamFilesStore {
   }
   async page(actor: TeamActor, channelId: TeamChannelId, before?: TeamMessageId) {
     return this.access.database.transaction().execute(async (t) => {
-      requireTeam((await this.access.channel(t, actor, channelId)).read);
+      requireTeam((await this.access.peerChannel(t, actor, channelId)).read);
       let messages = t
         .selectFrom("teamMessageAttachments as a")
         .innerJoin("teamMessages as m", "m.id", "a.messageId")

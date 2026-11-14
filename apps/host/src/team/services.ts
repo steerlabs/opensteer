@@ -736,7 +736,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
                     "id" in result.channel
                   )
                     channelId = TeamChannelIdSchema.parse(result.channel.id);
-                  return !channelId || (await access.channel(t, actor, channelId)).read;
+                  return !channelId || (await access.peerChannel(t, actor, channelId)).read;
                 }),
               () => result,
             );

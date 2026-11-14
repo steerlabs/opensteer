@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { verifyPartnerPins } from "./identity.js";
 import { sql, type Selectable, type Transaction } from "kysely";
 import { type TeamActor, type UserId } from "@opensteer/core";
 import type { DatabaseSchema } from "@opensteer/database";
@@ -221,6 +222,22 @@ export class TeamPartnerStore {
   async propose(actor: TeamActor, authority: HostDiscoveryEnvelope, name: string) {
     return this.write(async (t) => {
       const approved = await this.authorize(t, actor, "propose");
+      const existing = await t
+        .selectFrom("teamPartnerLinks")
+        .selectAll()
+        .where("partnerTeamId", "=", authority.document.deploymentId)
+        .where("state", "!=", "revoked")
+        .executeTakeFirst();
+      if (existing) {
+        verifyPartnerPins(authority, {
+          teamId: existing.partnerTeamId,
+          origin: existing.partnerOrigin,
+          hostKeyFingerprint: existing.partnerHostKeyFingerprint,
+          hostInstanceId: existing.partnerHostInstanceId,
+        });
+        requireTeam(existing.role === "dialer");
+        return existing;
+      }
       return this.insert(t, authority, name, "dialer", actor.userId, approved, false);
     });
   }
@@ -231,7 +248,6 @@ export class TeamPartnerStore {
     authority: HostDiscoveryEnvelope,
     name: string,
     partnerApproved: boolean,
-    id?: string,
   ) {
     return this.write(async (t) => {
       const invite = await t
@@ -240,9 +256,7 @@ export class TeamPartnerStore {
         .where("id", "=", selector)
         .forNoKeyUpdate()
         .executeTakeFirst();
-      requireTeam(
-        invite && !invite.consumedAt && !invite.revokedAt && invite.expiresAt > new Date(),
-      );
+      requireTeam(invite && !invite.revokedAt && invite.expiresAt > new Date());
       requireTeam(
         timingSafeEqual(
           Buffer.from(invite.verifierHash, "hex"),
@@ -250,6 +264,17 @@ export class TeamPartnerStore {
         ),
       );
       await this.authorize(t, { kind: "human", userId: invite.createdBy }, "propose");
+      if (invite.consumedAt) {
+        const existing = await this.get(selector, t);
+        requireTeam(existing && existing.role === "listener" && existing.state !== "revoked");
+        verifyPartnerPins(authority, {
+          teamId: existing.partnerTeamId,
+          origin: existing.partnerOrigin,
+          hostKeyFingerprint: existing.partnerHostKeyFingerprint,
+          hostInstanceId: existing.partnerHostInstanceId,
+        });
+        return this.#seen(t, existing, partnerApproved, name);
+      }
       await t
         .updateTable("teamPartnerInvites")
         .set({ consumedAt: new Date() })
@@ -265,7 +290,8 @@ export class TeamPartnerStore {
         invite.createdBy,
         approved,
         partnerApproved,
-        id,
+        // The listener's invite also identifies its link so a lost acknowledgment can resume.
+        selector,
       );
     });
   }
@@ -366,21 +392,25 @@ export class TeamPartnerStore {
       const row = await this.get(id, t);
       requireTeam(row);
       if (row.state === "revoked") return row;
-      const result = await t
-        .updateTable("teamPartnerLinks")
-        .set({
-          partnerApproved,
-          state: row.localApproved && partnerApproved ? "active" : "pending",
-          lastSeenAt: new Date(),
-          lastError: null,
-          ...(partnerName ? { partnerName } : {}),
-        })
-        .where("id", "=", id)
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      await this.audit(t, null, "connected", id);
-      return result;
+      return this.#seen(t, row, partnerApproved, partnerName);
     });
+  }
+
+  async #seen(t: Tx, row: PartnerRow, partnerApproved: boolean, partnerName?: string) {
+    const result = await t
+      .updateTable("teamPartnerLinks")
+      .set({
+        partnerApproved,
+        state: row.localApproved && partnerApproved ? "active" : "pending",
+        lastSeenAt: new Date(),
+        lastError: null,
+        ...(partnerName ? { partnerName } : {}),
+      })
+      .where("id", "=", row.id)
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    await this.audit(t, null, "connected", row.id);
+    return result;
   }
 
   async failed(id: string, reason: NonNullable<PartnerRow["lastError"]>) {

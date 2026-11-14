@@ -66,6 +66,47 @@ export { shareNotFound } from "./team-share-access.js";
 export class TeamSharesStore {
   readonly access: TeamAccessStore;
   readonly chat: TeamChatStore;
+  readonly #editing = new Map<string, number>();
+  #editKey(actor: TeamActor, s: Share, publicId: string, body: string) {
+    return JSON.stringify([s.id, actor.userId, actor.kind, publicId, body]);
+  }
+  holdEdit(actor: TeamActor, s: Share, publicId: string, body: string) {
+    const key = this.#editKey(actor, s, publicId, body);
+    this.#editing.set(key, (this.#editing.get(key) ?? 0) + 1);
+    let held = true;
+    return () => {
+      if (!held) return;
+      held = false;
+      const count = this.#editing.get(key)!;
+      if (count === 1) this.#editing.delete(key);
+      else this.#editing.set(key, count - 1);
+    };
+  }
+  async discardEdit(actor: TeamActor, s: Share, publicId: string, body: string) {
+    await this.access.outsideHumanSession(() =>
+      this.access.knowledgeWrite(async (t) => {
+        await t
+          .selectFrom("teamShareRelays")
+          .select("publicId")
+          .where("shareId", "=", s.id)
+          .where("authorUserId", "=", actor.userId)
+          .where("authorKind", "=", actor.kind)
+          .where("publicId", "=", publicId)
+          .forNoKeyUpdate()
+          .execute();
+        if (this.#editing.has(this.#editKey(actor, s, publicId, body))) return;
+        await t
+          .updateTable("teamShareRelays")
+          .set({ pendingBodies: sql`array_remove(pending_bodies, ${body})` })
+          .where("shareId", "=", s.id)
+          .where("authorUserId", "=", actor.userId)
+          .where("authorKind", "=", actor.kind)
+          .where("publicId", "=", publicId)
+          .execute();
+      }),
+    );
+  }
+
   constructor(access: TeamAccessStore, chat: TeamChatStore) {
     this.access = access;
     this.chat = chat;
@@ -131,7 +172,7 @@ export class TeamSharesStore {
     if (!found) return undefined;
     return this.db.transaction().execute(async (t) => {
       await this.access.checkSession(t);
-      const authority = await this.access.channel(t, actor, channelId);
+      const authority = await this.access.peerChannel(t, actor, channelId);
       requireTeam(authority.read && (!post || authority.post));
       const share = await channelShare(t, channelId);
       if (share?.role !== "follower") return undefined;
@@ -152,7 +193,7 @@ export class TeamSharesStore {
   async offer(actor: TeamActor, channelId: TeamChannelId, linkId: string, confirmed: boolean) {
     return this.access.mutate(async (t) => {
       const approved = await this.policy(t, actor);
-      const authority = await this.access.channel(t, actor, channelId);
+      const authority = await this.access.peerChannel(t, actor, channelId);
       requireTeam(
         authority.read && authority.manage && confirmed,
         "Confirm sharing the channel's full history, including agent answers",
@@ -308,7 +349,7 @@ export class TeamSharesStore {
         .where("id", "=", id)
         .executeTakeFirstOrThrow();
       requireTeam(s.role === "owner" && s.state === "offered");
-      requireTeam((await this.access.channel(t, actor, s.channelId!)).manage);
+      requireTeam((await this.access.peerChannel(t, actor, s.channelId!)).manage);
       await t.updateTable("teamShares").set({ localApproved: true }).where("id", "=", id).execute();
       return { value: { ...s, localApproved: true }, effects: emptyTeamAccessEffects };
     });
@@ -342,7 +383,7 @@ export class TeamSharesStore {
           "Choose a fresh follower channel",
         );
         await this.chat.insertChannel(t, actor, input);
-      } else requireTeam((await this.access.channel(t, actor, input.id)).manage);
+      } else requireTeam((await this.access.peerChannel(t, actor, input.id)).manage);
       if (s.historyFromShareId)
         await t
           .insertInto("teamShareRelays")
@@ -1016,7 +1057,7 @@ export class TeamSharesStore {
     write: Extract<TeamShareOperation, { op: "write" }>["write"],
     provenance?: Pick<Parameters<TeamChatStore["send"]>[1], "linkId" | "runId" | "publication">,
   ) {
-    return this.access.contentWrite(actor, s.channelId!, async (t, a) => {
+    return this.access.writeForPeer(actor, s.channelId!, async (t, a) => {
       requireTeam(a.post);
       if (actor.kind === "agent") requireTeam(!a.peopleOnly);
       const current = await this.scoped(t, s.partnerLinkId, s.id, s.generation, "follower");
@@ -1375,7 +1416,11 @@ export class TeamSharesStore {
       const verified = batch.rows
         .filter((row) => {
           const old = byPublic.get(row.publicId);
-          return !old || BigInt(old.ownerChangeSeq ?? "0") < BigInt(row.sequence);
+          return (
+            !old ||
+            BigInt(old.ownerChangeSeq ?? "0") < BigInt(row.sequence) ||
+            (old.ownerChangeSeq === row.sequence && old.bodyMarkdown === row.bodyMarkdown)
+          );
         })
         .map((row) => {
           const p = principals.get(key(row.author.teamId, row.author.userId));
@@ -1430,7 +1475,14 @@ export class TeamSharesStore {
               authorKind: row.authorKind,
               clientMessageId: row.clientMessageId,
               bodyMarkdown: row.deletedAt ? proof!.bodyMarkdown : row.bodyMarkdown,
-              pendingBodies: proof!.pendingBodies.filter((body) => body !== row.bodyMarkdown),
+              // Owner state retires ambiguous attempts; edits still in flight retain their proof.
+              pendingBodies: proof!.pendingBodies.filter(
+                (body) =>
+                  body !== row.bodyMarkdown &&
+                  this.#editing.has(
+                    this.#editKey({ userId: p.id, kind: row.authorKind }, s, row.publicId, body),
+                  ),
+              ),
               threadRootPublicId: row.threadRootPublicId,
               publicId: row.publicId,
               attachmentPublicIds: proof!.attachmentPublicIds,
@@ -1891,7 +1943,7 @@ export class TeamSharesStore {
         .where("state", "=", "active")
         .executeTakeFirstOrThrow();
       requireTeam(
-        actor.kind === "human" && (await this.access.channel(t, actor, s.channelId!)).manage,
+        actor.kind === "human" && (await this.access.peerChannel(t, actor, s.channelId!)).manage,
       );
       await t
         .updateTable("teamShares")
@@ -1912,7 +1964,7 @@ export class TeamSharesStore {
         .where("role", "=", "owner")
         .where("state", "=", "active")
         .executeTakeFirstOrThrow();
-      requireTeam((await this.access.channel(t, actor, s.channelId!)).manage);
+      requireTeam((await this.access.peerChannel(t, actor, s.channelId!)).manage);
       const p = await t
         .selectFrom("teamShareParticipants as a")
         .innerJoin("teamPrincipals as p", "p.id", "a.principalId")
@@ -2043,7 +2095,7 @@ export class TeamSharesStore {
         requireTeam(
           actor.kind === "human" && (member.role !== "member" || policy.policy === "members"),
         );
-        if (s.channelId) requireTeam((await this.access.channel(t, actor, s.channelId)).manage);
+        if (s.channelId) requireTeam((await this.access.peerChannel(t, actor, s.channelId)).manage);
       }
       if (s.state !== "ended")
         await t
@@ -2130,7 +2182,7 @@ export class TeamSharesStore {
         .selectAll("s")
         .select("l.partnerName");
       if (channelId) {
-        requireTeam((await this.access.channel(t, actor, channelId)).read);
+        requireTeam((await this.access.peerChannel(t, actor, channelId)).read);
         q = q.where("s.channelId", "=", channelId);
       } else {
         const member = await this.access.member(t, actor.userId);
@@ -2173,7 +2225,7 @@ export class TeamSharesStore {
       const manages = new Map<TeamChannelId, boolean>();
       for (const s of rows)
         if (decides && s.channelId && s.state !== "ended" && !manages.has(s.channelId))
-          manages.set(s.channelId, (await this.access.channel(t, actor, s.channelId)).manage);
+          manages.set(s.channelId, (await this.access.peerChannel(t, actor, s.channelId)).manage);
       return {
         nextCursor: page.length > 50 ? rows.at(-1)!.id : null,
         shares: rows.map((s) => ({
