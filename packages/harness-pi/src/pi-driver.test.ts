@@ -757,15 +757,13 @@ describe("Pi sessions", () => {
       expect(await session.releaseForReuse?.()).toBe(true);
       session.rebind?.({
         ...fixture.context,
-        machineAccessNotice: "Computer offline 4m",
-        historyWindow: { byteCount: 100, hasEarlier: true, itemCount: 7 },
+        machineAccessNotice: "Computer offline",
       });
       previous.abort();
       await session.execute(fixture.turn("two"));
       const prompts = (await fixture.capture()).filter((entry) => entry.type === "prompt");
       expect(prompts).toHaveLength(2);
-      expect(String(prompts[1]?.message)).toContain("Computer offline 4m");
-      expect(String(prompts[1]?.message)).toContain("most recent 7 durable messages");
+      expect(String(prompts[1]?.message)).toContain("Computer offline");
       expect(await readFile(instructionsPath, "utf8")).toBe(stable);
     } finally {
       await session.stop();

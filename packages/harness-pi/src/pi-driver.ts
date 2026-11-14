@@ -720,7 +720,6 @@ class PiHarnessSession implements HarnessSession {
     }
     const message = [
       this.#context.machineAccessNotice,
-      durableHistoryWindowNotice(this.#context),
       initialContinuationContextPrompt(this.#context),
       inputsToPiPrompt(run.inputs, run, run.attachments),
     ]
@@ -1914,7 +1913,13 @@ export function piInstructions(
   tools: readonly PiExtensionToolDefinition[],
   skillCatalog?: string,
 ): string {
-  return [context.platformGuide, context.instructions, skillCatalog, piToolsNotice(tools)]
+  return [
+    context.platformGuide,
+    context.instructions,
+    durableHistoryWindowNotice(context),
+    skillCatalog,
+    piToolsNotice(tools),
+  ]
     .filter((value): value is string => Boolean(value))
     .join("\n\n");
 }

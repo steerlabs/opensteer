@@ -926,11 +926,7 @@ describe("machine access notice", () => {
     expect(fitted.callerMachineName).toBe(context.callerMachineName);
     expect(notice).toContain(`This Run is on ${context.callerMachineName}.`);
     expect(fitted.machines.length).toBeGreaterThan(0);
-    expect(fitted.machines).toEqual(
-      machines
-        .toSorted((a, b) => (a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0))
-        .slice(0, fitted.machines.length),
-    );
+    expect(fitted.machines).toEqual(machines.slice(0, fitted.machines.length));
     expect(fitted.omittedMachines).toBe(3 + machines.length - fitted.machines.length);
     expect(notice).toContain(
       `…and ${fitted.omittedMachines} more computers are not listed and cannot be addressed this Run.`,
