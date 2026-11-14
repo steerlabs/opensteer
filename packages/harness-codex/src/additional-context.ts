@@ -10,6 +10,13 @@ export interface CodexContextEntry {
 // Codex middle-truncates values beyond 1,000 tokens, estimated as UTF-8 bytes / 4.
 const maximumValueBytes = 4_000;
 
+/** Unnumbered keys drivers sent before the inventory existed. */
+export const legacyCodexContextKeys: readonly string[] = [
+  "opensteer_computers",
+  "opensteer_current_instructions",
+  "opensteer_skills",
+];
+
 /** The last write to each inventory, so every builder of one conversation writes in turn. */
 const inventoryWrites = new Map<string, Promise<void>>();
 
@@ -29,8 +36,16 @@ export class CodexAdditionalContext {
     this.#keys = new Set(keys);
   }
 
-  static async open(path: string): Promise<CodexAdditionalContext> {
-    return new CodexAdditionalContext(path, await readInventory(path));
+  /**
+   * A conversation with no recorded inventory may still hold keys an earlier
+   * driver sent; `unrecorded` names them so they are retired too.
+   */
+  static async open(
+    path: string,
+    unrecorded: readonly string[] = [],
+  ): Promise<CodexAdditionalContext> {
+    const recorded = await readInventory(path);
+    return new CodexAdditionalContext(path, recorded.length > 0 ? recorded : unrecorded);
   }
 
   async build(

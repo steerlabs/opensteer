@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { CodexAdditionalContext } from "./additional-context.js";
+import { CodexAdditionalContext, legacyCodexContextKeys } from "./additional-context.js";
 
 it("bounds UTF-8 values without losing paragraphs, lines or code points and retires removed keys across engines", async () => {
   const directory = await mkdtemp(join(tmpdir(), "codex-context-"));
@@ -55,6 +55,21 @@ it("keeps every recorded key when builds of one conversation overlap", async () 
       "skills_beta_000001",
       "skills_gamma_000001",
     ]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("retires the unnumbered keys a pre-inventory driver left in a resumed conversation", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-context-"));
+  try {
+    const path = join(directory, "codex-context-keys.json");
+    const resumed = await CodexAdditionalContext.open(path, legacyCodexContextKeys);
+    const entries = await resumed.build({ opensteer_computers: "None" });
+    for (const key of legacyCodexContextKeys) expect(entries[key]?.value).toBe("");
+    expect(entries.opensteer_computers_000001?.value).toBe("None");
+    const reopened = await CodexAdditionalContext.open(path, legacyCodexContextKeys);
+    expect(Object.keys(await reopened.build({}))).toEqual(Object.keys(entries));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

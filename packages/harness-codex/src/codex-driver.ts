@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { CodexAdditionalContext } from "./additional-context.js";
+import { CodexAdditionalContext, legacyCodexContextKeys } from "./additional-context.js";
 import { requestToolNames } from "@opensteer/agent-tools";
 import { backgroundLightModels, voiceCallSeed } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
@@ -1240,6 +1240,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
    */
   #sessionApprovalGranted = false;
   #additionalContextBuilder: Promise<CodexAdditionalContext> | undefined;
+  #resumedConversation = false;
   #additionalContext: Record<string, { kind: "application"; value: string }> = {};
   #contextCompacted = false;
   #contextRestore: Promise<void> = Promise.resolve();
@@ -1433,6 +1434,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     }
     this.#additionalContextBuilder ??= CodexAdditionalContext.open(
       join(this.#context.threadStateDirectory, "codex-context-keys.json"),
+      this.#resumedConversation ? legacyCodexContextKeys : [],
     );
     this.#additionalContext = await (await this.#additionalContextBuilder).build(families);
     return this.#additionalContext;
@@ -1847,6 +1849,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     }
     server.claim(reference, this);
     this.#codexThreadId = reference;
+    this.#resumedConversation = resume;
     if (this.#closed) {
       // Stopped while Codex was loading it: nothing of it may stay loaded.
       await this.#unload(server, undefined);
