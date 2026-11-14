@@ -396,13 +396,23 @@ export class MockTeamHost {
     socket.addEventListener("close", () => this.#sockets.delete(socket));
     return socket;
   };
+  #channelView(id: TeamChannelId) {
+    const channel = this.channels.get(id);
+    if (!channel) throw new Error("Unknown channel.");
+    const viewerHandle = this.shareParticipants
+      .get(id)
+      ?.find((person) => person.userId === this.userId)?.handle;
+    return channel.share && viewerHandle
+      ? { ...channel, share: { ...channel.share, viewerHandle } }
+      : channel;
+  }
   cut(
     scope: TeamScope,
     subscriptionId: string,
     generation: number,
     since: string | null,
   ): TeamConsistentCut {
-    const channel = this.channels.get(scope.channelId);
+    const channel = this.#channelView(scope.channelId);
     if (!channel) throw new Error("Unknown channel.");
     const messages = [...this.messages.values()]
       .filter(
@@ -583,34 +593,35 @@ export class MockTeamHost {
       };
     }
     if (name === "team.shares.list") {
-      const { channelId } = hostApi["team.shares.list"].payload.parse(input);
+      const { channelId, after } = hostApi["team.shares.list"].payload.parse(input);
+      const rows = [...this.shares.values()]
+        .filter((s) => (!channelId || s.channelId === channelId) && (!after || s.id > after))
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .slice(0, 51);
       return {
-        shares: [...this.shares.values()]
-          .filter((s) => !channelId || s.channelId === channelId)
-          .slice(0, 50)
-          .map((share) => {
-            const manage =
-              !share.channelId || this.channels.get(share.channelId)?.can.manage === true;
-            const admin =
-              this.bootstrap.member.role !== "member" || this.sharingPolicy === "members";
-            return {
-              ...share,
-              canApprove:
-                manage &&
-                admin &&
-                this.sharingPolicy !== "off" &&
-                share.role === "owner" &&
-                share.state === "offered" &&
-                !share.localApproved,
-              canAccept:
-                manage &&
-                admin &&
-                this.sharingPolicy !== "off" &&
-                share.role === "follower" &&
-                share.state === "offered",
-              canEnd: manage && admin && share.state !== "ended",
-            };
-          }),
+        nextCursor: rows.length > 50 ? rows[49]!.id : null,
+        shares: rows.slice(0, 50).map((share) => {
+          const manage =
+            !share.channelId || this.channels.get(share.channelId)?.can.manage === true;
+          const admin = this.bootstrap.member.role !== "member" || this.sharingPolicy === "members";
+          return {
+            ...share,
+            canApprove:
+              manage &&
+              admin &&
+              this.sharingPolicy !== "off" &&
+              share.role === "owner" &&
+              share.state === "offered" &&
+              !share.localApproved,
+            canAccept:
+              manage &&
+              admin &&
+              this.sharingPolicy !== "off" &&
+              share.role === "follower" &&
+              share.state === "offered",
+            canEnd: manage && admin && share.state !== "ended",
+          };
+        }),
       };
     }
     if (name === "team.sharing.policy.get")
@@ -1375,7 +1386,7 @@ export class MockTeamHost {
         .sort((a, b) => Number(BigInt(a.id) - BigInt(b.id)));
       return {
         people: this.#contentPeople(rows),
-        channel: this.channels.get(payload.channelId),
+        channel: this.#channelView(payload.channelId),
         messages: payload.page.direction === "after" ? rows.slice(0, 50) : rows.slice(-50),
         hasMore: rows.length > 50,
         throughSeq: String(this.#seq),

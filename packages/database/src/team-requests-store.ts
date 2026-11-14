@@ -17,6 +17,9 @@ import type { DatabaseSchema } from "./schema.js";
 import type { TeamRequestStorePort } from "./team-requests-port.js";
 import {
   TeamAccessStore,
+  assertTeamSharedChannelVersion,
+  teamPeerSupportsSharedChannels,
+  teamSharedChannelIds,
   bumpTeamChannel,
   requireTeam,
   lockTeamMessages,
@@ -46,6 +49,11 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       .where("m.state", "=", "active")
       .executeTakeFirst();
     requireTeam(row, "Request unavailable");
+    assertTeamSharedChannelVersion(
+      !!row.presentation?.asker.homeTeamName ||
+        !!row.presentation?.audience.externalTeams?.length ||
+        !!row.returnPayload?.author?.homeTeamName,
+    );
     const authority = await this.access.channel(
       transaction,
       { kind: "agent", userId: row.ownerUserId },
@@ -126,6 +134,15 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         .orderBy("createdAt")
         .orderBy("id")
         .limit(limit);
+      if (!teamPeerSupportsSharedChannels())
+        pending = pending
+          .where("channelId", "not in", teamSharedChannelIds())
+          .where(
+            sql<boolean>`coalesce(presentation->'asker'->>'homeTeamName',return_payload->'author'->>'homeTeamName') is null`,
+          )
+          .where(
+            sql<boolean>`coalesce(jsonb_array_length(presentation->'audience'->'externalTeams'),0)=0`,
+          );
       if (excludeRequestIds.length) pending = pending.where("id", "not in", excludeRequestIds);
       const rows = await pending.execute();
       const actors = new Map<string, { actor: TeamActor; channels: Set<TeamChannelId> }>();

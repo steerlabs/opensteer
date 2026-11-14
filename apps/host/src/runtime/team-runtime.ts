@@ -14,7 +14,12 @@ import websocket from "@fastify/websocket";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
-import { deploymentPolicy, type Deployment, type HostKeyFingerprint } from "@opensteer/core";
+import {
+  OpensteerError,
+  deploymentPolicy,
+  type Deployment,
+  type HostKeyFingerprint,
+} from "@opensteer/core";
 import {
   HostDescriptorSchema,
   apiNegotiation,
@@ -446,7 +451,14 @@ export async function createTeamHostRuntime(input: {
                 const fresh = await authenticator.authenticateSession(request.headers);
                 await access.withHumanSession(fresh, () => peer.receive(JSON.parse(frame)));
               })
-              .catch(() => socket.close(1008, "Team frame refused"))
+              .catch((error: unknown) =>
+                socket.close(
+                  1008,
+                  error instanceof OpensteerError && error.reason === "api-version-mismatch"
+                    ? "Update Opensteer for shared channels"
+                    : "Team frame refused",
+                ),
+              )
               .finally(() => {
                 queuedFrames--;
                 queuedBytes -= bytes;

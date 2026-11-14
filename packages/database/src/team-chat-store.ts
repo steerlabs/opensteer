@@ -57,6 +57,9 @@ import {
   teamReadableChannels,
   teamReadableChannelIds,
   teamChannelPeopleOnly,
+  assertTeamSharedChannelVersion,
+  teamPeerSupportsSharedChannels,
+  teamSharedChannelIds,
 } from "./team-access-store.js";
 import { appendTeamAudit, type TeamAgentOperation } from "./team-audit-store.js";
 import { bindTeamFiles, teamFileView } from "./team-files-store.js";
@@ -220,13 +223,20 @@ export async function teamContentPeople(
 export async function teamChannelShares(
   t: Transaction<DatabaseSchema>,
   ids: readonly TeamChannelId[],
+  viewerUserId?: UserId,
 ) {
   if (!ids.length)
     return new Map<TeamChannelId, import("@opensteer/protocol").TeamChannel["share"]>();
   const rows = await t
     .selectFrom("teamShares as s")
     .innerJoin("teamPartnerLinks as l", "l.id", "s.partnerLinkId")
+    .leftJoin("teamShareParticipants as viewer", (join) =>
+      join
+        .onRef("viewer.shareId", "=", "s.id")
+        .on(sql<boolean>`viewer.principal_id = ${viewerUserId ?? null}`),
+    )
     .select([
+      "viewer.handle as viewerHandle",
       "s.id",
       "s.channelId",
       "s.state",
@@ -240,10 +250,12 @@ export async function teamChannelShares(
     .where((eb) => eb.or([eb("s.state", "=", "active"), eb("s.role", "=", "follower")]))
     .orderBy("s.createdAt")
     .execute();
+  assertTeamSharedChannelVersion(rows.length > 0);
   return new Map(
     rows.map((r) => [
       r.channelId!,
       {
+        ...(r.viewerHandle ? { viewerHandle: r.viewerHandle } : {}),
         shareId: r.id,
         agentsEnabled: r.agentsEnabled,
         updateRequired: r.syncError === "update-required",
@@ -392,7 +404,7 @@ export class TeamChatStore {
       .where("ownerUserId", "=", actor.userId)
       .where("state", "=", "active")
       .executeTakeFirst();
-    const share = (await teamChannelShares(transaction, [id])).get(id);
+    const share = (await teamChannelShares(transaction, [id], actor.userId)).get(id);
     return TeamChannelSchema.strip().parse({
       ...row,
       ...(share ? { share } : {}),
@@ -2132,13 +2144,15 @@ export class TeamChatStore {
                   ...(member.role !== "member" ? [e("kind", "=", "private")] : []),
                 ]),
           );
+        if (!teamPeerSupportsSharedChannels())
+          query = query.where("id", "not in", teamSharedChannelIds());
         if (after) query = query.where("id", ">", after);
         if (channelIds) query = query.where("id", "in", [...channelIds]);
         const rows = await query.orderBy("id").limit(51).execute();
         const pageRows = rows.slice(0, 50),
           ids = pageRows.map((row) => row.id);
         const authorities = await this.access.channels(t, actor, ids);
-        const shares = await teamChannelShares(t, ids);
+        const shares = await teamChannelShares(t, ids, actor.userId);
         const states = ids.length
           ? await t
               .selectFrom("teamChannelMemberState")

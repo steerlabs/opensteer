@@ -18,6 +18,7 @@ import {
   type HostApiClient,
   type HostApiCommandInput,
   type TeamMessage,
+  type TeamChannel,
   type TeamAgentRecipient,
 } from "@opensteer/protocol";
 import type { z } from "zod";
@@ -177,8 +178,18 @@ export class TeamSessionClient {
     this.#snapshot = { ...this.#snapshot, ...patch };
     for (const listener of this.#listeners) listener();
   }
-  #peoplePatch(people: TeamRemotePeople | undefined, channelId: TeamChannelId) {
+  #peoplePatch(
+    people: TeamRemotePeople | undefined,
+    channelId: TeamChannelId,
+    channel?: TeamChannel,
+  ) {
+    const handles = { ...this.#snapshot.handlesByChannel?.[channelId] };
+    if (channel) {
+      delete handles[this.scope.userId];
+      if (channel.share?.viewerHandle) handles[this.scope.userId] = channel.share.viewerHandle;
+    }
     return {
+      handlesByChannel: { ...this.#snapshot.handlesByChannel, [channelId]: handles },
       people: mergeTeamPeople(this.#snapshot.people ?? {}, people),
       peopleByChannel: {
         ...this.#snapshot.peopleByChannel,
@@ -508,7 +519,7 @@ export class TeamSessionClient {
     if (lifetime !== this.#lifetime || !current || selected.generation !== current.generation)
       return;
     this.#update({
-      ...this.#peoplePatch(result.people, selected.scope.channelId),
+      ...this.#peoplePatch(result.people, selected.scope.channelId, result.channel),
       [view]: reduceTeamPage(current, result, selected.generation, direction),
     });
   }
@@ -578,6 +589,7 @@ export class TeamSessionClient {
       ...this.#peoplePatch(
         mergeTeamPeople(mergeTeamPeople(message.people ?? {}, before.people), after.people),
         channelId,
+        after.channel,
       ),
       [view]: { ...next, hasMore: before.hasMore, anchorId: message.id },
     });
@@ -660,7 +672,7 @@ export class TeamSessionClient {
         const next = reduceTeamCut(held, frame.cut);
         if (next !== held) {
           this.#update({
-            ...this.#peoplePatch(frame.cut.people, frame.cut.scope.channelId),
+            ...this.#peoplePatch(frame.cut.people, frame.cut.scope.channelId, frame.cut.channel),
             [view]: next,
           });
           this.#applyRecipients(frame.cut.agentRecipients);

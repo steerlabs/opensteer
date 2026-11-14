@@ -1904,7 +1904,7 @@ export class TeamSharesStore {
       };
     });
   }
-  async list(actor: TeamActor, channelId?: TeamChannelId) {
+  async list(actor: TeamActor, channelId?: TeamChannelId, after?: string) {
     return this.db.transaction().execute(async (t) => {
       await this.access.member(t, actor.userId);
       let q = t
@@ -1943,7 +1943,9 @@ export class TeamSharesStore {
           ]),
         );
       }
-      const rows = await q.orderBy("s.createdAt", "desc").limit(50).execute();
+      if (after) q = q.where("s.id", ">", after);
+      const page = await q.orderBy("s.id").limit(51).execute();
+      const rows = page.slice(0, 50);
       const member = await this.access.member(t, actor.userId);
       const { policy } = await t
         .selectFrom("teamSharingSettings")
@@ -1956,6 +1958,7 @@ export class TeamSharesStore {
         if (decides && s.channelId && s.state !== "ended" && !manages.has(s.channelId))
           manages.set(s.channelId, (await this.access.channel(t, actor, s.channelId)).manage);
       return {
+        nextCursor: page.length > 50 ? rows.at(-1)!.id : null,
         shares: rows.map((s) => ({
           canApprove:
             decides &&
