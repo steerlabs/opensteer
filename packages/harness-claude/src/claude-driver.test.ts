@@ -2757,6 +2757,29 @@ describe("Claude Agent SDK harness", () => {
     await adapter.close();
   });
 
+  it("runs the turn when Claude Code announces the session title before init", async () => {
+    const sdk = new FakeSdk((parameters) =>
+      scriptedQuery([
+        message({
+          type: "system",
+          subtype: "session_title_changed",
+          title: "Opensteer",
+          session_id: providerSessionId(parameters.options),
+        }),
+        initMessage(providerSessionId(parameters.options)),
+        successMessage(providerSessionId(parameters.options), "Done."),
+      ]),
+    );
+    const { adapter, session } = await openSession(sdk);
+    const observer = observe(session.events);
+    await send(session, "Hello");
+    await observer.waitFor("run.completed");
+    expect(observer.events.some((event) => event.type === "run.failed")).toBe(false);
+    await session.stop();
+    await observer.done;
+    await adapter.close();
+  });
+
   it("rejects a plugin impersonating the synthetic Opensteer plugin", async () => {
     const sdk = new FakeSdk((parameters) =>
       scriptedQuery([

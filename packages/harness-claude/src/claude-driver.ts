@@ -2638,8 +2638,12 @@ class ClaudeHarnessSession implements HarnessSession {
     // Mods can hold a tool call until someone interacts with a terminal pane.
     // Close the query via the failure path; interrupt may never be acknowledged.
     const subtype: unknown = Reflect.get(message, "subtype");
-    // Plugin UI redraw notifications may precede init and need no host action.
-    if (message.type === "system" && subtype === "ui_invalidate") return;
+    // Plugin UI redraws and the echo of the `title` option may precede init and need no host action.
+    if (
+      message.type === "system" &&
+      (subtype === "ui_invalidate" || subtype === "session_title_changed")
+    )
+      return;
     if (message.type === "system" && subtype === "ui_panes") {
       const paneId: unknown = Reflect.get(message, "focus_requested_id");
       if (typeof paneId === "string" && paneId.trim()) {
