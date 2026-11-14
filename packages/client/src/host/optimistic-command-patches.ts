@@ -76,6 +76,7 @@ type OptimisticCommandPatch =
     }
   | {
       readonly edit: MessageEdit;
+      readonly leaseId?: string;
       readonly message: MessageView;
       readonly threadId: string;
       readonly type: Extract<CommandType, "thread.input.edit">;
@@ -189,8 +190,8 @@ export const optimisticCommandPatches = {
   "teams.ask.decide": answerTeamAsk,
   "thread.execution.update": replaceThread,
   "thread.input.cancel": withdrawQueuedInput,
-  "thread.input.edit": (snapshot, { edit, message, threadId }) =>
-    withEditedWaitingMessage(snapshot, threadId, message, edit),
+  "thread.input.edit": (snapshot, { edit, leaseId, message, threadId }) =>
+    withEditedWaitingMessage(snapshot, threadId, message, edit, undefined, leaseId),
   "thread.input.lease.take": (snapshot, { lease, messageId, threadId }) => ({
     ...snapshot,
     inputQueues: withEditLease(snapshot.inputQueues, threadId, messageId, lease),
@@ -609,6 +610,7 @@ export function withEditedWaitingMessage(
   message: MessageView,
   edit: MessageEdit | undefined,
   input?: ThreadInputQueueItem["input"],
+  leaseId?: string,
 ): HostSnapshot {
   const transcript = snapshot.transcripts[threadId];
   const stale = (held: MessageView) =>
@@ -647,7 +649,7 @@ export function withEditedWaitingMessage(
           ...item,
           ...(input ? { input } : {}),
           // A person's save ends the lease it was made under; a Host rewrite leaves it.
-          lease: edit ? null : item.lease,
+          lease: edit && item.lease?.leaseId === leaseId ? null : item.lease,
           message: { ...message, ...(mark ? { edit: mark } : {}) },
         };
       },

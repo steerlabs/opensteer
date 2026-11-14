@@ -1247,6 +1247,7 @@ export class HttpHostClient {
           this.#update(
             applyOptimisticCommandPatch(this.#snapshot, {
               edit: result.edit,
+              ...(parsedCommand.leaseId === undefined ? {} : { leaseId: parsedCommand.leaseId }),
               message: result.message,
               threadId: parsedCommand.threadId,
               type: result.type,
@@ -3215,11 +3216,25 @@ export class HttpHostClient {
   loadThreadInputQueue(threadId: string): Promise<ThreadInputQueue> {
     const existing = this.#threadInputQueueLoads.get(threadId);
     if (existing) return existing;
+    const generation = this.#viewerGeneration;
+    const held = this.#snapshot.inputQueues[threadId];
     const operation = this.rpc["thread.inputQueue.get"]({ threadId })
       .then(unwrapRpcResult)
       .then((queue) => {
         if (queue.threadId !== threadId) throw new Error("Thread input queue mismatch.");
-        if (this.#removedThreads.has(threadId)) return queue;
+        if (
+          generation !== this.#viewerGeneration ||
+          this.#disposed ||
+          this.#removedThreads.has(threadId)
+        )
+          return queue;
+        if (
+          this.#snapshot.inputQueues[threadId] !== held ||
+          this.#threadInputQueueRereads.has(threadId)
+        ) {
+          this.#threadInputQueueRereads.add(threadId);
+          return queue;
+        }
         this.#update({
           ...this.#snapshot,
           inputQueues: { ...this.#snapshot.inputQueues, [threadId]: queue },
@@ -3604,13 +3619,19 @@ export class HttpHostClient {
         if (!this.#viewerStillCurrent(generation, userId)) return;
         this.#mergeVisits(page.tasks.map((entry) => entry.thread));
         merged = mergeTasks(merged, {
-          entries: page.tasks.map((entry) => ({
-            ...entry,
-            thread: this.#threadState.reconcile(
-              toThreadSummary(entry.thread, this.#snapshot.environments, this.#snapshot.harnesses),
-              page.asOfSequence,
-            ),
-          })),
+          entries: page.tasks
+            .filter((entry) => !this.#removedThreads.has(entry.thread.id))
+            .map((entry) => ({
+              ...entry,
+              thread: this.#threadState.reconcile(
+                toThreadSummary(
+                  entry.thread,
+                  this.#snapshot.environments,
+                  this.#snapshot.harnesses,
+                ),
+                page.asOfSequence,
+              ),
+            })),
           window: page.window,
         });
         if (!page.window.hasMore || (scope !== "active" && merged.entries.length >= minimumItems))
@@ -3620,6 +3641,10 @@ export class HttpHostClient {
         before = page.window.nextBefore;
       }
       if (!merged || !this.#viewerStillCurrent(generation, userId)) return;
+      merged = {
+        ...merged,
+        entries: merged.entries.filter((entry) => !this.#removedThreads.has(entry.thread.id)),
+      };
       if (!scope) this.#savedViewReadiness = { ...this.#savedViewReadiness, tasksReady: true };
       this.#update(
         scope === "active"
@@ -5047,7 +5072,8 @@ export class HttpHostClient {
   #refreshInputQueues(threadIds: Iterable<string>): void {
     const stale: string[] = [];
     for (const threadId of threadIds) {
-      if (!this.#snapshot.inputQueues[threadId]) continue;
+      if (!this.#snapshot.inputQueues[threadId] && !this.#threadInputQueueLoads.has(threadId))
+        continue;
       if (threadId === this.#activeThreadId) this.#reloadInputQueue(threadId);
       else stale.push(threadId);
     }
