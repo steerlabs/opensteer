@@ -32,7 +32,6 @@ export interface TeamComposerProps {
   }) => void;
   readonly agent: AgentReach;
   readonly toMyAgent: boolean;
-  readonly sticky?: boolean;
   readonly onToMyAgentChange: (on: boolean) => void;
   /** Asking with no Opensteer linked: opens "Connect your Opensteer". */
   readonly onAgentUnavailable: () => void;
@@ -60,8 +59,8 @@ export interface TeamComposerProps {
  *
  * At rest it is the app's capsule with "Ask my agent" labelled at its end, at
  * thumb height. Focused or holding a draft it opens: the words on top, then
- * attach, @, the pill and send. With "to my agent" on, the rim turns ember and
- * the agent's chip leads the words; × or a backspace at the start turns it off.
+ * attach, @, the pill and send. With "to my agent" on, the agent's chip leads
+ * the words; the chip, the pill or a backspace at the start turns it off.
  *
  * In a people-only place the pill is a People only badge. With no Opensteer
  * linked the pill still shows, and asking explains how to connect one.
@@ -103,127 +102,114 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
         <MentionList onPick={props.onPickMention} options={props.mentions} />
       )}
       {props.hint ?? null}
-      {props.sticky && editing === null && (toMyAgent || props.agent === "available") ? (
-        <Pressable accessibilityRole="button" onPress={() => props.onToMyAgentChange(!toMyAgent)}>
-          <AppText role="caption" tone="muted">
-            {toMyAgent ? "→ your agent ✕" : "+ your agent"}
-          </AppText>
-        </Pressable>
-      ) : null}
       {editing === null ? null : <EditingBar onCancel={editing.onCancel} />}
-      <View style={[styles.rim, toMyAgent && !props.sticky && styles.rimOn]}>
-        <ComposerBar
-          {...(props.attachments.length === 0 && !uploading
-            ? {}
-            : {
-                caption: (
-                  <View style={styles.caption}>
-                    <StagedAttachments
-                      files={props.attachments}
-                      onRemove={props.onRemoveAttachment}
-                    />
-                    {uploading ? (
-                      <AppText role="caption" style={styles.captionLine} tone="muted">
-                        Sends when uploads finish
-                      </AppText>
-                    ) : null}
-                  </View>
-                ),
-              })}
-          field={
-            <Pressable
-              accessible={false}
-              onPress={() => input.current?.focus()}
-              style={styles.lane}
-            >
-              {toMyAgent && !props.sticky ? (
-                <Pressable
-                  accessibilityHint="Turns off asking your agent"
-                  accessibilityLabel="To my agent"
-                  accessibilityRole="button"
-                  onPress={() => props.onToMyAgentChange(false)}
-                  style={styles.agentChip}
-                >
-                  <AgentOrb size={14} />
-                  <AppText
-                    maxFontSizeMultiplier={controlFontScaleLimit}
-                    role="secondaryMedium"
-                    style={styles.agentChipText}
-                  >
-                    My agent
-                  </AppText>
-                </Pressable>
-              ) : null}
-              <PasteTarget
-                maxBytes={teamUploadMaxBytes}
-                onPasteImages={(event) => props.onPasteImages(event.nativeEvent)}
-                style={styles.field}
+      <ComposerBar
+        {...(props.attachments.length === 0 && !uploading
+          ? {}
+          : {
+              caption: (
+                <View style={styles.caption}>
+                  <StagedAttachments
+                    files={props.attachments}
+                    onRemove={props.onRemoveAttachment}
+                  />
+                  {uploading ? (
+                    <AppText role="caption" style={styles.captionLine} tone="muted">
+                      Sends when uploads finish
+                    </AppText>
+                  ) : null}
+                </View>
+              ),
+            })}
+        field={
+          <Pressable accessible={false} onPress={() => input.current?.focus()} style={styles.lane}>
+            {toMyAgent ? (
+              <Pressable
+                accessibilityHint="Turns off asking your agent"
+                accessibilityLabel="To my agent"
+                accessibilityRole="button"
+                onPress={() => props.onToMyAgentChange(false)}
+                style={styles.agentChip}
               >
-                <TextInput
-                  accessibilityLabel={toMyAgent ? "Ask your agent" : props.placeholder}
-                  cursorColor={color.ember}
+                <AgentOrb size={14} />
+                <AppText
                   maxFontSizeMultiplier={controlFontScaleLimit}
-                  multiline
-                  onBlur={() => setFocused(false)}
-                  onChangeText={props.onChangeText}
-                  onFocus={() => setFocused(true)}
-                  onKeyPress={(event) => {
-                    if (toMyAgent && event.nativeEvent.key === "Backspace" && props.text === "") {
-                      props.onToMyAgentChange(false);
-                    }
-                  }}
-                  onSelectionChange={(event) =>
-                    props.onSelectionChange?.(event.nativeEvent.selection)
+                  role="secondaryMedium"
+                  style={styles.agentChipText}
+                >
+                  @My agent
+                </AppText>
+              </Pressable>
+            ) : null}
+            <PasteTarget
+              maxBytes={teamUploadMaxBytes}
+              onPasteImages={(event) => props.onPasteImages(event.nativeEvent)}
+              style={styles.field}
+            >
+              <TextInput
+                accessibilityLabel={toMyAgent ? "Ask your agent" : props.placeholder}
+                cursorColor={color.ember}
+                maxFontSizeMultiplier={controlFontScaleLimit}
+                multiline
+                onBlur={() => setFocused(false)}
+                onChangeText={props.onChangeText}
+                onFocus={() => setFocused(true)}
+                onKeyPress={(event) => {
+                  if (toMyAgent && event.nativeEvent.key === "Backspace" && props.text === "") {
+                    props.onToMyAgentChange(false);
                   }
-                  placeholder={toMyAgent ? "Ask your agent…" : props.placeholder}
-                  placeholderTextColor={color.muted}
-                  ref={input}
-                  selectionColor={color.ember}
-                  style={styles.input}
-                  value={props.text}
-                />
-              </PasteTarget>
-            </Pressable>
-          }
-          leading={
-            <View style={styles.row}>
-              {editing === null ? (
-                <Pressable
-                  accessibilityLabel="Attach files"
-                  accessibilityRole="button"
-                  onPress={props.onAttach}
-                >
-                  <ComposerGlyph icon="paperclip" />
-                </Pressable>
-              ) : null}
-              {open ? (
-                <Pressable
-                  accessibilityLabel="Mention someone"
-                  accessibilityRole="button"
-                  onPress={props.onMention}
-                >
-                  <ComposerGlyph icon="at" />
-                </Pressable>
-              ) : null}
-            </View>
-          }
-          {...(open && !props.sticky && editing === null ? { accessory: askPill } : {})}
-          action={
-            open ? (
-              <ComposerAction
-                busy={editing?.saving === true}
-                disabled={!hasContent || refused}
-                kind="send"
-                label={editing !== null ? "Save edit" : toMyAgent ? "Send to my agent" : "Send"}
-                onPress={props.onSend}
+                }}
+                onSelectionChange={(event) =>
+                  props.onSelectionChange?.(event.nativeEvent.selection)
+                }
+                placeholder={toMyAgent ? "Ask your agent…" : props.placeholder}
+                placeholderTextColor={color.muted}
+                ref={input}
+                selectionColor={color.ember}
+                style={styles.input}
+                value={props.text}
               />
-            ) : (
-              <View style={styles.restAction}>{props.sticky ? null : askPill}</View>
-            )
-          }
-          shape={open ? "rounded" : "capsule"}
-        />
-      </View>
+            </PasteTarget>
+          </Pressable>
+        }
+        leading={
+          <View style={styles.row}>
+            {editing === null ? (
+              <Pressable
+                accessibilityLabel="Attach files"
+                accessibilityRole="button"
+                onPress={props.onAttach}
+              >
+                <ComposerGlyph icon="paperclip" />
+              </Pressable>
+            ) : null}
+            {open ? (
+              <Pressable
+                accessibilityLabel="Mention someone"
+                accessibilityRole="button"
+                onPress={props.onMention}
+              >
+                <ComposerGlyph icon="at" />
+              </Pressable>
+            ) : null}
+          </View>
+        }
+        {...(open && editing === null ? { accessory: askPill } : {})}
+        action={
+          open ? (
+            <ComposerAction
+              busy={editing?.saving === true}
+              disabled={!hasContent || refused}
+              kind="send"
+              label={editing !== null ? "Save edit" : toMyAgent ? "Send to my agent" : "Send"}
+              onPress={props.onSend}
+            />
+          ) : (
+            <View style={styles.restAction}>{askPill}</View>
+          )
+        }
+        shape={open ? "rounded" : "capsule"}
+      />
     </View>
   );
 }
@@ -352,9 +338,6 @@ const styles = StyleSheet.create({
   pillOn: { backgroundColor: color.emberWash, borderColor: color.emberLine },
   pillPressed: { opacity: 0.7 },
   restAction: { justifyContent: "center", minHeight: touchTarget, paddingRight: space[4] },
-  rim: { borderColor: "transparent", borderRadius: 26, borderWidth: 1 },
-  // The attention rim: the one sign, before sending, that this message wakes an agent.
-  rimOn: { borderColor: "rgba(230, 190, 176, 0.55)" },
   row: { flexDirection: "row" },
   stack: { gap: space[8] },
 });

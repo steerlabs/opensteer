@@ -11,13 +11,29 @@ vi.mock("react-native", () => ({
   },
   StyleSheet: { create: (styles: object) => styles, hairlineWidth: 1 },
   View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-  Pressable: ({ children, onPress }: { children?: ReactNode; onPress?: () => void }) => (
-    <button onClick={onPress}>{children}</button>
+  Pressable: ({
+    accessibilityLabel,
+    children,
+    onPress,
+  }: {
+    accessibilityLabel?: string;
+    children?: ReactNode;
+    onPress?: () => void;
+  }) => (
+    <div aria-label={accessibilityLabel} onClick={onPress} role="button">
+      {children}
+    </div>
   ),
   TextInput: () => null,
 }));
 vi.mock("../thread/composer-bar.js", () => ({
-  ComposerBar: () => null,
+  ComposerBar: (props: { field: ReactNode; accessory?: ReactNode; action: ReactNode }) => (
+    <div>
+      {props.field}
+      {props.accessory}
+      {props.action}
+    </div>
+  ),
   ComposerGlyph: () => null,
   composerLaneHeight: 44,
 }));
@@ -44,7 +60,6 @@ it.each(["people-only", "not-connected"] as const)(
       text: "",
       onChangeText: vi.fn(),
       agent: "available",
-      sticky: true,
       toMyAgent: true,
       onToMyAgentChange: change,
       onAgentUnavailable: vi.fn(),
@@ -60,14 +75,14 @@ it.each(["people-only", "not-connected"] as const)(
     try {
       act(() => root.render(<TeamComposer {...props} />));
       act(() => root.render(<TeamComposer {...props} agent={agent} />));
-      const button = [...host.querySelectorAll("button")].find((b) =>
-        b.textContent?.includes("→ your agent"),
-      );
-      expect(button, "The enabled recipient must remain removable").toBeDefined();
-      act(() => button!.click());
+      const chip = host.querySelector<HTMLElement>('[aria-label="To my agent"]');
+      expect(chip, "The enabled recipient must remain removable").not.toBeNull();
+      act(() => chip!.click());
       expect(change).toHaveBeenCalledExactlyOnceWith(false);
       act(() => root.render(<TeamComposer {...props} agent={agent} toMyAgent={false} />));
-      expect(host.textContent).not.toContain("+ your agent");
+      const ask = host.querySelector<HTMLElement>('[aria-label="Ask my agent"]');
+      if (ask) act(() => ask.click());
+      expect(change, "An unavailable agent must not be turned back on").toHaveBeenCalledTimes(1);
     } finally {
       act(() => root.unmount());
       host.remove();

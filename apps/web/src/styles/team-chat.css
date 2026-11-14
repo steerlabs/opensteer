@@ -1577,11 +1577,6 @@ a.team-row__main:hover {
   position: relative;
 }
 
-.team-composer__box--agent {
-  border-color: var(--rim-attention);
-  box-shadow: var(--edge-attention), var(--lift-float), var(--ring-ember);
-}
-
 .team-composer__line {
   display: flex;
   align-items: flex-start;
@@ -1591,10 +1586,12 @@ a.team-row__main:hover {
 .team-composer__chip {
   flex: none;
   margin: 15px 0 0 var(--space-12);
+  font-family: inherit;
   font-size: var(--text-xl);
+  cursor: pointer;
 }
 
-.team-composer__box--agent .team-composer__input {
+.team-composer__chip + .team-composer__input {
   padding-left: var(--space-8);
 }
 
@@ -3417,8 +3414,7 @@ a.kb-note__crumb:hover {
 }
 
 .team-input-source,
-.team-run-delivery,
-.team-composer__recipient {
+.team-run-delivery {
   color: var(--muted);
   font-size: 0.75rem;
 }
@@ -3435,14 +3431,6 @@ a.team-input-source:hover {
 .turn > .team-run-delivery {
   margin-top: calc(4px - var(--space-6));
 }
-.team-composer__recipient {
-  align-self: flex-start;
-  background: none;
-  border: 0;
-  padding: 4px 0;
-  cursor: pointer;
-}
-
 /* ---- Browse channels ----
    The Knowledge page's column: a title, one line saying what the page is for,
    the search, then one compact row per channel. */

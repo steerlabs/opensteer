@@ -851,7 +851,6 @@ function Place(props: {
     onSelectionChange: setSelection,
     agent: reach,
     toMyAgent,
-    sticky: rootId !== null,
     onToMyAgentChange: setToMyAgent,
     onAgentUnavailable: () => navigation.navigate("ConnectOpensteer", { teamId }),
     mentions,
