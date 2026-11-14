@@ -195,6 +195,7 @@ describe("Chromium child environment", () => {
         close: vi.fn().mockResolvedValue(undefined),
         newBrowserCDPSession: vi.fn().mockResolvedValue(browserCdp),
         newContext: vi.fn().mockResolvedValue(context),
+        version: () => "151.0.7922.34",
       } as unknown as Browser;
       const browserServer = {
         kill: vi.fn().mockResolvedValue(undefined),
@@ -237,9 +238,7 @@ describe("Chromium child environment", () => {
       expect(launcher.passkeys).toBe(provider && supportsSecurity ? 1 : undefined);
       expect(context.addInitScript).toHaveBeenCalledWith({
         content:
-          provider && supportsSecurity
-            ? expect.stringContaining("opensteerPasskey_")
-            : browserPagePolicyScript,
+          provider && supportsSecurity ? expect.stringContaining("b_") : browserPagePolicyScript,
       });
       if (provider && supportsSecurity) {
         const platform = await launched.context.pages()[0]!.cdp();
@@ -260,6 +259,7 @@ describe("Chromium child environment", () => {
       expect(launchOptions?.env).not.toHaveProperty("AWS_SECRET_ACCESS_KEY");
       expect(browser.newContext).toHaveBeenCalledWith(
         expect.objectContaining({
+          userAgent: expect.stringContaining("Chrome/151.0.0.0"),
           // The Runtime's ledger alone sizes pages.
           viewport: null,
         }),

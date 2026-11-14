@@ -79,6 +79,18 @@ interface PlaywrightChromiumLauncherOptions {
   proxyUrl?: string;
 }
 
+/** Reduced Chrome UA at the shipped engine major; stock headless announces itself. */
+export function reducedChromeUserAgent(version: string): string {
+  const major = version.split(".")[0] ?? version;
+  const platform =
+    process.platform === "win32"
+      ? "Windows NT 10.0; Win64; x64"
+      : process.platform === "darwin"
+        ? "Macintosh; Intel Mac OS X 10_15_7"
+        : "X11; Linux x86_64";
+  return `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`;
+}
+
 const commonChromiumEnvironmentVariables = [
   "LANG",
   "LC_ALL",
@@ -230,9 +242,10 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
   private startServer(timeout?: number): Promise<PlaywrightBrowserServer> {
     return chromium.launchServer({
       ...(timeout === undefined ? {} : { timeout }),
+      ignoreDefaultArgs: ["--enable-automation"],
       args: [
         ...this.args,
-        `--disable-blink-features=${browserPageDisabledBlinkFeatures}`,
+        `--disable-blink-features=${browserPageDisabledBlinkFeatures},AutomationControlled`,
         ...(this.proxyUrl
           ? [
               "--disable-background-networking",
@@ -326,6 +339,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       const browser = await chromium.connect(browserServer.wsEndpoint());
       const openDialogs = new Map<Page, Dialog>();
       const context = await browser.newContext({
+        userAgent: reducedChromeUserAgent(browser.version()),
         acceptDownloads: false,
         // The Runtime's ledger alone sizes pages. A Playwright viewport would
         // be a second emulator that Playwright re-applies on its own, such as
@@ -489,8 +503,7 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
         "--restore-last-session",
         "--no-first-run",
         "--no-default-browser-check",
-        "--enable-automation",
-        `--disable-blink-features=${browserPageDisabledBlinkFeatures}`,
+        `--disable-blink-features=${browserPageDisabledBlinkFeatures},AutomationControlled`,
         ...(this.headless ? ["--headless=new"] : []),
         ...(this.chromiumSandbox ? [] : ["--no-sandbox"]),
         ...(this.proxyUrl

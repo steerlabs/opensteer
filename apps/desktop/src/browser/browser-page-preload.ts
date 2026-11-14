@@ -20,8 +20,8 @@ if (argument) {
   try {
     config = z
       .object({
-        bindingName: z.string().regex(/^opensteerPasskey_[a-f0-9]{64}$/u),
-        replyName: z.string().regex(/^opensteerReply_[a-f0-9]{64}$/u),
+        bindingName: z.string().regex(/^b_[a-f0-9]{64}$/u),
+        replyName: z.string().regex(/^r_[a-f0-9]{64}$/u),
       })
       .parse(JSON.parse(argument.slice("--opensteer-passkey-provider=".length)));
   } catch {

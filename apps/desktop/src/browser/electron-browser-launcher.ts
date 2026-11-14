@@ -58,6 +58,8 @@ import { boundPageRestore, ElectronPageRestoreSchema, WakeSeeds } from "./page-r
 import {
   applyBrowserSessionPolicy,
   bindBrowserSessionRequestGate,
+  browserAcceptLanguages,
+  browserIdentity,
   updateBrowserPasskeyPolicy,
   type BrowserSessionRequestGate,
 } from "./browser-session-policy.js";
@@ -315,6 +317,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       return;
     }
     applyBrowserSessionPolicy(profileSession, {
+      acceptLanguages: browserAcceptLanguages(app.getPreferredSystemLanguages()),
       onMainFrameRequest: (id, method) => {
         if (this.#methods.has(id)) this.#methods.set(id, method);
       },
@@ -842,6 +845,7 @@ class ElectronBrowserContext implements BrowserContext {
       this.#providerConfig,
       timing,
       this.#options.protection,
+      browserIdentity(this.#profileSession.getUserAgent()).userAgent,
     );
     this.#pages.add(page);
     page.onClose(() => {
@@ -893,6 +897,7 @@ class ElectronBrowserContext implements BrowserContext {
           : []),
       ],
       allowRunningInsecureContent: false,
+      autoplayPolicy: "document-user-activation-required",
       backgroundThrottling: true,
       contextIsolation: true,
       devTools: false,
@@ -1058,6 +1063,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       uploading: () => false,
       downloading: () => false,
     }),
+    userAgent?: string,
   ) {
     this.view = view;
     this.initialLoad = initialLoad;
@@ -1084,6 +1090,12 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     // Own dialogs before that first script, ahead of the hub's renderer-dependent
     // Runtime initialization, and keep an opening until the ledger subscribes.
     if (!authenticator && !inspector.isAttached()) inspector.attach("1.3");
+    // A fromPath (local profile) session's user agent never reaches its
+    // contents in Electron 44, so present the session identity per page.
+    if (!authenticator && userAgent)
+      void inspector
+        .sendCommand("Emulation.setUserAgentOverride", { userAgent })
+        .catch(() => undefined);
     const pageEnabled = authenticator ? undefined : inspector.sendCommand("Page.enable");
     // The passkey policy has two hooks, each where its timing holds. Electron
     // has no pause-on-start and answers this registration only from a

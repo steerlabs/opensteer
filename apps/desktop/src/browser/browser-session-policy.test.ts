@@ -3,7 +3,7 @@ import { chromeUserAgent } from "./browser-session-policy.js";
 
 describe("Chrome user agent for every release", () => {
   const chrome =
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.7339.0 Safari/537.36";
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
   for (const name of [
     "Opensteer",
     "Opensteer",
@@ -13,6 +13,7 @@ describe("Chrome user agent for every release", () => {
     it(`removes ${name}'s Electron product token`, () => {
       const token = name.replace(/\s/gu, "");
       const electron = chrome
+        .replace("Chrome/150.0.0.0", "Chrome/150.0.7339.0")
         .replace(" Chrome/", ` ${token}/0.1.118 Chrome/`)
         .replace(" Safari/", " Electron/43.3.0 Safari/");
       expect(chromeUserAgent(electron)).toBe(chrome);
@@ -57,6 +58,20 @@ it("denies device permissions and external protocols for every browser session (
     expect(answer).toHaveBeenCalledWith(false);
   }
   expect(check({}, "fullscreen")).toBe(true);
+  for (const permission of [
+    "sensors",
+    "background-sync",
+    "clipboard-sanitized-write",
+    "storage-access",
+    "screen-wake-lock",
+    "payment-handler",
+  ]) {
+    expect(check({}, permission)).toBe(true);
+    const granted = vi.fn();
+    request({}, permission, granted);
+    expect(granted).toHaveBeenCalledWith(true);
+  }
+  expect(session.setUserAgent).toHaveBeenCalledWith("Chrome/150");
   const before = session.webRequest.onBeforeRequest.mock.calls[0]![0];
   for (const method of ["POST", "GET"])
     before(
@@ -117,6 +132,66 @@ it("keeps site policy readable for provider frames and denies foreign ancestors"
     expect(result["Permissions-Policy"]).toHaveLength(denied ? 2 : 1);
     expect(result["Permissions-Policy"]![0]).toBe("publickey-credentials-get=()");
   }
+});
+
+it("presents one reduced identity and supplies the navigation client hints Electron drops", async () => {
+  const { applyBrowserSessionPolicy, browserAcceptLanguages, browserIdentity } =
+    await import("./browser-session-policy.js");
+  const { vi } = await import("vitest");
+  const identity = browserIdentity(
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Opensteer/1.0 Chrome/152.0.7977.169 Electron/44.10.2 Safari/537.36",
+  );
+  expect(identity.userAgent).toBe(
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+  );
+  expect(identity.clientHints).toEqual({
+    brands: '"Not?A_Brand";v="24", "Chromium";v="152"',
+    platform: "macOS",
+  });
+  expect(browserAcceptLanguages(["en-US", "fr-FR", "en"])).toBe("en-US,en,fr-FR,fr");
+  const session = {
+    setPermissionCheckHandler: vi.fn(),
+    setPermissionRequestHandler: vi.fn(),
+    getPreloadScripts: () => [],
+    registerPreloadScript: vi.fn(),
+    webRequest: {
+      onHeadersReceived: vi.fn(),
+      onBeforeRequest: vi.fn(),
+      onBeforeSendHeaders: vi.fn(),
+    },
+    setUserAgent: vi.fn(),
+    getUserAgent: () =>
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.169 Electron/44.10.2 Safari/537.36",
+  };
+  applyBrowserSessionPolicy(session as unknown as import("electron").Session, {
+    acceptLanguages: "en-US,en",
+    downloads: { accept: vi.fn() },
+    pagePolicyPreloadPath: "/policy.cjs",
+  });
+  expect(session.setUserAgent).toHaveBeenCalledWith(
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+    "en-US,en",
+  );
+  const sendHeaders = session.webRequest.onBeforeSendHeaders.mock.calls[0]![0];
+  const injected = vi.fn();
+  sendHeaders({ url: "https://site.test/", requestHeaders: { "User-Agent": "x" } }, injected);
+  expect(injected).toHaveBeenCalledWith({
+    requestHeaders: {
+      "User-Agent": "x",
+      "Sec-CH-UA": '"Not?A_Brand";v="24", "Chromium";v="152"',
+      "Sec-CH-UA-Mobile": "?0",
+      "Sec-CH-UA-Platform": '"macOS"',
+    },
+  });
+  const untouched = vi.fn();
+  sendHeaders(
+    { url: "https://site.test/", requestHeaders: { "Sec-CH-UA": '"Chromium";v="152"' } },
+    untouched,
+  );
+  expect(untouched).toHaveBeenCalledWith({});
+  const insecure = vi.fn();
+  sendHeaders({ url: "http://site.test/", requestHeaders: {} }, insecure);
+  expect(insecure).toHaveBeenCalledWith({});
 });
 
 it("immediately cancels every request at a closed restoration gate, including service workers", async () => {

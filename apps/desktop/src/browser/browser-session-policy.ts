@@ -8,9 +8,66 @@ export interface BrowserSessionPolicyOptions {
   readonly onUploadRequest?: (webContentsId: number, requestId: number) => void;
   readonly onRequestFinished?: (requestId: number) => void;
   readonly onMainFrameRequest?: (webContentsId: number, method: string) => void;
+  readonly acceptLanguages?: string;
   readonly downloads: Pick<DesktopDownloads, "accept">;
   /** Absolute path of the bundled `browser-page-preload.cjs`. */
   readonly pagePolicyPreloadPath: string;
+}
+
+/**
+ * Permissions Chromium grants without asking and that genuinely work in this
+ * browser; everything else stays denied until a person-facing prompt exists.
+ */
+const grantedPermissions = new Set([
+  "background-sync",
+  "clipboard-sanitized-write",
+  "fullscreen",
+  "payment-handler",
+  "screen-wake-lock",
+  "sensors",
+  "storage-access",
+]);
+
+// Chromium seeds its GREASE brand from the major version. Pinned per shipped
+// major; an unknown major skips hint injection rather than inventing a brand.
+const greaseByMajor: Readonly<Record<string, { brand: string; version: string }>> = {
+  "152": { brand: "Not?A_Brand", version: "24" },
+};
+
+export interface BrowserIdentity {
+  readonly userAgent: string;
+  readonly clientHints: { readonly brands: string; readonly platform: string } | undefined;
+}
+
+/** The one identity every browser session presents, derived from the engine. */
+export function browserIdentity(sessionUserAgent: string): BrowserIdentity {
+  const userAgent = chromeUserAgent(sessionUserAgent);
+  const major = /Chrome\/(\d+)\./u.exec(userAgent)?.[1];
+  const grease = major ? greaseByMajor[major] : undefined;
+  if (!major || !grease) return { userAgent, clientHints: undefined };
+  const platform = userAgent.includes("Windows NT")
+    ? "Windows"
+    : userAgent.includes("Macintosh")
+      ? "macOS"
+      : "Linux";
+  return {
+    userAgent,
+    clientHints: {
+      brands: `"${grease.brand}";v="${grease.version}", "Chromium";v="${major}"`,
+      platform,
+    },
+  };
+}
+
+/** Expands each preferred language with its base language, as Chrome does. */
+export function browserAcceptLanguages(preferred: readonly string[]): string {
+  const languages: string[] = [];
+  for (const language of preferred) {
+    if (!languages.includes(language)) languages.push(language);
+    const base = language.split("-")[0];
+    if (base && base !== language && !languages.includes(base)) languages.push(base);
+  }
+  return languages.join(",");
 }
 
 const requestGates = new WeakMap<Session, BrowserSessionRequestGate>();
@@ -31,6 +88,11 @@ export function applyBrowserSessionPolicy(
   options: BrowserSessionPolicyOptions,
 ): void {
   if (options.requestGate) bindBrowserSessionRequestGate(session, options.requestGate);
+  const identity = browserIdentity(session.getUserAgent());
+  session.setUserAgent(
+    identity.userAgent,
+    ...(options.acceptLanguages ? [options.acceptLanguages] : []),
+  );
   session.webRequest.onBeforeRequest((details, callback) => {
     if (details.webContentsId !== undefined && !["GET", "HEAD"].includes(details.method))
       options.onUploadRequest?.(details.webContentsId, details.id);
@@ -45,10 +107,34 @@ export function applyBrowserSessionPolicy(
     session.webRequest.onCompleted((details) => options.onRequestFinished!(details.id));
     session.webRequest.onErrorOccurred((details) => options.onRequestFinished!(details.id));
   }
-  session.setPermissionCheckHandler((_contents, permission) => permission === "fullscreen");
+  session.setPermissionCheckHandler((_contents, permission) => grantedPermissions.has(permission));
   session.setPermissionRequestHandler((_contents, permission, callback) =>
-    callback(permission === "fullscreen"),
+    callback(grantedPermissions.has(permission)),
   );
+  // Electron never emits client hints on navigations (its client-hints
+  // delegate is absent), while the renderer emits the same low-entropy hints
+  // on subresource requests. Supply the navigation set from the same
+  // identity so the wire agrees with what pages read in JS.
+  if (identity.clientHints) {
+    const hints = identity.clientHints;
+    session.webRequest.onBeforeSendHeaders((details, callback) => {
+      const hasHints = Object.keys(details.requestHeaders).some(
+        (name) => name.toLowerCase() === "sec-ch-ua",
+      );
+      if (hasHints || !details.url.startsWith("https://")) {
+        callback({});
+        return;
+      }
+      callback({
+        requestHeaders: {
+          ...details.requestHeaders,
+          "Sec-CH-UA": hints.brands,
+          "Sec-CH-UA-Mobile": "?0",
+          "Sec-CH-UA-Platform": `"${hints.platform}"`,
+        },
+      });
+    });
+  }
   for (const preload of session.getPreloadScripts()) {
     session.unregisterPreloadScript(preload.id);
   }
@@ -58,7 +144,6 @@ export function applyBrowserSessionPolicy(
   session.registerPreloadScript({ filePath: options.pagePolicyPreloadPath, type: "frame" });
   updateBrowserPasskeyPolicy(session, options.provider === true);
   options.downloads.accept(session);
-  session.setUserAgent(chromeUserAgent(session.getUserAgent()));
 }
 
 /** Updates only the policy that depends on the negotiated provider mode. */
@@ -110,7 +195,8 @@ function withPagePermissionsPolicy(
 export function chromeUserAgent(userAgent: string): string {
   return userAgent
     .replace(/\s[^\s/]+\/[^\s]+(?=\sChrome\/)/gu, "")
-    .replace(/\sElectron\/[^\s]+/gu, "");
+    .replace(/\sElectron\/[^\s]+/gu, "")
+    .replace(/Chrome\/(\d+)\.\d+\.\d+\.\d+/u, "Chrome/$1.0.0.0");
 }
 
 function isAllowedBrowserRequest(value: string): boolean {

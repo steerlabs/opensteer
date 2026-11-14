@@ -200,7 +200,11 @@ vi.mock("electron", () => {
   const sessions = new Map<string, ReturnType<typeof makeSession>>();
   return {
     ipcMain: { on: vi.fn(), off: vi.fn() },
-    app: { on: vi.fn(), whenReady: vi.fn(async () => undefined) },
+    app: {
+      on: vi.fn(),
+      whenReady: vi.fn(async () => undefined),
+      getPreferredSystemLanguages: () => ["en-US"],
+    },
     safeStorage: {
       isAsyncEncryptionAvailable: async () => true,
       getSelectedStorageBackend: () => "gnome_libsecret",
@@ -2237,6 +2241,30 @@ describe("native Electron profiles", () => {
         },
       });
       expect(announced).toHaveBeenCalledOnce();
+    } finally {
+      await browser?.close();
+      f.launcher.close();
+      await f.launcher.localProfiles.release(f.directory);
+      await rm(f.root, { recursive: true, force: true });
+    }
+  });
+  it("presents the session user agent per page on a local profile", async () => {
+    const f = await fixture();
+    let browser: Awaited<ReturnType<typeof f.launch>> | undefined;
+    try {
+      await f.initialize();
+      browser = await f.launch();
+      // A fromPath session's user agent never reaches its contents, so the
+      // launcher presents it per page over CDP before navigation.
+      const overrides = electron.views
+        .at(-1)!
+        .webContents.debugger.sendCommand.mock.calls.filter(
+          ([method]) => method === "Emulation.setUserAgentOverride",
+        );
+      expect(overrides).toHaveLength(1);
+      const parameters = overrides[0]![1] as { userAgent: string };
+      expect(parameters.userAgent).toContain("Chrome/");
+      expect(parameters.userAgent).not.toContain("Electron/");
     } finally {
       await browser?.close();
       f.launcher.close();
