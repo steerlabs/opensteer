@@ -4099,13 +4099,13 @@ describe("RunnerRuntime", () => {
           },
           {
             plugin: "opensteer",
-            localName: "threads",
+            localName: "tasks",
             fullName: "opensteer:tasks",
             path: "/runner/agent-skills/skills/tasks",
           },
           {
             plugin: "opensteer",
-            localName: "triggers",
+            localName: "automations",
             fullName: "opensteer:automations",
             path: "/runner/agent-skills/skills/automations",
           },
