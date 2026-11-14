@@ -479,7 +479,9 @@ describe("standing team link authority", () => {
     socket.emit("close");
   });
   for (const stuck of ["unacked", "rejected"] as const)
-    it(`refills the return window with one ${stuck} return among 205`, async () => {
+    it(`refills the return window with one ${stuck} return among 11`, async () => {
+      const returnWindowSize = 5;
+      endpoint = new TeamLinkEndpoint({ ...endpoint.options, returnWindowSize });
       const sender = await fixture.member("Alex");
       await chat.setAccess(human(), channelId, access.revision, [
         { subject: { kind: "person", userId: fixture.userId }, level: "post", manage: true },
@@ -497,7 +499,7 @@ describe("standing team link authority", () => {
         },
       );
       const consent = (await requests.pending(linkId))[0]!;
-      const returns = Array.from({ length: 205 }, () => ({
+      const returns = Array.from({ length: 11 }, () => ({
         id: createId("teamAgentRequest"),
         kind: "return" as const,
         ownerUserId: fixture.userId,
@@ -569,7 +571,8 @@ describe("standing team link authority", () => {
             );
           if (frame.type === "result") {
             this.completed.add(frame.id);
-            if (this.completed.size === 150) refillReleased.resolve();
+            // A third acknowledgment must pass while the second pending scan is held.
+            if (this.completed.size === 3) refillReleased.resolve();
             this.outstanding.delete(frame.id);
             this.accepting = false;
             queueMicrotask(() => this.acceptNext());
@@ -607,10 +610,20 @@ describe("standing team link authority", () => {
         );
         await withTimeout(socket.drained.promise, 5000, {
           timeoutError: () =>
-            new Error(`Only ${socket.completed.size} of 205 returns were acknowledged`),
+            new Error(
+              `Only ${socket.completed.size} of ${returns.length} returns were acknowledged`,
+            ),
         });
-        expect(pendingSpy.mock.calls.length).toBeLessThanOrEqual(2);
-        expect(socket.maxOutstanding).toBeLessThanOrEqual(200);
+        // Half-window refills free at least three slots; allow four pages and a final empty scan.
+        expect(pendingSpy.mock.calls.length).toBeLessThanOrEqual(5);
+        expect(socket.maxOutstanding).toBeLessThanOrEqual(returnWindowSize);
+        expect(socket.completed).toEqual(
+          new Set(
+            returns
+              .filter((row) => stuck === "rejected" || row.id !== socket.stuckId)
+              .map((row) => row.id),
+          ),
+        );
         expect(socket.delivered.get(consent.request.id)).toBe(1);
         expect([...socket.delivered.values()].every((count) => count === 1)).toBe(true);
         expect(new Set((await requests.pending(linkId)).map((item) => item.request.id))).toEqual(

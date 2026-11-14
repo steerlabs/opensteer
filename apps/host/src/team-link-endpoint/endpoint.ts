@@ -31,6 +31,8 @@ import { boundTeamReadPage } from "./read-page.js";
 import { TeamKnowledgeFailure } from "../knowledge/team-knowledge.js";
 import type { TeamAccessResolver, TeamAccessLockPort } from "../team/access-port.js";
 
+const defaultReturnWindowSize = 200;
+
 export interface TeamLinkEndpointOptions {
   readonly links: TeamEndpointLinks;
   readonly requests: TeamRequestStorePort;
@@ -38,6 +40,7 @@ export interface TeamLinkEndpointOptions {
   readonly access: TeamAccessLockPort;
   readonly lifetimes: TeamLinkLifetimes;
   readonly resolver: TeamAccessResolver;
+  readonly returnWindowSize?: number;
   readonly onPresence?: (ownerUserId: UserId, online: boolean) => void;
 }
 interface MachineResult {
@@ -67,6 +70,8 @@ export class TeamLinkEndpoint {
   async attach(socket: WebSocket, linkId: TeamLinkId): Promise<void> {
     const { links, requests, access, lifetimes } = this.options;
     const link = await links.assertActive(linkId);
+    const returnWindowSize = this.options.returnWindowSize ?? defaultReturnWindowSize;
+    const refillThreshold = Math.floor(returnWindowSize / 2);
     let active = true;
     let hello = false;
     let work = Promise.resolve();
@@ -131,7 +136,7 @@ export class TeamLinkEndpoint {
             do {
               deliveryRequested = false;
               if (!hello || !active) return;
-              const capacity = 200 - inFlightReturns.size;
+              const capacity = returnWindowSize - inFlightReturns.size;
               if (!capacity) return;
               const revision = access.revision;
               const pending = await requests.pending(linkId, [...delivered], capacity);
@@ -170,7 +175,10 @@ export class TeamLinkEndpoint {
                   },
                 );
               }
-            } while (deliveryRequested || (returnBacklog && inFlightReturns.size <= 100));
+            } while (
+              deliveryRequested ||
+              (returnBacklog && inFlightReturns.size <= refillThreshold)
+            );
           } finally {
             delivery = undefined;
           }
@@ -253,7 +261,7 @@ export class TeamLinkEndpoint {
                 delivered.delete(result.request.id);
                 inFlightReturns.delete(result.request.id);
                 // A page read must not hold up acknowledgments for the current window.
-                if (returnBacklog && inFlightReturns.size <= 100)
+                if (returnBacklog && inFlightReturns.size <= refillThreshold)
                   void subscriber.deliver(true).catch(() => close());
               }
             } catch (error) {
