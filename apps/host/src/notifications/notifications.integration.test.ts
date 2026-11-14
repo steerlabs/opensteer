@@ -759,12 +759,12 @@ function openSocket(stack: VerticalStack): Promise<WebSocket> {
 function toolCall(name: string, input: unknown): string {
   return `[[call ${name} ${Buffer.from(JSON.stringify(input), "utf8").toString("base64url")}]]`;
 }
-function programSending(delivery: "queue" | "report", taskId: string, message: string): string {
+function programSending(delivery: "queue" | "report", threadId: string, message: string): string {
   return `export default async function ({ opensteer }) {
     await opensteer.callTool("opensteer_task_send", ${JSON.stringify({
       delivery,
       message,
-      taskId,
+      taskId: threadId,
     })});
   }`;
 }
