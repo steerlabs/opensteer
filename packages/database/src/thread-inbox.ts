@@ -4102,7 +4102,7 @@ export async function ensureQueuedRun(
     .insertInto("runs")
     .values({
       accessMode: thread.accessMode,
-      maintenance: options.maintenance ?? null,
+      ...(options.maintenance ? { maintenance: options.maintenance } : {}),
       activationInputId: seed.messageId,
       assignmentId: seed.assignmentId,
       actorPrincipalId: seed.actorPrincipalId,

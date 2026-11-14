@@ -145,11 +145,9 @@ describe("fresh personal/team lineage", () => {
       ownerId: userId,
       suffix: "ask-upgrade",
     });
-    const input = await store.enqueueThreadInput({
+    const input = await legacyQueuedInput({
       threadId: base.thread.id,
       requestedBy: userId,
-      source: { kind: "human" },
-      policy: "queue",
       content: [{ type: "text", text: "Existing work" }],
       idempotencyKey: "ask-upgrade",
     });
