@@ -8,6 +8,9 @@ export async function migrateTeamChannelShares(database: Kysely<unknown>): Promi
     update team_messages m set created_seq=n.seq from
       (select id,row_number() over(partition by channel_id order by id) as seq from team_messages) n
       where n.id=m.id;
+    -- The column defaults rewrote the table in this transaction, so the backfill queued its
+    -- deferred foreign-key checks; CREATE INDEX refuses to run while they are pending.
+    set constraints all immediate;
     create unique index team_messages_public_id on team_messages(channel_id,public_id);
     create function opensteer_team_message_ordinal() returns trigger language plpgsql as $$
     begin
