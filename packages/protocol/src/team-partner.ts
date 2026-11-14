@@ -11,7 +11,7 @@ import { HostDiscoveryEnvelopeSchema } from "@opensteer/deployment-authority";
 
 export type TeamPartnerAuthority = z.infer<typeof HostDiscoveryEnvelopeSchema>;
 
-export const teamPartnerProtocolVersion = 3;
+export const teamPartnerProtocolVersion = 1;
 export const teamPartnerCapability = "team-partner-links-v1";
 export const teamPartnerSocketPath = "/internal/v1/team/partner";
 export const teamPartnerMaxFrameBytes = 300 * 1024;
