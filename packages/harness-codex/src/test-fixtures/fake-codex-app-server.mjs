@@ -1390,6 +1390,33 @@ function handleTurnStart(message) {
     return;
   }
 
+  if (scenario === "image-output") {
+    const item = {
+      id: "image-1",
+      type: "mcpToolCall",
+      server: "probe",
+      tool: "probe",
+      arguments: {},
+    };
+    send({
+      method: "item/started",
+      params: { threadId, turnId, item: { ...item, status: "inProgress" } },
+    });
+    send({
+      method: "item/completed",
+      params: {
+        threadId,
+        turnId,
+        item: {
+          ...item,
+          status: "completed",
+          result: { content: [{ type: "image", mimeType: "image/png", data: "iVBORw0KGgoA" }] },
+        },
+      },
+    });
+    finishTurnWith("Done.");
+    return;
+  }
   if (scenario === "direct-tools") {
     const item = {
       arguments: { site: "https://example.test" },

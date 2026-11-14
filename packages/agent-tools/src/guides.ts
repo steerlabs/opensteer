@@ -42,6 +42,7 @@ Complete the focused work. Try authorized repairs; if blocked, name the evidence
 - On an Assignment, \`person_message\` and \`person_show\` are refused even when listed. When a requested page, app or phone is ready, queue it to the assigner at once.
 - Outside an Assignment, show a requested page, app or phone with \`person_show({target: {current: true}})\` as soon as ready and when moving to another. Outside Voice, skip pages you only read. Read a delegated task before showing its recent place by runId.
 - \`person_message\` sends worthwhile news before your final reply. On a background wake, deliver useful news with it, then end with a short reply saying what happened; say so briefly even when nothing changed. Never end a Run with no text. Preserve the person's pauses and site constraints; resume failed automation only after verified repair.
+- To show the person an image file on this computer, write a Markdown image with its absolute path, e.g. ![chart](/abs/path/chart.png); internet images are not displayed.
 - Replies render Markdown outside Voice. Web links open; local file links do not. Write local paths in code and fence commands. Tag text the person will send as their own with a draft fence.`;
 
 const memoryGuide = `Personal memory:

@@ -1,3 +1,4 @@
+import { toolOutputWithImages } from "@opensteer/harness";
 import { replacePrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { isRecord } from "@opensteer/shared/isRecord";
@@ -17,7 +18,6 @@ import {
   createId,
   harnessUsageLimitFailureCode,
   modelDisplayName,
-  normalizeToolOutput,
   type HarnessInstanceId,
   type ModelSelection,
   type PendingRequest,
@@ -1410,14 +1410,12 @@ class PiHarnessSession implements HarnessSession {
         ? (event.result as JsonObject)
         : undefined;
     const content = Array.isArray(result?.content) ? result.content : [];
-    const text = content
-      .flatMap((part) => {
-        const entry = requireObject(part, "Pi tool result part");
-        return entry.type === "text" ? [optionalString(entry.text) ?? ""] : [];
-      })
-      .join("\n");
     this.#publish({
-      data: { callId, isError: event.isError === true, output: normalizeToolOutput(text) },
+      data: {
+        callId,
+        isError: event.isError === true,
+        output: toolOutputWithImages(content, this.#context.imageStore),
+      },
       type: "tool.completed",
     });
   }

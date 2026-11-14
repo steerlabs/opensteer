@@ -1,3 +1,4 @@
+import { toolOutputWithImages } from "@opensteer/harness";
 import { opencodeLightModelFamilies } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
@@ -17,7 +18,6 @@ import {
   createId,
   harnessUsageLimitFailureCode,
   modelDisplayName,
-  normalizeToolOutput,
   type HarnessInstanceId,
   type ModelSelection,
   type PendingRequest,
@@ -1554,8 +1554,13 @@ class OpencodeHarnessSession implements HarnessSession {
       data: {
         callId,
         isError: state.status === "error",
-        output: normalizeToolOutput(
-          state.status === "error" ? (state.error ?? "") : (state.output ?? ""),
+        output: toolOutputWithImages(
+          state.status === "error"
+            ? (state.error ?? "")
+            : Array.isArray(state.attachments) && state.attachments.length
+              ? [{ type: "text", text: state.output ?? "" }, ...state.attachments]
+              : (state.output ?? ""),
+          this.#context.imageStore,
         ),
       },
       type: "tool.completed",
@@ -1770,8 +1775,13 @@ class OpencodeHarnessSession implements HarnessSession {
         callId: part.callID,
         isError: state.status === "error",
         nodeId,
-        output: normalizeToolOutput(
-          state.status === "error" ? (state.error ?? "") : (state.output ?? ""),
+        output: toolOutputWithImages(
+          state.status === "error"
+            ? (state.error ?? "")
+            : Array.isArray(state.attachments) && state.attachments.length
+              ? [{ type: "text", text: state.output ?? "" }, ...state.attachments]
+              : (state.output ?? ""),
+          this.#context.imageStore,
         ),
       },
       type: "tool.completed",

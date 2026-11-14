@@ -1,5 +1,7 @@
 # Agent orchestration
 
+Personal installs require the Host and its hosting Runner to share filesystem read access for image files; the development stack and desktop bundle provide this. Tool-result images live in the Runner data directory’s validated `images` subtree, outside private harness state.
+
 ## One MCP, live caller authority
 
 Runs, Trigger and Watch programs and connected agents share one `opensteer` MCP server.

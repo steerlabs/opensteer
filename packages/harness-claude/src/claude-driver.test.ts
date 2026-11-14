@@ -1,3 +1,4 @@
+import { createToolImageStore } from "@opensteer/harness";
 import { agentTools } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import { existsSync } from "node:fs";
@@ -4393,6 +4394,7 @@ async function openSession(
   );
   const sessionContext: HarnessSessionContext = {
     ...baseContext,
+    imageStore: createToolImageStore(directory),
     accessMode: overrides.accessMode ?? baseContext.accessMode,
     machineAccessNotice: overrides.machineAccessNotice ?? noComputersNotice,
     machineAccessPlatform: overrides.machineAccessPlatform,
@@ -5032,4 +5034,43 @@ it("maps real namespaces to Claude plugins and loose skills to a private project
     await realpath(skills.skills[2]!.path),
   );
   await fixture.adapter.close();
+});
+
+it("retains Claude tool-result images", async () => {
+  const sdk = new FakeSdk((parameters) => {
+    const sessionId = providerSessionId(parameters.options);
+    return scriptedQuery([
+      initMessage(sessionId),
+      assistantMessage(sessionId, [{ id: "image-1", input: {}, name: "probe", type: "tool_use" }]),
+      userMessage(sessionId, [
+        {
+          type: "tool_result",
+          tool_use_id: "image-1",
+          content: [
+            {
+              type: "image",
+              source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgoA" },
+            },
+          ],
+        },
+      ]),
+      successMessage(sessionId, "Done."),
+    ]);
+  });
+  const { adapter, session } = await openSession(sdk);
+  const observer = observe(session.events);
+  try {
+    await send(session, "Show an image");
+    await session.stop();
+    await observer.done;
+    expect(observer.events.find((e) => e.type === "tool.completed")).toMatchObject({
+      data: {
+        output: { images: [{ mediaType: "image/png", path: expect.stringMatching(/\.png$/) }] },
+      },
+    });
+    expect(JSON.stringify(observer.events)).not.toContain("iVBORw0KGgoA");
+  } finally {
+    await session.stop();
+    await adapter.close();
+  }
 });

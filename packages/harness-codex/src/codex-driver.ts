@@ -1,3 +1,4 @@
+import { toolOutputWithImages } from "@opensteer/harness";
 import { createHash } from "node:crypto";
 import { CodexAdditionalContext, legacyCodexContextKeys } from "./additional-context.js";
 import { requestToolNames } from "@opensteer/agent-tools";
@@ -2471,7 +2472,10 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
               callId: descriptor.callId,
               isError: toolItemFailed(item),
               nodeId,
-              output: normalizeToolOutput(codexToolOutput(item)),
+              output:
+                item.type === "mcpToolCall"
+                  ? toolOutputWithImages(codexToolOutput(item), this.#context.imageStore)
+                  : normalizeToolOutput(codexToolOutput(item)),
             },
             type: "tool.completed",
           });
@@ -2787,7 +2791,10 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       data: {
         callId: descriptor.callId,
         isError: toolItemFailed(item),
-        output: normalizeToolOutput(codexToolOutput(item)),
+        output:
+          item.type === "mcpToolCall"
+            ? toolOutputWithImages(codexToolOutput(item), this.#context.imageStore)
+            : normalizeToolOutput(codexToolOutput(item)),
       },
       type: "tool.completed",
     });
