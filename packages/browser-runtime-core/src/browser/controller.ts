@@ -3563,6 +3563,7 @@ export class BrowserController {
       const { idempotencyKey, url: requestedUrl, viewport, operationAuthority } = parsed.data;
       const started = Date.now();
       let remaining = 18_000;
+      let origin: "agent" | "person" = "person";
       if (operationAuthority) {
         if (!this.verifyOpenAuthority)
           throw new BrowserRuntimeError("forbidden", "Browser opening authority is unavailable.");
@@ -3588,6 +3589,7 @@ export class BrowserController {
           authority.remainingBudgetMs,
           Date.parse(authority.operationExpiresAt) - Date.now(),
         );
+        origin = authority.creationOrigin;
       }
       if (remaining <= 0)
         throw new BrowserRuntimeError("conflict", "The browser opening authority expired.");
@@ -3611,6 +3613,7 @@ export class BrowserController {
           this.ledger.openSurface({
             signal: operationSignal,
             activate: false,
+            origin,
             ...(surfaceId ? { surfaceId } : {}),
             ...(viewport ? { viewport: { devicePixelRatio: 1, ...viewport } } : {}),
           }),
@@ -3638,7 +3641,7 @@ export class BrowserController {
         if (url !== undefined) {
           const binding = this.ledger.binding(tabId);
           if (!binding) throw new BrowserRuntimeError("not_found", "The new tab closed.");
-          this.ledger.recordHumanActivity(tabId, { kind: "navigation" });
+          if (origin === "person") this.ledger.recordHumanActivity(tabId, { kind: "navigation" });
           void this.ledger.navigate(tabId, url, message.navigationId).catch(() => undefined);
         }
       }

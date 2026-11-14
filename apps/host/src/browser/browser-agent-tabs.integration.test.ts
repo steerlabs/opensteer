@@ -448,4 +448,56 @@ integration("agent tabs", () => {
       }),
     );
   });
+  it("keeps Browser-off from landing between an agent's admission and its open", async () => {
+    const f = await setup();
+    await f.guest();
+    const order: string[] = [];
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const original = f.browser.withRunnerAdmission.bind(f.browser);
+    let holding = true;
+    const lane = vi
+      .spyOn(f.browser, "withRunnerAdmission")
+      .mockImplementation((runnerId, action) => {
+        if (!holding) return original(runnerId, action);
+        holding = false;
+        return original(runnerId, async () => {
+          entered.resolve();
+          await withTimeout(release.promise, 3000, {
+            timeoutError: () => new Error("the held admission was not released"),
+          });
+          const result = await action();
+          order.push("agent-sent");
+          return result;
+        });
+      });
+    const opening = f.guest();
+    await withTimeout(entered.promise, 2000, {
+      timeoutError: () => new Error("the open never entered the computer's admission lane"),
+    });
+    const off = f.browser.withRunnerAdmission(f.runtime.runnerId, async () => {
+      order.push("off");
+    });
+    release.resolve();
+    await opening;
+    await off;
+    lane.mockRestore();
+    expect(order).toEqual(["agent-sent", "off"]);
+  });
+
+  it("lists an offline computer's tabs instead of failing the whole list", async () => {
+    const f = await setup();
+    const opened = await f.guest();
+    await f.runtime.close();
+    // Using the tab is what needs its computer; that refusal shows it went offline.
+    await vi.waitFor(
+      async () =>
+        expect((await f.request("tabs/use", { tabId: opened.tabId })).status).not.toBe(200),
+      { timeout: 3000 },
+    );
+    const response = await f.request("tabs");
+    expect(response.status, await response.clone().text()).toBe(200);
+    const listed = BrowserAgentTabListResultSchema.parse(await response.json());
+    expect(listed.tabs.map((tab) => tab.tabId)).toContain(opened.tabId);
+  });
 });

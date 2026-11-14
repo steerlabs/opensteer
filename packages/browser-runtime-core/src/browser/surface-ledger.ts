@@ -1132,9 +1132,10 @@ export class SurfaceLedger {
   }
 
   /**
-   * Opens a fresh page for the person, selecting it unless `activate` is false. It
-   * starts at `viewport`, the size of the place they will read it, or at the
-   * size their view last gave this session without one.
+   * Opens a fresh page for the person, or for an agent when `origin` says so,
+   * selecting it unless `activate` is false. It starts at `viewport`, the size
+   * of the place they will read it, or at the size their view last gave this
+   * session without one.
    */
   async openSurface(
     options: {
@@ -1142,6 +1143,7 @@ export class SurfaceLedger {
       readonly viewport?: Viewport;
       readonly activate?: boolean;
       readonly surfaceId?: BrowserSurfaceId;
+      readonly origin?: "agent" | "person";
     } = {},
   ): Promise<BrowserSurface> {
     return this.creationLock.run(() => this.openSurfaceOnce(options));
@@ -1152,6 +1154,7 @@ export class SurfaceLedger {
     readonly viewport?: Viewport;
     readonly activate?: boolean;
     readonly surfaceId?: BrowserSurfaceId;
+    readonly origin?: "agent" | "person";
   }): Promise<BrowserSurface> {
     options.signal?.throwIfAborted();
     if (this.closed) throw new BrowserRuntimeError("conflict", "The surface ledger is closed.");
@@ -1208,8 +1211,8 @@ export class SurfaceLedger {
       await page.close().catch(() => undefined);
       throw new BrowserRuntimeError("conflict", "The browser could not open a new tab.");
     }
-    record.origin = "person";
-    this.touch(record.id, true);
+    record.origin = options.origin ?? "person";
+    this.touch(record.id, record.origin === "person");
     return this.toSurface(record);
   }
 
