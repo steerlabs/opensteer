@@ -12,7 +12,7 @@
   "runGuide.voice.personalContext.true.bytes": 6621,
   "runGuide.voice.personalContext.false.bytes": 6164,
   "bundledSkills.catalogBytes": 2339,
-  "bundledSkills.bodyBytes": 29130,
+  "bundledSkills.bodyBytes": 28908,
   "bundledSkills.referenceBytes": 113997,
   "bundledSkills.openaiMetadataBytes": 2755
 }
