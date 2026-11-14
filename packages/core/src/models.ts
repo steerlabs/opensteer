@@ -591,6 +591,7 @@ export const ReplyTargetViewSchema = z.discriminatedUnion("kind", [
 export type ReplyTarget = z.infer<typeof ReplyTargetSchema>;
 
 const messageShape = {
+  ownerEdited: z.literal(true).optional(),
   author: MessageAuthorSchema,
   content: MessageContentSchema,
   createdAt: IsoDateTimeSchema,
