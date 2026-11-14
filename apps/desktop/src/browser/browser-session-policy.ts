@@ -1,6 +1,7 @@
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import type { Session } from "electron";
 import { browserIdentity } from "@opensteer/browser-core";
+import { isLoopbackHostname } from "@opensteer/core";
 import { browserPagePermissionsPolicy } from "@opensteer/browser-runtime-core/page-policy";
 
 export { browserIdentity, chromeUserAgent } from "@opensteer/browser-core";
@@ -24,12 +25,14 @@ export interface BrowserSessionPolicyOptions {
  */
 const grantedPermissions = new Set([
   "background-sync",
-  "clipboard-sanitized-write",
   "fullscreen",
   "payment-handler",
   "screen-wake-lock",
   "sensors",
 ]);
+// Clipboard stays denied: this browser shares the person's own clipboard,
+// and page script must not write it without the person copying. The agent
+// CDP policy refuses agent copy/cut for the same reason.
 /** Expands each preferred language with its base language, as Chrome does. */
 export function browserAcceptLanguages(preferred: readonly string[]): string {
   const languages: string[] = [];
@@ -93,9 +96,9 @@ export function applyBrowserSessionPolicy(
         (name) => name.toLowerCase() === "sec-ch-ua",
       );
       // Chrome sends hints to secure contexts, which includes loopback http.
-      const hintOrigin =
-        details.url.startsWith("https://") ||
-        /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])([:/?#]|$)/u.test(details.url);
+      // The hostname comes from the parsed URL: a prefix match would take
+      // "localhost" userinfo for a loopback host.
+      const hintOrigin = details.url.startsWith("https://") || isLoopbackOrigin(details.url);
       if (hasHints || !hintOrigin) {
         callback({});
         return;
@@ -164,6 +167,15 @@ function withPagePermissionsPolicy(
     Object.keys(headers).find((key) => key.toLowerCase() === "permissions-policy") ??
     "Permissions-Policy";
   return { ...headers, [name]: [...(headers[name] ?? []), browserPagePermissionsPolicy] };
+}
+
+function isLoopbackOrigin(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" && isLoopbackHostname(url.hostname);
+  } catch {
+    return false;
+  }
 }
 
 function isAllowedBrowserRequest(value: string): boolean {

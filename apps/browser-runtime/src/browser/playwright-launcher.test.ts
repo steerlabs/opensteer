@@ -290,7 +290,9 @@ describe("Chromium child environment", () => {
       await expect(
         launched.cdp.send("Target.createTarget", { url: "https://example.com/" }),
       ).resolves.toEqual({ targetId: "agent-tab" });
-      expect(context.newPage).toHaveBeenCalledTimes(provider ? 3 : 2);
+      // One extra page is the throwaway context that reads the engine's own
+      // high-entropy identity before the Guest context is created.
+      expect(context.newPage).toHaveBeenCalledTimes(provider ? 4 : 3);
       await vi.waitFor(() =>
         expect(tabSession.send).toHaveBeenCalledWith("Page.navigate", {
           url: "https://example.com/",

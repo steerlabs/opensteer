@@ -1,3 +1,4 @@
+/// <reference lib="dom" />
 import {
   reducedUserAgentMetadata,
   type BrowserCdpBackend,
@@ -30,7 +31,6 @@ import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { release as osRelease } from "node:os";
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -83,14 +83,6 @@ interface PlaywrightChromiumLauncherOptions {
   executablePath: string;
   headless: boolean;
   proxyUrl?: string;
-}
-
-/** macOS marketing version from the Darwin kernel major, as UA-CH reports it. */
-function darwinPlatformVersion(): string {
-  if (process.platform !== "darwin") return "";
-  const major = Number(osRelease().split(".")[0]);
-  if (!Number.isInteger(major) || major < 20) return "";
-  return `${major >= 25 ? major + 1 : major - 9}.0.0`;
 }
 
 /** Reduced Chrome UA at the shipped engine major; stock headless announces itself. */
@@ -354,19 +346,53 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       const openDialogs = new Map<Page, Dialog>();
       const guestUserAgent = reducedChromeUserAgent(browser.version());
       // Playwright derives UA metadata from the UA string, which reports the
-      // frozen "10_15_7" platform version and x86 on Apple Silicon. Override
-      // each page with metadata built from the real system instead.
+      // frozen "10_15_7" platform version and x86 on Apple Silicon. Read the
+      // engine's own high-entropy values from a throwaway context instead of
+      // deriving them, then override each Guest page with those.
+      const nativeSystem = await (async () => {
+        try {
+          const probe = await browser.newContext();
+          try {
+            const page = await probe.newPage();
+            return await page.evaluate(async () => {
+              const data = navigator.userAgentData;
+              if (!data) return undefined;
+              const high = await data.getHighEntropyValues([
+                "architecture",
+                "bitness",
+                "platform",
+                "platformVersion",
+              ]);
+              return {
+                architecture: high.architecture ?? "",
+                bitness: high.bitness ?? "",
+                platform: high.platform ?? "",
+                platformVersion: high.platformVersion ?? "",
+              };
+            });
+          } finally {
+            await probe.close();
+          }
+        } catch {
+          return undefined;
+        }
+      })();
       const guestMetadata = reducedUserAgentMetadata(
         browser.version(),
-        process.platform === "win32"
-          ? "Windows"
-          : process.platform === "darwin"
-            ? "macOS"
-            : "Linux",
+        nativeSystem?.platform ||
+          (process.platform === "win32"
+            ? "Windows"
+            : process.platform === "darwin"
+              ? "macOS"
+              : "Linux"),
         {
-          architecture: process.arch === "arm64" ? "arm" : process.arch === "x64" ? "x86" : "",
-          bitness: process.arch === "arm64" || process.arch === "x64" ? "64" : "",
-          platformVersion: darwinPlatformVersion(),
+          architecture:
+            nativeSystem?.architecture ||
+            (process.arch === "arm64" ? "arm" : process.arch === "x64" ? "x86" : ""),
+          bitness:
+            nativeSystem?.bitness ||
+            (process.arch === "arm64" || process.arch === "x64" ? "64" : ""),
+          platformVersion: nativeSystem?.platformVersion ?? "",
         },
       );
       const context = await browser.newContext({

@@ -54,6 +54,9 @@ it("denies device permissions and external protocols for every browser session (
     // Storage access changes a cross-site privacy decision, so it stays
     // denied until an origin-scoped consent exists.
     "storage-access",
+    // The browser shares the person's own clipboard; page script must not
+    // write it without the person copying.
+    "clipboard-sanitized-write",
   ]) {
     expect(check({}, permission)).toBe(false);
     const answer = vi.fn();
@@ -61,13 +64,7 @@ it("denies device permissions and external protocols for every browser session (
     expect(answer).toHaveBeenCalledWith(false);
   }
   expect(check({}, "fullscreen")).toBe(true);
-  for (const permission of [
-    "sensors",
-    "background-sync",
-    "clipboard-sanitized-write",
-    "screen-wake-lock",
-    "payment-handler",
-  ]) {
+  for (const permission of ["sensors", "background-sync", "screen-wake-lock", "payment-handler"]) {
     expect(check({}, permission)).toBe(true);
     const granted = vi.fn();
     request({}, permission, granted);
@@ -215,15 +212,21 @@ it("presents one reduced identity and supplies the navigation client hints Elect
   sendHeaders({ url: "http://site.test/", requestHeaders: {} }, insecure);
   expect(insecure).toHaveBeenCalledWith({});
   // Loopback http is a secure context in Chrome, so it gets the hints too.
-  const loopback = vi.fn();
-  sendHeaders({ url: "http://localhost:3000/", requestHeaders: {} }, loopback);
-  expect(loopback).toHaveBeenCalledWith({
-    requestHeaders: {
-      "Sec-CH-UA": '"Not?A_Brand";v="24", "Chromium";v="152"',
-      "Sec-CH-UA-Mobile": "?0",
-      "Sec-CH-UA-Platform": '"macOS"',
-    },
-  });
+  for (const url of ["http://localhost:3000/", "http://127.0.0.2/", "http://app.localhost/"]) {
+    const loopback = vi.fn();
+    sendHeaders({ url, requestHeaders: {} }, loopback);
+    expect(loopback).toHaveBeenCalledWith({
+      requestHeaders: {
+        "Sec-CH-UA": '"Not?A_Brand";v="24", "Chromium";v="152"',
+        "Sec-CH-UA-Mobile": "?0",
+        "Sec-CH-UA-Platform": '"macOS"',
+      },
+    });
+  }
+  // Userinfo must not make a remote host look like loopback.
+  const spoofed = vi.fn();
+  sendHeaders({ url: "http://localhost:80@evil.example/", requestHeaders: {} }, spoofed);
+  expect(spoofed).toHaveBeenCalledWith({});
 });
 
 it("immediately cancels every request at a closed restoration gate, including service workers", async () => {

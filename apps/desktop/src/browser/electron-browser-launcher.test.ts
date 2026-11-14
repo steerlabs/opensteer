@@ -224,6 +224,13 @@ vi.mock("electron", () => {
     WebContentsView: MockWebContentsView,
     screen: { getDisplayMatching: vi.fn(() => ({ scaleFactor: 1 })), on: vi.fn(), off: vi.fn() },
     session: {
+      defaultSession: {
+        setUserAgent: vi.fn(),
+        getUserAgent: vi.fn(
+          () =>
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Opensteer/1.0 Chrome/152.0.7977.169 Electron/44.10.2 Safari/537.36",
+        ),
+      },
       fromPath: vi.fn((directory: string) => {
         if (!sessions.has(directory)) sessions.set(directory, makeSession());
         return sessions.get(directory)!;
@@ -2160,6 +2167,39 @@ it("updates provider header policy disabled, enabled, disabled on the same Sessi
   }
 });
 
+it("presents the session identity on passkey provider pages too", async () => {
+  const launcher = new ElectronBrowserLauncher({
+    downloads: { accept: vi.fn() },
+    pagePolicyPreloadPath: "/policy.cjs",
+  });
+  const browser = await launcher.launch({
+    initialViewport: { devicePixelRatio: 1, height: 600, width: 800 },
+    partitionKey: "session:provider-identity",
+    sessionId: BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000010"),
+    storage: { kind: "guest" },
+    authenticator: {
+      ceremony: async () => ({ kind: "refused" as const, error: "NotAllowedError" as const }),
+    },
+  });
+  try {
+    // The bridge owns these pages' debugger and attaches it during
+    // bootstrap; the identity override lands once it is attached.
+    await vi.waitFor(() => {
+      const calls = electron.views.at(-1)!.webContents.debugger.sendCommand.mock.calls;
+      expect(
+        calls.some(
+          ([method, parameters]) =>
+            method === "Emulation.setUserAgentOverride" &&
+            (parameters as { userAgent: string }).userAgent.includes("Chrome/152.0.0.0"),
+        ),
+      ).toBe(true);
+    });
+  } finally {
+    await browser.close();
+    launcher.close();
+  }
+});
+
 describe("native Electron profiles", () => {
   async function fixture(policyFailure = false) {
     const root = await mkdtemp(path.join(tmpdir(), "opensteer-native-unit-"));
@@ -2277,10 +2317,14 @@ describe("native Electron profiles", () => {
       expect(parameters.userAgent).not.toContain("Electron/");
       expect(parameters.acceptLanguage).toBe("en-US,en");
       // Contents that never see the session identity use the app fallback,
-      // which the launcher reduces for the same reason.
-      const { app } = await import("electron");
+      // which the launcher reduces for the same reason. The app's own
+      // service traffic keeps the branded agent device lists read.
+      const { app, session } = await import("electron");
       expect(app.userAgentFallback).toBe(
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+      );
+      expect(session.defaultSession.setUserAgent).toHaveBeenCalledWith(
+        expect.stringContaining("Electron/44.10.2"),
       );
       // Without metadata Chromium empties navigator.userAgentData while the
       // wire carries client hints; the two identities must agree.

@@ -162,8 +162,12 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     // Contents that never see a session user agent (popups' first documents,
     // passkey pages, local-profile pages before their override lands) fall
     // back to the app default, so the default itself must not name the app
-    // or Electron.
-    app.userAgentFallback = chromeUserAgent(app.userAgentFallback);
+    // or Electron. The app's own service traffic is the opposite: device
+    // lists label it "Opensteer app" from the Electron token, so the default
+    // session keeps the branded agent explicitly.
+    const brandedFallback = app.userAgentFallback;
+    app.userAgentFallback = chromeUserAgent(brandedFallback);
+    electronSession.defaultSession.setUserAgent(brandedFallback);
     this.#localProfileRoot = options.localProfileRoot;
     this.#onLocalProfileOpenTiming = options.onLocalProfileOpenTiming;
     this.#onLocalProfileDiagnostic = options.onLocalProfileDiagnostic;
@@ -1111,9 +1115,13 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     // contents in Electron 44, so present the session identity per page. The
     // metadata must accompany the string: without it Chromium empties
     // navigator.userAgentData while the wire still carries client hints.
-    // Pages whose debugger the passkey bridge owns are only overridden when
-    // that bridge has already attached; the app fallback covers them.
-    if (identity && inspector.isAttached())
+    // Pages whose debugger the passkey bridge owns attach during bootstrap,
+    // after this point, so the identity is applied again once it resolves;
+    // until then the app fallback covers these pages.
+    let identityApplied = false;
+    const applyIdentity = () => {
+      if (identityApplied || !identity || !inspector.isAttached()) return;
+      identityApplied = true;
       void inspector
         .sendCommand("Emulation.setUserAgentOverride", {
           userAgent: identity.userAgent,
@@ -1121,6 +1129,8 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
           ...(acceptLanguage ? { acceptLanguage } : {}),
         })
         .catch(() => undefined);
+    };
+    applyIdentity();
     const pageEnabled = authenticator ? undefined : inspector.sendCommand("Page.enable");
     // The passkey policy has two hooks, each where its timing holds. Electron
     // has no pause-on-start and answers this registration only from a
@@ -1164,6 +1174,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     const platform = authenticator
       ? Promise.resolve(this.#hub.bootstrapPlatform(installBridge))
       : this.#hub.open("platform");
+    void platform.then(applyIdentity, () => undefined);
     if (authenticator)
       void timedPolicy()
         .catch(() => this.close())
