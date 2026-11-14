@@ -39,6 +39,7 @@ export function TeamSide(props: {
   const teamId = team.teamId;
   const sidebar = useSessionValue(team, readSidebar);
   const canCreateChannel = useSessionValue(team, readCanCreateChannel);
+  const canInvite = useSessionValue(team, readCanInvite);
   const section = useMemo(
     () => (sidebar === null ? null : drawerSection({ teamId, name: team.name, sidebar })),
     [sidebar, team.name, teamId],
@@ -70,6 +71,7 @@ export function TeamSide(props: {
         <TeamPageList
           canCreateChannel={canCreateChannel}
           onBrowseChannels={go("TeamChannels")}
+          onInvite={canInvite ? go("TeamInvites") : undefined}
           onKnowledge={go("TeamKnowledge")}
           onLoadMore={loadMore}
           onNewChannel={go("TeamNewChannel")}
@@ -187,6 +189,8 @@ function noticeFor(team: MobileTeam): {
 const readSidebar = (snapshot: TeamSessionSnapshot | null) => snapshot?.sidebar ?? null;
 const readCanCreateChannel = (snapshot: TeamSessionSnapshot | null) =>
   snapshot?.bootstrap?.can.createChannel === true;
+const readCanInvite = (snapshot: TeamSessionSnapshot | null) =>
+  snapshot?.bootstrap?.can.manageInvites === true;
 
 /**
  * One value of a team's session, redrawn only when that value changes: a typing

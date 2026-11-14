@@ -18,6 +18,7 @@ type PageRow =
   | { readonly kind: "knowledge" }
   | { readonly kind: "channels" }
   | { readonly kind: "browse" }
+  | { readonly kind: "invite" }
   | { readonly kind: "dms" }
   | { readonly kind: "message-someone" }
   | { readonly kind: "channel"; readonly channel: ChannelRowView }
@@ -38,6 +39,8 @@ export function TeamPageList(props: {
   readonly onBrowseChannels: () => void;
   readonly onNewChannel: () => void;
   readonly onNewMessage: () => void;
+  /** Present only when the team lets the reader invite people. */
+  readonly onInvite?: (() => void) | undefined;
   /** The end of the list is near: the team's next page of channels and DMs. */
   readonly onLoadMore: () => void;
   /** The channel or DM in front, marked as the one open. */
@@ -45,18 +48,20 @@ export function TeamPageList(props: {
   readonly paddingBottom: number;
 }): ReactNode {
   const { section } = props;
+  const invites = props.onInvite !== undefined;
   const rows = useMemo(
     (): readonly PageRow[] => [
       { kind: "knowledge" },
       { kind: "channels" },
       ...section.channels.map((channel) => ({ kind: "channel" as const, channel })),
       { kind: "browse" },
+      ...(invites ? [{ kind: "invite" as const }] : []),
       { kind: "dms" },
       ...(section.dms.length === 0
         ? [{ kind: "message-someone" as const }]
         : section.dms.map((dm) => ({ kind: "dm" as const, dm }))),
     ],
-    [section.channels, section.dms],
+    [invites, section.channels, section.dms],
   );
   const {
     onOpenChannel,
@@ -64,6 +69,7 @@ export function TeamPageList(props: {
     onBrowseChannels,
     onNewChannel,
     onNewMessage,
+    onInvite,
     canCreateChannel,
     openChannelId,
   } = props;
@@ -89,6 +95,10 @@ export function TeamPageList(props: {
         case "browse":
           return (
             <QuietRow icon="magnifyingglass" label="Browse channels" onPress={onBrowseChannels} />
+          );
+        case "invite":
+          return onInvite === undefined ? null : (
+            <QuietRow icon="person.badge.plus" label="Invite people" onPress={onInvite} />
           );
         case "message-someone":
           return <QuietRow icon="plus" label="Message someone" onPress={onNewMessage} />;
@@ -124,6 +134,7 @@ export function TeamPageList(props: {
     [
       canCreateChannel,
       onBrowseChannels,
+      onInvite,
       onKnowledge,
       onNewChannel,
       onNewMessage,
@@ -159,7 +170,7 @@ function rowKey(row: PageRow): string {
 
 /** A way in under a list, quieter than the rows it sits under. */
 const QuietRow = memo(function QuietRow(props: {
-  readonly icon: "magnifyingglass" | "plus" | "lightbulb";
+  readonly icon: "magnifyingglass" | "plus" | "lightbulb" | "person.badge.plus";
   readonly label: string;
   readonly onPress: () => void;
   /** A place in the team rather than a way to find or make one. */

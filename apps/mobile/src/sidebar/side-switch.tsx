@@ -14,7 +14,15 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from "react-native";
+import {
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  type LayoutChangeEvent,
+  type StyleProp,
+  type TextStyle,
+} from "react-native";
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import type { MobileTeam } from "../team/mobile-teams.js";
 import { TeamTile } from "../team/team-marks.js";
@@ -80,7 +88,10 @@ export const SideSwitch = memo(function SideSwitch(props: {
     { teamIds, recent, width: tasksWidth === 0 ? 0 : width, tasks: tasksWidth },
     metrics,
   );
-  const thumb = useThumb(active);
+  // A team folded away is shown chosen on the folded segment.
+  const thumb = useThumb(
+    layout.segments.some((segment) => segment.key === active) ? active : moreTeamsKey,
+  );
   const byId = useMemo(() => new Map(teams.map((team) => [team.teamId, team])), [teams]);
   const foldedKey = layout.folded.join(" ");
   const folded = useMemo(
@@ -103,7 +114,12 @@ export const SideSwitch = memo(function SideSwitch(props: {
         {layout.segments.map(({ key }) => {
           if (key === moreTeamsKey)
             return (
-              <Animated.View key={key} layout={move} style={styles.markOnly}>
+              <Animated.View
+                key={key}
+                layout={move}
+                onLayout={(event: LayoutChangeEvent) => thumb.measure(key, event)}
+                style={styles.markOnly}
+              >
                 <FoldedSegment ground={ground} onSelect={onSelect} teams={folded} />
               </Animated.View>
             );
@@ -162,14 +178,12 @@ export const SideSwitch = memo(function SideSwitch(props: {
       {titled === undefined ? null : (
         <View style={styles.title}>
           <TeamTile size={20} team={{ id: titled.teamId, name: titled.name, imageUri: null }} />
-          <Text
+          <FadingName
             accessibilityRole="header"
-            maxFontSizeMultiplier={controlFontScaleLimit}
-            numberOfLines={1}
+            ground={props.ground}
+            label={titled.name}
             style={[type.bodyMedium, styles.titleText]}
-          >
-            {titled.name}
-          </Text>
+          />
         </View>
       )}
     </>
@@ -310,16 +324,71 @@ function Segment(props: {
         )}
       </View>
       {named ? (
-        <Text
-          maxFontSizeMultiplier={controlFontScaleLimit}
-          numberOfLines={1}
+        <FadingName
+          // The name sits on the plate when chosen, on the track otherwise.
+          ground={chosen ? String(material.selected.backgroundColor) : props.ground}
+          label={props.label}
           style={[type.caption, styles.label, chosen && styles.chosenLabel]}
-        >
-          {props.label}
-        </Text>
+        />
       ) : null}
       {named && count > 0 ? <Count count={count} ground={props.ground} tone={props.tone} /> : null}
     </Pressable>
+  );
+}
+
+/**
+ * A name on one line that runs to its edge and fades there, as on the desktop,
+ * rather than ending in an ellipsis. The fade shows only while the name is cut.
+ */
+function FadingName(props: {
+  readonly accessibilityRole?: "header";
+  /** The opaque colour behind the name, which the fade blends into. */
+  readonly ground: string;
+  readonly label: string;
+  readonly style: StyleProp<TextStyle>;
+}): ReactNode {
+  const [room, setRoom] = useState(0);
+  const [natural, setNatural] = useState(0);
+  return (
+    <View
+      onLayout={(event: LayoutChangeEvent) => setRoom(event.nativeEvent.layout.width)}
+      style={styles.name}
+    >
+      <Text
+        accessibilityRole={props.accessibilityRole}
+        ellipsizeMode="clip"
+        maxFontSizeMultiplier={controlFontScaleLimit}
+        numberOfLines={1}
+        style={props.style}
+      >
+        {props.label}
+      </Text>
+      {/* The name's own width, laid out where nothing constrains it. */}
+      <View
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        pointerEvents="none"
+        style={styles.measure}
+      >
+        <Text
+          maxFontSizeMultiplier={controlFontScaleLimit}
+          numberOfLines={1}
+          onLayout={(event: LayoutChangeEvent) => setNatural(event.nativeEvent.layout.width)}
+          style={props.style}
+        >
+          {props.label}
+        </Text>
+      </View>
+      {natural > room + 0.5 ? (
+        <View
+          pointerEvents="none"
+          style={[
+            styles.fade,
+            { backgroundImage: `linear-gradient(to right, ${props.ground}00, ${props.ground})` },
+          ]}
+        />
+      ) : null}
+    </View>
   );
 }
 
@@ -433,6 +502,7 @@ const styles = StyleSheet.create({
     top: -7,
   },
   dim: { opacity: 0.45 },
+  fade: { bottom: 0, end: 0, position: "absolute", top: 0, width: space[16] },
   ember: { backgroundColor: color.ember },
   face: {
     alignItems: "center",
@@ -447,6 +517,15 @@ const styles = StyleSheet.create({
   label: { color: color.textSoft, flexShrink: 1, fontWeight: "600" },
   mark: { alignItems: "center", height: 20, justifyContent: "center", minWidth: 20 },
   markOnly: { width: markSegmentWidth },
+  name: { flexShrink: 1, minWidth: 0, overflow: "hidden" },
+  measure: {
+    alignItems: "flex-start",
+    height: 0,
+    opacity: 0,
+    overflow: "hidden",
+    position: "absolute",
+    width: 4096,
+  },
   natural: { flexShrink: 0 },
   // A menu's trigger takes no hit slop, so it reaches a full touch target past the plate.
   menuFace: {

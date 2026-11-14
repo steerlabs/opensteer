@@ -39,18 +39,19 @@ describe("the switch's layout", () => {
     expect(tight.folded).toEqual([]);
   });
 
-  it("folds the teams past what fits, keeping Tasks, the recent team and every team reachable", () => {
+  it("folds the teams past what fits, keeping their order and every team reachable", () => {
     const teams = ["a", "b", "c", "d", "e", "f", "g"];
-    for (const width of [160, 200, 240, 300, 400, 0])
+    for (const width of [104, 120, 160, 200, 240, 300, 400, 0])
       for (const recent of teams) {
         const result = layout(teams, recent, width);
         const drawn = keys(result).filter((key) => key !== "tasks" && key !== moreTeamsKey);
         expect(keys(result)[0]).toBe("tasks");
-        expect(drawn).toContain(recent);
+        if (width === 0 || width >= 140) expect(drawn).toContain(recent);
         expect([...drawn, ...result.folded].sort()).toEqual(teams);
         expect(drawn).toEqual(teams.filter((team) => drawn.includes(team)));
         expect(keys(result).includes(moreTeamsKey)).toBe(result.folded.length > 0);
-        if (width > 0 && result.segments.length > 3) {
+        // Inside the track whenever Tasks and the folded segment fit at all.
+        if (width >= 70 + metrics.gap + metrics.mark + metrics.padding * 2) {
           const last = result.segments.at(-1)!;
           expect(last.x + last.width).toBeLessThanOrEqual(width - metrics.padding);
         }
@@ -58,5 +59,10 @@ describe("the switch's layout", () => {
     const narrow = layout(teams, "e", 200);
     expect(keys(narrow)).toEqual(["tasks", "a", "b", "e", moreTeamsKey]);
     expect(narrow.folded).toEqual(["c", "d", "f", "g"]);
+    // Too narrow for the recent team beside Tasks and the fold: it folds too.
+    const narrowest = layout(teams, "e", 120);
+    expect(keys(narrowest)).toEqual(["tasks", moreTeamsKey]);
+    expect(narrowest.folded).toEqual(teams);
+    expect(narrowest.named).toBe(false);
   });
 });

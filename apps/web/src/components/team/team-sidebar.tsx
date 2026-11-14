@@ -93,7 +93,8 @@ export function SidebarSwitch({
   const measured = size.width > 0 && size.tasks > 0 && size.metrics.mark > 0;
   const moving = useMoving(`${active} ${recent}`);
   const frame = (key: string) => layout.segments.find((segment) => segment.key === key);
-  const plate = frame(active);
+  // A team folded away is chosen through, and shown chosen on, the folded segment.
+  const plate = frame(active) ?? frame(moreTeamsKey);
   const byId = new Map(teams.map((team) => [team.id, team]));
   const radios = layout.segments.flatMap((segment) =>
     segment.key === moreTeamsKey ? [] : [segment.key],
@@ -161,6 +162,7 @@ export function SidebarSwitch({
           if (segment.key === moreTeamsKey)
             return (
               <MoreTeams
+                active={active}
                 key={segment.key}
                 onSelect={(side) => select(side, false)}
                 style={style}
@@ -272,10 +274,12 @@ function useMoving(key: string): boolean {
 
 /** The teams past what the track holds, behind one segment that lists them. */
 function MoreTeams({
+  active,
   onSelect,
   style,
   teams,
 }: {
+  readonly active: SidebarSide;
   readonly onSelect: (side: SidebarSide) => void;
   readonly style: CSSProperties | undefined;
   readonly teams: readonly SwitchTeam[];
@@ -310,6 +314,7 @@ function MoreTeams({
         <Popover align="end" anchor={anchor} below label={label} onClose={() => setOpen(false)}>
           {teams.map((team) => (
             <button
+              aria-current={team.id === active ? "true" : undefined}
               className="picker__row"
               key={team.id}
               onClick={() => {
@@ -321,6 +326,7 @@ function MoreTeams({
             >
               <TeamTile size={18} tile={team.tile} />
               <span className="picker__label">{team.name}</span>
+              {team.id === active ? <Icon name="check" /> : null}
               {team.mentions > 0 ? (
                 <span
                   aria-label={mentionPhrase(team.mentions)}

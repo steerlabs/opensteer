@@ -58,9 +58,10 @@ export const moreTeamsKey = ":more";
  * Tasks keeps its own width, and every other team is its mark. The recent team
  * takes what is left, saying its name when that is enough, so moving between
  * Tasks and a team moves no segment. When even the marks don't fit, the teams
- * after what fits fold into one last segment; Tasks and the recent team are
- * always drawn, and every team stays in its joined order. Unmeasured (a width
- * of 0), nothing folds and the recent team is named.
+ * after what fits fold into one last segment; Tasks and the recent team stay
+ * drawn, and every team keeps its joined order. Narrower than Tasks, the
+ * recent team and that segment, every team folds into it, so none is ever out
+ * of reach. Unmeasured (a width of 0), nothing folds and the recent team is named.
  */
 export function sideSwitchLayout(
   input: {
@@ -82,16 +83,18 @@ export function sideSwitchLayout(
   const left = (marks: number) =>
     inner - tasks - (marks + (recent === null ? 0 : 1)) * gap - marks * mark;
   let shown = others;
+  let drawsRecent = recent !== null;
   if (width > 0 && recent !== null && left(others.length) < mark) {
     // One mark's place goes to the folded teams' segment.
     let fit = 0;
     while (fit < others.length - 1 && left(fit + 2) >= mark) fit += 1;
     shown = others.slice(0, fit);
+    drawsRecent = left(1) >= mark;
   }
-  const kept = new Set<string>([...shown, ...(recent === null ? [] : [recent])]);
+  const kept = new Set<string>([...shown, ...(drawsRecent && recent !== null ? [recent] : [])]);
   const folded = teamIds.filter((id) => !kept.has(id));
   const recentWidth = Math.max(mark, left(shown.length + (folded.length > 0 ? 1 : 0)));
-  const named = width <= 0 || recentWidth >= metrics.named;
+  const named = width <= 0 || (drawsRecent && recentWidth >= metrics.named);
   const segments: SideSwitchSegment[] = [];
   let x = padding;
   const place = (key: SidebarSide, span: number) => {
