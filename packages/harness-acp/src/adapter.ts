@@ -150,7 +150,7 @@ export class AcpHarnessAdapter implements HarnessAdapter {
 
 class AcpHarnessSession implements HarnessSession {
   readonly events: AsyncIterable<HarnessEvent>;
-  readonly #context: HarnessSessionContext;
+  #context: HarnessSessionContext;
   readonly #client: AcpProtocolClient;
   readonly #onClose: (session: AcpHarnessSession) => void;
   readonly #options: AcpHarnessOptions;
@@ -171,6 +171,11 @@ class AcpHarnessSession implements HarnessSession {
   #replaying = false;
   readonly #stderrWaiters = new Set<() => void>();
   #stopPromise: Promise<void> | undefined;
+  #deliveredGuidance: string | undefined;
+  #compactionMarker: symbol | undefined;
+  readonly #completedCompactions = new Set<string>();
+  #persistentApprovalGranted = false;
+  #backgroundWorkRemains = false;
 
   private constructor(
     options: AcpHarnessOptions,
@@ -198,11 +203,12 @@ class AcpHarnessSession implements HarnessSession {
       handlers: {
         elicitation: (request, signal) => this.#elicitation(request, signal),
         permission: (request, signal) => this.#permission(request, signal),
-        readTextFile: acpReadTextFileHandler([
-          context.workspacePath,
-          ...context.writableRoots,
-          ...(context.attachmentDirectory ? [context.attachmentDirectory] : []),
-        ]),
+        readTextFile: (path, line, limit) =>
+          acpReadTextFileHandler([
+            this.#context.workspacePath,
+            ...this.#context.writableRoots,
+            ...(this.#context.attachmentDirectory ? [this.#context.attachmentDirectory] : []),
+          ])(path, line, limit),
         update: (sessionId, update) => this.#handleUpdate(sessionId, update),
       },
       process,
@@ -295,7 +301,12 @@ class AcpHarnessSession implements HarnessSession {
         this.#finish(active, "interrupted");
         return;
       }
-      const blocks = await this.#promptBlocks(run);
+      const prepared = await this.#promptBlocks(run);
+      if (active.terminal || this.#closed) return;
+      if (run.signal.aborted) {
+        this.#finish(active, "interrupted");
+        return;
+      }
       this.#publish(runStartedEvent());
       active.stderrStart = this.#stderrPosition();
       // A Run abort is translated through the engine's cancel policy. In
@@ -303,7 +314,7 @@ class AcpHarnessSession implements HarnessSession {
       // post-cancel prompt outcome arrives.
       const result = await this.#client.prompt(
         this.providerSessionReference,
-        blocks,
+        prepared.blocks,
         this.#lifetime.signal,
       );
       if (result.usage) active.usage = result.usage;
@@ -318,6 +329,19 @@ class AcpHarnessSession implements HarnessSession {
       }
       this.#flushHeldAssistant(active);
       await this.#stopBackgroundChildren(active);
+      if (
+        !active.interruptRequested &&
+        !this.#closed &&
+        !this.#processEnded &&
+        !["cancelled", "refusal", "error"].includes(result.stopReason)
+      ) {
+        if (prepared.compacts) this.#compactionMarker = Symbol();
+        else if (prepared.guidance !== undefined) {
+          this.#deliveredGuidance = prepared.guidance;
+          if (this.#compactionMarker === prepared.compactionMarker)
+            this.#compactionMarker = undefined;
+        }
+      }
       this.#finish(active, active.interruptRequested ? "interrupted" : "completed");
       await active.completion.promise;
     } catch (error) {
@@ -354,6 +378,31 @@ class AcpHarnessSession implements HarnessSession {
     if (!active || active.terminal) return;
     active.interruptRequested = true;
     await this.#interruptActive(active);
+  }
+
+  rebind(context: HarnessSessionContext): void {
+    this.#assertUsable();
+    context.signal.throwIfAborted();
+    if (this.#active || this.#pending.size)
+      throw new Error("An ACP session cannot be rebound during a Run");
+    if (this.#context.voiceCall || context.voiceCall)
+      throw new Error("A voice call cannot reuse a session");
+    assertSameEnvironment(this.#context.environment, context.environment);
+    this.#context.signal.removeEventListener("abort", this.#abortListener);
+    this.#context = context;
+    context.signal.addEventListener("abort", this.#abortListener, { once: true });
+  }
+
+  async releaseForReuse(): Promise<boolean> {
+    return (
+      !this.#closed &&
+      !this.#publisher.unusable &&
+      !this.#processEnded &&
+      !this.#active &&
+      this.#pending.size === 0 &&
+      !this.#persistentApprovalGranted &&
+      !this.#backgroundWorkRemains
+    );
   }
 
   async resolveRequest(requestId: RequestId, response: RequestResponse): Promise<void> {
@@ -494,12 +543,48 @@ class AcpHarnessSession implements HarnessSession {
     }
   }
 
-  async #promptBlocks(run: HarnessRunInput): Promise<readonly AcpPromptBlock[]> {
-    const stableContext = [
+  async #promptBlocks(run: HarnessRunInput): Promise<{
+    blocks: readonly AcpPromptBlock[];
+    guidance?: string;
+    compactionMarker?: symbol;
+    compacts?: boolean;
+  }> {
+    const parts = run.inputs.flatMap((input) => resolvedInputSequence(input, run.attachments));
+    const rawText = run.inputs
+      .flatMap((input) => input.content)
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join("\n");
+    const slashCommand = rawText.trimStart().startsWith("/");
+    const blocks: AcpPromptBlock[] = [];
+    for (const part of parts) {
+      if (part.type === "text") blocks.push({ type: "text", text: part.text });
+      else {
+        const bytes = await readVerifiedAttachmentBytes(part.attachment);
+        blocks.push({
+          data: bytes.toString("base64"),
+          mimeType: part.attachment.attachment.mediaType,
+          type: "image",
+        });
+      }
+    }
+    if (slashCommand)
+      return {
+        compacts: /^\/compact(?:\s|$)/u.test(rawText.trimStart()),
+        blocks: [
+          { type: "text", text: rawText },
+          ...blocks.filter((block) => block.type !== "text"),
+        ],
+      };
+    const guidance = [
       this.#context.platformGuide,
       this.#context.instructions,
       durableHistoryWindowNotice(this.#context),
       await renderHarnessSkillCatalog(this.#context.skills),
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    const facts = [
       initialContinuationContextPrompt(this.#context),
       `## This Run's computers\n${this.#context.machineAccessNotice}`,
       harnessTurnPreamble(run, (input) =>
@@ -508,41 +593,53 @@ class AcpHarnessSession implements HarnessSession {
           .map((part) => part.text)
           .join("\n"),
       ),
-    ].filter((value): value is string => Boolean(value));
-    const blocks: AcpPromptBlock[] = [{ type: "text", text: stableContext.join("\n\n") }];
-    for (const input of run.inputs) {
-      for (const part of resolvedInputSequence(input, run.attachments)) {
-        if (part.type === "text") {
-          blocks.push({ type: "text", text: part.text });
-        } else {
-          const bytes = await readVerifiedAttachmentBytes(part.attachment);
-          blocks.push({
-            data: bytes.toString("base64"),
-            mimeType: part.attachment.attachment.mediaType,
-            type: "image",
-          });
-        }
-      }
-    }
+    ]
+      .filter(Boolean)
+      .join("\n\n");
     const rewrite = this.#options.hooks.rewritePromptText;
-    if (!rewrite) return blocks;
-    return Promise.all(
-      blocks.map(async (block) =>
-        block.type === "text"
+    const rewritten = await Promise.all(
+      [
+        { type: "text" as const, text: guidance },
+        { type: "text" as const, text: facts },
+        ...blocks,
+      ].map(async (block) =>
+        block.type === "text" && rewrite
           ? { ...block, text: await rewrite(block.text, this.#context) }
           : block,
       ),
     );
+    const stable = rewritten[0]!;
+    const stableText = stable.type === "text" ? stable.text : "";
+    const marker = this.#compactionMarker;
+    const send = marker !== undefined || this.#deliveredGuidance !== stableText;
+    return {
+      blocks: send ? rewritten : rewritten.slice(1),
+      ...(send ? { guidance: stableText } : {}),
+      ...(marker ? { compactionMarker: marker } : {}),
+    };
   }
 
   #handleUpdate(sessionId: string, update: unknown): void {
     if (this.#replaying) return;
+    const normalized = this.#options.hooks.normalizeUpdate?.(update) ?? normalizeAcpUpdate(update);
+    for (const entry of normalized) {
+      if (
+        entry.kind !== "compaction" ||
+        entry.nodeKey ||
+        sessionId !== this.#providerSessionReference
+      )
+        continue;
+      if (entry.compactionId !== undefined) {
+        if (this.#completedCompactions.has(entry.compactionId)) continue;
+        this.#completedCompactions.add(entry.compactionId);
+      }
+      this.#compactionMarker = Symbol();
+    }
     const active = this.#active;
     if (!active || active.terminal) return;
     const foreign = sessionId !== this.#providerSessionReference;
     const sessionKey = active.childSessions.get(sessionId);
     if (foreign && !sessionKey) return;
-    const normalized = this.#options.hooks.normalizeUpdate?.(update) ?? normalizeAcpUpdate(update);
     for (const entry of normalized) {
       const nodeKey = foreign ? sessionKey : entry.nodeKey;
       if (nodeKey && !active.nodes.nodeId(nodeKey)) continue;
@@ -635,6 +732,7 @@ class AcpHarnessSession implements HarnessSession {
       case "usage":
         active.usage = update;
         return;
+      case "compaction":
       case "ignore":
         return;
     }
@@ -797,6 +895,7 @@ class AcpHarnessSession implements HarnessSession {
   }
 
   async #stopBackgroundChildren(active: ActiveTurn): Promise<void> {
+    this.#backgroundWorkRemains = active.nodes.liveKeys().length > 0;
     if (
       active.nodes.liveKeys().length === 0 ||
       this.#options.policy.cancel.behavior !== "cancel-and-kill"
@@ -846,9 +945,20 @@ class AcpHarnessSession implements HarnessSession {
       },
       type: "request.opened",
     });
-    return this.#awaitInteraction(requestId, settlement, signal, (value) =>
+    const answer = await this.#awaitInteraction(requestId, settlement, signal, (value) =>
       typeof value === "string" ? value : null,
     );
+    const choice = choices.find((choice) => choice.optionId === answer);
+    const native = request.options.find((option) => option.id === answer);
+    if (
+      choice &&
+      (choice.hint === "allow-for-run" ||
+        (choice.hint === "allow-once" &&
+          native &&
+          /always|persistent|session/iu.test(`${native.id} ${native.kind}`)))
+    )
+      this.#persistentApprovalGranted = true;
+    return answer;
   }
 
   async #elicitation(request: AcpElicitationRequest, signal: AbortSignal): Promise<unknown> {
@@ -1074,6 +1184,17 @@ export function normalizeAcpUpdate(update: unknown): readonly AcpNormalizedUpdat
   if (!isRecord(update) || typeof update.sessionUpdate !== "string") return [];
   const content = isRecord(update.content) ? update.content : undefined;
   switch (update.sessionUpdate) {
+    case "compaction_update":
+      return update.status === "completed"
+        ? [
+            {
+              kind: "compaction",
+              ...(typeof update.compactionId === "string"
+                ? { compactionId: update.compactionId }
+                : {}),
+            },
+          ]
+        : [];
     case "agent_message_chunk":
       return content?.type === "text" && typeof content.text === "string"
         ? [{ kind: "assistant", text: content.text }]
