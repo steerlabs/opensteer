@@ -30,5 +30,5 @@ describe("bundleNodeService", () => {
     expect(
       (await readFile(script, "utf8")).match(/\b(?:document|window|location)\d+\b/gu),
     ).toBeNull();
-  }, 60_000);
+  });
 });
