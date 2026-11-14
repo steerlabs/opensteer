@@ -18,7 +18,7 @@ export function NeedsYouList({
   const [loading, setLoading] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const [dismissing, setDismissing] = useState<string | null>(null);
-  // An ask that never became a task has nowhere to be answered; dismissing declines it.
+  // A failed ask is answered nowhere; dismissing declines it.
   const dismiss = async (entry: Extract<NeedsYouEntry, { kind: "team-ask" }>) => {
     setDismissing(needsYouEntryKey(entry));
     setFailure(null);
@@ -54,9 +54,10 @@ export function NeedsYouList({
             dismissing={dismissing === needsYouEntryKey(entry)}
             entry={entry}
             key={needsYouEntryKey(entry)}
-            {...(entry.kind === "team-ask" && !entry.task
-              ? { onDismiss: () => void dismiss(entry) }
-              : { onOpen: () => onOpen(entry) })}
+            onDismiss={() => {
+              if (entry.kind === "team-ask") void dismiss(entry);
+            }}
+            onOpen={() => onOpen(entry)}
           />
         ))}
       </ul>
