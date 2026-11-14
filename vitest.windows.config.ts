@@ -14,6 +14,8 @@ export default defineConfig({
     // An empty run would vouch for nothing; ci-check.ts also holds the inventory to the tracked files.
     passWithNoTests: false,
     pool: "forks",
+    retry: 0,
+    runner: "./scripts/quarantine-runner.ts",
     restoreMocks: true,
     setupFiles: ["./tests/process-supervisor-setup.test-support.ts"],
     testTimeout: 30_000,

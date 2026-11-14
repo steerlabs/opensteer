@@ -154,7 +154,12 @@ test("scheduled and manual runs take every task unless main has not changed", ()
   }
   const unchanged = detect({ event: "schedule", unchangedSince: "a".repeat(40) });
   assert.deepEqual(unchanged.nativeMac, []);
-  assert.ok(Object.values(unchanged.lanes).every((on) => on === false));
+  assert.deepEqual(
+    Object.entries(unchanged.lanes)
+      .filter(([, on]) => on)
+      .map(([lane]) => lane),
+    ["lint"],
+  );
   // Only a scheduled run consults the last full run.
   assert.deepEqual(
     detect({ event: "workflow_dispatch", unchangedSince: "a".repeat(40) }).nativeMac,

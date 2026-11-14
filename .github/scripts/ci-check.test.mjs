@@ -125,15 +125,18 @@ test("Check holds the native-mac task list to the plan, and main to every task",
   );
 });
 
-test("only a scheduled run with nothing new on main may skip everything", () => {
-  const none = Object.fromEntries(lanes.map((k) => [k, false]));
+test("an unchanged scheduled run still enforces lint policy guards", () => {
+  const none = Object.fromEntries(lanes.map((k) => [k, k === "lint"]));
   const unchanged = { version: 1, unchangedSince: "a".repeat(40), nativeMac: [], lanes: none };
   const needs = {
     changes: {
       result: "success",
-      outputs: { ...Object.fromEntries(lanes.map((k) => [k, "false"])), "native-mac-tasks": "[]" },
+      outputs: {
+        ...Object.fromEntries(lanes.map((k) => [k, String(k === "lint")])),
+        "native-mac-tasks": "[]",
+      },
     },
-    ...Object.fromEntries(lanes.map((k) => [k, { result: "skipped" }])),
+    ...Object.fromEntries(lanes.map((k) => [k, { result: k === "lint" ? "success" : "skipped" }])),
   };
   const sha = "a".repeat(40);
   assert.doesNotThrow(() => validateResults(unchanged, needs, "schedule", sha));
@@ -146,11 +149,11 @@ test("only a scheduled run with nothing new on main may skip everything", () => 
     assert.throws(() => validateResults(unchanged, needs, event, sha), /Only a scheduled run/);
   assert.throws(() => validateResults(plan, results, undefined), /Unknown CI event/);
   const partly = structuredClone(needs);
-  partly.changes.outputs.lint = "true";
-  partly.lint = { result: "success" };
+  partly.changes.outputs.lint = "false";
+  partly.lint = { result: "skipped" };
   assert.throws(
     () =>
-      validateResults({ ...unchanged, lanes: { ...none, lint: true } }, partly, "schedule", sha),
+      validateResults({ ...unchanged, lanes: { ...none, lint: false } }, partly, "schedule", sha),
     /Only a scheduled run/,
   );
 });
@@ -310,7 +313,7 @@ test("native-fs executes once on shard one, fails the lane and Check, and upload
   // validateResults' failing matrix-lane regression above proves the Check side.
 });
 
-test("main push concurrency coalesces by branch without changing other event groups", async () => {
+test("main pushes have independent commit groups while PRs cancel only their own older runs", async () => {
   const { workflow } = await ciConfig();
   const { runInNewContext } = await import("node:vm");
   const expand = (value, github) =>
@@ -324,11 +327,18 @@ test("main push concurrency coalesces by branch without changing other event gro
       ref,
       event: { pull_request: { number } },
     });
-  assert.equal(group("push", "a"), group("push", "b"));
-  assert.notEqual(group("push", "a"), group("push", "a", "refs/heads/other"));
+  assert.notEqual(group("push", "a"), group("push", "b"));
+  assert.equal(group("push", "a"), "ci-a-push");
   assert.equal(group("pull_request", "a", "refs/pull/12/merge", 12), "ci-12-pull_request");
-  for (const event of ["schedule", "workflow_dispatch"])
+  assert.equal(group("pull_request", "b", "refs/pull/12/merge", 12), "ci-12-pull_request");
+  for (const event of ["schedule", "workflow_dispatch"]) {
     assert.equal(group(event, "a"), `ci-a-${event}`);
+    assert.notEqual(group(event, "a"), group("push", "a"));
+    assert.equal(
+      expand(workflow.concurrency["cancel-in-progress"], { event_name: event }),
+      "false",
+    );
+  }
   assert.equal(expand(workflow.concurrency["cancel-in-progress"], { event_name: "push" }), "false");
   assert.equal(
     expand(workflow.concurrency["cancel-in-progress"], { event_name: "pull_request" }),

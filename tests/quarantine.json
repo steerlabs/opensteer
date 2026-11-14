@@ -320,12 +320,13 @@
     ],
     "area": "Run lifecycle",
     "owner": "Run lifecycle maintainers",
-    "status": "quarantined",
+    "status": "investigating",
     "firstSeen": "2026-10-27T00:00:00Z",
     "deadline": "2026-11-03T00:00:00Z",
     "sha": "285a2836a73ced2ca813ce63e474cb85e1b13c1b",
     "evidence": [
-      "The journey timed out waiting for done, then passed in 44.9 s on the same SHA. An earlier run produced six assistant messages instead of three. Reproduce a completed turn while the Host remains down for more than two leases; preserve the existing completion and exact-message assertions."
+      "The journey timed out waiting for done, then passed in 44.9 s on the same SHA. An earlier run produced six assistant messages instead of three. Reproduce a completed turn while the Host remains down for more than two leases; preserve the existing completion and exact-message assertions.",
+      "Execution-policy review: this historical record predates executable quarantine and its deadline has expired. Current reproduction or fix qualification is missing; keep the test running as investigating, retain the original evidence and deadline, and do not renew a skip from an old same-SHA rerun."
     ]
   },
   {
@@ -336,12 +337,13 @@
     ],
     "area": "Live streaming",
     "owner": "Live streaming maintainers",
-    "status": "quarantined",
+    "status": "investigating",
     "firstSeen": "2026-10-28T01:24:00Z",
     "deadline": "2026-11-04T01:24:00Z",
     "sha": "914f24ef5c2f8a810e5c17019bf0112a97628da7",
     "evidence": [
-      "Timed out waiting for refused: neither event refusal nor the <=10 s expired-lease sweep failed the Run within 30 s. A same-SHA file rerun passed three tests in 18.7 s. Reproduce Host refusal under concurrent Runs; acceptance fails only the refused Run and retains its Runner and other Runs, within existing budgets."
+      "Timed out waiting for refused: neither event refusal nor the <=10 s expired-lease sweep failed the Run within 30 s. A same-SHA file rerun passed three tests in 18.7 s. Reproduce Host refusal under concurrent Runs; acceptance fails only the refused Run and retains its Runner and other Runs, within existing budgets.",
+      "Execution-policy review: this historical record predates executable quarantine and its deadline has expired. Current reproduction or fix qualification is missing; keep the test running as investigating, retain the original evidence and deadline, and do not renew a skip from an old same-SHA rerun."
     ]
   },
   {
@@ -352,7 +354,7 @@
     ],
     "area": "Browser",
     "owner": "Browser maintainers",
-    "status": "investigating",
+    "status": "quarantined",
     "firstSeen": "2026-11-12T19:34:18Z",
     "deadline": "2026-11-19T19:34:18Z",
     "sha": "3c7eadff8545a492ccd6236fba0a22f2cab428c2",
@@ -371,12 +373,13 @@
     ],
     "area": "Runner",
     "owner": "Runner maintainers",
-    "status": "quarantined",
+    "status": "investigating",
     "firstSeen": "2026-10-28T00:00:00Z",
     "deadline": "2026-11-04T00:00:00Z",
     "sha": "97437475de2acfa90f98ef5c8c59b45bac4cf592",
     "evidence": [
-      "The case passed but teardown emitted an uncaught WebSocket was closed before the connection was established. A same-SHA rerun passed in 6.54 s. Reproduce cancellation after temporary handshake listeners are removed; acceptance requires the typed final-save refusal promptly and teardown with no uncaught socket error."
+      "The case passed but teardown emitted an uncaught WebSocket was closed before the connection was established. A same-SHA rerun passed in 6.54 s. Reproduce cancellation after temporary handshake listeners are removed; acceptance requires the typed final-save refusal promptly and teardown with no uncaught socket error.",
+      "Execution-policy review: this historical record predates executable quarantine and its deadline has expired. Current reproduction or fix qualification is missing; keep the test running as investigating, retain the original evidence and deadline, and do not renew a skip from an old same-SHA rerun."
     ]
   },
   {
@@ -439,12 +442,13 @@
     ],
     "area": "Browser runtime",
     "owner": "Browser runtime maintainers",
-    "status": "quarantined",
+    "status": "investigating",
     "firstSeen": "2026-10-28T17:10:11Z",
     "deadline": "2026-11-04T17:10:11Z",
     "sha": "3454f17616588b3001bb1b591e1b903aeec40a50",
     "evidence": [
       "The named real-Chromium follow-view journey failed once under concurrent load; a same-SHA rerun passed alongside watch-supervisor (25/25). Reproduce an agent size write held under a dialog. Acceptance: the person view stays free and all original journey assertions pass.",
+      "Execution-policy review: this historical record predates executable quarantine and its deadline has expired. Current reproduction or fix qualification is missing; keep the test running as investigating, retain the original evidence and deadline, and do not renew a skip from an old same-SHA rerun.",
       "Investigation from base 059294a2e05a80f2f348cbfb7625e1cff26fc0aa: the complete follow-view file passed twice, including a run with harness action deadline tests and four integration workers active. The separate Nov 13 closing-tab size timeout is recorded on its own case, with bounded named operation diagnostics; it does not prove this dialog-size failure fixed."
     ]
   },
@@ -482,14 +486,15 @@
     ],
     "area": "Machine access",
     "owner": "Machine access maintainers",
-    "status": "quarantined",
+    "status": "investigating",
     "firstSeen": "2026-10-30T03:57:30Z",
     "deadline": "2026-11-06T03:57:30Z",
     "sha": "6a217cb128a600dbe20235d7b47b6688d4333e75",
     "evidence": [
       "integration (4) on 6a217cb (PR #221, which changed only Thread listing): the test ran 84.9 s, its hook timed out at 60 s and database fixture containment failed ('Producers of ... host_clone ... did not stop'); 'ends an overdue background Run's sessions ...' then failed only by worker contamination. The same job passed on rerun at the same SHA (run 40999673919, attempt 2), and the whole file passed 14/14 locally at that SHA (13.2 s for this test). Reproduce under the full integration shard's load; fix why the token-refresh session leaves database producers running past teardown, keeping the refresh and expiry assertions unchanged.",
       "Recurrence on PR #329 at candidate eff9a7ddd4c4c008bfd5d94227ef3743a9d42e34 / CI merge 9f2957313a6dc9619eda6329496b1b2ffa89ec54: integration (4), run 41208677192, job 124558965792. The same first afterEach timeout (60 s), producer containment timeout and next-test contamination occurred. The independently owned Host close did not finish, so a slow client closer alone cannot explain it. The exact Host shutdown step remains unproven; no production cause or fix is asserted.",
-      "Diagnosis of that source tree: the filtered token-refresh case passed on macOS, then the complete file passed 14/14 with observation-only closer diagnostics. An isolated Linux arm64 run with Node 24.13.0, Go 1.25.0, enforcing lock order and the new failure diagnostics passed 14/14 (11.7 s for the token case); this is not CI's amd64 shard/load and does not resolve the flake. All owned PostgreSQL/runner containers were removed. Existing assertions and test/hook timeouts are retained. Fixture cleanup now clears its scenario reference before awaiting close, and reports runtime.closingStep() before the existing 10 s producer-containment deadline. Acceptance: reproduce the named shutdown step, inject the actual interleaving and prove producers drain before database drop under the original refresh/expiry assertions. This entry does not exempt the test or authorize a passing gate."
+      "Diagnosis of that source tree: the filtered token-refresh case passed on macOS, then the complete file passed 14/14 with observation-only closer diagnostics. An isolated Linux arm64 run with Node 24.13.0, Go 1.25.0, enforcing lock order and the new failure diagnostics passed 14/14 (11.7 s for the token case); this is not CI's amd64 shard/load and does not resolve the flake. All owned PostgreSQL/runner containers were removed. Existing assertions and test/hook timeouts are retained. Fixture cleanup now clears its scenario reference before awaiting close, and reports runtime.closingStep() before the existing 10 s producer-containment deadline. Acceptance: reproduce the named shutdown step, inject the actual interleaving and prove producers drain before database drop under the original refresh/expiry assertions. This entry does not exempt the test or authorize a passing gate.",
+      "Execution-policy review: this historical record predates executable quarantine and its deadline has expired. Current reproduction or fix qualification is missing; keep the test running as investigating, retain the original evidence and deadline, and do not renew a skip from an old same-SHA rerun."
     ]
   },
   {
@@ -500,13 +505,14 @@
     ],
     "area": "Browser",
     "owner": "Browser maintainers",
-    "status": "quarantined",
+    "status": "investigating",
     "firstSeen": "2026-10-30T05:39:00Z",
     "deadline": "2026-11-06T05:39:00Z",
     "sha": "7cab25b8ba1f7397e3feb0c66d13cb118a84265a",
     "evidence": [
       "integration (1) on 7cab25b (PR #243, which changed only how task rows render): the clipboard result arrived late ('Matcher did not succeed in time'; expected [ { type: 'clipboard.result', … } ] to deeply equal [ ObjectContaining{…} ]) after 25.7 s. The same job passed on rerun at the same SHA (run 41009135701, attempt 2) in 17.7 s. Reproduce under the integration shard's load; fix why the native clipboard result can miss the matcher's window, keeping the projection and attribution assertions unchanged.",
       "integration (1) on 70c2a445c (PR #418, a merge of main with no browser changes): the test body finished, then its afterEach cleanup exceeded the 30 s hook timeout (run 41836895735). The Host also logged an unparsed browser runtime frame (Unrecognized keys: access, dialog, sessionId, state, surfaces), which main's own CI logs for this test too (run 41832359500). Three local runs of the file at the same SHA passed. Acceptance additionally covers bounded cleanup: identify which close in afterEach blocks and make it settle without lengthening the hook timeout.",
+      "Execution-policy review: this historical record predates executable quarantine and its deadline has expired. Current reproduction or fix qualification is missing; keep the test running as investigating, retain the original evidence and deadline, and do not renew a skip from an old same-SHA rerun.",
       "Nov 13 recurrence: https://github.com/steerlabs/opensteer/actions/runs/43436850810/job/131924193313 timed out waiting for outcome:pasted on the 10 MB PNG, after earlier copy and CJK paste succeeded. Its retained integration artifact omits engine.json and relay.json, so transport loss versus native clipboard work remains unproved. Two complete-file runs on 059294a2e05a80f2f348cbfb7625e1cff26fc0aa with four integration workers passed; the private clipboard open reached 5,101 ms locally under concurrent browser load. A separate deterministic server regression exposes a paste header queued during attachment blocking its own parts; that deadlock is fixed, but cannot yet explain this post-attachment PNG failure. Preserve the 10,000 ms assertion and every clipboard isolation check. Editing traces now default into retained run-owned artifacts."
     ]
   },
@@ -515,7 +521,7 @@
     "name": ["Background work", "keeps background work through a Host restart"],
     "area": "Agent orchestration",
     "owner": "Host/Runner maintainers",
-    "status": "quarantined",
+    "status": "investigating",
     "firstSeen": "2026-10-30T14:55:12Z",
     "deadline": "2026-11-06T14:55:12Z",
     "sha": "1f07627fcd1d735a2457a0af14ef567a7cb73c47",
@@ -523,7 +529,8 @@
       "https://github.com/steerlabs/opensteer/actions/runs/41073881100/job/124126629137: restart case exhausted 180 s; cleanup exhausted another 30 s. The containment AggregateError names stack startup/operations. Startup already returned and restartHost is this case's only tracked operation, so cleanup was waiting on the unfinished restart, not a second independent failure.",
       "The log does not identify which restart stage stalled. Shutdown draining a live Run/event is a hypothesis; no evidence establishes a missed background wakeup, wall-clock deadline expiry or execution-lease race. Fixture containment then forcibly removes run databases (57P01 administrator termination), explaining the later connection errors.",
       "Keep every completion/deadline/node assertion. Bound restart and individual database conditions and release the fake child in finally. The new unit regression proves the old polling deadline did not bound an in-flight database read. This register preserves ownership; it does not skip the test or authorize a passing gate.",
-      "W5 investigation (2026-10-30): the focused restart passed with named stop/join/listener, connected Runner, ready-catalog visibility, background projection and released completion observations. No shutdown stall reproduced; cause remains unresolved. Bootstrap readiness is not proof of the new boot catalog commit. Need restart-stage gates and onRunnerCatalogsCommitted observation from the vertical-stack fixture owner (W4/W2); W5 deliberately does not edit that shared fixture. No quarantine removal, retries or deadline increase."
+      "W5 investigation (2026-10-30): the focused restart passed with named stop/join/listener, connected Runner, ready-catalog visibility, background projection and released completion observations. No shutdown stall reproduced; cause remains unresolved. Bootstrap readiness is not proof of the new boot catalog commit. Need restart-stage gates and onRunnerCatalogsCommitted observation from the vertical-stack fixture owner (W4/W2); W5 deliberately does not edit that shared fixture. No quarantine removal, retries or deadline increase.",
+      "Execution-policy review: this historical record predates executable quarantine and its deadline has expired. Current reproduction or fix qualification is missing; keep the test running as investigating, retain the original evidence and deadline, and do not renew a skip from an old same-SHA rerun."
     ]
   },
   {
@@ -601,7 +608,7 @@
     ],
     "area": "Browser",
     "owner": "Browser maintainers",
-    "status": "investigating",
+    "status": "quarantined",
     "firstSeen": "2026-11-10T20:22:30Z",
     "deadline": "2026-11-17T20:22:30Z",
     "sha": "72b70c6452e84d8163ba6b2a59dc42f6116f5a41",
@@ -620,7 +627,7 @@
     ],
     "area": "Browser",
     "owner": "Browser maintainers",
-    "status": "investigating",
+    "status": "quarantined",
     "firstSeen": "2026-11-10T20:30:00Z",
     "deadline": "2026-11-17T20:30:00Z",
     "sha": "72b70c6452e84d8163ba6b2a59dc42f6116f5a41",
@@ -632,7 +639,7 @@
   {
     "area": "Browser",
     "owner": "Browser maintainers",
-    "status": "investigating",
+    "status": "quarantined",
     "firstSeen": "2026-11-13T23:26:00Z",
     "deadline": "2026-11-20T23:26:00Z",
     "sha": "cfe134868e561ff20551d0bdb70cdcd22f71c141",

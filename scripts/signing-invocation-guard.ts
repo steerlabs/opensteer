@@ -219,11 +219,18 @@ function reviewed(file: string, tool: string, span: string, source: string): boo
     (span.includes('options.execute("/usr/bin/codesign", args)') || span.includes("...args"))
   )
     return true;
-  // The timing wrapper creates this filename, then forwards the original argv.
+  // Notarization timing only classifies the forwarded xcrun argv into a phase name.
+  if (
+    file === "apps/desktop/scripts/codesign-timing.cjs" &&
+    tool === "notarytool" &&
+    span.includes('args[0] === "notarytool" && args[1] === "submit"')
+  )
+    return true;
+  // The timing wrapper creates these shim filenames, then forwards the original argv.
   if (
     file === "apps/desktop/scripts/mac-signing-timing.ts" &&
     tool === "codesign" &&
-    span.includes('path.join(directory, "codesign")')
+    span === '["codesign", "xcrun"]'
   )
     return true;
   // Other-platform packagers cannot invoke Apple's signer or notarizer.

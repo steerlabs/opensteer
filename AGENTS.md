@@ -156,9 +156,10 @@ as `.claude/skills/`.
 - Fix bugs at the root, with a regression test that fails first. Before changing
   ownership, wire contracts or cross-process architecture, get one review of the
   smallest design, then build it.
-- Never weaken an assertion or lengthen a timeout to get green. Skipped is not
-  passed. Fix a flaky test at the root, or quarantine it in `tests/quarantine.json`
-  with a reason ([flaky tests](docs/testing.md#known-flaky-tests)).
+- Never weaken an assertion, add retries or lengthen a timeout to get green. Fix
+  flakes or quarantine the exact test in `tests/quarantine.json` with an owner,
+  evidence and a deadline within seven days; it skips visibly and expiry fails CI
+  ([flaky tests](docs/testing.md#known-flaky-tests)).
 - Wait on the thing itself: await the event or promise, use `vi.waitFor` with a
   condition, or use fake timers. No sleeps, polling loops or `retry`. Every wait
   on something the test set up gets a deadline well inside the test timeout and
