@@ -25,7 +25,7 @@ export function pushSubagent(params: RootParamList["Subagent"]): void {
 }
 
 /** Links, notifications, Voice and cross-side destinations share the root entry. */
-export function enterSide(target: TopLevelTarget, push = false): boolean {
+export function enterSide(target: TopLevelTarget): boolean {
   if (!navigationRef.isReady()) return false;
   let state = navigationRef.getRootState();
   if (state === undefined) return false;
@@ -34,14 +34,13 @@ export function enterSide(target: TopLevelTarget, push = false): boolean {
   const currentDeployment =
     home?.params && "deploymentId" in home.params ? home.params.deploymentId : null;
   if (typeof deploymentId === "string" && currentDeployment !== deploymentId) {
-    sideMemory.clear();
     state = {
       ...state,
       index: 0,
       routes: [{ key: `Home:${deploymentId}`, name: "Home", params: { deploymentId } }],
     };
   }
-  const action = sideMemory.enter(state, target, push);
+  const action = sideMemory.enter(state, target);
   if (action === null) return false;
   navigationRef.dispatch(action);
   return true;

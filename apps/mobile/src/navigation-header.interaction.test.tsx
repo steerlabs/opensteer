@@ -10,8 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
  *   one place to switch between tasks and tabs;
  * - with the sidebar a drawer, the Menu is missing, so it can be opened only
  *   by a swipe nobody knows about;
- * - a drill-in gets the Menu over its Back, so Back to the task it came from
- *   is lost;
+ * - a drill-in loses Back when Menu is added, or a presented flow loses its controls;
  * - it is a drawn view rather than a native bar item, so it is not in the
  *   vertical bar, has no label for VoiceOver, and is not a keyboard target;
  * - questions waiting are not said in its name while they show on its badge.
@@ -22,6 +21,7 @@ const harness = vi.hoisted(() => ({
   options: {} as Record<string, unknown>,
   open: vi.fn(),
   routeKey: "thread-a",
+  presented: false,
 }));
 
 vi.mock("react-native", () => ({
@@ -66,7 +66,15 @@ vi.mock("@react-navigation/native", () => {
   };
   return {
     useNavigation: () => navigation,
-    useNavigationState: (select: (value: typeof state) => unknown) => select(state),
+    useNavigationState: (select: (value: typeof state) => unknown) =>
+      select(
+        harness.presented
+          ? {
+              ...state,
+              routes: [state.routes[0]!, { key: "settings", name: "Settings" }, state.routes[2]!],
+            }
+          : state,
+      ),
     useRoute: () => ({ key: harness.routeKey }),
   };
 });
@@ -94,6 +102,7 @@ afterEach(() => {
   harness.options = {};
   harness.open.mockReset();
   harness.routeKey = "thread-a";
+  harness.presented = false;
 });
 
 function mount(docked: boolean) {
@@ -160,5 +169,12 @@ describe("the Menu in a top-level screen's bar", () => {
     render(true);
     expect(harness.options["headerBackVisible"]).toBe(true);
     expect(leadingItems()).toEqual([]);
+  });
+
+  it("leaves a presented flow's own controls in charge", () => {
+    harness.presented = true;
+    harness.routeKey = "subagent";
+    mount(false);
+    expect(harness.options).toEqual({});
   });
 });

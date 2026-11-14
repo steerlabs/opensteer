@@ -74,20 +74,22 @@ export function useIsTopLevel(): boolean {
   return useNavigationState((state) => isTopLevel(state, key));
 }
 
-/** Menu stays beside Back on drill-ins; presented flows keep their own controls. */
-export function TopLevelMenu(): ReactNode {
+export function useIsPresented(): boolean {
   const { key } = useRoute();
-  const presented = useNavigationState((state) => {
+  return useNavigationState((state) => {
     const from = presentedFrom(state);
     return from >= 0 && state.routes.findIndex((route) => route.key === key) >= from;
   });
-  return presented ? null : <InstallMenu />;
+}
+
+/** Menu stays beside Back on drill-ins; presented flows keep their own controls. */
+export function TopLevelMenu(): ReactNode {
+  return useIsPresented() ? null : <InstallMenu />;
 }
 
 function InstallMenu(): null {
   const navigation = useNavigation();
   const topLevel = useIsTopLevel();
-  const teamRoot = useRoute().name === "TeamHome";
   const sidebar = useSidebarControl();
   const docked = useSidebarDocked();
   const attention = useMenuAttention();
@@ -97,7 +99,7 @@ function InstallMenu(): null {
     // nothing to open, and a top-level screen has no Back.
     if (docked) {
       navigation.setOptions({
-        headerBackVisible: !topLevel || teamRoot,
+        headerBackVisible: !topLevel,
         headerLeft: () => null,
         unstable_headerLeftItems: () => [],
       });
@@ -112,11 +114,11 @@ function InstallMenu(): null {
       onPress: () => sidebar.open(),
     };
     navigation.setOptions({
-      headerBackVisible: !topLevel || teamRoot,
+      headerBackVisible: !topLevel,
       headerLeft: () => <MenuHeaderButton {...menu} onOpen={sidebar.open} />,
       unstable_headerLeftItems: () => [nativeHeaderItem(menu)],
     });
-  }, [attention, docked, navigation, sidebar, teamRoot, topLevel]);
+  }, [attention, docked, navigation, sidebar, topLevel]);
   return null;
 }
 

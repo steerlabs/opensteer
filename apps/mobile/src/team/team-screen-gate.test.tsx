@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, useState, useEffect, type ReactNode } from "react";
+import { act, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import type { MobileTeam, TeamState } from "./mobile-teams.js";
@@ -21,10 +21,7 @@ vi.mock("react-native", () => ({
   Alert: { alert: vi.fn() },
   StyleSheet: { create: (s: object) => s },
 }));
-vi.mock("../navigation-ref.js", () => ({ enterSide: vi.fn() }));
 vi.mock("@react-navigation/native", () => ({
-  useRoute: () => ({ params: {} }),
-  useFocusEffect: (callback: () => void | (() => void)) => useEffect(callback, [callback]),
   useNavigation: () => ({ setOptions: vi.fn(), popToTop: h.popToTop, goBack: h.popToTop }),
 }));
 vi.mock("react-native-safe-area-context", () => ({ useSafeAreaInsets: () => ({ bottom: 0 }) }));

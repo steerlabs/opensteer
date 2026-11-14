@@ -454,14 +454,16 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
           </>
         )}
       </View>
-      <SideSwitch
-        active={sideTeam === null ? "tasks" : sideTeam.teamId}
-        ground={docked ? color.background : color.surfaceElevated}
-        needsYou={needsYou}
-        onSelect={props.onSide}
-        teamMenu={teamMenu}
-        teams={teams}
-      />
+      {teams.length === 0 ? null : (
+        <SideSwitch
+          active={sideTeam === null ? "tasks" : sideTeam.teamId}
+          ground={docked ? color.background : color.surfaceElevated}
+          needsYou={needsYou}
+          onSelect={props.onSide}
+          teamMenu={teamMenu}
+          teams={teams}
+        />
+      )}
 
       {sideTeam !== null ? (
         <TeamSide

@@ -569,7 +569,6 @@ export function App(): ReactNode {
   );
 
   const handleNavigatorReady = (): void => {
-    sideMemory.account(client.getSnapshot().account.account.identity?.subject ?? null);
     const state = navigationRef.getRootState();
     if (state !== undefined) sideMemory.record(state);
     const destination = waiting.current;

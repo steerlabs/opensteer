@@ -11,7 +11,7 @@ import {
   View,
 } from "react-native";
 import { useChromeInspection } from "../browser/chrome-sign-in-parts.js";
-import { enterSide, navigationRef, pushSubagent } from "../navigation-ref.js";
+import { navigationRef, pushSubagent } from "../navigation-ref.js";
 import {
   color,
   controlBorderWidth,
@@ -498,13 +498,10 @@ function WaitingMenu(props: {
     label: requestTitle(request),
     onPress: () => {
       if (!navigationRef.isReady()) return;
-      enterSide({
-        name: "Thread",
-        params: {
-          deploymentId: props.deploymentId,
-          requestId: request.id,
-          threadId: request.originatingThreadId,
-        },
+      navigationRef.navigate("Thread", {
+        deploymentId: props.deploymentId,
+        requestId: request.id,
+        threadId: request.originatingThreadId,
       });
     },
   }));

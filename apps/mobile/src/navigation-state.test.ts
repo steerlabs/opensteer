@@ -253,8 +253,8 @@ describe("warm mobile sides on the native stack router", () => {
         "Deployments",
         "Thread",
         "WorkspaceBrowser",
-        "TeamHome",
         "TeamChannel",
+        "TeamChannels",
         "TeamThread",
         "Settings",
         "TeamSettings",
@@ -300,35 +300,19 @@ describe("warm mobile sides on the native stack router", () => {
     f.enter(channel);
     f.push(reply);
     const teamA = f.state().routes;
-    expect(teamA.map((route) => route.name)).toEqual([
-      "Home",
-      "TeamHome",
-      "TeamChannel",
-      "TeamThread",
-    ]);
-    f.resume("b");
-    const teamB = f.state().routes;
-    expect(teamB.map((route) => route.name)).toEqual(["Home", "TeamHome"]);
+    expect(teamA.map((route) => route.name)).toEqual(["Home", "TeamChannel", "TeamThread"]);
+    expect(f.memory.resume(f.state(), "b")).toBeNull();
     f.resume("tasks");
     expect(f.state().routes).toEqual(tasks);
     f.resume("a");
     expect(f.state().routes).toEqual(teamA);
-    f.resume("b");
-    expect(f.state().routes).toEqual(teamB);
-    expect(f.memory.resume(f.state(), "b")).toBeNull();
-    f.resume("a");
+    expect(f.memory.resume(f.state(), "a")).toBeNull();
     f.back();
-    expect(f.state().routes.map((route) => route.name)).toEqual([
-      "Home",
-      "TeamHome",
-      "TeamChannel",
-    ]);
-    f.back();
-    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "TeamHome"]);
+    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "TeamChannel"]);
     f.back();
     expect(f.state().routes).toEqual(tasks);
     f.resume("a");
-    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "TeamHome"]);
+    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "TeamChannel"]);
   });
 
   it("an explicit notification or team link replaces only its side and spends its landing params", () => {
@@ -359,12 +343,7 @@ describe("warm mobile sides on the native stack router", () => {
       ...reply,
       params: { teamId: "b", channelId: "b-channel", rootId: "b-root", replyId: "landing" },
     });
-    expect(f.state().routes.map((route) => route.name)).toEqual([
-      "Home",
-      "TeamHome",
-      "TeamChannel",
-      "TeamThread",
-    ]);
+    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "TeamThread"]);
     f.resume("a");
     expect(f.state().routes).toEqual(teamA);
     f.resume("b");
@@ -375,21 +354,24 @@ describe("warm mobile sides on the native stack router", () => {
     });
   });
 
-  it("records only through the active index and excludes sheets and their descendants and non-address params", () => {
+  it("records only through the active index, excludes presented flows, and keeps all unspent params", () => {
     const f = fixture();
     f.enter(task);
     f.push({
       ...page,
-      params: { ...page.params, token: "secret", pendingBrowserTab: "attempt", editAddress: true },
+      params: { ...page.params, futureParam: { selection: [1, 2] }, editAddress: true },
     });
     f.push({ name: "Settings", params: { token: "secret" } });
     f.push({ name: "TeamSettings", params: { teamId: "unrelated" } });
-    f.resume("a");
+    f.enter(channel);
     f.resume("tasks");
     expect(f.state().routes.map(({ name, params }) => ({ name, params }))).toEqual([
       { name: "Home", params: { deploymentId: "d" } },
       task,
-      page,
+      {
+        ...page,
+        params: { ...page.params, futureParam: { selection: [1, 2] }, editAddress: true },
+      },
     ]);
     f.memory.record({ ...f.state(), index: 1 });
     const action = f.memory.resume({ ...f.state(), index: 1 }, "a");
@@ -397,13 +379,8 @@ describe("warm mobile sides on the native stack router", () => {
     f.resume("tasks");
     expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "Thread"]);
     f.push({ name: "Settings", params: {} });
-    f.apply(f.memory.enter(f.state(), reply, true));
-    expect(f.state().routes.map((route) => route.name)).toEqual([
-      "Home",
-      "TeamHome",
-      "TeamChannel",
-      "TeamThread",
-    ]);
+    f.apply(f.memory.enter(f.state(), reply));
+    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "TeamThread"]);
     f.resume("tasks");
     expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "Thread"]);
   });
@@ -415,8 +392,7 @@ describe("warm mobile sides on the native stack router", () => {
     f.enter(channel);
     expect(f.memory.account("other")).toBe(true);
     f.apply(CommonActions.reset(deploymentRoot("d")));
-    f.resume("a");
-    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "TeamHome"]);
+    expect(f.memory.resume(f.state(), "a")).toBeNull();
     f.resume("tasks");
     expect(f.state().routes.map((route) => route.name)).toEqual(["Home"]);
     f.enter(task);
@@ -429,7 +405,7 @@ describe("warm mobile sides on the native stack router", () => {
     f.apply(CommonActions.reset({ index: 0, routes: [{ name: "Deployments" }] }));
     f.apply(CommonActions.reset(deploymentRoot("other-deployment")));
     f.resume("a");
-    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "TeamHome"]);
+    expect(f.state().routes.map((route) => route.name)).toEqual(["Home"]);
   });
 
   it("trims only confirmed deletion/closure, and forgets a team back to remembered Tasks", () => {
@@ -486,14 +462,17 @@ describe("warm mobile sides on the native stack router", () => {
     f.enter(task);
     f.push(page);
     const tasks = f.state().routes;
-    f.resume("a");
+    f.enter({ name: "TeamChannels", params: { teamId: "a" } });
+    f.push(channel);
     f.push(reply);
-    f.apply(f.memory.trim(f.state(), (route) => route.name === "TeamThread"));
-    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "TeamHome"]);
+    f.apply(f.memory.trim(f.state(), (route) => "channelId" in (route.params ?? {})));
+    expect(f.state().routes).toEqual(tasks);
+    f.resume("a");
+    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "TeamChannels"]);
     f.apply(f.memory.forget(f.state(), "a"));
     expect(f.state().routes).toEqual(tasks);
     f.resume("a");
-    expect(f.state().routes.map((route) => route.name)).toEqual(["Home", "TeamHome"]);
+    expect(f.state().routes).toEqual(tasks);
   });
 
   it("preserves exact owner-view generation and never invents another tab", () => {
@@ -512,7 +491,7 @@ describe("warm mobile sides on the native stack router", () => {
       },
     };
     f.push(ownerView);
-    f.resume("a");
+    f.enter(channel);
     f.resume("tasks");
     expect(f.state().routes.at(-1)?.params).toEqual(ownerView.params);
     const unknown = {

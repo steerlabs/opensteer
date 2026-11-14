@@ -1,4 +1,3 @@
-import { enterSide } from "../navigation-ref.js";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import { useChannelDirectory, useMountedRef } from "@opensteer/client/react";
 import {
@@ -127,9 +126,7 @@ export function TeamChannelsScreen(props: TeamParams): ReactNode {
   );
   const open = useCallback(
     (channel: TeamChannelSummary) => {
-      const go = (): void => {
-        enterSide({ name: "TeamChannel", params: { teamId, channelId: channel.id } }, true);
-      };
+      const go = () => navigation.navigate("TeamChannel", { teamId, channelId: channel.id });
       if (channel.can.read) return go();
       if (!channel.can.join || session === null) return;
       setJoining(channel.id);
@@ -138,7 +135,7 @@ export function TeamChannelsScreen(props: TeamParams): ReactNode {
         .then(go, (error: unknown) => Alert.alert("Couldn't join", failureText(error)))
         .finally(() => setJoining(null));
     },
-    [session, teamId],
+    [navigation, session, teamId],
   );
   // The search key's action opens the first match, or makes the channel no one has yet.
   const submit = useRef<() => void>(() => undefined);

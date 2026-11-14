@@ -1,4 +1,3 @@
-import { enterSide } from "../navigation-ref.js";
 import {
   useKnowledgeNote,
   useKnowledgeNotes,
@@ -492,17 +491,11 @@ export function TeamNoteScreen(
               accessibilityHint="Opens the message that asked for this"
               label={`From ${sourceOf(session, source.channelId)}`}
               onPress={() =>
-                enterSide(
-                  {
-                    name: "TeamChannel",
-                    params: {
-                      teamId,
-                      channelId: source.channelId,
-                      messageId: source.messageId,
-                    },
-                  },
-                  true,
-                )
+                navigation.navigate("TeamChannel", {
+                  teamId,
+                  channelId: source.channelId,
+                  messageId: source.messageId,
+                })
               }
             />
           )}

@@ -44,8 +44,9 @@ definitive identity or epoch refusal revokes the attachment and fences pending c
 One native stack keeps Home mounted beneath the active side. Tasks and each team remember their
 own route chain in memory for the current Account and Deployment; switching sides resumes that
 chain, while an explicit task, channel, link or notification replaces only its destination side.
-Sheets and their descendants are never remembered, nor are capabilities or spent landing
-instructions. Unknown or offline content does not invalidate a remembered address.
+An unvisited team changes only the sidebar's list until a screen is opened there. Sheets and their
+descendants are never remembered, and spent landing instructions are removed. Team history is
+trimmed when leaving a channel or forgetting a team; unknown or offline content keeps its address.
 
 The screen directly on Home is top-level ([top-level.ts](../apps/mobile/src/top-level.ts)).
 Drill-ins keep native Back and its swipe; a team's root returns to Tasks' remembered location.

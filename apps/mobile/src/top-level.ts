@@ -1,6 +1,6 @@
 import type { NavigationAction } from "@react-navigation/native";
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
-import { sideMemory } from "./side-memory.js";
+import { isTeamSideRoot, sideMemory } from "./side-memory.js";
 import { presentedFrom } from "./navigation-presentations.js";
 
 /**
@@ -17,7 +17,6 @@ const topLevelRoutes: ReadonlySet<string> = new Set([
   "Schedules",
   "Tabs",
   "TaskSearch",
-  "TeamHome",
   "TeamChannel",
   "TeamChannels",
   "TeamKnowledge",
@@ -52,7 +51,9 @@ export interface TopLevelTarget {
 export function topLevelIndex(state: StackView): 0 | 1 | null {
   if (state.routes[0]?.name !== "Home") return null;
   const above = state.routes[1];
-  return above !== undefined && presentedFrom(state) !== 1 && topLevelRoutes.has(above.name)
+  return above !== undefined &&
+    presentedFrom(state) !== 1 &&
+    (topLevelRoutes.has(above.name) || isTeamSideRoot(state, above.key))
     ? 1
     : 0;
 }

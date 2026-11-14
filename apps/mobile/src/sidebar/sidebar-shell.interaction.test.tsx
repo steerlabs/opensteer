@@ -324,7 +324,6 @@ describe("the sidebar's side", () => {
         tabId: "tab",
       },
     };
-    const acmeHome = { key: "acme-home", name: "TeamHome", params: { teamId: "dep_acme" } };
     const acme = {
       key: "acme-general",
       name: "TeamChannel",
@@ -333,11 +332,9 @@ describe("the sidebar's side", () => {
     const { render } = await mount([home, task, page]);
     expect(lastPanel().side).toBe("tasks");
     act(() => lastPanel().onSide("dep_acme"));
-    expect(harness.dispatch).toHaveBeenLastCalledWith({
-      type: "RESET",
-      payload: { index: 1, routes: [home, { name: "TeamHome", params: { teamId: "dep_acme" } }] },
-    });
-    await render([home, acmeHome, acme]);
+    expect(harness.dispatch).not.toHaveBeenCalled();
+    expect(lastPanel().side).toBe("dep_acme");
+    await render([home, acme]);
     const count = harness.dispatch.mock.calls.length;
     act(() => lastPanel().onSide("dep_acme"));
     expect(harness.dispatch).toHaveBeenCalledTimes(count);

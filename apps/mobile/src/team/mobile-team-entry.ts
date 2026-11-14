@@ -130,7 +130,7 @@ export async function openTeamGeneral(
   if (!navigationRef.isReady()) return;
   enterSide(
     channelId === undefined
-      ? { name: "TeamHome", params: { teamId: teamDeploymentId } }
+      ? { name: "TeamChannels", params: { teamId: teamDeploymentId } }
       : { name: "TeamChannel", params: { teamId: teamDeploymentId, channelId } },
   );
 }

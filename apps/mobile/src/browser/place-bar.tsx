@@ -6,6 +6,7 @@ import {
   menuHint,
   menuLabel,
   useIsTopLevel,
+  useIsPresented,
   useMenuAttention,
 } from "../navigation-header.js";
 import { useSidebarControl, useSidebarDocked } from "../sidebar/sidebar-context.js";
@@ -74,9 +75,10 @@ export function ToolbarLeave(props: { readonly ownRow?: boolean }): ReactNode {
 function ToolbarMenuButton(): ReactNode {
   const sidebar = useSidebarControl();
   const docked = useSidebarDocked();
+  const presented = useIsPresented();
   const attention = useMenuAttention();
   const button = useRef<HostInstance>(null);
-  if (sidebar === null || docked) return null;
+  if (sidebar === null || docked || presented) return null;
   return (
     <ToolbarButton
       accessibilityHint={menuHint}

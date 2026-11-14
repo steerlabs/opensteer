@@ -53,5 +53,5 @@ export function show(deploymentId: string | null, target: VoiceTarget): boolean 
     Object.entries(params).every(([key, value]) => current[key] === value)
   )
     return false;
-  return enterSide({ name, params }, true);
+  return enterSide({ name, params });
 }
