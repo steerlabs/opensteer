@@ -150,7 +150,7 @@ async function main(): Promise<void> {
       names: ["PasswordsBroker", "PasswordsImportWorker"],
       sourceRevision: process.env.OPENSTEER_SOURCE_REVISION ?? "",
       cacheDirectory: process.env.OPENSTEER_NATIVE_BUILD_CACHE_DIRECTORY,
-      inputs: () => nativeReleaseInputs(repositoryRoot, "passwords", identity, architectures),
+      inputs: () => nativeReleaseInputs(repositoryRoot, "passwords", architectures),
       build,
       verify: (files) => verifyNativeProducts(files, architectures),
       packageAndVerify,

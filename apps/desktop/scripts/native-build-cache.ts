@@ -1,5 +1,4 @@
 /** Cache compiler products only; every caller still packages and signs a new bundle. */
-import { createRequire } from "node:module";
 import { createHash, randomUUID } from "node:crypto";
 import {
   appendFile,
@@ -44,6 +43,7 @@ interface Root {
   readonly name: string;
   readonly path: string;
 }
+export type NativeHelperKind = "computer-use" | "passwords" | "dictation";
 
 /** Hash actual bytes, modes and link targets; absolute checkout names and mtimes
  * are not compilation inputs. Generated Swift/plist inputs must already exist. */
@@ -168,7 +168,7 @@ function record(
 }
 
 export async function nativeBuildProducts(options: {
-  kind: "computer-use" | "passwords";
+  kind: NativeHelperKind;
   sourceRevision: string;
   cacheDirectory?: string | undefined;
   names: readonly string[];
@@ -232,6 +232,8 @@ export async function nativeBuildProducts(options: {
       products[name] = selected;
     }
     await options.verify(products);
+    if ((await options.inputs())?.digest !== proof.digest)
+      throw Error("Native inputs changed during restore");
     await options.packageAndVerify(products);
     record(options.kind, "hit", started, proof, metadata.sourceRevision);
     await release();
@@ -246,6 +248,7 @@ export async function nativeBuildProducts(options: {
   const products = await options
     .build()
     .then(async (built) => {
+      await options.verify(built);
       await options.packageAndVerify(built);
       return built;
     })
@@ -311,6 +314,9 @@ export async function nativeToolchainIdentity(
     run("/usr/bin/xcrun", ["--sdk", "macosx", "--show-sdk-version"]),
     run("/usr/bin/xcrun", ["--sdk", "macosx", "--show-sdk-build-version"]),
     run("/usr/bin/swift", ["--version"]),
+    run("/usr/bin/xcrun", ["--sdk", "macosx", "--show-sdk-path"]),
+    run("/usr/bin/xcrun", ["clang", "--version"]),
+    run("/usr/bin/sw_vers", ["-buildVersion"]),
     environment.DEVELOPER_DIR
       ? Promise.resolve(environment.DEVELOPER_DIR)
       : run("/usr/bin/xcode-select", ["-p"]),
@@ -321,7 +327,10 @@ export async function nativeToolchainIdentity(
     if (!value) throw Error("Missing native toolchain identity");
     return value;
   });
-  const [xcode, sdkVersion, sdkBuild, swift, developer] = values as [
+  const [xcode, sdkVersion, sdkBuild, swift, sdk, clang, osBuild, developer] = values as [
+    string,
+    string,
+    string,
     string,
     string,
     string,
@@ -332,18 +341,21 @@ export async function nativeToolchainIdentity(
   const developerDirectory = await realpath(
     developer.endsWith(".app") ? path.join(developer, "Contents/Developer") : developer,
   );
-  return { xcode, sdkVersion, sdkBuild, swift, developerDirectory };
+  const sdkDirectory = await realpath(sdk);
+  return { xcode, sdkVersion, sdkBuild, swift, sdkDirectory, clang, osBuild, developerDirectory };
 }
 
 /** Changes to compilation recipes must invalidate cached executable products. */
-export function nativeBuildRecipeInputs(root: string, kind: "computer-use" | "passwords"): Root[] {
+export function nativeBuildRecipeInputs(root: string, kind: NativeHelperKind): Root[] {
+  const builder = {
+    "computer-use": "build-computer-use-helper.ts",
+    passwords: "build-passwords-broker.ts",
+    dictation: "build-dictation-helper.ts",
+  }[kind];
   return [
     {
       name: "builder",
-      path: path.join(
-        root,
-        `apps/desktop/scripts/build-${kind === "computer-use" ? "computer-use-helper" : "passwords-broker"}.ts`,
-      ),
+      path: path.join(root, "apps/desktop/scripts", builder),
     },
     {
       name: "swift-builder",
@@ -357,14 +369,16 @@ export function nativeBuildRecipeInputs(root: string, kind: "computer-use" | "pa
  * include roots still bind actual bytes, not declared versions or mtimes. */
 export async function nativeReleaseInputs(
   root: string,
-  kind: "computer-use" | "passwords",
-  identity: string,
+  kind: NativeHelperKind,
   architectures: readonly string[],
+  run: (executable: string, args: readonly string[]) => Promise<string> = (executable, args) =>
+    runBounded(executable, args, { cwd: root, timeoutMs: 10_000 }),
+  environment: NodeJS.ProcessEnv = process.env,
 ): Promise<NativeInputProof | undefined> {
-  if (process.env.OPENSTEER_NATIVE_BUILD_CACHE === "off") return undefined;
+  if (environment.OPENSTEER_NATIVE_BUILD_CACHE === "off") return undefined;
   if (
-    Object.keys(process.env).some((key) =>
-      /^(?:SWIFT|CLANG|CC$|CXX|CFLAGS|LDFLAGS|LD$|AR$|SDKROOT|CPATH|C_INCLUDE_PATH|CPLUS_INCLUDE_PATH|OBJC_INCLUDE_PATH|LIBRARY_PATH|DYLD_|LD_LIBRARY_PATH|MACOSX_DEPLOYMENT_TARGET|ARCHS$)/u.test(
+    Object.keys(environment).some((key) =>
+      /^(?:SWIFT|CLANG|CC$|CCC_|CXX|CFLAGS|LDFLAGS|LD$|LD_|AR$|ASFLAGS|ARCHFLAGS|SDKROOT|CPATH|C_INCLUDE_PATH|CPLUS_INCLUDE_PATH|OBJC_INCLUDE_PATH|LIBRARY_PATH|DYLD_|MACOSX_DEPLOYMENT_TARGET|ARCHS$|TOOLCHAINS$|DEVELOPER_TOOLCHAINS_DIR|GCC_|COMPILER_PATH|PKG_CONFIG|OTHER_.*FLAGS|SOURCE_DATE_EPOCH|ZERO_AR_DATE)/u.test(
         key,
       ),
     )
@@ -372,40 +386,12 @@ export async function nativeReleaseInputs(
     return undefined;
   // The shared Mac exports a JDK include flag. Declare and hash the headers
   // rather than silently ignoring ambient flags or changing build semantics.
-  const includeFlags = process.env.CPPFLAGS?.trim().split(/\s+/u).filter(Boolean) ?? [];
+  const includeFlags = environment.CPPFLAGS?.trim().split(/\s+/u).filter(Boolean) ?? [];
   if (includeFlags.some((flag) => !/^-I\/[A-Za-z0-9_@./+-]+$/u.test(flag))) return undefined;
-  const run = (executable: string, args: readonly string[]) =>
-    runBounded(executable, args, { cwd: root, timeoutMs: 10_000 });
-  const toolchain = await nativeToolchainIdentity(run);
-  const { readSigningMode } = createRequire(import.meta.url)(
-    "./signing-input.cjs",
-  ) as typeof import("./signing-input.cjs");
-  const signingMode = readSigningMode();
-  const keychain = signingMode.mode === "signed" ? signingMode.signing.keychain : undefined;
-  const identities = (
-    await run("/usr/bin/security", [
-      "find-identity",
-      "-v",
-      "-p",
-      "codesigning",
-      ...(keychain ? [keychain] : []),
-    ])
-  )
-    .split("\n")
-    .filter((line) => line.includes(identity));
-  if (identities.length !== 1) return undefined;
-  const native = path.join(
-    root,
-    "apps/desktop/native",
-    kind === "computer-use" ? "computer-use" : "passwords",
-  );
+  const toolchain = await nativeToolchainIdentity(run, environment);
+  const native = path.join(root, "apps/desktop/native", kind);
   const roots: Root[] = [
-    { name: "self-signing-sources", path: path.join(root, "packages/macos-signing/Sources") },
-    { name: "self-signing-package", path: path.join(root, "packages/macos-signing/Package.swift") },
-    { name: "sources", path: path.join(native, "Sources") },
-    { name: "package", path: path.join(native, "Package.swift") },
     ...nativeBuildRecipeInputs(root, kind),
-    { name: "host-os", path: "/System/Library/CoreServices/SystemVersion.plist" },
     ...includeFlags.map((flag, index) => ({ name: `include-${index}`, path: flag.slice(2) })),
   ];
   // Homebrew's JDK include directory is a facade of links into its sibling
@@ -418,33 +404,50 @@ export async function nativeReleaseInputs(
         path: path.join(include, "../libexec/openjdk.jdk/Contents/Home/include"),
       });
   }
-  if (kind === "computer-use") {
-    roots.push(
-      { name: "apple-sources", path: path.join(root, "packages/apple-data/Sources") },
-      { name: "apple-package", path: path.join(root, "packages/apple-data/Package.swift") },
-    );
-  }
-  for (const name of ["Package.resolved", ".swiftpm"]) {
-    const filename = path.join(native, name);
-    try {
-      await lstat(filename);
-      roots.push({ name, path: filename });
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+  // Resolve the real transitive package closure rather than maintaining a second
+  // dependency list. These packages compile sources/resources under Sources.
+  const graph: unknown = JSON.parse(
+    await run("/usr/bin/swift", [
+      "package",
+      "--package-path",
+      native,
+      "--disable-keychain",
+      "--disable-netrc",
+      "show-dependencies",
+      "--format",
+      "json",
+    ]),
+  );
+  const node = z.object({ path: z.string(), dependencies: z.array(z.unknown()) });
+  const visited = new Set<string>();
+  const visit = async (value: unknown): Promise<void> => {
+    const pkg = node.parse(value);
+    const directory = await realpath(pkg.path);
+    const relative = path.relative(await realpath(root), directory);
+    if (relative.startsWith("..") || path.isAbsolute(relative))
+      throw Error("Native dependency outside the checkout");
+    if (visited.has(directory)) return;
+    visited.add(directory);
+    roots.push({ name: `${relative}/Sources`, path: path.join(directory, "Sources") });
+    for (const name of (await readdir(directory)).sort()) {
+      if (
+        /^Package(?:@swift-[\d.]+)?\.swift$/u.test(name) ||
+        name === "Package.resolved" ||
+        name === ".swiftpm"
+      )
+        roots.push({ name: `${relative}/${name}`, path: path.join(directory, name) });
     }
-  }
-  const profile = process.env.OPENSTEER_PASSWORDS_PROVISIONING_PROFILE;
-  if (kind === "passwords" && profile) roots.push({ name: "profile", path: profile });
+    for (const dependency of pkg.dependencies) await visit(dependency);
+  };
+  await visit(graph);
   return hashNativeInputs(roots, {
     ...toolchain,
     buildMode: "release",
-    signingForm: "certificate",
-    identity: identities[0]!.trim(),
     architectures: architectures.join(","),
-    flags: "-c release",
-    platform: "macos14",
+    flags: "--build-system native -c release",
+    trust: "release",
     host: process.arch,
-    cppFlags: process.env.CPPFLAGS ?? "",
+    cppFlags: environment.CPPFLAGS ?? "",
   });
 }
 
@@ -461,5 +464,32 @@ export async function verifyNativeProducts(
       canonicalJson(actual.trim().split(/\s+/u).sort()) !== canonicalJson([...architectures].sort())
     )
       throw Error("Native product architectures differ");
+    for (const architecture of architectures) {
+      // The linker may add an ad-hoc signature, but distribution signatures and
+      // their entitlements belong only to freshly packaged copies.
+      const signature = await run(
+        "/bin/sh",
+        [
+          "-c",
+          '/usr/bin/codesign -d --verbose=4 --arch "$1" "$2" 2>&1; result=$?; printf "\\nstatus=%s\\n" "$result"',
+          "compiler-signature",
+          architecture,
+          filename,
+        ],
+        { timeoutMs: 10_000 },
+      );
+      if (
+        !(
+          (/^Signature=adhoc$/mu.test(signature) && /\nstatus=0\s*$/u.test(signature)) ||
+          (signature.includes("code object is not signed at all") &&
+            /\nstatus=1\s*$/u.test(signature))
+        ) ||
+        /^Authority=/mu.test(signature) ||
+        /^TeamIdentifier=(?!not set$)/mu.test(signature)
+      )
+        throw Error(
+          "Native compiler product has a distribution signature or unknown signing state",
+        );
+    }
   }
 }

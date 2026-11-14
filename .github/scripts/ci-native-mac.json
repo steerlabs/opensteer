@@ -140,6 +140,7 @@
       ],
       "scripts": [
         "apps/desktop/scripts/prove-release-native.ts",
+        "apps/desktop/scripts/release-native-cache-inputs.ts",
         "apps/desktop/scripts/build-computer-use-helper.ts",
         "apps/desktop/scripts/build-passwords-broker.ts",
         "apps/desktop/scripts/build-dictation-helper.ts"
