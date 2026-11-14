@@ -11,7 +11,7 @@ import { TeamInvitesStore } from "@opensteer/database/team-invites";
 import { TeamMembersStore } from "@opensteer/database/team-members";
 import { createTeamInviteVerifierVault } from "./invite-verifier-vault.js";
 import { registerTeamSetupRoutes } from "./setup-routes.js";
-import { normalizeHostError } from "../server/http-errors.js";
+import { installHostHttpBoundary } from "../server/host-http-boundary.js";
 
 describe("reusable team invites", () => {
   let fixture: Awaited<ReturnType<typeof createTeamFixture>>;
@@ -274,10 +274,7 @@ describe("reusable team invites", () => {
     const invite = await reset(7);
     const good = secret(invite.url);
     const http = Fastify();
-    http.setErrorHandler((error, _request, reply) => {
-      const normalized = normalizeHostError(error);
-      void reply.status(normalized.status).send(normalized.error);
-    });
+    installHostHttpBoundary(http);
     registerTeamSetupRoutes(http, {
       identity: {} as unknown as IdentityService,
       invites,
@@ -308,7 +305,7 @@ describe("reusable team invites", () => {
       for (const response of refusals) {
         expect(response.statusCode).toBe(403);
         expect(response.json()).toEqual(refusals[0]!.json());
-        expect(response.json()).toMatchObject({ reason: "invite-invalid" });
+        expect(response.json()).toMatchObject({ error: { reason: "invite-invalid" } });
       }
 
       const page = await http.inject({ method: "GET", url: `/invite/${good.selector}` });

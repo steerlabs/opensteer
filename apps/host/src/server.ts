@@ -211,7 +211,6 @@ import type { ChannelService } from "./channels/channel-service.js";
 import type { PlaceContextService } from "./computer-use/place-context-service.js";
 import { HostAuthenticator } from "./identity/auth.js";
 import { registerPersonalRemoteExecutor } from "./access/personal-remote-administration-routes.js";
-import { rejectDuplicateCredentialHeaders } from "./identity/request-credential-headers.js";
 import type { MachineFullDiskAccessService } from "./shell/machine-full-disk-access-service.js";
 
 import type {
@@ -302,6 +301,7 @@ import { createHostApiHandlers, type CoreCommand } from "./server/host-api-handl
 import { installPersonalVersionGate, registerHostApi } from "./server/host-api-registration.js";
 import { unversionedRoute } from "./server/unversioned-route.js";
 import { normalizeHostError } from "./server/http-errors.js";
+import { installHostHttpBoundary } from "./server/host-http-boundary.js";
 import { hostInternalRoutePaths } from "./server/internal-routes.js";
 import { requestAbortSignal } from "./server/request-abort-signal.js";
 import { registerResponseCompression } from "./server/response-compression.js";
@@ -462,9 +462,7 @@ export async function createHostServer(
   });
   appGateway.installHttp(app);
   installPersonalVersionGate(app);
-  app.addHook("onRequest", async (request) => {
-    if (!request.url.startsWith("/v1/rpc/")) await rejectDuplicateCredentialHeaders(request);
-  });
+  installHostHttpBoundary(app);
   await registerResponseCompression(app);
   const harnessCatalogs = {
     ...notifyingHarnessCatalogRecorder(dependencies.store, dependencies.realtime),
@@ -610,12 +608,6 @@ export async function createHostServer(
   registerTriggerRoutes(app, dependencies.authenticator, dependencies.triggers.service);
   registerTriggerCdpBridge(app, dependencies.browser, dependencies.triggers.controlTokens);
   registerWatchCdpBridge(app, dependencies.browser, dependencies.triggers.watchBrowserTokens);
-
-  app.setErrorHandler((error, request, reply) => {
-    const normalized = normalizeHostError(error);
-    if (normalized.status >= 500) request.log.error({ err: error }, "request failed");
-    void reply.status(normalized.status).send({ error: normalized.error });
-  });
 
   app.get("/healthz", async () => ({ ok: true }));
   app.get("/.well-known/opensteer", async (request, reply) => {

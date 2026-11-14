@@ -1,4 +1,3 @@
-import { rejectDuplicateCredentialHeaders } from "../identity/request-credential-headers.js";
 import { teamOidcStatePrefix, teamOAuthVersionParameter } from "@opensteer/deployment-authority";
 import Fastify from "fastify";
 import websocket from "@fastify/websocket";
@@ -42,7 +41,7 @@ import { signHostDiscovery, type HostKeyPair } from "../identity/host-keys.js";
 import { HostAuthenticator, toWebHeaders } from "../identity/auth.js";
 import { createIdentityRpcHandlers, registerIdentityRoutes } from "../identity/identity-routes.js";
 import { registerHostApi, carryWebSocketVersion } from "../server/host-api-registration.js";
-import { normalizeHostError } from "../server/http-errors.js";
+import { installHostHttpBoundary } from "../server/host-http-boundary.js";
 import { HostStaticDistribution } from "../server/static-distribution.js";
 import {
   RemoteAccountAdoptionGrantVerifier,
@@ -277,10 +276,6 @@ export async function createTeamHostRuntime(input: {
     });
     await identity.initialize();
     const authenticator = new HostAuthenticator({ identity, publicUrl: config.canonicalOrigin });
-    app.setErrorHandler((error, _request, reply) => {
-      const normalized = normalizeHostError(error);
-      void reply.status(normalized.status).send(normalized.error);
-    });
     app.addHook("onRequest", async (request) => {
       carryWebSocketVersion(request, "team");
       // A system browser carries negotiation in the OAuth round trip; it cannot set upgrade headers.
@@ -321,9 +316,7 @@ export async function createTeamHostRuntime(input: {
       )
         assertTeamApiVersion(toWebHeaders(request.headers));
     });
-    app.addHook("onRequest", async (request) => {
-      if (!request.url.startsWith("/v1/rpc/")) await rejectDuplicateCredentialHeaders(request);
-    });
+    installHostHttpBoundary(app);
     await app.register(websocket, { options: { maxPayload: 512 * 1024 } });
     app.get("/healthz", () => ({ ok: true }));
     app.get("/.well-known/opensteer", () =>

@@ -171,78 +171,69 @@ function registerHostApiMember<Name extends keyof typeof hostApi>(
   const declaration = hostApi[name];
   const binaryRequest = "binaryRequest" in declaration && declaration.binaryRequest === true;
   app.route({
-    onRequest: async (request, reply) => {
-      try {
-        if (options.kind === "team") assertTeamApiVersion(toWebHeaders(request.headers));
-        else requireNegotiatedVersion(request);
-        await rejectDuplicateCredentialHeaders(request);
-      } catch (error) {
-        const normalized = normalizeHostError(error);
-        return reply
-          .status(normalized.status)
-          .header("cache-control", "no-store")
-          .send({ ok: false, error: normalized.error });
-      }
+    // Every refusal, from the version gate and body parsing through
+    // authentication to the handler, is a result of the call in the envelope
+    // the client parses, never the root handler's different shape.
+    errorHandler: (error, request, reply) => {
+      const normalized = normalizeHostError(error);
+      if (normalized.status >= 500) request.log.error({ err: error }, "rpc failed");
+      else if (normalized.error.reason)
+        // Reasons are stable codes; messages and payloads can carry addresses.
+        request.log.info(
+          {
+            rpc: name,
+            code: normalized.error.code,
+            reason: normalized.error.reason,
+            cause: refusalCause(error),
+          },
+          "rpc refused",
+        );
+      void reply
+        .status(normalized.status)
+        .header("cache-control", "no-store")
+        .send({
+          error: HostApiErrorSchema.parse(normalized.error),
+          ok: false,
+        });
+    },
+    onRequest: async (request) => {
+      if (options.kind === "team") assertTeamApiVersion(toWebHeaders(request.headers));
+      else requireNegotiatedVersion(request);
+      await rejectDuplicateCredentialHeaders(request);
     },
     handler: async (request, reply) => {
-      // Authentication and origin refusals are results of the call like any
-      // other, so they are raised inside the envelope the client parses rather
-      // than escaping to the global handler, which answers in a different shape.
-      try {
-        if (options.dispatch && (name.startsWith("team.") || name === "commands.dispatch")) {
-          const raw =
-            declaration.method === "POST"
-              ? request.body
-              : JSON.parse(
-                  z.strictObject({ input: z.string().max(262144) }).parse(request.query).input,
-                );
-          const data = declaration.success.parse(
-            await options.dispatch(name, raw, request),
-          ) as z.output<(typeof declaration)["success"]>;
-          return sendResult(declaration, { ok: true, data }, request, reply);
-        }
-        const scope =
-          name in hostApiScopes ? hostApiScopes[name as keyof typeof hostApiScopes] : "session";
-        const authenticated = await authenticateScope(authenticator, scope, request);
-        if (binaryRequest && request.headers["content-type"] !== "application/octet-stream") {
-          throw new OpensteerError({
-            code: "bad_request",
-            message: "Attachment upload requires application/octet-stream",
-          });
-        }
-        const context = createContext(authenticated, request, reply, binaryRequest);
-        bindAnonymousClientAddress(context, request);
-        const input = rpcInput(declaration, request);
-        const handler = handlers[name];
-        if (!handler)
-          throw new OpensteerError({
-            code: "not_found",
-            message: "Procedure unavailable on this Host",
-          });
-        const output = await handler(input, context);
-        return sendResult(declaration, output, request, reply);
-      } catch (error) {
-        const normalized = normalizeHostError(error);
-        if (normalized.status >= 500) request.log.error({ err: error }, "rpc failed");
-        else if (normalized.error.reason)
-          // Reasons are stable codes; messages and payloads can carry addresses.
-          request.log.info(
-            {
-              rpc: name,
-              code: normalized.error.code,
-              reason: normalized.error.reason,
-              cause: refusalCause(error),
-            },
-            "rpc refused",
-          );
-        return reply
-          .status(normalized.status)
-          .header("cache-control", "no-store")
-          .send({
-            error: HostApiErrorSchema.parse(normalized.error),
-            ok: false,
-          });
+      if (options.dispatch && (name.startsWith("team.") || name === "commands.dispatch")) {
+        const raw =
+          declaration.method === "POST"
+            ? request.body
+            : JSON.parse(
+                z.strictObject({ input: z.string().max(262144) }).parse(request.query).input,
+              );
+        const data = declaration.success.parse(
+          await options.dispatch(name, raw, request),
+        ) as z.output<(typeof declaration)["success"]>;
+        return sendResult(declaration, { ok: true, data }, request, reply);
       }
+      const scope =
+        name in hostApiScopes ? hostApiScopes[name as keyof typeof hostApiScopes] : "session";
+      const authenticated = await authenticateScope(authenticator, scope, request);
+      if (binaryRequest && request.headers["content-type"] !== "application/octet-stream") {
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Attachment upload requires application/octet-stream",
+        });
+      }
+      const context = createContext(authenticated, request, reply, binaryRequest);
+      bindAnonymousClientAddress(context, request);
+      const input = rpcInput(declaration, request);
+      const handler = handlers[name];
+      if (!handler)
+        throw new OpensteerError({
+          code: "not_found",
+          message: "Procedure unavailable on this Host",
+        });
+      const output = await handler(input, context);
+      return sendResult(declaration, output, request, reply);
     },
     method: declaration.method,
     ...(declaration.method === "POST"

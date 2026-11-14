@@ -25,7 +25,7 @@ import Fastify from "fastify";
 import { SignJWT, exportJWK, generateKeyPair, type CryptoKey } from "jose";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { RemoteTeamIdentityAssertionVerifier } from "../access/team-identity-assertion-verifier.js";
-import { normalizeHostError } from "../server/http-errors.js";
+import { installHostHttpBoundary } from "../server/host-http-boundary.js";
 import { registerTeamSessionExchangeRoute } from "./session-exchange-routes.js";
 
 // Skipped outside the PostgreSQL launcher, which provides the database URL.
@@ -268,10 +268,7 @@ integration("team session exchange", () => {
       })
       .execute();
     const app = Fastify();
-    app.setErrorHandler((error, _request, reply) => {
-      const normalized = normalizeHostError(error);
-      void reply.status(normalized.status).send({ error: normalized.error });
-    });
+    installHostHttpBoundary(app);
     registerTeamSessionExchangeRoute(app, { identity, members });
     await app.ready();
     hosts.push(async () => {

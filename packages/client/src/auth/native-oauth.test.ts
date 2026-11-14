@@ -748,8 +748,37 @@ describe("NativeOAuthManager", () => {
     },
   );
 
-  it("keeps a Host credential when its refresh cannot reach the Host", async () => {
-    const fixture = await managerFixture({ refreshStatuses: [502], tokenLifetimeSeconds: 61 });
+  // Only an OAuth verdict on the grant ends a credential. A Host that answers
+  // with anything else (a misconfigured parser, our own error envelope, a
+  // proxy page) has a problem of its own, and says so instead of "unreachable".
+  it.each([
+    ["cannot be reached", "network", /couldn’t be reached/u],
+    ["answers with a server error", { status: 502, body: { error: "busy" } }, /couldn’t renew/u],
+    [
+      "refuses the request's content type",
+      { status: 415, body: { error: { code: "bad_request", message: "Unsupported" } } },
+      /couldn’t renew/u,
+    ],
+    [
+      "answers 400 without an OAuth verdict",
+      { status: 400, body: { error: { code: "bad_request", message: "Invalid" } } },
+      /couldn’t renew/u,
+    ],
+    [
+      "answers 400 with another OAuth error",
+      { status: 400, body: { error: "invalid_request" } },
+      /couldn’t renew/u,
+    ],
+  ] as const)("keeps a Host credential when the Host %s", async (_case, failure, detail) => {
+    const refresh = deferred<void>();
+    const options: { refreshGate?: Promise<void> } & NonNullable<
+      Parameters<typeof managerFixture>[0]
+    > = {
+      refreshGate: refresh.promise,
+      refreshStatuses: failure === "network" ? [] : [failure],
+      tokenLifetimeSeconds: 61,
+    };
+    const fixture = await managerFixture(options);
     await fixture.manager.initialize();
     await fixture.manager.beginHostSignIn(fixture.connection);
     const authorize = new URL(fixture.opened[0]!);
@@ -758,9 +787,15 @@ describe("NativeOAuthManager", () => {
     );
     fixture.clock.now = new Date("2026-08-11T19:00:02.000Z");
 
-    await expect(fixture.manager.authorizationHeader(fixture.connection)).rejects.toMatchObject({
+    const header = fixture.manager.authorizationHeader(fixture.connection);
+    await vi.waitFor(() => expect(fixture.refreshes).toHaveLength(1));
+    if (failure === "network") refresh.reject(new TypeError("fetch failed"));
+    else refresh.resolve();
+    await expect(header).rejects.toMatchObject({
       classification: "transient",
+      message: expect.stringMatching(detail),
     });
+    delete options.refreshGate;
     expect(fixture.manager.hostCredentialState(fixture.connection)).toMatchObject({
       status: "signed-in",
     });
@@ -2003,7 +2038,7 @@ async function managerFixture(
     readonly networkTimeoutMs?: number;
     readonly refreshGate?: Promise<void>;
     /** One scripted answer per refresh, in order; an empty queue answers with tokens. */
-    readonly refreshStatuses?: number[];
+    readonly refreshStatuses?: (number | { readonly status: number; readonly body: unknown })[];
     readonly revokeFailure?: boolean;
     readonly revokeGate?: Promise<void>;
     /** Answers JSON calls (Account grants, team exchange) before the OAuth fake sees them. */
@@ -2074,11 +2109,12 @@ async function managerFixture(
           }),
         ),
       ]);
-      const status = options.refreshStatuses?.shift();
-      if (status !== undefined && status !== 200) {
+      const answer = options.refreshStatuses?.shift();
+      if (typeof answer === "object") return Response.json(answer.body, { status: answer.status });
+      if (answer !== undefined && answer !== 200) {
         return Response.json(
-          { error: status === 400 ? "invalid_grant" : status === 401 ? "invalid_client" : "busy" },
-          { status },
+          { error: answer === 400 ? "invalid_grant" : answer === 401 ? "invalid_client" : "busy" },
+          { status: answer },
         );
       }
     } else {

@@ -20,7 +20,7 @@ import {
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { HostAuthenticator } from "./auth.js";
-const maximumNativeEndSessionBodyBytes = 24 * 1_024;
+const maximumNativeOAuthBodyBytes = 24 * 1_024;
 export type IdentityRpcHandlers = Pick<
   HostApiHandlers,
   | "auth.config"
@@ -249,49 +249,32 @@ export function registerIdentityRoutes(
       );
       return sendWebResponse(reply, response);
     });
-    for (const route of [
-      {
-        method: "GET",
-        path: "/v1/auth/native/jwks",
-      },
-      {
-        method: "GET",
-        path: "/v1/auth/native/oauth2/authorize",
-      },
-      {
-        method: "GET",
-        path: "/v1/auth/native/oauth2/end-session",
-      },
-      {
-        method: "GET",
-        path: "/v1/auth/native/oauth2/userinfo",
-      },
-      {
-        method: "POST",
-        path: "/v1/auth/native/oauth2/end-session",
-      },
-      {
-        method: "POST",
-        path: "/v1/auth/native/oauth2/revoke",
-      },
-      {
-        method: "POST",
-        path: "/v1/auth/native/oauth2/token",
-      },
-    ] as const) {
-      app.route({
-        ...(route.method === "POST" && route.path.endsWith("/end-session")
-          ? {
-              bodyLimit: maximumNativeEndSessionBodyBytes,
-            }
-          : {}),
-        handler: (request, reply) => {
-          return handleNativeOAuth(identity, authenticator, request, reply);
-        },
-        method: route.method,
-        url: route.path,
-      });
-    }
+    // OAuth token, revocation and logout requests are form-encoded, so these
+    // routes own that parser wherever they are mounted, replacing any inherited one.
+    void app.register(async (oauth) => {
+      oauth.removeContentTypeParser("application/x-www-form-urlencoded");
+      oauth.addContentTypeParser(
+        "application/x-www-form-urlencoded",
+        { parseAs: "buffer" },
+        (_request, body, done) => done(null, body),
+      );
+      for (const route of [
+        { method: "GET", path: "/v1/auth/native/jwks" },
+        { method: "GET", path: "/v1/auth/native/oauth2/authorize" },
+        { method: "GET", path: "/v1/auth/native/oauth2/end-session" },
+        { method: "GET", path: "/v1/auth/native/oauth2/userinfo" },
+        { method: "POST", path: "/v1/auth/native/oauth2/end-session" },
+        { method: "POST", path: "/v1/auth/native/oauth2/revoke" },
+        { method: "POST", path: "/v1/auth/native/oauth2/token" },
+      ] as const) {
+        oauth.route({
+          ...(route.method === "POST" ? { bodyLimit: maximumNativeOAuthBodyBytes } : {}),
+          handler: (request, reply) => handleNativeOAuth(identity, authenticator, request, reply),
+          method: route.method,
+          url: route.path,
+        });
+      }
+    });
   }
 }
 function contextHeaders(context: HostApiServerContext): Headers {
