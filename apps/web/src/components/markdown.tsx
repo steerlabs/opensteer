@@ -119,21 +119,18 @@ export const Markdown = memo(function Markdown({
   streaming?: boolean;
   text: string;
 }) {
-  const imageContext = useContext(TranscriptImageContext);
   const blocks = useMemo(() => splitMarkdownBlocks(text), [text]);
   return (
-    <TranscriptImageContext value={imageContext ? { ...imageContext, reference: text } : null}>
-      <div className="md-prose">
-        {blocks.map((block, index) => (
-          <MarkdownBlock
-            bare={bare}
-            key={index}
-            streaming={streaming && index === blocks.length - 1}
-            text={block}
-          />
-        ))}
-      </div>
-    </TranscriptImageContext>
+    <div className="md-prose">
+      {blocks.map((block, index) => (
+        <MarkdownBlock
+          bare={bare}
+          key={index}
+          streaming={streaming && index === blocks.length - 1}
+          text={block}
+        />
+      ))}
+    </div>
   );
 });
 

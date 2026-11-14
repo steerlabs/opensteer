@@ -66,24 +66,38 @@ it("batches at most 32 per task, separates tasks, and deduplicates in-flight and
   await store.get("deployment", thread, "/0.png", "preview");
   expect(read).toHaveBeenCalledTimes(3);
 });
-it("proactively re-mints five minutes before expiry and reuses the result", async () => {
+it("re-mints before use once an address is within five minutes of expiry", async () => {
   const { store, read, thread } = setup();
   await store.get("d", thread, "/a.png", "preview");
-  await vi.advanceTimersByTimeAsync(8 * 60 * 60_000 - 5 * 60_000);
-  expect(read).toHaveBeenCalledTimes(2);
-  await store.get("d", thread, "/a.png", "preview");
+  await vi.advanceTimersByTimeAsync(8 * 60 * 60_000 - 4 * 60_000);
+  const renewed = store.get("d", thread, "/a.png", "preview");
+  expect(read).toHaveBeenCalledTimes(1);
+  await renewed;
   expect(read).toHaveBeenCalledTimes(2);
 });
-it("refreshes both cached variants when a new output names an overwritten path", async () => {
+it("does not remember a failed call as an unavailable image", async () => {
+  const { store, read, thread } = setup();
+  read.mockRejectedValueOnce(new Error("offline"));
+  expect(await store.get("d", thread, "/a.png", "preview")).toMatchObject({
+    status: "unavailable",
+  });
+  expect(await store.get("d", thread, "/a.png", "preview")).toMatchObject({ status: "ok" });
+  expect(read).toHaveBeenCalledTimes(2);
+});
+it("renders a cached address at once and re-confirms it in the background after 30 s", async () => {
   const { store, read, thread, overwrite } = setup();
-  await Promise.all([
-    store.get("d", thread, "/a.png", "preview"),
-    store.get("d", thread, "/a.png", "original"),
-  ]);
+  const changed = vi.fn();
+  store.subscribe(changed);
+  await store.get("d", thread, "/a.png", "preview");
+  await vi.advanceTimersByTimeAsync(20_000);
+  expect(await store.get("d", thread, "/a.png", "preview")).toMatchObject({ revision: "1" });
+  expect(read).toHaveBeenCalledTimes(1);
   overwrite();
-  store.refreshReference("d", thread, "/a.png");
+  await vi.advanceTimersByTimeAsync(11_000);
+  expect(await store.get("d", thread, "/a.png", "preview")).toMatchObject({ revision: "1" });
+  await vi.waitFor(() => expect(changed).toHaveBeenCalled(), { timeout: 1_000 });
   expect(await store.get("d", thread, "/a.png", "preview")).toMatchObject({ revision: "2" });
-  expect(read.mock.calls[1]?.[0].assets).toHaveLength(2);
+  expect(read).toHaveBeenCalledTimes(2);
 });
 it("invalidates and re-mints only once on load failure, allowing another attempt for new output", async () => {
   const { store, read, thread, overwrite } = setup();
@@ -94,8 +108,14 @@ it("invalidates and re-mints only once on load failure, allowing another attempt
   expect(await store.loadFailed("d", thread, "/a.png", "preview")).toBe(false);
   expect(read).toHaveBeenCalledTimes(2);
   expect(await store.image("d", thread, "/a.png", "preview")).toBeNull();
-  store.refreshReference("d", thread, "/a.png");
+  overwrite();
+  await vi.advanceTimersByTimeAsync(31_000);
   await store.get("d", thread, "/a.png", "preview");
+  await vi.waitFor(
+    async () =>
+      expect(await store.get("d", thread, "/a.png", "preview")).toMatchObject({ revision: "3" }),
+    { timeout: 1_000 },
+  );
   expect(await store.loadFailed("d", thread, "/a.png", "preview")).toBe(true);
 });
 it("rebases cached metadata after attachment invalidation without minting again", async () => {
@@ -153,10 +173,9 @@ it("re-mints when time jumps past expiry and isolates Deployment metadata", asyn
   expect(read).toHaveBeenCalledTimes(3);
 });
 
-it("settles every item when the RPC fails, and retries it on a new reference", async () => {
+it("settles every item when the RPC fails, and asks again on the next use", async () => {
   const { store, read, thread } = setup();
   read.mockRejectedValueOnce(new Error("offline"));
   expect(await store.image("d", thread, "/a.png", "preview")).toBeNull();
-  store.refreshReference("d", thread, "/a.png");
   expect(await store.image("d", thread, "/a.png", "preview")).toMatchObject({ revision: "1" });
 });

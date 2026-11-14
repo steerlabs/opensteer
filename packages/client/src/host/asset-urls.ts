@@ -11,13 +11,20 @@ type Entry = {
   path: string;
   variant: AssetVariant;
   value?: AssetUrl;
+  /** When `value` was last confirmed by the Host. */
+  confirmedAt?: number;
   loadRetried?: boolean;
   pending?: Promise<AssetUrl>;
   resolve?: (value: AssetUrl) => void;
-  timer?: ReturnType<typeof setTimeout>;
 };
 const unavailable: AssetUrl = { status: "unavailable", reason: "missing" };
 const margin = 5 * 60_000;
+/**
+ * A cached address renders at once; one older than this is re-confirmed in the
+ * background, so a file overwritten at the same path is never shown stale for
+ * long, while remounts and re-renders cost no round trip.
+ */
+const revalidateAfter = 30_000;
 
 export function assetImageUrl(
   deploymentId: string,
@@ -92,36 +99,31 @@ export class AssetUrlStore {
       entry = { deploymentId, threadId, path, variant };
       this.#entries.set(key, entry);
     }
-    if (entry.pending) return entry.pending;
+    const value = entry.value;
     if (
       !refresh &&
-      entry.value &&
-      (entry.value.status !== "ok" || Date.parse(entry.value.expiresAt) - Date.now() > margin)
-    )
-      return Promise.resolve(entry.value);
+      !entry.pending &&
+      value &&
+      (value.status !== "ok" || Date.parse(value.expiresAt) - Date.now() > margin)
+    ) {
+      if (Date.now() - (entry.confirmedAt ?? 0) > revalidateAfter) this.#enqueue(entry);
+      return Promise.resolve(value);
+    }
+    if (entry.pending) return entry.pending;
     entry.pending = new Promise((resolve) => {
       entry.resolve = resolve;
     });
-    this.#queue.add(entry);
-    if (!this.#scheduled) {
-      this.#scheduled = true;
-      queueMicrotask(() => {
-        this.#scheduled = false;
-        void this.#flush();
-      });
-    }
+    this.#enqueue(entry);
     return entry.pending;
   }
-  refreshReference(deploymentId: string, threadId: string, path: string) {
-    for (const entry of this.#entries.values())
-      if (
-        entry.deploymentId === deploymentId &&
-        entry.threadId === threadId &&
-        entry.path === path
-      ) {
-        entry.loadRetried = false;
-        void this.get(deploymentId, threadId, path, entry.variant, true);
-      }
+  #enqueue(entry: Entry) {
+    this.#queue.add(entry);
+    if (this.#scheduled) return;
+    this.#scheduled = true;
+    queueMicrotask(() => {
+      this.#scheduled = false;
+      void this.#flush();
+    });
   }
   async loadFailed(
     deploymentId: string,
@@ -134,13 +136,13 @@ export class AssetUrlStore {
     if (entry.pending && entry.loadRetried) return (await entry.pending).status === "ok";
     if (entry.loadRetried) {
       entry.value = unavailable;
-      if (entry.timer) clearTimeout(entry.timer);
       this.#emit();
       return false;
     }
-    entry.loadRetried = true;
     delete entry.value;
-    return (await this.get(deploymentId, threadId, path, variant, true)).status === "ok";
+    const value = await this.get(deploymentId, threadId, path, variant, true);
+    entry.loadRetried = true;
+    return value.status === "ok";
   }
   async #flush() {
     const groups = new Map<string, Entry[]>();
@@ -155,7 +157,7 @@ export class AssetUrlStore {
       [...groups.values()].map(async (entries) => {
         for (let start = 0; start < entries.length; start += 32) {
           const batch = entries.slice(start, start + 32);
-          let values: readonly AssetUrl[] = [];
+          let values: readonly AssetUrl[] | undefined;
           try {
             const result = await this.rpc["asset.urls"]({
               threadId: ThreadIdSchema.parse(batch[0]!.threadId),
@@ -163,30 +165,26 @@ export class AssetUrlStore {
             });
             if (result.ok) values = result.data.assets;
           } catch {
-            /* Unreachable images keep the transcript readable. */
+            /* A failed call is not an answer: the next render asks again. */
           }
+          let changed = false;
           batch.forEach((entry, index) => {
-            const value = values[index] ?? unavailable;
-            entry.value = value;
-            entry.resolve?.(value);
+            const value = values?.[index];
+            // Only the Host's answer is remembered; a failed call is asked again.
+            if (value) {
+              if (!sameAsset(entry.value, value)) {
+                changed = true;
+                // A new address deserves its own load attempt.
+                entry.loadRetried = false;
+              }
+              entry.value = value;
+              entry.confirmedAt = Date.now();
+            }
+            entry.resolve?.(value ?? unavailable);
             delete entry.pending;
             delete entry.resolve;
-            if (entry.timer) clearTimeout(entry.timer);
-            if (!this.#disposed && value.status === "ok")
-              entry.timer = setTimeout(
-                () => {
-                  void this.get(
-                    entry.deploymentId,
-                    entry.threadId,
-                    entry.path,
-                    entry.variant,
-                    true,
-                  );
-                },
-                Math.max(1000, Date.parse(value.expiresAt) - Date.now() - margin),
-              );
           });
-          this.#emit();
+          if (changed) this.#emit();
         }
       }),
     );
@@ -194,11 +192,17 @@ export class AssetUrlStore {
   dispose() {
     this.#disposed = true;
     this.#release?.();
-    for (const entry of this.#entries.values()) {
-      if (entry.timer) clearTimeout(entry.timer);
-      entry.resolve?.(unavailable);
-    }
+    for (const entry of this.#entries.values()) entry.resolve?.(unavailable);
     this.#entries.clear();
     this.#listeners.clear();
   }
+}
+
+function sameAsset(left: AssetUrl | undefined, right: AssetUrl): boolean {
+  if (!left || left.status !== right.status) return false;
+  return left.status === "ok" && right.status === "ok"
+    ? left.url === right.url
+    : left.status === "unavailable" &&
+        right.status === "unavailable" &&
+        left.reason === right.reason;
 }

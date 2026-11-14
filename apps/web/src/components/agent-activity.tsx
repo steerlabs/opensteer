@@ -1862,13 +1862,7 @@ function ToolDetail({ tool: preview }: { tool: ToolEntry }) {
   const Section = body.collapsed ? DisclosedSection : OpenSection;
   return (
     <div className="trace-step__body">
-      <TranscriptImageContext
-        value={
-          client && threadId
-            ? { client, threadId, reference: `${tool.id}:${tool.state}:${tool.output?.text ?? ""}` }
-            : null
-        }
-      >
+      <TranscriptImageContext value={client && threadId ? { client, threadId } : null}>
         {tool.output?.images?.map((image) => (
           <AssetImage key={image.path} path={image.path} />
         ))}

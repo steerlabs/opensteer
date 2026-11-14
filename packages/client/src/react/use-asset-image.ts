@@ -6,7 +6,6 @@ import type { AssetImage } from "../host/asset-urls.js";
 export const TranscriptImageContext = createContext<{
   client: HostClient;
   threadId: string;
-  reference?: string;
 } | null>(null);
 export function useAssetImage(path: string, variant: AssetVariant = "preview") {
   const context = useContext(TranscriptImageContext);
@@ -16,9 +15,6 @@ export function useAssetImage(path: string, variant: AssetVariant = "preview") {
   const deploymentId =
     snapshot?.deploymentShape?.kind === "personal" ? snapshot.deploymentId : null;
   const store = client?.assetUrls;
-  useEffect(() => {
-    if (store && deploymentId && threadId) store.refreshReference(deploymentId, threadId, path);
-  }, [store, deploymentId, threadId, path, context?.reference]);
   const [state, setState] = useState<{ image: AssetImage | null; failed: boolean }>({
     image: null,
     failed: false,
@@ -31,7 +27,12 @@ export function useAssetImage(path: string, variant: AssetVariant = "preview") {
       if (store && deploymentId && threadId)
         void store.image(deploymentId, threadId, path, variant).then(
           (image) => {
-            if (alive && current === generation) setState({ image, failed: image === null });
+            if (alive && current === generation)
+              setState((previous) =>
+                previous.image?.source === image?.source && previous.failed === (image === null)
+                  ? previous
+                  : { image, failed: image === null },
+              );
           },
           () => {
             if (alive && current === generation) setState({ image: null, failed: true });

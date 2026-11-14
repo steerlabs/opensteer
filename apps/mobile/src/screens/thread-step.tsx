@@ -113,7 +113,6 @@ function ToolDetail(props: {
         value={{
           client: props.hostClient,
           threadId: props.threadId,
-          reference: `${tool.id}:${tool.state}:${tool.output?.text ?? ""}`,
         }}
       >
         {tool.output?.images?.map((image) => (

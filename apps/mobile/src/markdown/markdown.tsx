@@ -41,23 +41,18 @@ export const Markdown = memo(function Markdown(props: {
   readonly text: string;
 }): ReactNode {
   const look = props.look ?? "reading";
-  const imageContext = useContext(TranscriptImageContext);
   const blocks = useMemo(() => splitMarkdownBlocks(props.text), [props.text]);
   return (
-    <TranscriptImageContext
-      value={imageContext ? { ...imageContext, reference: props.text } : null}
-    >
-      <View style={look === "bubble" ? styles.bubbleProse : styles.prose}>
-        {blocks.map((source, index) => (
-          <Block
-            key={index}
-            look={look}
-            source={source}
-            streaming={props.streaming === true && index === blocks.length - 1}
-          />
-        ))}
-      </View>
-    </TranscriptImageContext>
+    <View style={look === "bubble" ? styles.bubbleProse : styles.prose}>
+      {blocks.map((source, index) => (
+        <Block
+          key={index}
+          look={look}
+          source={source}
+          streaming={props.streaming === true && index === blocks.length - 1}
+        />
+      ))}
+    </View>
   );
 });
 
