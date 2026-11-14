@@ -48,13 +48,15 @@ export async function pairFixture() {
       return socket;
     },
   };
+  const starting = ["Alpha", "Bravo"].map(async (name) => {
+    const host = await startTeamSystem(name, { teamPartnerNetwork: network });
+    hosts.push(host);
+    targets.set(host.canonicalOrigin, host);
+    return host;
+  });
   try {
-    for (const name of ["Alpha", "Bravo"]) {
-      const host = await startTeamSystem(name, { teamPartnerNetwork: network });
-      hosts.push(host);
-      targets.set(host.canonicalOrigin, host);
-    }
-    const [a, b] = hosts as [Host, Host];
+    const [a, b] = await Promise.all(starting);
+    if (!a || !b) throw new Error("Expected both partner Hosts");
     const [aUser, bUser] = await Promise.all([a.setup(), b.setup()]);
     const [aSession, bSession] = await Promise.all([
       a.session(aUser, "Alpha admin"),
@@ -77,6 +79,7 @@ export async function pairFixture() {
       },
     };
   } catch (error) {
+    await Promise.allSettled(starting);
     await Promise.all(hosts.map((host) => host.close()));
     throw error;
   }
