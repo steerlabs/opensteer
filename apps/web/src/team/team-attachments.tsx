@@ -1,4 +1,4 @@
-import { teamEntryRefusalOutcome } from "@opensteer/protocol";
+import { bootstrapMembershipRefused } from "@opensteer/protocol";
 import {
   createContext,
   useCallback,
@@ -383,8 +383,7 @@ export function TeamsProvider({
         } catch (error) {
           if (!live || owner.signal.aborted) return;
           const failure =
-            error instanceof HostClientRequestError &&
-            teamEntryRefusalOutcome(error.reason) === "membership"
+            error instanceof HostClientRequestError && bootstrapMembershipRefused(error)
               ? "join"
               : error instanceof HostClientRequestError &&
                   [

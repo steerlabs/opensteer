@@ -48,6 +48,8 @@ const connections: readonly DeploymentConnection[] = mockDeploymentConnections()
 function fixture(
   options: {
     readonly bootstrapFailures?: number;
+    /** Every non-Acme bootstrap answers as an older team server refusing a removed member. */
+    readonly legacyRefusal?: boolean;
     readonly files?: MemoryPrivateFilesystem;
     readonly previews?: Pick<NotificationPreviews, "attach" | "clear">;
     /** Answers a team command in place of the mock team Host. */
@@ -74,18 +76,26 @@ function fixture(
               await acmeAnswers;
               return target["team.bootstrap.get"](input);
             }
-          : name === "team.bootstrap.get" && !acme && options.bootstrapFailures !== undefined
-            ? async (input: never) => {
-                if (bootstrapCalls++ > 0 && bootstrapFailures > 0) {
-                  bootstrapFailures--;
-                  throw new Error("Team offline");
-                }
-                return target["team.bootstrap.get"](input);
+          : name === "team.bootstrap.get" && !acme && options.legacyRefusal
+            ? async () => {
+                throw new HostClientRequestError({
+                  code: "forbidden",
+                  status: 403,
+                  message: "Active team membership required",
+                });
               }
-            : name === "commands.dispatch" && options.dispatch !== undefined
-              ? async (input: { readonly type: string }) =>
-                  options.dispatch!(input) ?? target["commands.dispatch"](input as never)
-              : Reflect.get(target, name, receiver),
+            : name === "team.bootstrap.get" && !acme && options.bootstrapFailures !== undefined
+              ? async (input: never) => {
+                  if (bootstrapCalls++ > 0 && bootstrapFailures > 0) {
+                    bootstrapFailures--;
+                    throw new Error("Team offline");
+                  }
+                  return target["team.bootstrap.get"](input);
+                }
+              : name === "commands.dispatch" && options.dispatch !== undefined
+                ? async (input: { readonly type: string }) =>
+                    options.dispatch!(input) ?? target["commands.dispatch"](input as never)
+                : Reflect.get(target, name, receiver),
     }) as HostApiClient;
     return { ...inner, rpc };
   };
@@ -190,6 +200,16 @@ describe("the one team socket a phone keeps", () => {
       expect(session.getSnapshot().bootstrap).not.toBeNull();
       expect(f.teams.team(mockFamilyTeamId)?.state).toBe("live");
       expect(f.sockets()[mockFamilyTeamId]).toBe(1);
+    } finally {
+      f.teams.dispose();
+    }
+  });
+
+  it("treats an older server's reasonless refusal of a new viewer as removal", async () => {
+    const f = fixture({ legacyRefusal: true });
+    try {
+      await expect(f.teams.session(mockFamilyTeamId)).rejects.toThrow();
+      expect(f.teams.team(mockFamilyTeamId)?.state).toBe("removed");
     } finally {
       f.teams.dispose();
     }

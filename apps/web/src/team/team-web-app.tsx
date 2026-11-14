@@ -3,7 +3,7 @@ import { BrowserRouter, Link, Navigate, Route, Routes, useParams } from "react-r
 import { parseTeamPageLink, teamPageAppLink, type TeamPageLink } from "@opensteer/core";
 import { createHttpHostApiClient } from "@opensteer/client/host";
 import {
-  teamEntryRefusalOutcome,
+  bootstrapMembershipRefused,
   teamApiVersion,
   teamApiVersionHeader,
   type TeamBootstrapSchema,
@@ -53,12 +53,7 @@ async function readEntry(): Promise<Entry> {
   });
   const result = await rpc["team.bootstrap.get"]({});
   if (result.ok) return { kind: "ready", bootstrap: result.data };
-  // Older team servers refuse a removed member with a reasonless `forbidden`.
-  if (
-    teamEntryRefusalOutcome(result.error.reason) === "membership" ||
-    (result.error.code === "forbidden" && !result.error.reason)
-  )
-    return { kind: "not-member" };
+  if (bootstrapMembershipRefused(result.error)) return { kind: "not-member" };
   if (!signedOut) return { kind: "failed", message: result.error.message };
   const state = await fetch("/v1/team/setup/state", { headers: versionHeaders });
   const setUp = state.ok && ((await state.json()) as { complete?: unknown }).complete === true;

@@ -24,7 +24,7 @@ it("scopes desktop team state to the authenticated viewer rather than the person
   const host = new MockTeamHost();
   const persistence = createMemoryTeamPersistence();
   const ownerUserId = createId("user");
-  let unavailable: false | "outage" | "update" = false;
+  let unavailable: false | "outage" | "update" | "legacy-removed" = false;
   transport.create.mockImplementation((options: TeamSessionOptions) => ({
     ...options,
     rpc: new Proxy(host.rpc, {
@@ -32,12 +32,19 @@ it("scopes desktop team state to the authenticated viewer rather than the person
         name === "team.bootstrap.get" && unavailable
           ? async () => ({
               ok: false,
-              error: {
-                code: unavailable === "update" ? "conflict" : "internal",
-                reason: unavailable === "update" ? "host-too-old" : "transport-unreachable",
-                message: "Team unavailable",
-                retryable: true,
-              },
+              error:
+                unavailable === "legacy-removed"
+                  ? {
+                      code: "forbidden",
+                      message: "Active team membership required",
+                      retryable: false,
+                    }
+                  : {
+                      code: unavailable === "update" ? "conflict" : "internal",
+                      reason: unavailable === "update" ? "host-too-old" : "transport-unreachable",
+                      message: "Team unavailable",
+                      retryable: true,
+                    },
             })
           : Reflect.get(target, name, receiver),
     }),
@@ -122,6 +129,23 @@ it("scopes desktop team state to the authenticated viewer rather than the person
       { timeout: 1000 },
     );
     expect(attachment?.client).toBeNull();
+    unavailable = "legacy-removed";
+    await act(async () =>
+      root.render(
+        <TeamsProvider
+          surface={{ kind: "desktop", bridge, hostClient: { ...hostClient } as HostClient }}
+        >
+          <Read />
+        </TeamsProvider>,
+      ),
+    );
+    await vi.waitFor(
+      () =>
+        expect(attachment?.failure, "an older server's removal was shown as an outage").toBe(
+          "join",
+        ),
+      { timeout: 1000 },
+    );
   } finally {
     await act(async () => root.unmount());
     host.dispose();

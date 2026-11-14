@@ -77,6 +77,17 @@ export const teamEntryRefusalOutcomes = {
   removed: "membership",
 } as const satisfies Record<TeamEntryRefusalReason | "removed", "membership" | "retryable">;
 
+/** At authenticated bootstrap only: older team servers refuse a removed member with a reasonless `forbidden`. */
+export function bootstrapMembershipRefused(error: {
+  readonly code?: string;
+  readonly reason?: string | null;
+}): boolean {
+  return (
+    teamEntryRefusalOutcome(error.reason) === "membership" ||
+    (error.code === "forbidden" && !error.reason)
+  );
+}
+
 export function teamEntryRefusalOutcome(reason: string | null | undefined) {
   return reason && Object.hasOwn(teamEntryRefusalOutcomes, reason)
     ? teamEntryRefusalOutcomes[reason as keyof typeof teamEntryRefusalOutcomes]

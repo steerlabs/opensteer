@@ -148,6 +148,9 @@ it("gives a removed team-web reader invite guidance instead of a bare sign-in", 
     await act(async () => session.remove("removed"));
     expect(node.textContent).toContain("Ask a team member for a new invite.");
     expect(node.textContent).not.toContain("Remove from this computer");
+    expect([...node.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
+      "Retry",
+    ]);
   } finally {
     act(() => root.unmount());
     session.dispose();

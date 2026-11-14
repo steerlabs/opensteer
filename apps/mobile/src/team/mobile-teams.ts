@@ -1,4 +1,4 @@
-import { teamEntryRefusalOutcome } from "@opensteer/protocol";
+import { bootstrapMembershipRefused, teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { TeamEntryRefusedError } from "@opensteer/client/auth";
 import {
   HostVersionMismatchError,
@@ -466,7 +466,13 @@ class MobileTeamRuntime {
         this.#names.set(teamId, bootstrap.teamName);
         await this.#rememberUser(teamId, userId);
       } catch (error) {
-        this.#fail(teamId, error);
+        if (error instanceof HostClientRequestError && bootstrapMembershipRefused(error))
+          this.#setState(
+            teamId,
+            error.reason === "not-a-member" ? "join" : "removed",
+            error.message,
+          );
+        else this.#fail(teamId, error);
         throw error;
       }
     }

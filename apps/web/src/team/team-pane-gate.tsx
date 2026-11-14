@@ -65,7 +65,9 @@ function TeamPane({ teamId, children }: { readonly teamId: string; readonly chil
       {error ? <p role="alert">{error}</p> : null}
       {!pending && team ? (
         <>
-          {state !== "join" && state !== "update-app" && state !== "update-server" ? (
+          {/* The team's own site has no Remove, so it always keeps a way to check again. */}
+          {surface === "team-web" ||
+          (state !== "join" && state !== "update-app" && state !== "update-server") ? (
             <button className="btn" disabled={busy} onClick={attempt} type="button">
               {state === "sign-in" || state === "suppressed" ? "Sign in" : "Retry"}
             </button>

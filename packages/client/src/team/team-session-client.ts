@@ -1,5 +1,5 @@
 import type { TeamRuntimeOwner } from "./team-runtime-owner.js";
-import { teamEntryRefusalOutcome } from "@opensteer/protocol";
+import { bootstrapMembershipRefused, teamEntryRefusalOutcome } from "@opensteer/protocol";
 import type { TeamFileUpload } from "./files.js";
 import {
   OpensteerError,
@@ -307,8 +307,7 @@ export class TeamSessionClient {
     try {
       return await this.rpc["team.bootstrap.get"]({}).then(unwrapRpcResult);
     } catch (error) {
-      // Older team servers omit the membership reason at authenticated bootstrap.
-      if (error instanceof OpensteerError && !error.reason && error.code === "forbidden")
+      if (error instanceof OpensteerError && !error.reason && bootstrapMembershipRefused(error))
         await this.remove("removed");
       throw error;
     }
