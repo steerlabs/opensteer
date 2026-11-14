@@ -42,6 +42,12 @@ describe("the top-level screen", () => {
     expect(topLevelIndex(stack(home, taskA, subagent))).toBe(1);
     expect(topLevelIndex(stack(home, { key: "needs-you", name: "NeedsYou" }))).toBe(1);
     expect(topLevelIndex(stack(home, { key: "setup", name: "SetUpPhone" }))).toBe(0);
+    expect(
+      topLevelIndex(stack(home, { key: "reply", name: "TeamThread", params: { teamId: "a" } })),
+    ).toBe(1);
+    expect(
+      topLevelIndex(stack(home, { key: "join", name: "JoinTeam", params: { teamId: "a" } })),
+    ).toBe(0);
     expect(topLevelIndex(stack(home, { key: "sheet", name: "ThreadAround" }))).toBe(0);
     expect(topLevelIndex(stack(taskA))).toBeNull();
   });

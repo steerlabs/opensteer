@@ -1,5 +1,4 @@
 import { Fragment, useState, type ReactNode } from "react";
-import { useNavigation } from "@react-navigation/native";
 import { ActivityIndicator, Alert, StyleSheet, View } from "react-native";
 import { color, space } from "../theme.js";
 import { Notice, PrimaryButton } from "../ui/primitives.js";
@@ -57,7 +56,6 @@ function AccountTeamScreen({
   readonly children: ReactNode;
 }): ReactNode {
   const teams = useMobileTeams();
-  const navigation = useNavigation();
   const { team, snapshot, failure } = useTeamSession(teamId);
   const [busy, setBusy] = useState(false);
   const state = team?.state;
@@ -107,7 +105,7 @@ function AccountTeamScreen({
             ) : null}
             <PrimaryButton
               label="Remove from this phone"
-              onPress={() => void teams.forget(teamId).then(() => navigation.goBack())}
+              onPress={() => void teams.forget(teamId)}
             />
           </>
         )}

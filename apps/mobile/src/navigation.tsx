@@ -1,3 +1,4 @@
+import { useTeamSideBack } from "./side-back.js";
 import { TeamScreenLayout } from "./team/team-screen-gate.js";
 import { screenPresentations } from "./navigation-presentations.js";
 import type { ReactNode } from "react";
@@ -114,11 +115,8 @@ import { thisPhoneNoun } from "./computers/phone-noun.js";
  * tap arrive at the same screen by the same path. The header uses the platform
  * face and stays native chrome.
  *
- * Home — the New task composer — is the root of every Deployment's stack and
- * stays mounted under everything. The screen directly on it is top-level, with
- * the Menu where Back would be, and whatever is opened from it is pushed over
- * it with the native Back (`top-level.ts`). Neither is a property of a route:
- * the same task is top-level from the sidebar and a drill-in from another task.
+ * Home keeps its unsent draft mounted beneath the active Tasks or team chain.
+ * The sidebar resumes each side; explicit entries replace only that side.
  *
  * The drawer is the stack's own `layout` (`SidebarShell`): one navigator, one
  * history, with the drawer or docked column around it.
@@ -129,6 +127,7 @@ import { thisPhoneNoun } from "./computers/phone-noun.js";
  */
 function ScreenLayout(props: { readonly children: ReactNode; readonly modal: boolean }) {
   const focused = useIsFocused();
+  useTeamSideBack();
   return (
     <>
       {props.modal ? <Pane>{props.children}</Pane> : props.children}

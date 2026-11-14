@@ -41,6 +41,7 @@ import { TranscriptHostClientContext } from "./attachment-views.js";
 // Exercise the actual native renderer's state and hierarchy with DOM hosts.
 // The platform controls and animation drivers are outside this regression.
 const appWebView = vi.hoisted(() => ({ props: null as WebViewProps | null }));
+vi.mock("../navigation-ref.js", () => ({ enterSide: vi.fn() }));
 vi.mock("@react-navigation/native", () => ({ useNavigation: () => ({ navigate: vi.fn() }) }));
 vi.mock("../team/team-context.js", () => ({ useTeamsSnapshot: () => ({ teams: [] }) }));
 vi.mock("react-native-webview", () => ({

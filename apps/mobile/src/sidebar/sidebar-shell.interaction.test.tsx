@@ -189,6 +189,7 @@ vi.mock("./sidebar-panel.js", () => ({
   },
 }));
 
+import { sideMemory } from "../side-memory.js";
 import { SidebarShell } from "./sidebar-shell.js";
 import {
   sidebarRef,
@@ -211,6 +212,7 @@ const roots: Root[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) act(() => root.unmount());
   document.body.replaceChildren();
+  sideMemory.clear();
   harness.bounds = { height: 844, width: 390 };
   harness.ready = true;
   harness.regions = [];
@@ -310,24 +312,39 @@ function stackStyle(container: HTMLElement): Record<string, unknown> {
 }
 
 describe("the sidebar's side", () => {
-  it("follows the screen in front each time it changes, back to one shown before", async () => {
-    const acme = { key: "acme-general", name: "TeamChannel", params: { teamId: "dep_acme" } };
-    const { render } = await mount([home]);
+  it("switches sides over Home and leaves the selected side's drill-ins in place on reselect", async () => {
+    const task = threadA;
+    const page = {
+      key: "page",
+      name: "WorkspaceBrowser",
+      params: {
+        deploymentId: "deployment-a",
+        threadId: "thread-a",
+        sessionId: "browser",
+        tabId: "tab",
+      },
+    };
+    const acme = {
+      key: "acme-general",
+      name: "TeamChannel",
+      params: { teamId: "dep_acme", channelId: "general" },
+    };
+    const { render } = await mount([home, task, page]);
     expect(lastPanel().side).toBe("tasks");
-    // The person looks at a team over Home: their choice holds while Home stays.
     act(() => lastPanel().onSide("dep_acme"));
-    await render([home]);
+    expect(harness.dispatch).not.toHaveBeenCalled();
     expect(lastPanel().side).toBe("dep_acme");
-    // Its channel opens on its side; Back to the same Home comes with Tasks.
-    act(() => lastPanel().onSide("tasks"));
     await render([home, acme]);
-    expect(lastPanel().side).toBe("dep_acme");
-    await render([home]);
-    expect(lastPanel().side).toBe("tasks");
-    // A screen of neither side, such as Teams, keeps the side shown.
+    const count = harness.dispatch.mock.calls.length;
     act(() => lastPanel().onSide("dep_acme"));
-    await render([home, { key: "teams", name: "Teams", params: {} }]);
-    expect(lastPanel().side).toBe("dep_acme");
+    expect(harness.dispatch).toHaveBeenCalledTimes(count);
+    act(() => lastPanel().onSide("tasks"));
+    expect(harness.dispatch).toHaveBeenLastCalledWith({
+      type: "RESET",
+      payload: { index: 2, routes: [home, task, page] },
+    });
+    await render([home, task, page]);
+    expect(lastPanel().side).toBe("tasks");
   });
 });
 

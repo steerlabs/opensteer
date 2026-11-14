@@ -3,6 +3,7 @@ import { useNavigation, useNavigationState, useRoute } from "@react-navigation/n
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { Platform, Pressable, StyleSheet, Text, View, type HostInstance } from "react-native";
+import { presentedFrom } from "./navigation-presentations.js";
 import { isTopLevel } from "./top-level.js";
 import { useSidebarControl, useSidebarDocked } from "./sidebar/sidebar-context.js";
 import { color, headerFontScaleLimit, radius, space, touchTarget } from "./theme.js";
@@ -73,17 +74,22 @@ export function useIsTopLevel(): boolean {
   return useNavigationState((state) => isTopLevel(state, key));
 }
 
-/**
- * The Menu in a top-level screen's bar, for every one alike. No screen asks
- * for it: where the screen stands in the stack decides (`top-level.ts`), so the
- * same task has the Menu from the sidebar and Back from the task that started it.
- */
+export function useIsPresented(): boolean {
+  const { key } = useRoute();
+  return useNavigationState((state) => {
+    const from = presentedFrom(state);
+    return from >= 0 && state.routes.findIndex((route) => route.key === key) >= from;
+  });
+}
+
+/** Menu stays beside Back on drill-ins; presented flows keep their own controls. */
 export function TopLevelMenu(): ReactNode {
-  return useIsTopLevel() ? <InstallMenu /> : null;
+  return useIsPresented() ? null : <InstallMenu />;
 }
 
 function InstallMenu(): null {
   const navigation = useNavigation();
+  const topLevel = useIsTopLevel();
   const sidebar = useSidebarControl();
   const docked = useSidebarDocked();
   const attention = useMenuAttention();
@@ -93,6 +99,7 @@ function InstallMenu(): null {
     // nothing to open, and a top-level screen has no Back.
     if (docked) {
       navigation.setOptions({
+        headerBackVisible: !topLevel,
         headerLeft: () => null,
         unstable_headerLeftItems: () => [],
       });
@@ -107,10 +114,11 @@ function InstallMenu(): null {
       onPress: () => sidebar.open(),
     };
     navigation.setOptions({
+      headerBackVisible: !topLevel,
       headerLeft: () => <MenuHeaderButton {...menu} onOpen={sidebar.open} />,
       unstable_headerLeftItems: () => [nativeHeaderItem(menu)],
     });
-  }, [attention, docked, navigation, sidebar]);
+  }, [attention, docked, navigation, sidebar, topLevel]);
   return null;
 }
 

@@ -328,14 +328,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
     for (const teamId of teamIds.split(" ")) void mobileTeams.refresh(teamId);
   }, [mobileTeams, props.side, teamIds, visible]);
   const { openTeamId } = props;
-  const onLeft = useCallback(
-    (teamId: string) => {
-      if (teamId === openTeamId) actions.onHome();
-    },
-    [actions, openTeamId],
-  );
   const teamMenu = useTeamMenu(sideTeam, {
-    onLeft,
     onOpen: actions.onOpenTeamPlace,
     onTeams: actions.onTeams,
   });
