@@ -19,13 +19,18 @@ export interface ThreadWaitSnapshot {
 export class ThreadWaitService {
   readonly options: {
     readonly subscribe: (wake: () => void) => () => void;
-    readonly read: () => Promise<ThreadWaitSnapshot>;
+    readonly read: (input: {
+      readonly signal: AbortSignal;
+      readonly expiresAt: number;
+    }) => Promise<ThreadWaitSnapshot>;
   };
   constructor(options: ThreadWaitService["options"]) {
     this.options = options;
   }
-  wait(input: { readonly timeoutMs: number; readonly signal?: AbortSignal }) {
-    return new Promise<
+  async wait(input: { readonly timeoutMs: number; readonly signal?: AbortSignal }) {
+    const readingScope = new AbortController();
+    let inFlight: Promise<ThreadWaitSnapshot> | undefined;
+    const result = new Promise<
       ThreadWaitSnapshot & {
         readonly status: "running" | "settled" | "offline" | "timed_out";
       }
@@ -44,12 +49,21 @@ export class ThreadWaitService {
         if (authorityTimer) clearTimeout(authorityTimer);
         unsubscribe();
         input.signal?.removeEventListener("abort", aborted);
+        readingScope.abort(new Error("Thread wait ended"));
       };
       const fail = (error: unknown) => {
         if (!done) {
+          if (Date.now() >= deadline && !input.signal?.aborted) {
+            timedOut();
+            return;
+          }
           cleanup();
           reject(error);
         }
+      };
+      const timedOut = () => {
+        snapshot ??= { connected: true, messages: [] };
+        finish("timed_out");
       };
       const finish = (status: "running" | "settled" | "offline" | "timed_out") => {
         if (done || !snapshot) return;
@@ -68,7 +82,8 @@ export class ThreadWaitService {
         }
         reading = true;
         dirty = false;
-        void this.options.read().then((value) => {
+        inFlight = this.options.read({ signal: readingScope.signal, expiresAt: deadline });
+        void inFlight.then((value) => {
           if (done) return;
           snapshot = value;
           if (
@@ -107,17 +122,14 @@ export class ThreadWaitService {
         aborted();
         return;
       }
-      timer = setTimeout(
-        () => {
-          snapshot ??= {
-            connected: true,
-            messages: [],
-          };
-          finish("timed_out");
-        },
-        Math.min(threadWaitMaxMs, Math.max(1, input.timeoutMs)),
-      );
+      timer = setTimeout(timedOut, Math.min(threadWaitMaxMs, Math.max(1, input.timeoutMs)));
       read();
     });
+    // A completed response must not leave a snapshot holding a database connection.
+    try {
+      return await result;
+    } finally {
+      await inFlight?.catch(() => undefined);
+    }
   }
 }

@@ -290,7 +290,7 @@ async function listSupervisedProcesses(variable: string): Promise<readonly Liste
   }));
 }
 
-/** Same-user processes' environments are readable in procfs; others' are not and are not ours. */
+/** A process's start identity remains readable after it loses its start environment. */
 async function listLinuxProcesses(variable: string): Promise<readonly ListedProcess[]> {
   const prefix = `${variable}=`;
   const found: ListedProcess[] = [];
@@ -298,11 +298,12 @@ async function listLinuxProcesses(variable: string): Promise<readonly ListedProc
     if (!/^[1-9][0-9]*$/u.test(entry)) continue;
     const pid = Number(entry);
     if (pid === process.pid) continue;
-    let environ: string;
+    let environ = "";
     try {
       environ = await readFile(`/proc/${entry}/environ`, "latin1");
     } catch {
-      continue;
+      // Linux removes a zombie's address space before its PID is reaped.
+      // Its start identity must remain listed even when environ returns ESRCH.
     }
     const scope = environ.split("\0").find((value) => value.startsWith(prefix));
     let stat: string;
