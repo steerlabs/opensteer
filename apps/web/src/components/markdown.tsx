@@ -1,3 +1,7 @@
+import { useContext } from "react";
+import { TranscriptImageContext } from "@opensteer/client/react";
+import { classifyMarkdownImageSource } from "@opensteer/shared/markdownImages";
+import { AssetImage } from "./asset-image.js";
 import { isValidElement, memo, useMemo, useRef, type ComponentProps, type MouseEvent } from "react";
 import ReactMarkdown, {
   defaultUrlTransform,
@@ -57,8 +61,14 @@ function TranscriptLink({ children, href }: ComponentProps<"a">) {
   );
 }
 
-/** An agent's image is never fetched from the reader's device; its words stay. */
 function TranscriptImage({ alt, src }: ComponentProps<"img">) {
+  const context = useContext(TranscriptImageContext);
+  const source = classifyMarkdownImageSource(typeof src === "string" ? src : "");
+  if (context && context.client.getSnapshot().deploymentShape?.kind === "personal") {
+    if (source.kind === "local") return <AssetImage path={source.path} alt={alt ?? ""} />;
+    if (source.kind === "remote")
+      return <TranscriptLink href={source.url}>{alt || source.url}</TranscriptLink>;
+  }
   const words = alt || (typeof src === "string" ? src : "");
   return words ? <span>{words}</span> : null;
 }
@@ -109,18 +119,21 @@ export const Markdown = memo(function Markdown({
   streaming?: boolean;
   text: string;
 }) {
+  const imageContext = useContext(TranscriptImageContext);
   const blocks = useMemo(() => splitMarkdownBlocks(text), [text]);
   return (
-    <div className="md-prose">
-      {blocks.map((block, index) => (
-        <MarkdownBlock
-          bare={bare}
-          key={index}
-          streaming={streaming && index === blocks.length - 1}
-          text={block}
-        />
-      ))}
-    </div>
+    <TranscriptImageContext value={imageContext ? { ...imageContext, reference: text } : null}>
+      <div className="md-prose">
+        {blocks.map((block, index) => (
+          <MarkdownBlock
+            bare={bare}
+            key={index}
+            streaming={streaming && index === blocks.length - 1}
+            text={block}
+          />
+        ))}
+      </div>
+    </TranscriptImageContext>
   );
 });
 

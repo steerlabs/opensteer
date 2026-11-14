@@ -1681,6 +1681,10 @@ export class MobileClient {
       const viewLoginId = await this.#viewLoginId(attachment.connection);
       if (!this.#isCurrentSelection(id, attempt) || generation !== this.#fence.generation) continue;
       const hostClient = this.#host.attach({
+        assetRoute: {
+          current: () => this.#fence.current(),
+          onAttachmentInvalidated: (listener) => this.#fence.onInvalidated(listener),
+        },
         authorization: {
           current: attachmentAuthorization.current,
           cached: () => {

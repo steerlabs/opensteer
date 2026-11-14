@@ -1,3 +1,4 @@
+import { AssetUrlStore } from "../host/asset-urls.js";
 import { settleTeamAsk } from "../host/needs-you.js";
 import { isDeviceAccessRequestEvent } from "@opensteer/protocol";
 import { deviceAccess } from "@opensteer/protocol";
@@ -1898,6 +1899,12 @@ function mockReaderThread<Thread extends { readonly id: string; readonly pending
 
 function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
   const handlers: Partial<HostApiHandlers> = {
+    "asset.urls": async ({ assets }) => ({
+      ok: true,
+      data: {
+        assets: assets.map(() => ({ status: "unavailable" as const, reason: "missing" as const })),
+      },
+    }),
     "attention.get": async (input) => {
       const snapshot = client.getSnapshot();
       return rpcSuccess({
@@ -3827,6 +3834,7 @@ export class MockHostClient implements HostClient {
   >();
   readonly browserFrames: BrowserFrameStore;
   readonly browserWatchFrames: BrowserFrameStore;
+  readonly assetUrls: AssetUrlStore;
   readonly rpc: HostApiClient;
   get cardUseMockStates() {
     return this.#state.cardUseMockStates;
@@ -3974,6 +3982,7 @@ export class MockHostClient implements HostClient {
     };
     this.browserWatchFrames = frames;
     this.rpc = createInMemoryHostApiClient(mockHostApiHandlers(this.#state), mockRpcContext());
+    this.assetUrls = new AssetUrlStore(this.rpc, { origin: async () => "http://mock.invalid" });
     this.#nodeDetails = new NodeDetailStore({
       available: () => true,
       nodes: (threadId) =>
@@ -4878,6 +4887,7 @@ export class MockHostClient implements HostClient {
   }
 
   dispose(): void {
+    this.assetUrls.dispose();
     this.#nodeDetails.clear();
     this.#personShowListeners.clear();
     this.#pendingBrowserTabs.dispose();

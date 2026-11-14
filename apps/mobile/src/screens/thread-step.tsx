@@ -1,3 +1,5 @@
+import { TranscriptImageContext } from "@opensteer/client/react";
+import { AssetImage } from "../markdown/asset-image.js";
 import { useToolOutput } from "@opensteer/client/react";
 import {
   activityStepHead,
@@ -107,6 +109,17 @@ function ToolDetail(props: {
   const status = [toolStatusLabel(tool), head.duration].filter(Boolean).join(" · ");
   return (
     <Frame label={head.label} status={status} tone={head.tone === "error" ? "amber" : "muted"}>
+      <TranscriptImageContext
+        value={{
+          client: props.hostClient,
+          threadId: props.threadId,
+          reference: `${tool.id}:${tool.state}:${tool.output?.text ?? ""}`,
+        }}
+      >
+        {tool.output?.images?.map((image) => (
+          <AssetImage key={image.path} path={image.path} />
+        ))}
+      </TranscriptImageContext>
       {body.summary ? (
         <AppText role="body" selectable tone="soft">
           {body.summary}

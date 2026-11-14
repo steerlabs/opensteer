@@ -1,6 +1,7 @@
 import { foldedSubagentSummary, turnSubagentCount } from "./subagent-model.js";
 import { pageSiteLabel } from "./surfaces.js";
 import {
+  imageGenerationToolName,
   isIntegrationGatewayTool,
   placeIdentityKey,
   type AssignmentSummary,
@@ -1868,6 +1869,14 @@ function isIntegrationGateway(tool: ToolEntry): boolean {
 export function toolPresentation(tool: ToolEntry): ToolPresentation {
   const identity = tool.tool;
   const args = effectiveArguments(tool);
+  if (identity?.name === imageGenerationToolName)
+    return step({
+      activeLabel: "Generating image",
+      label: "Generate image",
+      hint: stringField(args, "prompt") ?? "",
+      icon: "sparkles",
+      kind: "tool",
+    });
   if (identity?.name === "computer" && isIntegrationGateway(tool))
     return step({
       activeLabel: "Running computer code",

@@ -1,3 +1,5 @@
+import { TranscriptImageContext } from "@opensteer/client/react";
+import { AssetImage } from "./asset-image.js";
 import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
 import { TeamInputSource } from "../team/task-source-chip.js";
 import { useToolOutput } from "@opensteer/client/react";
@@ -425,56 +427,68 @@ export function AgentTranscript({
                                 <TranscriptBrowserUses value={browserUses}>
                                   <TranscriptBrowsers value={browserSessions}>
                                     <Speakers value={speakers}>
-                                      {rows.map(({ group, key }, index) => (
-                                        <Fragment key={key}>
-                                          {places?.[index]?.time ? (
-                                            <p className="transcript__time">{places[index].time}</p>
-                                          ) : null}
-                                          <div
-                                            className="transcript__row"
-                                            data-continued={places?.[index]?.continued || undefined}
-                                            data-joined={places?.[index]?.joined || undefined}
-                                            data-transcript-row={key}
-                                          >
-                                            {group.kind === "app" ? (
-                                              <AppCard entry={group.entry} />
-                                            ) : group.kind === "turn" ? (
-                                              <TurnView
-                                                turn={group.turn}
-                                                turnKey={group.key}
-                                                reveal={revealMessage}
-                                              />
-                                            ) : group.kind === "delegation" ? (
-                                              <DelegationNotice delegation={group.entry} />
-                                            ) : group.kind === "assignment" ? (
-                                              renderTask?.([group.entry])
-                                            ) : (
-                                              <TranscriptMessage
-                                                joinedRun={group.joinedRun === true}
-                                                reveal={
-                                                  revealMessage?.id === group.entry.id
-                                                    ? revealMessage
-                                                    : null
-                                                }
-                                                message={group.entry}
-                                                viewerUserId={viewerUserId}
-                                              />
-                                            )}
+                                      <TranscriptImageContext
+                                        value={
+                                          attachmentReader && threadId
+                                            ? { client: attachmentReader, threadId }
+                                            : null
+                                        }
+                                      >
+                                        {rows.map(({ group, key }, index) => (
+                                          <Fragment key={key}>
+                                            {places?.[index]?.time ? (
+                                              <p className="transcript__time">
+                                                {places[index].time}
+                                              </p>
+                                            ) : null}
+                                            <div
+                                              className="transcript__row"
+                                              data-continued={
+                                                places?.[index]?.continued || undefined
+                                              }
+                                              data-joined={places?.[index]?.joined || undefined}
+                                              data-transcript-row={key}
+                                            >
+                                              {group.kind === "app" ? (
+                                                <AppCard entry={group.entry} />
+                                              ) : group.kind === "turn" ? (
+                                                <TurnView
+                                                  turn={group.turn}
+                                                  turnKey={group.key}
+                                                  reveal={revealMessage}
+                                                />
+                                              ) : group.kind === "delegation" ? (
+                                                <DelegationNotice delegation={group.entry} />
+                                              ) : group.kind === "assignment" ? (
+                                                renderTask?.([group.entry])
+                                              ) : (
+                                                <TranscriptMessage
+                                                  joinedRun={group.joinedRun === true}
+                                                  reveal={
+                                                    revealMessage?.id === group.entry.id
+                                                      ? revealMessage
+                                                      : null
+                                                  }
+                                                  message={group.entry}
+                                                  viewerUserId={viewerUserId}
+                                                />
+                                              )}
+                                            </div>
+                                          </Fragment>
+                                        ))}
+                                        {indicator === null ? null : indicator.kind === "typing" ? (
+                                          // No turn has begun, so there is no Activity to open yet.
+                                          <div className="turn turn--conversation">
+                                            <Typing />
                                           </div>
-                                        </Fragment>
-                                      ))}
-                                      {indicator === null ? null : indicator.kind === "typing" ? (
-                                        // No turn has begun, so there is no Activity to open yet.
-                                        <div className="turn turn--conversation">
-                                          <Typing />
-                                        </div>
-                                      ) : (
-                                        <WorkingIndicator label={indicator.label} />
-                                      )}
-                                      {passwordsOffer === null
-                                        ? null
-                                        : renderPasswordsSuggestion?.(passwordsOffer)}
-                                      {queued}
+                                        ) : (
+                                          <WorkingIndicator label={indicator.label} />
+                                        )}
+                                        {passwordsOffer === null
+                                          ? null
+                                          : renderPasswordsSuggestion?.(passwordsOffer)}
+                                        {queued}
+                                      </TranscriptImageContext>
                                     </Speakers>
                                   </TranscriptBrowsers>
                                 </TranscriptBrowserUses>
@@ -1848,6 +1862,17 @@ function ToolDetail({ tool: preview }: { tool: ToolEntry }) {
   const Section = body.collapsed ? DisclosedSection : OpenSection;
   return (
     <div className="trace-step__body">
+      <TranscriptImageContext
+        value={
+          client && threadId
+            ? { client, threadId, reference: `${tool.id}:${tool.state}:${tool.output?.text ?? ""}` }
+            : null
+        }
+      >
+        {tool.output?.images?.map((image) => (
+          <AssetImage key={image.path} path={image.path} />
+        ))}
+      </TranscriptImageContext>
       {body.summary ? <p className="trace-step__summary">{body.summary}</p> : null}
       {body.command ? <pre className="trace-code trace-code--command">{body.command}</pre> : null}
       {body.argumentsText ? <Section label="Input" text={body.argumentsText} /> : null}

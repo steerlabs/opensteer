@@ -1,3 +1,4 @@
+import { AssetUrlStore, type AssetRoute } from "./asset-urls.js";
 import { needsYouEntryKey, refreshNeedsYou, settleTeamAsk } from "./needs-you.js";
 import type { MachineSummary } from "@opensteer/protocol";
 import type { PersonalStreamCache, PersonalCacheScope } from "./personal-stream-cache.js";
@@ -396,6 +397,8 @@ export type HostCapabilityReader = (options?: {
 }) => Promise<readonly HostCapability[]>;
 
 export interface HttpHostClientOptions {
+  readonly assetRoute?: AssetRoute;
+  readonly desktopMedia?: boolean;
   readonly deviceAccessRequests?: "include";
   readonly streamCache?: PersonalStreamCache;
   readonly passkeys?: BrowserPasskeyPort;
@@ -451,6 +454,7 @@ export class HttpHostClient {
   readonly renewComputerView: OwnerViewHostClient["renewComputerView"];
   readonly listComputerAppWindows: OwnerViewHostClient["listComputerAppWindows"];
   readonly listApprovedComputerApps: OwnerViewHostClient["listApprovedComputerApps"];
+  readonly assetUrls: AssetUrlStore;
   readonly rpc: HostApiClient;
   readonly #baseUrl: URL;
   readonly #streamCache: PersonalStreamCache | undefined;
@@ -990,6 +994,21 @@ export class HttpHostClient {
       },
       onVersionMismatch: () => this.#reverifyCapabilities(),
     });
+    this.assetUrls = new AssetUrlStore(
+      this.rpc,
+      options.assetRoute
+        ? {
+            origin: async (deploymentId) => {
+              const { resolved } = await options.assetRoute!.current();
+              if (resolved.deploymentId !== deploymentId)
+                throw new Error("The image belongs to another Deployment.");
+              return resolved.origin;
+            },
+            subscribe: (listener) => options.assetRoute!.onAttachmentInvalidated(listener),
+          }
+        : { origin: async () => this.#baseUrl.origin },
+      options.desktopMedia,
+    );
     this.#personalTabActivations = new PersonalTabActivations({
       snapshot: () => this.#snapshot,
       subscribe: (listener) => this.subscribe(listener),
@@ -3146,6 +3165,7 @@ export class HttpHostClient {
   }
 
   dispose(): void {
+    this.assetUrls.dispose();
     this.#nodeDetails.clear();
     this.#pendingBrowserTabs.dispose();
     if (this.#disposed) return;
