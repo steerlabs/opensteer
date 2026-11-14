@@ -806,14 +806,6 @@ describe("Opensteer's own steps", () => {
   const opensteer = (name: string, args: Record<string, unknown> = {}) =>
     toolPresentation(tool({ arguments: args, tool: { name, namespace: "opensteer" } }));
 
-  it.each([
-    ["thread_delegate", "delegate_task"],
-    ["thread_message", "thread_send"],
-    ["request_list", "pending_request"],
-  ])("keeps stored %s calls readable after the %s cutover", (old, current) => {
-    expect(opensteer(old, { title: "Review" })).toEqual(opensteer(current, { title: "Review" }));
-  });
-
   it.each(["opensteer", "opensteer.integrations", "mcp:opensteer_integrations"])(
     "keeps integration summaries and model-only details consistent in %s",
     (namespace) => {
@@ -865,13 +857,16 @@ describe("Opensteer's own steps", () => {
       hint: "",
       label: "Restored tabs",
     });
-    expect(opensteer("thread_update", { action: "rename", title: "Tonight" })).toMatchObject({
+    expect(opensteer("opensteer_task_update", { title: "Tonight" })).toMatchObject({
       hint: "Tonight",
       hintKind: "prose",
       label: "Renamed a task",
     });
-    expect(opensteer("trigger_write", { action: "pause_all" }).label).toBe("Changed an automation");
-    expect(opensteer("thread_send").label).toBe("Sent a message");
+    expect(opensteer("opensteer_task_update", { done: false }).label).toBe("Reopened a task");
+    expect(opensteer("opensteer_automation_control", { action: "pause_all" }).label).toBe(
+      "Changed an automation",
+    );
+    expect(opensteer("opensteer_task_send").label).toBe("Sent to a task");
   });
 });
 
@@ -945,7 +940,7 @@ describe("passwordsSetupOffer", () => {
       arguments: { site },
       output: { text: JSON.stringify(result) },
       runId,
-      tool: { name: "use_saved_login", namespace: "opensteer" },
+      tool: { name: "saved_login_request", namespace: "opensteer" },
     });
   const notSetUp = { reason: "passwords-not-set-up", site, status: "unavailable" };
   const offer = (entries: Parameters<typeof groupTranscriptEntries>[0]) =>
@@ -958,7 +953,7 @@ describe("passwordsSetupOffer", () => {
         tool({
           arguments: { site },
           output: { text: JSON.stringify(result) },
-          tool: { name: "use_card", namespace: "opensteer" },
+          tool: { name: "card_request", namespace: "opensteer" },
         });
       const unavailable = card({ status: "unavailable", site, reason });
       const ready = card({
@@ -1012,7 +1007,7 @@ describe("passwordsSetupOffer", () => {
       output: {
         text: JSON.stringify({ reason: "chrome-signed-out", site, status: "unavailable" }),
       },
-      tool: { name: "copy_chrome_cookies", namespace: "opensteer" },
+      tool: { name: "chrome_cookies_request", namespace: "opensteer" },
     });
     expect(offer([chrome, run()])).toBeNull();
   });
@@ -1040,7 +1035,7 @@ describe("passwordsSetupOffer", () => {
 describe("sign-in steps", () => {
   const githubSite = "https://github.com";
   const step = (
-    name: "use_saved_login" | "copy_chrome_cookies",
+    name: "saved_login_request" | "chrome_cookies_request",
     result: unknown,
     overrides: Partial<ToolEntry> = {},
   ) =>
@@ -1058,7 +1053,7 @@ describe("sign-in steps", () => {
   it("says a saved login is ready, and copied cookies only as copied", () => {
     expect(
       head(
-        step("use_saved_login", {
+        step("saved_login_request", {
           status: "ready",
           site: githubSite,
           loginRef: `lgn_${"0".repeat(32)}`,
@@ -1074,7 +1069,7 @@ describe("sign-in steps", () => {
     });
     expect(
       head(
-        step("copy_chrome_cookies", {
+        step("chrome_cookies_request", {
           status: "copied",
           site: githubSite,
           sourceName: "Work",
@@ -1090,19 +1085,19 @@ describe("sign-in steps", () => {
 
   it.each([
     [
-      "use_saved_login",
+      "saved_login_request",
       { reason: "needs-approval", site: githubSite, status: "unavailable" },
       "Couldn’t use a saved login for github.com",
       "A task or automation can’t ask you to allow a sign-in",
     ],
     [
-      "use_saved_login",
+      "saved_login_request",
       { reason: "session-closed", site: githubSite, status: "unavailable" },
       "Couldn’t use a saved login for github.com",
       "The agent’s browser closed",
     ],
     [
-      "copy_chrome_cookies",
+      "chrome_cookies_request",
       { reason: "chrome-signed-out", site: githubSite, status: "unavailable" },
       "Couldn’t copy your Chrome sign-in for github.com",
       "Chrome isn’t signed in to github.com",
@@ -1119,7 +1114,7 @@ describe("sign-in steps", () => {
 
   it("says a decline as the card does, and a pending call as waiting", () => {
     const requestId = createId("request");
-    for (const name of ["use_saved_login", "copy_chrome_cookies"] as const)
+    for (const name of ["saved_login_request", "chrome_cookies_request"] as const)
       expect(head(step(name, { requestId, site: githubSite, status: "declined" }))).toMatchObject({
         icon: "alert-circle",
         label: "Not allowed",
@@ -1128,7 +1123,7 @@ describe("sign-in steps", () => {
       });
     expect(
       head(
-        step("use_saved_login", {
+        step("saved_login_request", {
           replayed: false,
           requestId,
           site: githubSite,
@@ -1138,7 +1133,7 @@ describe("sign-in steps", () => {
     ).toMatchObject({ icon: "browser", label: "Asked to use your saved login for github.com" });
     expect(
       head(
-        step("copy_chrome_cookies", {
+        step("chrome_cookies_request", {
           replayed: false,
           requestId,
           site: githubSite,
@@ -1149,14 +1144,16 @@ describe("sign-in steps", () => {
   });
 
   it("never reads unreadable output, an error or a running call as done", () => {
-    expect(head(step("use_saved_login", { site: githubSite, status: "signed-in" }))).toMatchObject({
+    expect(
+      head(step("saved_login_request", { site: githubSite, status: "signed-in" })),
+    ).toMatchObject({
       icon: "browser",
       label: "Tried to sign in to github.com",
     });
     expect(
       head(
         step(
-          "use_saved_login",
+          "saved_login_request",
           { status: "ready", site: githubSite, loginRef: `lgn_${"0".repeat(32)}`, account: "t" },
           { isError: true, state: "failed" },
         ),
@@ -1164,7 +1161,7 @@ describe("sign-in steps", () => {
     ).toMatchObject({ label: "Tried to sign in to github.com", tone: "error" });
     expect(
       head(
-        step("copy_chrome_cookies", null, {
+        step("chrome_cookies_request", null, {
           completedAt: null,
           output: undefined,
           state: "running",
@@ -1875,27 +1872,33 @@ describe("integration gateway steps", () => {
   } satisfies Partial<ToolEntry>;
 
   it.each([
-    { arguments: capturedRequest.arguments, target: "integration access" },
+    {
+      arguments: capturedRequest.arguments,
+      name: "integration_request",
+      target: "integration access",
+    },
     {
       arguments: { catalog: "google-gmail", reason: "Read the requested email." },
+      name: "integration_request",
       target: "integration access",
     },
     {
       arguments: {
         app: "com.tinyspeck.slackmacgap",
-        kind: "computer-app",
         reason: "Read the requested Slack message.",
       },
-      target: "app access on a Mac",
+      name: "app_access_request",
+      target: "app access",
     },
     {
-      arguments: { kind: "computer-app", reason: "Read the requested app." },
-      target: "app access on a Mac",
+      arguments: { computerId: "runner_1", reason: "Read the requested app." },
+      name: "app_access_request",
+      target: "app access",
     },
   ])(
     "labels a request for $target without naming its argument target",
-    ({ arguments: args, target }) => {
-      const entry = gateway("integration_request", { ...capturedRequest, arguments: args });
+    ({ arguments: args, name, target }) => {
+      const entry = gateway(name, { ...capturedRequest, arguments: args });
       const reason = args.reason;
       expect(toolPresentation(entry)).toMatchObject({
         activeLabel: `Requesting ${target}`,
@@ -2029,7 +2032,7 @@ describe("Host-authored computer operations", () => {
     });
     const outer = tool({
       createdAt: at(0),
-      tool: { name: "computer", namespace: "opensteer.integrations" },
+      tool: { name: "computer_use", namespace: "opensteer" },
       arguments: { code: "await app('Notes').window().click(1)" },
     });
     expect(toolPresentation(operation).kind).toBe("computer");
