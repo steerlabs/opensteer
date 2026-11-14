@@ -20,11 +20,10 @@ eligibility decide; cached usage exhaustion only affects ordering. The Host comp
 for the viewer, and an unbound preference never reaches an `openai-compatible` endpoint.
 
 The person's choices live in `settings.json` in Agent home
-([schema](../packages/core/src/background-models.ts)), which their agent edits with file tools;
-no Host command or agent tool writes it, and Settings only shows it. The hosting Runner reads it
-when it connects, before the Host dispatches anything, and at each Run's start and end, and watches
-it while connected. The Host keeps the last valid version: a broken file changes nothing, appears in
-Settings and reaches the agent's next Run. Each role's list runs before the recommended order, which is always appended, so a stale or
+([schema](../packages/core/src/background-models.ts)); their agent edits it with file tools and
+nothing else writes it. Agent home belongs to the hosting computer, so its Runner reports the file
+and the Host keeps the last valid version: a broken file changes nothing, shows in Settings and
+reaches the agent's next Run. The recommended order always follows each role's list, so a stale or
 mistyped choice never strands naming or memory.
 
 Selection happens before admission and freezes the endpoint for accepted work. Account changes
