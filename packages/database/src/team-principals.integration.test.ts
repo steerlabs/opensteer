@@ -152,6 +152,7 @@ it("keeps remote principals outside authority tables and channel audiences", asy
     "team_message_pins.pinned_by",
     "team_messages.author_user_id",
     "team_note_versions.writer_user_id",
+    "team_share_asks.target_principal_id",
     "team_share_participants.principal_id",
   ]);
 });

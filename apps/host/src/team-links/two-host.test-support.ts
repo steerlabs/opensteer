@@ -236,6 +236,7 @@ export async function createTwoHostLinkFixture() {
   const rawView = (row: Awaited<ReturnType<typeof teamRequestRow>>): TeamAgentRequest =>
     TeamAgentRequestSchema.parse({
       id: row.id,
+      kind: row.kind,
       ownerUserId: row.ownerUserId,
       channelId: row.channelId,
       threadRootId: row.threadRootId,
