@@ -1,3 +1,5 @@
+import { useTeamShareParticipants } from "@opensteer/client/react";
+import { ChannelShares } from "./channel-shares.js";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import type { TeamSessionClient } from "@opensteer/client/team";
 import {
@@ -16,7 +18,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootParamList } from "../navigation.js";
 import { color, space } from "../theme.js";
 import type { NativeMenuOption } from "../thread/composer-menu.js";
-import { AppText, Notice, RowGroup } from "../ui/primitives.js";
+import { AppText, Notice, RowGroup, SecondaryButton } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 import {
   ChannelDetailsBody,
@@ -235,6 +237,7 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
             ),
           onRestore: () => run({ type: "team.channel.restore", channelId: channelKey }),
         }}
+        sharing={<ChannelShares session={session} channel={value} />}
         archived={value.archivedAt !== null}
         canLeave={value.can.leave}
         canManage={value.can.manage}
@@ -258,8 +261,8 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
  */
 export function TeamMembersScreen(props: ChannelParams): ReactNode {
   const { teamId, channelId } = props.route.params;
-  const { session } = useTeamSession(teamId);
-  const { members, directory } = useTeamMembers(teamId);
+  const { session, snapshot } = useTeamSession(teamId);
+  const { members, directory } = useTeamMembers(teamId, channelId);
   const padding = useBottomPadding();
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
@@ -275,6 +278,11 @@ export function TeamMembersScreen(props: ChannelParams): ReactNode {
       return { list, groups: groups.groups, channel };
     },
     channelId,
+  );
+  const participants = useTeamShareParticipants(
+    session,
+    channelKey,
+    access.value?.channel.share ? query : null,
   );
   if (session === null || access.value === null)
     return (
@@ -371,7 +379,34 @@ export function TeamMembersScreen(props: ChannelParams): ReactNode {
       <MembersBody
         canAdd={canAdd}
         candidates={candidates}
-        members={rows}
+        members={[
+          ...rows,
+          ...participants.items
+            .filter((row) => snapshot.people?.[row.userId])
+            .map((row): MemberRowView => {
+              const person = personView(row.userId, directory);
+              return {
+                id: row.userId,
+                kind: "person",
+                name: person.name,
+                detail: `@${row.handle} · External · ${person.externalTeam}`,
+                person,
+                role: "member",
+                canRemove: false,
+              };
+            }),
+        ]}
+        more={
+          participants.nextCursor ? (
+            <SecondaryButton
+              label="More people"
+              busy={participants.loadingMore}
+              onPress={() => void participants.more()}
+            />
+          ) : participants.error ? (
+            <SecondaryButton label="Retry partner people" onPress={participants.reload} />
+          ) : null
+        }
         onAdd={() => setAdding((now) => !now)}
         onAddMember={(userId) =>
           groupDm
@@ -531,13 +566,12 @@ export function TeamPinnedScreen(props: ChannelParams): ReactNode {
   const { teamId, channelId } = props.route.params;
   const navigation = useNavigation<Navigation>();
   const { session, snapshot } = useTeamSession(teamId);
-  const { directory } = useTeamMembers(teamId);
+  const { directory } = useTeamMembers(teamId, channelId);
   const padding = useBottomPadding();
   const channelKey = TeamChannelIdSchema.parse(channelId);
   const read = useTeamRead(
     session,
-    async (team) =>
-      unwrapRpcResult(await team.rpc["team.pins.page"]({ channelId: channelKey })).messages,
+    async (team) => (await team.pinnedMessages(channelKey)).messages,
     channelId,
   );
   if (session === null || read.value === null)
@@ -788,6 +822,7 @@ export function TeamNoticesScreen(
   return (
     <Screen edgeToEdge>
       <ScrollView contentContainerStyle={[styles.form, { paddingBottom: padding }]}>
+        <ChannelShares session={session} />
         {read.value.length === 0 ? (
           <AppText role="secondary" tone="muted">
             Nothing from the team.

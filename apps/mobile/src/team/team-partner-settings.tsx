@@ -1,3 +1,4 @@
+import { ChannelShares } from "./channel-shares.js";
 import { useTeamPartnerSettings } from "@opensteer/client/react";
 import {
   partnerActionError,
@@ -87,6 +88,7 @@ function PartnerSettings({ session }: { readonly session: TeamSessionClient }): 
           />
         }
       >
+        <ChannelShares session={session} />
         <AppText role="secondary" tone="muted">
           Connect another team, then choose which channels to share with it.
         </AppText>

@@ -410,6 +410,7 @@ const ChannelRow = memo(function ChannelRow({ hrefFor, onOpen, open, row }: Chan
   const label = [
     dm ? row.name : `${row.kind === "private" ? "Private channel" : "Channel"} ${row.name}`,
     row.peopleOnly ? "people only" : null,
+    row.shared ? "shared channel" : null,
     row.mentions > 0 ? `${row.mentions} ${row.mentions === 1 ? "mention" : "mentions"}` : null,
     row.unread && row.mentions === 0 ? "unread" : null,
   ]
@@ -427,6 +428,11 @@ const ChannelRow = memo(function ChannelRow({ hrefFor, onOpen, open, row }: Chan
         <ChannelGlyph kind={row.kind} people={row.people} />
       </span>
       <span className="team-row__name">{row.name}</span>
+      {row.shared ? (
+        <span title="Shared channel">
+          <Icon name="link" />
+        </span>
+      ) : null}
       {row.peopleOnly ? <Icon className="team-row__people-only" name="user" /> : null}
       {row.mentions > 0 ? (
         <span aria-hidden className="mention-count">

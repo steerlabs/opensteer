@@ -1,3 +1,4 @@
+import { teamAskerLabel } from "@opensteer/client/team";
 import { useHostSelector } from "@opensteer/client/react";
 import { needsYouEntryKey, type HostClient } from "@opensteer/client/host";
 import type { NeedsYouTeamAskEntry } from "@opensteer/protocol";
@@ -64,9 +65,7 @@ function NeedsYouList({ client, deploymentId }: { client: HostClient; deployment
             style={{ padding: space[16], gap: space[8] }}
           >
             <AppText>
-              {entry.kind === "team-ask"
-                ? `${entry.presentation.asker.displayName}${entry.presentation.asker.actor === "agent" ? "'s agent" : ""}`
-                : entry.title}
+              {entry.kind === "team-ask" ? teamAskerLabel(entry.presentation.asker) : entry.title}
             </AppText>
             {entry.kind === "team-ask" ? (
               <AppText tone={entry.failureReason ? "danger" : "muted"}>

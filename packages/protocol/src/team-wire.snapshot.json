@@ -2973,6 +2973,18 @@
               },
               "localApproved": {
                 "type": "boolean"
+              },
+              "canApprove": {
+                "type": "boolean"
+              },
+              "canAccept": {
+                "type": "boolean"
+              },
+              "canEnd": {
+                "type": "boolean"
+              },
+              "peopleOnly": {
+                "type": "boolean"
               }
             },
             "required": [

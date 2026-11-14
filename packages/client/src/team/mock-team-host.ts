@@ -433,6 +433,7 @@ export class MockTeamHost {
           this.linkPresence.find((entry) => entry.ownerUserId === ownerUserId)?.online ?? false,
       }));
     const base = {
+      people: this.#contentPeople(messages),
       channel,
       throughSeq: channel.changeSeq,
       subscriptionId,
@@ -475,6 +476,34 @@ export class MockTeamHost {
       hasMore: messages.length > retained.length,
     });
   }
+  #contentPeople(messages: readonly TeamMessage[]) {
+    const ids = new Set(
+      messages.flatMap((message) => [
+        message.authorUserId,
+        ...message.mentions.map((mention) => mention.userId),
+        ...message.replySummary.repliers,
+      ]),
+    );
+    return Object.fromEntries(
+      [...ids].flatMap((id) =>
+        this.remotePeople[id]
+          ? [
+              [
+                id,
+                {
+                  ...this.remotePeople[id],
+                  handle:
+                    this.shareParticipants
+                      .get(messages[0]!.channelId)
+                      ?.find((person) => person.userId === id)?.handle ??
+                    this.remotePeople[id].handle,
+                },
+              ],
+            ]
+          : [],
+      ),
+    );
+  }
   async read(name: string, input: unknown): Promise<unknown> {
     if (name === "team.bootstrap.get") return { ...this.bootstrap, sidebar: this.#sidebarPage() };
     if (name === "team.sidebar.get") {
@@ -512,7 +541,7 @@ export class MockTeamHost {
       const { channelId, messageId } = hostApi[name].payload.parse(input),
         message = this.messages.get(messageId);
       if (message?.channelId !== channelId) throw new Error("Unknown message.");
-      return message;
+      return { ...message, people: this.#contentPeople([message]) };
     }
     if (name === "team.members.list") return { members: this.members, hasMore: false };
     if (name === "team.groups.list")
@@ -545,7 +574,9 @@ export class MockTeamHost {
         participants: selected,
         people: Object.fromEntries(
           selected.flatMap((p) =>
-            this.remotePeople[p.userId] ? [[p.userId, this.remotePeople[p.userId]]] : [],
+            this.remotePeople[p.userId]
+              ? [[p.userId, { ...this.remotePeople[p.userId], handle: p.handle }]]
+              : [],
           ),
         ),
         nextCursor: rows.length > 50 ? selected.at(-1)!.handle : null,
@@ -556,7 +587,30 @@ export class MockTeamHost {
       return {
         shares: [...this.shares.values()]
           .filter((s) => !channelId || s.channelId === channelId)
-          .slice(0, 50),
+          .slice(0, 50)
+          .map((share) => {
+            const manage =
+              !share.channelId || this.channels.get(share.channelId)?.can.manage === true;
+            const admin =
+              this.bootstrap.member.role !== "member" || this.sharingPolicy === "members";
+            return {
+              ...share,
+              canApprove:
+                manage &&
+                admin &&
+                this.sharingPolicy !== "off" &&
+                share.role === "owner" &&
+                share.state === "offered" &&
+                !share.localApproved,
+              canAccept:
+                manage &&
+                admin &&
+                this.sharingPolicy !== "off" &&
+                share.role === "follower" &&
+                share.state === "offered",
+              canEnd: manage && admin && share.state !== "ended",
+            };
+          }),
       };
     }
     if (name === "team.sharing.policy.get")
@@ -646,17 +700,20 @@ export class MockTeamHost {
         ),
       };
     }
-    if (name === "team.mentions.page" || name === "team.pins.page")
-      return {
-        messages: [...this.messages.values()]
-          .filter((row) =>
-            name === "team.pins.page"
+    if (name === "team.mentions.page" || name === "team.pins.page") {
+      const { channelId, before } = hostApi[name].payload.parse(input);
+      const messages = [...this.messages.values()]
+        .filter(
+          (row) =>
+            (!channelId || row.channelId === channelId) &&
+            (!before || BigInt(row.id) < BigInt(before)) &&
+            (name === "team.pins.page"
               ? row.pinned
-              : row.mentions.some((mention) => mention.userId === this.userId),
-          )
-          .slice(-50),
-        hasMore: false,
-      };
+              : row.mentions.some((mention) => mention.userId === this.userId)),
+        )
+        .slice(-50);
+      return { people: this.#contentPeople(messages), messages, hasMore: false };
+    }
     if (name === "team.files.page") {
       const { channelId } = hostApi[name].payload.parse(input);
       return {
@@ -757,7 +814,17 @@ export class MockTeamHost {
         share.channelId = command.id;
         share.state = "active";
         share.ready = true;
-        return { type: command.type, channel: this.channels.get(command.id) };
+        const channel = this.channels.get(command.id)!;
+        channel.share = {
+          role: "follower",
+          state: "shared",
+          teamId:
+            [...this.partners.values()].find((p) => p.partnerName === share.partnerName)
+              ?.partnerTeamId ?? this.teamId,
+          teamName: share.partnerName,
+        };
+        this.publish();
+        return { type: command.type, channel };
       }
       if (command.type.startsWith("team.partner.") || command.type === "team.sharing.policy.set") {
         const admin = this.bootstrap.member.role !== "member";
@@ -1221,6 +1288,21 @@ export class MockTeamHost {
         return { type: command.type };
       }
       if (command.type === "team.message.send") {
+        const channel = this.channels.get(command.channelId);
+        if (!channel?.can.post)
+          throw new OpensteerError({ code: "forbidden", message: "This channel is read only" });
+        if (
+          channel.share?.role === "follower" &&
+          [...this.partners.values()].some(
+            (p) => p.partnerTeamId === channel.share?.teamId && !p.connected,
+          )
+        )
+          throw new OpensteerError({
+            code: "conflict",
+            reason: "partner-unreachable",
+            message: "Partner is unreachable",
+            retryable: true,
+          });
         let message = [...this.messages.values()].find(
           (row) =>
             row.clientMessageId === command.clientMessageId && row.authorUserId === this.userId,
@@ -1282,6 +1364,7 @@ export class MockTeamHost {
         )
         .sort((a, b) => Number(BigInt(a.id) - BigInt(b.id)));
       return {
+        people: this.#contentPeople(rows),
         channel: this.channels.get(payload.channelId),
         messages: payload.page.direction === "after" ? rows.slice(0, 50) : rows.slice(-50),
         hasMore: rows.length > 50,
@@ -1303,6 +1386,7 @@ export class MockTeamHost {
         )
         .sort((a, b) => Number(BigInt(b.id) - BigInt(a.id)));
       return {
+        people: this.#contentPeople(matches.slice(0, 50)),
         results: matches.slice(0, 50).map((message) => ({
           message,
           source: {
@@ -1368,8 +1452,17 @@ export class MockTeamHost {
     const channel = this.channels.get(input.channelId);
     if (!channel) throw new Error("Unknown channel.");
     const authorUserId = input.authorUserId ?? this.userId;
-    if (!this.members.some((member) => member.userId === authorUserId))
-      throw new Error("Unknown member.");
+    if (
+      !this.members.some((member) => member.userId === authorUserId) &&
+      !(
+        channel.share &&
+        this.remotePeople[authorUserId] &&
+        this.shareParticipants
+          .get(input.channelId)
+          ?.some((person) => person.userId === authorUserId && person.state === "active")
+      )
+    )
+      throw new Error("Unknown channel participant.");
     const message = TeamMessageSchema.parse({
       authorUserId,
       authorKind: "human",

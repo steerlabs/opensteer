@@ -45,6 +45,7 @@ export interface ChannelDetailsActions {
  * managers, Access (People only) and Archive, or Restore once archived.
  */
 export function ChannelDetailsBody(props: {
+  readonly sharing?: ReactNode;
   readonly actions: ChannelDetailsActions;
   readonly channel: ChannelHeaderView;
   readonly canManage: boolean;
@@ -146,6 +147,7 @@ export function ChannelDetailsBody(props: {
           ),
         ].filter((row) => row !== null)}
       </RowGroup>
+      {props.sharing}
       <View style={styles.group}>
         <SectionLabel>You</SectionLabel>
         <RowGroup>
@@ -343,6 +345,7 @@ export function InstructionsBody(props: {
  */
 export function MembersBody(props: {
   readonly members: readonly MemberRowView[];
+  readonly more?: ReactNode;
   readonly query: string;
   readonly onQuery: (query: string) => void;
   readonly canAdd: boolean;
@@ -428,6 +431,7 @@ export function MembersBody(props: {
           </View>
         ))}
       </RowGroup>
+      {props.more}
     </ScrollView>
   );
 }

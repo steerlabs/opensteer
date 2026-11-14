@@ -213,6 +213,7 @@ const ChannelRow = memo(function ChannelRow(props: {
   const label = [
     channel.kind === "private" ? `${channel.name}, private` : channel.name,
     channel.peopleOnly ? "people only" : null,
+    channel.shared ? "shared channel" : null,
     channel.mentions > 0 ? `${channel.mentions} mentions` : channel.unread ? "unread" : null,
   ]
     .filter(Boolean)
@@ -240,6 +241,7 @@ const ChannelRow = memo(function ChannelRow(props: {
       >
         {channel.name}
       </AppText>
+      {channel.shared ? <Symbol name="link" size={12} tint={color.muted} /> : null}
       {channel.peopleOnly ? <PeopleOnlyBadge compact /> : null}
       <MentionCount count={channel.mentions} />
     </Pressable>

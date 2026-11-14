@@ -58,8 +58,8 @@ function MentionRow(props: {
     option.kind === "my-agent"
       ? option.detail
       : option.kind === "person"
-        ? `@${option.person.handle}`
-        : `Ask ${option.owner.name.split(" ")[0]}`;
+        ? `@${option.person.handle}${option.person.externalTeam ? ` · External · ${option.person.externalTeam}` : ""}`
+        : `Ask ${option.owner.name.split(" ")[0]}${option.owner.externalTeam ? ` · External · ${option.owner.externalTeam}` : ""}`;
   return (
     <Pressable
       accessibilityHint={option.kind === "agent" ? detail : undefined}

@@ -1,4 +1,4 @@
-import { teamAskAudienceLabel } from "@opensteer/client/team";
+import { teamAskerLabel, teamAskAudienceLabel } from "@opensteer/client/team";
 import { useNavigation } from "@react-navigation/native";
 import { useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
@@ -21,7 +21,7 @@ export function TeamAskReview({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { presentation: ask } = entry;
-  const name = ask.asker.displayName + (ask.asker.actor === "agent" ? "'s agent" : "");
+  const name = teamAskerLabel(ask.asker);
   const decide = async (decision: "approve" | "decline") => {
     setPending(true);
     setError(null);
