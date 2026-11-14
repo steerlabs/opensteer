@@ -80,6 +80,16 @@ import {
  */
 class OAuthGrantRefusedError extends Error {}
 
+/** The token endpoint answered without a verdict on the grant, so the credential stands. */
+class OAuthTokenEndpointFailedError extends ClientOperationError {
+  constructor() {
+    super("The authorization server could not complete the token exchange.", "transient");
+  }
+}
+
+// RFC 6749 §5.2: the verdicts that the grant or its client can never be used again.
+const OAuthGrantRefusalSchema = z.object({ error: z.enum(["invalid_grant", "invalid_client"]) });
+
 /** A team Host turned the person away: not a member, or an invite that no longer works. */
 export class TeamEntryRefusedError extends ClientOperationError {
   readonly reason: TeamEntryRefusalReason;
@@ -131,8 +141,11 @@ const accountAuthorizationExpiredDetail =
   "Your Opensteer Account authorization expired. Sign in again.";
 const accountUnreachableDetail =
   "Your Opensteer account couldn’t be reached. Check your connection and try again.";
+const accountRenewalFailedDetail =
+  "Your Opensteer account couldn’t renew your sign-in. Try again in a moment.";
 const hostUnreachableDetail =
   "This server couldn’t be reached. Check your connection and try again.";
+const hostRenewalFailedDetail = "This server couldn’t renew your sign-in. Try again in a moment.";
 const revocationUnconfirmedDetail =
   "Signed out locally; server-side revocation could not be confirmed.";
 const hostAuthorizationTimedOutDetail = "Authorization timed out. Sign in again.";
@@ -1108,7 +1121,13 @@ export class NativeOAuthManager implements HostCredentialProvider {
           this.#emitHost(connection);
           return null;
         }
-        throw new ClientOperationError(hostUnreachableDetail, "transient", { cause: error });
+        throw new ClientOperationError(
+          error instanceof OAuthTokenEndpointFailedError
+            ? hostRenewalFailedDetail
+            : hostUnreachableDetail,
+          "transient",
+          { cause: error },
+        );
       }
       let next: HostCredential;
       try {
@@ -1231,7 +1250,13 @@ export class NativeOAuthManager implements HostCredentialProvider {
         return null;
       }
       if (this.#accountSession !== session) return null;
-      throw new ClientOperationError(accountUnreachableDetail, "transient", { cause: error });
+      throw new ClientOperationError(
+        error instanceof OAuthTokenEndpointFailedError
+          ? accountRenewalFailedDetail
+          : accountUnreachableDetail,
+        "transient",
+        { cause: error },
+      );
     }
     let next: AccountCredential;
     try {
@@ -1554,14 +1579,15 @@ export class NativeOAuthManager implements HostCredentialProvider {
     if (response.ok && response.body !== undefined) {
       return OAuthTokenResponseSchema.parse(response.body);
     }
-    // RFC 6749 §5.2 answers a refused grant with 400, or 401 for the client.
-    if (response.status === 400 || response.status === 401) {
+    // RFC 6749 §5.2 answers a refused grant with 400, or 401 for the client. A
+    // bare 400 or 401 can come from a proxy or a misconfigured server instead.
+    if (
+      (response.status === 400 || response.status === 401) &&
+      OAuthGrantRefusalSchema.safeParse(response.body).success
+    ) {
       throw new OAuthGrantRefusedError("The authorization server rejected the token exchange.");
     }
-    throw new ClientOperationError(
-      "The authorization server could not complete the token exchange.",
-      "transient",
-    );
+    throw new OAuthTokenEndpointFailedError();
   }
 
   async #revoke(endpoints: OAuthEndpoints, token: string, resource: string): Promise<void> {
@@ -1611,15 +1637,25 @@ export class NativeOAuthManager implements HostCredentialProvider {
       if (response.redirected || (response.url !== "" && response.url !== endpoint)) {
         throw new Error("The authorization server endpoint redirected.");
       }
+      const json =
+        acceptJson &&
+        response.headers.get("content-type")?.split(";", 1)[0]?.trim() === "application/json";
       if (acceptJson && response.ok) {
-        const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
-        if (contentType !== "application/json") {
+        if (!json) {
           await response.body?.cancel();
           throw new Error("The authorization server did not return application/json.");
         }
         return {
           body: await readBoundedJson(response, boundedJsonOptions),
           ok: true,
+          status: response.status,
+        };
+      }
+      // A refusal's body says whether the grant is dead; an unreadable one says nothing.
+      if (json) {
+        return {
+          body: await readBoundedJson(response, boundedJsonOptions).catch(() => undefined),
+          ok: false,
           status: response.status,
         };
       }

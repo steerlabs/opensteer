@@ -185,7 +185,7 @@ a{color:var(--accent)}
 const verifier=location.hash.slice(1),selector=location.pathname.split('/').pop(),authorize=new URLSearchParams(location.search).get('authorize');history.replaceState(null,'',location.pathname);
 const versionHeaders=${versionHeaders()},el=(id)=>document.getElementById(id);
 const show=(id)=>{for(const main of document.querySelectorAll('main'))main.hidden=main.id!==id;};
-const post=async(path,input)=>{const r=await fetch(path,{method:'POST',headers:{...versionHeaders,'content-type':'application/json'},body:JSON.stringify(input),redirect:'error'});const body=await r.json().catch(()=>null);if(!r.ok)throw Object.assign(new Error(body?.message??'Something went wrong. Try again.'),{reason:body?.reason});return body;};
+const post=async(path,input)=>{const r=await fetch(path,{method:'POST',headers:{...versionHeaders,'content-type':'application/json'},body:JSON.stringify(input),redirect:'error'});const body=await r.json().catch(()=>null);if(!r.ok)throw Object.assign(new Error(body?.error?.message??'Something went wrong. Try again.'),{reason:body?.error?.reason});return body;};
 ${teamSignInScript}
 const refuse=(reason)=>{el('refused-title').textContent=reason==='invite-expired'?'This invite has expired':reason==='invite-used-up'?'This invite has been used up':reason==='missing'?'Open your invite link again':"This invite doesn't work";show('refused');};
 const mobile=/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)||(navigator.maxTouchPoints>1&&/Macintosh/.test(navigator.userAgent));

@@ -374,6 +374,7 @@
     "apps/host/src/server/egress-service.ts",
     "apps/host/src/server/host-api-handlers.ts",
     "apps/host/src/server/host-api-registration.ts",
+    "apps/host/src/server/host-http-boundary.ts",
     "apps/host/src/server/http-errors.ts",
     "apps/host/src/server/internal-routes.ts",
     "apps/host/src/server/request-abort-signal.ts",

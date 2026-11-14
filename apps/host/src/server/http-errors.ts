@@ -18,12 +18,8 @@ export interface NormalizedHostError {
 }
 
 export function normalizeHostError(error: unknown): NormalizedHostError {
-  if (error instanceof Error && "code" in error && error.code === "FST_ERR_CTP_BODY_TOO_LARGE") {
-    return {
-      error: { code: "bad_request", message: "Request body is too large", retryable: false },
-      status: 413,
-    };
-  }
+  const refusal = fastifyRequestRefusal(error);
+  if (refusal) return refusal;
   // A malformed body reaches the handler as a parse failure, not as a fault of
   // this Deployment; both spellings of that failure are the caller's mistake.
   if (error instanceof z.ZodError || error instanceof SyntaxError) {
@@ -59,6 +55,32 @@ export function normalizeHostError(error: unknown): NormalizedHostError {
   return {
     error: { code: "internal", message: "Internal server error", retryable: false },
     status: 500,
+  };
+}
+
+const fastifyRefusalMessages: Readonly<Record<number, string>> = {
+  413: "Request body is too large",
+  415: "Request content type is not supported",
+};
+
+/**
+ * Fastify refuses an unsupported, malformed or oversized body before any route
+ * runs. That is the caller's mistake, so it keeps Fastify's 4xx status with a
+ * fixed message rather than becoming this Deployment's 500.
+ */
+function fastifyRequestRefusal(error: unknown): NormalizedHostError | undefined {
+  if (!(error instanceof Error) || !("code" in error) || !("statusCode" in error)) return;
+  const { code, statusCode } = error;
+  if (typeof code !== "string" || !code.startsWith("FST_") || typeof statusCode !== "number")
+    return;
+  if (statusCode < 400 || statusCode > 499) return;
+  return {
+    error: {
+      code: "bad_request",
+      message: fastifyRefusalMessages[statusCode] ?? "Request is invalid",
+      retryable: false,
+    },
+    status: statusCode,
   };
 }
 
