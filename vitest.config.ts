@@ -37,6 +37,8 @@ export default defineConfig({
     sequence: { sequencer: CiSequencer },
     setupFiles: ["./tests/process-supervisor-setup.test-support.ts"],
     pool: "forks",
+    retry: 0,
+    runner: "./scripts/quarantine-runner.ts",
     restoreMocks: true,
   },
 });

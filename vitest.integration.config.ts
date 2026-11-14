@@ -36,7 +36,7 @@ export default defineConfig({
     // The default reporter keeps the final summary; the other prints each failure as it happens.
     // Both run inside the run record's reporter, which accounts for every one of their hooks.
     reporters: [new RunRecordReporter([new DefaultReporter(), new IntegrationFailureReporter()])],
-    runner: "./packages/database/src/lock-order-runner.test-support.ts",
+    runner: "./scripts/integration-quarantine-runner.ts",
     // Integration hooks clone databases and start production services; give them the
     // same budget as the tests they set up.
     hookTimeout: 30_000,

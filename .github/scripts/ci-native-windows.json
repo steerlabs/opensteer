@@ -23,6 +23,9 @@
     "tests/process-supervisor-setup.test-support.ts",
     "scripts/process-supervisor-path.ts",
     "apps/host/src/main.ts",
-    "apps/runner/src/main.ts"
+    "apps/runner/src/main.ts",
+    "scripts/quarantine-runner.ts",
+    "scripts/quarantine.ts",
+    "tests/quarantine.json"
   ]
 }

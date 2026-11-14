@@ -25,9 +25,10 @@ export function validateResults(plan, needs, event, sha) {
     (event !== "schedule" ||
       plan.unchangedSince !== sha ||
       tasks.length ||
-      Object.values(plan.lanes).some(Boolean))
+      !plan.lanes.lint ||
+      Object.entries(plan.lanes).some(([lane, selected]) => lane !== "lint" && selected))
   )
-    throw new Error("Only a scheduled run on an unchanged main may skip everything");
+    throw new Error("Only a scheduled run on an unchanged main may run just lint");
   // The scheduled and manual runs back up main's per-push native selection.
   const full = !unchanged && (event === "schedule" || event === "workflow_dispatch");
   if (full && tasks.length !== allNativeMacTasks.length)
@@ -37,7 +38,7 @@ export function validateResults(plan, needs, event, sha) {
     const output = needs.changes.outputs?.[lane];
     if (typeof flag !== "boolean" || output !== String(flag))
       throw new Error(`Missing/invalid plan output: ${lane}`);
-    if (lane === "lint" && !flag && !unchanged) throw new Error("Lint must run");
+    if (lane === "lint" && !flag) throw new Error("Lint must run");
     // Main selects its native work per push; every other lane runs there.
     if (!flag && (full || (event === "push" && !lane.startsWith("native-"))))
       throw new Error("Main/scheduled/manual forbids skips");

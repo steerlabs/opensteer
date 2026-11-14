@@ -9,7 +9,7 @@ on:
   push:
     branches:
       - main
-  # Main picks its native tasks per push; this full run backs that up, and skips
+  # Main picks its native tasks per push; this full run backs that up, and skips heavy lanes
   # when main has not changed since the last full run.
   schedule:
     - cron: "23 */4 * * *"
@@ -17,7 +17,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.event_name == 'push' && github.ref || github.event.pull_request.number || github.sha }}-${{ github.event_name }}
+  group: ci-${{ github.event.pull_request.number || github.sha }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   changes:
@@ -76,6 +76,8 @@ jobs:
           {
             pnpm format:check
             pnpm lint
+            node .github/scripts/ci-team-api.mjs
+            pnpm exec tsx scripts/quarantine.ts
             # Prose guards: docs-only changes run no test lane, so lint carries them.
             pnpm exec vitest run tests/product-name-spelling.test.ts
             node --test .github/scripts/*.test.mjs
