@@ -13,7 +13,16 @@ import { Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from "react
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import type { MobileTeam } from "../team/mobile-teams.js";
 import { TeamTile } from "../team/team-marks.js";
-import { color, controlFontScaleLimit, material, mix, radius, space, type } from "../theme.js";
+import {
+  color,
+  controlFontScaleLimit,
+  material,
+  mix,
+  radius,
+  space,
+  touchTarget,
+  type,
+} from "../theme.js";
 import { NativeMenu, type NativeMenuSection } from "../thread/composer-menu.js";
 import { duration, move } from "../ui/motion.js";
 import { Symbol } from "../ui/symbol.js";
@@ -214,7 +223,7 @@ function FoldedSegment(props: {
         onPress: () => props.onSelect(team.teamId),
       }))}
       style={styles.fill}
-      triggerStyle={styles.face}
+      triggerStyle={[styles.face, styles.menuFace]}
     >
       <View style={styles.mark}>
         <Symbol name="ellipsis" size={16} tint={color.muted} weight="semibold" />
@@ -281,7 +290,7 @@ function Segment(props: {
         accessibilityState={{ selected: chosen }}
         options={props.menu}
         style={styles.fill}
-        triggerStyle={[styles.face, styles.spelled]}
+        triggerStyle={[styles.face, styles.menuFace, styles.spelled]}
       >
         {face}
       </NativeMenu>
@@ -429,6 +438,11 @@ const styles = StyleSheet.create({
   label: { color: color.textSoft, flexShrink: 1, fontWeight: "600" },
   mark: { alignItems: "center", height: 20, justifyContent: "center", minWidth: 20 },
   markOnly: { width: markSegmentWidth },
+  // A menu's trigger takes no hit slop, so it reaches a full touch target past the plate.
+  menuFace: {
+    height: touchTarget,
+    marginVertical: -(touchTarget - segmentHeight) / 2,
+  },
   onAmber: { color: color.inkOnAmber },
   onEmber: { color: color.inkOnEmber },
   pressed: { ...material.quiet },

@@ -32,16 +32,16 @@ describe("the switch's segments", () => {
   });
 
   it("folds what the track can't hold, always drawing Tasks and the chosen side", () => {
-    // 236 points hold the chosen segment and two marks: Tasks, the fold, and the chosen team.
-    const narrow = switchLayout(sides, "e", 236);
+    // 240 points hold the chosen segment and two marks: Tasks and the fold.
+    const narrow = switchLayout(sides, "e", 240);
     expect(narrow.shown).toEqual(["tasks", "e"]);
     expect(narrow.folded).toEqual(["a", "b", "c", "d", "f"]);
-    // 316 points hold it and four marks: three teams and the fold.
+    // 316 points hold it and three marks: two teams and the fold.
     const wide = switchLayout(sides, "tasks", 316);
-    expect(wide.shown).toEqual(["tasks", "a", "b", "c"]);
-    expect(wide.folded).toEqual(["d", "e", "f"]);
+    expect(wide.shown).toEqual(["tasks", "a", "b"]);
+    expect(wide.folded).toEqual(["c", "d", "e", "f"]);
     // Every side is reachable exactly once.
-    for (const width of [180, 236, 280, 316, 400])
+    for (const width of [180, 240, 280, 316, 400])
       for (const active of sides) {
         const layout = switchLayout(sides, active, width);
         expect([...layout.shown, ...layout.folded].sort()).toEqual([...sides].sort());

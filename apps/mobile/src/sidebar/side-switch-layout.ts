@@ -2,8 +2,8 @@ import type { SidebarSide } from "./sidebar-side.js";
 
 /** A segment drawn as its mark alone, at a full touch target. */
 export const markSegmentWidth = 44;
-/** The least the chosen segment keeps for its mark, a few letters of its name and its count. */
-export const chosenSegmentMinWidth = 104;
+/** The least the chosen segment keeps: its mark, count and menu arrow, and a short name whole. */
+export const chosenSegmentMinWidth = 140;
 export const segmentGap = 2;
 export const trackPadding = 3;
 
