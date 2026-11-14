@@ -51,6 +51,7 @@ it("uses durable operation IDs and attaches reply claims only for the exact Run 
     },
   });
   const request = PersonalTeamRequestSchema.parse({
+    kind: "self",
     teamId: source.teamId,
     requestId: createId("teamAgentRequest"),
     triggerMessageId: "2",

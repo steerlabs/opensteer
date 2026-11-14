@@ -45,7 +45,6 @@ import {
 import {
   KnowledgeNoteIdSchema,
   SequenceSchema,
-  TeamAudienceSchema,
   TeamAskPresentationViewSchema,
   TeamAskOutcomeSchema,
   TeamAgentReturnPayloadViewSchema,
@@ -261,7 +260,8 @@ export const TeamMessagePageViewSchema = z.object({
 
 export const TeamTaskOriginViewSchema = z.object({ ...TeamTaskOriginSchema.shape });
 
-export const TeamAudienceViewSchema = z.object({ ...TeamAudienceSchema.shape });
+export { TeamAudienceViewSchema } from "@opensteer/core";
+import { TeamAudienceViewSchema } from "@opensteer/core";
 
 export const TeamSourceViewSchema = TeamTaskOriginViewSchema.extend({
   threadRootId: TeamMessageIdSchema.nullable(),

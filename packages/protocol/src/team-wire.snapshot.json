@@ -7297,8 +7297,7 @@
                           "required": [
                             "teamId",
                             "name"
-                          ],
-                          "additionalProperties": false
+                          ]
                         }
                       },
                       "teamName": {
@@ -16356,8 +16355,7 @@
                                   "required": [
                                     "teamId",
                                     "name"
-                                  ],
-                                  "additionalProperties": false
+                                  ]
                                 }
                               },
                               "teamName": {
@@ -16590,8 +16588,7 @@
                               "required": [
                                 "teamId",
                                 "name"
-                              ],
-                              "additionalProperties": false
+                              ]
                             }
                           },
                           "teamName": {
@@ -17311,8 +17308,7 @@
                                         "required": [
                                           "teamId",
                                           "name"
-                                        ],
-                                        "additionalProperties": false
+                                        ]
                                       }
                                     },
                                     "teamName": {
@@ -17430,8 +17426,7 @@
                                     "required": [
                                       "teamId",
                                       "name"
-                                    ],
-                                    "additionalProperties": false
+                                    ]
                                   }
                                 },
                                 "teamName": {
@@ -17501,8 +17496,7 @@
                                 "required": [
                                   "teamId",
                                   "name"
-                                ],
-                                "additionalProperties": false
+                                ]
                               }
                             },
                             "teamName": {
@@ -18360,8 +18354,7 @@
                                     "required": [
                                       "teamId",
                                       "name"
-                                    ],
-                                    "additionalProperties": false
+                                    ]
                                   }
                                 },
                                 "teamName": {
@@ -18988,8 +18981,7 @@
                                           "required": [
                                             "teamId",
                                             "name"
-                                          ],
-                                          "additionalProperties": false
+                                          ]
                                         }
                                       },
                                       "teamName": {
@@ -19621,8 +19613,7 @@
                                 "required": [
                                   "teamId",
                                   "name"
-                                ],
-                                "additionalProperties": false
+                                ]
                               }
                             },
                             "teamName": {

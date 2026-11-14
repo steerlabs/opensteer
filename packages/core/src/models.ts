@@ -1,7 +1,7 @@
 import {
   TeamTaskOriginSchema,
   TeamSourceSchema,
-  TeamAudienceSchema,
+  TeamAudienceViewSchema,
   TeamRunDeliverySchema,
   TeamRunDeliveryViewSchema,
 } from "./team.js";
@@ -662,9 +662,7 @@ const threadInputShape = {
 export const ThreadInputSchema = z.strictObject(threadInputShape);
 export const ThreadInputViewSchema = z.object({
   ...threadInputShape,
-  teamSource: z
-    .object({ ...TeamSourceSchema.shape, audience: z.object(TeamAudienceSchema.shape) })
-    .nullable(),
+  teamSource: z.object({ ...TeamSourceSchema.shape, audience: TeamAudienceViewSchema }).nullable(),
   replyTarget: ReplyTargetViewSchema.nullable(),
 });
 export type ThreadInput = z.infer<typeof ThreadInputSchema>;

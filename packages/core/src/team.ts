@@ -13,11 +13,12 @@ import {
 
 export const TeamChannelKindSchema = z.enum(["public", "private", "dm", "group_dm"]);
 export type TeamChannelKind = z.infer<typeof TeamChannelKindSchema>;
+const TeamExternalTeamSchema = z.strictObject({
+  teamId: DeploymentIdSchema,
+  name: z.string().min(1).max(160),
+});
 export const TeamAudienceSchema = z.strictObject({
-  externalTeams: z
-    .array(z.strictObject({ teamId: DeploymentIdSchema, name: z.string().min(1).max(160) }))
-    .max(1)
-    .optional(),
+  externalTeams: z.array(TeamExternalTeamSchema).max(1).optional(),
   teamName: z.string().min(1).max(160),
   channelName: z.string().min(1).max(160),
   channelKind: TeamChannelKindSchema,
@@ -25,6 +26,10 @@ export const TeamAudienceSchema = z.strictObject({
   peopleOnly: z.boolean(),
 });
 export type TeamAudience = z.infer<typeof TeamAudienceSchema>;
+export const TeamAudienceViewSchema = z.object({
+  ...TeamAudienceSchema.shape,
+  externalTeams: z.array(z.object(TeamExternalTeamSchema.shape)).max(1).optional(),
+});
 export const TeamTaskOriginSchema = z.strictObject({
   teamId: DeploymentIdSchema,
   channelId: TeamChannelIdSchema,
@@ -121,7 +126,7 @@ export const TeamAskPresentationViewSchema = z.object({
   asker: z.object(TeamAskerSchema.shape),
   attachments: z.array(z.object(TeamAttachmentRefSchema.shape)).max(10),
   destination: z.object(TeamTaskOriginSchema.shape),
-  audience: z.object(TeamAudienceSchema.shape),
+  audience: TeamAudienceViewSchema,
 });
 export type TeamAskPresentation = z.infer<typeof TeamAskPresentationSchema>;
 export const TeamAgentReturnOutcomeSchema = z.enum([
