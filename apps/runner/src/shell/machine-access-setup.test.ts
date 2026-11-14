@@ -825,6 +825,23 @@ describe("OpenSSH configuration", () => {
 });
 
 describe("machine access notice", () => {
+  it("keeps the notice identical across inventory order and elapsed time", () => {
+    const context = machineContext();
+    const inventory = {
+      ...context,
+      machines: [
+        ...context.machines,
+        {
+          ...machine("beta", "Beta"),
+          status: "offline" as const,
+          lastSeenAt: "2026-09-13T10:00:00.000Z",
+        },
+      ],
+    };
+    expect(renderMachineAccessNotice(inventory)).toBe(
+      renderMachineAccessNotice({ ...inventory, machines: [...inventory.machines].reverse() }),
+    );
+  });
   it("renders online, offline, shares and omitted machines", () => {
     const context = machineContext();
     const notice = renderMachineAccessNotice(
@@ -843,10 +860,9 @@ describe("machine access notice", () => {
         ],
         omittedMachines: 3,
       },
-      Date.parse("2026-09-13T12:00:00.000Z"),
     );
     expect(notice).toContain("alpha (macOS, online)");
-    expect(notice).toContain("build-box (macOS, offline 2h)");
+    expect(notice).toContain("build-box (macOS, offline)");
     expect(notice).toContain("/srv/data (read-only); commands off; port forwarding off.");
     expect(notice).toContain("commands allowed; port forwarding allowed.");
     expect(notice).toContain(
@@ -910,7 +926,11 @@ describe("machine access notice", () => {
     expect(fitted.callerMachineName).toBe(context.callerMachineName);
     expect(notice).toContain(`This Run is on ${context.callerMachineName}.`);
     expect(fitted.machines.length).toBeGreaterThan(0);
-    expect(fitted.machines).toEqual(machines.slice(0, fitted.machines.length));
+    expect(fitted.machines).toEqual(
+      machines
+        .toSorted((a, b) => (a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0))
+        .slice(0, fitted.machines.length),
+    );
     expect(fitted.omittedMachines).toBe(3 + machines.length - fitted.machines.length);
     expect(notice).toContain(
       `…and ${fitted.omittedMachines} more computers are not listed and cannot be addressed this Run.`,
@@ -958,10 +978,8 @@ describe("machine access notice", () => {
   });
 
   it("renders the reason when nothing is listed", () => {
-    const now = Date.parse("2026-09-13T12:00:00.000Z");
     const notice = renderMachineAccessNotice(
       { callerMachineName: "cloud-1", machines: [], omittedMachines: 2 },
-      now,
       "driver-access-mode",
     );
     expect(notice).toContain(
@@ -977,7 +995,6 @@ describe("machine access notice", () => {
     expect(
       renderMachineAccessNotice(
         { callerMachineName: "cloud-1", machines: [], omittedMachines: 0 },
-        now,
         "none-reachable",
       ),
     ).toBe(noReachableComputersNotice("cloud-1"));
@@ -1072,7 +1089,7 @@ type SetupOptions = Omit<
   Parameters<typeof setupMachineAccess>[0],
   "plan" | "workspacePath" | "wrapModelCommand" | "wrapProcessLaunch"
 > &
-  Omit<Parameters<typeof planMachineAccess>[0], "now"> & {
+  Parameters<typeof planMachineAccess>[0] & {
     readonly workspacePath?: string;
     readonly wrapModelCommand?: Parameters<typeof setupMachineAccess>[0]["wrapModelCommand"];
     readonly wrapProcessLaunch?: Parameters<typeof setupMachineAccess>[0]["wrapProcessLaunch"];

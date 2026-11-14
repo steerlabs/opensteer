@@ -2796,7 +2796,6 @@ export class RunnerRuntime {
                   omittedMachines:
                     machineAccessContext.machines.length + machineAccessContext.omittedMachines,
                 },
-                Date.now(),
                 machineAccessUnavailable,
               ),
         machineAccessPlatform: launch?.machineAccessPlatform,

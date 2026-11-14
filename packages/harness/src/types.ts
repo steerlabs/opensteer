@@ -386,7 +386,7 @@ export interface HarnessSkill {
 
 export function durableHistoryWindowNotice(context: HarnessSessionContext): string | undefined {
   if (!context.historyWindow.hasEarlier) return undefined;
-  return `Opensteer supplied the most recent ${context.historyWindow.itemCount} durable messages (${context.historyWindow.byteCount} serialized bytes) to this session. Earlier messages remain canonical on the Host and can be retrieved with thread_read.`;
+  return "Opensteer supplied a recent window of durable messages to this session. Earlier messages remain canonical on the Host and can be retrieved with thread_read.";
 }
 
 /**
