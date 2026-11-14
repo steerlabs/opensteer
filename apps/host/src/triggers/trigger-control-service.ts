@@ -20,7 +20,7 @@ const TriggerCapabilityScopeSchema = z.strictObject({
   runnerBootId: z.string().min(1).max(255),
   runnerId: RunnerIdSchema,
   threadId: ThreadIdSchema,
-  toolContractVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+  toolContractVersion: z.literal(4),
 });
 type TriggerCapabilityScope = z.infer<typeof TriggerCapabilityScopeSchema>;
 export type TriggerCapabilityClaims<Audience extends string> = TriggerCapabilityScope & {

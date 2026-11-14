@@ -162,7 +162,7 @@ describe("engine qualification", () => {
         });
         const nonce = randomUUID();
         // Told to keep working on purpose: only the runtime can stop it.
-        const prompt = `Remember ${nonce}. Request a new browser profile named Receipts with browser_profile_request for this expense task. After requesting it, try thread_list to find running tasks, as independent work. Do not open a browser or sign in. Once the person has chosen the profile, reply with the chosen profile name and the remembered code.`;
+        const prompt = `Remember ${nonce}. Request a new browser profile named Receipts with browser_profile_request for this expense task. After requesting it, try opensteer_task_list to find running tasks, as independent work. Do not open a browser or sign in. Once the person has chosen the profile, reply with the chosen profile name and the remembered code.`;
         const first = await active.queueMessage({
           text: prompt,
           threadId,
@@ -249,7 +249,7 @@ describe("engine qualification", () => {
           windDown
             .filter(
               ({ type, data }) =>
-                type === "tool.started" && toolEvent(data).tool?.name === "thread_list",
+                type === "tool.started" && toolEvent(data).tool?.name === "opensteer_task_list",
             )
             .map(({ data }) => toolEvent(data).callId),
         );

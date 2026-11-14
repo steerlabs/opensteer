@@ -1,3 +1,4 @@
+import { productToolOutput } from "./tool-output.js";
 import { IntegrationCallOutputSchema } from "@opensteer/agent-tools/outputs";
 import { z } from "zod";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
@@ -506,7 +507,12 @@ export class OpensteerMcpService {
       const handler = this.options.handlers[tool.name] as (
         call: ToolCall<typeof tool.name>,
       ) => Promise<unknown>;
-      const output = tool.output.safeParse(await handler(call));
+      const raw = await handler(call);
+      const output = tool.output.safeParse(
+        /^(opensteer_(task|delegation|subagent|request|automation|app)_|person_)/.test(tool.name)
+          ? productToolOutput(raw)
+          : raw,
+      );
       // A result outside the contract is the Host's fault, never the caller's arguments.
       // Field paths only: a value could be anything the tool returned.
       if (!output.success)

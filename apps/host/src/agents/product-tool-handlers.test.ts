@@ -94,7 +94,7 @@ describe("Product tool handlers", () => {
           type: "thread.delegate",
           requestId: crypto.randomUUID(),
           specialist: "invoices",
-          task: "Read invoices",
+          message: "Read invoices",
         }),
       ).rejects.toThrow("Specialist is removing");
       expect(delegateThread).not.toHaveBeenCalled();
@@ -155,8 +155,8 @@ describe("Product tool handlers", () => {
       await service.handle("run-token", {
         type: "thread.delegate",
         requestId: crypto.randomUUID(),
-        threadId: existing.id,
-        task: "Next batch",
+        taskId: existing.id,
+        message: "Next batch",
       });
       expect(delegateThread).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -212,7 +212,7 @@ describe("Product tool handlers", () => {
       type: "request.list.result",
       window: {
         hasMore: true,
-        nextBefore: "next_request_page",
+        nextCursor: "next_request_page",
       },
     });
     expect(visiblePage).toHaveBeenCalledWith({
@@ -271,7 +271,7 @@ describe("Product tool handlers", () => {
       type: "request.list.result",
       window: {
         hasMore: true,
-        nextBefore: "next_request_page",
+        nextCursor: "next_request_page",
       },
     });
     expect(visiblePage).toHaveBeenCalledWith({
@@ -376,19 +376,19 @@ describe("Product tool handlers", () => {
       service.handle("run-token", {
         limit: 10,
         requestId: readId,
-        threadId: target.id,
+        taskId: target.id,
         type: "thread.read",
       }),
     ).resolves.toMatchObject({
       items: [messageItem(targetMessage, 20_000)],
-      thread: {
+      task: {
         id: target.id,
       },
     });
     const delegateId = crypto.randomUUID();
     const delegateRequest = ProductToolRequestSchema.parse({
       requestId: delegateId,
-      task: "Research the provider contract",
+      message: "Research the provider contract",
       title: child.title,
       type: "thread.delegate",
     });
@@ -396,17 +396,22 @@ describe("Product tool handlers", () => {
     await expect(service.handle("run-token", delegateRequest)).resolves.toMatchObject({
       result: {
         runId: childRun.id,
-        threadId: child.id,
+        taskId: child.id,
       },
     });
     expect(delegateThread).toHaveBeenCalledWith({
       accessMode: "auto",
       callerIntent: {
-        requestId: mcpToolCallId(`run:${claims.runId}`, delegateId, "operation", "delegate_task"),
+        requestId: mcpToolCallId(
+          `run:${claims.runId}`,
+          delegateId,
+          "operation",
+          "opensteer_task_delegate",
+        ),
         requestFingerprint: fingerprint({
           mode: delegateRequest.mode,
           timeoutMs: delegateRequest.timeoutMs,
-          task: delegateRequest.task,
+          message: delegateRequest.message,
           title: delegateRequest.title,
         }),
       },
@@ -414,7 +419,7 @@ describe("Product tool handlers", () => {
       environmentId,
       harnessInstanceId: nativeHarnessId,
       idempotencyKey: expect.stringContaining(
-        `${mcpToolCallId(`run:${claims.runId}`, delegateId, "operation", "delegate_task")}:delegate`,
+        `${mcpToolCallId(`run:${claims.runId}`, delegateId, "operation", "opensteer_task_delegate")}:delegate`,
       ),
       modelSelection: testModelSelection,
       origin: {
@@ -459,7 +464,7 @@ describe("Product tool handlers", () => {
         },
       ],
       idempotencyKey: expect.stringContaining(
-        `${mcpToolCallId(`run:${claims.runId}`, messageId, "operation", "thread_send")}:message`,
+        `${mcpToolCallId(`run:${claims.runId}`, messageId, "operation", "opensteer_task_send")}:message`,
       ),
       policy: "queue",
       requestedBy: ownerId,
@@ -499,7 +504,7 @@ describe("Product tool handlers", () => {
     await expect(
       service.handle("run-token", {
         requestId: crypto.randomUUID(),
-        task: "Do work",
+        message: "Do work",
         model: testModelSelection,
         type: "thread.delegate",
       }),
@@ -521,7 +526,7 @@ describe("Product tool handlers", () => {
     await expect(
       service.handle("run-token", {
         requestId: crypto.randomUUID(),
-        task: "Do work",
+        message: "Do work",
         type: "thread.delegate",
         model: testModelSelection,
       }),
@@ -557,12 +562,12 @@ describe("Product tool handlers", () => {
         threadId: current.id,
         type: "thread.message",
       }),
-    ).rejects.toThrow("cannot message its own active Thread");
+    ).rejects.toThrow("cannot message its own active task");
     await expect(
       service.handle("run-token", {
         limit: 10,
         requestId: crypto.randomUUID(),
-        threadId: foreign.id,
+        taskId: foreign.id,
         type: "thread.read",
       }),
     ).rejects.toThrow("unavailable");
@@ -583,7 +588,7 @@ describe("Product tool handlers", () => {
     await expect(
       service.handle("run-token", {
         requestId: crypto.randomUUID(),
-        task: "Do not run",
+        message: "Do not run",
         title: "Disabled",
         type: "thread.delegate",
       }),
@@ -605,7 +610,7 @@ describe("Product tool handlers", () => {
     await expect(
       service.handle("run-token", {
         requestId: crypto.randomUUID(),
-        task: "Do not schedule this",
+        message: "Do not schedule this",
         title: "Unavailable driver",
         type: "thread.delegate",
       }),
@@ -643,14 +648,14 @@ describe("Product tool handlers", () => {
     await expect(
       service.handle("run-token", {
         requestId,
-        task: "Existing task",
+        message: "Existing task",
         title: child.title,
         type: "thread.delegate",
       }),
     ).resolves.toMatchObject({
       result: {
         runId: childRun.id,
-        threadId: child.id,
+        taskId: child.id,
       },
     });
     expect(delegateThread).not.toHaveBeenCalled();
@@ -741,7 +746,12 @@ describe("Product tool handlers", () => {
       expect.objectContaining({
         action: "thread.message",
         requestFingerprint: expect.stringMatching(/^[0-9a-f]{64}$/),
-        requestId: mcpToolCallId(`run:${claims.runId}`, requestId, "operation", "thread_send"),
+        requestId: mcpToolCallId(
+          `run:${claims.runId}`,
+          requestId,
+          "operation",
+          "opensteer_task_send",
+        ),
         runId: claims.runId,
         sourceThreadId: claims.threadId,
       }),
@@ -749,7 +759,7 @@ describe("Product tool handlers", () => {
     expect(enqueueThreadInput).toHaveBeenCalledTimes(2);
     const firstKey = enqueueThreadInput.mock.calls[0]?.[0].idempotencyKey;
     expect(firstKey).toBe(
-      `run:${claims.runId}:${mcpToolCallId(`run:${claims.runId}`, requestId, "operation", "thread_send")}:message`,
+      `run:${claims.runId}:${mcpToolCallId(`run:${claims.runId}`, requestId, "operation", "opensteer_task_send")}:message`,
     );
     expect(enqueueThreadInput.mock.calls[1]?.[0].idempotencyKey).toBe(firstKey);
     expect(firstKey).not.toContain(claims.jti);
@@ -819,7 +829,7 @@ describe("Product tool handlers", () => {
       }),
     ).resolves.toMatchObject({
       result: {
-        triggers: [],
+        automations: [],
       },
       type: "trigger.control.result",
     });
@@ -866,7 +876,7 @@ describe("Product tool handlers", () => {
         name: "Nightly report",
         operation: "create",
         program: {
-          toolContractVersion: 3,
+          toolContractVersion: 4,
           language: "javascript",
           source: "export default () => {}",
         },
@@ -881,7 +891,7 @@ describe("Product tool handlers", () => {
     expect(manage).toHaveBeenCalledWith(
       claims.requestedBy,
       expect.objectContaining({
-        idempotencyKey: `run:${claims.runId}:${mcpToolCallId(`run:${claims.runId}`, requestId, "operation", "trigger_write")}:trigger.create`,
+        idempotencyKey: `run:${claims.runId}:${mcpToolCallId(`run:${claims.runId}`, requestId, "operation", "opensteer_automation_create")}:trigger.create`,
       }),
       current.id,
       expect.objectContaining({
@@ -1618,7 +1628,7 @@ it("uses authenticated admission for a person message without waking work", asyn
         `run:${fixture.claims.runId}`,
         requestId,
         "operation",
-        "person_message",
+        "person_notify",
       ),
     }),
   });
@@ -1642,7 +1652,7 @@ it("omits client-only addressing from agent thread history", async () => {
   const response = await fixture.service.handle("run-token", {
     type: "thread.read",
     requestId: crypto.randomUUID(),
-    threadId: current.id,
+    taskId: current.id,
   });
   expect(response).toMatchObject({
     type: "thread.read.result",

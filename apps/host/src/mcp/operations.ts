@@ -39,12 +39,12 @@ export function callerListScope(_caller: AgentCaller): AgentThreadListScope {
 }
 const actions = {
   device_access_request: "device.access.request",
-  delegate_task: "thread.delegate",
-  thread_send: "thread.message",
-  person_message: "person.message",
+  opensteer_task_delegate: "thread.delegate",
+  opensteer_task_send: "thread.message",
+  person_notify: "person.message",
   person_show: "person.show",
-  thread_update: "thread.write",
-  task_cancel: "assignment.cancel",
+  opensteer_task_update: "thread.write",
+  opensteer_delegation_cancel: "assignment.cancel",
 } as const;
 type AdmittedTool = keyof typeof actions;
 export function runAdmission(
@@ -72,7 +72,7 @@ export function runAdmission(
 }
 export function mutationAdmission(
   caller: AgentCaller,
-  tool: "delegate_task" | "thread_send",
+  tool: "opensteer_task_delegate" | "opensteer_task_send",
   input: { readonly observationId?: string | undefined },
   requestId: string,
   targetThreadIds: readonly Thread["id"][] = [],

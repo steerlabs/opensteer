@@ -353,9 +353,8 @@ export class TriggerService {
   async #assertProgramCompatible(
     ownerId: UserId,
     anchorThreadId: ThreadId,
-    version: 1 | 2 | 3,
+    version: 4,
   ): Promise<void> {
-    if (version !== 3) return;
     const anchor = await this.#threads.getThreadForOwner(anchorThreadId, ownerId);
     if (!anchor)
       throw new OpensteerError({

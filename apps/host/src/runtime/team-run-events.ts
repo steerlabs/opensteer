@@ -91,7 +91,7 @@ function stepKind(event: AgentEvent): StepKind | null {
   const name = event.data.tool.name;
   if (event.data.integration) return "used_integration";
   if (/^browser(?:_|$)/u.test(name)) return "browsed";
-  if (name === "team_read" || name === "team_search") return "searched_team";
+  if (name === "opensteer_team_read" || name === "opensteer_team_search") return "searched_team";
   if (/^(?:computer|integration_call)$/u.test(name)) return "used_integration";
   if (/^(?:Bash|PowerShell|exec_command|shell|shell_run|run_command|execute)$/u.test(name))
     return "ran_commands";

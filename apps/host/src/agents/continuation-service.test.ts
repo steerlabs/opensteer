@@ -195,7 +195,7 @@ describe("ContinuationService", () => {
     expect(input.content[0].text).toContain(first.id);
     expect(input.content[0].text).toContain(second.id);
     expect(input.content[0].text).toContain(broken.id);
-    expect(input.content[0].text).toContain("pending_request");
+    expect(input.content[0].text).toContain("opensteer_request_answer");
     expect(fixture.recordContinuationAttempt).toHaveBeenCalledTimes(3);
   });
 

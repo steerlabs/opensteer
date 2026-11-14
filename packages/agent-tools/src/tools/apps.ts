@@ -5,34 +5,34 @@ import { z } from "zod";
 
 import { OperationKeySchema } from "./inputs.js";
 import { AppPublishOutputSchema, AppListOutputSchema, AppFetchOutputSchema } from "./outputs.js";
-export const app_publish = defineAgentTool({
-  name: "app_publish",
+export const opensteer_app_publish = defineAgentTool({
+  name: "opensteer_app_publish",
   title: "Publish an app",
   description:
-    "Show an Agent home HTML file or server app inline and full-screen. Run-only. path names self-contained UTF-8 HTML, or a folder with start. Servers need full-access/local storage, listen on 127.0.0.1 at process.env.PORT and use relative URLs; start runs in the shell your context names. Returns appId/version after verification. appId updates cards; HTML replaces/stops a server. Read opensteer:threads references/apps.md. Do not repeat the app in prose.",
+    "Publish an HTML file or server app from the agent home folder. Server apps require full access and listen on the assigned local port. Use opensteer_app_list to find published apps.",
   input: AppPublishInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: AppPublishOutputSchema,
   access: "write",
   callers: ["run"] as const,
 });
 
-export const app_list = defineAgentTool({
-  name: "app_list",
+export const opensteer_app_list = defineAgentTool({
+  name: "opensteer_app_list",
   title: "List apps",
   description:
-    "Find published apps for the owner. Returns IDs and server folders/start commands; read the server README before app_fetch.",
+    "List the owner’s published apps and server folders. Read the server README before opensteer_app_call.",
   input: z.strictObject({}),
   output: AppListOutputSchema,
   access: "read",
   callers: ["run", "program", "connection"] as const,
 });
 
-export const app_fetch = defineAgentTool({
-  name: "app_fetch",
+export const opensteer_app_call = defineAgentTool({
+  name: "opensteer_app_call",
   title: "Call an app",
   description:
-    "Call a server app by appId and relative path starting with /. Full-access Run for the owner. May change data. Returns HTTP status/content type/text, including non-2xx, within 30 seconds/256 KiB. Read the app README for its API.",
-  input: AppFetchInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
+    "Call a server app by appId and a relative path. This requires a full-access Run and may change data.",
+  input: AppFetchInputSchema,
   output: AppFetchOutputSchema,
   access: "write",
   callers: ["run"] as const,

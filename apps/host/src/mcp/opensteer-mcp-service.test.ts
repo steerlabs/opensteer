@@ -87,14 +87,14 @@ function fixture() {
   const targets = new Map([[thread.id, thread]]);
   const messageId = createId("message");
   const personMessage = vi.fn(
-    async (_call: import("./handlers/index.js").ToolCall<"person_message">) => ({
+    async (_call: import("./handlers/index.js").ToolCall<"person_notify">) => ({
       messageId,
       unnamedSecret: "private",
     }),
   );
   const handlers = {
-    person_message: personMessage,
-    thread_send: vi.fn(async () => {
+    person_notify: personMessage,
+    opensteer_task_send: vi.fn(async () => {
       throw new Error("Unexpected effect");
     }),
     plugin_install: vi.fn(async () => {
@@ -631,7 +631,7 @@ describe("Opensteer MCP spine", () => {
           jsonrpc: "2.0",
           id: 2,
           method: "tools/call",
-          params: { name: "person_message", arguments: { message: "waiting" } },
+          params: { name: "person_notify", arguments: { message: "waiting" } },
         },
         sessionId,
       );
@@ -665,9 +665,9 @@ describe("Opensteer MCP spine", () => {
       const names = (await client.listTools(undefined, { timeout: 5000 })).tools.map((t) => t.name);
       // Every Run lists knowledge; its handlers decide per call whether the owner may use it.
       expect(names).toEqual(toolsFor({ ...f.run, knowledge: true }).map((t) => t.name));
-      expect(names).toContain("thread_wait");
+      expect(names).toContain("opensteer_task_wait");
       expect(names).toContain("integration_call");
-      expect(names).toContain("delegate_task");
+      expect(names).toContain("opensteer_task_delegate");
       expect(client.getServerVersion()?.name).toBe("opensteer");
       expect(client.getInstructions()).toBeUndefined();
     } finally {
@@ -742,7 +742,7 @@ describe("Opensteer MCP spine", () => {
   it("counts in-flight detached servers and frees revoked sessions", async () => {
     const f = await httpFixture();
     const finish = new Set<() => void>();
-    f.handlers.thread_wait = async () =>
+    f.handlers.opensteer_task_wait = async () =>
       new Promise((resolve) => {
         finish.add(() => resolve({ status: "timed_out", messages: [] }));
       });
@@ -760,7 +760,7 @@ describe("Opensteer MCP spine", () => {
           jsonrpc: "2.0",
           id: 1,
           method: "tools/call",
-          params: { name: "thread_wait", arguments: { threadId: f.thread.id } },
+          params: { name: "opensteer_task_wait", arguments: { taskId: f.thread.id } },
         }),
       });
     const pending = Array.from({ length: 8 }, () => send());
@@ -830,12 +830,13 @@ describe("Opensteer MCP spine", () => {
         },
         onWorkspaceEvent: vi.fn(),
       } as unknown as ConstructorParameters<typeof ProductToolHandlers>[0]);
-      f.handlers.pending_request = (call) => product.pending_request(call);
-      f.handlers.request_withdraw = (call) => product.request_withdraw(call);
+      f.handlers.opensteer_request_list = (call) =>
+        product.opensteer_request_answer({ ...call, input: { ...call.input, action: "list" } });
+      f.handlers.opensteer_request_withdraw = (call) => product.opensteer_request_withdraw(call);
       try {
         const result = await f.service.callTool(
           token,
-          "pending_request",
+          "opensteer_request_list",
           {},
           { operationKey: "list" },
         );
@@ -844,7 +845,7 @@ describe("Opensteer MCP spine", () => {
             { id: request.id, title: "Sign in to Example", reason: "Check the account" },
             { kind: "harness.input", reason: null },
           ],
-          window,
+          window: { hasMore: false, nextCursor: null, totalItems: 2, itemCount: 2, byteCount: 0 },
         });
         expect(JSON.stringify(result)).not.toMatch(
           /private-payload|private-answer|presentation|payload|response/,
@@ -852,7 +853,7 @@ describe("Opensteer MCP spine", () => {
         if (token === "run") {
           const withdrawn = await f.service.callTool(
             token,
-            "request_withdraw",
+            "opensteer_request_withdraw",
             { requestId: request.id },
             { operationKey: "withdraw" },
           );
@@ -889,7 +890,7 @@ describe("Opensteer MCP spine", () => {
           jsonrpc: "2.0",
           id: 1,
           method: "tools/call",
-          params: { name: "person_message", arguments: { message: "one authority" } },
+          params: { name: "person_notify", arguments: { message: "one authority" } },
         }),
       });
       expect(response.status).toBe(200);
@@ -911,7 +912,7 @@ describe("Opensteer MCP spine", () => {
       const names = (await client.listTools()).tools.map((t) => t.name);
       expect(names).toContain("settings_write");
       expect(names).toContain("computer_list");
-      expect(names).toContain("pending_request");
+      expect(names).toContain("opensteer_request_list");
     } finally {
       await client.close();
       await f.service.close();
@@ -949,14 +950,14 @@ describe("Opensteer MCP spine", () => {
     const client = await connect(f.url, "program");
     try {
       const names = (await client.listTools(undefined, { timeout: 5000 })).tools.map((t) => t.name);
-      expect(names).toContain("delegate_task");
+      expect(names).toContain("opensteer_task_delegate");
       expect(names).toContain("integration_search");
-      expect(names).toContain("thread_wait");
+      expect(names).toContain("opensteer_task_wait");
       expect(client.getInstructions()).toBeUndefined();
       expect(names).not.toContain("computer");
       expect(names).not.toContain("person_show");
       await expect(
-        f.service.callTool("program", "person_message", { message: "hi" }, { operationKey: "p" }),
+        f.service.callTool("program", "person_notify", { message: "hi" }, { operationKey: "p" }),
       ).rejects.toThrow("unavailable to this caller");
       expect(f.personMessage).not.toHaveBeenCalled();
     } finally {
@@ -966,15 +967,15 @@ describe("Opensteer MCP spine", () => {
   });
   it("returns a program the exact skipped memory wake text it matches on", async () => {
     const f = await httpFixture();
-    vi.mocked(f.handlers.thread_send).mockRejectedValueOnce(
+    vi.mocked(f.handlers.opensteer_task_send).mockRejectedValueOnce(
       new OpensteerError({ code: "conflict", message: MANAGED_MEMORY_WAKE_SKIPPED }),
     );
     const client = await connect(f.url, "program");
     try {
       await expect(
         client.callTool({
-          name: "thread_send",
-          arguments: { delivery: "queue", message: "Light pass due", threadId: f.thread.id },
+          name: "opensteer_task_send",
+          arguments: { delivery: "queue", message: "Light pass due", taskId: f.thread.id },
         }),
       ).resolves.toMatchObject({
         isError: true,
@@ -987,21 +988,21 @@ describe("Opensteer MCP spine", () => {
   });
   it("gives a model the whole refusal in both halves of the result", async () => {
     const f = await httpFixture();
-    vi.mocked(f.handlers.thread_send).mockRejectedValueOnce(
+    vi.mocked(f.handlers.opensteer_task_send).mockRejectedValueOnce(
       new OpensteerError({
         code: "conflict",
-        message: "That Thread is busy.",
-        next: "Queue it with thread_send.",
+        message: "That task is busy.",
+        next: "Queue it with opensteer_task_send.",
         reason: "thread-busy",
       }),
     );
     const client = await connect(f.url, "run");
     try {
-      const text = "That Thread is busy. Queue it with thread_send.";
+      const text = "That task is busy. Queue it with opensteer_task_send.";
       await expect(
         client.callTool({
-          name: "thread_send",
-          arguments: { delivery: "queue", message: "Hello", threadId: f.thread.id },
+          name: "opensteer_task_send",
+          arguments: { delivery: "queue", message: "Hello", taskId: f.thread.id },
         }),
       ).resolves.toMatchObject({
         isError: true,
@@ -1017,11 +1018,10 @@ describe("Opensteer MCP spine", () => {
     }
   });
   it.each([
-    ["pending_request", {}, "Try once more"],
+    ["opensteer_request_list", {}, "Try once more"],
     [
-      "pending_request",
+      "opensteer_request_answer",
       {
-        action: "respond",
         requestId: "req_11111111-1111-4111-8111-111111111111",
         expectedRevision: "seen",
         response: { kind: "form", answers: { answer: ["42"] } },
@@ -1029,7 +1029,7 @@ describe("Opensteer MCP spine", () => {
       "It may have taken effect, so check before retrying.",
     ],
     [
-      "thread_send",
+      "opensteer_task_send",
       { delivery: "queue", message: "Hello" },
       "It may have taken effect, so check before retrying.",
     ],
@@ -1047,7 +1047,7 @@ describe("Opensteer MCP spine", () => {
       try {
         const result = await client.callTool({
           name,
-          arguments: name === "pending_request" ? args : { ...args, threadId: f.thread.id },
+          arguments: name === "opensteer_task_send" ? { ...args, taskId: f.thread.id } : args,
         });
         expect(result).toMatchObject({
           isError: true,
@@ -1069,13 +1069,13 @@ describe("Opensteer MCP spine", () => {
     try {
       expect(client.getInstructions()).toBe(connectionInstructions);
       const names = (await client.listTools(undefined, { timeout: 5000 })).tools.map((t) => t.name);
-      expect(names).toContain("delegate_task");
-      expect(names).toContain("thread_wait");
+      expect(names).toContain("opensteer_task_create");
+      expect(names).toContain("opensteer_task_wait");
       expect(names).not.toContain("browser_profile_write");
       expect(names).not.toContain("computer");
       expect(names).not.toContain("use_saved_login");
       expect(names).not.toContain("copy_chrome_cookies");
-      expect(names).not.toContain("person_message");
+      expect(names).not.toContain("person_notify");
     } finally {
       await client.close();
       await f.service.close();
@@ -1083,24 +1083,24 @@ describe("Opensteer MCP spine", () => {
   });
   it("strips unnamed output fields and leaves domain retry identity intact", async () => {
     const f = fixture();
-    const input = { message: "sent once", operationKey: "stable" };
+    const input = { message: "sent once" };
     expect(
-      await f.service.callTool("run", "person_message", input, { operationKey: "rpc-1" }),
+      await f.service.callTool("run", "person_notify", input, { operationKey: "rpc-1" }),
     ).not.toHaveProperty("unnamedSecret");
-    await f.service.callTool("run", "person_message", input, { operationKey: "rpc-2" });
+    await f.service.callTool("run", "person_notify", input, { operationKey: "rpc-2" });
     expect(f.personMessage).toHaveBeenCalledTimes(2);
     expect(f.personMessage.mock.calls.map(([call]) => call.operationKey)).toEqual([
-      "stable",
-      "stable",
+      "rpc-1",
+      "rpc-2",
     ]);
   });
   it("rechecks live authority on a new call", async () => {
     const f = fixture();
-    const input = { message: "once", operationKey: "stable" };
-    await f.service.callTool("run", "person_message", input, { operationKey: "1" });
+    const input = { message: "once" };
+    await f.service.callTool("run", "person_notify", input, { operationKey: "1" });
     f.callers.delete("run");
     await expect(
-      f.service.callTool("run", "person_message", input, { operationKey: "2" }),
+      f.service.callTool("run", "person_notify", input, { operationKey: "2" }),
     ).rejects.toThrow("expired");
     expect(f.personMessage).toHaveBeenCalledTimes(1);
   });
@@ -1109,26 +1109,26 @@ describe("Opensteer MCP spine", () => {
     await expect(
       f.service.callTool(
         "run",
-        "thread_send",
-        { threadId: createId("thread"), message: "hello", delivery: "queue" },
+        "opensteer_task_send",
+        { taskId: createId("thread"), message: "hello", delivery: "queue" },
         { operationKey: "owner" },
       ),
     ).rejects.toThrow("unavailable");
-    expect(f.handlers.thread_send).not.toHaveBeenCalled();
+    expect(f.handlers.opensteer_task_send).not.toHaveBeenCalled();
   });
-  it("refuses a stronger target Thread before its handler", async () => {
+  it("refuses a stronger target task before its handler", async () => {
     const f = fixture();
     const target = { ...f.thread, id: createId("thread"), accessMode: "full-access" as const };
     f.targets.set(target.id, target);
     await expect(
       f.service.callTool(
         "run",
-        "thread_send",
-        { threadId: target.id, message: "hello", delivery: "report" },
+        "opensteer_task_send",
+        { taskId: target.id, message: "hello", delivery: "report" },
         { operationKey: "mode" },
       ),
     ).rejects.toThrow("stronger access mode");
-    expect(f.handlers.thread_send).not.toHaveBeenCalled();
+    expect(f.handlers.opensteer_task_send).not.toHaveBeenCalled();
   });
   it("requires full-access for settings", async () => {
     const f = fixture();
@@ -1147,7 +1147,7 @@ describe("Opensteer MCP spine", () => {
     await expect(
       f.service.callTool(
         "run",
-        "person_message",
+        "person_notify",
         { message: "hi", attribution: "spoofed" },
         { operationKey: "invalid" },
       ),
@@ -1183,7 +1183,7 @@ describe("Opensteer MCP spine", () => {
     try {
       await f.service.close();
       const result = await client.callTool({
-        name: "person_message",
+        name: "person_notify",
         arguments: { message: "after restart" },
       });
       expect(result.isError).not.toBe(true);

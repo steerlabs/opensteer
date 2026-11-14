@@ -393,7 +393,7 @@ export class AppService {
             if (!version.server)
               throw new OpensteerError({
                 code: "bad_request",
-                message: "app_fetch requires a server app",
+                message: "opensteer_app_call requires a server app",
               });
             const spec = await this.#runtimeSpec(app.id, version.version, version.server);
             return this.#tunnels().connect(spec, signal);

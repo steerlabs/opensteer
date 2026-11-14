@@ -10,35 +10,35 @@ describe("Trigger program Runner compatibility", () => {
     [null, [], ["environment-list-v1"], ["browser-profile-create-v1"]].map((capabilities) => ({
       capabilities,
     })),
-  )("refuses v3 without its dedicated stored advertisement: %j", async ({ capabilities }) => {
+  )("refuses v4 without its dedicated stored advertisement: %j", async ({ capabilities }) => {
     const store = {
       getEnvironment: vi.fn(async () => ({ runnerId: createId("runner") })),
       runnerCapabilities: vi.fn(async () => capabilities),
     } as unknown as Pick<OpensteerStore, "getEnvironment" | "runnerCapabilities">;
-    expect(await triggerProgramCompatibilityReason(store, createId("environment"), 3)).toBe(
-      "This computer's Runner cannot run Trigger program version 3. Use version 2 or update that computer.",
+    expect(await triggerProgramCompatibilityReason(store, createId("environment"), 4)).toBe(
+      "Update this computer to run automation programs with tool contract version 4.",
     );
   });
   it.each([null, { runnerId: null }])(
-    "refuses v3 without an anchor Runner: %j",
+    "refuses v4 without an anchor Runner: %j",
     async (environment) => {
       const runnerCapabilities = vi.fn();
       const store = {
         getEnvironment: vi.fn(async () => environment),
         runnerCapabilities,
       } as unknown as Pick<OpensteerStore, "getEnvironment" | "runnerCapabilities">;
-      expect(await triggerProgramCompatibilityReason(store, createId("environment"), 3)).toContain(
-        "Use version 2 or update that computer",
+      expect(await triggerProgramCompatibilityReason(store, createId("environment"), 4)).toContain(
+        "version 4",
       );
       expect(runnerCapabilities).not.toHaveBeenCalled();
     },
   );
-  it("accepts a stored v3 advertisement without requiring a connected Runner", async () => {
+  it("accepts a stored v4 advertisement without requiring a connected Runner", async () => {
     const store = {
       getEnvironment: vi.fn(async () => ({ runnerId: createId("runner") })),
-      runnerCapabilities: vi.fn(async () => ["trigger-program-v3"]),
+      runnerCapabilities: vi.fn(async () => ["trigger-program-v4"]),
     } as unknown as Pick<OpensteerStore, "getEnvironment" | "runnerCapabilities">;
-    expect(await triggerProgramCompatibilityReason(store, createId("environment"), 3)).toBeNull();
+    expect(await triggerProgramCompatibilityReason(store, createId("environment"), 4)).toBeNull();
   });
   it.each([1, 2] as const)("does not change version %s admission", async (version) => {
     const getEnvironment = vi.fn();
@@ -48,7 +48,7 @@ describe("Trigger program Runner compatibility", () => {
     >;
     expect(
       await triggerProgramCompatibilityReason(store, createId("environment"), version),
-    ).toBeNull();
+    ).toContain("version 4");
     expect(getEnvironment).not.toHaveBeenCalled();
   });
 });

@@ -122,7 +122,7 @@ export interface TriggerDispatchContext {
 
 export interface WatchActivationContext {
   readonly activation: TriggerWatchActivation;
-  readonly toolContractVersion: 1 | 2 | 3;
+  readonly toolContractVersion: 4;
   readonly agentHome: import("@opensteer/core").ComputerFolder;
 }
 export interface ActiveWatchBindingInput {
@@ -433,6 +433,14 @@ export class TriggerStore {
       createTriggerInTransaction(transaction, input),
     );
   }
+  async regenerateSystemProgram(input: {
+    triggerId: TriggerId;
+    ownerId: UserId;
+    expectedRevisionId: TriggerRevisionId;
+    program: TriggerProgram;
+  }) {
+    return this.#update({ ...input, actorThreadId: null }, true);
+  }
   async update(input: {
     readonly actorThreadId: ThreadId | null;
     readonly actorAccessMode?: ThreadAccessMode;
@@ -446,6 +454,15 @@ export class TriggerStore {
     readonly revision: TriggerRevision;
     readonly trigger: Trigger;
   }> {
+    return this.#update(input, false);
+  }
+  async #update(
+    input: Parameters<TriggerStore["update"]>[0],
+    systemProgram = false,
+  ): Promise<{
+    readonly revision: TriggerRevision;
+    readonly trigger: Trigger;
+  }> {
     if (input.name === undefined && input.program === undefined && input.source === undefined) {
       throw new OpensteerError({
         code: "bad_request",
@@ -455,9 +472,12 @@ export class TriggerStore {
     return withPersonalTransaction(this.#database, async (transaction) => {
       await lockWatchCapacityForTrigger(transaction, input.triggerId);
       const trigger = await lockTriggerForMutation(transaction, input, "define");
-      await requireTriggerExecutionAuthority(transaction, trigger);
+      if (!systemProgram) await requireTriggerExecutionAuthority(transaction, trigger);
+      if (systemProgram && !trigger.systemRole)
+        throw conflict("Only system automations can regenerate programs");
       if (
         trigger.systemRole &&
+        !systemProgram &&
         (input.name !== undefined ||
           input.program !== undefined ||
           (input.source !== undefined &&
@@ -467,7 +487,8 @@ export class TriggerStore {
       ) {
         throw conflict(MANAGED_MEMORY_REFUSAL);
       }
-      if (trigger.status === "archived") throw conflict("Archived Triggers cannot be changed");
+      if (trigger.status === "archived" && !systemProgram)
+        throw conflict("Archived Triggers cannot be changed");
       if (trigger.currentRevisionId !== input.expectedRevisionId) {
         throw conflict("Trigger revision changed; read it again before updating");
       }

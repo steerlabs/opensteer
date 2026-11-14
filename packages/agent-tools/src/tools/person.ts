@@ -1,18 +1,20 @@
 import { defineAgentTool } from "../registry.js";
-import { PersonMessageSchema, PersonShowTargetSchema } from "@opensteer/core";
+import {
+  PersonMessageSchema,
+  ThreadIdSchema,
+  RunIdSchema,
+  BrowserSurfaceIdSchema,
+} from "@opensteer/core";
 
 import { z } from "zod";
 
-import { OperationKeySchema } from "./inputs.js";
 import { PersonMessageOutputSchema, PersonShowOutputSchema } from "./outputs.js";
-export const person_message = defineAgentTool({
-  name: "person_message",
+export const person_notify = defineAgentTool({
+  name: "person_notify",
   title: "Update the person",
   description:
-    "Send worthwhile news to this Run’s requester while work continues. May notify devices. Refused on Assignments: ask the assigner to tell the person. On a background wake, briefly say what happened in your final reply; send real finds to the asking task with thread_send queue or email through a connected integration. Put the completed answer in your final reply without a duplicate update.",
-  input: z
-    .strictObject({ message: PersonMessageSchema })
-    .safeExtend({ operationKey: OperationKeySchema.optional() }),
+    "Notify this Run’s requester while work continues. Delegated Runs must ask the parent task to notify the person.",
+  input: z.strictObject({ message: PersonMessageSchema }),
   output: PersonMessageOutputSchema,
   access: "write",
   callers: ["run"] as const,
@@ -22,10 +24,15 @@ export const person_show = defineAgentTool({
   name: "person_show",
   title: "Show a place",
   description:
-    "Bring your work into the person's view without waiting to be asked, on devices viewing this conversation. `{current: true}`: the page, Mac app or Agent Phone you are in, with no new browser attach or computer observation. `{runId}`: where a task's Run last worked, from `recentPlaces` in `thread_read`. `{tabId}`: a tab, even asleep, from Browser Harness `listTabs()`. `{threadId}`: a Thread. Refused on Assignments: tell the assigner what to show. `sent-unconfirmed` is not proof anyone saw it.",
-  input: z
-    .strictObject({ target: PersonShowTargetSchema })
-    .safeExtend({ operationKey: OperationKeySchema.optional() }),
+    "Show a task, browser tab or recent Run place to the person. Delegated Runs must ask the parent task to show it.",
+  input: z.strictObject({
+    target: z.union([
+      z.strictObject({ current: z.literal(true) }),
+      z.strictObject({ runId: RunIdSchema }),
+      z.strictObject({ tabId: BrowserSurfaceIdSchema }),
+      z.strictObject({ taskId: ThreadIdSchema }),
+    ]),
+  }),
   output: PersonShowOutputSchema,
   access: "write",
   callers: ["run"] as const,

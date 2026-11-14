@@ -1,3 +1,9 @@
+import { productToolOutput } from "./tool-output.js";
+import {
+  opensteer_subagent_read,
+  opensteer_subagent_stop,
+  opensteer_task_resume,
+} from "@opensteer/agent-tools/tools";
 import { personalBrowserRepository } from "@opensteer/database/test-support/store";
 import { personalTestExecution } from "./personal-execution.test-support.js";
 import { randomUUID } from "node:crypto";
@@ -19,17 +25,18 @@ import {
   type RequestResponse,
 } from "@opensteer/core";
 import {
-  thread_read,
-  thread_list,
+  opensteer_task_read,
+  opensteer_task_list,
   person_show,
-  thread_configure,
-  thread_queue,
-  delegate_task,
-  task_status,
-  task_cancel,
-  thread_interrupt,
-  thread_wait,
-  pending_request,
+  opensteer_task_configure,
+  opensteer_task_queue,
+  opensteer_task_delegate,
+  opensteer_delegation_status,
+  opensteer_task_interrupt,
+  opensteer_delegation_wait,
+  opensteer_request_read,
+  opensteer_task_wait,
+  opensteer_request_answer,
   orchestrator_capabilities,
 } from "@opensteer/agent-tools/tools";
 import { ThreadReadOutputSchema } from "@opensteer/agent-tools/outputs";
@@ -181,9 +188,9 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     },
   };
   const read = (input: Record<string, unknown> = {}, actor: AgentCaller = caller) =>
-    product.thread_read({
+    product.opensteer_task_read({
       caller: actor,
-      input: thread_read.input.parse({ threadId: f.thread.id, ...input }),
+      input: opensteer_task_read.input.parse(input),
       operationKey: randomUUID(),
     });
   const show = (target: unknown, actor: RunCaller = caller) =>
@@ -210,9 +217,9 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
 async function waitingTask(storeFixture: StoreFixture, suffix: string) {
   const f = await storeFixture.startRunFixture(suffix);
   const s = setup(storeFixture, f);
-  const task = await s.product.delegate_task({
+  const task = await s.product.opensteer_task_delegate({
     caller: s.caller,
-    input: delegate_task.input.parse({ task: "Find the answer" }),
+    input: opensteer_task_delegate.input.parse({ message: "Find the answer" }),
     operationKey: randomUUID(),
   });
   const assignmentId = task.assignmentId!;
@@ -281,15 +288,19 @@ async function waitingTask(storeFixture: StoreFixture, suffix: string) {
   };
   const checkLive = vi.fn(async () => {});
   const wait = (timeoutMs = 2_000, caller: AgentCaller = s.caller, signal?: AbortSignal) =>
-    s.product.thread_wait({
+    s.product.opensteer_task_wait({
       caller,
-      input: thread_wait.input.parse({ assignmentId, timeoutMs }),
+      input: opensteer_delegation_wait.input.parse({ delegationId: assignmentId, timeoutMs }),
       operationKey: randomUUID(),
       checkLive,
       ...(signal ? { signal } : {}),
     });
   const status = (caller: AgentCaller = s.caller) =>
-    s.product.task_status({ caller, input: { assignmentId }, operationKey: randomUUID() });
+    s.product.opensteer_delegation_status({
+      caller,
+      input: { delegationId: assignmentId },
+      operationKey: randomUUID(),
+    });
   const returns = () =>
     storeFixture.database
       .selectFrom("threadInputs")
@@ -350,9 +361,9 @@ async function questionTask(
     }),
   });
   const readRequest = (actor: AgentCaller = s.caller, requestId = request.id) =>
-    s.product.pending_request({
+    s.product.opensteer_request_answer({
       caller: actor,
-      input: pending_request.input.parse({ action: "read", requestId }),
+      input: { ...opensteer_request_read.input.parse({ requestId }), action: "read", limit: 50 },
       operationKey: randomUUID(),
     });
   const respond = (
@@ -360,14 +371,17 @@ async function questionTask(
     expectedRevision = requestRevision(request),
     requestId = request.id,
   ) =>
-    s.product.pending_request({
+    s.product.opensteer_request_answer({
       caller: actor,
-      input: pending_request.input.parse({
+      input: {
+        ...opensteer_request_answer.input.parse({
+          requestId,
+          expectedRevision,
+          response: { kind: "form", answers: { format: ["CSV"] } },
+        }),
         action: "respond",
-        requestId,
-        expectedRevision,
-        response: { kind: "form", answers: { format: ["CSV"] } },
-      }),
+        limit: 50,
+      },
       operationKey: randomUUID(),
     });
   const dispatch = async () => {
@@ -683,7 +697,7 @@ describeStore("agents answering task questions", (it) => {
       .where("requestId", "=", s.request.id)
       .executeTakeFirstOrThrow();
     expect(row.author).toMatchObject({ kind: "platform", cause: "task-question" });
-    expect(JSON.stringify(row.content)).toContain("pending_request");
+    expect(JSON.stringify(row.content)).toContain("opensteer_request_answer");
     await s.respond();
     await s.dispatch();
     await cancelSettledTaskQuestionNotice(storeFixture.database, s.request.id);
@@ -699,7 +713,7 @@ describeStore("agents answering task questions", (it) => {
     ).toEqual([]);
   });
 
-  it("delivers a waiting parent's question through thread_wait without a second notice", async ({
+  it("delivers a waiting parent's question through opensteer_task_wait without a second notice", async ({
     storeFixture,
   }) => {
     let waiting: ReturnType<Awaited<ReturnType<typeof waitingTask>>["wait"]> | undefined;
@@ -904,7 +918,7 @@ async function tool(
   return { started, completed };
 }
 
-describeStore("shaped agent Thread tools", (it) => {
+describeStore("shaped agent task tools", (it) => {
   for (const ending of ["timeout", "disconnect"] as const) {
     it(`joins a blocked store snapshot and returns its checkout on ${ending}`, async ({
       storeFixture,
@@ -947,7 +961,7 @@ describeStore("shaped agent Thread tools", (it) => {
       let pending: Promise<unknown> | undefined;
       try {
         await withTimeout(locked.promise, 1000, {
-          timeoutError: () => new Error("Thread relation was not locked"),
+          timeoutError: () => new Error("task relation was not locked"),
         });
         pending = service.wait({
           timeoutMs: ending === "timeout" ? 100 : 2000,
@@ -976,7 +990,7 @@ describeStore("shaped agent Thread tools", (it) => {
           controller.abort(disconnected);
         }
         const result = await withTimeout(outcome, 1000, {
-          timeoutError: () => new Error("Thread wait did not join its cancelled store read"),
+          timeoutError: () => new Error("task wait did not join its cancelled store read"),
         });
         if (ending === "timeout") expect(result).toMatchObject({ value: { status: "timed_out" } });
         else expect(result).toEqual({ error: disconnected });
@@ -984,7 +998,7 @@ describeStore("shaped agent Thread tools", (it) => {
         expect(
           (
             await withTimeout(sql`select 1 as alive`.execute(database), 500, {
-              timeoutError: () => new Error("Thread wait retained the only checkout"),
+              timeoutError: () => new Error("task wait retained the only checkout"),
             })
           ).rows,
         ).toEqual([{ alive: 1 }]);
@@ -1066,9 +1080,9 @@ describeStore("shaped agent Thread tools", (it) => {
       data: { nodeId, callId: "sensitive", isError: false, output: { text: "NEVER_RETURN" } },
     });
     const read = (extra: Record<string, unknown> = {}, caller: AgentCaller = s.caller) =>
-      s.product.thread_read({
+      s.product.opensteer_task_read({
         caller,
-        input: thread_read.input.parse({
+        input: opensteer_subagent_read.input.parse({
           subagentId: nodeId,
           view: "activity",
           limit: 2,
@@ -1077,7 +1091,7 @@ describeStore("shaped agent Thread tools", (it) => {
         operationKey: randomUUID(),
       });
     const page = await read();
-    expect(ThreadReadOutputSchema.parse(page).subagent).toMatchObject({
+    expect(ThreadReadOutputSchema.parse(productToolOutput(page)).subagent).toMatchObject({
       id: nodeId,
       title: "Inspect parser",
       model: "child-model",
@@ -1088,7 +1102,7 @@ describeStore("shaped agent Thread tools", (it) => {
     });
     expect(page.items.map((item) => item.text)).toEqual([null, null]);
     expect(JSON.stringify(page)).not.toContain("NEVER_RETURN");
-    const older = await read({ before: page.nextBefore });
+    const older = await read({ cursor: page.nextBefore });
     expect(older.items[0]).toMatchObject({
       type: "tool.completed",
       text: "😀".repeat(500),
@@ -1097,7 +1111,7 @@ describeStore("shaped agent Thread tools", (it) => {
     });
     const full = await read({ itemId: older.items[0]!.itemId, textOffset: 500 });
     expect(full.items[0]).toMatchObject({ text: "😀".repeat(200), textTruncated: false });
-    const oldest = await read({ before: older.nextBefore });
+    const oldest = await read({ cursor: older.nextBefore });
     expect(oldest.items).toHaveLength(1);
     expect(oldest.items[0]).toMatchObject({ type: "node.message", text: "Child reply 😀" });
     expect(oldest.hasMore).toBe(false);
@@ -1115,9 +1129,9 @@ describeStore("shaped agent Thread tools", (it) => {
     });
     expect(missing).toMatchObject({ code: "forbidden", message: "Subagent is unavailable" });
     await expect(
-      s.product.task_cancel({
+      s.product.opensteer_delegation_cancel({
         caller: { ...s.caller, claims: { ...s.caller.claims, runId: createId("run") } },
-        input: task_cancel.input.parse({ subagentId: nodeId }),
+        input: opensteer_subagent_stop.input.parse({ subagentId: nodeId }),
         operationKey: randomUUID(),
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
@@ -1127,9 +1141,9 @@ describeStore("shaped agent Thread tools", (it) => {
       .where("id", "=", nodeId)
       .execute();
     await expect(
-      s.product.task_cancel({
+      s.product.opensteer_delegation_cancel({
         caller: s.caller,
-        input: task_cancel.input.parse({ subagentId: nodeId }),
+        input: opensteer_subagent_stop.input.parse({ subagentId: nodeId }),
         operationKey: randomUUID(),
       }),
     ).rejects.toMatchObject({
@@ -1141,13 +1155,13 @@ describeStore("shaped agent Thread tools", (it) => {
       .set({ stopSupported: true })
       .where("id", "=", nodeId)
       .execute();
-    const result = await s.product.task_cancel({
+    const result = await s.product.opensteer_delegation_cancel({
       caller: s.caller,
-      input: task_cancel.input.parse({ subagentId: nodeId }),
+      input: opensteer_subagent_stop.input.parse({ subagentId: nodeId }),
       operationKey: randomUUID(),
     });
     expect(result).toEqual({ subagentId: nodeId, status: "stopping" });
-    expect(ThreadReadOutputSchema.parse(await read()).subagent).toMatchObject({
+    expect(ThreadReadOutputSchema.parse(productToolOutput(await read())).subagent).toMatchObject({
       stopSupported: true,
       stopping: true,
     });
@@ -1167,9 +1181,9 @@ describeStore("shaped agent Thread tools", (it) => {
       .where("id", "=", node.attemptId)
       .execute();
     await expect(
-      s.product.task_cancel({
+      s.product.opensteer_delegation_cancel({
         caller: s.caller,
-        input: task_cancel.input.parse({ subagentId: nodeId }),
+        input: opensteer_subagent_stop.input.parse({ subagentId: nodeId }),
         operationKey: randomUUID(),
       }),
     ).rejects.toMatchObject({
@@ -1295,13 +1309,13 @@ describeStore("shaped agent Thread tools", (it) => {
     expect(await storeFixture.store.drainAssignmentReturn(s.assignmentId)).toEqual([]);
   });
 
-  it("hands the result once to a Run that waits on its own task's conversation", async ({
+  it("hands the result once to a Run that waits on its own task's task", async ({
     storeFixture,
   }) => {
     const s = await waitingTask(storeFixture, "wait-own-thread");
-    const pending = s.product.thread_wait({
+    const pending = s.product.opensteer_task_wait({
       caller: s.caller,
-      input: thread_wait.input.parse({ threadId: s.task.threadId, timeoutMs: 2_000 }),
+      input: opensteer_task_wait.input.parse({ taskId: s.task.threadId, timeoutMs: 2_000 }),
       operationKey: randomUUID(),
       checkLive: s.checkLive,
     });
@@ -1328,10 +1342,10 @@ describeStore("shaped agent Thread tools", (it) => {
       .where("threadId", "=", s.task.threadId)
       .orderBy("createdAt", "asc")
       .executeTakeFirstOrThrow();
-    const pending = s.product.thread_wait({
+    const pending = s.product.opensteer_task_wait({
       caller: s.caller,
-      input: thread_wait.input.parse({
-        threadId: s.task.threadId,
+      input: opensteer_task_wait.input.parse({
+        taskId: s.task.threadId,
         afterMessageId: seed.id,
         timeoutMs: 2_000,
       }),
@@ -1443,15 +1457,15 @@ describeStore("shaped agent Thread tools", (it) => {
   it("refuses self and ancestor waits", async ({ storeFixture }) => {
     const s = await waitingTask(storeFixture, "wait-ancestry");
     const wait = (threadId: Fixture["thread"]["id"], caller = s.caller) =>
-      s.product.thread_wait({
+      s.product.opensteer_task_wait({
         caller,
-        input: thread_wait.input.parse({ threadId, timeoutMs: 1 }),
+        input: opensteer_task_wait.input.parse({ taskId: threadId, timeoutMs: 1 }),
         operationKey: randomUUID(),
       });
     await expect(wait(s.f.thread.id)).rejects.toThrow("Cannot wait on yourself");
     const child = (await storeFixture.store.getThreadForOwner(s.task.threadId, s.f.userId))!;
     await expect(wait(s.f.thread.id, { ...s.caller, thread: child })).rejects.toThrow(
-      "conversation you are working for",
+      "task you are working for",
     );
   });
 
@@ -1472,14 +1486,14 @@ describeStore("shaped agent Thread tools", (it) => {
     expect(await s.returns()).toHaveLength(1);
   });
 
-  it("uses the same waiter for delegate_task wait mode", async ({ storeFixture }) => {
+  it("uses the same waiter for opensteer_task_delegate wait mode", async ({ storeFixture }) => {
     const s = await waitingTask(storeFixture, "delegate-wait");
-    const input = delegate_task.input.parse({
-      task: "Another answer",
+    const input = opensteer_task_delegate.input.parse({
+      message: "Another answer",
       mode: "wait",
       timeoutMs: 2_000,
     });
-    const pending = s.product.delegate_task({
+    const pending = s.product.opensteer_task_delegate({
       caller: s.caller,
       input,
       operationKey: randomUUID(),
@@ -1493,7 +1507,7 @@ describeStore("shaped agent Thread tools", (it) => {
           .where("parentRunId", "=", s.f.run.id)
           .where("id", "!=", s.assignmentId)
           .executeTakeFirst();
-        expect(row, "wait-mode delegation never created its Assignment").toBeDefined();
+        expect(row, "wait-mode delegation never created its delegation").toBeDefined();
         assignmentId = row!.id;
       },
       { timeout: 1000 },
@@ -1552,9 +1566,13 @@ describeStore("shaped agent Thread tools", (it) => {
       status: "running",
       pendingRequest: { id: created.request.id },
     });
-    const read = await s.product.pending_request({
+    const read = await s.product.opensteer_request_answer({
       caller: s.caller,
-      input: pending_request.input.parse({ action: "read", requestId: created.request.id }),
+      input: {
+        ...opensteer_request_read.input.parse({ requestId: created.request.id }),
+        action: "read",
+        limit: 50,
+      },
       operationKey: randomUUID(),
     });
     expect(read).toMatchObject({
@@ -1562,9 +1580,13 @@ describeStore("shaped agent Thread tools", (it) => {
     });
     expect(read).not.toHaveProperty("request.payload");
     await expect(
-      s.product.pending_request({
+      s.product.opensteer_request_answer({
         caller: s.caller,
-        input: pending_request.input.parse({ action: "read", requestId: createId("request") }),
+        input: {
+          ...opensteer_request_read.input.parse({ requestId: createId("request") }),
+          action: "read",
+          limit: 50,
+        },
         operationKey: randomUUID(),
       }),
     ).rejects.toThrow("Request is unavailable");
@@ -1829,7 +1851,7 @@ describeStore("shaped agent Thread tools", (it) => {
     );
     const page = await s.read({ view: "activity", limit: 1 });
     expect(page.items[0]).toMatchObject({ itemId: messageId, text: "Published answer" });
-    const earlier = await s.read({ view: "activity", before: page.nextBefore });
+    const earlier = await s.read({ view: "activity", cursor: page.nextBefore });
     expect(
       earlier.items
         .filter((i) => i.type.startsWith("node."))
@@ -1894,30 +1916,26 @@ describeStore("shaped agent Thread tools", (it) => {
     expect(Buffer.byteLength(JSON.stringify(page.items))).toBeLessThanOrEqual(256 * 1024);
     expect(page.hasMore).toBe(true);
     expect(page.nextBefore).not.toBeNull();
-    ThreadReadOutputSchema.parse(page);
-    const older = await s.read({ limit: 100, maxCharsPerItem: 50000, before: page.nextBefore });
+    ThreadReadOutputSchema.parse(productToolOutput(page));
+    const older = await s.read({ limit: 100, maxCharsPerItem: 50000, cursor: page.nextBefore });
     expect(older.items.length).toBeGreaterThan(0);
     expect(older.items.some((i) => page.items.some((p) => p.itemId === i.itemId))).toBe(false);
   });
 
-  it("reads configure and lists queue by default on this Thread and refuses unnamed connection targets", async ({
+  it("reads configure and lists queue by default on this task and refuses unnamed connection targets", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("shaped-configure");
     const s = setup(storeFixture, f);
-    const configuration = await s.product.thread_configure({
-      caller: s.caller,
-      input: thread_configure.input.parse({}),
-      operationKey: randomUUID(),
-    });
-    expect(configuration).toMatchObject({
-      threadId: f.thread.id,
-      providerSessionId: f.thread.providerSessionId,
+    const configuration = await s.read({});
+    expect(configuration.thread).toMatchObject({
+      id: f.thread.id,
       modelSelection: testModelSelection,
+      accessMode: f.thread.accessMode,
     });
-    const queue = await s.product.thread_queue({
+    const queue = await s.product.opensteer_task_queue({
       caller: s.caller,
-      input: thread_queue.input.parse({ action: "list" }),
+      input: opensteer_task_queue.input.parse({ action: "list" }),
       operationKey: randomUUID(),
     });
     expect(queue).toEqual({ paused: false, items: [] });
@@ -1927,15 +1945,19 @@ describeStore("shaped agent Thread tools", (it) => {
       .where("id", "=", f.thread.id)
       .execute();
     const lower = { ...s.caller, accessMode: "approval-required" as const };
-    const listing = thread_queue.input.parse({ action: "list" });
-    expect(thread_queue.readsOnly?.(listing)).toBe(true);
+    const listing = opensteer_task_queue.input.parse({ action: "list" });
+    expect(opensteer_task_queue.readsOnly?.(listing)).toBe(true);
     expect(
-      await s.product.thread_queue({ caller: lower, input: listing, operationKey: randomUUID() }),
+      await s.product.opensteer_task_queue({
+        caller: lower,
+        input: listing,
+        operationKey: randomUUID(),
+      }),
     ).toEqual({ paused: false, items: [] });
     await expect(
-      s.product.thread_queue({
+      s.product.opensteer_task_queue({
         caller: lower,
-        input: thread_queue.input.parse({ action: "resume" }),
+        input: { ...opensteer_task_resume.input.parse({}), action: "resume" },
         operationKey: randomUUID(),
       }),
     ).rejects.toThrow("stronger access mode");
@@ -1944,13 +1966,13 @@ describeStore("shaped agent Thread tools", (it) => {
       .set({ accessMode: f.thread.accessMode })
       .where("id", "=", f.thread.id)
       .execute();
-    expect((await s.read({ threadId: "self" })).thread.id).toBe(f.thread.id);
-    await s.product.delegate_task({
+    expect((await s.read({})).thread.id).toBe(f.thread.id);
+    await s.product.opensteer_task_delegate({
       caller: s.caller,
-      input: delegate_task.input.parse({
-        harnessInstanceId: f.harnessInstance.id,
+      input: opensteer_task_delegate.input.parse({
+        aiAccountId: f.harnessInstance.id,
         model: { ...testModelSelection, options: {} },
-        task: "Work here",
+        message: "Work here",
       }),
       operationKey: randomUUID(),
     });
@@ -1962,27 +1984,20 @@ describeStore("shaped agent Thread tools", (it) => {
       accessMode: "full-access",
     };
     await expect(
-      s.product.thread_configure({
+      s.product.opensteer_task_configure({
         caller: connection,
-        input: thread_configure.input.parse({}),
+        input: opensteer_task_configure.input.parse({ modelSelection: testModelSelection }),
         operationKey: randomUUID(),
       }),
-    ).rejects.toThrow("must name threadId");
+    ).rejects.toThrow("must name taskId");
     await expect(
-      s.product.thread_queue({
+      s.product.opensteer_task_queue({
         caller: connection,
-        input: thread_queue.input.parse({ action: "list" }),
+        input: opensteer_task_queue.input.parse({ action: "list" }),
         operationKey: randomUUID(),
       }),
-    ).rejects.toThrow("must name threadId");
-    await expect(s.read({ threadId: "self" }, connection)).rejects.toThrow("must name threadId");
-    await expect(
-      s.product.thread_list({
-        caller: connection,
-        input: thread_list.input.parse({ parentThreadId: "self" }),
-        operationKey: randomUUID(),
-      }),
-    ).rejects.toThrow("must name parentThreadId");
+    ).rejects.toThrow("must name taskId");
+    await expect(s.read({}, connection)).rejects.toThrow("must name taskId");
   });
 
   it("returns one task shape on delegation and replay, full results, and open/latest assignments across personal tasks", async ({
@@ -1990,27 +2005,31 @@ describeStore("shaped agent Thread tools", (it) => {
   }) => {
     const f = await storeFixture.startRunFixture("shaped-tasks");
     const s = setup(storeFixture, f);
-    const input = delegate_task.input.parse({
-      harnessInstanceId: f.harnessInstance.id,
+    const input = opensteer_task_delegate.input.parse({
+      aiAccountId: f.harnessInstance.id,
       model: { ...testModelSelection, options: {} },
       title: "Worker",
-      task: "Do the work",
+      message: "Do the work",
     });
     const operationKey = randomUUID();
-    const delegated = await s.product.delegate_task({ caller: s.caller, input, operationKey });
+    const delegated = await s.product.opensteer_task_delegate({
+      caller: s.caller,
+      input,
+      operationKey,
+    });
     expect(delegated).toMatchObject({
       assignmentId: expect.any(String),
       status: "open",
       threadId: expect.any(String),
       parentThreadId: f.thread.id,
     });
-    expect(await s.product.delegate_task({ caller: s.caller, input, operationKey })).toEqual(
-      delegated,
-    );
+    expect(
+      await s.product.opensteer_task_delegate({ caller: s.caller, input, operationKey }),
+    ).toEqual(delegated);
     const list = () =>
-      s.product.thread_list({
+      s.product.opensteer_task_list({
         caller: s.caller,
-        input: thread_list.input.parse({ parentThreadId: "self" }),
+        input: opensteer_task_list.input.parse({ parentTaskId: f.thread.id }),
         operationKey: randomUUID(),
       });
     expect((await list()).threads).toContainEqual(
@@ -2056,9 +2075,12 @@ describeStore("shaped agent Thread tools", (it) => {
       runId: f.run.id,
       target: { runId: delegated.runId, place: { surfaceId: tabId } },
     });
-    const next = await s.product.delegate_task({
+    const next = await s.product.opensteer_task_delegate({
       caller: s.caller,
-      input: delegate_task.input.parse({ threadId: delegated.threadId, task: "Continue" }),
+      input: opensteer_task_delegate.input.parse({
+        taskId: delegated.threadId,
+        message: "Continue",
+      }),
       operationKey: randomUUID(),
     });
     expect((await list()).threads.find((t) => t.id === delegated.threadId)).toMatchObject({
@@ -2093,9 +2115,9 @@ describeStore("shaped agent Thread tools", (it) => {
       userId: f.userId,
       accessMode: "approval-required",
     };
-    const status = await s.product.task_status({
+    const status = await s.product.opensteer_delegation_status({
       caller: connection,
-      input: task_status.input.parse({ assignmentId: next.assignmentId }),
+      input: opensteer_delegation_status.input.parse({ delegationId: next.assignmentId }),
       operationKey: randomUUID(),
     });
     expect(status.result).toBe(result);
@@ -2109,9 +2131,9 @@ describeStore("shaped agent Thread tools", (it) => {
       .where("threadId", "=", f.thread.id)
       .execute();
     expect(
-      await s.product.thread_interrupt({
+      await s.product.opensteer_task_interrupt({
         caller: s.caller,
-        input: thread_interrupt.input.parse({}),
+        input: opensteer_task_interrupt.input.parse({}),
         operationKey: randomUUID(),
       }),
     ).toEqual({ interruptedRunId: null });
@@ -2136,7 +2158,7 @@ describeStore("shaped agent Thread tools", (it) => {
     });
     const target = { ...f, run: delegated.run, thread: delegated.thread };
     await expect(s.show({ runId: delegated.run.id })).rejects.toMatchObject({
-      next: "Read recentPlaces with thread_read.",
+      next: "Read recentPlaces with opensteer_task_read.",
     });
     const sessionId = createBrowserSessionId();
     const tabId = BrowserSurfaceIdSchema.parse("guest-task");

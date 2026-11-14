@@ -10,6 +10,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import {
+  TriggerStore,
   createMemoryPass,
   personalSettings,
   recordMemoryPassWake,
@@ -20,6 +21,7 @@ import {
 import type { RunnerRegistry } from "@opensteer/orchestration";
 import { MANAGED_MEMORY_WAKE_SKIPPED, type TriggerSystemRole } from "@opensteer/triggers";
 import { resolveAutomaticModels, personalExecution } from "./automatic-models.js";
+import { isDeepStrictEqual } from "node:util";
 import { memoryPassProgram } from "./memory-pass-program.js";
 import { triggerProgramCompatibilityReason } from "../triggers/trigger-program-compatibility.js";
 
@@ -64,6 +66,30 @@ export class MemoryPassService {
       .executeTakeFirst();
     if (!initialized) return;
     const settings = await personalSettings(store.database);
+    const systemPrograms = await store.database
+      .selectFrom("triggers")
+      .innerJoin("triggerRevisions", "triggerRevisions.id", "triggers.currentRevisionId")
+      .select([
+        "triggers.id",
+        "triggers.currentRevisionId",
+        "triggers.systemRole",
+        "triggerRevisions.program",
+      ])
+      .where("triggers.systemRole", "is not", null)
+      .execute();
+    for (const current of systemPrograms) {
+      if (!current.systemRole) continue;
+      const program = memoryPassProgram(current.systemRole);
+      if (!isDeepStrictEqual(current.program, program)) {
+        await new TriggerStore(store.database).regenerateSystemProgram({
+          triggerId: current.id,
+          ownerId: settings.ownerId,
+          expectedRevisionId: current.currentRevisionId,
+          program,
+        });
+        this.options.onChanged();
+      }
+    }
     const zone = TimeZoneSchema.safeParse(
       await store.notificationState.timeZoneFor(settings.ownerId),
     );
@@ -82,7 +108,7 @@ export class MemoryPassService {
       .select("id")
       .where("runnerId", "=", settings.agentHome.computerId)
       .executeTakeFirst();
-    if (!environment || (await triggerProgramCompatibilityReason(store, environment.id, 3))) return;
+    if (!environment || (await triggerProgramCompatibilityReason(store, environment.id, 4))) return;
     let instructions: string | null;
     try {
       instructions = await this.options.readAgentInstructions(AbortSignal.timeout(10_000));

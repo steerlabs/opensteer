@@ -1,10 +1,5 @@
 import { OpensteerError, type UserId, type ThreadId } from "@opensteer/core";
-import {
-  requiredTriggerToolField,
-  triggerSourceFromInput,
-  type TriggerControlInput,
-  type TriggerWriteInput,
-} from "@opensteer/triggers";
+import { triggerSourceFromInput, type TriggerControlInput } from "@opensteer/triggers";
 import { callerThread } from "../agent-caller.js";
 import { idempotencyKey, operationId } from "../operations.js";
 import type { ToolCall } from "./types.js";
@@ -25,34 +20,101 @@ export class TriggerToolHandlers {
   constructor(triggers: AgentTriggerManager) {
     this.triggers = triggers;
   }
-  async trigger_read({ caller, input }: ToolCall<"trigger_read">) {
-    const context = { action: input.action, tool: "trigger_read" } as const;
+  async read(call: ToolCall<"opensteer_automation_list"> | ToolCall<"opensteer_automation_read">) {
+    const { caller, input } = call;
     return this.triggers.manage(
       caller.userId,
-      input.action === "list"
+      "automationId" in input
         ? {
+            operation: "get",
+            triggerId: input.automationId,
+            occurrenceLimit: input.occurrenceLimit,
+          }
+        : {
             operation: "list",
             limit: input.limit,
             ...(input.systemRole ? { systemRole: input.systemRole } : {}),
-          }
-        : {
-            operation: "get",
-            triggerId: requiredTriggerToolField(input.triggerId, "triggerId", context),
-            occurrenceLimit: input.occurrenceLimit,
           },
       caller.kind === "connection" ? null : callerThread(caller).id,
       { accessMode: caller.accessMode },
     );
   }
-  async trigger_write({ caller, input, operationKey }: ToolCall<"trigger_write">) {
-    const { operationKey: _operationKey, ...write } = input;
-    const requestId = operationId(caller, operationKey, "trigger_write");
-    const anchor =
-      write.anchorThreadId ?? (caller.kind === "connection" ? undefined : callerThread(caller).id);
-    const operation = triggerWriteOperation(
-      write.action === "create" && anchor ? { ...write, anchorThreadId: anchor } : write,
-      idempotencyKey(caller, requestId, "trigger.create"),
+  async write(
+    call:
+      | ToolCall<"opensteer_automation_create">
+      | ToolCall<"opensteer_automation_update">
+      | ToolCall<"opensteer_automation_control">,
+  ) {
+    const { caller, input, operationKey } = call;
+    const requestId = operationId(
+      caller,
+      operationKey,
+      !("automationId" in input)
+        ? "opensteer_automation_create"
+        : "action" in input
+          ? "opensteer_automation_control"
+          : "opensteer_automation_update",
     );
+    let operation: TriggerControlInput;
+    if (!("automationId" in input)) {
+      const anchor =
+        input.taskId ?? (caller.kind === "connection" ? undefined : callerThread(caller).id);
+      if (!anchor)
+        throw new OpensteerError({ code: "bad_request", message: "Connections must name taskId" });
+      operation = {
+        operation: "create",
+        anchorThreadId: anchor,
+        name: input.name,
+        program: input.program,
+        source: triggerSourceFromInput(input.source),
+        ...(input.ownTask ? { ownTask: true } : {}),
+        idempotencyKey: idempotencyKey(caller, requestId, "trigger.create"),
+      };
+    } else if (!("action" in input)) {
+      operation = {
+        operation: "update",
+        triggerId: input.automationId,
+        expectedRevisionId: input.expectedRevisionId,
+        ...(input.name === undefined ? {} : { name: input.name }),
+        ...(input.program === undefined ? {} : { program: input.program }),
+        ...(input.source === undefined ? {} : { source: triggerSourceFromInput(input.source) }),
+      };
+    } else {
+      const triggerId = input.automationId;
+      switch (input.action) {
+        case "pause":
+        case "resume":
+        case "archive":
+          operation = {
+            operation: "set_status",
+            triggerId,
+            status:
+              input.action === "pause"
+                ? "paused"
+                : input.action === "resume"
+                  ? "active"
+                  : "archived",
+          };
+          break;
+        case "reschedule":
+          operation = { operation: "set_next_fire", triggerId, nextFireAt: input.nextFireAt! };
+          break;
+        case "run_now":
+          operation = {
+            operation: "run",
+            triggerId,
+            ...(input.payload === undefined ? {} : { payload: input.payload }),
+          };
+          break;
+        case "cancel_pending":
+          operation = {
+            operation: "cancel",
+            triggerId,
+            ...(input.occurrenceId === undefined ? {} : { occurrenceId: input.occurrenceId }),
+          };
+          break;
+      }
+    }
     return this.triggers.manage(
       caller.userId,
       operation,
@@ -62,81 +124,5 @@ export class TriggerToolHandlers {
         operationKey: idempotencyKey(caller, requestId, "trigger.write"),
       },
     );
-  }
-}
-function triggerWriteOperation(write: TriggerWriteInput, requestId: string): TriggerControlInput {
-  const context = { action: write.action, tool: "trigger_write" } as const;
-  // The flat input is the union of every action's fields; a field the chosen
-  // action would silently drop is refused so the caller learns it had no effect.
-  const accepted: Readonly<Record<TriggerWriteInput["action"], readonly string[]>> = {
-    cancel: ["occurrenceId", "triggerId"],
-    create: ["anchorThreadId", "name", "ownTask", "program", "source"],
-    run: ["payload", "triggerId"],
-    set_next_fire: ["nextFireAt", "triggerId"],
-    set_status: ["status", "triggerId"],
-    update: ["expectedRevisionId", "name", "program", "source", "triggerId"],
-  };
-  const stray = Object.entries(write)
-    .filter(
-      ([field, value]) =>
-        field !== "action" && value !== undefined && !accepted[write.action].includes(field),
-    )
-    .map(([field]) => field);
-  if (stray.length > 0) {
-    throw new OpensteerError({
-      code: "bad_request",
-      message: `trigger_write action "${write.action}" does not accept ${stray.join(", ")}`,
-    });
-  }
-  switch (write.action) {
-    case "create":
-      return {
-        anchorThreadId: requiredTriggerToolField(write.anchorThreadId, "anchorThreadId", context),
-        // The model never chooses the key: the control service rewrites this
-        // into a key scoped to the authority the call arrived with.
-        idempotencyKey: requestId,
-        name: requiredTriggerToolField(write.name, "name", context),
-        operation: "create",
-        ...(write.ownTask ? { ownTask: true } : {}),
-        program: requiredTriggerToolField(write.program, "program", context),
-        source: triggerSourceFromInput(requiredTriggerToolField(write.source, "source", context)),
-      };
-    case "update":
-      return {
-        expectedRevisionId: requiredTriggerToolField(
-          write.expectedRevisionId,
-          "expectedRevisionId",
-          context,
-        ),
-        ...(write.name === undefined ? {} : { name: write.name }),
-        operation: "update",
-        ...(write.program === undefined ? {} : { program: write.program }),
-        ...(write.source === undefined ? {} : { source: triggerSourceFromInput(write.source) }),
-        triggerId: requiredTriggerToolField(write.triggerId, "triggerId", context),
-      };
-    case "set_status":
-      return {
-        operation: "set_status",
-        status: requiredTriggerToolField(write.status, "status", context),
-        triggerId: requiredTriggerToolField(write.triggerId, "triggerId", context),
-      };
-    case "set_next_fire":
-      return {
-        operation: "set_next_fire",
-        nextFireAt: requiredTriggerToolField(write.nextFireAt, "nextFireAt", context),
-        triggerId: requiredTriggerToolField(write.triggerId, "triggerId", context),
-      };
-    case "run":
-      return {
-        operation: "run",
-        ...(write.payload === undefined ? {} : { payload: write.payload }),
-        triggerId: requiredTriggerToolField(write.triggerId, "triggerId", context),
-      };
-    case "cancel":
-      return {
-        ...(write.occurrenceId === undefined ? {} : { occurrenceId: write.occurrenceId }),
-        operation: "cancel",
-        triggerId: requiredTriggerToolField(write.triggerId, "triggerId", context),
-      };
   }
 }

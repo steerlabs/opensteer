@@ -141,7 +141,7 @@ export const RunnerCapabilitySchema = z.enum([
   "browser-profile-create-v1",
   "environment-list-v1",
   // Can parse and execute v3 Trigger and Watch programs; independent of tool discovery.
-  "trigger-program-v3",
+  "trigger-program-v4",
   "native-place-input-v1",
   "execution-plane-v2",
   "filesystem",
