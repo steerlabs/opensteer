@@ -573,10 +573,9 @@
   flex: 1 1 0;
 }
 
-/* Tabs is a sheet risen from the footer's line: lit and rounded along its
-   top, open at its foot. */
+/* Tabs rises from the footer's line with a sheet's rim, rounded and lit
+   along its top and open at its foot. It has no fill of its own. */
 .side-section--tabs {
-  --ground: var(--fill-sheet);
   flex: 0 1 var(--side-tabs-height, calc(var(--side-head) + 6 * var(--side-pitch)));
   max-height: max-content;
   margin: var(--space-4) var(--space-6) 0;
@@ -584,10 +583,6 @@
   border: 1px solid var(--rim-sheet);
   border-bottom: 0;
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
-  background:
-    linear-gradient(var(--ground) 0 0) padding-box,
-    var(--light-sheet),
-    var(--ground);
   box-shadow: var(--edge-sheet);
 }
 
