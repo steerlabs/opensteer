@@ -116,6 +116,8 @@ export function useKnowledgeNotes(
 }
 
 interface NoteHistory {
+  /** The session and note these versions were read for. */
+  readonly key: string;
   readonly versions: readonly TeamNote[];
   readonly hasMore: boolean;
   readonly loading: boolean;
@@ -126,7 +128,9 @@ interface NoteHistory {
  * One note, and its topic when `topicId` is given (a caller holding the topic list passes
  * null), read together. Its versions are read only when asked for: most opens never need
  * them, and a busy note's history is every body it ever had. Restoring writes an old version
- * again as the newest; a stale view is refused and read again.
+ * again as the newest; a stale view is refused and read again. A refusal (the note is gone,
+ * or the reader lost its topic) drops everything read, so nothing outlives the access it
+ * was read under.
  */
 export function useKnowledgeNote(
   session: TeamSessionClient | null,
@@ -143,6 +147,8 @@ export function useKnowledgeNote(
   const [history, setHistory] = useState<NoteHistory | null>(null);
   const [busy, setBusy] = useState<"restore" | "delete" | null>(null);
   const key = `${sessionKey(session)}:${noteId}:${topicId ?? ""}`;
+  const keyRef = useRef(key);
+  keyRef.current = key;
   const historyLoad = useRef(0);
   /** Versions were asked for, so a reload reads them again too. */
   const historyOpen = useRef(false);
@@ -158,7 +164,15 @@ export function useKnowledgeNote(
         : session.rpc["team.knowledge.topic.get"]({ topicId }).then(unwrapRpcResult),
     ]).then(
       ([note, topic]) => live && setRead({ key, note, topic }),
-      (failure: unknown) => live && setError(failure),
+      (failure: unknown) => {
+        if (!live) return;
+        setError(failure);
+        if (!refused(failure)) return;
+        historyLoad.current++;
+        historyOpen.current = false;
+        setRead(null);
+        setHistory(null);
+      },
     );
     return () => {
       live = false;
@@ -177,9 +191,11 @@ export function useKnowledgeNote(
       historyOpen.current = true;
       const load = ++historyLoad.current;
       const before = after.at(-1)?.version;
+      const at = keyRef.current;
       setHistory((now) => ({
+        key: at,
         versions: after,
-        hasMore: now?.hasMore ?? false,
+        hasMore: now?.key === at && now.hasMore,
         loading: true,
         error: null,
       }));
@@ -192,6 +208,7 @@ export function useKnowledgeNote(
           (page) =>
             load === historyLoad.current &&
             setHistory({
+              key: at,
               versions: [...after, ...page.versions],
               hasMore: page.hasMore,
               loading: false,
@@ -199,13 +216,14 @@ export function useKnowledgeNote(
             }),
           (failure: unknown) =>
             load === historyLoad.current &&
-            setHistory({ versions: after, hasMore: true, loading: false, error: failure }),
+            setHistory({ key: at, versions: after, hasMore: true, loading: false, error: failure }),
         );
     },
     [session, noteId],
   );
 
   const current = read?.key === key ? read : null;
+  const versions = history?.key === key ? history : null;
   const reload = useCallback(() => {
     setGeneration((next) => next + 1);
     if (historyOpen.current) loadHistory();
@@ -234,9 +252,9 @@ export function useKnowledgeNote(
     topic: current?.topic ?? null,
     error,
     /** Null until the versions are asked for. */
-    history,
+    history: versions,
     showHistory: () => loadHistory(),
-    moreHistory: () => history && !history.loading && loadHistory(history.versions),
+    moreHistory: () => versions && !versions.loading && loadHistory(versions.versions),
     busy,
     reload,
     /** Writes `version` again as the newest version; restoring the current one undeletes it. */
@@ -244,4 +262,11 @@ export function useKnowledgeNote(
       current ? write("restore", noteRestoreCommand(current.note, version)) : Promise.resolve(),
     remove: () => (current ? write("delete", noteDeleteCommand(current.note)) : Promise.resolve()),
   };
+}
+
+/** The team refused the read itself, not the network: what was read must go. */
+function refused(failure: unknown): boolean {
+  const code =
+    typeof failure === "object" && failure !== null && "code" in failure ? failure.code : null;
+  return code === "not_found" || code === "forbidden";
 }
