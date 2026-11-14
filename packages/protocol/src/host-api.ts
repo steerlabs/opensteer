@@ -78,7 +78,9 @@ import {
   LiveRunProgressViewSchema,
   LocalPasswordRecoveryTokenSchema,
   MessageContentSchema,
+  MessageEditSchema,
   MessageIdSchema,
+  MessageRevisionViewSchema,
   MessageViewSchema,
   ModelSelectionSchema,
   NotificationInstallationIdSchema,
@@ -96,6 +98,7 @@ import {
   SequenceSchema,
   ThreadAccessModeSchema,
   ThreadIdSchema,
+  ThreadInputEditLeaseViewSchema,
   ThreadInputPolicySchema,
   ThreadInputQueueViewSchema,
   ThreadInputViewSchema,
@@ -287,6 +290,9 @@ const ComputerUseInstalledAppViewSchema = z.object({
   identity: ComputerAppIdentityViewSchema,
 });
 const idempotencyKeySchema = z.string().trim().min(1).max(255);
+/** Client-generated, so a retried take is the same lease. */
+const threadInputEditLeaseIdSchema = z.string().regex(/^[A-Za-z0-9_-]{16,64}$/);
+export const messageRevisionsPageSize = 20;
 const emailSchema = z.email().max(320);
 // An interrupted native OAuth authorization rides through sign-in as its opaque
 // original query string. Bounding it keeps an unauthenticated caller from
@@ -461,6 +467,47 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     messageId: MessageIdSchema,
     threadId: ThreadIdSchema,
     type: z.literal("thread.input.move"),
+  }),
+  /**
+   * Starts editing a waiting message on this device. The client names the
+   * lease, so a retry is the same lease. Another device's live lease is a
+   * conflict unless `takeOver`.
+   */
+  z.strictObject({
+    leaseId: threadInputEditLeaseIdSchema,
+    messageId: MessageIdSchema,
+    takeOver: z.boolean(),
+    threadId: ThreadIdSchema,
+    type: z.literal("thread.input.lease.take"),
+  }),
+  /** Extends this device's lease while the person types; a replaced lease stays replaced. */
+  z.strictObject({
+    leaseId: threadInputEditLeaseIdSchema,
+    messageId: MessageIdSchema,
+    threadId: ThreadIdSchema,
+    type: z.literal("thread.input.lease.renew"),
+  }),
+  /** Ends this device's lease, or with no `leaseId` releases whichever device holds it. */
+  z.strictObject({
+    leaseId: threadInputEditLeaseIdSchema.optional(),
+    messageId: MessageIdSchema,
+    threadId: ThreadIdSchema,
+    type: z.literal("thread.input.lease.release"),
+  }),
+  /**
+   * Replaces a waiting message's content in place and ends the lease. Accepted
+   * when `leaseId` is the live lease or no device holds one, and the message is
+   * still at `expectedRevision` (0 when never edited). Non-text parts may only be
+   * kept or removed.
+   */
+  z.strictObject({
+    content: MessageContentSchema,
+    expectedRevision: z.number().int().nonnegative(),
+    idempotencyKey: idempotencyKeySchema,
+    leaseId: threadInputEditLeaseIdSchema.optional(),
+    messageId: MessageIdSchema,
+    threadId: ThreadIdSchema,
+    type: z.literal("thread.input.edit"),
   }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
@@ -1165,6 +1212,21 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
   z.object({ input: ThreadInputViewSchema, type: z.literal("thread.input.cancel") }),
   z.object({ type: z.literal("thread.input.move") }),
+  z.object({
+    lease: ThreadInputEditLeaseViewSchema,
+    revision: z.number().int().nonnegative(),
+    type: z.literal("thread.input.lease.take"),
+  }),
+  z.object({
+    lease: ThreadInputEditLeaseViewSchema,
+    type: z.literal("thread.input.lease.renew"),
+  }),
+  z.object({ type: z.literal("thread.input.lease.release") }),
+  z.object({
+    edit: MessageEditSchema,
+    message: MessageViewSchema,
+    type: z.literal("thread.input.edit"),
+  }),
   z.object({ input: ThreadInputViewSchema, type: z.literal("thread.input.steer") }),
   z.object({
     input: ThreadInputViewSchema,
@@ -2133,6 +2195,19 @@ export const hostApi = defineRpc({
     "GET",
     z.strictObject({ threadId: ThreadIdSchema }),
     ThreadInputQueueViewSchema,
+  ),
+  /** A waiting message's versions, newest first, a bounded page at a time. */
+  "thread.message.revisions.list": declaration(
+    "GET",
+    z.strictObject({
+      threadId: ThreadIdSchema,
+      messageId: MessageIdSchema,
+      before: z.number().int().positive().optional(),
+    }),
+    z.object({
+      revisions: z.array(MessageRevisionViewSchema).max(messageRevisionsPageSize),
+      hasMore: z.boolean(),
+    }),
   ),
   /**
    * What each of the Thread's active Runs is streaming right now, as `replace`

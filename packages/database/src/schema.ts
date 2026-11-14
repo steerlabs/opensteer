@@ -742,6 +742,8 @@ export interface ThreadTable {
   createdByPrincipalId: PrincipalId;
   nextMessageSequence: Generated<string>;
   nextRunOrdinal: Generated<number>;
+  /** Admission of a teammate's ask created it; it is removed if only declined asks ever reached it. */
+  teamAskOrigin: Generated<boolean>;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -757,6 +759,19 @@ export interface MessageTable {
   kind: MessageKind;
   actorPrincipalId: PrincipalId;
   content: JsonColumn<readonly unknown[]>;
+  /** Edits a person made while it waited; `content` is always the latest. */
+  revision: Generated<number>;
+  editedAt: Generated<Date | null>;
+  createdAt: Timestamp;
+}
+
+/** Every version of an edited message, revision 0 being the original. Append-only. */
+export interface MessageRevisionTable {
+  messageId: MessageId;
+  revision: number;
+  content: JsonColumn<readonly unknown[]>;
+  author: JsonColumn<MessageAuthor>;
+  deviceLabel: string | null;
   createdAt: Timestamp;
 }
 
@@ -803,6 +818,10 @@ export interface ThreadInputTable {
   state: ThreadInputState;
   steerCommandId: CommandId | null;
   threadId: ThreadId;
+  /** A device's edit lease; all three are set together. Expired leases count as absent. */
+  editLeaseId: Generated<string | null>;
+  editLeaseDeviceLabel: Generated<string | null>;
+  editLeaseExpiresAt: Generated<Date | null>;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -2121,6 +2140,7 @@ export interface DatabaseSchema {
   threadStatePending: { threadId: ThreadId; requestedAt: Timestamp };
   threads: ThreadTable;
   messages: MessageTable;
+  messageRevisions: MessageRevisionTable;
   threadInputs: ThreadInputTable;
   threadWorkInputs: ThreadInputTable;
   causalChains: CausalChainTable;
@@ -2624,6 +2644,10 @@ export interface PersonalTeamRequestTable {
   consentExpiresAt: NullableTimestamp;
   localDecision: Generated<TeamAskDecision | null>;
   decisionAt: NullableTimestamp;
+  /** The revision of the task's copy the owner approved; only that revision may be released. */
+  approvedRevision: Generated<number | null>;
+  /** When an approved ask's input joined its queue. Never set for an ask that did not run. */
+  releasedAt: Generated<Date | null>;
   returnAdmission: Generated<TeamReturnAdmission | null>;
   answerMessageId: Generated<MessageId | null>;
   answerPayload: ColumnType<

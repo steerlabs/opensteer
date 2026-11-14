@@ -283,6 +283,8 @@ export const TeamCommandSchema = z.discriminatedUnion("type", [
     teamId: DeploymentIdSchema,
     requestId: TeamAgentRequestIdSchema,
     decision: TeamAskDecisionSchema,
+    /** The version of the task's copy the person saw. The Host requires it to approve. */
+    expectedRevision: z.number().int().nonnegative().optional(),
   }),
   z.strictObject({ type: z.literal("team.channel.archive"), channelId: TeamChannelIdSchema }),
   z.strictObject({ type: z.literal("team.channel.restore"), channelId: TeamChannelIdSchema }),

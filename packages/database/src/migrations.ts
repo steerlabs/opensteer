@@ -24,6 +24,47 @@ alter table team_invites add column sealed_verifier bytea;
 create unique index team_invites_current on team_invites((true)) where sealed_verifier is not null and revoked_at is null;
 `;
 
+/**
+ * Waiting messages a person edits in place, under a device's edit lease, with
+ * every version kept; teammates' asks admitted on arrival behind an approval
+ * gate bound to the revision approved. Asks approved before this migration
+ * were already running or done, so they count as released at their decision.
+ */
+const WAITING_INPUT_EDITS_SQL = `
+alter table messages
+  add column revision integer not null default 0 check (revision >= 0),
+  add column edited_at timestamptz,
+  add constraint messages_edit check ((revision = 0) = (edited_at is null));
+create table message_revisions (
+  message_id text not null references messages(id) on delete cascade,
+  revision integer not null check (revision >= 0),
+  content jsonb not null,
+  author jsonb not null,
+  device_label text,
+  created_at timestamptz not null,
+  primary key (message_id, revision)
+);
+alter table thread_inputs
+  add column edit_lease_id text,
+  add column edit_lease_device_label text,
+  add column edit_lease_expires_at timestamptz,
+  add constraint thread_inputs_edit_lease check (
+    (edit_lease_id is null) = (edit_lease_expires_at is null)
+    and (edit_lease_id is null) = (edit_lease_device_label is null));
+create index thread_inputs_edit_lease_expiry on thread_inputs(edit_lease_expires_at) where edit_lease_id is not null;
+create index thread_inputs_awaiting_approval on thread_inputs(thread_id, created_at, message_id) where state = 'awaiting-approval';
+create or replace view thread_work_inputs as select * from thread_inputs where policy in ('queue','steer');
+alter table threads add column team_ask_origin boolean not null default false;
+alter table personal_team_requests
+  add column approved_revision integer check (approved_revision >= 0),
+  add column released_at timestamptz,
+  add constraint personal_team_requests_release check (
+    (approved_revision is null or (kind = 'ask' and local_decision = 'approve'))
+    and (released_at is null or approved_revision is not null));
+update personal_team_requests set approved_revision = 0, released_at = decision_at
+  where kind = 'ask' and local_decision = 'approve' and local_task_id is not null;
+`;
+export const waitingInputEditsMigrationName = "0022_waiting_input_edits";
 export const personalTeamBaselineName = "0002_personal_team_baseline";
 export const threadVisitsMigrationName = "0004_thread_visits";
 export const teamKnowledgeNotesMigrationName = "0006_team_knowledge_notes";
@@ -190,6 +231,11 @@ export function migrationProvider(): MigrationProvider {
               alter table team_share_relays add column pending_bodies text[] not null default '{}'`.execute(
               database,
             );
+          },
+        },
+        [waitingInputEditsMigrationName]: {
+          async up(database) {
+            await sql.raw(WAITING_INPUT_EDITS_SQL).execute(database);
           },
         },
       };

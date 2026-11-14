@@ -632,12 +632,30 @@ export const MessageViewSchema = z
     /** Whether this read's input has reached the published conversation. */
     published: z.boolean().optional(),
     quote: MessageQuoteViewSchema.optional(),
+    edit: z.lazy(() => MessageEditSchema).optional(),
   })
   .superRefine(validateMessage);
+/**
+ * A message a person edited in place while it waited; absent when never
+ * edited. Runners never receive it: the content they get is already the edit.
+ */
+export const MessageEditSchema = z.strictObject({
+  revision: z.number().int().positive(),
+  editedAt: IsoDateTimeSchema,
+  /** The owner edited a teammate's ask, so its words are no longer only the teammate's. */
+  ownerEdited: z.literal(true).optional(),
+});
+export type MessageEdit = z.infer<typeof MessageEditSchema>;
 export type Message = z.infer<typeof MessageSchema>;
 export type MessageView = z.infer<typeof MessageViewSchema>;
 
+/**
+ * `awaiting-approval` is a teammate's ask waiting for its owner's decision. It
+ * sits in the task but not in line: no Run can take it until approval makes it
+ * `pending` at the back of the queue.
+ */
 export const ThreadInputStateSchema = z.enum([
+  "awaiting-approval",
   "pending",
   "claimed",
   "delivered",
@@ -677,12 +695,25 @@ export function threadInputIsPublished(input: Pick<ThreadInput, "policy" | "stat
 }
 
 /**
+ * One device's claim on a waiting message while a person edits it. While it is
+ * live nothing takes that message and nothing behind it overtakes it, except a
+ * person's explicit steer or move. It lapses on its own.
+ */
+export const ThreadInputEditLeaseViewSchema = z.object({
+  leaseId: z.string().min(1).max(64),
+  deviceLabel: z.string().min(1).max(120),
+  expiresAt: IsoDateTimeSchema,
+});
+export type ThreadInputEditLeaseView = z.infer<typeof ThreadInputEditLeaseViewSchema>;
+export const threadInputEditLeaseMs = 2 * 60_000;
+
+/**
  * The messages waiting behind a Thread's current work: queued inputs that no
- * Run has picked up yet, in the order the next Run takes them. A message that
- * already seeds a Run, or that a promotion has handed to one, belongs to the
- * transcript, not here. Steering, cancelling and moving act on the same
- * durable message; the Host says per item which of them it will accept from
- * the reader.
+ * Run has picked up yet, in the order the next Run takes them, followed by
+ * teammates' asks awaiting the owner's decision. A message that already seeds
+ * a Run, or that a promotion has handed to one, belongs to the transcript, not
+ * here. Every action acts on the same durable message; the Host says per item
+ * which it will accept from the reader.
  */
 export const ThreadInputQueueViewSchema = z.object({
   threadId: ThreadIdSchema,
@@ -694,13 +725,29 @@ export const ThreadInputQueueViewSchema = z.object({
         message: MessageViewSchema,
         input: ThreadInputViewSchema,
         canCancel: z.boolean(),
+        canEdit: z.boolean(),
         canMove: z.boolean(),
         canSteer: z.boolean(),
+        lease: ThreadInputEditLeaseViewSchema.nullable(),
       }),
     )
     .max(100),
 });
 export type ThreadInputQueue = z.infer<typeof ThreadInputQueueViewSchema>;
+
+/**
+ * One version of a message a person edited while it waited. Revision 0 is the
+ * original, by the message's author; each later one is a person's edit. The
+ * history stays on the Host it was written on.
+ */
+export const MessageRevisionViewSchema = z.object({
+  revision: z.number().int().nonnegative(),
+  content: MessageContentSchema,
+  author: MessageAuthorViewSchema,
+  deviceLabel: z.string().min(1).max(120).nullable(),
+  createdAt: IsoDateTimeSchema,
+});
+export type MessageRevisionView = z.infer<typeof MessageRevisionViewSchema>;
 
 /**
  * The one rule for rearranging a queue: `moving` stands immediately in front
