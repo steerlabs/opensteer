@@ -250,6 +250,7 @@ jobs:
           # On macOS 15 codesign --keychain still fails with "could not be found in
           # the keychain" unless that keychain is on the user search list.
           # Deleting the keychain afterwards also removes it from the list.
+          # shellcheck disable=SC2046 # The existing search list is one keychain path per word.
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: .*\)".*/\1/p')
           echo "::add-mask::$identity"
