@@ -5,7 +5,7 @@ import { ImagePreviewDialog } from "./attachments/message-attachments.js";
 export function AssetImage({ path, alt = "" }: { path: string; alt?: string }) {
   const preview = useAssetImage(path);
   const [open, setOpen] = useState(false);
-  if (preview.failed) return <span>Image unavailable</span>;
+  if (preview.failed) return <span>{alt || "Image unavailable"}</span>;
   if (!preview.available) return <span>{alt || path}</span>;
   return (
     <>

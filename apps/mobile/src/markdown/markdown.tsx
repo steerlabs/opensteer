@@ -498,9 +498,7 @@ const styles = StyleSheet.create({
 function MarkdownImage({ src, alt }: { src: string; alt: string }) {
   const images = useTranscriptImages();
   const source = classifyMarkdownImageSource(src);
-  if (images) {
-    if (source.kind === "local") return <AssetImage path={source.path} alt={alt} />;
-    if (source.kind === "remote") return <Link url={source.url}>{alt || source.url}</Link>;
-  }
+  // Internet images stay words: loading one could carry a secret out.
+  if (images && source.kind === "local") return <AssetImage path={source.path} alt={alt} />;
   return <Text>{alt || src}</Text>;
 }

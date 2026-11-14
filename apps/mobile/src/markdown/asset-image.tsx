@@ -6,7 +6,7 @@ import { useAssetImage } from "@opensteer/client/react";
 export function AssetImage({ path, alt = "" }: { path: string; alt?: string }) {
   const preview = useAssetImage(path);
   const [open, setOpen] = useState(false);
-  if (preview.failed) return <Text>Image unavailable</Text>;
+  if (preview.failed) return <Text>{alt || "Image unavailable"}</Text>;
   if (!preview.available) return <Text>{alt || path}</Text>;
   const image = preview.image;
   return (

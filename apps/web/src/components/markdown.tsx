@@ -63,11 +63,8 @@ function TranscriptLink({ children, href }: ComponentProps<"a">) {
 function TranscriptImage({ alt, src }: ComponentProps<"img">) {
   const images = useTranscriptImages();
   const source = classifyMarkdownImageSource(typeof src === "string" ? src : "");
-  if (images) {
-    if (source.kind === "local") return <AssetImage path={source.path} alt={alt ?? ""} />;
-    if (source.kind === "remote")
-      return <TranscriptLink href={source.url}>{alt || source.url}</TranscriptLink>;
-  }
+  // Internet images stay words: loading one could carry a secret out.
+  if (images && source.kind === "local") return <AssetImage path={source.path} alt={alt ?? ""} />;
   const words = alt || (typeof src === "string" ? src : "");
   return words ? <span>{words}</span> : null;
 }
