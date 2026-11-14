@@ -1701,7 +1701,7 @@ function handleTurnStart(message) {
     // later turn calls its tools on the session the first turn opened.
     void (async () => {
       current().sessionTools ??= await opensteerTools();
-      const listed = await current().sessionTools.call("pending_request", { limit: 1 });
+      const listed = await current().sessionTools.call("opensteer_request_list", { limit: 1 });
       capture({
         fakeMcpCall: { ok: true, pid: process.pid, sessionId: current().sessionTools.sessionId },
       });
@@ -3227,8 +3227,8 @@ async function browserProfilesTurn(input) {
       return tools.call(name, args, replayId);
     };
     if (plan.delegate)
-      report.delegated = await call("delegate_task", {
-        task: 'Report your tool inventory. BROWSER_PROFILE_JOURNEY:{"kind":"delegated"}',
+      report.delegated = await call("opensteer_task_delegate", {
+        message: 'Report your tool inventory. BROWSER_PROFILE_JOURNEY:{"kind":"delegated"}',
         title: "Profile authority inventory",
       });
     if (plan.request) {

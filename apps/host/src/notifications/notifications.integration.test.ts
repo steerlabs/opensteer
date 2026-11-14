@@ -543,7 +543,7 @@ integration("Notifications", () => {
       name: "Morning summary",
       program: `export default async function ({ opensteer }) {
         await opensteer.callTool("opensteer_task_delegate", {
-          task: ${JSON.stringify(
+          message: ${JSON.stringify(
             "Summarize the inbox. " +
               toolCall("person_notify", {
                 message: "Inbox milestone ready.",
@@ -764,7 +764,7 @@ function programSending(delivery: "queue" | "report", threadId: string, message:
     await opensteer.callTool("opensteer_task_send", ${JSON.stringify({
       delivery,
       message,
-      threadId,
+      taskId: threadId,
     })});
   }`;
 }

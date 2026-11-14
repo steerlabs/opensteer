@@ -542,8 +542,8 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
     // The engine may see a directive more than once; a resent change is the same write.
     await ask(
       [
-        call("knowledge_write", { noteId, version: 1, body: "The answer is 42." }),
-        call("knowledge_read", { query: "z4" }),
+        call("opensteer_knowledge_save", { noteId, version: 1, body: "The answer is 42." }),
+        call("opensteer_knowledge_search", { query: "z4" }),
         "[[reply Knowledge written and read.]]",
       ].join("\n"),
       queued.id,

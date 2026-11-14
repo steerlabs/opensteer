@@ -57,7 +57,7 @@ const reportSchema = z
       .optional(),
     page: z.object({ signedIn: z.boolean(), url: z.string() }).optional(),
     request: z.object({ requestId: RequestIdSchema }).passthrough().optional(),
-    delegated: z.object({ threadId: ThreadIdSchema }).passthrough().optional(),
+    delegated: z.object({ taskId: ThreadIdSchema }).passthrough().optional(),
     profiles: z
       .object({
         profiles: z.array(profileSchema),
@@ -441,7 +441,7 @@ run("Browser profiles through a whole deployment", () => {
     const { stack } = await profileDeployment();
     const main = await profileTurn(stack, evidence, {});
     const delegated = await profileTurn(stack, evidence, { delegate: true }, main.threadId);
-    const childId = delegated.report.delegated!.threadId;
+    const childId = delegated.report.delegated!.taskId;
     let child: Report | undefined;
     await waitFor(async () => {
       const snapshot = await stack.host.store.deploymentSnapshot();
