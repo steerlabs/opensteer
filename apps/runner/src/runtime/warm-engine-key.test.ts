@@ -1,5 +1,11 @@
 import { expect, it } from "vitest";
-import { createId, ModelSelectionSchema, SequenceSchema, TeamSourceSchema } from "@opensteer/core";
+import {
+  createId,
+  ModelIdSchema,
+  ModelSelectionSchema,
+  SequenceSchema,
+  TeamSourceSchema,
+} from "@opensteer/core";
 import { warmEngineKey } from "./warm-engine-pool.js";
 it("invalidates warm reuse for tool inventory, instructions, roots and discovered skills while preserving per-Run credential rebinding", () => {
   const context = {
