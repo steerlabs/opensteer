@@ -2410,7 +2410,9 @@ function InputMessage({
       <span className="input-card__name">{source.name}</span>
     </>
   );
-  const action = incomingMessageAction(message);
+  // An ask its owner reworded before approving is no longer only its sender's words.
+  const action =
+    incomingMessageAction(message) ?? (message.edit?.ownerEdited ? "· edited by you" : null);
 
   return (
     <div

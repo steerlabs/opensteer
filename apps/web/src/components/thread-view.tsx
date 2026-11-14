@@ -51,7 +51,7 @@ import {
   type TranscriptEntry,
 } from "@opensteer/client/host";
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
-import { useThreadInputQueue } from "@opensteer/client/react";
+import { useThreadInputQueue, useWaitingInputs } from "@opensteer/client/react";
 import { fromLivePage, useMediaQuery, useWindowInForeground } from "../ui-utils.js";
 import { AgentTranscript, ConversationActivity } from "./agent-activity.js";
 import { useShell } from "./app-shell.js";
@@ -79,7 +79,7 @@ import type { ComposerQuote, ComposerRestore } from "./composer.js";
 import { InputSurface, RequestStack, focusOpenRequest, useRequestDock } from "./input-surface.js";
 import { useVoiceOn } from "@opensteer/client/react";
 import { VoiceStart } from "./voice.js";
-import { QueuedMessages } from "./queued-messages.js";
+import { WaitingInputs } from "./waiting-inputs.js";
 import { setThreadReading } from "./thread-reading.js";
 import { ThreadFind } from "./thread-find.js";
 import { BrandMark } from "./brand.js";
@@ -251,8 +251,8 @@ function ThreadView({
   const [activityOwnerAnchor, setActivityOwnerAnchor] = useState<HTMLElement | null>(null);
   const activityPanelId = useId();
   const headerTitleRef = useRef<HTMLHeadingElement | null>(null);
-  // A queued message taken back to be reworded, on its way into the composer.
-  // It belongs to the composer of the conversation it came from, and to no other.
+  // A quoted reply on its way into the composer. It belongs to the composer
+  // of the conversation it came from, and to no other.
   const [restoredDraft, setRestoredDraft] = useState<{
     readonly composer: string;
     readonly restore: ComposerRestore;
@@ -268,6 +268,7 @@ function ThreadView({
     setActivityView(null);
   }, [composerKey]);
   const inputQueue = useThreadInputQueue(hostClient, thread.id);
+  const waiting = useWaitingInputs(hostClient, thread.id);
   // The Tasks count opens a task at its exact request; one already answered stays answered.
   const location = useLocation();
   const focusRequest =
@@ -743,16 +744,6 @@ function ThreadView({
     return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
 
-  /** A message taken back from the queue returns to this composer to be reworded. */
-  const editQueued = useCallback(
-    (message: Omit<ComposerRestore, "key">) =>
-      setRestoredDraft((current) => ({
-        composer: composerKey,
-        restore: { ...message, key: (current?.restore.key ?? 0) + 1 },
-      })),
-    [composerKey],
-  );
-
   /* ---- Quoting a reply ---- */
 
   /** Quotes a message into this conversation's own composer, focused and unsent. */
@@ -1054,7 +1045,7 @@ function ThreadView({
                       </span>
                     </button>
                   ) : null}
-                  {conversation.length === 0 && historyState === undefined ? (
+                  {conversation.length === 0 && historyState === undefined && !waiting?.length ? (
                     <EmptyThread voice={voiceThread} />
                   ) : null}
                   <AgentTranscript
@@ -1076,13 +1067,14 @@ function ThreadView({
                     inputQueuePaused={thread.inputQueuePaused}
                     renderPasswordsSuggestion={renderPasswordsSuggestion}
                     queued={
-                      inputQueue && !conversational ? (
-                        <QueuedMessages
+                      inputQueue && waiting && !conversational ? (
+                        <WaitingInputs
                           client={hostClient}
                           disabled={!canRespond || thread.status === "archived"}
-                          onEdit={editQueued}
+                          inputs={waiting}
                           onError={reportActionError}
-                          queue={inputQueue}
+                          paused={inputQueue.paused}
+                          threadId={thread.id}
                           viewerUserId={snapshot.user?.id ?? null}
                         />
                       ) : null
