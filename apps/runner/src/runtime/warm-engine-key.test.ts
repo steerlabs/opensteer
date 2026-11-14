@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { createId } from "@opensteer/core";
+import { createId, ModelIdSchema } from "@opensteer/core";
 import { warmEngineKey } from "./warm-engine-pool.js";
 it("invalidates warm reuse for tool inventory, instructions, roots and discovered skills while preserving per-Run credential rebinding", () => {
   const context = {
@@ -37,9 +37,44 @@ it("invalidates warm reuse for tool inventory, instructions, roots and discovere
     writableRoots: ["/task", "/agent-home"],
   };
   const before = warmEngineKey(input);
+  const effortInput = {
+    ...input,
+    perTurnEffortOption: "effort",
+    context: {
+      ...context,
+      modelSelection: { ...context.modelSelection, options: { effort: "high" } },
+    },
+  };
+  expect(warmEngineKey(effortInput)).toBe(
+    warmEngineKey({ ...input, perTurnEffortOption: "effort" }),
+  );
+  expect(warmEngineKey({ ...effortInput, perTurnEffortOption: undefined })).not.toBe(before);
+  expect(
+    warmEngineKey({
+      ...effortInput,
+      context: {
+        ...effortInput.context,
+        modelSelection: { ...context.modelSelection, options: { effort: "high", speed: "fast" } },
+      },
+    }),
+  ).not.toBe(warmEngineKey(effortInput));
   context.agentTools.token = "rotated";
   expect(warmEngineKey(input)).toBe(before);
   for (const change of [
+    { ...input, baseEnvironment: { MODE: "changed" } },
+    { ...input, runtimeBoundary: "isolated-service" },
+    { ...input, providerSessionReference: "different-thread" },
+    { ...input, context: { ...context, harnessInstanceId: createId("harnessInstance") } },
+    {
+      ...input,
+      context: {
+        ...context,
+        modelSelection: {
+          ...context.modelSelection,
+          modelId: ModelIdSchema.parse("different-model"),
+        },
+      },
+    },
     { ...input, instructions: "Changed home instructions" },
     { ...input, homeSkillsDigest: "home:changed" },
     { ...input, writableRoots: ["/task", "/another-home"] },

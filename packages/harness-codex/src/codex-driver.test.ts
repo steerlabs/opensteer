@@ -1603,7 +1603,7 @@ describe("Codex app-server harness", () => {
         approvalPolicy: "never",
         approvalsReviewer: "user",
         cwd: fixture.context.workspacePath,
-        developerInstructions: expect.not.stringContaining("Other computers"),
+
         config: {
           // Every feature the release lists, on only where Opensteer approved it.
           features: {
@@ -1659,7 +1659,7 @@ describe("Codex app-server harness", () => {
     expect(captured.find((message) => message.method === "turn/start")).toMatchObject({
       params: {
         additionalContext: {
-          opensteer_computers: { kind: "application", value: "Other computers: build-box." },
+          opensteer_computers_000001: { kind: "application", value: "Other computers: build-box." },
         },
         approvalPolicy: "never",
         approvalsReviewer: "user",
@@ -2247,8 +2247,8 @@ describe("Codex app-server harness", () => {
         .filter((message) => message.method === "turn/start")
         .map(
           (message) =>
-            (message.params as { additionalContext: { opensteer_computers: JsonRecord } })
-              .additionalContext.opensteer_computers,
+            (message.params as { additionalContext: { opensteer_computers_000001: JsonRecord } })
+              .additionalContext.opensteer_computers_000001,
         ),
     ).toEqual([
       { kind: "application", value: "Other computers: build-box." },
@@ -2264,6 +2264,96 @@ describe("Codex app-server harness", () => {
     }
     await fixture.adapter.close();
   });
+
+  it("keeps bounded canonical context on a follow-up root turn while children finish", async () => {
+    const fixture = await setup("background-children", {
+      serverArguments: ["--child-ends-while-starting"],
+    });
+    const session = await fixture.adapter.startSession({
+      ...fixture.context,
+      platformGuide: "🦊".repeat(3000),
+    });
+    const observer = observe(session.events);
+    try {
+      const execution = session.execute(fixture.turn("Delegate"));
+      await vi.waitFor(
+        () =>
+          expect(
+            observer.events.some(
+              (event) => event.type === "run.phase" && event.data.phase === "background",
+            ),
+          ).toBe(true),
+        { timeout: 2000 },
+      );
+      await steerOf(session)({ input: humanInput("Continue") });
+      await execution;
+      const turns = (await fixture.capture())
+        .filter((entry) => entry.method === "turn/start")
+        .map((entry) => entry.params as { additionalContext: Record<string, { value: string }> });
+      expect(turns).toHaveLength(2);
+      expect(turns[1]!.additionalContext).toEqual(turns[0]!.additionalContext);
+      expect(turns[0]!.additionalContext).toBeDefined();
+      for (const entry of Object.values(turns[0]!.additionalContext))
+        expect(Buffer.byteLength(entry.value)).toBeLessThanOrEqual(4000);
+      const start = (await fixture.capture()).find((entry) => entry.method === "thread/start")!;
+      expect(start.params).not.toHaveProperty("developerInstructions");
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+  });
+
+  it.each(["execute", "reuse"] as const)(
+    "restores compacted context before %s proceeds",
+    async (next) => {
+      const releasePath = join(await mkdtemp(join(tmpdir(), "codex-restore-")), "release");
+      temporaryDirectories.push(dirname(releasePath));
+      const fixture = await setup("context-compaction", {
+        environmentOverrides: { FAKE_CODEX_RESTORE_RELEASE: releasePath },
+      });
+      const session = await fixture.adapter.startSession({ ...fixture.context, skills: undefined });
+      try {
+        await session.execute(fixture.turn("Compact"));
+        let settled = false;
+        const pending = (
+          next === "reuse" ? session.releaseForReuse!() : session.execute(fixture.turn("Continue"))
+        ).then((value) => {
+          settled = true;
+          return value;
+        });
+        await vi.waitFor(
+          async () =>
+            expect(
+              (await fixture.capture()).some((entry) => entry.id === "context-restore-barrier"),
+            ).toBe(true),
+          { timeout: 2000 },
+        );
+        expect(settled).toBe(false);
+        const captured = await fixture.capture();
+        const start = captured.find((entry) => entry.method === "turn/start")!.params as {
+          additionalContext: Record<string, { value: string }>;
+        };
+        const injection = captured.find((entry) => entry.method === "thread/inject_items")!.params;
+        expect(injection).toEqual({
+          threadId: "codex-thread-1",
+          items: Object.entries(start.additionalContext).map(([key, entry]) => ({
+            type: "message",
+            role: "developer",
+            content: [{ type: "input_text", text: `<${key}>${entry.value}</${key}>` }],
+          })),
+        });
+        expect(captured.filter((entry) => entry.method === "turn/start")).toHaveLength(1);
+        expect(captured.some((entry) => entry.method === "thread/backgroundTerminals/clean")).toBe(
+          false,
+        );
+        await writeFile(releasePath, "release");
+        expect(await pending).toBe(next === "reuse" ? true : undefined);
+      } finally {
+        await session.stop();
+        await fixture.adapter.close();
+      }
+    },
+  );
 
   it("refreshes current platform and changed, removed, or empty Workspace instructions on resumed Runs", async () => {
     const fixture = await setup("resume-large-history");
@@ -2295,15 +2385,17 @@ describe("Codex app-server harness", () => {
         (message) =>
           (message.params as { additionalContext: Record<string, JsonRecord> }).additionalContext,
       );
-    expect(additionalContexts[0]).not.toHaveProperty("opensteer_current_instructions");
-    expect(additionalContexts[1]?.opensteer_current_instructions).toEqual({
+    expect(additionalContexts[0]?.opensteer_current_instructions_000001?.value).toContain(
+      "Original Workspace instructions.",
+    );
+    expect(additionalContexts[1]?.opensteer_current_instructions_000001).toEqual({
       kind: "application",
       value: expect.stringMatching(
         /replace their counterparts from earlier Runs[\s\S]*Updated Opensteer platform guide[\s\S]*Updated Workspace instructions/u,
       ),
     });
     for (const context of additionalContexts.slice(2)) {
-      expect(context.opensteer_current_instructions).toEqual({
+      expect(context.opensteer_current_instructions_000001).toEqual({
         kind: "application",
         value: expect.stringMatching(
           /Newer Opensteer platform guide[\s\S]*There are no current task instructions/u,

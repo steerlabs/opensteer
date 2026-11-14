@@ -157,6 +157,7 @@ export class WarmEnginePool {
  * its machine notice — are not in it; the session is rebound with them.
  */
 export function warmEngineKey(input: {
+  readonly perTurnEffortOption?: string | undefined;
   readonly attachmentRoot: string | null;
   readonly baseEnvironment: Readonly<Record<string, string>>;
   readonly context: Extract<RunnerCommand, { readonly type: "run.execute" }>["context"];
@@ -194,7 +195,14 @@ export function warmEngineKey(input: {
         context.agentTools.skills,
         context.taskPurpose,
         context.personalContext,
-        context.modelSelection,
+        {
+          ...context.modelSelection,
+          options: Object.fromEntries(
+            Object.entries(context.modelSelection.options).filter(
+              ([key]) => key !== input.perTurnEffortOption,
+            ),
+          ),
+        },
         [...context.plugins.versions].sort((a, b) => a.pluginId.localeCompare(b.pluginId)),
         input.skills,
         input.homeSkillsDigest,

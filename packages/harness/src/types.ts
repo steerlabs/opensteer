@@ -33,6 +33,8 @@ import type { z } from "zod";
 import type { InstalledEngineUpdateFacts } from "./engine-installation.js";
 
 export interface HarnessCapabilities {
+  /** Model option applied on every turn, safe to change while reusing a session. */
+  readonly perTurnEffortOption?: string;
   readonly voiceCalls?: true;
   readonly approvals: boolean;
   readonly attachments: boolean;
