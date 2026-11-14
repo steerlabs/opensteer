@@ -1130,11 +1130,13 @@ export async function getThreadNamingInput(database: Kysely<DatabaseSchema>, thr
           .where((eb) =>
             eb.or([
               eb("threadInputs.state", "is", null),
-              eb("threadInputs.state", "!=", "cancelled"),
+              eb("threadInputs.state", "not in", ["cancelled", "awaiting-approval"]),
             ]),
           )
           .where("kind", "=", "input")
-          .where(sql<boolean>`author->>'kind' in ('human', 'agent', 'trigger', 'watch')`)
+          .where(
+            sql<boolean>`(author->>'kind' in ('human', 'agent', 'trigger', 'watch') or (author->>'kind' = 'team-member' and exists (select 1 from personal_team_requests p where p.local_input_id = messages.id and p.kind = 'ask' and p.released_at is not null)))`,
+          )
           .orderBy("messages.sequence", "asc")
           .limit(1)
           .executeTakeFirst()

@@ -1,3 +1,10 @@
+import {
+  lockInputQueueProjection,
+  liveInputLease,
+  clearInputLease,
+  leaseChangedEvent,
+} from "./waiting-inputs.js";
+import { executionDate } from "./personal-transaction.js";
 import { isDeepStrictEqual } from "node:util";
 import {
   MessageIdSchema,
@@ -262,14 +269,52 @@ export class PersonalTeamRequestsStore {
     return Boolean(saved);
   }
 
+  async admissionBlocked(teamId: DeploymentId, requestId: TeamAgentRequestId, reason: string) {
+    await withPersonalTransaction(this.database, (tx) =>
+      tx
+        .updateTable("personalTeamRequests")
+        .set({ blockedReason: reason.slice(0, 500) })
+        .where("teamDeploymentId", "=", teamId)
+        .where("requestId", "=", requestId)
+        .where("localTaskId", "is", null)
+        .where("terminalState", "is", null)
+        .execute(),
+    );
+  }
+  async expiredUndecidedAsks() {
+    const rows = await this.database
+      .selectFrom("personalTeamRequests")
+      .selectAll()
+      .where("kind", "=", "ask")
+      .where("localDecision", "is", null)
+      .where("terminalState", "is", null)
+      .where("consentExpiresAt", "<=", executionDate(this.database))
+      .orderBy("teamDeploymentId")
+      .orderBy("requestId")
+      .limit(100)
+      .execute();
+    return rows.map(personalTeamRequestMirrorFromRow);
+  }
   async decide(
     ownerId: UserId,
     teamId: DeploymentId,
     requestId: TeamAgentRequestId,
     decision: TeamAskDecision,
+    expectedRevision?: number,
+    sessionId?: import("@opensteer/core").AuthSessionId,
   ) {
-    return withPersonalTransaction(this.database, async (tx) => {
+    const result = await withPersonalTransaction(this.database, async (tx) => {
+      const events: AgentEvent[] = [];
       await requirePersonalOwner(tx, ownerId);
+      const observed = await tx
+        .selectFrom("personalTeamRequests")
+        .selectAll()
+        .where("teamDeploymentId", "=", teamId)
+        .where("requestId", "=", requestId)
+        .executeTakeFirst();
+      const thread = observed?.localTaskId
+        ? await lockInputQueueProjection(tx, observed.localTaskId)
+        : null;
       const row = await tx
         .selectFrom("personalTeamRequests")
         .selectAll()
@@ -279,7 +324,7 @@ export class PersonalTeamRequestsStore {
         .executeTakeFirst();
       if (!row || row.kind !== "ask")
         throw new OpensteerError({ code: "not_found", message: "Pending team ask not found." });
-      if (row.terminalState === "failed" && !row.localTaskId) {
+      if (row.terminalState === "failed" && !row.releasedAt) {
         if (decision !== "decline")
           throw new OpensteerError({
             code: "conflict",
@@ -292,35 +337,83 @@ export class PersonalTeamRequestsStore {
           .where("requestId", "=", requestId)
           .returningAll()
           .executeTakeFirstOrThrow();
-        return personalTeamRequestMirrorFromRow(saved);
+        return { mirror: personalTeamRequestMirrorFromRow(saved), events };
       }
+      if (decision === "approve" && expectedRevision === undefined)
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Approval requires the reviewed revision.",
+        });
       if (row.localDecision) {
-        if (row.localDecision !== decision)
+        if (
+          row.localDecision !== decision ||
+          (decision === "approve" && row.approvedRevision !== expectedRevision)
+        )
           throw new OpensteerError({
             code: "conflict",
             message: "This team ask was already decided on another device.",
           });
-        return personalTeamRequestMirrorFromRow(row);
+        return { mirror: personalTeamRequestMirrorFromRow(row), events };
       }
       if (
         row.remoteState !== "awaiting_approval" ||
         row.terminalState ||
         !row.consentExpiresAt ||
-        row.consentExpiresAt <= new Date()
+        row.consentExpiresAt <= executionDate(tx)
       )
         throw new OpensteerError({
           code: "conflict",
           message: "This team ask is no longer awaiting approval.",
         });
+      let approvedRevision: number | null = null;
+      if (decision === "approve") {
+        if (!thread || !row.localInputId || expectedRevision === undefined)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Review the admitted ask before approving it.",
+          });
+        const inbox = await tx
+          .selectFrom("threadInputs")
+          .selectAll()
+          .where("messageId", "=", row.localInputId)
+          .executeTakeFirstOrThrow();
+        const message = await tx
+          .selectFrom("messages")
+          .selectAll()
+          .where("id", "=", row.localInputId)
+          .executeTakeFirstOrThrow();
+        const lease = liveInputLease(tx, inbox);
+        if (inbox.state !== "awaiting-approval" || message.revision !== expectedRevision)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "This ask changed. Review its current revision.",
+          });
+        if (lease && inbox.editLeaseSessionId !== sessionId)
+          throw new OpensteerError({
+            code: "conflict",
+            message: `Being edited on ${lease.deviceLabel}.`,
+          });
+        approvedRevision = message.revision;
+        if (inbox.editLeaseId) {
+          await tx
+            .updateTable("threadInputs")
+            .set(clearInputLease)
+            .where("messageId", "=", inbox.messageId)
+            .execute();
+          events.push(await leaseChangedEvent(tx, thread, inbox.messageId, null));
+        }
+      }
       const saved = await tx
         .updateTable("personalTeamRequests")
-        .set({ localDecision: decision, decisionAt: new Date() })
+        .set({ localDecision: decision, decisionAt: executionDate(tx), approvedRevision })
         .where("teamDeploymentId", "=", teamId)
         .where("requestId", "=", requestId)
         .returningAll()
         .executeTakeFirstOrThrow();
-      return personalTeamRequestMirrorFromRow(saved);
+      return { mirror: personalTeamRequestMirrorFromRow(saved), events };
     });
+    for (const event of result.events) this.#onDeliveryEvent?.(event);
+    return result.mirror;
   }
 
   async failDecision(
@@ -340,7 +433,7 @@ export class PersonalTeamRequestsStore {
         .where("teamDeploymentId", "=", teamId)
         .where("requestId", "=", requestId)
         .where("kind", "=", "ask")
-        .where("localTaskId", "is", null)
+        .where("releasedAt", "is", null)
         .where("terminalState", "is", null)
         .execute();
     });
@@ -467,7 +560,7 @@ export class PersonalTeamRequestsStore {
           terminalState: state,
           returnPayload: sql`case when kind = 'return' then return_payload || '{"bodyMarkdown":null,"attachments":[]}'::jsonb else return_payload end`,
           finishedAt: new Date().toISOString(),
-          publicationState: sql`case when local_task_id is null then 'blocked' else publication_state end`,
+          publicationState: sql`case when kind = 'ask' and released_at is null then 'blocked' when local_task_id is null then 'blocked' else publication_state end`,
         })
         .where("teamDeploymentId", "=", teamId)
         .where("requestId", "=", requestId)
@@ -683,6 +776,8 @@ export function personalTeamRequestMirrorFromRow(
     consentExpiresAt: row.consentExpiresAt?.toISOString() ?? null,
     localDecision: row.localDecision,
     decisionAt: row.decisionAt?.toISOString() ?? null,
+    approvedRevision: row.approvedRevision,
+    releasedAt: row.releasedAt?.toISOString() ?? null,
     returnAdmission: row.returnAdmission,
     triggerMessageId: row.triggerMessageId,
     taskId: row.localTaskId,

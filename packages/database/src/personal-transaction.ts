@@ -2,6 +2,24 @@ import type { IsolationLevel, Kysely, Transaction } from "kysely";
 import { withDatabaseTransaction } from "./connection.js";
 import type { DatabaseSchema } from "./schema.js";
 
+const clocks = new WeakMap<Kysely<DatabaseSchema>, () => number>();
+
+export function setExecutionClock(database: Kysely<DatabaseSchema>, now: () => number) {
+  clocks.set(database, now);
+}
+
+export function executionDate(database: Kysely<DatabaseSchema>): Date {
+  return new Date((clocks.get(database) ?? Date.now)());
+}
+
+export function inheritExecutionClock(
+  database: Kysely<DatabaseSchema>,
+  transaction: Transaction<DatabaseSchema>,
+) {
+  const clock = clocks.get(database);
+  if (clock) clocks.set(transaction, clock);
+}
+
 const held = new WeakSet<Transaction<DatabaseSchema>>();
 
 export function withPersonalReadTransaction<Result>(
@@ -11,7 +29,14 @@ export function withPersonalReadTransaction<Result>(
 ): Promise<Result> {
   return database.isTransaction
     ? read(database as Transaction<DatabaseSchema>)
-    : withDatabaseTransaction(database, read, isolationLevel);
+    : withDatabaseTransaction(
+        database,
+        (transaction) => {
+          inheritExecutionClock(database, transaction);
+          return read(transaction);
+        },
+        isolationLevel,
+      );
 }
 
 /** Personal mutations reserve commit order before taking any domain row lock. */
@@ -45,6 +70,7 @@ export function withPersonalTransaction<Result>(
   return withDatabaseTransaction(
     database,
     async (transaction) => {
+      inheritExecutionClock(database, transaction);
       await lockDeploymentEvents(transaction);
       return action(transaction);
     },

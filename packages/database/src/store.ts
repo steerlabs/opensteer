@@ -1,3 +1,5 @@
+import * as waitingInputs from "./waiting-inputs.js";
+import { setExecutionClock } from "./personal-transaction.js";
 import { bindDeviceSession, revokeDeviceSession, leaveDevice } from "./device-store.js";
 import { enqueueNodeStop } from "./node-control.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
@@ -208,6 +210,7 @@ export class OpensteerStore {
     this.#readPersonalResources = options.readPersonalResources;
     this.#links = options.links ?? threadPathLinks;
     this.#executionNow = options.executionClock?.now ?? (() => Date.now());
+    setExecutionClock(database, this.#executionNow);
     this.requests = new RequestStore(database, this.#links, this.#executionNow);
     this.notificationState = new NotificationStateStore(database);
     this.browserHistory = new BrowserHistoryStore(database);
@@ -1253,14 +1256,38 @@ export class OpensteerStore {
   async enqueueThreadInput(input: EnqueueThreadInputRequest): Promise<EnqueuedThreadInput> {
     return this.#announceRevokedGrants(await threadStore.enqueueThreadInput(this.#database, input));
   }
+  takeThreadInputLease(input: Parameters<typeof waitingInputs.takeThreadInputLease>[1]) {
+    return waitingInputs.takeThreadInputLease(this.#database, input);
+  }
+  renewThreadInputLease(input: Parameters<typeof waitingInputs.renewThreadInputLease>[1]) {
+    return waitingInputs.renewThreadInputLease(this.#database, input);
+  }
+  async releaseThreadInputLease(
+    input: Parameters<typeof waitingInputs.releaseThreadInputLease>[1],
+  ) {
+    return this.#announceRevokedGrants(
+      await waitingInputs.releaseThreadInputLease(this.#database, input),
+    );
+  }
+  async editThreadInput(input: Parameters<typeof waitingInputs.editThreadInput>[1]) {
+    return this.#announceRevokedGrants(await waitingInputs.editThreadInput(this.#database, input));
+  }
+  listMessageRevisions(input: Parameters<typeof waitingInputs.listMessageRevisions>[1]) {
+    return waitingInputs.listMessageRevisions(this.#database, input);
+  }
+  async expireThreadInputLeases() {
+    return this.#announceRevokedGrants(await waitingInputs.expireThreadInputLeases(this.#database));
+  }
   async steerThreadInput(input: SteerThreadInputRequest): Promise<EnqueuedThreadInput> {
     return this.#announceRevokedGrants(await threadStore.steerThreadInput(this.#database, input));
   }
   async cancelThreadInput(input: CancelThreadInputRequest): Promise<CancelledThreadInput> {
-    return threadStore.cancelThreadInput(this.#database, input);
+    const result = await threadStore.cancelThreadInput(this.#database, input);
+    return this.#announceRevokedGrants({ ...result, revokedGrants: result.revokedGrants ?? [] });
   }
   async moveThreadInput(input: MoveThreadInputRequest): Promise<MovedThreadInput> {
-    return threadStore.moveThreadInput(this.#database, input);
+    const result = await threadStore.moveThreadInput(this.#database, input);
+    return this.#announceRevokedGrants({ ...result, revokedGrants: result.revokedGrants ?? [] });
   }
   async getThreadInputQueue(input: {
     readonly authority?: import("./thread-caller.js").ThreadCallerAuthority;

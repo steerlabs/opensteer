@@ -10,7 +10,7 @@ import {
 import { NeedsYouPageSchema, type NeedsYouPage, type NeedsYouEntry } from "@opensteer/protocol";
 import { sql, type Kysely } from "kysely";
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { withPersonalReadTransaction } from "./personal-transaction.js";
+import { executionDate, withPersonalReadTransaction } from "./personal-transaction.js";
 import { requestFromRow } from "./request-persistence.js";
 import type { DatabaseSchema } from "./schema.js";
 import {
@@ -70,11 +70,11 @@ export function needsYouPage(
               eb("remoteState", "=", "awaiting_approval"),
               eb("localDecision", "is", null),
               eb("terminalState", "is", null),
-              eb("consentExpiresAt", ">", new Date()),
+              eb("consentExpiresAt", ">", executionDate(transaction)),
             ]),
             eb.and([
               eb("terminalState", "=", "failed"),
-              eb("localTaskId", "is", null),
+              eb("releasedAt", "is", null),
               eb("blockedReason", "is not", null),
             ]),
           ]),
@@ -101,6 +101,15 @@ export function needsYouPage(
         askQuery.execute(),
         asks.select(({ fn }) => fn.countAll<string>().as("count")).executeTakeFirstOrThrow(),
       ]);
+      const askInputIds = askRows.flatMap((row) => (row.localInputId ? [row.localInputId] : []));
+      const askMessages = askInputIds.length
+        ? await transaction
+            .selectFrom("messages")
+            .select(["id", "revision"])
+            .where("id", "in", askInputIds)
+            .execute()
+        : [];
+      const revisionById = new Map(askMessages.map((row) => [row.id, row.revision]));
       const selected = rows;
       const navigation = selected.length
         ? await sql<{
@@ -153,11 +162,18 @@ export function needsYouPage(
             teamId: row.teamDeploymentId,
             requestId: row.requestId,
             presentation: row.presentation!,
+            ...(row.localTaskId && row.localInputId
+              ? {
+                  task: {
+                    threadId: row.localTaskId,
+                    messageId: row.localInputId,
+                    revision: revisionById.get(row.localInputId) ?? 0,
+                  },
+                }
+              : {}),
             createdAt: row.createdAt.toISOString(),
             consentExpiresAt: row.consentExpiresAt!.toISOString(),
-            ...(row.terminalState === "failed" && row.blockedReason
-              ? { failureReason: row.blockedReason }
-              : {}),
+            ...(!row.releasedAt && row.blockedReason ? { failureReason: row.blockedReason } : {}),
           },
           createdAt: row.createdAt.toISOString(),
           id: `team:${row.teamDeploymentId}:${row.requestId}`,

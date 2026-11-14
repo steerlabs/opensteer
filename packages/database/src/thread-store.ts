@@ -276,6 +276,7 @@ export interface EnqueuedThreadInput {
   readonly wasDuplicate: boolean;
 }
 export interface SteerThreadInputRequest {
+  readonly sessionId?: import("@opensteer/core").AuthSessionId;
   readonly authority?: ThreadCallerAuthority;
   readonly threadId: ThreadId;
   readonly messageId: MessageId;
@@ -284,6 +285,7 @@ export interface SteerThreadInputRequest {
   readonly idempotencyKey: string;
 }
 export interface CancelThreadInputRequest {
+  readonly sessionId?: import("@opensteer/core").AuthSessionId;
   readonly authority?: ThreadCallerAuthority;
   readonly threadId: ThreadId;
   readonly messageId: MessageId;
@@ -296,11 +298,13 @@ export interface CancelThreadInputRequest {
  * nothing a delivery would: no command, no disposition, no Run.
  */
 export interface CancelledThreadInput {
+  readonly revokedGrants?: readonly RevokedRunGrant[];
   readonly events: readonly AgentEvent[];
   readonly input: ThreadInput;
   readonly wasDuplicate: boolean;
 }
 export interface MoveThreadInputRequest {
+  readonly sessionId?: import("@opensteer/core").AuthSessionId;
   readonly authority?: ThreadCallerAuthority;
   /** The waiting message to stand in front of, or null for the back of the queue. */
   readonly beforeMessageId: MessageId | null;
@@ -310,6 +314,7 @@ export interface MoveThreadInputRequest {
   readonly threadId: ThreadId;
 }
 export interface MovedThreadInput {
+  readonly revokedGrants?: readonly RevokedRunGrant[];
   readonly events: readonly AgentEvent[];
   readonly wasDuplicate: boolean;
 }

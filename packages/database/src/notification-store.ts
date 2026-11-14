@@ -153,10 +153,10 @@ export class NotificationStore {
       sequence: String(state.sequence),
       kind: "request-opened",
       userId: settings.ownerId,
-      threadId: null,
+      threadId: row.localTaskId,
       requestId: null,
       runId: null,
-      messageId: null,
+      messageId: row.localInputId,
       title: "Your agent was asked",
       body: `${row.presentation.asker.displayName}${row.presentation.asker.actor === "agent" ? "'s agent" : ""} asks in ${row.presentation.audience.channelName}.`.slice(
         0,
