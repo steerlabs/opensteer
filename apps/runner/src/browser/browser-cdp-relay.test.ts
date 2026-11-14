@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { createServer, request as httpRequest } from "node:http";
 import type { Socket } from "node:net";
 import { fileURLToPath } from "node:url";
+import { createId } from "@opensteer/core";
 import { createBrowserSessionId } from "@opensteer/protocol";
 import {
   acceptUpgrade,
@@ -70,6 +71,7 @@ afterEach(async () => {
 
 describe("BrowserCdpRelay", () => {
   it("forwards only contract routes with bounded bodies and actionable Host refusals", async () => {
+    const deviceRefusalMachine = createId("runner");
     const seen: Array<{ method: string; url: string; token: string; body: string }> = [];
     const http = createServer((request, response) => {
       const chunks: Buffer[] = [];
@@ -81,7 +83,20 @@ describe("BrowserCdpRelay", () => {
           token: request.headers.authorization!,
           body: Buffer.concat(chunks).toString(),
         });
-        if (request.url?.includes("plain-refusal")) {
+        if (request.url?.includes("device-refusal")) {
+          response.writeHead(403).end(
+            JSON.stringify({
+              error: {
+                code: "forbidden",
+                message: "browser is off. Use device_access_request if needed.",
+                reason: "device-access-off",
+                machineId: deviceRefusalMachine,
+                capability: "browser",
+                retryable: false,
+              },
+            }),
+          );
+        } else if (request.url?.includes("plain-refusal")) {
           response.writeHead(503).end("Unavailable");
         } else if (request.url?.includes("oversize")) {
           response.write('{"data":"');
@@ -127,6 +142,15 @@ describe("BrowserCdpRelay", () => {
           reason: "browser-tab-open-outcome-unknown",
         },
       });
+      const deviceRefusal = await fetch(`${base}/agent/tabs?device-refusal=1`);
+      expect(await deviceRefusal.json()).toEqual({
+        error: {
+          message: "browser is off. Use device_access_request if needed.",
+          reason: "device-access-off",
+          machineId: deviceRefusalMachine,
+          capability: "browser",
+        },
+      });
       const plainRefusal = await fetch(`${base}/agent/tabs?plain-refusal=1`);
       expect(plainRefusal.status).toBe(503);
       expect(await plainRefusal.json()).toEqual({
@@ -143,7 +167,7 @@ describe("BrowserCdpRelay", () => {
         ).status,
       ).toBe(413);
       expect((await fetch(`${base}/agent/tabs?oversize=1`)).status).toBe(502);
-      expect(seen).toHaveLength(7);
+      expect(seen).toHaveLength(8);
       expect(seen[0]).toEqual({
         method: "GET",
         url: "/internal/v1/browser-agent/tabs?query=work&limit=3",

@@ -12,6 +12,7 @@ import {
   BrowserAgentTabOrganizeResultSchema,
   type BrowserAgentTabOpenResult,
   type BrowserAgentTab,
+  type BrowserAgentTabGroup,
 } from "@opensteer/protocol/browser-agent";
 import {
   BrowserActionRequestSchema,
@@ -393,6 +394,7 @@ export async function startTabJourney({ phones: phoneCount = 1 } = {}) {
   const kits = [first, second];
   const calls: Array<{ path: string; input: Record<string, unknown> }> = [];
   const opens = new Map<string, BrowserAgentTabOpenResult>();
+  const groups: BrowserAgentTabGroup[] = [];
   let uncertainOpen = false;
   const phones = Array.from({ length: phoneCount }, () => {
     const id = BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
@@ -466,6 +468,7 @@ export async function startTabJourney({ phones: phoneCount = 1 } = {}) {
           const offset = Number(parsed.cursor ?? 0);
           return BrowserAgentTabListResultSchema.parse({
             tabs: filtered.slice(offset, offset + parsed.limit),
+            groups,
             total: filtered.length,
             nextCursor:
               offset + parsed.limit < filtered.length ? String(offset + parsed.limit) : null,
@@ -583,6 +586,7 @@ export async function startTabJourney({ phones: phoneCount = 1 } = {}) {
     second,
     calls,
     opens,
+    groups,
     phoneId,
     phoneIds: phones.map((phone) => phone.id),
     /** Holds the first phone's next page reads until `release`. */

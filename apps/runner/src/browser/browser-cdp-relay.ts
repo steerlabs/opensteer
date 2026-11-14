@@ -7,7 +7,7 @@ import {
 } from "node:http";
 import { once } from "node:events";
 import type { RunnerConfig } from "@opensteer/config";
-import { allowsPlaintextRunnerTransport } from "@opensteer/core";
+import { allowsPlaintextRunnerTransport, RunnerIdSchema } from "@opensteer/core";
 import { BrowserSessionIdSchema, HostApiErrorSchema } from "@opensteer/protocol";
 import { readBoundedJson } from "@opensteer/shared/boundedJson";
 import { z } from "zod";
@@ -276,7 +276,13 @@ export class BrowserCdpRelay {
       }
       const refusal = z
         .object({
-          error: z.object({ message: z.string(), reason: z.string().max(128).optional() }),
+          error: z.object({
+            message: z.string(),
+            reason: z.string().max(128).optional(),
+            // A device refusal names the computer and access the agent can request.
+            machineId: RunnerIdSchema.optional(),
+            capability: z.string().max(32).optional(),
+          }),
         })
         .safeParse(result);
       response.writeHead(upstream.status, {
@@ -289,10 +295,7 @@ export class BrowserCdpRelay {
             ? result
             : {
                 error: refusal.success
-                  ? {
-                      message: refusal.data.error.message,
-                      ...(refusal.data.error.reason ? { reason: refusal.data.error.reason } : {}),
-                    }
+                  ? refusal.data.error
                   : { message: "The Host refused browser control." },
               },
         ),

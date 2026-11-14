@@ -49,9 +49,15 @@ function createFacade(base) {
     });
     const body = await response.json().catch(() => null);
     if (!response.ok) {
+      const refusal = body?.error;
       const error = new Error(
-        body?.error?.message ?? `Browser request refused (HTTP ${response.status}).`,
+        (refusal?.message ?? `Browser request refused (HTTP ${response.status}).`) +
+          (refusal?.machineId
+            ? ` (machineId ${refusal.machineId}, capability ${refusal.capability ?? "browser"})`
+            : ""),
       );
+      if (refusal?.machineId)
+        Object.assign(error, { machineId: refusal.machineId, capability: refusal.capability });
       // A lost or unconfirmed outcome may still have taken effect; its key recovers it.
       error.uncertain =
         response.status >= 500 || body?.error?.reason === "browser-tab-open-outcome-unknown";
@@ -300,6 +306,7 @@ function createFacade(base) {
         return result;
       }),
     organizeTabs: (input) => mutate("tabs/organize", input),
+    listGroups: async () => (await agent("tabs", undefined, { limit: 1 })).groups,
     currentTab: async () => publicInfo(await call("currentTab")()),
     pageInfo: async () => publicInfo(await call("pageInfo")()),
     ensureRealTab: async () => publicInfo(await call("ensureRealTab")()),

@@ -94,6 +94,7 @@ export const BrowserFixtureSchema = z.strictObject({
     .default([]),
   offlineComputers: z.array(z.string()).default([]),
   personActiveTab: z.string().optional(),
+  groups: z.array(z.looseObject({ groupId: z.string(), title: z.string() })).default([]),
   accessRequiredComputers: z.array(z.string()).default([]),
 });
 const harnessCall = z.strictObject({

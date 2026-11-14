@@ -53,12 +53,13 @@ function newTab(url='about:blank', options={}) { return record('newTab', {url,..
 function closeTab(id=selected) { return record('closeTab', {tabId:id}, () => { const t=tab(id); online(t); state.tabs=state.tabs.filter(t=>t.tabId!==id); if(selected===id) selected=undefined; return {closed:[id],failed:[]}; }); }
 function organizeTabs(input) { return record('organizeTabs', input, () => {
   const tabs = (input.tabIds ?? []).map(id => tab(id));
-  if (input.action === 'group') { const id = 'eval-group-' + (state.nextGroup = (state.nextGroup ?? 0) + 1); for(const t of tabs)t.groupId=id; return {groupId:id}; }
+  if (input.action === 'group') { const id = 'eval-group-' + (state.nextGroup = (state.nextGroup ?? 0) + 1); for(const t of tabs)t.groupId=id; state.groups.push({groupId:id,title:input.title ?? '',color:input.color ?? 'grey',collapsed:false,tabCount:tabs.length,createdBy:'this-task'}); return {groupId:id}; }
   if (input.action === 'ungroup') { for(const t of tabs)t.groupId=null; }
   else if(input.action === 'move') { for(const t of tabs)t.groupId=input.toGroupId ?? null; state.tabs=state.tabs.filter(t=>!tabs.includes(t)); const before=state.tabs.findIndex(t=>t.tabId===input.before || t.groupId===input.before); state.tabs.splice(before<0?state.tabs.length:before,0,...tabs); }
   else if(input.action !== 'update_group') throw new Error('Use group, ungroup, move or update_group');
   return {status:'ok'};
 }); }
+function listGroups() { return record('listGroups', {}, () => state.groups.map(g => ({...g, tabCount: state.tabs.filter(t => t.groupId === g.groupId).length}))); }
 function currentTab() { return record('currentTab', {}, () => { const {pageText,pageTitle,...t}=tab(); return {...t, ...(personActivity(t) ? {userActivity: personActivity(t)} : {})}; }); }
 function pageInfo() { return record('pageInfo', {}, () => {const t=tab(); return {tabId:t.tabId,url:t.url,title:t.pageTitle ?? t.title,text:t.pageText ?? '', ...(personActivity(t) ? {userActivity: personActivity(t)} : {})};}); }
 function gotoUrl(url) { return record('gotoUrl', {url}, () => {const t=tab(); online(t);t.url=url;return {url,title:t.pageTitle ?? t.title,text:t.pageText ?? ''};}); }
@@ -70,13 +71,13 @@ function locator(selector) { return {innerText:()=>record('page.innerText',{sele
 function clickAt(...args) {return record('clickAt',{args},()=>true);}
 function typeText(text) {return record('typeText',{text},()=>true);}
 function fillInput(selector,text,options={}) {return record('fillInput',{selector,text,...options},()=>true);}
-function fillLogin(input) {return record('fillLogin',input,()=>({filled:true}));}
-function fillCard(input) {return record('fillCard',input,()=>({filled:true}));}
+function fillLogin(loginRef, field) {return record('fillLogin',{loginRef,field},()=>'filled');}
+function fillCard(cardRef, field) {return record('fillCard',{cardRef,field},()=>'filled');}
 function pressKey(key) {return record('pressKey',{key},()=>true);}
 function scroll(...args) {return record('scroll',{args},()=>true);}
 function waitForLoad() {return record('waitForLoad',{},()=>true);}
 function captureScreenshot() {return record('captureScreenshot',{},()=>({image:'fixture screenshot'}));}
-return { helpers: {listTabs,switchTab,newTab,closeTab,organizeTabs,currentTab,pageInfo,gotoUrl,js,console,page,clickAt,typeText,fillInput,fillLogin,fillCard,pressKey,scroll,waitForLoad,captureScreenshot}, snapshot: () => JSON.stringify({state,log,output,notices,selected,failed:globalThis.failed,finished:globalThis.finished}) };
+return { helpers: {listTabs,listGroups,switchTab,newTab,closeTab,organizeTabs,currentTab,pageInfo,gotoUrl,js,console,page,clickAt,typeText,fillInput,fillLogin,fillCard,pressKey,scroll,waitForLoad,captureScreenshot}, snapshot: () => JSON.stringify({state,log,output,notices,selected,failed:globalThis.failed,finished:globalThis.finished}) };
 })()
 `;
 const bridge = new Script(bootstrap).runInContext(context, { timeout: 1000 });

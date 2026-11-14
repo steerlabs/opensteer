@@ -216,6 +216,19 @@ export class BrowserTabGroupService {
     await this.#browser.admitAgentBrowser(actor, "read");
     return BrowserAgentTabListResultSchema.parse({
       tabs,
+      groups: groups.map((group) => ({
+        groupId: group.id,
+        title: group.title,
+        color: group.color,
+        collapsed: group.collapsed,
+        tabCount: group.tabIds.length,
+        createdBy:
+          group.createdByThreadId === null
+            ? "person"
+            : group.createdByThreadId === actor.threadId
+              ? "this-task"
+              : "another-task",
+      })),
       total: matching.length,
       nextCursor:
         after + tabs.length < matching.length && tabs.length

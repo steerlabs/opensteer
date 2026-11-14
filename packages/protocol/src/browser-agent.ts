@@ -3,8 +3,10 @@ import {
   BrowserProfileIdSchema,
   BrowserSessionIdSchema,
   BrowserSurfaceIdSchema,
+  BrowserTabGroupColorSchema,
   BrowserTabGroupIdSchema,
   BrowserTabWriteInputSchema,
+  browserTabGroupsMaxPerOwner,
   EnvironmentIdSchema,
 } from "@opensteer/core";
 import { BrowserTabWriteResultSchema } from "./browser.js";
@@ -64,8 +66,21 @@ export const BrowserAgentTabSchema = z.strictObject({
 });
 export type BrowserAgentTab = z.infer<typeof BrowserAgentTabSchema>;
 
+/** A group in the person's tab list; listed even when empty, so it can be found to change. */
+export const BrowserAgentTabGroupSchema = z.strictObject({
+  groupId: BrowserTabGroupIdSchema,
+  title: z.string().max(80),
+  color: BrowserTabGroupColorSchema,
+  collapsed: z.boolean(),
+  tabCount: z.number().int().nonnegative(),
+  createdBy: z.enum(["person", "this-task", "another-task"]),
+});
+export type BrowserAgentTabGroup = z.infer<typeof BrowserAgentTabGroupSchema>;
+
 export const BrowserAgentTabListResultSchema = z.strictObject({
   tabs: z.array(BrowserAgentTabSchema).max(browserAgentTabListMaxLimit),
+  /** Every group this task can see, whatever the query matched. */
+  groups: z.array(BrowserAgentTabGroupSchema).max(browserTabGroupsMaxPerOwner),
   /** Matching tabs in all. */
   total: z.number().int().nonnegative(),
   nextCursor: z.string().min(1).max(512).nullable(),

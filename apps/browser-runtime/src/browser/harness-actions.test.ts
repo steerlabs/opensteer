@@ -789,6 +789,21 @@ assert(rows.length === 1 && !rows[0].current, 'unselected filtered inventory');`
     expect(opened.stdout.trim()).toBe([...kit.opens.values()][0]!.tabId);
   });
 
+  it("finishes a page wait on its own tab after the script switches away", async () => {
+    const kit = await startTabJourney();
+    const a = kit.first.surfaceId,
+      b = kit.second.surfaceId;
+    const out = await kit.run(
+      `await switchTab(${JSON.stringify(a)});
+const until = Date.now() + 400;
+const pending = page.waitForFunction((at) => Date.now() > at, until);
+await switchTab(${JSON.stringify(b)});
+await pending;
+console.log((await currentTab()).tabId);`,
+    );
+    expect(out.stdout.trim()).toBe(b);
+  });
+
   it("keeps a browser with work in flight connected while a script walks more browsers", async () => {
     const kit = await startTabJourney({ phones: 5 });
     const held = kit.holdPhoneQuery();

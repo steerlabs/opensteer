@@ -34,7 +34,7 @@ Key names are Playwright's, such as `Enter`, `Tab`, `Escape`, `ArrowDown`, `Shif
 
 Coordinates (`page.mouse.click(x, y)`, `clickAt`) are for canvas, maps, frames and widgets without usable structure. A coordinate holds only for the layout it was measured in: a scroll, animation, re-render or resize makes it stale, so measure one target right before clicking it. Programs that run again later, such as Trigger programs, find elements with locators and never store coordinates.
 
-The other helpers are `pageInfo`, `currentTab`, `gotoUrl`, `listTabs`, `newTab`, `switchTab`, `closeTab`, `organizeTabs`, `js`, `cdp`, `clickAt`, `typeText`, `fillInput`, `fillLogin`, `fillCard`, `pressKey`, `scroll`, `waitForLoad`, `captureScreenshot`, `setInputFiles` and `stageFiles`. `cdp` sends any allowed CDP command when nothing else fits. Use `await` for every call.
+The other helpers are `pageInfo`, `currentTab`, `gotoUrl`, `listTabs`, `listGroups`, `newTab`, `switchTab`, `closeTab`, `organizeTabs`, `js`, `cdp`, `clickAt`, `typeText`, `fillInput`, `fillLogin`, `fillCard`, `pressKey`, `scroll`, `waitForLoad`, `captureScreenshot`, `setInputFiles` and `stageFiles`. `cdp` sends any allowed CDP command when nothing else fits. Use `await` for every call.
 
 To upload, pass files you can read, such as the user's attachments or files you made: `await setInputFiles("input[type=file]", ["/path/photo.png"])` for a file input, or `await setInputFiles({ x, y }, [...])` with the coordinates of a button that opens a file chooser. It returns the files the page now holds; check the page's preview too. The browser may run on another machine, so raw file-bearing CDP (`DOM.setFileInputFiles`, drag `data.files`) accepts only the paths `stageFiles` returns.
 

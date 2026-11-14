@@ -393,6 +393,14 @@ integration("agent tabs", () => {
       await (await f.request("tabs?query=Needle%20group")).json(),
     );
     expect(byGroup.total).toBe(2);
+    // Groups come back whatever the query matched, so an agent can find one to change.
+    const unmatched = BrowserAgentTabListResultSchema.parse(
+      await (await f.request("tabs?query=no-such-tab")).json(),
+    );
+    expect(unmatched.total).toBe(0);
+    expect(unmatched.groups).toEqual([
+      expect.objectContaining({ title: "Needle group", tabCount: 2, createdBy: "person" }),
+    ]);
     expect(f.browser.tabStateOf(opened.sessionId, b)).toBe("suspended");
   });
 

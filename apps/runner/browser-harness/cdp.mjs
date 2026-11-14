@@ -295,6 +295,16 @@ export class CdpClient {
 
 export function createBrowserHarness(client, initialTargetId) {
   const operations = new AsyncLocalStorage();
+  /**
+   * Operations still running on each tab attachment. Leaving a tab detaches it
+   * only once its own operations settle, so work started before a switch, such
+   * as a wait, finishes on the tab it began on.
+   */
+  const inFlight = new Map();
+  const detachTarget = (departing) =>
+    client.command("Target.detachFromTarget", { sessionId: departing }).catch(() => {
+      // The target may have closed before cleanup.
+    });
   let sessionId;
   let targetId;
   let selectedTargetId = initialTargetId;
@@ -448,11 +458,9 @@ export function createBrowserHarness(client, initialTargetId) {
           ),
       });
       if (sessionId === departing) sessionId = undefined;
-      try {
-        await client.command("Target.detachFromTarget", { sessionId: departing });
-      } catch {
-        // The target may have closed before cleanup.
-      }
+      const running = inFlight.get(departing);
+      if (running) running.detach = true;
+      else await detachTarget(departing);
     }
     if (!sessionId) targetId = undefined;
   };
@@ -1017,7 +1025,30 @@ export function createBrowserHarness(client, initialTargetId) {
   };
 
   return Object.freeze({
-    run: (operation) => operations.run({ sessionId, targetId }, operation),
+    run: (operation) => {
+      const binding = { sessionId, targetId };
+      if (!binding.sessionId) return operations.run(binding, operation);
+      const running = inFlight.get(binding.sessionId) ?? { count: 0, detach: false };
+      inFlight.set(binding.sessionId, running);
+      running.count += 1;
+      const settle = () => {
+        if (--running.count > 0) return;
+        inFlight.delete(binding.sessionId);
+        if (running.detach && binding.sessionId !== sessionId) void detachTarget(binding.sessionId);
+      };
+      let result;
+      try {
+        result = operations.run(binding, operation);
+      } catch (error) {
+        settle();
+        throw error;
+      }
+      if (!(result instanceof Promise)) {
+        settle();
+        return result;
+      }
+      return result.finally(settle);
+    },
     attach,
     captureScreenshot,
     cdp,
