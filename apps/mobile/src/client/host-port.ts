@@ -62,6 +62,7 @@ export type HostEpochAgreement =
 export interface MobileHostPort {
   readonly credentials: DeploymentCredentials;
   attach(input: {
+    readonly assetRoute?: import("@opensteer/client/host").AssetRoute;
     readonly authorization: HostAuthorization;
     readonly capabilities: readonly HostCapability[] | null | HostCapabilityReader;
     readonly connection: DeploymentConnection;
@@ -130,7 +131,7 @@ export function createNetworkHostPort(options: {
       });
     },
 
-    attach({ authorization, capabilities, connection, origin }): HostClient {
+    attach({ authorization, capabilities, connection, origin, assetRoute }): HostClient {
       const network = createHostNetwork({
         authorization,
         fetch: options.fetch,
@@ -140,6 +141,7 @@ export function createNetworkHostPort(options: {
         openWebSocket: options.openWebSocket,
       });
       const client = new HttpHostClient({
+        ...(assetRoute ? { assetRoute } : {}),
         deviceAccessRequests: "include",
         baseUrl: origin,
         ...(options.browserPreferencesStorage

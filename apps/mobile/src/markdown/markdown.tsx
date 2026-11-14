@@ -1,3 +1,6 @@
+import { TranscriptImageContext } from "@opensteer/client/react";
+import { classifyMarkdownImageSource } from "@opensteer/shared/markdownImages";
+import { AssetImage } from "./asset-image.js";
 import { splitMarkdownBlocks } from "@opensteer/shared/markdown";
 import { transcriptLinkUrl } from "@opensteer/shared/transcriptLinks";
 import type { List, PhrasingContent, RootContent, Table as TableNode } from "mdast";
@@ -38,18 +41,23 @@ export const Markdown = memo(function Markdown(props: {
   readonly text: string;
 }): ReactNode {
   const look = props.look ?? "reading";
+  const imageContext = useContext(TranscriptImageContext);
   const blocks = useMemo(() => splitMarkdownBlocks(props.text), [props.text]);
   return (
-    <View style={look === "bubble" ? styles.bubbleProse : styles.prose}>
-      {blocks.map((source, index) => (
-        <Block
-          key={index}
-          look={look}
-          source={source}
-          streaming={props.streaming === true && index === blocks.length - 1}
-        />
-      ))}
-    </View>
+    <TranscriptImageContext
+      value={imageContext ? { ...imageContext, reference: props.text } : null}
+    >
+      <View style={look === "bubble" ? styles.bubbleProse : styles.prose}>
+        {blocks.map((source, index) => (
+          <Block
+            key={index}
+            look={look}
+            source={source}
+            streaming={props.streaming === true && index === blocks.length - 1}
+          />
+        ))}
+      </View>
+    </TranscriptImageContext>
   );
 });
 
@@ -76,6 +84,20 @@ function Node(props: { readonly look: MarkdownLook; readonly node: RootContent }
   const { look, node } = props;
   switch (node.type) {
     case "paragraph":
+      if (node.children.some((child) => child.type === "image"))
+        return (
+          <View>
+            {node.children.map((child, index) =>
+              child.type === "image" ? (
+                <MarkdownImage key={index} src={child.url} alt={child.alt ?? ""} />
+              ) : (
+                <Prose key={index} look={look}>
+                  <Spans nodes={[child]} />
+                </Prose>
+              ),
+            )}
+          </View>
+        );
       return (
         <LinkHold look={look} nodes={node.children}>
           <Prose look={look}>
@@ -298,8 +320,7 @@ function Span(props: { readonly node: PhrasingContent }): ReactNode {
     case "html":
       return node.value;
     case "image":
-      // An agent's image is never fetched from the reader's device; its words stay.
-      return node.alt ?? node.url;
+      return <MarkdownImage src={node.url} alt={node.alt ?? ""} />;
     case "link": {
       const words = <Spans nodes={node.children} />;
       if (!transcriptLinkUrl(node.url)) return words;
@@ -478,3 +499,13 @@ const styles = StyleSheet.create({
     flexDirection: "row",
   },
 });
+
+function MarkdownImage({ src, alt }: { src: string; alt: string }) {
+  const context = useContext(TranscriptImageContext);
+  const source = classifyMarkdownImageSource(src);
+  if (context && context.client.getSnapshot().deploymentShape?.kind === "personal") {
+    if (source.kind === "local") return <AssetImage path={source.path} alt={alt} />;
+    if (source.kind === "remote") return <Link url={source.url}>{alt || source.url}</Link>;
+  }
+  return <Text>{alt || src}</Text>;
+}

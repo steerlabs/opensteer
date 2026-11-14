@@ -1,3 +1,4 @@
+import { TranscriptImageContext } from "@opensteer/client/react";
 import { useThreadVisits } from "@opensteer/client/react";
 import {
   messageAuthorName,
@@ -1478,30 +1479,32 @@ function ThreadPaneForUser(
     </>
   );
   return (
-    <TaskScopeContext.Provider value={taskScope}>
-      <AgentEngine value={placement?.driverKind ?? null}>
-        <AgentMemoryContext value={agentMemory}>
-          <AgentListNestedContext value>
-            <TranscriptComputersContext.Provider value={computers}>
-              <TranscriptSurfacesContext.Provider value={surfaces}>
-                <TranscriptAppTabsContext.Provider value={appTabs}>
-                  {/* Beside a page, the screen already keeps the keyboard clear. */}
-                  <ConversationLinksProvider
-                    deploymentId={deploymentId}
-                    hostClient={hostClient}
-                    threadId={threadId}
-                  >
-                    <ComposerDockLayout avoidKeyboard={companion === null} dock={dock}>
-                      {transcript}
-                    </ComposerDockLayout>
-                  </ConversationLinksProvider>
-                </TranscriptAppTabsContext.Provider>
-              </TranscriptSurfacesContext.Provider>
-            </TranscriptComputersContext.Provider>
-          </AgentListNestedContext>
-        </AgentMemoryContext>
-      </AgentEngine>
-    </TaskScopeContext.Provider>
+    <TranscriptImageContext value={{ client: hostClient, threadId: thread.id }}>
+      <TaskScopeContext.Provider value={taskScope}>
+        <AgentEngine value={placement?.driverKind ?? null}>
+          <AgentMemoryContext value={agentMemory}>
+            <AgentListNestedContext value>
+              <TranscriptComputersContext.Provider value={computers}>
+                <TranscriptSurfacesContext.Provider value={surfaces}>
+                  <TranscriptAppTabsContext.Provider value={appTabs}>
+                    {/* Beside a page, the screen already keeps the keyboard clear. */}
+                    <ConversationLinksProvider
+                      deploymentId={deploymentId}
+                      hostClient={hostClient}
+                      threadId={threadId}
+                    >
+                      <ComposerDockLayout avoidKeyboard={companion === null} dock={dock}>
+                        {transcript}
+                      </ComposerDockLayout>
+                    </ConversationLinksProvider>
+                  </TranscriptAppTabsContext.Provider>
+                </TranscriptSurfacesContext.Provider>
+              </TranscriptComputersContext.Provider>
+            </AgentListNestedContext>
+          </AgentMemoryContext>
+        </AgentEngine>
+      </TaskScopeContext.Provider>
+    </TranscriptImageContext>
   );
 }
 

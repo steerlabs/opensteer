@@ -1112,6 +1112,7 @@ export interface HostClient {
   ): Promise<ComputerView>;
   readonly browserFrames: BrowserFrameStore;
   readonly browserWatchFrames: BrowserFrameStore;
+  readonly assetUrls?: import("./asset-urls.js").AssetUrlStore;
   readonly rpc: HostApiClient;
   createAttachment(input: {
     readonly name: string;

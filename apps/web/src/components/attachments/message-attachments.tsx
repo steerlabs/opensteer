@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type RefObject,
+  type ReactNode,
 } from "react";
 import type { ArtifactContentPart } from "@opensteer/core";
 import type { HostClient } from "@opensteer/client/host";
@@ -60,7 +61,6 @@ function ImageAttachment({
   const near = useNearViewport(frameRef);
   const image = useAttachmentImage(client, part, near);
   const [open, setOpen] = useState(false);
-  const titleId = useId();
 
   if (image.failed) {
     return <FileAttachment client={client} note="Preview unavailable" part={part} />;
@@ -84,21 +84,17 @@ function ImageAttachment({
         )}
       </button>
       {open ? (
-        <Dialog
+        <ImagePreviewDialog
           footer={<DownloadButton client={client} part={part} />}
-          labelledBy={titleId}
           onClose={() => setOpen(false)}
           title={part.name}
-          wide
         >
-          <div className="attachment-preview">
-            {image.url ? (
-              <img alt={part.name} src={image.url} />
-            ) : (
-              <span className="spinner" role="status" aria-label="Loading image" />
-            )}
-          </div>
-        </Dialog>
+          {image.url ? (
+            <img alt={part.name} src={image.url} />
+          ) : (
+            <span className="spinner" role="status" aria-label="Loading image" />
+          )}
+        </ImagePreviewDialog>
       ) : null}
     </>
   );
@@ -280,4 +276,23 @@ function useNearViewport(ref: RefObject<HTMLElement | null>): boolean {
     return () => observer.disconnect();
   }, [near, ref]);
   return near;
+}
+
+export function ImagePreviewDialog({
+  title,
+  onClose,
+  children,
+  footer,
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+  footer?: ReactNode;
+}) {
+  const titleId = useId();
+  return (
+    <Dialog title={title} labelledBy={titleId} onClose={onClose} footer={footer} wide>
+      <div className="attachment-preview">{children}</div>
+    </Dialog>
+  );
 }

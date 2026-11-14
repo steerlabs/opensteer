@@ -1,3 +1,4 @@
+import { TranscriptImageContext } from "@opensteer/client/react";
 import {
   conversationActivityTurn,
   formatClockTime,
@@ -159,43 +160,45 @@ function ReplyActivity(props: {
     );
   }
   return (
-    <TaskScopeContext value={scope}>
-      <AgentEngine value={engine}>
-        <AgentGround value={color.surfaceElevated}>
-          <AgentMemoryContext value={memory}>
-            <TranscriptHostClientContext value={hostClient}>
-              <Frame
-                status={
-                  activity.live
-                    ? "Now"
-                    : activity.reply === null
-                      ? null
-                      : formatClockTime(activity.reply.createdAt)
-                }
-              >
-                <TranscriptSurfacesContext.Provider value={surfaces}>
-                  <ReplySurfaces turn={activity.turn} turnKey={activity.key} />
-                </TranscriptSurfacesContext.Provider>
-                {activity.steps.length === 0 ? (
-                  <AppText role="secondary" tone="muted">
-                    {activity.live ? "Nothing yet." : "Opensteer answered without any steps."}
-                  </AppText>
-                ) : (
-                  <ConversationSteps
-                    reveal={props.messageId}
-                    entries={activity.steps}
-                    highlightRequestId={null}
-                    live={live}
-                    onOpenStep={openStep}
-                    turn={activity.turn}
-                  />
-                )}
-              </Frame>
-            </TranscriptHostClientContext>
-          </AgentMemoryContext>
-        </AgentGround>
-      </AgentEngine>
-    </TaskScopeContext>
+    <TranscriptImageContext value={{ client: hostClient, threadId }}>
+      <TaskScopeContext value={scope}>
+        <AgentEngine value={engine}>
+          <AgentGround value={color.surfaceElevated}>
+            <AgentMemoryContext value={memory}>
+              <TranscriptHostClientContext value={hostClient}>
+                <Frame
+                  status={
+                    activity.live
+                      ? "Now"
+                      : activity.reply === null
+                        ? null
+                        : formatClockTime(activity.reply.createdAt)
+                  }
+                >
+                  <TranscriptSurfacesContext.Provider value={surfaces}>
+                    <ReplySurfaces turn={activity.turn} turnKey={activity.key} />
+                  </TranscriptSurfacesContext.Provider>
+                  {activity.steps.length === 0 ? (
+                    <AppText role="secondary" tone="muted">
+                      {activity.live ? "Nothing yet." : "Opensteer answered without any steps."}
+                    </AppText>
+                  ) : (
+                    <ConversationSteps
+                      reveal={props.messageId}
+                      entries={activity.steps}
+                      highlightRequestId={null}
+                      live={live}
+                      onOpenStep={openStep}
+                      turn={activity.turn}
+                    />
+                  )}
+                </Frame>
+              </TranscriptHostClientContext>
+            </AgentMemoryContext>
+          </AgentGround>
+        </AgentEngine>
+      </TaskScopeContext>
+    </TranscriptImageContext>
   );
 }
 
