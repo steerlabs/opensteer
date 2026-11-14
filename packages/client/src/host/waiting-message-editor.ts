@@ -67,6 +67,11 @@ export async function openWaitingMessageEditor(
     revision = taken.revision;
     await port.holdsRevision(threadId, messageId, revision);
   } catch (error) {
+    // A take that may have landed must not hold the queue for an editor that never opened.
+    if (!isSettledInputMutationError(error))
+      await port
+        .dispatch({ leaseId, messageId, threadId, type: "thread.input.lease.release" })
+        .catch(() => undefined);
     port.leases.delete(leaseId);
     throw error;
   }

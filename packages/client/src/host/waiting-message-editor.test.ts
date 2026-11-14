@@ -127,8 +127,15 @@ it("edits a waiting message in place under this device's lease, renewing it only
   ]);
 });
 
-it("retries a save whose answer was lost as the same edit, never a second one", async () => {
-  const { client, lost, messageId, threadId } = await setup();
+it("lets go of a take whose answer was lost, and retries a lost save as the same edit", async () => {
+  const { client, lost, messageId, mock, threadId } = await setup();
+  lost.add("thread.input.lease.take");
+  await expect(client.editWaitingMessage(threadId, messageId)).rejects.toThrow(
+    "could not be reached",
+  );
+  // The Host took that lease; nothing may wait two minutes on an editor that never opened.
+  expect(mock.getSnapshot().inputQueues[threadId]?.items[0]?.lease).toBeNull();
+
   const editor = await client.editWaitingMessage(threadId, messageId);
   const words = [{ text: "Check the 9am ferry", type: "text" as const }];
   lost.add("thread.input.edit");
