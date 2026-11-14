@@ -11,7 +11,7 @@ export function useTeamSideBack(): void {
   const { key } = useRoute();
   const root = useNavigationState((state) => isTeamSideRoot(state, key));
   usePreventRemove(root, ({ data }) => {
-    if (["GO_BACK", "POP", "POP_TO_TOP"].includes(data.action.type)) {
+    if (["GO_BACK", "POP"].includes(data.action.type)) {
       const state = navigation.getState();
       const action = state === undefined ? null : sideMemory.back(state);
       if (action !== null) {

@@ -822,7 +822,7 @@ class MobileTeamRuntime {
   #ended(teamId: string, session: TeamSessionClient): void {
     if (this.#sessions.get(teamId) !== session) return;
     const ended = session.getSnapshot().ended;
-    if (ended === "removed") this.#onForgotten?.(teamId);
+    if (ended === "removed" || ended === "viewer-changed") this.#onForgotten?.(teamId);
     this.#drop(teamId);
     void this.#previews?.clear(DeploymentIdSchema.parse(teamId));
     if (ended === "viewer-changed") {

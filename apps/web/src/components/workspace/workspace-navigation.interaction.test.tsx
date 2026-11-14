@@ -737,7 +737,7 @@ describe("a channel and back", () => {
     expect(team().getAttribute("aria-checked")).toBe("true");
   });
 
-  it("remembers a team's thread, knowledge query and hash while settings leave both bookmarks alone", async () => {
+  it("remembers a team's thread across a round trip through Tasks", async () => {
     await mount((source) => `/tasks/${delegating(source)}${tabSearch(pageTab(source))}`, {
       team: true,
     });
@@ -753,6 +753,27 @@ describe("a channel and back", () => {
     expect(history.at(-1)).toEqual({ ...task, type: "PUSH" });
     await click(element(`.side-switch__option[data-value="${mockTeamId}"]`));
     expect(history.at(-1)).toMatchObject({ path: thread, search: "", type: "PUSH" });
+  });
+
+  it("returns to Tasks without a tab opening that finished while the team was shown", async () => {
+    let task = "";
+    await mount(
+      (source) => {
+        task = `/tasks/${delegating(source)}`;
+        return `${task}?panel=browser&pendingBrowserTab=opening`;
+      },
+      { team: true },
+    );
+    await click(element(`.side-switch__option[data-value="${mockTeamId}"]`));
+    await click(element('.side-switch__option[data-value="tasks"]'));
+    expect(history.at(-1)).toMatchObject({ path: task, search: "?panel=browser", type: "PUSH" });
+  });
+
+  it("remembers a knowledge query and hash while settings and the directory leave both bookmarks alone", async () => {
+    await mount((source) => `/tasks/${delegating(source)}${tabSearch(pageTab(source))}`, {
+      team: true,
+    });
+    const task = history.at(-1)!;
     const knowledge = `/teams/${mockTeamId}/knowledge?q=bookmark#topic`;
     await act(async () => goTo!(knowledge));
     await act(async () => goTo!("/settings/general"));

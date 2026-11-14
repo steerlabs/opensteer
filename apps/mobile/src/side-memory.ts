@@ -10,7 +10,7 @@ type SideRoute = {
   readonly params?: object | undefined;
 };
 
-const landingParams = new Set(["messageId", "requestId", "replyId"]);
+const landingParams = new Set(["messageId", "requestId", "replyId", "pendingBrowserTab"]);
 
 export function routeSide(route: SideRoute | undefined): SideId {
   const teamId = isRecord(route?.params) ? route.params["teamId"] : undefined;

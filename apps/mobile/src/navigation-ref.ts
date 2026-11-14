@@ -40,6 +40,10 @@ export function enterSide(target: TopLevelTarget): boolean {
       routes: [{ key: `Home:${deploymentId}`, name: "Home", params: { deploymentId } }],
     };
   }
+  if (state.routes[0]?.name !== "Home") {
+    navigationRef.dispatch(StackActions.push(target.name, target.params));
+    return true;
+  }
   const action = sideMemory.enter(state, target);
   if (action === null) return false;
   navigationRef.dispatch(action);

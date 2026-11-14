@@ -623,9 +623,13 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
       if (team?.removed) return;
       bookmarks.side = side;
       if (side !== "tasks" && !team?.viewer) return;
+      // An opening still under way finishes only on the address it started from.
+      const params = new URLSearchParams(address.search);
+      params.delete("pendingBrowserTab");
+      const search = params.toString();
       bookmarks.bookmarks[side] = {
         pathname: address.pathname,
-        search: address.search,
+        search: search ? `?${search}` : "",
         hash: address.hash ?? "",
         startFrom: startPageOrigin(address.state),
         viewer: team?.viewer ?? null,
