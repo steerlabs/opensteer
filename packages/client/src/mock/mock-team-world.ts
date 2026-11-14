@@ -14,6 +14,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import {
+  TeamPartnerLinkSchema,
   TeamAgentRequestSchema,
   TeamChannelSchema,
   TeamFileSchema,
@@ -192,6 +193,7 @@ export function seedBusyTeam(
       id: TeamAgentRequestIdSchema.parse(
         `tar_00000000-0000-4000-8${options.index}00-${String(requests.length + 1).padStart(12, "0")}`,
       ),
+      kind: "self",
       ownerUserId: owner,
       channelId: where,
       threadRootId: root.id,
@@ -411,6 +413,77 @@ export function seedBusyTeam(
   markRead(host, dmGroup);
   send(dmJordan, jordan, "Thanks for the intro!");
   markRead(host, dmJordan);
+
+  const partnerId = "00000000-0000-4000-8000-000000000099";
+  const partnerTeamId = DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-000000000099");
+  const partnerUserId = userId(99);
+  host.partners.set(
+    partnerId,
+    TeamPartnerLinkSchema.parse({
+      id: partnerId,
+      partnerTeamId,
+      partnerOrigin: "https://partner.example",
+      partnerHostKeyFingerprint: `sha256:${"A".repeat(43)}`,
+      partnerHostInstanceId: "hst_00000000-0000-4000-8000-000000000099",
+      partnerName: "Northstar",
+      role: "dialer",
+      state: "active",
+      localApproved: true,
+      partnerApproved: true,
+      createdBy: me,
+      approvedBy: me,
+      createdAt: day("2026-11-01"),
+      approvedAt: day("2026-11-01"),
+      lastSeenAt: day("2026-11-08"),
+      revokedAt: null,
+      revokedBy: null,
+      lastError: null,
+      connected: true,
+      canApprove: false,
+      canRevoke: true,
+    }),
+  );
+  const shared = channel(11, "northstar-project", "private");
+  host.channels.get(shared)!.share = {
+    role: "owner",
+    state: "shared",
+    teamId: partnerTeamId,
+    teamName: "Northstar",
+  };
+  host.remotePeople[partnerUserId] = {
+    name: "Alex Kim",
+    handle: "alex-northstar",
+    homeTeamName: "Northstar",
+    external: true,
+  };
+  host.shareParticipants.set(shared, [
+    { userId: partnerUserId, handle: "alex-northstar", level: "post", state: "active" },
+  ]);
+  host.shares.set(partnerId, {
+    id: partnerId,
+    channelId: shared,
+    partnerName: "Northstar",
+    role: "owner",
+    state: "active",
+    generation: 1,
+    name: "northstar-project",
+    ready: true,
+    localApproved: true,
+  });
+  host.shares.set("00000000-0000-4000-8000-000000000098", {
+    id: "00000000-0000-4000-8000-000000000098",
+    channelId: null,
+    partnerName: "Northstar",
+    role: "follower",
+    state: "offered",
+    generation: 1,
+    name: "design-review",
+    ready: false,
+    localApproved: false,
+  });
+  send(shared, partnerUserId, "Thanks @tim. Our team can see the full project history here.", {
+    mentions: [{ userId: me, kind: "person" }],
+  });
 
   seedAcmeKnowledge(host, {
     people: { me, leo, maya, dana, priya, sam, jordan },

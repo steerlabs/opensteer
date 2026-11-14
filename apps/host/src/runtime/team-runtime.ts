@@ -1,3 +1,12 @@
+import { TeamPartners } from "../team-partners/service.js";
+import { TeamPartnerStore } from "../team-partners/store.js";
+import { registerTeamPartnerRoutes } from "../team-partners/routes.js";
+import {
+  teamPartnerCapability,
+  teamShareCapability,
+  teamSharedAgentsCapability,
+  teamPartnerSocketPath,
+} from "@opensteer/protocol";
 import { rejectDuplicateCredentialHeaders } from "../identity/request-credential-headers.js";
 import { teamOidcStatePrefix, teamOAuthVersionParameter } from "@opensteer/deployment-authority";
 import Fastify from "fastify";
@@ -5,7 +14,12 @@ import websocket from "@fastify/websocket";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, open, rename, unlink } from "node:fs/promises";
 import { dirname } from "node:path";
-import { deploymentPolicy, type Deployment, type HostKeyFingerprint } from "@opensteer/core";
+import {
+  OpensteerError,
+  deploymentPolicy,
+  type Deployment,
+  type HostKeyFingerprint,
+} from "@opensteer/core";
 import {
   HostDescriptorSchema,
   apiNegotiation,
@@ -82,6 +96,7 @@ export async function createTeamHostRuntime(input: {
   const lifetimes = new TeamLinkLifetimes();
   let services: Awaited<ReturnType<typeof startTeamServices>> | undefined;
   let knowledge: TeamKnowledge | undefined;
+  let partners: TeamPartners | undefined;
   let machine: ReturnType<typeof createTeamLinkEndpoint> | undefined;
   let account = config.account;
   let authority: HostAuthorityPublisher | undefined;
@@ -143,7 +158,16 @@ export async function createTeamHostRuntime(input: {
   }
   try {
     const access = new TeamAccessStore(database);
+    partners = new TeamPartners({
+      store: new TeamPartnerStore(access, envelope),
+      ...(options.teamPartnerNetwork ? { network: options.teamPartnerNetwork } : {}),
+      keys,
+      teamName: config.deploymentName ?? "Team",
+      publicOnly: async () => (await admitted?.hostedTeam()) != null,
+      onError: () => report("team-partners"),
+    });
     services = await startTeamServices({
+      partners,
       kind: "team",
       database,
       access,
@@ -315,7 +339,7 @@ export async function createTeamHostRuntime(input: {
       if (
         (request.url.startsWith("/v1/") && !request.url.startsWith("/v1/rpc/")) ||
         request.url.startsWith("/rpc/") ||
-        request.url.startsWith("/internal/v1/team/") ||
+        (request.url.startsWith("/internal/v1/team/") && request.url !== teamPartnerSocketPath) ||
         request.url.startsWith("/.well-known/openid-configuration") ||
         request.url.startsWith("/.well-known/oauth-authorization-server")
       )
@@ -333,6 +357,9 @@ export async function createTeamHostRuntime(input: {
         authority: envelope,
         bootstrapMethods: ["oidc"],
         capabilities: [
+          teamPartnerCapability,
+          teamShareCapability,
+          teamSharedAgentsCapability,
           ...(config.identity.nativeOAuth
             ? ["native-oauth", "team-session-exchange-v1", "team-native-browser-return-v1"]
             : []),
@@ -379,6 +406,7 @@ export async function createTeamHostRuntime(input: {
         authenticator.authenticateSession(request.headers, { mutation }),
     });
     await registerTeamLinkRoutes(app, machine.endpoint, machine.binary);
+    registerTeamPartnerRoutes(app, partners);
     app.get(
       "/v1/realtime",
       {
@@ -423,7 +451,14 @@ export async function createTeamHostRuntime(input: {
                 const fresh = await authenticator.authenticateSession(request.headers);
                 await access.withHumanSession(fresh, () => peer.receive(JSON.parse(frame)));
               })
-              .catch(() => socket.close(1008, "Team frame refused"))
+              .catch((error: unknown) =>
+                socket.close(
+                  1008,
+                  error instanceof OpensteerError && error.reason === "api-version-mismatch"
+                    ? "Update Opensteer for shared channels"
+                    : "Team frame refused",
+                ),
+              )
               .finally(() => {
                 queuedFrames--;
                 queuedBytes -= bytes;
@@ -445,6 +480,7 @@ export async function createTeamHostRuntime(input: {
         })
       ).register(app);
     await app.ready();
+    await partners.start();
     await publishDirectory();
     let closing: Promise<void> | undefined;
     return {
@@ -462,6 +498,7 @@ export async function createTeamHostRuntime(input: {
           lifetimes.stop();
           const failures: unknown[] = [];
           for (const [name, close] of [
+            ["partner transports", () => partners?.close()],
             ["team transports", () => team.close()],
             ["http", () => app.close()],
             ["Account directory", () => directory?.close()],
@@ -485,6 +522,7 @@ export async function createTeamHostRuntime(input: {
     stopping.abort();
     lifetimes.stop();
     await Promise.allSettled([
+      partners?.close(),
       services?.close(),
       app.close(),
       directory?.close(),

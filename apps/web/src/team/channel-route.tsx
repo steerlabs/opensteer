@@ -10,7 +10,15 @@ import {
 import { teamPageUrl } from "@opensteer/core";
 import type { TeamChannel, TeamFileSchema } from "@opensteer/protocol";
 import { watchTeamReplyRead, unwrapRpcResult } from "@opensteer/client/host";
-import { teamAskRefusalNotice, teamScopeKey, type TeamTimeline } from "@opensteer/client/team";
+import {
+  channelShareView,
+  pendingSendView,
+  teamAskRefusalNotice,
+  teamScopeKey,
+  type TeamTimeline,
+} from "@opensteer/client/team";
+import { useTeamShareParticipants } from "@opensteer/client/react";
+import { ChannelShares } from "./channel-shares.js";
 import { TeamPreviewUrls } from "./preview-urls.js";
 import type { z } from "zod";
 import { useOptionalShell } from "../components/app-shell.js";
@@ -202,6 +210,12 @@ function channelView(view: TeamView, channel: TeamChannel | null, channelId: str
   )?.channel;
   const summary = channel ?? entry;
   return {
+    ...(summary?.share
+      ? {
+          shareLabel: channelShareView(summary.share)!.label,
+          shareDetail: channelShareView(summary.share)!.detail,
+        }
+      : {}),
     id: channelId,
     kind: channelKind(summary?.kind ?? "public"),
     name: summary?.name ?? "channel",
@@ -248,6 +262,12 @@ function ChannelScreenFor({
   const entry = snapshot.sidebar?.channels.find((row) => row.channel.id === channelId);
   const can = timeline?.channel?.can ?? entry?.channel.can ?? null;
   const archived = Boolean(timeline?.channel?.archivedAt ?? entry?.channel.archivedAt);
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const participants = useTeamShareParticipants(
+    client,
+    channelId,
+    (timeline?.channel ?? entry?.channel)?.share ? mentionQuery : null,
+  );
   const go = (path: string, keepPlace = true) =>
     void navigate({ pathname: path, search: keepPlace ? search : "" });
   const searchChannel = () =>
@@ -359,7 +379,7 @@ function ChannelScreenFor({
     const files = await Promise.all(sending.map(([, upload]) => upload.done));
     if (files.some((file) => !file))
       throw new Error("Remove or retry the failed attachment before sending.");
-    const message = teamMessage(input, me, view.members);
+    const message = teamMessage(input, words.members.get(me.userId) ?? me, words.members);
     try {
       await client.send({
         channelId,
@@ -394,16 +414,21 @@ function ChannelScreenFor({
         pendingView(
           words,
           { ...row.command, createdAt: row.createdAt },
-          row.failure
-            ? { kind: "failed", reason: row.failure }
-            : snapshot.connection === "connected"
-              ? { kind: "sending" }
-              : { kind: "queued" },
+          pendingSendView(
+            row,
+            snapshot.connection === "connected",
+            snapshot.sendErrors?.[row.command.clientMessageId]
+              ? {
+                  error: snapshot.sendErrors[row.command.clientMessageId],
+                  teamName: (timeline?.channel ?? entry?.channel)?.share?.teamName,
+                }
+              : null,
+          ),
         ),
       );
   const items = useMemo(
     () => (timeline ? timelineItems(words, timeline, pendingFor(null), false) : []),
-    [timeline, words, snapshot.pending, snapshot.connection],
+    [timeline, words, snapshot.pending, snapshot.connection, snapshot.sendErrors],
   );
   const lastRead = entry?.lastReadMessageId ?? null;
   const firstUnread =
@@ -465,6 +490,7 @@ function ChannelScreenFor({
         )
         .catch(report);
     },
+    onRetrySend: () => void client.reconcilePending().catch(report),
     onPin: (messageId: string, pinned: boolean) =>
       dispatch({
         type: pinned ? "team.message.pin" : "team.message.unpin",
@@ -487,7 +513,11 @@ function ChannelScreenFor({
         return;
       }
       if (!view.me) return;
-      const message = teamMessage({ body, toMyAgent: false }, view.me, view.members);
+      const message = teamMessage(
+        { body, toMyAgent: false },
+        words.members.get(view.me.userId) ?? view.me,
+        words.members,
+      );
       dispatch({
         type: "team.message.edit",
         channelId,
@@ -509,6 +539,13 @@ function ChannelScreenFor({
           }),
     onOpenFile: openFile,
     onOpenTask: links ? (messageId: string) => void openTask(threadRoot(messageId)) : undefined,
+  };
+  const availableMessageActions = {
+    ...messageActions,
+    onAskAgent: can?.wakeOwnAgent ? messageActions.onAskAgent : undefined,
+    ...(!can?.post
+      ? { onPin: undefined, onEdit: undefined, onDelete: undefined, onRetrySend: undefined }
+      : {}),
   };
   function threadRoot(messageId: string): string {
     const message = [...(timeline?.messages ?? []), ...(thread?.messages ?? [])].find(
@@ -554,10 +591,20 @@ function ChannelScreenFor({
   const me = person(words, words.viewerUserId);
   const people = useMemo(
     () =>
-      [...view.members.values()]
-        .filter((member) => member.state === "active")
-        .map((member) => person(words, member.userId)),
-    [view.members, words],
+      [...words.members.values()]
+        .filter((member) =>
+          member.externalTeam
+            ? participants.items.some(
+                (row) => row.userId === member.userId && row.state === "active",
+              )
+            : view.members.get(member.userId)?.state === "active",
+        )
+        .map((member) => ({
+          ...person(words, member.userId),
+          handle:
+            participants.items.find((row) => row.userId === member.userId)?.handle ?? member.handle,
+        })),
+    [view.members, words, participants.items],
   );
   const typingFor = (rootId: string | null) =>
     (snapshot.typing[JSON.stringify([channelId, rootId])] ?? [])
@@ -566,7 +613,11 @@ function ChannelScreenFor({
   const composer = (rootId: string | null) =>
     can?.post !== true ? (
       <p className="team-composer__closed">
-        {archived ? "This channel is archived." : "You can read this channel but not post here."}
+        {channel.shareLabel
+          ? `${channel.shareLabel}. ${channel.shareDetail}`
+          : archived
+            ? "This channel is archived."
+            : "You can read this channel but not post here."}
       </p>
     ) : (
       <TeamComposer
@@ -598,6 +649,7 @@ function ChannelScreenFor({
             )
           ] ?? ""
         }
+        onMentionQuery={setMentionQuery}
         onDraft={(text) =>
           void client
             .setDraft(
@@ -652,7 +704,7 @@ function ChannelScreenFor({
             (item) => item.kind !== "message" || item.message.id !== place.threadId,
           )
         : [],
-    [thread, words, place.threadId, snapshot.pending, snapshot.connection],
+    [thread, words, place.threadId, snapshot.pending, snapshot.connection, snapshot.sendErrors],
   );
   const readVisibleReply = useCallback(
     (messageId: string) => {
@@ -684,7 +736,7 @@ function ChannelScreenFor({
   const threadPane =
     place.threadId && threadRootMessage ? (
       <ThreadPane
-        actions={messageActions}
+        actions={availableMessageActions}
         cardActions={cardActions}
         channel={channel}
         composer={composer(place.threadId)}
@@ -721,7 +773,7 @@ function ChannelScreenFor({
         }
         list={
           <MessageList
-            actions={messageActions}
+            actions={availableMessageActions}
             firstUnreadId={firstUnread}
             editingId={editingId}
             onEditingChange={setEditingId}
@@ -788,7 +840,15 @@ function ChannelScreenFor({
   return (
     <ChannelScreen
       banner={
-        <ConnectionBanner notice={notice} onRetry={() => client.connect()} team={team.name} />
+        <>
+          <ConnectionBanner notice={notice} onRetry={() => client.connect()} team={team.name} />
+          {timeline?.channel?.share?.state === "disconnected" ||
+          timeline?.channel?.share?.updateRequired ? (
+            <p className="team-share-notice" role="status">
+              {channel.shareLabel}. {channel.shareDetail}
+            </p>
+          ) : null}
+        </>
       }
       channel={channel}
       lead={work ? null : drawer ? <DrawerButton /> : <SidebarRestoreButton />}
@@ -872,7 +932,7 @@ function ChannelPins({
 }) {
   const navigate = useNavigate();
   const pins = useTeamRead(
-    () => view.client.rpc["team.pins.page"]({ channelId }).then(unwrapRpcResult),
+    () => view.client.pinnedMessages(channelId),
     `pins:${channelId}:${view.snapshot.channel?.throughSeq ?? ""}`,
   );
   return (
@@ -972,7 +1032,21 @@ function ChannelDetailsPane({
           : {}),
       }}
       channel={channel}
+      sharing={live ? <ChannelShares client={view.client} channel={live} /> : null}
       notify={level}
+      sharedAgents={
+        manage && live?.share?.shareId && live.share.agentsEnabled !== undefined
+          ? {
+              enabled: live.share.agentsEnabled,
+              onChange: (enabled) =>
+                void dispatch({
+                  type: "team.share.agents.set",
+                  shareId: live.share!.shareId!,
+                  enabled,
+                }),
+            }
+          : undefined
+      }
       workingAgents={workingAgents}
     />
   );
@@ -998,28 +1072,60 @@ function ChannelMembersPane({
     `groups:${view.team.teamId}`,
   );
   const entries = access.value?.entries ?? [];
+  const [query, setQuery] = useState("");
+  const participants = useTeamShareParticipants(
+    view.client,
+    channelId,
+    channel.shareLabel ? query : null,
+  );
   return (
     <MembersPane
       actions={{ onClose }}
+      onQuery={setQuery}
+      more={
+        participants.nextCursor ? (
+          <button
+            className="btn btn--small"
+            disabled={participants.loadingMore}
+            onClick={() => void participants.more()}
+            type="button"
+          >
+            More people
+          </button>
+        ) : participants.error ? (
+          <button className="btn btn--small" onClick={participants.reload} type="button">
+            Retry partner people
+          </button>
+        ) : null
+      }
       canManage={access.value?.can.manage ?? false}
       channel={channel}
-      members={entries.map((entry) => {
-        if (entry.subject.kind === "person")
+      members={[
+        ...entries.map((entry) => {
+          if (entry.subject.kind === "person")
+            return {
+              kind: "person" as const,
+              person: person(view.words, entry.subject.userId),
+              manager: entry.manage,
+            };
+          const groupId = entry.subject.groupId;
+          const group = groups.value?.groups.find((candidate) => candidate.id === groupId);
           return {
-            kind: "person" as const,
-            person: person(view.words, entry.subject.userId),
+            kind: "group" as const,
+            id: groupId,
+            name: group?.name ?? "Group",
+            peopleCount: group?.people.length ?? 0,
             manager: entry.manage,
           };
-        const groupId = entry.subject.groupId;
-        const group = groups.value?.groups.find((candidate) => candidate.id === groupId);
-        return {
-          kind: "group" as const,
-          id: groupId,
-          name: group?.name ?? "Group",
-          peopleCount: group?.people.length ?? 0,
-          manager: entry.manage,
-        };
-      })}
+        }),
+        ...participants.items
+          .filter((row) => view.snapshot.people?.[row.userId])
+          .map((row) => ({
+            kind: "person" as const,
+            person: { ...person(view.words, row.userId), handle: row.handle },
+            manager: false,
+          })),
+      ]}
     />
   );
 }

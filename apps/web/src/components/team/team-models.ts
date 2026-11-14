@@ -7,6 +7,7 @@ export type Presence = "active" | "away";
 
 /** A member as the viewer sees them. */
 export interface PersonView {
+  readonly externalTeam?: string;
   readonly id: string;
   readonly name: string;
   /** Unique per team, without "@"; their agent's handle is `<handle>-agent`. */
@@ -35,6 +36,7 @@ export type AuthorView =
  * made; `agent-reference` names someone else's agent and asks its owner.
  */
 export interface MentionView {
+  readonly externalTeam?: string;
   readonly handle: string;
   readonly label: string;
   readonly tone: "you" | "person" | "agent" | "agent-reference";
@@ -51,6 +53,7 @@ export interface FileView {
 
 /** A message the server has not confirmed, or refused. */
 export type SendStateView =
+  | { readonly kind: "retryable"; readonly reason: string }
   | { readonly kind: "sending" }
   | { readonly kind: "queued" }
   | { readonly kind: "failed"; readonly reason: string };
@@ -170,6 +173,8 @@ export interface ChannelInstructionsView {
 }
 
 export interface ChannelView {
+  readonly shareLabel?: string;
+  readonly shareDetail?: string;
   readonly id: string;
   readonly kind: ChannelKind;
   /** A channel's name without "#"; for a DM, the other people's names. */
@@ -194,6 +199,7 @@ export type ChannelTab = "messages" | "files" | "pinned";
 
 /** A channel or DM row in the sidebar. Unread is a dot of weight; only mentions are counted. */
 export interface ChannelRowView {
+  readonly shared?: boolean;
   readonly id: string;
   readonly kind: ChannelKind;
   readonly name: string;

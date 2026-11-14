@@ -22,6 +22,7 @@ function fixture() {
     },
   });
   let row = PersonalTeamRequestSchema.parse({
+    kind: "self",
     teamId: source.teamId,
     requestId: createId("teamAgentRequest"),
     triggerMessageId: "2",

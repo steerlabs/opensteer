@@ -184,7 +184,7 @@ export function MentionChip(props: { readonly mention: MentionView }): ReactNode
       style={[styles.chip, tone]}
     >
       {/* Thin spaces stand in for padding, which nested text can't take on iOS. */}
-      {` ${props.mention.label} `}
+      {` ${props.mention.label}${props.mention.externalTeam ? ` · External · ${props.mention.externalTeam}` : ""} `}
     </Text>
   );
 }

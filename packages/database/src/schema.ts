@@ -1967,6 +1967,21 @@ export interface DatabaseSchema {
     metadata: JsonColumn<readonly { fullName: string; description: string; digest: string }[]>;
   };
   teamMembers: TeamMemberTable;
+  teamPrincipals: TeamPrincipalTable;
+  teamSharingSettings: {
+    singletonKey: "team";
+    policy: "off" | "admins" | "members-propose" | "members";
+  };
+  teamPartnerInvites: {
+    id: string;
+    verifierHash: string;
+    createdBy: UserId;
+    createdAt: Timestamp;
+    expiresAt: Timestamp;
+    consumedAt: NullableTimestamp;
+    revokedAt: NullableTimestamp;
+  };
+  teamPartnerLinks: TeamPartnerLinkTable;
   teamAccessState: TeamAccessStateTable;
   teamGroups: TeamGroupTable;
   teamGroupPeople: TeamGroupPersonTable;
@@ -1978,6 +1993,14 @@ export interface DatabaseSchema {
   teamChannels: TeamChannelTable;
   teamChannelMembers: TeamChannelMemberTable;
   teamChannelMemberState: TeamChannelMemberStateTable;
+  teamShares: TeamShareTable;
+  teamShareAsks: TeamShareAskTable;
+  teamRequestStatuses: TeamAgentRequestTable & {
+    pendingRemote: boolean;
+    askRefusal: "people-only" | "no-access" | "no-link" | "rate-limited" | null;
+  };
+  teamShareParticipants: TeamShareParticipantTable;
+  teamShareRelays: TeamShareRelayTable;
   teamMessages: TeamMessageTable;
   teamMentions: TeamMentionTable;
   teamMessagePins: TeamMessagePinTable;
@@ -2277,6 +2300,16 @@ export interface TeamMemberTable {
   changedAt: Timestamp;
   changedBy: UserId | null;
 }
+export interface TeamPrincipalTable {
+  id: UserId;
+  homeTeamId: DeploymentId;
+  homeUserId: string;
+  memberUserId: UserId | null;
+  displayName: string | null;
+  handle: TeamHandle | null;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
 export interface TeamAccessStateTable {
   singletonKey: "team";
   revision: Generated<string>;
@@ -2367,6 +2400,7 @@ export interface TeamChannelTable {
   dmKey: string | null;
 }
 export interface TeamChannelMemberTable {
+  memberUserId: ColumnType<UserId | null, never, never>;
   channelId: TeamChannelId;
   subjectKind: "person" | "group";
   subjectId: string;
@@ -2383,6 +2417,9 @@ export interface TeamChannelMemberStateTable {
   updatedAt: Timestamp;
 }
 export interface TeamMessageTable {
+  publicId: Generated<string>;
+  createdSeq: Generated<string>;
+  ownerChangeSeq: Generated<string | null>;
   agentLinkId: Generated<TeamLinkId | null>;
   personalDeploymentId: Generated<DeploymentId | null>;
   callerRunId: Generated<RunId | null>;
@@ -2416,6 +2453,11 @@ export interface TeamMessagePinTable {
   pinnedAt: Timestamp;
 }
 export interface TeamBlobTable {
+  cacheOriginalReserved: Generated<boolean>;
+  cachePreviewReserved: Generated<boolean>;
+  publicId: Generated<string>;
+  remoteShareId: Generated<string | null>;
+  previewSha256: Generated<string | null>;
   agentLinkId: Generated<TeamLinkId | null>;
   personalDeploymentId: Generated<DeploymentId | null>;
   callerRunId: Generated<RunId | null>;
@@ -2460,6 +2502,7 @@ export interface TeamTopicTable {
   accessRevision: Generated<string>;
 }
 export interface TeamTopicGrantTable {
+  memberUserId: ColumnType<UserId | null, never, never>;
   topicId: KnowledgeTopicId;
   subjectKind: "person" | "group" | "everyone";
   /** A user or group id; "team" for everyone. */
@@ -2513,6 +2556,7 @@ export interface TeamLinkTable {
   revokedAt: NullableTimestamp;
 }
 export interface TeamAgentRequestTable {
+  shareId: Generated<string | null>;
   targetAgentHandle: Generated<string | null>;
   kind: Generated<TeamAgentRequestKind>;
   presentation: ColumnType<
@@ -2605,4 +2649,93 @@ export interface PersonalTeamRequestTable {
   source: JsonColumn<TeamSource>;
   createdAt: Timestamp;
   finishedAt: NullableTimestamp;
+}
+
+export interface TeamPartnerLinkTable {
+  id: string;
+  partnerTeamId: DeploymentId;
+  partnerOrigin: string;
+  partnerHostKeyFingerprint: string;
+  partnerHostInstanceId: HostInstanceId;
+  partnerAuthority: JsonColumn<import("@opensteer/protocol").TeamPartnerAuthority>;
+  partnerName: string;
+  role: "dialer" | "listener";
+  state: "pending" | "active" | "revoked";
+  localApproved: boolean;
+  partnerApproved: boolean;
+  createdBy: UserId;
+  approvedBy: UserId | null;
+  createdAt: Timestamp;
+  approvedAt: NullableTimestamp;
+  lastSeenAt: NullableTimestamp;
+  lastError: "identity-mismatch" | "unsupported-partner-version" | "unreachable" | null;
+  revokedAt: NullableTimestamp;
+  revokedBy: "local" | "partner" | null;
+}
+
+export interface TeamShareTable {
+  policyRevision: Generated<string>;
+  agentsEnabled: Generated<boolean>;
+  historyFromShareId: string | null;
+  syncError: Generated<"update-required" | null>;
+  storedRows: Generated<number>;
+  storedBytes: Generated<string>;
+  id: string;
+  channelId: TeamChannelId | null;
+  partnerLinkId: string;
+  role: "owner" | "follower";
+  state: "offered" | "active" | "ended";
+  generation: number;
+  name: string;
+  peopleOnly: boolean;
+  offeredBy: UserId | null;
+  acceptedBy: UserId | null;
+  localApproved: boolean;
+  cursor: Generated<string>;
+  creationCursor: Generated<string>;
+  cursorPublicId: Generated<string>;
+  ready: Generated<boolean>;
+  createdAt: Timestamp;
+  endedAt: NullableTimestamp;
+}
+export interface TeamShareParticipantTable {
+  blocked: Generated<boolean>;
+  shareId: string;
+  principalId: UserId;
+  handle: TeamHandle;
+  level: "read" | "post";
+  state: "active" | "removed";
+}
+export interface TeamShareRelayTable {
+  pendingBodies: Generated<string[]>;
+  attachmentPublicIds: Generated<string[]>;
+  agentTargets: ColumnType<readonly UserId[], readonly UserId[] | undefined, readonly UserId[]>;
+  publication: Generated<boolean>;
+  admitted: Generated<boolean>;
+  agentLinkId: Generated<TeamLinkId | null>;
+  personalDeploymentId: Generated<DeploymentId | null>;
+  callerRunId: Generated<RunId | null>;
+  shareId: string;
+  authorUserId: UserId;
+  authorKind: "human" | "agent";
+  clientMessageId: string;
+  bodyMarkdown: string;
+  threadRootPublicId: string | null;
+  publicId: string | null;
+}
+
+export interface TeamShareAskTable {
+  id: TeamAgentRequestId;
+  shareId: string;
+  channelId: TeamChannelId;
+  triggerMessageId: TeamMessageId;
+  threadRootId: TeamMessageId;
+  targetPrincipalId: UserId;
+  targetAgentHandle: string;
+  localRequestId: TeamAgentRequestId | null;
+  status: JsonColumn<import("@opensteer/protocol").TeamShareAskStatus | null>;
+  outcome: TeamAgentReturnPayload["outcome"] | null;
+  replyMessageId: TeamMessageId | null;
+  createdAt: Timestamp;
+  changeSeq: string;
 }

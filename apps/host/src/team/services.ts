@@ -1,3 +1,5 @@
+import { TeamShares } from "../team-partners/shares.js";
+import type { TeamPartners } from "../team-partners/service.js";
 import {
   OpensteerError,
   type AuthenticatedSession,
@@ -29,12 +31,18 @@ import type { DatabaseSchema } from "@opensteer/database";
 import {
   TeamAccessStore,
   requireTeam,
+  withTeamPeerVersion,
   type TeamStoreAccessEffects,
 } from "@opensteer/database/team-access";
 import { TeamMembersStore } from "@opensteer/database/team-members";
 import { TeamGroupsStore } from "@opensteer/database/team-groups";
 import { TeamInvitesStore, type TeamInviteVerifierVault } from "@opensteer/database/team-invites";
-import { TeamChatStore, teamMessageViews, teamRequestView } from "@opensteer/database/team-chat";
+import {
+  TeamChatStore,
+  teamContentPeople,
+  teamMessageViews,
+  teamRequestView,
+} from "@opensteer/database/team-chat";
 import { TeamFilesStore } from "@opensteer/database/team-files";
 import { TeamAuditStore } from "@opensteer/database/team-audit";
 import { TeamNoticesStore } from "@opensteer/database/team-notices";
@@ -42,6 +50,7 @@ import { TeamOutboxStore, type TeamPushDelivery } from "@opensteer/database/team
 import { TeamRequestsStore } from "@opensteer/database/team-requests";
 import { TeamLinkService } from "./link-service.js";
 import { TeamFileService } from "./file-service.js";
+import { TeamShareFiles } from "../team-partners/files.js";
 import { TeamRealtimeHub } from "./realtime.js";
 
 export function assertTeamApiVersion(headers: Headers) {
@@ -53,6 +62,7 @@ export function assertTeamApiVersion(headers: Headers) {
     });
 }
 export interface TeamServiceOptions {
+  readonly partners?: TeamPartners;
   readonly kind: DeploymentKind;
   readonly database: Kysely<DatabaseSchema>;
   readonly access?: TeamAccessStore;
@@ -107,15 +117,28 @@ export async function startTeamServices(options: TeamServiceOptions) {
     teamName: options.teamName,
     agentOnline: (ownerUserId) => options.machine?.isOnline?.(ownerUserId) ?? false,
   });
+  const requests = new TeamRequestsStore(access, chat);
+  const shares = options.partners
+    ? new TeamShares(
+        options.partners,
+        chat,
+        requests,
+        () => options.backgroundError("team-maintenance"),
+        async () => (await options.hostedTeam?.())?.generalChannelId ?? null,
+      )
+    : undefined;
   const links = new TeamLinkService(access, {
     teamName: options.teamName,
     teamId: options.teamId,
     origin: options.origin,
     hostKeyFingerprint: options.hostKeyFingerprint,
   });
-  const requests = new TeamRequestsStore(access, chat);
   const files = new TeamFilesStore(access, { storageLimitBytes: options.storageLimitBytes });
   const fileService = new TeamFileService(files, access, options.dataDirectory);
+  if (shares) {
+    shares.files = new TeamShareFiles(shares, fileService);
+    fileService.remote = shares.files;
+  }
   const realtime = new TeamRealtimeHub(access, chat);
   const outbox = new TeamOutboxStore(access, (userId, channelId) =>
     realtime.visible(userId, channelId),
@@ -193,6 +216,64 @@ export async function startTeamServices(options: TeamServiceOptions) {
     if (command.type.startsWith("team.knowledge."))
       return options.knowledge.command(actor, command);
     switch (command.type) {
+      case "team.share.agents.set":
+        requireTeam(shares);
+        await shares.store.setAgents(actor, command.shareId, command.enabled);
+        return { type: command.type };
+      case "team.share.participant.remove":
+      case "team.share.participant.restore":
+        requireTeam(shares);
+        await shares.store.setParticipant(
+          actor,
+          command.shareId,
+          command.principalId,
+          command.type === "team.share.participant.remove",
+        );
+        break;
+      case "team.share.offer":
+        requireTeam(shares);
+        return {
+          type: command.type,
+          ...(await shares.offer(
+            actor,
+            command.channelId,
+            command.linkId,
+            command.historyVisibleConfirmed,
+          )),
+        };
+      case "team.share.approve":
+        requireTeam(shares);
+        await shares.approve(actor, command.shareId);
+        break;
+      case "team.share.accept":
+        requireTeam(shares);
+        return { type: command.type, ...(await shares.accept(actor, command.shareId, command)) };
+      case "team.share.end":
+        requireTeam(shares);
+        await shares.end(command.shareId, actor);
+        break;
+      case "team.partner.invite.create":
+        requireTeam(options.partners);
+        return { type: command.type, ...(await options.partners.store.createInvite(actor)) };
+      case "team.partner.invite.revoke":
+        requireTeam(options.partners);
+        await options.partners.store.revokeInvite(actor, command.inviteId);
+        break;
+      case "team.partner.invite.redeem":
+        requireTeam(options.partners);
+        return { type: command.type, ...(await options.partners.redeem(actor, command.offer)) };
+      case "team.partner.approve":
+        requireTeam(options.partners);
+        await options.partners.approve(actor, command.linkId);
+        break;
+      case "team.partner.revoke":
+        requireTeam(options.partners);
+        await options.partners.revoke(actor, command.linkId);
+        break;
+      case "team.sharing.policy.set":
+        requireTeam(options.partners);
+        await options.partners.setPolicy(actor, command.policy);
+        break;
       case "team.channel.create":
         return { type: command.type, channel: await chat.create(actor, command) };
       case "team.channel.update":
@@ -371,6 +452,31 @@ export async function startTeamServices(options: TeamServiceOptions) {
     await options.database.transaction().execute((t) => access.checkSession(t));
     if (name.startsWith("team.knowledge.")) return options.knowledge.read(actor, name, raw);
     switch (name) {
+      case "team.partner.invite.preview":
+        requireTeam(options.partners);
+        return options.partners.preview(actor, teamReadSchemas[name].input.parse(raw).offer);
+      case "team.share.participants.get":
+        requireTeam(shares);
+        return shares.store.participants(actor, teamReadSchemas[name].input.parse(raw));
+      case "team.shares.list": {
+        requireTeam(shares);
+        const input = teamReadSchemas[name].input.parse(raw);
+        return shares.store.list(actor, input.channelId, input.after);
+      }
+      case "team.partners.list":
+        requireTeam(options.partners);
+        return options.partners.store.list(
+          actor,
+          options.partners.connected,
+          teamReadSchemas[name].input.parse(raw),
+        );
+      case "team.partner.invites.list":
+        requireTeam(options.partners);
+        return options.partners.store.invites(actor, teamReadSchemas[name].input.parse(raw).after);
+      case "team.sharing.policy.get":
+        requireTeam(options.partners);
+        teamReadSchemas[name].input.parse(raw);
+        return options.partners.store.getPolicy(actor);
       case "team.bootstrap.get": {
         const member = await members.get(actor);
         const hosted = (await options.hostedTeam?.()) ?? null;
@@ -508,8 +614,10 @@ export async function startTeamServices(options: TeamServiceOptions) {
           if (input.channelId) query = query.where("m.channelId", "=", input.channelId);
           if (input.before) query = query.where("m.id", "<", input.before);
           const rows = await query.orderBy("m.id", "desc").limit(51).execute();
+          const messages = await teamMessageViews(t, rows.slice(0, 50));
           return {
-            messages: await teamMessageViews(t, rows.slice(0, 50)),
+            people: await teamContentPeople(t, messages),
+            messages,
             hasMore: rows.length > 50,
           };
         });
@@ -523,6 +631,8 @@ export async function startTeamServices(options: TeamServiceOptions) {
   }
   return {
     kind: "team" as const,
+    partners: options.partners,
+    shares,
     access,
     resolver: access,
     locks: access,
@@ -547,97 +657,99 @@ export async function startTeamServices(options: TeamServiceOptions) {
         "Personal routes are unavailable on a team Host",
       );
       const session = await authenticate();
-      return access.withHumanSession(session, async () => {
-        const actor: TeamActor = { kind: "human", userId: session.user.id };
-        await options.database.transaction().execute((t) => access.member(t, actor.userId));
-        if (
-          name === "commands.dispatch" &&
-          typeof raw === "object" &&
-          raw !== null &&
-          "type" in raw &&
-          raw.type === "notification.preview.register"
-        ) {
-          const command = hostApi["commands.dispatch"].payload.parse(raw);
-          requireTeam(
-            command.type === "notification.preview.register" && options.registerPreviewKey,
-            "Preview registration unavailable",
-          );
-          const revision = access.revision;
-          await options.database.transaction().execute(async (t) => {
-            await t
-              .selectFrom("teamAccessState")
-              .select("revision")
-              .where("singletonKey", "=", "team")
-              .forShare()
-              .executeTakeFirstOrThrow();
-            const member = await access.member(t, actor.userId);
-            const active = await t
-              .selectFrom("authSessions")
-              .select("id")
-              .where("id", "=", session.id)
-              .where("userId", "=", actor.userId)
-              .where("memberGeneration", "=", member.generation)
-              .where("expiresAt", ">", new Date())
-              .executeTakeFirst();
-            requireTeam(active);
-            await options.registerPreviewKey!(session, command);
-          });
-          return access.handoff(
-            revision,
-            () =>
-              options.database.transaction().execute(async (t) => {
-                await access.checkSession(t);
-                return true;
-              }),
-            () => ({
-              type: command.type,
-              installationId: command.installationId,
-              keyId: command.keyId,
-              registered: true,
-            }),
-          );
-        }
-        if (name === "commands.dispatch") {
-          const revision = access.revision;
-          const command = TeamCommandSchema.parse(raw);
-          const result = await dispatch(actor, command);
-          if (
-            typeof result === "object" &&
-            result !== null &&
-            Object.keys(result).length === 1 &&
-            "type" in result
-          )
-            return result;
-          return access.handoff(
-            revision,
-            () =>
-              options.database.transaction().execute(async (t) => {
-                await access.member(t, actor.userId);
-                if (command.type === "team.invite.create" || command.type === "team.invite.reset")
-                  await access.admin(t, actor);
-                let channelId = "channelId" in command ? command.channelId : undefined;
-                if (
-                  typeof result === "object" &&
-                  result !== null &&
-                  "channel" in result &&
-                  typeof result.channel === "object" &&
-                  result.channel !== null &&
-                  "id" in result.channel
-                )
-                  channelId = TeamChannelIdSchema.parse(result.channel.id);
-                return !channelId || (await access.channel(t, actor, channelId)).read;
-              }),
-            () => result,
-          );
-        }
-        for (;;) {
-          const revision = access.revision;
-          const result = await read(actor, name, raw);
-          if (revision === access.revision) return result;
-          await authenticate();
+      return withTeamPeerVersion(Number(headers.get(teamApiVersionHeader)), () =>
+        access.withHumanSession(session, async () => {
+          const actor: TeamActor = { kind: "human", userId: session.user.id };
           await options.database.transaction().execute((t) => access.member(t, actor.userId));
-        }
-      });
+          if (
+            name === "commands.dispatch" &&
+            typeof raw === "object" &&
+            raw !== null &&
+            "type" in raw &&
+            raw.type === "notification.preview.register"
+          ) {
+            const command = hostApi["commands.dispatch"].payload.parse(raw);
+            requireTeam(
+              command.type === "notification.preview.register" && options.registerPreviewKey,
+              "Preview registration unavailable",
+            );
+            const revision = access.revision;
+            await options.database.transaction().execute(async (t) => {
+              await t
+                .selectFrom("teamAccessState")
+                .select("revision")
+                .where("singletonKey", "=", "team")
+                .forShare()
+                .executeTakeFirstOrThrow();
+              const member = await access.member(t, actor.userId);
+              const active = await t
+                .selectFrom("authSessions")
+                .select("id")
+                .where("id", "=", session.id)
+                .where("userId", "=", actor.userId)
+                .where("memberGeneration", "=", member.generation)
+                .where("expiresAt", ">", new Date())
+                .executeTakeFirst();
+              requireTeam(active);
+              await options.registerPreviewKey!(session, command);
+            });
+            return access.handoff(
+              revision,
+              () =>
+                options.database.transaction().execute(async (t) => {
+                  await access.checkSession(t);
+                  return true;
+                }),
+              () => ({
+                type: command.type,
+                installationId: command.installationId,
+                keyId: command.keyId,
+                registered: true,
+              }),
+            );
+          }
+          if (name === "commands.dispatch") {
+            const revision = access.revision;
+            const command = TeamCommandSchema.parse(raw);
+            const result = await dispatch(actor, command);
+            if (
+              typeof result === "object" &&
+              result !== null &&
+              Object.keys(result).length === 1 &&
+              "type" in result
+            )
+              return result;
+            return access.handoff(
+              revision,
+              () =>
+                options.database.transaction().execute(async (t) => {
+                  await access.member(t, actor.userId);
+                  if (command.type === "team.invite.create" || command.type === "team.invite.reset")
+                    await access.admin(t, actor);
+                  let channelId = "channelId" in command ? command.channelId : undefined;
+                  if (
+                    typeof result === "object" &&
+                    result !== null &&
+                    "channel" in result &&
+                    typeof result.channel === "object" &&
+                    result.channel !== null &&
+                    "id" in result.channel
+                  )
+                    channelId = TeamChannelIdSchema.parse(result.channel.id);
+                  return !channelId || (await access.peerChannel(t, actor, channelId)).read;
+                }),
+              () => result,
+            );
+          }
+          for (;;) {
+            const revision = access.revision;
+            const result = await read(actor, name, raw);
+            if (revision === access.revision) return result;
+            await authenticate();
+            await options.database.transaction().execute((t) => access.member(t, actor.userId));
+          }
+        }),
+      );
     },
     dispatch,
     read,
@@ -648,8 +760,9 @@ export async function startTeamServices(options: TeamServiceOptions) {
       unsubscribe();
       unsubscribeRequests();
       unsubscribeMachine();
+      await shares?.close();
       realtime.close();
-      fileService.close();
+      await fileService.close();
       await Promise.all([pushing, maintaining]);
     },
   };

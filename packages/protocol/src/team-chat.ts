@@ -47,7 +47,9 @@ export const TeamFileSchema = z.strictObject({
 });
 export const TeamAgentRequestSchema = z.strictObject({
   id: TeamAgentRequestIdSchema,
-  kind: TeamAgentRequestKindSchema.default("self"),
+  kind: TeamAgentRequestKindSchema,
+  pendingRemote: z.boolean().optional(),
+  askRefusal: z.enum(["people-only", "no-access", "no-link", "rate-limited"]).nullable().optional(),
   consentExpiresAt: IsoDateTimeSchema.nullable().default(null),
   ownerUserId: UserIdSchema,
   channelId: TeamChannelIdSchema,
@@ -73,7 +75,27 @@ export const TeamAgentRequestSchema = z.strictObject({
   changeSeq: SequenceSchema,
 });
 export type TeamAgentRequest = z.infer<typeof TeamAgentRequestSchema>;
+export const TeamRemotePeopleSchema = z.record(
+  UserIdSchema,
+  z.object({
+    name: z.string().min(1).max(160),
+    handle: TeamHandleSchema,
+    homeTeamName: z.string().min(1).max(160),
+    external: z.literal(true),
+  }),
+);
+export const TeamChannelShareSchema = z.object({
+  viewerHandle: TeamHandleSchema.optional(),
+  shareId: z.uuid().optional(),
+  agentsEnabled: z.boolean().optional(),
+  updateRequired: z.boolean().optional(),
+  state: z.enum(["shared", "disconnected"]),
+  role: z.enum(["owner", "follower"]),
+  teamId: DeploymentIdSchema,
+  teamName: z.string().min(1).max(160),
+});
 export const TeamChannelSummarySchema = z.strictObject({
+  share: TeamChannelShareSchema.optional(),
   id: TeamChannelIdSchema,
   kind: TeamChannelKindSchema,
   name: z.string().min(1).max(160),
@@ -120,6 +142,7 @@ export const TeamPageDirectionSchema = z.discriminatedUnion("direction", [
   z.strictObject({ direction: z.literal("after"), messageId: TeamMessageIdSchema }),
 ]);
 export const TeamMessagePageSchema = z.strictObject({
+  people: TeamRemotePeopleSchema.optional(),
   messages: z.array(TeamMessageSchema).max(teamPageSize),
   hasMore: z.boolean(),
   throughSeq: SequenceSchema,
@@ -145,6 +168,7 @@ export const TeamAgentRecipientSchema = z.strictObject({
 });
 export type TeamAgentRecipient = z.infer<typeof TeamAgentRecipientSchema>;
 const cutShape = {
+  people: TeamRemotePeopleSchema.optional(),
   agentRecipients: z.array(TeamAgentRecipientSchema).max(200).default([]),
   linkPresence: z.array(TeamLinkPresenceSchema).max(200),
   subscriptionId: z.string().min(1).max(128),
@@ -217,6 +241,7 @@ export const TeamSearchInputSchema = z.strictObject({
   before: TeamMessageIdSchema.optional(),
 });
 export const TeamSearchPageSchema = z.strictObject({
+  people: TeamRemotePeopleSchema.optional(),
   results: z
     .array(z.strictObject({ message: TeamMessageSchema, source: TeamSourceSchema }))
     .max(50),

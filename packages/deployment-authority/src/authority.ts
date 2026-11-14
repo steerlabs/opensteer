@@ -46,7 +46,8 @@ export const hostApiVersion = 57;
  * compatibility policy in docs/teams.md before changing either; the wire
  * snapshot test refuses a breaking schema change without a bump.
  */
-export const teamApiVersion = 5;
+// Shared work requires version 6; unshared teams still serve explicit-kind version 5 peers.
+export const teamApiVersion = 6;
 export const minimumTeamApiVersion = 5;
 export const teamOAuthVersionParameter = "opensteer_team_api_version";
 export const teamOidcStatePrefix = "ost-team-api-";
@@ -107,6 +108,9 @@ export const teamApiVersionRefusal = `Update Opensteer: this team server needs t
  * advertise capabilities an older client has never heard of.
  */
 export const HostCapabilitySchema = z.enum([
+  "team-partner-links-v1",
+  "team-shared-channels-v1",
+  "team-shared-agents-v1",
   /** Device setup and switches, plus explicit opt-in to device-access Request reads. */
   "devices-v1",
   "automatic-models-v1",

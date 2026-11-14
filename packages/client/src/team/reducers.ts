@@ -21,6 +21,7 @@ export interface TeamTimeline {
   readonly scope: TeamScope;
   readonly throughSeq: Sequence | null;
   readonly channel: TeamPage["channel"] | null;
+  readonly people?: NonNullable<TeamPage["people"]>;
   readonly messages: readonly TeamMessage[];
   readonly anchorId: TeamMessage["id"] | null;
   readonly requests: readonly TeamAgentRequest[];
@@ -145,6 +146,7 @@ export function reduceTeamCut(state: TeamTimeline, input: TeamConsistentCut): Te
   return {
     ...state,
     channel: cut.channel,
+    ...(cut.people ? { people: { ...state.people, ...cut.people } } : {}),
     messages: ordered(messages.values(), state.scope, false, state.anchorId),
     requests: [...requests.values()].slice(-200),
     throughSeq: cut.throughSeq,
@@ -178,6 +180,7 @@ export function reduceTeamPage(
       state.throughSeq === null || compareSequence(page.throughSeq, state.throughSeq) >= 0
         ? page.channel
         : state.channel,
+    ...(page.people ? { people: { ...state.people, ...page.people } } : {}),
     messages: ordered(rows.values(), state.scope, direction === "before", state.anchorId),
     hasMore: page.hasMore,
   };

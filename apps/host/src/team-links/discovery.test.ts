@@ -93,5 +93,6 @@ describe("team discovery and route pinning", () => {
     "8.8.8.8",
   ])("allows the approved team's exact private or public route %s", (address) => {
     expect(allowedTeamAddress(address)).toBe(true);
+    expect(allowedTeamAddress(address, true)).toBe(address === "8.8.8.8");
   });
 });

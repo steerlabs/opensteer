@@ -2,6 +2,12 @@ import { sql, type Kysely } from "kysely";
 import { Migrator, type MigrationProvider, type MigrationResultSet } from "kysely/migration";
 import { migrateTeamAgentAsks } from "./team-agent-asks-migration.js";
 import { migrateTeamAgents } from "./team-agent-migration.js";
+import { migrateTeamSharedAgents } from "./team-shared-agents-migration.js";
+import { migrateTeamChannelShares } from "./team-shares-migration.js";
+import { migrateTeamShareFiles } from "./team-share-files-migration.js";
+import { migrateTeamShareFileCache } from "./team-share-file-cache-migration.js";
+import { migrateTeamPartnerLinks } from "./team-partner-links-migration.js";
+import { migrateTeamPrincipals } from "./team-principals-migration.js";
 import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
 import { TEAM_KNOWLEDGE_NOTES_SQL } from "./team-knowledge-schema.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -23,6 +29,8 @@ export const threadVisitsMigrationName = "0004_thread_visits";
 export const teamKnowledgeNotesMigrationName = "0006_team_knowledge_notes";
 export const teamAgentMigrationName = "0011_team_agent_contracts";
 export const teamAgentAsksMigrationName = "0012_team_agent_asks";
+export const teamPrincipalsMigrationName = "0015_team_principals";
+export const teamPartnerLinksMigrationName = "0016_team_partner_links";
 export function migrationProvider(): MigrationProvider {
   return {
     async getMigrations() {
@@ -168,6 +176,20 @@ export function migrationProvider(): MigrationProvider {
                 thread_id, (maintenance->>'providerSessionId'), (maintenance->>'sourceRunId')
               ) where maintenance is not null;
             `.execute(database);
+          },
+        },
+        [teamPrincipalsMigrationName]: { up: migrateTeamPrincipals },
+        [teamPartnerLinksMigrationName]: { up: migrateTeamPartnerLinks },
+        "0017_team_channel_shares": { up: migrateTeamChannelShares },
+        "0018_team_share_files": { up: migrateTeamShareFiles },
+        "0019_team_shared_agents": { up: migrateTeamSharedAgents },
+        "0020_team_share_file_cache": { up: migrateTeamShareFileCache },
+        "0021_team_share_relay_policy": {
+          async up(database) {
+            await sql`alter table team_shares add column policy_revision bigint not null default 0;
+              alter table team_share_relays add column pending_bodies text[] not null default '{}'`.execute(
+              database,
+            );
           },
         },
       };

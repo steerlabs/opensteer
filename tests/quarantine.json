@@ -665,5 +665,23 @@
       "Fails on main: at 36aab700e (with only the benchmark's missing Host API version on its viewer sockets corrected, without which neither socket is admitted) the full matrix failed 2 of 3 runs, and failed the same way with the agent-tabs change. Command: OPENSTEER_LOCK_ORDER_MODE=enforce OPENSTEER_BROWSER_STREAM_BENCH={\"profile\":\"all\",\"scenario\":\"all\",\"runs\":1,\"duration\":4} pnpm test:integration -- --config scripts/browser-stream.vitest.config.ts tests/browser-stream.bench.ts. One failure reported weak-cell/article-scroll presenting 2868 of the expected final 2880 pixels with one unmatched wheel input and zero rejections; a lone weak-cell/article-scroll run passed.",
       "Root cause unproved. Determine whether the last wheel input or its final picture is lost under the full matrix, keep the zero-unmatched and final-pixel assertions and existing deadlines, add deterministic coverage at the responsible layer, and qualify every link/scenario combination before resolving."
     ]
+  },
+  {
+    "file": "apps/host/src/browser/browser-sign-in-tool.integration.test.ts",
+    "name": [
+      "agent login authorization across authority and browser streams",
+      "keeps sessionful use_saved_login and origin-fill admission while the personal lease outlives a browser"
+    ],
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-11-14T08:10:00Z",
+    "deadline": "2026-11-21T00:00:00Z",
+    "sha": null,
+    "evidence": [
+      "The case takes 26.8-29.4 s of its 30 s budget on green main CI and about 20 s locally, and timed out at 32.6-33.6 s in three PR #596 runs (43575596695, 43603283226, 43604586505); no assertion failed.",
+      "Per-phase timing locally: 15 of the 20 s are two fixed waits. (1) browser-close-keeps-lease: closeAgentSession takes 5.0 s because the fake runtime in browser-runtime.test-support.ts ignores browser.close, so the Host waits out waitForSocketClose's 5 s deadline; the real runtime answers browser.closed at once. Answering it there drops the case to ~15 s but makes browser-presence's 'patches viewers with page and acting changes' case fail every time, so the fixture and that case must change together. (2) exact-tab-request: the decline RPC takes 10.0 s because PasswordSignInService.#decline waits declineAnswerMs (10 s) for a settlement after the authority has already answered login.cancelled; the desktop authority emits nothing after that reply, so a person's Decline also takes ~10 s in production.",
+      "Acceptance: settle a decline when the authority answers login.cancelled (a product change to password sign-in, which needs maintainer approval), and have the fake runtime answer browser.close with browser-presence updated to match. The case should then finish well inside 30 s with its lease, sessionful reuse and origin-fill assertions unchanged and no longer timeout."
+    ]
   }
 ]

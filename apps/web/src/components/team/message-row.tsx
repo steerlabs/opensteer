@@ -103,6 +103,11 @@ export const MessageRow = memo(function MessageRow({
         {grouped ? null : (
           <header className="tmsg__head">
             <span className="tmsg__name">{authorName(author)}</span>
+            {(author.kind === "person" ? author.person : author.owner).externalTeam ? (
+              <span className="team-external">
+                External · {(author.kind === "person" ? author.person : author.owner).externalTeam}
+              </span>
+            ) : null}
             <time className="tmsg__time" dateTime={message.at}>
               {message.send?.kind === "sending" ? "Sending…" : clockTime(message.at)}
             </time>
@@ -131,9 +136,12 @@ export const MessageRow = memo(function MessageRow({
           <p className="tmsg__state">
             <Icon name="clock" /> Waiting for connection · sends when you’re back
           </p>
-        ) : message.send?.kind === "failed" ? (
+        ) : message.send?.kind === "failed" || message.send?.kind === "retryable" ? (
           <p className="tmsg__state tmsg__state--failed" role="alert">
-            <Icon name="alert-circle" /> Not sent: {message.send.reason}
+            <Icon name="alert-circle" />{" "}
+            {message.send.kind === "retryable"
+              ? message.send.reason
+              : `Not sent: ${message.send.reason}`}
             {message.canEdit && actions.onEdit && !editing ? (
               <button onClick={() => onEditingChange?.(message.id, true)} type="button">
                 Edit

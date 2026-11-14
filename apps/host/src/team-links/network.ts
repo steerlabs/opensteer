@@ -33,9 +33,10 @@ const metadataAddresses = new BlockList();
 metadataAddresses.addAddress("100.100.100.200", "ipv4");
 metadataAddresses.addAddress("fd00:ec2::254", "ipv6");
 
-export function allowedTeamAddress(address: string): boolean {
+export function allowedTeamAddress(address: string, publicOnly = false): boolean {
   const family = isIP(address);
   if (family && metadataAddresses.check(address, family === 4 ? "ipv4" : "ipv6")) return false;
+  if (publicOnly) return isPublicIp(address);
   return (
     isPublicIp(address) ||
     (family !== 0 && privateAddresses.check(address, family === 4 ? "ipv4" : "ipv6"))
@@ -43,11 +44,19 @@ export function allowedTeamAddress(address: string): boolean {
 }
 
 export class TeamLinkNetwork {
+  readonly publicOnly: () => Promise<boolean>;
+  constructor(publicOnly: () => Promise<boolean> = async () => false) {
+    this.publicOnly = publicOnly;
+  }
   async #route(origin: string) {
     const url = new URL(TeamOriginSchema.parse(origin));
     const hostname = url.hostname.replace(/^\[|\]$/g, "");
     const addresses = await lookup(hostname, { all: true, verbatim: true });
-    if (!addresses.length || addresses.some((item) => !allowedTeamAddress(item.address)))
+    const publicOnly = await this.publicOnly();
+    if (
+      !addresses.length ||
+      addresses.some((item) => !allowedTeamAddress(item.address, publicOnly))
+    )
       throw linkError();
     const address = addresses[0]!;
     return { url, address, hostname };
@@ -165,17 +174,28 @@ export class TeamLinkNetwork {
   }
 
   async connect(origin: string, secret: string, signal: AbortSignal): Promise<WebSocket> {
+    return this.connectSocket(origin, teamLinkRoutes.socket, signal, {
+      authorization: `Bearer ${secret}`,
+      [teamApiVersionHeader]: String(teamApiVersion),
+    });
+  }
+
+  async connectSocket(
+    origin: string,
+    path: string,
+    signal: AbortSignal,
+    headers: Readonly<Record<string, string>> = {},
+  ): Promise<WebSocket> {
+    if (!path.startsWith("/") || path.startsWith("//") || path.includes("?") || path.includes("#"))
+      throw linkError("bad_request");
     const { url, address } = await this.#route(origin);
-    const target = new URL(teamLinkRoutes.socket, url);
+    const target = new URL(path, url);
     target.protocol = "wss:";
     const socket = new WebSocket(target, {
       followRedirects: false,
       handshakeTimeout: 10_000,
       maxPayload: teamLinkMaxFrameBytes,
-      headers: {
-        authorization: `Bearer ${secret}`,
-        [teamApiVersionHeader]: String(teamApiVersion),
-      },
+      headers,
       lookup: (_hostname, options, callback) => {
         if (options.all) callback(null, [{ address: address.address, family: address.family }]);
         else callback(null, address.address, address.family);

@@ -10,6 +10,7 @@ import {
   teamKnowledgeNotesMigrationName,
   teamAgentMigrationName,
   teamAgentAsksMigrationName,
+  teamPrincipalsMigrationName,
 } from "./migrations.js";
 import type { DatabaseSchema } from "./schema.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
@@ -48,6 +49,9 @@ async function catalog() {
   ).rows;
 }
 async function team() {
+  await sql`insert into deployments(id,singleton_key,active_host_instance_id,canonical_origin,lifecycle,deployment_shape)
+    values(${createId("deployment")},'primary',${createId("hostInstance")},'https://team.example.invalid','active','{"kind":"team"}')
+    on conflict(singleton_key) do nothing`.execute(database);
   const owner = createId("user");
   const channel = createId("teamChannel");
   const other = createId("teamChannel");
@@ -137,6 +141,97 @@ async function legacyQueuedInput(input: {
 }
 
 describe("fresh personal/team lineage", () => {
+  it("preserves existing uploaded bytes and assigns partner-safe identities when adding shared files", async () => {
+    await migrateToLatest(database, migrationsBefore("0018_team_share_files"));
+    const { owner, channel, other } = await team();
+    const id = createId("teamBlob");
+    await sql`insert into team_blobs(id,channel_id,uploader_user_id,uploader_kind,client_upload_id,storage_key,filename,declared_type,verified_type,size_bytes,sha256,state,received_bytes)
+      values(${id},${channel},${owner},'human',${crypto.randomUUID()},${id},'notes.txt','text/plain','text/plain',3,${"a".repeat(64)},'ready',3)`.execute(
+      database,
+    );
+    await migrateToLatest(database);
+    const row = await database
+      .selectFrom("teamBlobs")
+      .selectAll()
+      .where("id", "=", id)
+      .executeTakeFirstOrThrow();
+    expect(row).toMatchObject({
+      storageKey: id,
+      channelId: channel,
+      remoteShareId: null,
+      previewSha256: null,
+      cacheOriginalReserved: false,
+      cachePreviewReserved: false,
+      sizeBytes: "3",
+    });
+    expect(row.publicId).toMatch(/^[a-f0-9-]{36}$/);
+    await database
+      .insertInto("teamBlobs")
+      .values({ ...row, id: createId("teamBlob"), channelId: other })
+      .execute();
+    expect(
+      await database
+        .selectFrom("teamBlobs")
+        .select("storageKey")
+        .where("storageKey", "=", id)
+        .execute(),
+    ).toHaveLength(2);
+  });
+  it("backfills principals for active and removed members without changing content ids", async () => {
+    await migrateToLatest(database, migrationsBefore(teamPrincipalsMigrationName));
+    const { owner, channel } = await team();
+    const removed = createId("user");
+    await sql`insert into users(id,display_name,email,email_verified) values(${removed},'Former','former@example.invalid',true)`.execute(
+      database,
+    );
+    await sql`insert into team_members(user_id,handle,role,state) values(${removed},'former','member','removed')`.execute(
+      database,
+    );
+    const id = await message(channel, removed);
+    await sql`insert into team_mentions(message_id,channel_id,target_user_id,target_kind) values(${id},${channel},${owner},'person')`.execute(
+      database,
+    );
+    await sql`insert into team_message_pins(message_id,channel_id,pinned_by) values(${id},${channel},${removed})`.execute(
+      database,
+    );
+    const before = await database.selectFrom("teamMessages").selectAll().execute();
+    await migrateToLatest(database);
+    const after = await database.selectFrom("teamMessages").selectAll().execute();
+    expect(
+      after.map(
+        ({
+          publicId: _publicId,
+          createdSeq: _createdSeq,
+          ownerChangeSeq: _ownerChangeSeq,
+          ...original
+        }) => original,
+      ),
+    ).toEqual(before);
+    expect(
+      after.map((row) => ({ createdSeq: row.createdSeq, ownerChangeSeq: row.ownerChangeSeq })),
+    ).toEqual([{ createdSeq: "1", ownerChangeSeq: null }]);
+    expect(after[0]!.publicId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+    expect(
+      (
+        await database
+          .selectFrom("teamPrincipals")
+          .select(["id", "memberUserId", "displayName", "handle"])
+          .execute()
+      ).sort((a, b) => a.id.localeCompare(b.id)),
+    ).toEqual(
+      [owner, removed]
+        .sort()
+        .map((userId) => ({ id: userId, memberUserId: userId, displayName: null, handle: null })),
+    );
+    expect(await database.selectFrom("teamMentions").select("targetUserId").execute()).toEqual([
+      { targetUserId: owner },
+    ]);
+    expect(await database.selectFrom("teamMessagePins").select("pinnedBy").execute()).toEqual([
+      { pinnedBy: removed },
+    ]);
+  });
   it("backfills self requests and preserves their execution and publication receipts", async () => {
     await migrateToLatest(database, migrationsBefore(teamAgentAsksMigrationName));
     const { userId } = await seedPersonalFixture(database, "/tmp/ws0-asks-agent-home");
