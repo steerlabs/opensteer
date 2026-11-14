@@ -1145,10 +1145,10 @@ class Viewer {
   readonly #closed: Promise<void>;
   #surface: BrowserViewerSurface | null = null;
 
-  private constructor(
-    socket: WebSocket,
-    readonly surfaceId: string,
-  ) {
+  readonly surfaceId: string;
+
+  private constructor(socket: WebSocket, surfaceId: string) {
+    this.surfaceId = surfaceId;
     this.#socket = socket;
     this.#closed = new Promise((done) => socket.once("close", () => done()));
     socket.on("message", (data: WebSocket.RawData, isBinary: boolean) => {
