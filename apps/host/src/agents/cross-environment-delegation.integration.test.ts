@@ -1631,7 +1631,7 @@ integration("personal task delegation lifecycle", () => {
         },
         threadId: (await readToolRecords(store, first)).thread.id,
       }),
-    ).rejects.toThrow(/Assignment/u);
+    ).rejects.toThrow(/Source delegation is finished/u);
     const secondWorker = await activateRun(fixture, (await readToolRecords(store, second)).run!.id);
     await reply(secondWorker, "Second result");
     await end(secondWorker, "completed");
@@ -1989,7 +1989,7 @@ integration("personal task delegation lifecycle", () => {
       }),
     ).rejects.toThrow(
       new RegExp(
-        `task ${task.delegationId}.*opensteer_task_send.*opensteer_delegation_cancel`,
+        `delegation ${task.delegationId}.*opensteer_task_send.*opensteer_delegation_cancel`,
         "u",
       ),
     );
