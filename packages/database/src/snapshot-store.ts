@@ -1,4 +1,4 @@
-import { compactionReturnHint } from "./compaction-eligibility.js";
+import { compactionReturnHint, compactionReturnHints } from "./compaction-eligibility.js";
 import { deploymentEventsAfter } from "./deployment-events.js";
 import { needsYouPage } from "./needs-you-store.js";
 import { personalSettings } from "./personal-settings-store.js";
@@ -324,13 +324,16 @@ export async function deploymentSnapshot(
           .$if(options.listedOnly === true, (query) => query.where("listed", "=", true))
           .executeTakeFirstOrThrow(),
       ]);
+      const hintRows = threadRows.slice(0, maxThreads);
+      const returnHints = await compactionReturnHints(
+        transaction,
+        hintRows.map(({ id }) => id),
+      );
       const threads = boundedSerializedPrefix(
-        await Promise.all(
-          threadsFromRows(threadRows.slice(0, maxThreads)).map(async (thread) => ({
-            ...thread,
-            returnHint: await compactionReturnHint(transaction, thread.id),
-          })),
-        ),
+        threadsFromRows(hintRows).map((thread) => ({
+          ...thread,
+          returnHint: returnHints.get(thread.id) ?? null,
+        })),
         maxThreads,
         Math.min(192 * 1_024, maxSerializedBytes),
       );
@@ -567,12 +570,15 @@ export async function taskPageForUser(
           .execute(),
         tasks.select(({ fn }) => fn.countAll<string>().as("count")).executeTakeFirstOrThrow(),
       ]);
-      const threads = await Promise.all(
-        threadsFromRows(rows.slice(0, maxItems)).map(async (thread) => ({
-          ...thread,
-          returnHint: await compactionReturnHint(transaction, thread.id),
-        })),
+      const hintRows = rows.slice(0, maxItems);
+      const returnHints = await compactionReturnHints(
+        transaction,
+        hintRows.map(({ id }) => id),
       );
+      const threads = threadsFromRows(hintRows).map((thread) => ({
+        ...thread,
+        returnHint: returnHints.get(thread.id) ?? null,
+      }));
       const lines = await taskLines(
         transaction,
         threads.map(({ id }) => id),

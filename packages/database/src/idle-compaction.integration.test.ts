@@ -1,5 +1,9 @@
 import { projectThreadState } from "./thread-status.js";
-import { compactionIsEligible, compactionReturnHint } from "./compaction-eligibility.js";
+import {
+  compactionIsEligible,
+  compactionReturnHint,
+  compactionReturnHints,
+} from "./compaction-eligibility.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { finalizeRunTransaction } from "./run-finalization.js";
 import { threadPathLinks, jsonValue } from "./store-primitives.js";
@@ -17,6 +21,46 @@ import {
 } from "./store.integration.test-support.js";
 
 describeStore("Claude compaction persistence", (it) => {
+  it("batches return hints identically for a mixed task page", async ({ storeFixture }) => {
+    const { database, thread, createRunFixture } = await compactionFixture(storeFixture);
+    const { thread: other } = await createRunFixture("no-context");
+    const original = await database
+      .selectFrom("threads")
+      .selectAll()
+      .where("id", "=", thread.id)
+      .executeTakeFirstOrThrow();
+    const session = await database
+      .selectFrom("providerSessions")
+      .selectAll()
+      .where("threadId", "=", thread.id)
+      .where("active", "=", true)
+      .executeTakeFirstOrThrow();
+    const archivedId = createId("thread");
+    await database
+      .insertInto("threads")
+      .values({ ...original, id: archivedId, status: "archived" })
+      .execute();
+    await database
+      .insertInto("providerSessions")
+      .values({ ...session, id: createId("providerSession"), threadId: archivedId })
+      .execute();
+    const ids = [thread.id, other.id, archivedId];
+    for (const paused of [false, true]) {
+      await database
+        .updateTable("threads")
+        .set({ inputQueuePaused: paused })
+        .where("id", "=", thread.id)
+        .execute();
+      const expected = await Promise.all(
+        ids.map(async (id) => [id, await compactionReturnHint(database, id)] as const),
+      );
+      const queries = vi.spyOn(database.getExecutor(), "executeQuery");
+      const hints = await compactionReturnHints(database, ids);
+      expect(queries.mock.calls.length).toBe(1);
+      queries.mockRestore();
+      for (const [id, hint] of expected) expect(hints.get(id) ?? null).toEqual(hint);
+    }
+  });
   it("persists the owner's policy and refuses another person", async ({ storeFixture }) => {
     const { store, database, createRunFixture } = storeFixture;
     const { userId } = await createRunFixture("compaction-policy");
@@ -555,6 +599,7 @@ describeStore("Claude compaction persistence", (it) => {
         data: { status: "running" },
       }),
     });
+    expect(await store.getThreadForOwner(thread.id, userId)).toMatchObject({ status: "idle" });
     await store.enqueueRunnerControl({
       type: "run.interrupt",
       threadId: thread.id,

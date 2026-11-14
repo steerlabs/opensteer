@@ -297,6 +297,7 @@ export interface TaskListState {
 }
 
 export interface RunQueueEntry {
+  maintenance?: Run["maintenance"];
   createdAt: string;
   id: string;
   status: "queued" | "starting" | "running" | "waiting";

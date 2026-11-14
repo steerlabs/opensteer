@@ -1,3 +1,4 @@
+import { lockThreadProviderSessions } from "./run-projection-locks.js";
 import { markThreadStatePending } from "./thread-state-pending.js";
 import { compactionReturnHint } from "./compaction-eligibility.js";
 import { projectDeviceAccessAssignment } from "@opensteer/protocol";
@@ -134,6 +135,7 @@ import {
   drainAssignmentReturn as drainAssignmentReturnInStore,
   ensureQueuedRun,
   enqueueThreadInputInTransaction,
+  lockThreadInputIdempotency,
   steerThreadInputInTransaction,
   cancelThreadInputInTransaction,
   moveThreadInputInTransaction,
@@ -1400,13 +1402,9 @@ export async function updateThreadExecutionSelection(
       });
     }
     const selected =
-      (await transaction
-        .selectFrom("providerSessions")
-        .selectAll()
-        .where("threadId", "=", thread.id)
-        .where("active", "=", true)
-        .forNoKeyUpdate()
-        .executeTakeFirst()) ?? null;
+      (await lockThreadProviderSessions(transaction, thread.id)).find(
+        (session) => session.active,
+      ) ?? null;
     const compatible =
       selected !== null &&
       (selected.continuationIdentity
@@ -2155,7 +2153,7 @@ export async function enqueueThreadInput(
   input: EnqueueThreadInputRequest,
 ): Promise<EnqueuedThreadInput> {
   return withPersonalTransaction(database, async (transaction) => {
-    await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
+    await lockThreadInputIdempotency(transaction, input);
     await lockThreadCaller(transaction, input.authority);
     const result = await enqueueThreadInputInTransaction(transaction, input);
     await assertThreadCaller(transaction, input.authority, {

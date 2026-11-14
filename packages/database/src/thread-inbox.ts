@@ -2137,6 +2137,7 @@ async function lockThreadInputPreconditions(
     .select("id")
     .where("threadId", "=", input.threadId)
     .where("status", "in", nonTerminalRunStatuses)
+    .where((eb) => eb.or([eb("status", "=", "running"), eb("maintenance", "is not", null)]))
     .executeTakeFirst();
   const sourceRunId =
     input.source.kind === "agent"
@@ -2500,6 +2501,22 @@ export function cancelSettledTaskQuestionNotice(
     return events;
   });
 }
+export async function lockThreadInputIdempotency(
+  transaction: Transaction<DatabaseSchema>,
+  request: Pick<
+    EnqueueThreadInputRequest,
+    "requestedBy" | "idempotencyKey" | "compaction" | "source"
+  >,
+): Promise<void> {
+  const idempotencyKeys = [request.idempotencyKey];
+  if (request.compaction === "compactFirst" && request.source.kind === "human")
+    idempotencyKeys.push(
+      `compact-send:${createHash("sha256").update(request.idempotencyKey).digest("hex")}`,
+    );
+  for (const key of idempotencyKeys.sort())
+    await lockCommandIdempotency(transaction, request.requestedBy, key);
+}
+
 export async function enqueueThreadInputInTransaction(
   transaction: Transaction<DatabaseSchema>,
   request: EnqueueThreadInputRequest,
@@ -2562,7 +2579,7 @@ export async function enqueueThreadInputInTransaction(
       "utf8",
     )
     .digest("base64url");
-  await lockCommandIdempotency(transaction, request.requestedBy, request.idempotencyKey);
+  await lockThreadInputIdempotency(transaction, request);
   const existing = await transaction
     .selectFrom("threadInputs")
     .selectAll()
@@ -2575,12 +2592,6 @@ export async function enqueueThreadInputInTransaction(
     }
     return replayThreadInput(transaction, existing);
   }
-  if (request.compaction === "compactFirst" && request.source.kind === "human")
-    await lockCommandIdempotency(
-      transaction,
-      request.requestedBy,
-      `compact-send:${createHash("sha256").update(request.idempotencyKey).digest("hex")}`,
-    );
   const preconditions = prepared ?? (await lockThreadInputPreconditions(transaction, request));
   const { executionValid, prelockedActiveRunId } = preconditions;
   let thread = preconditions.thread;

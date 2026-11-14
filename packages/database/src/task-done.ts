@@ -387,6 +387,7 @@ export async function setThreadDone(
                 .set({
                   doneAt: null,
                   doneReason: null,
+                  updatedAt: now,
                 })
                 .where("id", "=", row.id)
                 .execute();

@@ -330,6 +330,8 @@ describeStore("PostgreSQL store", (it) => {
           expect.objectContaining({
             type: "thread.state-changed",
             data: {
+              updatedAt: expect.any(String),
+              returnHint: null,
               latestRunCompletedAt: null,
               pendingRequests: 1,
               inputQueuePaused: true,
@@ -625,6 +627,8 @@ describeStore("PostgreSQL store", (it) => {
         .executeTakeFirstOrThrow();
       expect(stored.map(({ data }) => data)).toEqual([
         {
+          updatedAt: expect.any(String),
+          returnHint: null,
           latestRunCompletedAt: null,
           status: "running",
           inputQueuePaused: false,
@@ -635,6 +639,8 @@ describeStore("PostgreSQL store", (it) => {
           doneReason: null,
         },
         {
+          updatedAt: expect.any(String),
+          returnHint: null,
           latestRunCompletedAt: completed.completedAt!.toISOString(),
           status: "idle",
           inputQueuePaused: true,
@@ -645,6 +651,8 @@ describeStore("PostgreSQL store", (it) => {
           doneReason: null,
         },
         {
+          updatedAt: expect.any(String),
+          returnHint: null,
           latestRunCompletedAt: null,
           status: "running",
           inputQueuePaused: false,

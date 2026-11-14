@@ -357,6 +357,16 @@ export async function confirmRunnerRegistration(
   return false;
 }
 
+export function runnerAttachedReaction(
+  wake: () => void,
+  reconcile: () => Promise<void>,
+): () => Promise<void> {
+  return async () => {
+    wake();
+    await reconcile();
+  };
+}
+
 export function runnerRegistrationHook<T>(
   wake: (identity: T) => void,
   afterRegistration: (identity: T) => Promise<void>,
@@ -1735,7 +1745,10 @@ export async function createHostRuntime(
           for (const execution of attached.resumed) liveRuns.track(execution);
           return attached.results;
         },
-        onAttached: async () => wakeExecutionCoordinator(),
+        onAttached: runnerAttachedReaction(
+          wakeExecutionCoordinator,
+          () => idleCompactionService?.reconcile() ?? Promise.resolve(),
+        ),
         onHarnessInstallation: async () => {
           notifyMachinesChanged(realtime, "harness.update");
         },

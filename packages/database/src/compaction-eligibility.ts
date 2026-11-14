@@ -7,7 +7,7 @@ import {
   type RunMaintenance,
   type ThreadId,
 } from "@opensteer/core";
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
 export async function compactionIsEligible(
@@ -184,4 +184,73 @@ export async function compactionReturnHint(
     sourceRunId: snapshot.sourceRunId,
     sessionRevision: `${session.id}:${snapshot.bindingGeneration}:${snapshot.ordinal}`,
   };
+}
+
+export async function compactionReturnHints(
+  database: Kysely<DatabaseSchema>,
+  threadIds: readonly ThreadId[],
+): Promise<ReadonlyMap<ThreadId, CompactionReturnHint>> {
+  if (threadIds.length === 0) return new Map();
+  const rows = await database
+    .selectFrom("providerSessions as session")
+    .innerJoin("threads as thread", "thread.id", "session.threadId")
+    .leftJoin("harnessInstances as harness", "harness.id", "thread.harnessInstanceId")
+    .leftJoin("executionEnvironments as environment", "environment.id", "thread.environmentId")
+    .leftJoin("runners as runner", "runner.id", "environment.runnerId")
+    .leftJoin("runs as source", (join) =>
+      join.on("source.id", "=", sql<RunId>`session.context_snapshot->>'sourceRunId'`),
+    )
+    .select(["thread.id as threadId", "session.id", "session.contextSnapshot"])
+    .select(
+      sql<boolean>`coalesce(
+      thread.listed and thread.parent_thread_id is null and thread.team_id is null
+      and thread.purpose = 'task' and thread.status <> 'archived'
+      and thread.done_at is null and not thread.input_queue_paused
+      and exists (select 1 from personal_settings p where p.owner_id = thread.created_by
+        and p.idle_compaction_policy->>'mode' <> 'off')
+      and harness.enabled and harness.driver_kind = 'claude'
+      and length(session.provider_session_reference) > 0
+      and session.harness_instance_id = thread.harness_instance_id
+      and runner.revoked_at is null and runner.capabilities @> '["claude-compaction-v1"]'::jsonb
+      and not exists (select 1 from personal_team_requests r where r.local_task_id = thread.id)
+      and not exists (select 1 from delegations d where
+        (d.parent_thread_id = thread.id or d.child_thread_id = thread.id) and d.status = 'open')
+      and not exists (select 1 from execution_nodes n join runs r on r.id = n.run_id
+        where r.thread_id = thread.id and n.status = 'running')
+      and (session.context_snapshot->>'usedTokens')::bigint >= 200000
+      and source.thread_id = thread.id and source.status = 'completed'
+      and source.harness_instance_id = thread.harness_instance_id
+      and source.model_selection = thread.model_selection
+      and source.maintenance is null and source.voice_session_id is null
+      and source.assignment_id is null and source.reply_target is null
+      and source.provider_session_id = session.id
+      and not exists (select 1 from runs r where r.thread_id = thread.id
+        and (r.run_ordinal > source.run_ordinal or r.status in ('queued','starting','running','waiting')))
+      and thread.pending_request_count = 0
+      and not exists (select 1 from thread_inputs i where i.thread_id = thread.id
+        and i.state in ('pending','claimed','unknown')),
+      false)`.as("eligible"),
+    )
+    .where("thread.id", "in", threadIds)
+    .where("session.active", "=", true)
+    .where("session.contextSnapshot", "is not", null)
+    .execute();
+  return new Map(
+    rows.flatMap((row) => {
+      const snapshot = row.contextSnapshot;
+      return snapshot
+        ? [
+            [
+              row.threadId,
+              {
+                eligible: row.eligible,
+                eligibleAt: compactionReturnEligibleAt(snapshot),
+                sourceRunId: snapshot.sourceRunId,
+                sessionRevision: `${row.id}:${snapshot.bindingGeneration}:${snapshot.ordinal}`,
+              },
+            ] as const,
+          ]
+        : [];
+    }),
+  );
 }
