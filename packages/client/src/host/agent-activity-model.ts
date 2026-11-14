@@ -2077,7 +2077,7 @@ const opensteerSteps = new Map<string, OpensteerStep>([
   ],
   [
     "opensteer_task_update",
-    (tool, args) => {
+    (_tool, args) => {
       const done = isRecord(args) ? args["done"] : undefined;
       const [activeLabel, label]: StepWords =
         done === true
