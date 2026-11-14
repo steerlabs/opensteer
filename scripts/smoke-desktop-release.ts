@@ -15,6 +15,13 @@ import {
 } from "./smoke-desktop-release-command.js";
 import { descendantPids } from "./smoke-desktop-release-processes.js";
 import {
+  observerPythonFlags,
+  observerScript,
+  observerStartup,
+  probeObserverPython,
+  resolveObserverPython,
+} from "./smoke-desktop-release-python.js";
+import {
   assertEphemeralRunner,
   personalSelectionReady,
   personalSetupIntent,
@@ -151,6 +158,20 @@ async function waitForSelection(deploymentId: string, signal: AbortSignal): Prom
 }
 let exit: Promise<{ code: number | null; signal: NodeJS.Signals | null }> | undefined;
 try {
+  step = "observer interpreter preflight failed";
+  const python = await resolveObserverPython(process.env);
+  trace({ event: "observer.probe", output: await probeObserverPython(python, roots) });
+  function observe(args: string[]) {
+    return runCommand(
+      python,
+      [...observerPythonFlags, observerScript, ...args],
+      11_000,
+      roots,
+      trace,
+      observerStartup,
+    );
+  }
+  step = "preparing the isolated packaged app";
   const sourceExecutable = path.resolve(values.executable);
   const bundle = path.resolve(path.dirname(sourceExecutable), "../..");
   if (!bundle.endsWith(".app")) throw Error("Executable must be inside App.app/Contents/MacOS");
@@ -164,7 +185,6 @@ try {
     copy = path.join(scratch, path.basename(bundle));
     await command("/usr/bin/ditto", [bundle, copy], 20_000);
   }
-  const observer = path.join(import.meta.dirname, "smoke-desktop-release-observer.py");
   const [hostPort, postgresPort] = await bounded(
     "loopback ports could not be reserved",
     5_000,
@@ -223,7 +243,7 @@ try {
       throw Error("Host health was not OK");
   });
   await bounded("renderer never presented its loaded window", 12_000, () =>
-    command("/usr/bin/python3", [observer, "window", String(child.pid), "10"], 11_000),
+    observe(["window", String(child.pid), "10"]),
   );
   const output = (
     await Promise.all(
@@ -239,7 +259,7 @@ try {
   if (result.code !== 0 || result.signal !== null)
     throw Error(`Desktop quit unexpectedly: ${JSON.stringify(result)}`);
   await bounded("captured desktop children did not exit", 12_000, () =>
-    command("/usr/bin/python3", [observer, "exit", ...[...children].map(String)], 11_000),
+    observe(["exit", ...[...children].map(String)]),
   );
   passed = true;
 } catch (error) {

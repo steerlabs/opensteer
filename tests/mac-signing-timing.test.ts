@@ -15,6 +15,55 @@ const { traceCodesign } = require("../apps/desktop/scripts/codesign-timing.cjs")
     },
   ) => Promise<number>;
 };
+
+it("records notarization submit, acceptance and staple without credentials, output or altered status", async () => {
+  const { traceXcrun } = require("../apps/desktop/scripts/codesign-timing.cjs") as {
+    traceXcrun: (
+      args: readonly string[],
+      options: {
+        execute: (
+          command: string,
+          args: readonly string[],
+        ) => Promise<{ code: number; signal: string | null; stdout: string; stderr: string }>;
+        record: (event: Record<string, unknown>) => void;
+      },
+    ) => Promise<number>;
+  };
+  const events: Record<string, unknown>[] = [];
+  for (const [args, code, stdout] of [
+    [
+      ["notarytool", "submit", "/private/app.zip", "--key", "DO-NOT-RECORD", "--wait"],
+      0,
+      '{"status":"Accepted","id":"PRIVATE-ID"}',
+    ],
+    [["stapler", "staple", "/private/app"], 0, "PRIVATE-OUTPUT"],
+    [
+      ["notarytool", "submit", "/private/app.zip", "--password", "DO-NOT-RECORD"],
+      7,
+      "PRIVATE-OUTPUT",
+    ],
+  ] as const) {
+    expect(
+      await traceXcrun(args, {
+        execute: async (command: string, actual: readonly string[]) => {
+          expect(command).toBe("/usr/bin/xcrun");
+          expect(actual).toEqual(args);
+          return { code, signal: null, stdout, stderr: "PRIVATE-ERROR" };
+        },
+        record: (event: Record<string, unknown>) => events.push(event),
+      }),
+    ).toBe(code);
+  }
+  expect(events.map(({ phase, event }) => [phase, event])).toEqual([
+    ["package.notarize.submit", "start"],
+    ["package.notarize.submit", "accepted"],
+    ["package.notarize.staple", "start"],
+    ["package.notarize.staple", "complete"],
+    ["package.notarize.submit", "start"],
+    ["package.notarize.submit", "failed"],
+  ]);
+  expect(JSON.stringify(events)).not.toMatch(/PRIVATE|DO-NOT-RECORD|--key|--password/);
+});
 it("measures each signing call without changing security options, exit status or retaining credential arguments", async () => {
   const events: Record<string, unknown>[] = [];
   const args = [
@@ -67,6 +116,7 @@ it("requires diagnostic opt-in and removes the measurement shim after a packagin
       async (environment) => {
         shim = path.join(environment.PATH!.split(path.delimiter)[0]!, "codesign");
         await access(shim);
+        await access(path.join(path.dirname(shim), "xcrun"));
         throw Error("injected packaging failure");
       },
     ),

@@ -13,7 +13,7 @@ Account decides which teams exist; [apps/team-provisioner](../apps/team-provisio
 and makes the cluster match, so Account never holds cluster credentials. Account admits only a
 Google-signed ID token for `OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL` with its own public URL as
 audience, and offers no hosted teams without that setting. Turn it on in
-[account.env](../deploy/account/account.env) only after a Stable promotion has deployed the
+[account.env](../deploy/account/account.env) only after a published Beta has deployed the
 provisioner, or teams wait at `starting`. Also wait until every Account replica runs a release
 that refuses Account deletion while it holds a hosted team: an older replica deletes a creator's
 hosted teams with their Account, even teams other people now own.
@@ -92,11 +92,15 @@ writes to `team-*` namespaces. The release deployer can change only the provisio
 
 ## Releases
 
-Hosted teams follow Stable: publishing a Stable deploys the provisioner with that release's team
-image digests, and it moves teams one at a time. A team on the new release that is not ready holds
+Hosted teams follow Beta: publishing an insider deploys the provisioner with that release's team
+image digests. Stable promotion never redeploys hosted teams: it can reuse older images, and team
+database migrations are forward-only. The deploy refuses a source older than its recorded
+`opensteer.dev/source-revision`; reruns can finish the same source. The provisioner moves teams
+one at a time. A team on the new release that is not ready holds
 the rest and is reported failed after ten minutes; restarts a team asked for (a setup retry,
 suspension) are never held. The provisioner is Ready only after a whole reconcile pass succeeds, so a
-release that cannot reach Account or list teams is rolled back. The GHCR packages must be public,
+release that cannot reach Account or list teams fails its rollout and holds for a forward fix,
+without restoring older team images. The GHCR packages must be public,
 because the cluster pulls without credentials.
 
 ## Abuse
