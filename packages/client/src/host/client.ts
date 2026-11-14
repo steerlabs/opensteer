@@ -327,6 +327,11 @@ export interface MessageEntry {
   places?: readonly (ComputerAppContentPart | PhoneContentPart)[];
   body: string;
   createdAt: string;
+  /**
+   * Set once a person edited the message while it waited; the content above
+   * is already the edit. Its mark opens the history (`listMessageRevisions`).
+   */
+  edit?: MessageEdit;
   /** Why a sent message did not, or may not, reach the Run it was sent to. */
   delivery?: {
     reason: string;
@@ -1077,6 +1082,16 @@ export interface WaitingMessageEditor {
   cancel(): Promise<void>;
 }
 
+/** A person's answer to a teammate's ask; approval names the revision they saw. */
+export type TeamAskDecision =
+  | {
+      readonly decision: "approve";
+      readonly expectedRevision: number;
+      readonly requestId: string;
+      readonly teamId: string;
+    }
+  | { readonly decision: "decline"; readonly requestId: string; readonly teamId: string };
+
 export interface HostClient {
   readonly browserTabs: import("./browser-tab-store.js").BrowserTabStore;
   /**
@@ -1230,6 +1245,20 @@ export interface HostClient {
   ): Promise<WaitingMessageEditor>;
   /** Ends whichever device's edit lease holds a waiting message, so its queue can move. */
   releaseWaitingMessage(threadId: string, messageId: string): Promise<void>;
+  /**
+   * Whether this device holds that edit lease: an editor open here, rather
+   * than another device. Settled before the Host reports the take, so a
+   * queue read never shows this device's own edit as someone else's.
+   */
+  ownsEditLease(leaseId: string): boolean;
+  /**
+   * Answers a teammate's ask awaiting this person. Approving names the
+   * version of the task's copy the person saw (`WaitingAsk.revision`, or the
+   * Needs-you entry's `task.revision`); the Host refuses it with `conflict`
+   * if that copy changed since. Until the team confirms, the ask stays in
+   * its task as approving; a decline cancels it there.
+   */
+  decideTeamAsk(decision: TeamAskDecision): Promise<void>;
   /** One page of a message's versions, newest first. */
   listMessageRevisions(
     threadId: string,

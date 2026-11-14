@@ -209,8 +209,10 @@ function queuedItem(text: string): ThreadInputQueue["items"][number] {
   const messageId = createId("message");
   return {
     canCancel: true,
+    canEdit: true,
     canMove: true,
     canSteer: true,
+    lease: null,
     input: {
       teamRequestId: null,
       teamSource: null,

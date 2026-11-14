@@ -1,5 +1,10 @@
 import { AssetUrlStore, type AssetRoute } from "./asset-urls.js";
-import { needsYouEntryKey, refreshNeedsYou, settleTeamAsk } from "./needs-you.js";
+import { needsYouEntryKey, refreshNeedsYou } from "./needs-you.js";
+import {
+  isSettledInputMutationError,
+  openWaitingMessageEditor,
+  type WaitingMessageEditorPort,
+} from "./waiting-message-editor.js";
 import type { MachineSummary } from "@opensteer/protocol";
 import type { PersonalStreamCache, PersonalCacheScope } from "./personal-stream-cache.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -36,8 +41,10 @@ import { OwnerViewRecords } from "./owner-view-records.js";
 import { ViewerScope, viewerScopeOf } from "./viewer-scope.js";
 import {
   DeploymentIdSchema,
+  MessageIdSchema,
   RunnerIdSchema,
   ExecutionNodeIdSchema,
+  TeamAgentRequestIdSchema,
   nodeDetailEventNodeId,
   type QuietTaskDays,
   AgentEventViewSchema,
@@ -75,6 +82,7 @@ import {
   type ThreadVisit,
   type WaitingRequest,
   type IconName,
+  type MessageRevisionView,
 } from "@opensteer/core";
 import { hostApiVersion, apiVersionQueryParameter } from "@opensteer/deployment-authority";
 import {
@@ -124,6 +132,8 @@ import type {
   TranscriptEntry,
   PersonalTabActivationOptions,
   PersonalTabLineage,
+  TeamAskDecision,
+  WaitingMessageEditor,
 } from "./client.js";
 import { HostClientRequestError, isHostRefusal, mainDoneTasks } from "./client.js";
 import { browserProfileHomeCommand } from "./browser-access.js";
@@ -143,7 +153,12 @@ import {
   type ClientVisibility,
 } from "./lifecycle.js";
 import { LiveStreamLedger, type LiveProgressInput } from "./live-progress.js";
-import { applyOptimisticCommandPatch, withThreadNames } from "./optimistic-command-patches.js";
+import {
+  applyOptimisticCommandPatch,
+  withEditedWaitingMessage,
+  withEditLease,
+  withThreadNames,
+} from "./optimistic-command-patches.js";
 import { PlaceActivityStore } from "./place-activity.js";
 import { placeByKey } from "./places.js";
 import { reconcileBrowserLastPictures } from "./browser-last-picture.js";
@@ -157,6 +172,7 @@ import {
   drawnLiveStream,
   foldLiveRun,
   foldTranscriptEvent,
+  isWaitingInputState,
   mergeTranscriptSegments,
   toMessageEntry,
   toTranscriptEntry,
@@ -259,25 +275,6 @@ const inputQueueEventTypes: ReadonlySet<AgentEvent["type"]> = new Set<AgentEvent
   "thread.input-queue-updated",
 ]);
 
-/**
- * The refusals that settle a steer or cancel: the Host looked and would not,
- * so nothing was recorded and the next attempt is a new one. Anything else, a
- * timeout, an unreachable Runner, a transport failure, leaves open whether
- * the mutation landed.
- */
-const settledInputMutationCodes: ReadonlySet<string> = new Set([
-  "bad_request",
-  "canonical_surface_required",
-  "conflict",
-  "forbidden",
-  "not_found",
-  "unauthorized",
-]);
-
-function isSettledInputMutationError(error: unknown): boolean {
-  return error instanceof HostClientRequestError && settledInputMutationCodes.has(error.code);
-}
-
 function showsSubscriptionProgress(message: RealtimeMessage, channel: DeploymentChannel): boolean {
   switch (message.type) {
     case "host.snapshot":
@@ -306,9 +303,11 @@ function queuedInputItem(
   if (result.input.policy !== "queue" || result.input.state !== "pending") return null;
   return {
     canCancel: true,
+    canEdit: true,
     canMove: true,
     canSteer: queue.steerRunId !== null && !result.input.freshContext,
     input: result.input,
+    lease: null,
     message: result.message,
   };
 }
@@ -829,6 +828,10 @@ export class HttpHostClient {
    * retry after a lost answer repeats the mutation instead of adding one.
    */
   readonly #threadInputMutationKeys = new Map<string, string>();
+  /** The edit leases this device holds, so its own edit never reads as another device's. */
+  readonly #editLeases = new Set<string>();
+  /** Tasks the Host removed; an open view of one stays `missing` rather than reading it again. */
+  readonly #removedThreads = new Set<string>();
 
   readonly #hydratedThreads = new Map<string, Sequence>();
   readonly #historicalThreads = new Set<string>();
@@ -1229,17 +1232,48 @@ export class HttpHostClient {
     const result = await this.#dispatch(parsedCommand);
     switch (result.type) {
       case "teams.ask.decide":
-        this.#update({
-          ...this.#snapshot,
-          needsYou:
-            parsedCommand.type === "teams.ask.decide"
-              ? settleTeamAsk(
-                  this.#snapshot.needsYou,
-                  parsedCommand.teamId,
-                  parsedCommand.requestId,
-                )
-              : this.#snapshot.needsYou,
-        });
+        if (commandIs(parsedCommand, result.type))
+          this.#update(
+            applyOptimisticCommandPatch(this.#snapshot, {
+              decision: parsedCommand.decision,
+              requestId: parsedCommand.requestId,
+              teamId: parsedCommand.teamId,
+              type: result.type,
+            }),
+          );
+        break;
+      case "thread.input.edit":
+        if (commandIs(parsedCommand, result.type))
+          this.#update(
+            applyOptimisticCommandPatch(this.#snapshot, {
+              edit: result.edit,
+              message: result.message,
+              threadId: parsedCommand.threadId,
+              type: result.type,
+            }),
+          );
+        break;
+      case "thread.input.lease.take":
+        if (commandIs(parsedCommand, result.type))
+          this.#update(
+            applyOptimisticCommandPatch(this.#snapshot, {
+              lease: result.lease,
+              messageId: parsedCommand.messageId,
+              threadId: parsedCommand.threadId,
+              type: result.type,
+            }),
+          );
+        break;
+      case "thread.input.lease.release":
+        if (commandIs(parsedCommand, result.type))
+          this.#update(
+            applyOptimisticCommandPatch(this.#snapshot, {
+              leaseId: parsedCommand.leaseId,
+              messageId: parsedCommand.messageId,
+              threadId: parsedCommand.threadId,
+              type: result.type,
+            }),
+          );
         break;
       case "assignment.cancel":
         this.#update({
@@ -1683,6 +1717,7 @@ export class HttpHostClient {
     const thread = this.#snapshot.threads.find(({ id }) => id === threadId);
     const opened = !this.#showsThread(threadId);
     this.#activeThreadId = threadId;
+    if (this.#removedThreads.has(threadId)) return;
     for (const [id, scan] of this.#messagePageLoads) {
       if (!this.#showsThread(id)) scan.retired = true;
     }
@@ -3005,6 +3040,68 @@ export class HttpHostClient {
     );
   }
 
+  editWaitingMessage(
+    threadId: string,
+    messageId: string,
+    options?: { readonly takeOver?: boolean },
+  ): Promise<WaitingMessageEditor> {
+    return openWaitingMessageEditor(
+      this.#waitingMessageEditorPort,
+      threadId,
+      messageId,
+      options?.takeOver ?? false,
+    );
+  }
+
+  async releaseWaitingMessage(threadId: string, messageId: string): Promise<void> {
+    await this.dispatch({ messageId, threadId, type: "thread.input.lease.release" });
+  }
+
+  ownsEditLease(leaseId: string): boolean {
+    return this.#editLeases.has(leaseId);
+  }
+
+  async listMessageRevisions(
+    threadId: string,
+    messageId: string,
+    before?: number,
+  ): Promise<{ readonly revisions: readonly MessageRevisionView[]; readonly hasMore: boolean }> {
+    return unwrapRpcResult(
+      await this.rpc["thread.message.revisions.list"]({
+        messageId: MessageIdSchema.parse(messageId),
+        threadId: ThreadIdSchema.parse(threadId),
+        ...(before === undefined ? {} : { before }),
+      }),
+    );
+  }
+
+  async decideTeamAsk(input: TeamAskDecision): Promise<void> {
+    await this.dispatch({
+      decision: input.decision,
+      requestId: TeamAgentRequestIdSchema.parse(input.requestId),
+      teamId: DeploymentIdSchema.parse(input.teamId),
+      type: "teams.ask.decide",
+      ...(input.decision === "approve" ? { expectedRevision: input.expectedRevision } : {}),
+    });
+  }
+
+  readonly #waitingMessageEditorPort: WaitingMessageEditorPort = {
+    dispatch: (command) => this.dispatch(command),
+    leases: this.#editLeases,
+    // A take can report a newer version than this client has read; the person
+    // must start from that one, or their save would quietly undo it.
+    holdsRevision: async (threadId, messageId, revision) => {
+      for (let read = 0; read < 2; read += 1) {
+        const held = this.#snapshot.inputQueues[threadId]?.items.find(
+          (item) => item.message.id === messageId,
+        );
+        if ((held?.message.edit?.revision ?? 0) >= revision) return;
+        await this.loadThreadInputQueue(threadId);
+      }
+    },
+    now: () => Date.now(),
+  };
+
   async resumeThreadInputQueue(threadId: string): Promise<void> {
     // Resume is idempotent on the Host, so a lost answer is simply asked again.
     await this.dispatch({
@@ -3122,6 +3219,7 @@ export class HttpHostClient {
       .then(unwrapRpcResult)
       .then((queue) => {
         if (queue.threadId !== threadId) throw new Error("Thread input queue mismatch.");
+        if (this.#removedThreads.has(threadId)) return queue;
         this.#update({
           ...this.#snapshot,
           inputQueues: { ...this.#snapshot.inputQueues, [threadId]: queue },
@@ -4898,6 +4996,7 @@ export class HttpHostClient {
       )
         this.#runPlaces.end(event.runId, false);
       invalidateScheduleAnchor(this, event);
+      if (event.type === "task.removed") this.#forgetTask(event.threadId, event.sequence);
       const current = next.threads.find(({ id }) => id === event.threadId);
       const ownsState = this.#threadState.record(event);
       const retained =
@@ -4930,6 +5029,19 @@ export class HttpHostClient {
     this.#runPlaces.flush();
     this.#releaseHeldLive(channel);
     this.#refreshInputQueues(touchedInputQueues);
+  }
+
+  #forgetTask(threadId: string, sequence: Sequence): void {
+    this.#removedThreads.add(threadId);
+    this.#hydratedThreads.delete(threadId);
+    this.#historicalThreads.delete(threadId);
+    this.#threadInputQueueRereads.delete(threadId);
+    // A read already under way predates the removal and must not bring the task back.
+    if (this.#hydrationBuffers.has(threadId))
+      this.#invalidatedHydrations.set(
+        threadId,
+        maxSequence(this.#invalidatedHydrations.get(threadId) ?? zeroSequence, sequence),
+      );
   }
 
   #refreshInputQueues(threadIds: Iterable<string>): void {
@@ -5685,6 +5797,63 @@ function withoutSteerTarget(
   return { ...inputQueues, [threadId]: { ...queue, steerRunId: null } };
 }
 
+/**
+ * A task the Host removed leaves every list and record this client holds of
+ * it. A view still open on it reads `missing`, as for any task that is gone.
+ */
+function withoutTask(snapshot: HostSnapshot, threadId: string): HostSnapshot {
+  const without = <Value>(record: Readonly<Record<string, Value>>): Record<string, Value> => {
+    const { [threadId]: _removed, ...rest } = record;
+    return rest;
+  };
+  const withoutEntry = (list: TaskListState): TaskListState => {
+    const entries = list.entries.filter((entry) => entry.thread.id !== threadId);
+    if (entries.length === list.entries.length) return list;
+    return {
+      entries,
+      window: {
+        ...list.window,
+        itemCount: Math.max(0, list.window.itemCount - 1),
+        totalItems: Math.max(0, list.window.totalItems - 1),
+      },
+    };
+  };
+  const needsYou = snapshot.needsYou;
+  const asks = needsYou?.entries.filter(
+    (entry) => entry.kind === "team-ask" && entry.task?.threadId === threadId,
+  ).length;
+  return {
+    ...snapshot,
+    activeTasks: snapshot.activeTasks.filter((entry) => entry.thread.id !== threadId),
+    doneTasks: Object.fromEntries(
+      Object.entries(snapshot.doneTasks).map(([key, list]) => [key, withoutEntry(list)]),
+    ),
+    inputQueues: without(snapshot.inputQueues),
+    needsYou:
+      needsYou && asks
+        ? {
+            ...needsYou,
+            count: Math.max(0, needsYou.count - asks),
+            entries: needsYou.entries.filter(
+              (entry) => entry.kind !== "team-ask" || entry.task?.threadId !== threadId,
+            ),
+            window: {
+              ...needsYou.window,
+              itemCount: Math.max(0, needsYou.window.itemCount - asks),
+              totalItems: Math.max(0, needsYou.window.totalItems - asks),
+            },
+          }
+        : needsYou,
+    requests: without(snapshot.requests),
+    tasks: snapshot.tasks && withoutEntry(snapshot.tasks),
+    threadLookups: { ...snapshot.threadLookups, [threadId]: "missing" },
+    threads: snapshot.threads.filter((thread) => thread.id !== threadId),
+    threadVisits: without(snapshot.threadVisits),
+    transcriptWindows: without(snapshot.transcriptWindows),
+    transcripts: without(snapshot.transcripts),
+  };
+}
+
 export function rpcErrorStatus(code: string): number {
   return code === "bad_request"
     ? 400
@@ -5859,13 +6028,13 @@ function projectAgentEvent(
       };
     }
     case "thread-input.updated": {
-      // The queue read decides what is waiting, but an input that has left
-      // `pending` has certainly left the queue, and the tray need not wait a
+      // The queue read decides what is waiting, but an input that has stopped
+      // waiting has certainly left the queue, and the tray need not wait a
       // round trip to stop offering it.
       const input = event.data.input;
       const queue = inputQueues[event.threadId];
       if (
-        input.state !== "pending" &&
+        !isWaitingInputState(input.state) &&
         queue?.items.some((item) => item.message.id === input.messageId)
       ) {
         inputQueues = {
@@ -5878,6 +6047,28 @@ function projectAgentEvent(
       }
       break;
     }
+    // Renewals are silent, so this is a take, a hand-over or an end: only
+    // that item's lease changes, without reading the queue's messages again.
+    case "thread-input.lease-changed":
+      return {
+        ...snapshot,
+        inputQueues: withEditLease(
+          inputQueues,
+          event.threadId,
+          event.data.messageId,
+          event.data.lease,
+        ),
+      };
+    case "message.updated":
+      return withEditedWaitingMessage(
+        snapshot,
+        event.threadId,
+        event.data.message,
+        event.data.edit,
+        event.data.input,
+      );
+    case "task.removed":
+      return withoutTask(snapshot, event.threadId);
     case "message.created":
       break;
     default:

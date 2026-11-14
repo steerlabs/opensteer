@@ -6445,8 +6445,10 @@ describe("HttpHostClient input queue", () => {
     expect(queue?.items).toEqual([
       {
         canCancel: true,
+        canEdit: true,
         canMove: true,
         canSteer: true,
+        lease: null,
         input: expect.objectContaining({ messageId: held.id, state: "pending" }),
         message: expect.objectContaining({ id: held.id }),
       },
@@ -6860,7 +6862,15 @@ function pendingInput(message: Message) {
 }
 
 function queueItem(message: Message, canSteer: boolean) {
-  return { canCancel: true, canMove: true, canSteer, input: pendingInput(message), message };
+  return {
+    canCancel: true,
+    canEdit: true,
+    canMove: true,
+    canSteer,
+    input: pendingInput(message),
+    lease: null,
+    message,
+  };
 }
 
 describe("HttpHostClient hosted browser", () => {
