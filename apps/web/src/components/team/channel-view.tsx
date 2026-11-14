@@ -92,6 +92,11 @@ function ChannelHeader({
         <span className="channel__title">{channel.name}</span>
         <Icon className="channel__chevron" name="chevron-down" />
       </button>
+      {channel.shareLabel ? (
+        <span className="team-external" title={channel.shareDetail}>
+          {channel.shareLabel}
+        </span>
+      ) : null}
       {channel.peopleOnly ? <PeopleOnlyBadge /> : null}
       <span className="channel__description">
         {other ? (other.presence === "active" ? "Active" : "Away") : channel.description}

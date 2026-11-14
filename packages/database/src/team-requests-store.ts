@@ -1,3 +1,4 @@
+import { teamAskerCanPost, teamAskerChannels, expireSharedAsks } from "./team-shared-agents.js";
 import { randomUUID } from "node:crypto";
 import {
   TeamStatusStepSchema,
@@ -16,6 +17,9 @@ import type { DatabaseSchema } from "./schema.js";
 import type { TeamRequestStorePort } from "./team-requests-port.js";
 import {
   TeamAccessStore,
+  assertTeamSharedChannelVersion,
+  teamPeerSupportsSharedChannels,
+  teamSharedChannelIds,
   bumpTeamChannel,
   requireTeam,
   lockTeamMessages,
@@ -45,7 +49,12 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       .where("m.state", "=", "active")
       .executeTakeFirst();
     requireTeam(row, "Request unavailable");
-    const authority = await this.access.channel(
+    assertTeamSharedChannelVersion(
+      !!row.presentation?.asker.homeTeamName ||
+        !!row.presentation?.audience.externalTeams?.length ||
+        !!row.returnPayload?.author?.homeTeamName,
+    );
+    const authority = await this.access.peerChannel(
       transaction,
       { kind: "agent", userId: row.ownerUserId },
       row.channelId,
@@ -53,12 +62,15 @@ export class TeamRequestsStore implements TeamRequestStorePort {
     requireTeam(authority.read && authority.post, "Request access revoked");
     if (row.presentation) {
       const asker = row.presentation.asker;
-      const rights = await this.access.channel(
-        transaction,
-        { kind: asker.actor, userId: asker.teamUserId },
-        row.channelId,
+      requireTeam(
+        await teamAskerCanPost(
+          transaction,
+          this.access,
+          { kind: asker.actor, userId: asker.teamUserId },
+          row.channelId,
+        ),
+        "Asker access revoked",
       );
-      requireTeam(rights.read && rights.post, "Asker access revoked");
     }
     return row;
   }
@@ -122,6 +134,15 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         .orderBy("createdAt")
         .orderBy("id")
         .limit(limit);
+      if (!teamPeerSupportsSharedChannels())
+        pending = pending
+          .where("channelId", "not in", teamSharedChannelIds())
+          .where(
+            sql<boolean>`coalesce(presentation->'asker'->>'homeTeamName',return_payload->'author'->>'homeTeamName') is null`,
+          )
+          .where(
+            sql<boolean>`coalesce(jsonb_array_length(presentation->'audience'->'externalTeams'),0)=0`,
+          );
       if (excludeRequestIds.length) pending = pending.where("id", "not in", excludeRequestIds);
       const rows = await pending.execute();
       const actors = new Map<string, { actor: TeamActor; channels: Set<TeamChannelId> }>();
@@ -142,8 +163,8 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         }
       }
       for (const { actor, channels } of actors.values()) {
-        const rights = await this.access.channels(t, actor, [...channels]);
-        requireTeam([...channels].every((id) => rights.get(id)?.read && rights.get(id)?.post));
+        const allowed = await teamAskerChannels(t, this.access, actor, [...channels]);
+        requireTeam([...channels].every((channelId) => allowed.has(channelId)));
       }
       const originIds = rows.flatMap((row) =>
         row.returnPayload ? [row.returnPayload.originAskId] : [],
@@ -155,7 +176,17 @@ export class TeamRequestsStore implements TeamRequestStorePort {
             .where("id", "in", originIds)
             .execute()
         : [];
-      const replies = new Map(origins.map((row) => [row.id, row.replyMessageId]));
+      const sharedOrigins = originIds.length
+        ? await t
+            .selectFrom("teamShareAsks")
+            .select(["id", "replyMessageId"])
+            .where("id", "in", originIds)
+            .where("localRequestId", "is", null)
+            .execute()
+        : [];
+      const replies = new Map(
+        [...origins, ...sharedOrigins].map((row) => [row.id, row.replyMessageId]),
+      );
       const messageIds = [
         ...new Set(
           rows.flatMap((row) => {
@@ -221,7 +252,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       .where("id", "=", id)
       .executeTakeFirstOrThrow();
     let changed = false;
-    const result = await this.access.contentWrite(
+    const result = await this.access.writeForPeer(
       { kind: "agent", userId: observed.ownerUserId },
       observed.channelId,
       async (t) => {
@@ -375,7 +406,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       .selectAll()
       .where("id", "=", id)
       .executeTakeFirstOrThrow();
-    await this.access.contentWrite(
+    await this.access.writeForPeer(
       { kind: "agent", userId: observed.ownerUserId },
       observed.channelId,
       async (t) => {
@@ -457,7 +488,96 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       .where("id", "=", linkId)
       .executeTakeFirstOrThrow();
     const actor = { kind: "agent" as const, userId: link.ownerUserId };
-    const result = await this.access.contentWrite(actor, input.channelId, async (t, authority) => {
+    if (input.requestId) {
+      const alreadyPublished = await this.access.writeForPeer(actor, input.channelId, async (t) => {
+        const request = await t
+          .selectFrom("teamAgentRequests")
+          .selectAll()
+          .where("id", "=", input.requestId!)
+          .where("linkId", "=", linkId)
+          .where("ownerUserId", "=", actor.userId)
+          .executeTakeFirstOrThrow();
+        requireTeam(
+          request.channelId === input.channelId && request.threadRootId === input.threadRootId,
+          "Reply destination does not match request",
+        );
+        if (input.publication && request.replyMessageId) return request.replyMessageId;
+        if (!request.replyMessageId) await this.#record(t, linkId, request.id);
+        return null;
+      });
+      if (alreadyPublished) return { messageId: alreadyPublished, askOutcomes: [] };
+    }
+    const relayed = await this.chat.relay?.send(actor, {
+      channelId: input.channelId,
+      threadRootId: input.threadRootId ?? null,
+      clientMessageId: input.clientMessageId,
+      bodyMarkdown: input.bodyMarkdown,
+      mentions: [],
+      publication: input.publication ?? false,
+      attachmentIds: input.attachmentIds,
+      linkId,
+      ...(input.runId ? { runId: input.runId } : {}),
+      ...(input.requestId ? { agentRequestId: input.requestId } : {}),
+    });
+    if (relayed) {
+      await this.access.writeForPeer(actor, input.channelId, async (t, a) => {
+        requireTeam(a.post);
+        await this.access.link(t, actor, linkId);
+        const request = input.requestId ? await this.#record(t, linkId, input.requestId) : null;
+        await lockTeamMessages(t, [
+          relayed.message.id,
+          ...(request ? [request.triggerMessageId, request.threadRootId] : []),
+        ]);
+        const { changeSeq } = await bumpTeamChannel(t, input.channelId);
+        await t
+          .updateTable("teamMessages")
+          .set({
+            agentRequestId: request?.id ?? null,
+            agentLinkId: linkId,
+            personalDeploymentId: link.personalDeploymentId,
+            callerRunId: input.runId ?? null,
+            operationId: input.clientMessageId,
+          })
+          .where("channelId", "=", input.channelId)
+          .where("id", "=", relayed.message.id)
+          .execute();
+        if (request && !request.replyMessageId) {
+          await t
+            .updateTable("teamMessages")
+            .set({ changeSeq })
+            .where("id", "in", [request.triggerMessageId, request.threadRootId])
+            .execute();
+          await t
+            .updateTable("teamAgentRequests")
+            .set({ replyMessageId: relayed.message.id, changeSeq })
+            .where("id", "=", request.id)
+            .execute();
+          await createTeamAskReturn(t, request, "answered", changeSeq, relayed.message.id);
+        }
+        await appendTeamAudit(t, {
+          actor,
+          runId: input.runId,
+          operationId: input.clientMessageId,
+          action: "agent.post",
+          metadata: { personalDeploymentId: link.personalDeploymentId },
+          resourceKind: "message",
+          resourceId: relayed.message.id,
+          linkId,
+          channelId: input.channelId,
+        });
+      });
+      this.chat.changed(input.channelId);
+      if (input.requestId) {
+        const request = await this.access.database
+          .selectFrom("teamAgentRequests")
+          .select("triggerMessageId")
+          .where("id", "=", input.requestId)
+          .executeTakeFirstOrThrow();
+        await this.chat.notifyRequests(request.triggerMessageId, true);
+      }
+      return { messageId: relayed.message.id, askOutcomes: relayed.askOutcomes };
+    }
+    const result = await this.access.writeForPeer(actor, input.channelId, async (t, authority) => {
       await this.access.link(t, actor, linkId);
       requireTeam(authority.post);
       const request = input.requestId
@@ -495,7 +615,10 @@ export class TeamRequestsStore implements TeamRequestStorePort {
               existing.agentRequestId === (input.requestId ?? null)),
           "Post identity names another destination",
         );
-        return { messageId: existing.id, askOutcomes: await this.chat.askOutcomes(t, existing.id) };
+        return {
+          messageId: existing.id,
+          askOutcomes: await this.chat.askOutcomes(t, existing.id),
+        };
       }
       const sent = await this.chat.insert(t, actor, {
         channelId: input.channelId,
@@ -640,6 +763,8 @@ export class TeamRequestsStore implements TeamRequestStorePort {
     await this.status(linkId, id, { state: "cancelled", steps: [] });
   }
   async expire(id?: TeamAgentRequestId) {
+    if (!id)
+      for (const channelId of await expireSharedAsks(this.access)) this.chat.changed(channelId);
     let query = this.access.database
       .selectFrom("teamAgentRequests")
       .selectAll()

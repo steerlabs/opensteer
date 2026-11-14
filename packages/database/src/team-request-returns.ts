@@ -2,6 +2,7 @@ import { createId, type TeamAgentReturnOutcome, type TeamMessageId } from "@open
 import { sql, type Selectable, type Transaction } from "kysely";
 import type { DatabaseSchema, TeamAgentRequestTable } from "./schema.js";
 import { appendTeamAudit } from "./team-audit-store.js";
+import { teamPrincipalProfiles } from "./team-principals-store.js";
 
 export async function teamAttachmentRefs(
   transaction: Transaction<DatabaseSchema>,
@@ -23,12 +24,28 @@ export async function teamAttachmentRefs(
 
 export async function createTeamAskReturn(
   transaction: Transaction<DatabaseSchema>,
-  ask: Selectable<TeamAgentRequestTable>,
+  ask: Pick<
+    Selectable<TeamAgentRequestTable>,
+    | "id"
+    | "kind"
+    | "ownerUserId"
+    | "targetAgentHandle"
+    | "channelId"
+    | "threadRootId"
+    | "triggerMessageId"
+    | "replyMessageId"
+  >,
   outcome: TeamAgentReturnOutcome,
   changeSeq: string,
   replyMessageId?: TeamMessageId,
 ) {
   if (ask.kind !== "ask" || (ask.replyMessageId && !replyMessageId)) return;
+  await transaction
+    .updateTable("teamShareAsks")
+    .set({ outcome })
+    .where("localRequestId", "=", ask.id)
+    .where("outcome", "is", null)
+    .execute();
   const trigger = await transaction
     .selectFrom("teamMessages")
     .selectAll()
@@ -57,11 +74,8 @@ export async function createTeamAskReturn(
         .where("id", "=", replyMessageId)
         .executeTakeFirstOrThrow()
     : null;
-  const owner = await transaction
-    .selectFrom("users")
-    .innerJoin("teamMembers", "teamMembers.userId", "users.id")
-    .select(["users.displayName", "teamMembers.handle"])
-    .where("users.id", "=", ask.ownerUserId)
+  const owner = await teamPrincipalProfiles(transaction)
+    .where("p.id", "=", ask.ownerUserId)
     .executeTakeFirstOrThrow();
   const payload = {
     author: {

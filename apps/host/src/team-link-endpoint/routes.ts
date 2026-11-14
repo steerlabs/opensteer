@@ -1,3 +1,4 @@
+import { withTeamPeerVersion } from "@opensteer/database/team-access";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import "@fastify/websocket";
 import { OpensteerError } from "@opensteer/core";
@@ -88,7 +89,9 @@ export async function registerTeamLinkRoutes(
     scope.get(teamBinaryRoutes.download, async (request, reply) => {
       const controller = new AbortController();
       reply.raw.once("close", () => controller.abort());
-      const result = await binary.download(headers(request), controller.signal);
+      const result = await withTeamPeerVersion(Number(request.headers[teamApiVersionHeader]), () =>
+        binary.download(headers(request), controller.signal),
+      );
       return reply
         .header("content-type", "application/octet-stream")
         .header("content-length", result.size)
@@ -116,7 +119,10 @@ export async function registerTeamLinkRoutes(
         request.raw.once("aborted", () => controller.abort());
         reply.raw.once("close", () => controller.abort());
         try {
-          return await binary.upload(headers(request), request.body, controller.signal);
+          const body = request.body;
+          return await withTeamPeerVersion(Number(request.headers[teamApiVersionHeader]), () =>
+            binary.upload(headers(request), body, controller.signal),
+          );
         } catch (error) {
           request.body.destroy();
           throw error;

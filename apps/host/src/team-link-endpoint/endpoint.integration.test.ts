@@ -16,6 +16,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sql } from "kysely";
 import { createId } from "@opensteer/core";
 import { createTeamKnowledgeFixture } from "@opensteer/database/test-support/team-knowledge";
+import { seedRemoteTeamContent } from "@opensteer/database/test-support/team-principals";
+import { teamPrincipalProfiles } from "@opensteer/database/team-principals";
 import { TeamAccessStore } from "@opensteer/database/team-access";
 import { TeamChatStore } from "@opensteer/database/team-chat";
 import { TeamRequestsStore } from "@opensteer/database/team-requests";
@@ -220,6 +222,66 @@ describe("standing team link authority", () => {
       "x-opensteer-team-operation-id": randomUUID(),
     };
   }
+  it("preserves remote content in standing agent reads, search, and local wakes in its thread", async () => {
+    const { remote, root, reply } = await seedRemoteTeamContent(fixture, channelId);
+    expect(
+      await endpoint.call(linkId, {
+        type: "read",
+        id: randomUUID(),
+        runId,
+        channelId,
+        threadRootId: root.id,
+      }),
+    ).toMatchObject({
+      kind: "read",
+      result: {
+        page: {
+          messages: [
+            { id: root.id, authorUserId: remote.id },
+            { id: reply.id, authorUserId: remote.id },
+          ],
+        },
+      },
+    });
+    expect(
+      await endpoint.call(linkId, {
+        type: "search",
+        id: randomUUID(),
+        runId,
+        input: { query: "Principal", channelId, authorUserId: remote.id },
+      }),
+    ).toMatchObject({
+      kind: "search",
+      result: {
+        results: [
+          { message: { id: reply.id, authorUserId: remote.id } },
+          { message: { id: root.id, authorUserId: remote.id } },
+        ],
+      },
+    });
+    await chat.send(human(), {
+      channelId,
+      threadRootId: root.id,
+      clientMessageId: randomUUID(),
+      bodyMarkdown: "@maya-agent help with this",
+      mentions: [],
+      attachmentIds: [],
+    });
+    const pending = (await requests.pending(linkId))[0]!;
+    expect(pending).toMatchObject({
+      request: { ownerUserId: fixture.userId, threadRootId: root.id },
+      bodyMarkdown: "@maya-agent help with this",
+    });
+    await requests.accept(linkId, pending.request.id);
+    expect(await requests.context(linkId, pending.request.id)).toMatchObject({
+      source: { threadRootId: root.id, audience: { memberCount: 1 } },
+    });
+    expect(
+      await teamPrincipalProfiles(fixture.database)
+        .where("p.id", "=", remote.id)
+        .executeTakeFirstOrThrow(),
+    ).toMatchObject({ displayName: "Remote Alex", handle: "alex" });
+  });
   it("reads, searches and posts without a ticket, audits attribution, and refuses live access loss", async () => {
     const read = {
       type: "read" as const,

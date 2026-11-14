@@ -1,3 +1,10 @@
+import {
+  TeamPartnerLinkSchema,
+  TeamPartnerInviteSchema,
+  serializeTeamPartnerOffer,
+  parseTeamPartnerOffer,
+  type TeamSharingPolicy,
+} from "@opensteer/protocol";
 import { OpensteerError, type TeamChannelId, createId } from "@opensteer/core";
 import { acceptsTeamApiVersion } from "@opensteer/deployment-authority";
 import {
@@ -82,6 +89,21 @@ export class MockTeamSocket implements WebSocketClient {
   }
 }
 export class MockTeamHost {
+  readonly shareParticipants = new Map<
+    TeamChannelId,
+    z.infer<(typeof hostApi)["team.share.participants.get"]["success"]>["participants"]
+  >();
+  readonly remotePeople: z.infer<
+    (typeof hostApi)["team.share.participants.get"]["success"]
+  >["people"] = {};
+  readonly removedShareParticipants = new Set<string>();
+  readonly shares = new Map<
+    string,
+    z.infer<(typeof hostApi)["team.shares.list"]["success"]>["shares"][number]
+  >();
+  sharingPolicy: TeamSharingPolicy = "admins";
+  readonly partners = new Map<string, z.infer<typeof TeamPartnerLinkSchema>>();
+  readonly partnerInvites = new Map<string, z.infer<typeof TeamPartnerInviteSchema>>();
   readonly agentRecipients = new Map<
     string,
     {
@@ -374,13 +396,23 @@ export class MockTeamHost {
     socket.addEventListener("close", () => this.#sockets.delete(socket));
     return socket;
   };
+  #channelView(id: TeamChannelId) {
+    const channel = this.channels.get(id);
+    if (!channel) throw new Error("Unknown channel.");
+    const viewerHandle = this.shareParticipants
+      .get(id)
+      ?.find((person) => person.userId === this.userId)?.handle;
+    return channel.share && viewerHandle
+      ? { ...channel, share: { ...channel.share, viewerHandle } }
+      : channel;
+  }
   cut(
     scope: TeamScope,
     subscriptionId: string,
     generation: number,
     since: string | null,
   ): TeamConsistentCut {
-    const channel = this.channels.get(scope.channelId);
+    const channel = this.#channelView(scope.channelId);
     if (!channel) throw new Error("Unknown channel.");
     const messages = [...this.messages.values()]
       .filter(
@@ -411,6 +443,7 @@ export class MockTeamHost {
           this.linkPresence.find((entry) => entry.ownerUserId === ownerUserId)?.online ?? false,
       }));
     const base = {
+      people: this.#contentPeople(messages),
       channel,
       throughSeq: channel.changeSeq,
       subscriptionId,
@@ -453,6 +486,34 @@ export class MockTeamHost {
       hasMore: messages.length > retained.length,
     });
   }
+  #contentPeople(messages: readonly TeamMessage[]) {
+    const ids = new Set(
+      messages.flatMap((message) => [
+        message.authorUserId,
+        ...message.mentions.map((mention) => mention.userId),
+        ...message.replySummary.repliers,
+      ]),
+    );
+    return Object.fromEntries(
+      [...ids].flatMap((id) =>
+        this.remotePeople[id]
+          ? [
+              [
+                id,
+                {
+                  ...this.remotePeople[id],
+                  handle:
+                    this.shareParticipants
+                      .get(messages[0]!.channelId)
+                      ?.find((person) => person.userId === id)?.handle ??
+                    this.remotePeople[id].handle,
+                },
+              ],
+            ]
+          : [],
+      ),
+    );
+  }
   async read(name: string, input: unknown): Promise<unknown> {
     if (name === "team.bootstrap.get") return { ...this.bootstrap, sidebar: this.#sidebarPage() };
     if (name === "team.sidebar.get") {
@@ -490,7 +551,7 @@ export class MockTeamHost {
       const { channelId, messageId } = hostApi[name].payload.parse(input),
         message = this.messages.get(messageId);
       if (message?.channelId !== channelId) throw new Error("Unknown message.");
-      return message;
+      return { ...message, people: this.#contentPeople([message]) };
     }
     if (name === "team.members.list") return { members: this.members, hasMore: false };
     if (name === "team.groups.list")
@@ -506,6 +567,123 @@ export class MockTeamHost {
         Date.parse(current.invite.expiresAt) > Date.now() &&
         (current.invite.maxUses === null || current.invite.usedCount < current.invite.maxUses);
       return { invite: live ? current.invite : null };
+    }
+    if (name === "team.share.participants.get") {
+      const parsed = hostApi[name].payload.parse(input);
+      const rows = (this.shareParticipants.get(parsed.channelId) ?? [])
+        .filter(
+          (p) =>
+            (!parsed.after || p.handle > parsed.after) &&
+            (!parsed.query ||
+              p.handle.includes(parsed.query) ||
+              this.remotePeople[p.userId]?.name.includes(parsed.query)),
+        )
+        .sort((a, b) => a.handle.localeCompare(b.handle));
+      const selected = rows.slice(0, 50);
+      return {
+        participants: selected,
+        people: Object.fromEntries(
+          selected.flatMap((p) =>
+            this.remotePeople[p.userId]
+              ? [[p.userId, { ...this.remotePeople[p.userId], handle: p.handle }]]
+              : [],
+          ),
+        ),
+        nextCursor: rows.length > 50 ? selected.at(-1)!.handle : null,
+      };
+    }
+    if (name === "team.shares.list") {
+      const { channelId, after } = hostApi["team.shares.list"].payload.parse(input);
+      const rows = [...this.shares.values()]
+        .filter((s) => (!channelId || s.channelId === channelId) && (!after || s.id > after))
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .slice(0, 51);
+      return {
+        nextCursor: rows.length > 50 ? rows[49]!.id : null,
+        shares: rows.slice(0, 50).map((share) => {
+          const manage =
+            !share.channelId || this.channels.get(share.channelId)?.can.manage === true;
+          const admin = this.bootstrap.member.role !== "member" || this.sharingPolicy === "members";
+          return {
+            ...share,
+            canApprove:
+              manage &&
+              admin &&
+              this.sharingPolicy !== "off" &&
+              share.role === "owner" &&
+              share.state === "offered" &&
+              !share.localApproved,
+            canAccept:
+              manage &&
+              admin &&
+              this.sharingPolicy !== "off" &&
+              share.role === "follower" &&
+              share.state === "offered",
+            canEnd: manage && admin && share.state !== "ended",
+          };
+        }),
+      };
+    }
+    if (name === "team.sharing.policy.get")
+      return {
+        policy: this.sharingPolicy,
+        canSet: this.bootstrap.member.role !== "member",
+        canPropose:
+          this.sharingPolicy !== "off" &&
+          (this.bootstrap.member.role !== "member" || this.sharingPolicy !== "admins"),
+      };
+    if (name === "team.partner.invite.preview") {
+      if (
+        this.sharingPolicy === "off" ||
+        (this.sharingPolicy === "admins" && this.bootstrap.member.role === "member")
+      )
+        throw new OpensteerError({ code: "forbidden", message: "Team sharing action refused" });
+      const offer = parseTeamPartnerOffer((input as { offer: string }).offer);
+      if (Date.parse(offer.expiresAt) <= Date.now())
+        throw new OpensteerError({
+          code: "forbidden",
+          reason: "partner-invite-expired",
+          message: "Partner invite expired",
+        });
+      return {
+        name: new URL(offer.origin).hostname.slice(0, 160),
+        origin: offer.origin,
+        expiresAt: offer.expiresAt,
+      };
+    }
+    if (name === "team.partners.list" || name === "team.partner.invites.list") {
+      const after = (input as { after?: string }).after;
+      const admin = this.bootstrap.member.role !== "member";
+      const values =
+        name === "team.partners.list"
+          ? [...this.partners.values()].map((row) => ({
+              ...row,
+              canApprove:
+                row.lastError !== "identity-mismatch" &&
+                !row.localApproved &&
+                row.state !== "revoked" &&
+                this.sharingPolicy !== "off" &&
+                (admin || this.sharingPolicy === "members"),
+              canRevoke:
+                row.state !== "revoked" &&
+                (admin ||
+                  this.sharingPolicy === "members" ||
+                  (row.createdBy === this.userId && !row.localApproved)),
+            }))
+          : [...this.partnerInvites.values()]
+              .filter((row) => admin || row.createdBy === this.userId)
+              .map((row) => ({
+                ...row,
+                canRevoke:
+                  !row.consumedAt && !row.revokedAt && Date.parse(row.expiresAt) > Date.now(),
+              }));
+      const rows = values
+        .filter((row) => !after || row.id > after)
+        .sort((a, b) => a.id.localeCompare(b.id));
+      return {
+        [name === "team.partners.list" ? "links" : "invites"]: rows.slice(0, 50),
+        nextCursor: rows.length > 50 ? rows[49]!.id : null,
+      };
     }
     if (name === "team.links.list")
       return {
@@ -533,17 +711,20 @@ export class MockTeamHost {
         ),
       };
     }
-    if (name === "team.mentions.page" || name === "team.pins.page")
-      return {
-        messages: [...this.messages.values()]
-          .filter((row) =>
-            name === "team.pins.page"
+    if (name === "team.mentions.page" || name === "team.pins.page") {
+      const { channelId, before } = hostApi[name].payload.parse(input);
+      const messages = [...this.messages.values()]
+        .filter(
+          (row) =>
+            (!channelId || row.channelId === channelId) &&
+            (!before || BigInt(row.id) < BigInt(before)) &&
+            (name === "team.pins.page"
               ? row.pinned
-              : row.mentions.some((mention) => mention.userId === this.userId),
-          )
-          .slice(-50),
-        hasMore: false,
-      };
+              : row.mentions.some((mention) => mention.userId === this.userId)),
+        )
+        .slice(-50);
+      return { people: this.#contentPeople(messages), messages, hasMore: false };
+    }
     if (name === "team.files.page") {
       const { channelId } = hostApi[name].payload.parse(input);
       return {
@@ -566,6 +747,206 @@ export class MockTeamHost {
           registered: true,
         };
       const command = TeamCommandSchema.parse(common);
+      if (
+        command.type === "team.share.participant.remove" ||
+        command.type === "team.share.participant.restore"
+      ) {
+        const share = this.shares.get(command.shareId);
+        if (
+          !share ||
+          share.role !== "owner" ||
+          share.state !== "active" ||
+          (this.bootstrap.member.role === "member" && this.sharingPolicy !== "members")
+        )
+          throw new OpensteerError({ code: "forbidden", message: "Share administration required" });
+        const key = `${command.shareId}:${command.principalId}`;
+        if (command.type === "team.share.participant.remove")
+          this.removedShareParticipants.add(key);
+        else this.removedShareParticipants.delete(key);
+        return { type: command.type };
+      }
+      if (command.type === "team.share.offer") {
+        const channel = this.channels.get(command.channelId),
+          partner = this.partners.get(command.linkId);
+        if (
+          !channel?.can.manage ||
+          !partner ||
+          partner.state !== "active" ||
+          this.sharingPolicy === "off" ||
+          channel.name.toLowerCase() === "general" ||
+          channel.kind === "dm" ||
+          channel.kind === "group_dm"
+        )
+          throw new OpensteerError({ code: "forbidden", message: "This channel cannot be shared" });
+        const id = crypto.randomUUID();
+        this.shares.set(id, {
+          id,
+          channelId: channel.id,
+          partnerName: partner.partnerName,
+          role: "owner",
+          state: "offered",
+          generation: 1,
+          name: channel.name,
+          ready: false,
+          localApproved:
+            this.bootstrap.member.role !== "member" || this.sharingPolicy === "members",
+        });
+        return { type: command.type, shareId: id };
+      }
+      if (command.type === "team.share.agents.set") {
+        const share = this.shares.get(command.shareId);
+        const channel = share?.channelId ? this.channels.get(share.channelId) : undefined;
+        if (!share || !channel?.can.manage)
+          throw new OpensteerError({ code: "forbidden", message: "Channel management required" });
+        share.agentsEnabled = command.enabled;
+        if (channel.share) channel.share.agentsEnabled = command.enabled;
+        this.publish();
+        return { type: command.type };
+      }
+      if (command.type === "team.share.approve" || command.type === "team.share.end") {
+        const share = this.shares.get(command.shareId);
+        if (!share || (this.bootstrap.member.role === "member" && this.sharingPolicy !== "members"))
+          throw new OpensteerError({ code: "forbidden", message: "Share administration required" });
+        if (command.type === "team.share.approve") share.localApproved = true;
+        else {
+          share.state = "ended";
+          share.generation++;
+          const c = share.channelId ? this.channels.get(share.channelId) : undefined;
+          if (c?.share) {
+            c.share.state = "disconnected";
+            if (share.role === "follower") c.can.post = false;
+          }
+        }
+        this.publish();
+        return { type: command.type };
+      }
+      if (command.type === "team.share.accept") {
+        const share = this.shares.get(command.shareId);
+        if (!share || share.role !== "follower" || share.state !== "offered")
+          throw new OpensteerError({ code: "not_found", message: "Shared channel not found" });
+        await this.read("commands.dispatch", {
+          type: "team.channel.create",
+          id: command.id,
+          kind: command.kind,
+          name: command.name,
+          peopleOnly: command.peopleOnly,
+          access: command.access,
+        });
+        share.channelId = command.id;
+        share.state = "active";
+        share.ready = true;
+        const channel = this.channels.get(command.id)!;
+        channel.share = {
+          role: "follower",
+          state: "shared",
+          teamId:
+            [...this.partners.values()].find((p) => p.partnerName === share.partnerName)
+              ?.partnerTeamId ?? this.teamId,
+          teamName: share.partnerName,
+        };
+        this.publish();
+        return { type: command.type, channel };
+      }
+      if (command.type.startsWith("team.partner.") || command.type === "team.sharing.policy.set") {
+        const admin = this.bootstrap.member.role !== "member";
+        const fail = () => {
+          throw new OpensteerError({ code: "forbidden", message: "Team sharing action refused" });
+        };
+        if (command.type === "team.sharing.policy.set") {
+          if (!admin) fail();
+          this.sharingPolicy = command.policy;
+          if (command.policy === "off")
+            for (const row of this.partners.values()) row.connected = false;
+        } else if (command.type === "team.partner.invite.create") {
+          if (this.sharingPolicy === "off" || (this.sharingPolicy === "admins" && !admin)) fail();
+          const id = crypto.randomUUID(),
+            createdAt = new Date().toISOString(),
+            expiresAt = new Date(Date.now() + 600_000).toISOString();
+          this.partnerInvites.set(id, {
+            id,
+            createdBy: this.userId,
+            createdAt,
+            expiresAt,
+            consumedAt: null,
+            revokedAt: null,
+          });
+          return {
+            type: command.type,
+            invite: { ...this.partnerInvites.get(id)!, canRevoke: true },
+            offer: serializeTeamPartnerOffer({
+              teamId: this.teamId,
+              origin: this.origin,
+              hostInstanceId: createId("hostInstance"),
+              hostKeyFingerprint: `sha256:${"A".repeat(43)}`,
+              selector: id,
+              verifier: (crypto.randomUUID() + crypto.randomUUID())
+                .replaceAll("-", "")
+                .slice(0, 43),
+              expiresAt,
+            }),
+          };
+        } else if (command.type === "team.partner.invite.redeem") {
+          if (this.sharingPolicy === "off" || (this.sharingPolicy === "admins" && !admin)) fail();
+          const offer = parseTeamPartnerOffer(command.offer);
+          if (Date.parse(offer.expiresAt) <= Date.now()) fail();
+          const approved = admin || this.sharingPolicy === "members";
+          const link = TeamPartnerLinkSchema.parse({
+            id: crypto.randomUUID(),
+            partnerTeamId: offer.teamId,
+            partnerOrigin: offer.origin,
+            partnerHostInstanceId: offer.hostInstanceId,
+            partnerHostKeyFingerprint: offer.hostKeyFingerprint,
+            partnerName: new URL(offer.origin).hostname.slice(0, 160),
+            role: "dialer",
+            state: "pending",
+            localApproved: approved,
+            partnerApproved: false,
+            createdBy: this.userId,
+            approvedBy: approved ? this.userId : null,
+            createdAt: new Date().toISOString(),
+            approvedAt: approved ? new Date().toISOString() : null,
+            lastSeenAt: null,
+            revokedAt: null,
+            revokedBy: null,
+            lastError: null,
+            connected: false,
+            canApprove: !approved && admin,
+            canRevoke: true,
+          });
+          this.partners.set(link.id, link);
+          return { type: command.type, link };
+        } else if (command.type === "team.partner.invite.revoke") {
+          const invite = this.partnerInvites.get(command.inviteId);
+          if (!invite || (!admin && invite.createdBy !== this.userId)) fail();
+          invite!.revokedAt = new Date().toISOString();
+        } else if (
+          command.type === "team.partner.approve" ||
+          command.type === "team.partner.revoke"
+        ) {
+          const row = this.partners.get(command.linkId);
+          if (!row || row.state === "revoked") fail();
+          if (command.type === "team.partner.approve") {
+            if (this.sharingPolicy === "off" || (!admin && this.sharingPolicy !== "members"))
+              fail();
+            row!.localApproved = true;
+            row!.approvedBy = this.userId;
+            row!.approvedAt = new Date().toISOString();
+            row!.state = row!.partnerApproved ? "active" : "pending";
+          } else {
+            if (
+              !admin &&
+              this.sharingPolicy !== "members" &&
+              !(row!.createdBy === this.userId && !row!.localApproved)
+            )
+              fail();
+            row!.state = "revoked";
+            row!.revokedAt = new Date().toISOString();
+            row!.revokedBy = "local";
+            row!.connected = false;
+          }
+        }
+        return { type: command.type };
+      }
       if (isMockKnowledgeCommand(command))
         return this.knowledge.command(command, {
           kind: "human",
@@ -928,6 +1309,21 @@ export class MockTeamHost {
         return { type: command.type };
       }
       if (command.type === "team.message.send") {
+        const channel = this.channels.get(command.channelId);
+        if (!channel?.can.post)
+          throw new OpensteerError({ code: "forbidden", message: "This channel is read only" });
+        if (
+          channel.share?.role === "follower" &&
+          [...this.partners.values()].some(
+            (p) => p.partnerTeamId === channel.share?.teamId && !p.connected,
+          )
+        )
+          throw new OpensteerError({
+            code: "conflict",
+            reason: "partner-unreachable",
+            message: "Partner is unreachable",
+            retryable: true,
+          });
         let message = [...this.messages.values()].find(
           (row) =>
             row.clientMessageId === command.clientMessageId && row.authorUserId === this.userId,
@@ -989,7 +1385,8 @@ export class MockTeamHost {
         )
         .sort((a, b) => Number(BigInt(a.id) - BigInt(b.id)));
       return {
-        channel: this.channels.get(payload.channelId),
+        people: this.#contentPeople(rows),
+        channel: this.#channelView(payload.channelId),
         messages: payload.page.direction === "after" ? rows.slice(0, 50) : rows.slice(-50),
         hasMore: rows.length > 50,
         throughSeq: String(this.#seq),
@@ -1010,6 +1407,7 @@ export class MockTeamHost {
         )
         .sort((a, b) => Number(BigInt(b.id) - BigInt(a.id)));
       return {
+        people: this.#contentPeople(matches.slice(0, 50)),
         results: matches.slice(0, 50).map((message) => ({
           message,
           source: {
@@ -1075,8 +1473,17 @@ export class MockTeamHost {
     const channel = this.channels.get(input.channelId);
     if (!channel) throw new Error("Unknown channel.");
     const authorUserId = input.authorUserId ?? this.userId;
-    if (!this.members.some((member) => member.userId === authorUserId))
-      throw new Error("Unknown member.");
+    if (
+      !this.members.some((member) => member.userId === authorUserId) &&
+      !(
+        channel.share &&
+        this.remotePeople[authorUserId] &&
+        this.shareParticipants
+          .get(input.channelId)
+          ?.some((person) => person.userId === authorUserId && person.state === "active")
+      )
+    )
+      throw new Error("Unknown channel participant.");
     const message = TeamMessageSchema.parse({
       authorUserId,
       authorKind: "human",

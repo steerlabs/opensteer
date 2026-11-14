@@ -134,6 +134,14 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     reason:
       "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
   },
+  "apps/host/src/team-partners/identity.ts": {
+    counts: {
+      "document.deploymentShape.kind": 1,
+      "descriptor.kind": 1,
+    },
+    reason:
+      "Partner links pin the peer's signed identity as a team before any partner frame is accepted.",
+  },
   "apps/host/src/team-links/service.ts": {
     counts: {
       "error?.details?.behind": 2,

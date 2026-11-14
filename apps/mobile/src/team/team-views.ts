@@ -1,3 +1,4 @@
+import { channelShareView, pendingSendView, type TeamPerson } from "@opensteer/client/team";
 import { teamAskStatuses } from "@opensteer/client/team";
 import type { PendingTeamSend, TeamSidebar, TeamTimeline } from "@opensteer/client/team";
 import { teamAgentHandle } from "@opensteer/core";
@@ -31,9 +32,9 @@ import { firstName } from "./status-words.js";
  * here decides access — the team's `can` facts do.
  */
 
-export type MemberDirectory = ReadonlyMap<string, TeamMember>;
+export type MemberDirectory = ReadonlyMap<string, TeamPerson>;
 
-export function memberDirectory(members: readonly TeamMember[]): MemberDirectory {
+export function memberDirectory(members: readonly TeamPerson[]): MemberDirectory {
   return new Map(members.map((member) => [member.userId, member]));
 }
 
@@ -49,6 +50,7 @@ export function personView(
     name: member?.displayName ?? "Someone",
     handle: member?.handle ?? "someone",
     avatarUri: member?.image ?? null,
+    ...(member?.externalTeam ? { externalTeam: member.externalTeam } : {}),
     presence: online === undefined ? null : online ? "active" : "away",
   };
 }
@@ -71,6 +73,12 @@ export function channelHeader(input: {
 }): ChannelHeaderView {
   const { channel } = input;
   return {
+    ...(channel.share
+      ? {
+          shareLabel: channelShareView(channel.share)!.label,
+          shareDetail: channelShareView(channel.share)!.detail,
+        }
+      : {}),
     id: channel.id,
     kind: channelKind(channel.kind),
     name: channel.name,
@@ -108,6 +116,7 @@ export function drawerSection(input: {
       mentions: row.mentionCount,
       peopleOnly: row.channel.peopleOnly,
       muted: row.notificationLevel === "muted",
+      shared: row.channel.share?.state === "shared",
     }))
     .sort((left, right) => left.name.localeCompare(right.name));
   const dmRows = rows
@@ -279,6 +288,7 @@ export function mentionView(
   if (mention.kind === "agent") {
     const mine = mention.userId === viewerId;
     return {
+      ...(member?.externalTeam ? { externalTeam: member.externalTeam } : {}),
       handle: teamAgentHandle(handle),
       label: mine ? "@My agent" : `@${member?.displayName ?? "Someone"}'s agent`,
       // Another person's agent waits for its owner's approval.
@@ -289,6 +299,7 @@ export function mentionView(
     };
   }
   return {
+    ...(member?.externalTeam ? { externalTeam: member.externalTeam } : {}),
     handle,
     label: `@${member?.displayName ?? handle}`,
     kind: mention.userId === viewerId ? "me" : "person",
@@ -425,6 +436,7 @@ function pendingView(
   viewerId: string,
   members: MemberDirectory,
   connected: boolean,
+  retry: Parameters<typeof pendingSendView>[2],
 ): MessageView {
   return {
     id: `pending:${send.command.clientMessageId}`,
@@ -439,12 +451,7 @@ function pendingView(
     edited: false,
     pinned: false,
     continued: false,
-    send:
-      send.failure !== null
-        ? { kind: "failed", reason: send.failure }
-        : connected
-          ? { kind: "sending" }
-          : { kind: "queued" },
+    send: pendingSendView(send, connected, retry),
     thread: null,
     agentRun: null,
   };
@@ -463,6 +470,7 @@ export function timelineItems(input: {
   readonly previews: ReadonlyMap<string, string>;
   readonly lastReadMessageId: string | null;
   readonly pending: readonly PendingTeamSend[];
+  readonly sendErrors?: Readonly<Record<string, unknown>> | undefined;
   readonly connected: boolean;
   readonly now: Date;
   /** In a thread the root is drawn above the list, not in it. */
@@ -534,7 +542,18 @@ export function timelineItems(input: {
     if (scope.kind === "channel" ? root !== null : root !== scope.rootId) continue;
     items.push({
       kind: "message",
-      message: pendingView(send, viewerId, members, input.connected),
+      message: pendingView(
+        send,
+        viewerId,
+        members,
+        input.connected,
+        input.sendErrors?.[send.command.clientMessageId]
+          ? {
+              error: input.sendErrors[send.command.clientMessageId],
+              teamName: input.timeline.channel?.share?.teamName,
+            }
+          : null,
+      ),
     });
   }
   return items;
@@ -574,9 +593,10 @@ export function mentionOptions(input: {
   readonly viewerId: string;
   readonly members: readonly TeamMember[];
   readonly reach: AgentReach;
+  readonly people?: readonly TeamPerson[];
 }): MentionOption[] {
   const query = input.query.toLowerCase();
-  const me = input.members.find((member) => member.userId === input.viewerId);
+  const me = (input.people ?? input.members).find((member) => member.userId === input.viewerId);
   const options: MentionOption[] = [];
   if (input.reach !== "people-only") {
     const handle = me === undefined ? null : teamAgentHandle(me.handle);
@@ -594,8 +614,8 @@ export function mentionOptions(input: {
         disabled: input.reach !== "available",
       });
   }
-  for (const member of input.members) {
-    if (member.userId === input.viewerId || member.state !== "active") continue;
+  for (const member of input.people ?? input.members.filter((row) => row.state === "active")) {
+    if (member.userId === input.viewerId) continue;
     const name = member.displayName.toLowerCase();
     if (query === "" || name.includes(query) || member.handle.startsWith(query))
       options.push({

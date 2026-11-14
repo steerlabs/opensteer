@@ -82,7 +82,7 @@ export type PersonalTeamLink = z.infer<typeof PersonalTeamLinkSchema>;
 export const PersonalTeamRequestMirrorSchema = z.strictObject({
   teamId: DeploymentIdSchema,
   requestId: TeamAgentRequestIdSchema,
-  kind: TeamAgentRequestKindSchema.default("self"),
+  kind: TeamAgentRequestKindSchema,
   remoteState: TeamAgentRequestStateSchema.default("queued"),
   presentation: TeamAskPresentationSchema.nullable().default(null),
   consentExpiresAt: IsoDateTimeSchema.nullable().default(null),

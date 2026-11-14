@@ -1,3 +1,4 @@
+import { withTeamPeerVersion } from "@opensteer/database/team-access";
 import {
   OpensteerError,
   type TeamSource,
@@ -74,6 +75,7 @@ export class TeamLinkEndpoint {
     const refillThreshold = Math.floor(returnWindowSize / 2);
     let active = true;
     let hello = false;
+    let peerVersion = 0;
     let work = Promise.resolve();
     let queued = 0;
     const offline = () => {
@@ -131,58 +133,60 @@ export class TeamLinkEndpoint {
       deliver: (refill = false) => {
         if (!refill) deliveryRequested = true;
         if (delivery) return delivery;
-        delivery = Promise.resolve().then(async () => {
-          try {
-            do {
-              deliveryRequested = false;
-              if (!hello || !active) return;
-              const capacity = returnWindowSize - inFlightReturns.size;
-              if (!capacity) return;
-              const revision = access.revision;
-              const pending = await requests.pending(linkId, [...delivered], capacity);
-              returnBacklog = pending.length === capacity;
-              const batches: (typeof pending)[number][][] = [];
-              let batch: (typeof pending)[number][] = [];
-              for (const request of pending) {
-                const next = [...batch, request];
-                if (
-                  batch.length &&
-                  (batch.length === 32 ||
-                    Buffer.byteLength(JSON.stringify({ type: "requests", requests: next })) >
-                      teamLinkMaxFrameBytes)
-                ) {
-                  batches.push(batch);
-                  batch = [];
+        delivery = withTeamPeerVersion(peerVersion, () =>
+          Promise.resolve().then(async () => {
+            try {
+              do {
+                deliveryRequested = false;
+                if (!hello || !active) return;
+                const capacity = returnWindowSize - inFlightReturns.size;
+                if (!capacity) return;
+                const revision = access.revision;
+                const pending = await requests.pending(linkId, [...delivered], capacity);
+                returnBacklog = pending.length === capacity;
+                const batches: (typeof pending)[number][][] = [];
+                let batch: (typeof pending)[number][] = [];
+                for (const request of pending) {
+                  const next = [...batch, request];
+                  if (
+                    batch.length &&
+                    (batch.length === 32 ||
+                      Buffer.byteLength(JSON.stringify({ type: "requests", requests: next })) >
+                        teamLinkMaxFrameBytes)
+                  ) {
+                    batches.push(batch);
+                    batch = [];
+                  }
+                  batch.push(request);
                 }
-                batch.push(request);
-              }
-              if (batch.length) batches.push(batch);
-              for (const batch of batches) {
-                await access.handoff(
-                  revision,
-                  async () => {
-                    const current = await requests.pending(linkId, [...delivered], capacity);
-                    return batch.every((item) =>
-                      current.some((entry) => entry.request.id === item.request.id),
-                    );
-                  },
-                  () => {
-                    write({ type: "requests", requests: batch });
-                    for (const item of batch) {
-                      delivered.add(item.request.id);
-                      if (item.request.kind === "return") inFlightReturns.add(item.request.id);
-                    }
-                  },
-                );
-              }
-            } while (
-              deliveryRequested ||
-              (returnBacklog && inFlightReturns.size <= refillThreshold)
-            );
-          } finally {
-            delivery = undefined;
-          }
-        });
+                if (batch.length) batches.push(batch);
+                for (const batch of batches) {
+                  await access.handoff(
+                    revision,
+                    async () => {
+                      const current = await requests.pending(linkId, [...delivered], capacity);
+                      return batch.every((item) =>
+                        current.some((entry) => entry.request.id === item.request.id),
+                      );
+                    },
+                    () => {
+                      write({ type: "requests", requests: batch });
+                      for (const item of batch) {
+                        delivered.add(item.request.id);
+                        if (item.request.kind === "return") inFlightReturns.add(item.request.id);
+                      }
+                    },
+                  );
+                }
+              } while (
+                deliveryRequested ||
+                (returnBacklog && inFlightReturns.size <= refillThreshold)
+              );
+            } finally {
+              delivery = undefined;
+            }
+          }),
+        );
         return delivery;
       },
       cancel: (requestId: TeamAgentRequestId) => {
@@ -225,6 +229,7 @@ export class TeamLinkEndpoint {
           if (frame.type === "hello") {
             if (hello) throw linkError("bad_request");
             checkTeamVersion(String(frame.teamApiVersion));
+            peerVersion = frame.teamApiVersion;
             hello = true;
             clearTimeout(deadline);
             await links.seen(linkId);
@@ -253,10 +258,12 @@ export class TeamLinkEndpoint {
             await send({ type: "pong" });
           } else {
             try {
-              const result = await this.call(linkId, frame, (result) => {
-                write({ type: "result", id: frame.id, result });
-                return result;
-              });
+              const result = await withTeamPeerVersion(peerVersion, () =>
+                this.call(linkId, frame, (result) => {
+                  write({ type: "result", id: frame.id, result });
+                  return result;
+                }),
+              );
               if (result.kind === "accepted" && result.request.kind === "return") {
                 delivered.delete(result.request.id);
                 inFlightReturns.delete(result.request.id);
@@ -282,7 +289,9 @@ export class TeamLinkEndpoint {
                   message:
                     error instanceof TeamKnowledgeFailure
                       ? [error.message, error.next].filter(Boolean).join("\n").slice(0, 2000)
-                      : "Team request is unavailable",
+                      : error instanceof OpensteerError && error.reason === "api-version-mismatch"
+                        ? error.message
+                        : "Team request is unavailable",
                   retryable:
                     !(error instanceof OpensteerError) ||
                     error.retryable ||
@@ -350,7 +359,7 @@ export class TeamLinkEndpoint {
       if (result.kind === "channels")
         await links.database.transaction().execute(async (tx) => {
           for (const channel of result.result.channels) {
-            const rights = await this.options.resolver.channel(
+            const rights = await this.options.resolver.peerChannel(
               tx,
               { kind: "agent", userId: link.ownerUserId },
               channel.id,
@@ -374,7 +383,7 @@ export class TeamLinkEndpoint {
 
   async #source(userId: TeamActor["userId"], source: TeamSource): Promise<void> {
     await this.options.links.database.transaction().execute(async (tx) => {
-      const rights = await this.options.resolver.channel(
+      const rights = await this.options.resolver.peerChannel(
         tx,
         { kind: "agent", userId },
         source.channelId,

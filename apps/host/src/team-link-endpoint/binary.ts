@@ -100,10 +100,14 @@ export class TeamLinkBinary {
 
   async #channel(
     source: TeamSource,
-    userId: Parameters<TeamAccessResolver["channel"]>[1]["userId"],
+    userId: Parameters<TeamAccessResolver["peerChannel"]>[1]["userId"],
   ) {
     return this.endpoint.options.links.database.transaction().execute(async (tx) => {
-      const rights = await this.resolver.channel(tx, { kind: "agent", userId }, source.channelId);
+      const rights = await this.resolver.peerChannel(
+        tx,
+        { kind: "agent", userId },
+        source.channelId,
+      );
       if (!rights.read || rights.peopleOnly) throw linkError();
       return true;
     });

@@ -557,3 +557,18 @@
 .teams-welcome__inline {
   flex: none;
 }
+
+.team-external {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 500;
+  margin-inline-start: 0.4em;
+  white-space: nowrap;
+}
+
+.team-share-notice {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  margin: 0;
+  padding: 0.75rem 1rem;
+}

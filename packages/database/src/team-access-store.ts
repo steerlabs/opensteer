@@ -1,3 +1,5 @@
+import { teamAskerCanPost, cancelUnavailableSharedAsks } from "./team-shared-agents.js";
+import { teamSharedChannelsApiVersion } from "@opensteer/protocol";
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
   OpensteerError,
@@ -41,6 +43,26 @@ export function teamConflict(message: string, reason?: string): never {
   throw new OpensteerError({ code: "conflict", message, ...(reason ? { reason } : {}) });
 }
 
+const teamPeerVersion = new AsyncLocalStorage<number>();
+export function withTeamPeerVersion<Value>(version: number, run: () => Value): Value {
+  return teamPeerVersion.run(version, run);
+}
+export function teamPeerSupportsSharedChannels() {
+  return (
+    (teamPeerVersion.getStore() ?? teamSharedChannelsApiVersion) >= teamSharedChannelsApiVersion
+  );
+}
+export function assertTeamSharedChannelVersion(shared: boolean) {
+  if (shared && !teamPeerSupportsSharedChannels())
+    teamConflict(
+      "Update Opensteer to use shared channels and their external audience.",
+      "api-version-mismatch",
+    );
+}
+export function teamSharedChannelIds() {
+  return sql<TeamChannelId>`(select channel_id from team_shares where channel_id is not null and (state='active' or role='follower'))`;
+}
+
 export function teamGroupPaths(userId: UserId | RawBuilder<unknown>) {
   return sql`with recursive member_groups(id, path) as (
     select p.group_id, array[p.group_id] from team_group_people p
@@ -52,13 +74,23 @@ export function teamGroupPaths(userId: UserId | RawBuilder<unknown>) {
     where cardinality(p.path)<16 and not e.parent_group_id=any(p.path)
   )`;
 }
+export function teamChannelPeopleOnly() {
+  return sql<boolean>`(c.people_only or exists(select 1 from team_shares s where s.channel_id=c.id and s.role='follower' and s.people_only))`;
+}
+function teamChannelAgentsBlocked() {
+  return sql<boolean>`(${teamChannelPeopleOnly()} or exists(select 1 from team_shares s where s.channel_id=c.id and s.state='active' and not s.agents_enabled))`;
+}
 export function teamReadableChannelIds(
   userId: UserId | RawBuilder<unknown>,
   kind: TeamActor["kind"],
+  localAclOnly = false,
 ) {
   return sql<TeamChannelId>`(${teamGroupPaths(userId)}
-    select c.id from team_channels c where (${kind}='human' or not c.people_only)
+    select c.id from team_channels c where (${kind}='human' or not ${teamChannelAgentsBlocked()})
     and exists(select 1 from team_members m where m.user_id=${userId} and m.state='active')
+    and (${localAclOnly} or not exists(select 1 from team_shares s where s.channel_id=c.id and s.role='follower' and not s.ready and s.state<>'ended'))
+    and (${localAclOnly} or not exists(select 1 from team_shares s join team_share_participants p on p.share_id=s.id
+      where s.channel_id=c.id and s.role='follower' and p.principal_id=${userId} and p.state='removed'))
     and exists(select 1 from team_channel_members a where a.channel_id=c.id and
       ((a.subject_kind='person' and a.subject_id=${userId}) or
        (a.subject_kind='group' and a.subject_id in (select id from member_groups))))
@@ -66,13 +98,18 @@ export function teamReadableChannelIds(
 }
 
 export function teamReadableChannels(actor: TeamActor) {
-  return teamReadableChannelIds(actor.userId, actor.kind);
+  return teamPeerSupportsSharedChannels()
+    ? teamReadableChannelIds(actor.userId, actor.kind)
+    : sql<TeamChannelId>`(select id from team_channels where id in ${teamReadableChannelIds(actor.userId, actor.kind)} and id not in ${teamSharedChannelIds()})`;
 }
 
 export class TeamAccessStore {
   readonly #sessions = new AsyncLocalStorage<{ sessionId: AuthSessionId; userId: UserId }>();
   #revision: Sequence = SequenceSchema.parse("0");
   readonly #closers = new Set<(effects: TeamStoreAccessEffects) => Promise<void> | void>();
+  readonly #beforeCommit = new Set<
+    (transaction: Transaction<DatabaseSchema>, effects: TeamStoreAccessEffects) => Promise<void>
+  >();
   readonly database: Kysely<DatabaseSchema>;
   constructor(database: Kysely<DatabaseSchema>) {
     this.database = database;
@@ -84,7 +121,7 @@ export class TeamAccessStore {
     return this.#sessions.run({ sessionId: session.id, userId: session.user.id }, run);
   }
   outsideHumanSession<Value>(run: () => Value): Value {
-    return this.#sessions.exit(run);
+    return teamPeerVersion.exit(() => this.#sessions.exit(run));
   }
   async checkSession(transaction: Transaction<DatabaseSchema>) {
     const session = this.#sessions.getStore();
@@ -119,6 +156,18 @@ export class TeamAccessStore {
     this.#closers.add(close);
     return () => {
       this.#closers.delete(close);
+    };
+  }
+  /** Hooks run under the access fence and use only this transaction. */
+  beforeAccessCommit(
+    write: (
+      transaction: Transaction<DatabaseSchema>,
+      effects: TeamStoreAccessEffects,
+    ) => Promise<void>,
+  ) {
+    this.#beforeCommit.add(write);
+    return () => {
+      this.#beforeCommit.delete(write);
     };
   }
   async link(transaction: Transaction<DatabaseSchema>, actor: TeamActor, linkId: TeamLinkId) {
@@ -173,6 +222,7 @@ export class TeamAccessStore {
         post: false,
         manage: false,
         peopleOnly: false,
+        shared: false,
       }
     );
   }
@@ -181,19 +231,48 @@ export class TeamAccessStore {
     actor: TeamActor,
     channelIds: readonly TeamChannelId[],
   ) {
-    type Authority = { read: boolean; post: boolean; manage: boolean; peopleOnly: boolean };
+    type Authority = {
+      read: boolean;
+      post: boolean;
+      manage: boolean;
+      peopleOnly: boolean;
+      shared: boolean;
+    };
     if (!channelIds.length) return new Map<TeamChannelId, Authority>();
     const result = await sql<
       Authority & { channelId: TeamChannelId }
     >`${teamGroupPaths(actor.userId)}
-      select c.id as channel_id,c.people_only,
-      coalesce(bool_or(a.subject_id is not null),false) and (not c.people_only or ${actor.kind}='human') as read,
-      coalesce(bool_or(a.level='post'),false) and c.archived_at is null and (not c.people_only or ${actor.kind}='human') as post,
+      select c.id as channel_id, c.id in ${teamSharedChannelIds()} as shared,${teamChannelPeopleOnly()} as people_only,
+      coalesce(bool_or(a.subject_id is not null),false) and (not ${teamChannelAgentsBlocked()} or ${actor.kind}='human')
+        and not exists(select 1 from team_shares s where s.channel_id=c.id and s.role='follower' and not s.ready and s.state<>'ended')
+        and not exists(select 1 from team_shares s join team_share_participants p on p.share_id=s.id where s.channel_id=c.id and s.role='follower' and p.principal_id=${actor.userId} and p.state='removed') as read,
+      coalesce(bool_or(a.level='post'),false) and c.archived_at is null and (not ${teamChannelAgentsBlocked()} or ${actor.kind}='human')
+        and not exists(select 1 from team_shares s where s.channel_id=c.id and s.role='follower' and
+          (s.state<>'active' or not s.ready or not exists(select 1 from team_sharing_settings where policy<>'off') or not exists(select 1 from team_partner_links l where l.id=s.partner_link_id and l.state='active') or not exists(select 1 from team_share_participants p where p.share_id=s.id and p.principal_id=${actor.userId} and p.state='active' and p.level='post'))) as post,
       (${actor.kind}='human' and (coalesce(bool_or(a.manage),false) or (c.kind in ('public','private') and m.role in ('owner','admin')))) as manage
       from team_channels c join team_members m on m.user_id=${actor.userId} and m.state='active'
       left join team_channel_members a on a.channel_id=c.id and ((a.subject_kind='person' and a.subject_id=m.user_id) or (a.subject_kind='group' and a.subject_id in(select id from member_groups)))
       where c.id in (${sql.join(channelIds)}) group by c.id,m.role`.execute(transaction);
     return new Map(result.rows.map(({ channelId, ...authority }) => [channelId, authority]));
+  }
+  async peerChannel(
+    transaction: Transaction<DatabaseSchema>,
+    actor: TeamActor,
+    channelId: TeamChannelId,
+  ) {
+    const authority = await this.channel(transaction, actor, channelId);
+    assertTeamSharedChannelVersion(authority.shared && (authority.read || authority.manage));
+    return authority;
+  }
+  async peerChannels(
+    transaction: Transaction<DatabaseSchema>,
+    actor: TeamActor,
+    channelIds: readonly TeamChannelId[],
+  ) {
+    const authorities = await this.channels(transaction, actor, channelIds);
+    for (const authority of authorities.values())
+      assertTeamSharedChannelVersion(authority.shared && (authority.read || authority.manage));
+    return authorities;
   }
   /** A person reads a topic granted to them, a group they are in, or everyone; their agent the same, never managing. */
   async topic(
@@ -223,9 +302,12 @@ export class TeamAccessStore {
     };
   }
   async mutate<Value>(
-    write: (
-      transaction: Transaction<DatabaseSchema>,
-    ) => Promise<{ readonly value: Value; readonly effects: TeamStoreAccessEffects }>,
+    write: (transaction: Transaction<DatabaseSchema>) => Promise<{
+      readonly value: Value;
+      readonly effects: TeamStoreAccessEffects;
+      /** Content-only replication must not invalidate unrelated buffered reads. */
+      readonly accessChanged?: boolean;
+    }>,
     afterAuthority?: (transaction: Transaction<DatabaseSchema>, value: Value) => Promise<void>,
   ): Promise<Value> {
     const committed = await this.database.transaction().execute(async (transaction) => {
@@ -247,6 +329,8 @@ export class TeamAccessStore {
         .execute();
       await this.checkSession(transaction);
       const result = await write(transaction);
+      if (result.accessChanged === false) return { ...result, revision: null };
+      for (const write of this.#beforeCommit) await write(transaction, result.effects);
       const effects = await this.#terminalize(transaction, result.effects);
       await afterAuthority?.(transaction, result.value);
       const state = await transaction
@@ -261,6 +345,7 @@ export class TeamAccessStore {
         .executeTakeFirstOrThrow();
       return { ...result, effects, revision: SequenceSchema.parse(state.revision) };
     });
+    if (committed.revision === null) return committed.value;
     if (BigInt(committed.revision) > BigInt(this.#revision)) this.#revision = committed.revision;
     const closed = await Promise.allSettled(
       [...this.#closers].map((close) =>
@@ -426,13 +511,30 @@ export class TeamAccessStore {
         request.channelId,
       );
       const asker = request.presentation?.asker;
-      const askerAuthority = asker
-        ? await this.channel(
-            transaction,
-            { kind: asker.actor, userId: asker.teamUserId },
-            request.channelId,
-          )
+      const askerAllowed =
+        !asker ||
+        (await teamAskerCanPost(
+          transaction,
+          this,
+          { kind: asker.actor, userId: asker.teamUserId },
+          request.channelId,
+        ));
+      const share = request.shareId
+        ? await transaction
+            .selectFrom("teamShares")
+            .select(["state", "partnerLinkId"])
+            .where("id", "=", request.shareId)
+            .executeTakeFirst()
         : null;
+      const shareActive =
+        !request.shareId ||
+        (share?.state === "active" &&
+          !!(await transaction
+            .selectFrom("teamPartnerLinks")
+            .select("id")
+            .where("id", "=", share.partnerLinkId)
+            .where("state", "=", "active")
+            .executeTakeFirst()));
       const trigger =
         asker?.actor === "agent"
           ? await transaction
@@ -444,7 +546,8 @@ export class TeamAccessStore {
       if (
         links.has(request.linkId) ||
         (trigger?.agentLinkId && links.has(trigger.agentLinkId)) ||
-        (askerAuthority && (!askerAuthority.read || !askerAuthority.post)) ||
+        !askerAllowed ||
+        !shareActive ||
         !authority.read ||
         !authority.post ||
         requests.has(request.id)
@@ -464,9 +567,14 @@ export class TeamAccessStore {
         .forUpdate()
         .execute();
     const affectedRequests = pending.filter((r) => requests.has(r.id));
+    const sharedPending = await transaction
+      .selectFrom("teamShareAsks")
+      .select(["triggerMessageId", "threadRootId"])
+      .where("outcome", "is", null)
+      .execute();
     await lockTeamMessages(
       transaction,
-      affectedRequests.flatMap((r) => [r.threadRootId, r.triggerMessageId]),
+      [...affectedRequests, ...sharedPending].flatMap((r) => [r.threadRootId, r.triggerMessageId]),
     );
     if (affectedRequests.length)
       await transaction
@@ -480,6 +588,13 @@ export class TeamAccessStore {
         .orderBy("id")
         .forNoKeyUpdate()
         .execute();
+    await transaction
+      .selectFrom("teamShareAsks")
+      .select("id")
+      .where("outcome", "is", null)
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
     for (const channelId of [...channels].sort()) {
       const affected = pending.filter((r) => r.channelId === channelId && requests.has(r.id));
       if (!affected.length) continue;
@@ -517,6 +632,8 @@ export class TeamAccessStore {
         }
       }
     }
+    for (const channelId of await cancelUnavailableSharedAsks(transaction, this))
+      channels.add(channelId);
     return { ...input, channels: [...channels], links: [...links], requests: [...requests] };
   }
   async contentWrite<Value>(
@@ -543,6 +660,19 @@ export class TeamAccessStore {
         .executeTakeFirstOrThrow();
       await this.checkSession(transaction);
       return write(transaction, await this.channel(transaction, actor, channelId));
+    });
+  }
+  async writeForPeer<Value>(
+    actor: TeamActor,
+    channelId: TeamChannelId,
+    write: (
+      transaction: Transaction<DatabaseSchema>,
+      authority: Awaited<ReturnType<TeamAccessStore["channel"]>>,
+    ) => Promise<Value>,
+  ) {
+    return this.contentWrite(actor, channelId, (transaction, authority) => {
+      assertTeamSharedChannelVersion(authority.shared && (authority.read || authority.manage));
+      return write(transaction, authority);
     });
   }
   /** Knowledge writes hold the access fence through commit; the writer authorizes inside it. */

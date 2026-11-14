@@ -16,6 +16,7 @@ export interface TeamTileView {
 }
 
 export interface PersonView {
+  readonly externalTeam?: string;
   readonly id: string;
   readonly name: string;
   /** Unique per team, set at join and never edited: "maya". */
@@ -43,6 +44,7 @@ export type FaceView =
  * (`@maya`, `@maya-agent`) and drawn with the reader's own words.
  */
 export interface MentionView {
+  readonly externalTeam?: string;
   readonly handle: string;
   /** "@My agent", "@Maya's agent", "@Maya Chen". */
   readonly label: string;
@@ -81,6 +83,7 @@ export interface StagedAttachmentView {
 }
 
 export type SendState =
+  | { readonly kind: "retryable"; readonly reason: string }
   | { readonly kind: "sent" }
   /** Not confirmed after a moment: "Sending…" takes the time's place. */
   | { readonly kind: "sending" }
@@ -205,6 +208,8 @@ export type TimelineItem =
 export type ChannelKind = "public" | "private" | "dm" | "group-dm";
 
 export interface ChannelHeaderView {
+  readonly shareLabel?: string;
+  readonly shareDetail?: string;
   readonly id: string;
   readonly kind: ChannelKind;
   /** "support", or the person's name in a DM, or "Leo, Priya". */
@@ -254,6 +259,7 @@ export interface ConnectionBannerView {
 
 /** One channel row in the drawer. */
 export interface ChannelRowView {
+  readonly shared?: boolean;
   readonly id: string;
   readonly kind: "public" | "private";
   readonly name: string;

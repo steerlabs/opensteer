@@ -1,4 +1,4 @@
-import { teamAskAudienceLabel } from "@opensteer/client/team";
+import { teamAskerLabel, teamAskAudienceLabel } from "@opensteer/client/team";
 import { useState } from "react";
 import type { NeedsYouTeamAskEntry } from "@opensteer/protocol";
 import type { HostClient } from "@opensteer/client/host";
@@ -17,7 +17,7 @@ export function TeamAskReview({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { presentation: ask } = entry;
-  const name = ask.asker.displayName + (ask.asker.actor === "agent" ? "'s agent" : "");
+  const name = teamAskerLabel(ask.asker);
   const decide = async (decision: "approve" | "decline") => {
     setPending(true);
     setError(null);
@@ -78,7 +78,11 @@ export function TeamAskReview({
           </p>
           <p>
             Approving lets your agent use your things and post its answer in #
-            {ask.audience.channelName}.
+            {ask.audience.channelName}
+            {ask.audience.externalTeams?.length
+              ? `, a channel shared with ${ask.audience.externalTeams.map((t) => t.name).join(", ")}`
+              : ""}
+            .
           </p>
         </>
       )}

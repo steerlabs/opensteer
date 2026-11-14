@@ -1,3 +1,5 @@
+import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
+import { linkedPersonalHost } from "./personal-host.test-support.js";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { Readable } from "node:stream";
@@ -11,8 +13,6 @@ import {
   ModelSelectionSchema,
   HarnessIdSchema,
   type ArtifactContentPart,
-  type UserId,
-  type TeamLinkId,
 } from "@opensteer/core";
 import {
   createDatabase,
@@ -21,32 +21,13 @@ import {
   needsYouPage,
   NotificationStore,
 } from "@opensteer/database";
-import {
-  ownTestDatabaseProducer,
-  cloneTestDatabase,
-} from "@opensteer/database/test-support/database";
+import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
-import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
-import {
-  teamPreviewMaxBytes,
-  TeamLinkResultSchema,
-  TeamRunRequestSchema,
-} from "@opensteer/protocol";
+import { teamPreviewMaxBytes } from "@opensteer/protocol";
 import { createLiveTeamFixture } from "../team/live-team.test-support.js";
 import { TeamRunFileTransfers } from "./files.js";
 import { TeamLinkNetwork } from "./network.js";
 import { PersonalTeamVault } from "./vault.js";
-import {
-  createPersonalRunFixturePort,
-  startPersonalQueuedRunFixture,
-} from "@opensteer/database/test-support/personal-run";
-import { pendingEvent } from "@opensteer/database/test-support/store";
-import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
-import { personalTeamRunOutcome } from "@opensteer/database/personal-team-run-store";
-import { TaskAdmissionService } from "../threads/task-admission-service.js";
-import { PersonalTeamRequests } from "./requests.js";
-import { TeamRunTools } from "./tools.js";
-import type { TeamLinkCallInput } from "../team-link-endpoint/contracts.js";
 
 it("uploads a real image and bounded preview from the personal Host and binds it to the team reply", async () => {
   const team = await createLiveTeamFixture();
@@ -239,122 +220,6 @@ it("uploads a real image and bounded preview from the personal Host and binds it
     await team.close();
   }
 });
-
-async function linkedPersonalHost(
-  team: Awaited<ReturnType<typeof createLiveTeamFixture>>,
-  teamUserId: UserId,
-  linkId: TeamLinkId,
-) {
-  const clone = await cloneTestDatabase("host");
-  try {
-    const { database } = await ownTestDatabaseProducer(clone.url, async () => {
-      const database = createDatabase({ connectionString: clone.url });
-      return { database, close: () => database.destroy() };
-    });
-    const owner = await seedPersonalFixture(database, tmpdir());
-    await team.database
-      .updateTable("teamLinks")
-      .set({ personalDeploymentId: owner.deploymentId })
-      .where("id", "=", linkId)
-      .execute();
-    const store = new OpensteerStore(database);
-    const runs = createPersonalRunFixturePort(store);
-    const task = await runs.createTask({ ownerId: owner.userId, suffix: "asking-peer" });
-    const execution = {
-      environmentId: owner.environmentId,
-      harnessInstanceId: task.harnessInstance.id,
-      modelSelection: task.thread.modelSelection,
-    };
-    const links = new PersonalTeamLinksStore(database);
-    await database
-      .insertInto("personalTeamLinks")
-      .values({
-        id: randomUUID(),
-        teamDeploymentId: team.deploymentId,
-        teamHostInstanceId: team.hostInstanceId,
-        hostKeyFingerprint: "fixture",
-        approvedOrigin: "https://team.example.invalid",
-        authorityEnvelope: { teamName: "Acme" },
-        state: "active",
-        remoteOwnerUserId: teamUserId,
-        remoteLinkId: linkId,
-      })
-      .execute();
-    const requests = new PersonalTeamRequestsStore(database);
-    const rpc = () => ({
-      call: async (input: TeamLinkCallInput) =>
-        TeamLinkResultSchema.parse(
-          await team.machine.endpoint.call(linkId, { ...input, id: randomUUID() }),
-        ),
-    });
-    const publisher = new PersonalTeamRequests({
-      links,
-      requests,
-      rpc,
-      admission: new TaskAdmissionService({
-        database,
-        execution: async () => execution,
-        publish() {},
-        revokeGrants() {},
-      }),
-      runs: { outcome: (request) => personalTeamRunOutcome(database, request) },
-    });
-    const tools = new TeamRunTools(links, requests, rpc);
-    const deliver = async () => {
-      for (const frame of await team.team.requests.pending(linkId))
-        await publisher.deliver(team.deploymentId, TeamRunRequestSchema.parse(frame));
-    };
-    const answer = async (
-      requestId: import("@opensteer/core").TeamAgentRequestId,
-      text: string,
-    ) => {
-      const request = (await requests.get(team.deploymentId, requestId))!;
-      const started = await startPersonalQueuedRunFixture(store, request.runId!);
-      const scope = {
-        runId: started.run.id,
-        threadId: started.run.threadId,
-        environmentId: owner.environmentId,
-        bindingGeneration: started.bindingGeneration,
-      };
-      for (const event of [
-        pendingEvent({
-          ...scope,
-          type: "assistant.message",
-          ordinal: 1,
-          data: { messageId: createId("message"), content: [{ type: "text", text }] },
-        }),
-        pendingEvent({
-          ...scope,
-          type: "run.completed",
-          ordinal: 2,
-          data: { status: "completed" },
-        }),
-      ])
-        await store.commitRunnerEvent({
-          environmentId: owner.environmentId,
-          runnerId: owner.runnerId,
-          runnerBootId: started.runnerBootId,
-          event,
-        });
-      await publisher.reconcileOne(request);
-    };
-    return {
-      database,
-      owner,
-      requests,
-      publisher,
-      tools,
-      runs,
-      task,
-      deliver,
-      answer,
-      close: clone.drop,
-    };
-  } catch (error) {
-    await clone.drop();
-    throw error;
-  }
-}
 
 it("round-trips an agent ask through owner consent and one private authored return, including decline and a human ask", async () => {
   const team = await createLiveTeamFixture();

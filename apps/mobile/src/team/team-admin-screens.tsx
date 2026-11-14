@@ -163,6 +163,7 @@ export function TeamSettingsScreen(props: TeamParams): ReactNode {
             ),
           onConnect: () => navigation.navigate("ConnectOpensteer", { teamId }),
           onPeople: () => navigation.navigate("TeamPeople", { teamId }),
+          onPartners: () => navigation.navigate("TeamPartners", { teamId }),
           onGroups: () => navigation.navigate("TeamGroups", { teamId }),
           onInvites: () => navigation.navigate("TeamInvites", { teamId }),
           onChannels: () => navigation.navigate("TeamChannels", { teamId }),

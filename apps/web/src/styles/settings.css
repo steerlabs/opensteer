@@ -603,6 +603,30 @@
   scrollbar-width: none;
 }
 
+.partner-settings-form {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-12);
+  min-width: 0;
+  padding: var(--space-16);
+}
+
+.partner-settings-form input {
+  width: 100%;
+  min-width: 0;
+}
+
+.partner-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+}
+
+.partner-settings-entry + .partner-settings-entry {
+  border-top: 1px solid var(--line);
+}
+
 .team-settings-nav::-webkit-scrollbar {
   display: none;
 }

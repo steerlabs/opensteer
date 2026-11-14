@@ -329,6 +329,18 @@ export async function startBrowserRuntime(
         });
         return;
       }
+      case "browser.close": {
+        // Like a real runtime, confirm at once; the Host otherwise waits out its close deadline.
+        engineSockets.get(message.channelId)?.close();
+        engineSockets.delete(message.channelId);
+        send({
+          ...message,
+          type: "browser.closed",
+          code: 1000,
+          reason: "Host closed the session.",
+        });
+        return;
+      }
       case "browser.profile.delete": {
         // A native profile is erased on its computer; this one keeps no files.
         send({ ...message, type: "browser.profile.delete.result", state: "deleted" });

@@ -1,3 +1,4 @@
+import { teamPeopleDirectory } from "@opensteer/client/team";
 import { useEffect, useMemo, useState } from "react";
 import type { TeamMember } from "@opensteer/protocol";
 import type { TeamSessionClient, TeamSessionSnapshot } from "@opensteer/client/team";
@@ -31,7 +32,13 @@ export function useTeamView(teamId: string | undefined, previews: ReadonlyMap<st
     if (!member) return null;
     return {
       viewerUserId: member.userId,
-      members: members.size > 0 ? members : new Map([[member.userId, member]]),
+      members: teamPeopleDirectory(
+        members.size > 0 ? members.values() : [member],
+        snapshot.channel
+          ? snapshot.peopleByChannel?.[snapshot.channel.scope.channelId]
+          : snapshot.people,
+        snapshot.channel ? snapshot.handlesByChannel?.[snapshot.channel.scope.channelId] : {},
+      ),
       linkOnline: new Map((linkPresence ?? []).map((row) => [row.ownerUserId, row.online])),
       previews,
       managedChannels: new Set(
@@ -53,6 +60,10 @@ export function useTeamView(teamId: string | undefined, previews: ReadonlyMap<st
     members,
     previews,
     snapshot?.bootstrap?.member,
+    snapshot?.people,
+    snapshot?.peopleByChannel,
+    snapshot?.handlesByChannel,
+    snapshot?.channel?.scope.channelId,
     snapshot?.sidebar,
     snapshot?.channel?.channel,
     snapshot?.thread?.channel,
@@ -62,7 +73,10 @@ export function useTeamView(teamId: string | undefined, previews: ReadonlyMap<st
     team,
     client,
     snapshot,
-    members: words.members,
+    members:
+      members.size > 0
+        ? members
+        : new Map([[snapshot.bootstrap!.member.userId, snapshot.bootstrap!.member]]),
     people,
     me: snapshot.bootstrap?.member ?? null,
     words,

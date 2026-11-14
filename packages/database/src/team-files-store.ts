@@ -15,6 +15,8 @@ import type { z } from "zod";
 import type { DatabaseSchema, TeamBlobTable, TeamMessageTable } from "./schema.js";
 import { TeamAccessStore, requireTeam } from "./team-access-store.js";
 import { appendTeamAudit } from "./team-audit-store.js";
+import { shareNotFound } from "./team-share-access.js";
+export { teamShareFileView } from "./team-share-files-store.js";
 
 export interface TeamFileAgent {
   readonly linkId: TeamLinkId;
@@ -85,6 +87,109 @@ export class TeamFilesStore {
     this.access = access;
     this.#storageLimitBytes = options.storageLimitBytes;
   }
+  async #lockStorage(t: Transaction<DatabaseSchema>) {
+    if (this.#storageLimitBytes !== undefined)
+      await sql`select pg_advisory_xact_lock(hashtextextended('team-storage', 0))`.execute(t);
+  }
+  async #reserveStorage(t: Transaction<DatabaseSchema>, reserved: number) {
+    if (this.#storageLimitBytes === undefined) return;
+    // Reservations remain charged until their bytes have been removed, including failed uploads.
+    const { used } = await t
+      .selectFrom(
+        t
+          .selectFrom("teamBlobs")
+          .select([
+            "storageKey",
+            sql<string>`max(case when remote_share_id is null then
+              size_bytes + coalesce(preview_size_bytes, case when state = 'uploading' and declared_type like 'image/%' then ${teamPreviewMaxBytes} else 0 end)
+              else (case when cache_original_reserved then size_bytes else 0 end) +
+                   (case when cache_preview_reserved then coalesce(preview_size_bytes,0) else 0 end)
+              end)`.as("reservedBytes"),
+          ])
+          .groupBy("storageKey")
+          .as("files"),
+      )
+      .select(sql<string>`coalesce(sum(reserved_bytes),0)`.as("used"))
+      .executeTakeFirstOrThrow();
+    if (Number(used) + reserved > this.#storageLimitBytes)
+      throw new OpensteerError({
+        code: "resource_exhausted",
+        reason: teamStorageFullReason,
+        message: teamStorageFullMessage,
+        details: { limitBytes: this.#storageLimitBytes },
+      });
+  }
+  async cacheWrite<Value>(
+    id: TeamBlobId,
+    write: (t: Transaction<DatabaseSchema>, row: Selectable<TeamBlobTable>) => Promise<Value>,
+  ) {
+    return this.access.knowledgeWrite(async (t) => {
+      await this.#lockStorage(t);
+      const row = await t
+        .selectFrom("teamBlobs")
+        .selectAll()
+        .where("id", "=", id)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!row || row.state !== "ready" || !row.remoteShareId || !(await remoteFileShare(t, row)))
+        shareNotFound();
+      const bound = await t
+        .selectFrom("teamMessageAttachments as a")
+        .innerJoin("teamMessages as m", "m.id", "a.messageId")
+        .select("a.messageId")
+        .where("a.blobId", "=", id)
+        .where("m.deletedAt", "is", null)
+        .executeTakeFirst();
+      if (!bound) shareNotFound();
+      return write(t, row);
+    });
+  }
+  async reserveCache(id: TeamBlobId, part: "original" | "preview") {
+    return this.cacheWrite(id, async (t, row) => {
+      const column = part === "original" ? "cacheOriginalReserved" : "cachePreviewReserved";
+      if (row[column]) return;
+      await this.#reserveStorage(
+        t,
+        Number(part === "original" ? row.sizeBytes : row.previewSizeBytes),
+      );
+      await t
+        .updateTable("teamBlobs")
+        .set({ [column]: true })
+        .where("id", "=", id)
+        .execute();
+    });
+  }
+  async releaseCache(id: TeamBlobId, part: "original" | "preview") {
+    await this.access.database
+      .updateTable("teamBlobs")
+      .set(part === "original" ? { cacheOriginalReserved: false } : { cachePreviewReserved: false })
+      .where("id", "=", id)
+      .execute();
+  }
+  async evictInactiveCaches(remove: (row: Selectable<TeamBlobTable>) => Promise<void>) {
+    await this.access.knowledgeWrite(async (t) => {
+      const rows = await t
+        .selectFrom("teamBlobs")
+        .selectAll()
+        .where("remoteShareId", "is not", null)
+        .where("state", "!=", "deleting")
+        .where((e) =>
+          e.or([e("cacheOriginalReserved", "=", true), e("cachePreviewReserved", "=", true)]),
+        )
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute();
+      for (const row of rows) {
+        if (await remoteFileShare(t, row)) continue;
+        await remove(row);
+        await t
+          .updateTable("teamBlobs")
+          .set({ cacheOriginalReserved: false, cachePreviewReserved: false })
+          .where("id", "=", row.id)
+          .execute();
+      }
+    });
+  }
   async begin(
     actor: TeamActor,
     channelId: TeamChannelId,
@@ -98,7 +203,7 @@ export class TeamFilesStore {
       image === metadata.previewSizeBytes > 0,
       "Only images carry a preview, and need one",
     );
-    return this.access.contentWrite(actor, channelId, async (t, a) => {
+    return this.access.writeForPeer(actor, channelId, async (t, a) => {
       requireTeam(a.post);
       if (actor.kind === "agent") requireTeam(agent);
       else requireTeam(!requestId && !agent);
@@ -132,27 +237,8 @@ export class TeamFilesStore {
         );
         return prior;
       }
-      if (this.#storageLimitBytes !== undefined) {
-        // A row reserves its bytes from begin until its files are removed from
-        // disk; an unfinished image holds the largest preview it may still send.
-        await sql`select pg_advisory_xact_lock(hashtextextended('team-storage', 0))`.execute(t);
-        const { used } = await t
-          .selectFrom("teamBlobs")
-          .select(
-            sql<string>`coalesce(sum(${sql.ref("sizeBytes")} + coalesce(${sql.ref("previewSizeBytes")}, case when ${sql.ref("state")} = 'uploading' and ${sql.ref("declaredType")} like 'image/%' then ${teamPreviewMaxBytes} else 0 end)), 0)`.as(
-              "used",
-            ),
-          )
-          .executeTakeFirstOrThrow();
-        const reserved = metadata.sizeBytes + (image ? teamPreviewMaxBytes : 0);
-        if (Number(used) + reserved > this.#storageLimitBytes)
-          throw new OpensteerError({
-            code: "resource_exhausted",
-            reason: teamStorageFullReason,
-            message: teamStorageFullMessage,
-            details: { limitBytes: this.#storageLimitBytes },
-          });
-      }
+      await this.#lockStorage(t);
+      await this.#reserveStorage(t, metadata.sizeBytes + (image ? teamPreviewMaxBytes : 0));
       const id = createId("teamBlob");
       return t
         .insertInto("teamBlobs")
@@ -195,6 +281,7 @@ export class TeamFilesStore {
       previewMediaType: "image/png" | "image/jpeg" | "image/webp" | null;
       previewSizeBytes: number;
       previewStorageKey: string | null;
+      previewSha256?: string | null;
     },
   ) {
     const observed = await this.access.database
@@ -202,7 +289,7 @@ export class TeamFilesStore {
       .selectAll()
       .where("id", "=", id)
       .executeTakeFirstOrThrow();
-    return this.access.contentWrite(actor, observed.channelId, async (t, a) => {
+    return this.access.writeForPeer(actor, observed.channelId, async (t, a) => {
       requireTeam(a.post);
       let link;
       if (actor.kind === "agent") {
@@ -237,6 +324,7 @@ export class TeamFilesStore {
           previewStorageKey: input.previewStorageKey,
           previewMediaType: input.previewMediaType,
           previewSizeBytes: input.previewSizeBytes || null,
+          previewSha256: input.previewSha256 ?? null,
           completedAt: new Date(),
         })
         .where("id", "=", id)
@@ -264,7 +352,7 @@ export class TeamFilesStore {
       .selectAll()
       .where("id", "=", id)
       .executeTakeFirstOrThrow();
-    await this.access.contentWrite(actor, row.channelId, async (t, a) => {
+    await this.access.writeForPeer(actor, row.channelId, async (t, a) => {
       requireTeam(a.post && row.uploaderUserId === actor.userId && row.uploaderKind === actor.kind);
       const bound = await t
         .selectFrom("teamMessageAttachments")
@@ -337,8 +425,14 @@ export class TeamFilesStore {
         .where("id", "=", id)
         .where("state", "=", "ready")
         .executeTakeFirst();
-      requireTeam(row);
-      requireTeam((await this.access.channel(t, actor, row.channelId)).read);
+      if (!row) shareNotFound();
+      requireTeam((await this.access.peerChannel(t, actor, row.channelId)).read);
+      let remoteShareId = row.remoteShareId;
+      if (remoteShareId) {
+        const share = await remoteFileShare(t, row);
+        if (!share) shareNotFound();
+        remoteShareId = share.id;
+      }
       const bound = await t
         .selectFrom("teamMessageAttachments as a")
         .innerJoin("teamMessages as m", "m.id", "a.messageId")
@@ -346,7 +440,7 @@ export class TeamFilesStore {
         .where("a.blobId", "=", id)
         .where("m.deletedAt", "is", null)
         .executeTakeFirst();
-      requireTeam(bound, "Only sent attachments can be downloaded");
+      if (!bound) shareNotFound();
       if (actor.kind === "agent" && recordRead)
         await appendTeamAudit(t, {
           actor,
@@ -358,12 +452,12 @@ export class TeamFilesStore {
           channelId: row.channelId,
           metadata: { personalDeploymentId: link?.personalDeploymentId ?? null },
         });
-      return { ...row, messageId: bound.messageId };
+      return { ...row, remoteShareId, messageId: bound.messageId };
     });
   }
   async page(actor: TeamActor, channelId: TeamChannelId, before?: TeamMessageId) {
     return this.access.database.transaction().execute(async (t) => {
-      requireTeam((await this.access.channel(t, actor, channelId)).read);
+      requireTeam((await this.access.peerChannel(t, actor, channelId)).read);
       let messages = t
         .selectFrom("teamMessageAttachments as a")
         .innerJoin("teamMessages as m", "m.id", "a.messageId")
@@ -402,4 +496,23 @@ export class TeamFilesStore {
       };
     });
   }
+}
+
+async function remoteFileShare(t: Transaction<DatabaseSchema>, row: Selectable<TeamBlobTable>) {
+  return t
+    .selectFrom("teamShares as s")
+    .innerJoin("teamPartnerLinks as l", "l.id", "s.partnerLinkId")
+    .innerJoin("teamPrincipals as p", (join) =>
+      join.on("p.id", "=", row.uploaderUserId).onRef("p.homeTeamId", "=", "l.partnerTeamId"),
+    )
+    .select("s.id")
+    .where("s.channelId", "=", row.channelId)
+    .where("s.state", "=", "active")
+    .where("l.state", "=", "active")
+    .where((eb) =>
+      eb.exists(
+        eb.selectFrom("teamSharingSettings").select("singletonKey").where("policy", "!=", "off"),
+      ),
+    )
+    .executeTakeFirst();
 }

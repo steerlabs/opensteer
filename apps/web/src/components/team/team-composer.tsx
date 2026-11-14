@@ -43,6 +43,7 @@ const pickerLimit = 7;
  */
 export function TeamComposer({
   notice,
+  onMentionQuery,
   agent,
   agentStartsOn = false,
   onAgentRecipient,
@@ -62,6 +63,7 @@ export function TeamComposer({
   typing = [],
 }: {
   readonly notice?: string | null;
+  readonly onMentionQuery?: ((query: string | null) => void) | undefined;
   readonly agent: MyAgentHere;
   /** The team Host's current recipient state for this thread. */
   readonly agentStartsOn?: boolean;
@@ -102,6 +104,9 @@ export function TeamComposer({
     else setLocalToAgent(enabled);
   };
   const [mention, setMention] = useState<MentionQuery | null>(null);
+  useEffect(() => {
+    onMentionQuery?.(mention?.query ?? null);
+  }, [mention?.query, onMentionQuery]);
   const [active, setActive] = useState(0);
   const [why, setWhy] = useState(false);
   const [dropping, setDropping] = useState(false);
@@ -529,7 +534,12 @@ function MentionList({
             <div key={`person-${item.person.id}`} {...common}>
               <PersonAvatar person={item.person} presence size={20} />
               <span className="at-list__text">
-                <span className="at-list__name">{item.person.name}</span>
+                <span className="at-list__name">
+                  {item.person.name}
+                  {item.person.externalTeam ? (
+                    <span className="team-external">External · {item.person.externalTeam}</span>
+                  ) : null}
+                </span>
                 <span className="at-list__detail">@{item.person.handle}</span>
               </span>
               {selected ? <Icon className="at-list__enter" name="corner-down-right" /> : null}
@@ -547,6 +557,7 @@ function MentionList({
               <span className="at-list__name">{agentName(item.owner)}</span>
               <span className="at-list__detail at-list__detail--wrap">
                 Ask {firstName(item.owner)}
+                {item.owner.externalTeam ? ` · External · ${item.owner.externalTeam}` : ""}
               </span>
             </span>
           </div>

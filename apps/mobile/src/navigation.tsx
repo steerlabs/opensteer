@@ -85,6 +85,7 @@ import {
   TeamSettingsScreen,
 } from "./team/team-admin-screens.js";
 import { TeamInvitesScreen } from "./team/invite-people-screen.js";
+import { TeamPartnerSettingsScreen } from "./team/team-partner-settings.js";
 import {
   CreateTeamScreen,
   DeleteTeamScreen,
@@ -402,6 +403,7 @@ const RootStack = createNativeStackNavigator({
     TeamGroup: { screen: TeamGroupScreen, options: { title: "Group" } },
     TeamNewGroup: { screen: TeamNewGroupScreen, options: { title: "New group" } },
     TeamInvites: { screen: TeamInvitesScreen, options: { title: "Invite people" } },
+    TeamPartners: { screen: TeamPartnerSettingsScreen, options: { title: "Partner teams" } },
     // Create a team or join with an invite, from the drawer and Settings.
     Teams: { screen: TeamsScreen, options: { headerLargeTitle: true, title: "Teams" } },
     CreateTeam: {
@@ -698,6 +700,7 @@ type OpensteerRootParamList = {
   readonly TeamGroup: { readonly teamId: string; readonly groupId: string };
   readonly TeamNewGroup: { readonly teamId: string };
   readonly TeamInvites: { readonly teamId: string };
+  readonly TeamPartners: { readonly teamId: string };
   readonly Teams: undefined;
   readonly CreateTeam: undefined;
   readonly TeamSetup: { readonly hostedTeamId: string };

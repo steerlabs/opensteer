@@ -306,6 +306,29 @@ function browserChanges(
   return changes;
 }
 
+/** Whether a session's row left the stream; a removed row shows nothing, acting included. */
+function removedFrom(listener: Listener, from: number, sessionId: string): boolean {
+  const rows = new Map<string, Record<string, unknown>>();
+  for (const [index, raw] of listener.messages.entries()) {
+    if (raw.type !== "host.browser-groups") continue;
+    const frame = raw.stream as {
+      rows?: Record<string, unknown>[];
+      add?: Record<string, unknown>[];
+      update?: Record<string, unknown>[];
+      remove?: string[];
+    };
+    for (const patch of [...(frame.rows ?? []), ...(frame.add ?? []), ...(frame.update ?? [])]) {
+      const id = `${raw.groupId ?? "groups"}:${String(patch.id)}`;
+      rows.set(id, { ...rows.get(id), ...patch });
+    }
+    for (const removed of frame.remove ?? []) {
+      const row = rows.get(`${raw.groupId ?? "groups"}:${removed}`);
+      if (index >= from && row?.sessionId === sessionId) return true;
+    }
+  }
+  return false;
+}
+
 function presenceOf(listener: Listener, from: number, sessionId: string) {
   return browserChanges(listener, "host.browser-groups", from)
     .filter((row) => row.sessionId === sessionId)
@@ -2397,8 +2420,13 @@ integration("Browser presence and conversation usage", () => {
     );
     const beforeClose = ownerElsewhere.messages.length;
     await host.runtime.browser.stop(host.ownerId, sessionId);
-    const terminalPresence = await until(() =>
-      presenceOf(ownerElsewhere, beforeClose, sessionId).find((presence) => !presence.acting),
+    // A fast close may coalesce "not acting" into the row's removal; either clears it.
+    const terminalPresence = await until(
+      () =>
+        presenceOf(ownerElsewhere, beforeClose, sessionId).find((presence) => !presence.acting) ??
+        (removedFrom(ownerElsewhere, beforeClose, sessionId)
+          ? { sessionId, removed: true }
+          : undefined),
     );
     await until(() => ofType(ownerElsewhere, "host.browser-sessions-changed", beforeClose)[0]);
     await until(() =>

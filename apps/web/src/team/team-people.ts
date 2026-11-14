@@ -1,3 +1,4 @@
+import type { TeamPerson } from "@opensteer/client/team";
 import { useEffect, useSyncExternalStore } from "react";
 import type { TeamMember } from "@opensteer/protocol";
 import type { TeamSessionClient } from "@opensteer/client/team";
@@ -18,13 +19,14 @@ export function teamTile(teamId: string, name: string): TeamTileView {
   return { name, color: tintOf(teamId) };
 }
 
-export function personView(member: TeamMember, viewerUserId: string | null): PersonView {
+export function personView(member: TeamPerson, viewerUserId: string | null): PersonView {
   return {
     id: member.userId,
     name: member.displayName,
     handle: member.handle,
     tint: tintOf(member.userId),
     avatarUrl: member.image,
+    ...(member.externalTeam ? { externalTeam: member.externalTeam } : {}),
     you: member.userId === viewerUserId,
   };
 }

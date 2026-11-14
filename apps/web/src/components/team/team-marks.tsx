@@ -150,6 +150,9 @@ export function MentionChip({ mention }: { readonly mention: MentionView }) {
     <span className={`mention mention--${mention.tone}`} data-handle={mention.handle}>
       {mention.tone === "agent" ? <span aria-hidden className="mention__dot" /> : null}@
       {mention.label}
+      {mention.externalTeam ? (
+        <span className="team-external">External · {mention.externalTeam}</span>
+      ) : null}
     </span>
   );
 }

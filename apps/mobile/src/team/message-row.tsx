@@ -21,7 +21,7 @@ export interface MessageRowActions {
   readonly onOpenThread: (rootId: string) => void;
   /** The owner's own agent reply: its private task. */
   readonly onOpenTask: (messageId: string) => void;
-  readonly onUnsent: (messageId: string, choice: "edit" | "delete") => void;
+  readonly onUnsent: (messageId: string, choice: "edit" | "delete" | "retry") => void;
 }
 
 /**
@@ -63,6 +63,11 @@ export const MessageRow = memo(
               <AppText numberOfLines={1} role="secondaryMedium" style={styles.name}>
                 {name}
               </AppText>
+              {person.externalTeam ? (
+                <AppText role="caption" tone="muted">
+                  External · {person.externalTeam}
+                </AppText>
+              ) : null}
               <SendStateLabel message={message} />
             </View>
           )}
@@ -81,12 +86,21 @@ export const MessageRow = memo(
           {message.continued && message.send.kind !== "sent" ? (
             <SendStateLabel message={message} />
           ) : null}
-          {message.send.kind === "failed" ? (
+          {message.send.kind === "failed" || message.send.kind === "retryable" ? (
             <View style={styles.unsent}>
               <AppText role="caption" style={styles.unsentReason} tone="danger">
-                Not sent: {message.send.reason}
+                {message.send.kind === "retryable"
+                  ? message.send.reason
+                  : `Not sent: ${message.send.reason}`}
               </AppText>
-              <TextAction label="Edit" onPress={() => actions.onUnsent(message.id, "edit")} />
+              {message.send.kind === "retryable" ? (
+                <TextAction
+                  label="Try again"
+                  onPress={() => actions.onUnsent(message.id, "retry")}
+                />
+              ) : (
+                <TextAction label="Edit" onPress={() => actions.onUnsent(message.id, "edit")} />
+              )}
               <TextAction label="Delete" onPress={() => actions.onUnsent(message.id, "delete")} />
             </View>
           ) : null}
@@ -132,7 +146,9 @@ function SendStateLabel(props: { readonly message: MessageView }): ReactNode {
       ? "Sending…"
       : send.kind === "queued"
         ? "Waiting for connection · sends when you're back"
-        : time;
+        : send.kind === "retryable"
+          ? "Unconfirmed"
+          : time;
   return (
     <AppText
       maxFontSizeMultiplier={controlFontScaleLimit}

@@ -15,6 +15,7 @@ export type TeamRole = "owner" | "admin" | "member";
 export interface TeamSettingsActions {
   readonly onProfile: () => void;
   readonly onNotifications: () => void;
+  readonly onPartners: () => void;
   readonly onConnect: () => void;
   readonly onPeople: () => void;
   readonly onGroups: () => void;
@@ -97,6 +98,11 @@ export function TeamSettingsBody(props: {
           ]}
         </RowGroup>
       </View>
+      <RowGroup>
+        {[
+          <LinkRow icon="link" key="partners" label="Partner teams" onPress={actions.onPartners} />,
+        ]}
+      </RowGroup>
       {admin ? (
         <View style={styles.group}>
           <SectionLabel>{`Manage ${team.name}`}</SectionLabel>

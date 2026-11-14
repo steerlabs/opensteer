@@ -61,6 +61,7 @@ describe("team session lifecycle", () => {
       const rootId = TeamMessageIdSchema.parse("1");
       const request = TeamAgentRequestSchema.parse({
         id: createId("teamAgentRequest"),
+        kind: "self",
         ownerUserId,
         channelId: mockTeamChannelId,
         threadRootId: rootId,

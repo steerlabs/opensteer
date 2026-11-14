@@ -3,7 +3,7 @@
 A team server is the same Host software with kind `team`, for shared chat and knowledge. A team
 runs it themselves or has Opensteer run it for them ([hosted teams](hosted-teams.md)). The team
 server authenticates members and relays content; personal Opensteer trusts it to do both honestly.
-Hostile team-server operators are outside this trust model. Membership and administrator roles
+Members trust their own team server; a partner server receives no membership or personal authority. Membership and administrator roles
 never grant access to another person's personal Opensteer, files, credentials or Mac. Each
 person's private Opensteer has kind `personal`; only that computer runs their agent. Families
 use the same team server. Operational steps live in the
@@ -141,9 +141,14 @@ session exchange both admit through `TeamInvitesStore.acceptInTransaction`
 
 ## Transport and versions
 
-Team API version 5 requires version 5 peers for asks that need approval and private returns.
+Team API version 6 carries shared-channel state, external audiences and the asker's team. Shared
+channels (including follower archives) require version 6 for apps and personal Opensteer. Older
+peers see only unshared channels in discovery and cross-channel results, cannot read or write shared
+channels, and receive no shared-channel requests on personal links. Version 5 remains the minimum
+for unshared work because it already sends explicit request kinds. Sharing an open channel ends an
+older app's subscription with an Opensteer update message.
 A team Host checks only `teamApiVersion`, before authentication and parsing on every team
-surface, including bootstrap, subscriptions, binary routes and the link. Personal Hosts check
+surface, including bootstrap, subscriptions, binary routes and the personal link. Partner sockets negotiate their own protocol. Personal Hosts check
 only the personal Host epoch. Team updates use [deploy/team](../deploy/team/README.md); desktop
 supervision updates personal Opensteer.
 
@@ -189,3 +194,59 @@ removing a person frees the files no message holds before the command returns, a
 uploads expire after a day. Link credentials and request provenance belong in headers, never URLs. Mobile push uses
 generic text and sealed previews through Account; no plaintext team content enters the push
 provider. Desktop notifications come from team sidebar sockets; there is no Web Push.
+
+## Partner teams
+
+Partner links are separate from person-owned agent links and grant no content access by themselves.
+The redeemer is always the dialer; the issuing team never fetches a partner-chosen address. Hosted
+teams dial public addresses only. Each side pins the other's signed team identity, origin, Host key
+and instance, then proves possession of that key against fresh challenges on every connection.
+Partner protocol compatibility is independent of the team-client API window. There is no bearer
+credential and no key rotation: changed identity requires revocation and a fresh pairing.
+
+Sharing defaults to administrators. An unaddressed invite still needs the issuing team's approval
+after it learns the redeemer's identity; members-propose requires local admin approval on both sides.
+The members policy allows member approvals and automatic acceptance. Turning sharing off closes
+connections and retains proposals and approvals; turning it back on reconnects them. Either team can
+revoke unilaterally, closing its sockets before returning and notifying the other when connected.
+A dialer learns a listener’s offline revocation at its next authenticated connection.
+
+## Shared channels
+
+A linked partner receives content only after a channel share is offered and accepted under each
+team's sharing policy. The owning team orders and authorizes every write; the partner serves its
+own local copy and relays its people's writes over the existing authenticated partner connection.
+Remote authors are content principals, never members, and gain no access to other channels,
+knowledge, sessions or personal Opensteer. The partner protocol names only share IDs and public
+message IDs; each receiving team maps them to its own local keys. A follower verifies rows
+attributed to its people against the writes it relayed; unconfirmed edits never replace the
+accepted authorship proof. Local profile cards must name people this team recorded for that share
+or its history. Imported history creates no pushes, agent requests or unread mentions. Agent context names the external team; shared rooms cannot
+be treated as an internal audience for knowledge.
+
+Sharing exposes the channel's full history, including past agent answers, and requires confirmation.
+The default channel and direct messages cannot be shared. File bytes stay on the uploader's team;
+the other team fetches originals and previews over the partner link and checks their size and digest
+before handing them to its own authenticated clients and agents. Verified remote bytes are cached
+in the receiving team's file storage and count against its quota. Deleting the message or ending
+the share evicts that copy; the uploader retains its own files when the share ends. Transfers have
+per-share byte and concurrency limits.
+Either side may disconnect while the other is offline. The follower keeps
+a readable archive, new writes stop, and the owner's channel continues. Disconnect cannot erase
+already received content. Re-sharing creates a fresh share and follower channel; it never merges
+archives or transfers ownership.
+
+Each team admits work only for its own agents. A follower evaluates self and sticky wakes after its
+own authenticated post commits at the owner, never from an imported row. Cross-team asks need the
+target owner's approval on their computer; that approval names the asker's team and the shared
+channel. Until the target team admits the ask, its reference shows Asking. Only bounded state and
+public reply references cross between teams. Private returns bind to the asking team's recorded
+post, target principal and share; peers cannot choose a local task or Run. Pending asks cancel on
+trigger edits/deletion, participant removal or disconnect. Each team can turn off its own agents in
+the channel's details; the owner's people-only setting binds both teams. Owner policy snapshots
+are ordered independently of message catch-up, so a late write receipt cannot undo a restriction.
+Queued relays recheck the local session, channel and request at the outbound handoff and cancel
+before the corresponding removal returns. Channel instructions stay
+local to each team's agents. The owner limits new ask references to 60 per share per minute, and
+the target team applies its normal requester and target budgets. Partner protocol version 1 is
+required for this exchange.

@@ -87,6 +87,8 @@ interface OperationShared {
   readonly waiters: Set<() => void>;
   cancelSent: PasswordSignInCancelReason | null;
   cancelledAt: number | null;
+  /** The authority confirmed the cancel; it sends nothing more for this operation. */
+  cancelConfirmed: boolean;
   need: "approval" | null;
   result: SavedLoginResult | null;
   requestId: RequestId | null;
@@ -498,6 +500,7 @@ export class PasswordSignInService {
         waiters: new Set(),
         cancelSent: null,
         cancelledAt: null,
+        cancelConfirmed: false,
         need: null,
         result: null,
         requestId: null,
@@ -1041,7 +1044,12 @@ export class PasswordSignInService {
           reason,
         })
         .then(async (result) => {
-          if (result.type !== "login.cancelled") await this.#finish(operation, interrupted());
+          if (result.type !== "login.cancelled") {
+            await this.#finish(operation, interrupted());
+            return;
+          }
+          operation.cancelConfirmed = true;
+          this.#notify(operation);
         })
         .catch(async () => {
           await this.#finish(operation, interrupted());
@@ -1156,10 +1164,11 @@ export class PasswordSignInService {
   }
 
   #wait(operation: Operation, timeoutMs: number, terminalOnly = false): Promise<void> {
-    if (operation.settlement || (!terminalOnly && operation.need)) return Promise.resolve();
+    const answered = () => operation.settlement !== null || operation.cancelConfirmed;
+    if (answered() || (!terminalOnly && operation.need)) return Promise.resolve();
     return new Promise((resolve) => {
       const done = () => {
-        if (terminalOnly && !operation.settlement) return;
+        if (terminalOnly && !answered()) return;
         clearTimeout(timer);
         operation.waiters.delete(done);
         resolve();

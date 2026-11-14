@@ -403,6 +403,12 @@ integration("IdentityService", () => {
         let invite: Awaited<ReturnType<TeamInvitesStore["create"]>> | undefined;
         let laterInvite: Awaited<ReturnType<TeamInvitesStore["create"]>> | undefined;
         if (kind === "team") {
+          const deployment = await ensureDeployment({
+            canonicalOrigin: publicOrigin,
+            deploymentId: createId("deployment"),
+            hostInstanceId: createId("hostInstance"),
+            deploymentShape: { kind: "team" },
+          });
           const access = new TeamAccessStore(database);
           await access.initialize();
           const invites = new TeamInvitesStore(access, publicOrigin);
@@ -411,8 +417,8 @@ integration("IdentityService", () => {
             invites,
             authority: {
               canonicalOrigin: publicOrigin,
-              deploymentId: createId("deployment"),
-              hostInstanceId: createId("hostInstance"),
+              deploymentId: deployment.id,
+              hostInstanceId: deployment.hostInstanceId,
               hostKeyFingerprint: HostKeyFingerprintSchema.parse(hostKeyFingerprint),
             },
             grantVerifier: {
@@ -1965,6 +1971,12 @@ integration("IdentityService", () => {
   });
 
   it("lets several browsers start on a shared invite with one use left, but admits only one", async () => {
+    const deployment = await ensureDeployment({
+      canonicalOrigin: "http://127.0.0.1:4310",
+      deploymentId: createId("deployment"),
+      hostInstanceId: createId("hostInstance"),
+      deploymentShape: { kind: "team" },
+    });
     const access = new TeamAccessStore(database);
     await access.initialize();
     const invites = new TeamInvitesStore(access, "http://127.0.0.1:4310");
@@ -1987,8 +1999,8 @@ integration("IdentityService", () => {
       invites,
       authority: {
         canonicalOrigin: "http://127.0.0.1:4310",
-        deploymentId: createId("deployment"),
-        hostInstanceId: createId("hostInstance"),
+        deploymentId: deployment.id,
+        hostInstanceId: deployment.hostInstanceId,
         hostKeyFingerprint: HostKeyFingerprintSchema.parse(hostKeyFingerprint),
       },
       grantVerifier: {
@@ -2355,7 +2367,7 @@ async function ensureDeployment(input: {
   canonicalOrigin: string;
   deploymentId: ReturnType<typeof createId<"deployment">>;
   hostInstanceId: ReturnType<typeof createId<"hostInstance">>;
-  deploymentShape: { kind: "personal" };
+  deploymentShape: { kind: "personal" | "team" };
 }) {
   await database
     .insertInto("deployments")

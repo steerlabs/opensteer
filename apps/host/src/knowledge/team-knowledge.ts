@@ -211,10 +211,18 @@ export async function startTeamKnowledge(options: {
   ): Promise<
     Map<KnowledgeTopicId, { readonly audience: TeamTopicAudience; readonly roomCanRead?: boolean }>
   > {
-    const [readers, members, roomReaders] = await Promise.all([
+    const [readers, members, roomReaders, sharedRoom] = await Promise.all([
       teamTopicReaders(executor, topicIds),
       teamActiveMemberCount(executor),
       room ? teamChannelReaders(executor, room) : undefined,
+      room
+        ? executor
+            .selectFrom("teamShares")
+            .select("id")
+            .where("channelId", "=", room)
+            .where((eb) => eb.or([eb("state", "=", "active"), eb("role", "=", "follower")]))
+            .executeTakeFirst()
+        : undefined,
     ]);
     return new Map(
       [...readers].map(([topicId, read]) => [
@@ -227,7 +235,8 @@ export async function startTeamKnowledge(options: {
           ...(roomReaders
             ? {
                 roomCanRead:
-                  read === "everyone" || [...roomReaders].every((userId) => read.has(userId)),
+                  !sharedRoom &&
+                  (read === "everyone" || [...roomReaders].every((userId) => read.has(userId))),
               }
             : {}),
         },

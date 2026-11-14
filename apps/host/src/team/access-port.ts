@@ -29,7 +29,7 @@ export interface TeamAccessEffects {
   readonly requests: readonly TeamAgentRequestId[];
 }
 export interface TeamAccessResolver {
-  channel(
+  peerChannel(
     transaction: Transaction<DatabaseSchema>,
     actor: TeamActor,
     channelId: TeamChannelId,

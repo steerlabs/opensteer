@@ -1,8 +1,8 @@
+import type { TeamPerson } from "@opensteer/client/team";
 import { teamAskStatuses } from "@opensteer/client/team";
 import type {
   TeamAgentRequest,
   TeamChannel,
-  TeamMember,
   TeamMessage,
   TeamFileSchema,
 } from "@opensteer/protocol";
@@ -34,7 +34,7 @@ type TeamFile = z.infer<typeof TeamFileSchema>;
 /** What every mapper needs to say things in this viewer's words. */
 export interface TeamWords {
   readonly viewerUserId: string;
-  readonly members: ReadonlyMap<string, TeamMember>;
+  readonly members: ReadonlyMap<string, TeamPerson>;
   /** Owners whose Opensteer is connected to the team right now. */
   readonly linkOnline: ReadonlyMap<string, boolean>;
   readonly previews: ReadonlyMap<string, string>;
@@ -68,6 +68,7 @@ export function sidebarView(input: {
     mentions: entry.mentionCount,
     peopleOnly: entry.channel.peopleOnly,
     muted: entry.notificationLevel === "muted",
+    shared: entry.channel.share?.state === "shared",
   });
   const channels = rows
     .filter((entry) => !directKinds.has(entry.channel.kind))
@@ -206,10 +207,12 @@ export function mentionViews(words: TeamWords, message: TeamMessage): readonly M
       return {
         handle: member?.handle ?? owner.handle,
         label: owner.name,
+        ...(owner.externalTeam ? { externalTeam: owner.externalTeam } : {}),
         tone: mention.userId === words.viewerUserId ? "you" : "person",
       };
     return {
       handle: `${member?.handle ?? owner.handle}-agent`,
+      ...(owner.externalTeam ? { externalTeam: owner.externalTeam } : {}),
       label: owner.you ? "My agent" : `${firstName(owner)}’s agent`,
       tone: message.authorUserId === mention.userId ? "agent" : "agent-reference",
     };
@@ -308,9 +311,15 @@ export function pendingView(
     mentions: send.mentions.map((mention) => {
       const owner = person(words, mention.userId);
       return mention.kind === "person"
-        ? { handle: owner.handle, label: owner.name, tone: owner.you ? "you" : "person" }
+        ? {
+            handle: owner.handle,
+            label: owner.name,
+            tone: owner.you ? "you" : "person",
+            ...(owner.externalTeam ? { externalTeam: owner.externalTeam } : {}),
+          }
         : {
             handle: `${owner.handle}-agent`,
+            ...(owner.externalTeam ? { externalTeam: owner.externalTeam } : {}),
             label: owner.you ? "My agent" : `${firstName(owner)}’s agent`,
             tone: mention.userId === words.viewerUserId ? "agent" : "agent-reference",
           };
