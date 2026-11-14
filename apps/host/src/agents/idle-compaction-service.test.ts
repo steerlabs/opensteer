@@ -3,6 +3,53 @@ import { createId } from "@opensteer/core";
 import { IdleCompactionService } from "./idle-compaction-service.js";
 
 describe("IdleCompactionService", () => {
+  it("reconciles policy changes to arm idle tasks and clear disabled timers", async () => {
+    vi.useFakeTimers();
+    const candidate = {
+      threadId: createId("thread"),
+      requestedBy: createId("user"),
+      providerSessionId: createId("providerSession"),
+      environmentId: createId("environment"),
+      contextSnapshot: {
+        usedTokens: 200_000,
+        measuredAt: 0,
+        requestStartedAt: 0,
+        promptCacheTtlMs: 300_000 as const,
+        sourceRunId: createId("run"),
+        bindingGeneration: 1,
+        ordinal: 0,
+      },
+    };
+    let enabled = false;
+    const admit = vi.fn(async () => {});
+    const service = new IdleCompactionService({
+      list: async () => (enabled ? [candidate] : []),
+      admit,
+      onError: (error) => {
+        throw error;
+      },
+    });
+    try {
+      vi.setSystemTime(100_000);
+      await service.start();
+      expect(vi.getTimerCount()).toBe(0);
+      enabled = true;
+      await service.reconcile();
+      expect(vi.getTimerCount()).toBe(1);
+      enabled = false;
+      await service.reconcile();
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(80_000);
+      expect(admit).not.toHaveBeenCalled();
+      enabled = true;
+      await service.reconcile();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(admit).toHaveBeenCalledTimes(1);
+    } finally {
+      await service.close();
+      vi.useRealTimers();
+    }
+  });
   it("rebuilds, replaces timers, rereads policy, and closes outstanding work", async () => {
     vi.useFakeTimers();
     try {

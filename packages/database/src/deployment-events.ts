@@ -39,11 +39,17 @@ export async function appendHostDeploymentEvent(
   const createdAt = new Date();
   if (input.type === "thread.state-changed") {
     const row = await transaction
-      .selectNoFrom(latestRunCompletion(sql`${input.threadId}`).as("completedAt"))
+      .selectFrom("threads")
+      .select(["updatedAt", latestRunCompletion(sql`${input.threadId}`).as("completedAt")])
+      .where("id", "=", input.threadId)
       .executeTakeFirstOrThrow();
     input = {
       ...input,
-      data: { ...input.data, latestRunCompletedAt: row.completedAt?.toISOString() ?? null },
+      data: {
+        ...input.data,
+        updatedAt: row.updatedAt.toISOString(),
+        latestRunCompletedAt: row.completedAt?.toISOString() ?? null,
+      },
     };
   }
   // Replay needs the excluded count at this sequence, even after its Requests settle.

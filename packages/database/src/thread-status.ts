@@ -87,7 +87,7 @@ export async function projectThreadState(
       status,
       pendingRequestCount: pendingRequests,
       projectedInputQueuePaused: thread.inputQueuePaused,
-      ...(last?.maintenance ? {} : { updatedAt }),
+      ...(last?.maintenance || (!changed && !force) ? {} : { updatedAt }),
     })
     .where("id", "=", threadId)
     .executeTakeFirstOrThrow();

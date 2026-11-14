@@ -1,3 +1,4 @@
+import { markThreadStatePending } from "./thread-state-pending.js";
 import { compactionReturnHint } from "./compaction-eligibility.js";
 import { projectDeviceAccessAssignment } from "@opensteer/protocol";
 import {
@@ -1420,6 +1421,17 @@ export async function updateThreadExecutionSelection(
         message: "The selected provider session changed before this AI engine update",
       });
     }
+    const selectionChanged =
+      thread.harnessInstanceId !== input.harnessInstanceId ||
+      !isDeepStrictEqual(thread.modelSelection, modelSelection);
+    if (selectionChanged) {
+      await transaction
+        .updateTable("providerSessions")
+        .set({ contextSnapshot: null })
+        .where("threadId", "=", thread.id)
+        .execute();
+      await markThreadStatePending(transaction, thread.id);
+    }
     let providerSessionId = selected?.id ?? null;
     if (compatible && selected && input.continuation === undefined) {
       await transaction
@@ -1473,12 +1485,15 @@ export async function updateThreadExecutionSelection(
       .where("id", "=", thread.id)
       .returningAll()
       .executeTakeFirstOrThrow();
-    const parsedThread = threadFromRow({
-      ...thread,
-      ...row,
-      continuationIdentity,
-      providerSessionId,
-    });
+    const parsedThread = {
+      ...threadFromRow({
+        ...thread,
+        ...row,
+        continuationIdentity,
+        providerSessionId,
+      }),
+      returnHint: await compactionReturnHint(transaction, thread.id),
+    };
     await transaction
       .insertInto("commands")
       .values({

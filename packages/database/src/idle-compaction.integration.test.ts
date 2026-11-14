@@ -1,10 +1,11 @@
+import { projectThreadState } from "./thread-status.js";
 import { compactionIsEligible, compactionReturnHint } from "./compaction-eligibility.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { finalizeRunTransaction } from "./run-finalization.js";
 import { threadPathLinks, jsonValue } from "./store-primitives.js";
 import { admitIdleCompaction } from "./idle-compaction-store.js";
 import { findPersonalSettings } from "./personal-settings-store.js";
-import { createId, HarnessIdSchema } from "@opensteer/core";
+import { createId, HarnessIdSchema, ModelIdSchema } from "@opensteer/core";
 import { expect, vi } from "vitest";
 import {
   type StoreFixture,
@@ -192,6 +193,138 @@ describeStore("Claude compaction persistence", (it) => {
       }),
     ).rejects.toMatchObject({ code: "conflict" });
   });
+  it("rejects stale model evidence at timer admission and clears the snapshot and hint", async ({
+    storeFixture,
+  }) => {
+    const { store, database, thread, userId, sessionId, source, now } = await compactionFixture(
+      storeFixture,
+      200_000,
+    );
+    const changed = { ...thread.modelSelection, modelId: ModelIdSchema.parse("changed-model") };
+    await store.updateThreadExecutionSelection({
+      threadId: thread.id,
+      requestedBy: userId,
+      harnessInstanceId: thread.harnessInstanceId,
+      continuationIdentity: {
+        ...testContinuationIdentity,
+        driverKind: HarnessIdSchema.parse("claude"),
+      },
+      modelSelection: changed,
+      idempotencyKey: "change-model",
+    });
+    expect(
+      await admitIdleCompaction(database, {
+        threadId: thread.id,
+        requestedBy: userId,
+        nowMs: now,
+        maintenance: {
+          kind: "claude-compaction",
+          reason: "idle",
+          sourceRunId: source.run.id,
+          providerSessionId: sessionId,
+        },
+      }),
+    ).toBeNull();
+    expect(
+      (
+        await database
+          .selectFrom("providerSessions")
+          .select("contextSnapshot")
+          .where("id", "=", sessionId)
+          .executeTakeFirstOrThrow()
+      ).contextSnapshot,
+    ).toBeNull();
+    expect((await store.getThreadForOwner(thread.id, userId))?.returnHint).toBeNull();
+    const events: import("@opensteer/core").AgentEvent[] = [];
+    await store.drainPendingThreadStates((batch) => {
+      events.push(...batch);
+    });
+    expect(events.find((event) => event.type === "thread.state-changed")?.data).toMatchObject({
+      returnHint: null,
+    });
+  });
+  it("rechecks source selections at execution binding even with retained evidence", async ({
+    storeFixture,
+  }) => {
+    const { store, database, thread, userId, sessionId, source, now, runnerId } =
+      await compactionFixture(storeFixture, 200_000);
+    const admitted = await admitIdleCompaction(database, {
+      threadId: thread.id,
+      requestedBy: userId,
+      nowMs: now,
+      maintenance: {
+        kind: "claude-compaction",
+        reason: "idle",
+        sourceRunId: source.run.id,
+        providerSessionId: sessionId,
+      },
+    });
+    expect(admitted).not.toBeNull();
+    await store.claimCommand(admitted!.command!.id, "selection-dispatcher");
+    await database
+      .updateTable("threads")
+      .set({
+        modelSelection: jsonValue({
+          ...thread.modelSelection,
+          modelId: ModelIdSchema.parse("changed-model"),
+        }),
+      })
+      .where("id", "=", thread.id)
+      .execute();
+    await expect(
+      store.acquireExecutionBinding({
+        bindingLeaseExpiresAt: new Date(now + 60_000),
+        continuationIdentity: {
+          ...testContinuationIdentity,
+          driverKind: HarnessIdSchema.parse("claude"),
+        },
+        harnessInstanceId: thread.harnessInstanceId,
+        leaseTokenHash: "selection-lease",
+        runnerBootId: "selection-boot",
+        runnerId,
+        runId: admitted!.run!.id,
+        threadId: thread.id,
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
+  });
+  it("publishes authoritative activity time when maintenance changes the return hint", async ({
+    storeFixture,
+  }) => {
+    const { database, thread, userId, sessionId, source, now } = await compactionFixture(
+      storeFixture,
+      200_000,
+    );
+    const admitted = await admitIdleCompaction(database, {
+      threadId: thread.id,
+      requestedBy: userId,
+      nowMs: now,
+      maintenance: {
+        kind: "claude-compaction",
+        reason: "idle",
+        sourceRunId: source.run.id,
+        providerSessionId: sessionId,
+      },
+    });
+    expect(admitted).not.toBeNull();
+    const before = await database
+      .selectFrom("threads")
+      .select("updatedAt")
+      .where("id", "=", thread.id)
+      .executeTakeFirstOrThrow();
+    const events = await withPersonalTransaction(database, (tx) =>
+      projectThreadState(tx, thread.id, new Date(now + 60_000), true),
+    );
+    expect(events[0]?.data).toMatchObject({ updatedAt: before.updatedAt.toISOString() });
+    expect(
+      (
+        await database
+          .selectFrom("threads")
+          .select("updatedAt")
+          .where("id", "=", thread.id)
+          .executeTakeFirstOrThrow()
+      ).updatedAt,
+    ).toEqual(before.updatedAt);
+  });
   it("orders one chosen compaction ahead of concurrent human inputs", async ({ storeFixture }) => {
     const { store, database, userId, thread } = await compactionFixture(storeFixture);
     const sends = await Promise.all(
@@ -324,6 +457,7 @@ describeStore("Claude compaction persistence", (it) => {
       })
       .where("id", "=", sessionId)
       .execute();
+    await withPersonalTransaction(database, (tx) => projectThreadState(tx, thread.id));
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const eligibleAt = now + 70 * 60_000;
@@ -339,6 +473,11 @@ describeStore("Claude compaction persistence", (it) => {
       expect(await compactionIsEligible(database, thread.id, maintenance, Date.now())).toBe(false);
       vi.setSystemTime(eligibleAt);
       expect(await compactionIsEligible(database, thread.id, maintenance, Date.now())).toBe(true);
+      const activity = await database
+        .selectFrom("threads")
+        .select("updatedAt")
+        .where("id", "=", thread.id)
+        .executeTakeFirstOrThrow();
       await store.notificationState.setIdleCompactionPolicy({ userId, policy: { mode: "off" } });
       const events: import("@opensteer/core").AgentEvent[] = [];
       await store.drainPendingThreadStates((batch) => {
@@ -350,6 +489,15 @@ describeStore("Claude compaction persistence", (it) => {
         )?.data,
       ).toMatchObject({ returnHint: { ...hint, eligible: false } });
       expect((await store.getThreadForOwner(thread.id, userId))?.returnHint?.eligible).toBe(false);
+      expect(
+        (
+          await database
+            .selectFrom("threads")
+            .select("updatedAt")
+            .where("id", "=", thread.id)
+            .executeTakeFirstOrThrow()
+        ).updatedAt,
+      ).toEqual(activity.updatedAt);
     } finally {
       vi.useRealTimers();
     }

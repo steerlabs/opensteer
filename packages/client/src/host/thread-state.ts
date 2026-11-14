@@ -50,7 +50,7 @@ export class ThreadStateProjection {
     this.#accept(event.threadId, {
       ...state,
       stateSequence: event.sequence,
-      updatedAt: event.createdAt,
+      updatedAt: state.updatedAt ?? event.createdAt,
     });
     return true;
   }

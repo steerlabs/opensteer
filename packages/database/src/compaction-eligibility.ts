@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   type CompactionReturnHint,
   compactionReturnEligibleAt,
@@ -110,6 +111,8 @@ export async function compactionIsEligible(
   if (
     !source ||
     source.status !== "completed" ||
+    source.harnessInstanceId !== thread.harnessInstanceId ||
+    !isDeepStrictEqual(source.modelSelection, thread.modelSelection) ||
     source.maintenance ||
     source.voiceSessionId ||
     source.assignmentId ||

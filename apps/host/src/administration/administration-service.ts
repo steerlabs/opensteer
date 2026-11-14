@@ -45,6 +45,7 @@ export type AdministrationDependencies = Pick<
   | "channels"
   | "realtime"
 > & {
+  readonly reconcileIdleCompaction?: () => Promise<void>;
   readonly publishDeploymentEvent: (event: import("@opensteer/core").AgentEvent) => void;
   readonly integrations: Pick<
     HostServerDependencies["integrations"],
@@ -333,14 +334,14 @@ export class AdministrationService {
           type: command.type,
         };
 
-      case "settings.idleCompaction.set":
-        return {
-          type: command.type,
-          policy: await dependencies.store.notificationState.setIdleCompactionPolicy({
-            policy: command.policy,
-            userId,
-          }),
-        };
+      case "settings.idleCompaction.set": {
+        const policy = await dependencies.store.notificationState.setIdleCompactionPolicy({
+          policy: command.policy,
+          userId,
+        });
+        await dependencies.reconcileIdleCompaction?.();
+        return { type: command.type, policy };
+      }
       case "viewer.quietTasks.update":
         return {
           quietTaskDays: await dependencies.store.notificationState.setQuietTaskDays({

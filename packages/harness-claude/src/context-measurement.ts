@@ -23,16 +23,6 @@ export class ClaudeContextMeasurement {
       this.#usage = {};
       return;
     }
-    if (
-      frame.type === "result" &&
-      this.#snapshot &&
-      typeof frame.request_sent_wall_ms === "number" &&
-      Number.isSafeInteger(frame.request_sent_wall_ms) &&
-      frame.request_sent_wall_ms >= 0
-    ) {
-      this.#snapshot = { ...this.#snapshot, requestStartedAt: frame.request_sent_wall_ms };
-      return;
-    }
     const event = isRecord(frame.event) ? frame.event : null;
     if (frame.type !== "stream_event" || !event) return;
     const start = event.type === "message_start";

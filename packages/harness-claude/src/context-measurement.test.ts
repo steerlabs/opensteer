@@ -76,7 +76,7 @@ it("retains cumulative fields on null deltas and replaces zero values", () => {
   expect(tracker.snapshot()).toEqual({
     usedTokens: 200_010,
     measuredAt: 200,
-    requestStartedAt: 50,
+    requestStartedAt: null,
     promptCacheTtlMs: 3_600_000,
   });
   tracker.accept(
@@ -93,3 +93,36 @@ it("retains cumulative fields on null deltas and replaces zero values", () => {
     promptCacheTtlMs: null,
   });
 });
+
+it.each([2_000, null])(
+  "keeps the latest request timing %s after a multi-request result",
+  (sent) => {
+    const tracker = new ClaudeContextMeasurement();
+    const start = (tokens: number, requestSent: number | null) => ({
+      type: "stream_event",
+      ...(requestSent === null ? {} : { request_sent_wall_ms: requestSent }),
+      event: {
+        type: "message_start",
+        message: {
+          usage: {
+            input_tokens: tokens,
+            cache_creation: { ephemeral_5m_input_tokens: 1 },
+          },
+        },
+      },
+    });
+    tracker.accept(start(100, 100), 200);
+    tracker.accept(start(200_000, sent), 3_000);
+    tracker.accept(
+      { type: "stream_event", event: { type: "message_delta", usage: { output_tokens: 10 } } },
+      4_000,
+    );
+    tracker.accept({ type: "result", request_sent_wall_ms: 100 }, 5_000);
+    expect(tracker.snapshot()).toEqual({
+      usedTokens: 200_010,
+      measuredAt: 4_000,
+      requestStartedAt: sent,
+      promptCacheTtlMs: 300_000,
+    });
+  },
+);

@@ -2333,6 +2333,7 @@ export async function createHostRuntime(
           channels: { service: channels, relay: messagingRelay },
           realtime,
           publishDeploymentEvent,
+          reconcileIdleCompaction: () => idleCompactionService?.reconcile() ?? Promise.resolve(),
           integrations: { platform: integrationPlatform, service: integrations, continuations },
         },
         (id) => administrationCatalogs?.schedule(id),

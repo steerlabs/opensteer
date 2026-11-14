@@ -1832,6 +1832,7 @@ integration("Host vertical slice", () => {
         )
       ).rows,
     ).toEqual([]);
+    const firstRepair = await runtime.store.getThreadForOwner(idleThread.id, ownerId);
     await runtime.store.database
       .updateTable("threads")
       .set({ pendingRequestCount: 9 })
@@ -1848,15 +1849,18 @@ integration("Host vertical slice", () => {
       },
       { timeout: 5000 },
     );
+    const secondRepair = await runtime.store.getThreadForOwner(idleThread.id, ownerId);
     const repaired = await runtime.store.database
       .selectFrom("deploymentEvents")
       .select("data")
       .where("threadId", "=", idleThread.id)
       .where("type", "=", "thread.state-changed")
+      .orderBy("sequence", "asc")
       .execute();
     expect(repaired).toEqual([
       {
         data: {
+          updatedAt: firstRepair!.updatedAt,
           returnHint: null,
           latestRunCompletedAt: null,
           pendingRequests: 0,
@@ -1870,6 +1874,7 @@ integration("Host vertical slice", () => {
       },
       {
         data: {
+          updatedAt: secondRepair!.updatedAt,
           returnHint: null,
           latestRunCompletedAt: null,
           pendingRequests: 0,
