@@ -25,10 +25,8 @@ export function applyDatabaseOperationBudget(executor: QueryExecutor): QueryExec
   executor.stream = (query, chunkSize, options) =>
     stream(query, chunkSize, operationOptions(options));
 
-  // Kysely derives executors for reserved connections, transactions, schemas and plugins.
-  const withConnectionProvider = executor.withConnectionProvider.bind(executor);
-  executor.withConnectionProvider = (provider) =>
-    applyDatabaseOperationBudget(withConnectionProvider(provider));
+  // Leave withConnectionProvider unwrapped: transaction/reserved connection owners
+  // must finish in-flight queries before rollback or returning the connection to the pool.
   const withPlugin = executor.withPlugin.bind(executor);
   executor.withPlugin = (plugin) => applyDatabaseOperationBudget(withPlugin(plugin));
   const withPlugins = executor.withPlugins.bind(executor);

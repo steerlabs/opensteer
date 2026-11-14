@@ -1,4 +1,5 @@
-import { sql } from "kysely";
+import { sql, type QueryResult } from "kysely";
+import { Pool } from "pg";
 import { expect, it, vi } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createDatabase, withDatabaseTransaction } from "./connection.js";
@@ -88,6 +89,135 @@ describeStore("automatic database operation budgets", (it) => {
         await withTimeout(Promise.all([blocker, reading?.catch(() => undefined)]), 1000, {
           timeoutError: () => new Error("Read did not release its database checkout"),
         });
+      }
+    });
+  }
+
+  for (const lifecycle of ["direct transaction", "controlled transaction", "reserved connection"]) {
+    it(`leaves a ${lifecycle} in charge of its running query after abort`, async ({
+      storeFixture,
+    }) => {
+      const f = await storeFixture.createRunFixture("operation-single-connection");
+      const { database, pool } = await ownTestDatabaseProducer(
+        storeFixture.databaseUrl,
+        async () => {
+          const pool = new Pool({
+            connectionString: storeFixture.databaseUrl,
+            application_name: "operation-budget-single-connection",
+            max: 1,
+          });
+          const database = createDatabase({ connectionString: storeFixture.databaseUrl }, pool);
+          return { database, pool, close: () => database.destroy() };
+        },
+      );
+      const locked = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const blocker = storeFixture.database.transaction().execute(async (tx) => {
+        await tx
+          .selectFrom("threads")
+          .select("id")
+          .where("id", "=", f.thread.id)
+          .forUpdate()
+          .execute();
+        locked.resolve();
+        await withTimeout(release.promise, 3000, {
+          timeoutError: () => new Error("Single-connection blocker was not released"),
+        });
+      });
+      void blocker.catch(locked.reject);
+      const controller = new AbortController();
+      let querySettled = false;
+      const read = async (connection: typeof database) => {
+        try {
+          return await connection
+            .withSchema("public")
+            .selectFrom("threads")
+            .select("id")
+            .where("id", "=", f.thread.id)
+            .forUpdate()
+            .execute();
+        } finally {
+          querySettled = true;
+        }
+      };
+      let reading: Promise<unknown> | undefined;
+      let nextCheckout: Promise<QueryResult<{ alive: number }>> | undefined;
+      try {
+        await withTimeout(locked.promise, 1000, {
+          timeoutError: () => new Error("Thread row was not locked"),
+        });
+        reading = withDatabaseOperationSignal(controller.signal, Date.now() + 2000, async () => {
+          if (lifecycle === "direct transaction") return database.transaction().execute(read);
+          if (lifecycle === "reserved connection") return database.connection().execute(read);
+          const transaction = await database.startTransaction().execute();
+          try {
+            return await read(transaction);
+          } finally {
+            await transaction.rollback().execute();
+          }
+        });
+        void reading.catch(() => undefined);
+        await vi.waitFor(
+          async () => {
+            const { rows } = await sql<{ count: number }>`
+              select count(*)::int as count from pg_stat_activity
+              where application_name = 'operation-budget-single-connection'
+                and wait_event_type = 'Lock'
+            `.execute(storeFixture.database);
+            expect(rows[0]?.count, "Single-connection query never reached the row lock").toBe(1);
+          },
+          { timeout: 500 },
+        );
+        controller.abort(new Error("Operation cancelled"));
+        const activity = await withTimeout(
+          sql<{ count: number }>`
+            select count(*)::int as count from pg_stat_activity
+            where application_name = 'operation-budget-single-connection' and state = 'active'
+          `.execute(storeFixture.database),
+          500,
+          { timeoutError: () => new Error("Could not observe the aborted operation's backend") },
+        );
+        expect(querySettled, "Query settled before its connection owner finished it").toBe(false);
+        expect(activity.rows).toEqual([{ count: 1 }]);
+        expect(pool.idleCount, "Running query was returned to the pool").toBe(0);
+
+        nextCheckout = sql<{ alive: number }>`select 1 as alive`.execute(database);
+        release.resolve();
+        await expect(
+          withTimeout(reading, 1000, {
+            timeoutError: () => new Error("Single-connection query did not finish after unlock"),
+          }),
+        ).resolves.toEqual([{ id: f.thread.id }]);
+        expect(
+          (
+            await withTimeout(nextCheckout, 500, {
+              timeoutError: () => new Error("Single-connection query retained the only checkout"),
+            })
+          ).rows,
+        ).toEqual([{ alive: 1 }]);
+        expect(
+          (
+            await sql<{ count: number }>`
+              select count(*)::int as count from pg_stat_activity
+              where application_name = 'operation-budget-single-connection' and state <> 'idle'
+            `.execute(storeFixture.database)
+          ).rows,
+        ).toEqual([{ count: 0 }]);
+      } finally {
+        release.resolve();
+        nextCheckout ??= sql<{ alive: number }>`select 1 as alive`.execute(database);
+        await withTimeout(
+          Promise.all([
+            blocker,
+            reading?.catch(() => undefined),
+            nextCheckout?.catch(() => undefined),
+          ]),
+          1000,
+          {
+            timeoutError: () =>
+              new Error("Single-connection operation did not release its checkout"),
+          },
+        );
       }
     });
   }
