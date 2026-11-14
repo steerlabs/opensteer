@@ -69,7 +69,7 @@ it("pasted images join the strip like picked photos, up to the message's file li
   });
 
   const pasted = Array.from({ length: attachmentMessageMaxCount + 3 }, (_, index) => image(index));
-  await act(async () => staged!.paste({ images: pasted, failed: 0 }));
+  await act(async () => staged!.paste({ images: pasted, failed: 0, tooLarge: 0 }));
 
   expect(staged!.items.map((item) => item.name)).toEqual(
     pasted

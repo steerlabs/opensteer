@@ -21,7 +21,10 @@ import java.util.concurrent.Executors
 class PasteTargetModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("OpensteerPasteTarget")
-    View(PasteTargetView::class) { Events("onPasteImages") }
+    View(PasteTargetView::class) {
+      Events("onPasteImages")
+      Prop("maxBytes") { view: PasteTargetView, value: Long -> view.maxBytes = value }
+    }
   }
 }
 
@@ -33,6 +36,8 @@ class PasteTargetModule : Module() {
 class PasteTargetView(context: Context, appContext: AppContext) : ExpoView(context, appContext) {
   private val onPasteImages by EventDispatcher<Map<String, Any>>()
   private val listener = OnReceiveContentListener { _, payload -> receive(payload) }
+  /** The most one image may hold where the field sends it; a larger one is reported, not kept. */
+  var maxBytes = 0L
 
   override fun onViewAdded(child: View) {
     super.onViewAdded(child)
@@ -56,26 +61,61 @@ class PasteTargetView(context: Context, appContext: AppContext) : ExpoView(conte
     val images = split.first ?: return split.second
     val uris = (0 until images.clip.itemCount).mapNotNull { images.clip.getItemAt(it).uri }
     // Read while the paste's or keyboard's read grant is still held.
+    val limit = maxBytes
     copier.execute {
-      val copied = uris.map { copy(it) }
-      val delivered = copied.filterNotNull()
-      post { onPasteImages(mapOf("images" to delivered, "failed" to copied.size - delivered.size)) }
+      val copied = uris.map { copy(it, limit) }
+      post {
+        onPasteImages(
+          mapOf(
+            "images" to copied.filterIsInstance<Copied.Image>().map { it.image },
+            "failed" to copied.count { it == Copied.Failed },
+            "tooLarge" to copied.count { it == Copied.TooLarge },
+          ),
+        )
+      }
     }
     return split.second
   }
 
-  private fun copy(uri: Uri): Map<String, Any>? = try {
+  private sealed interface Copied {
+    data class Image(val image: Map<String, Any>) : Copied
+    data object Failed : Copied
+    data object TooLarge : Copied
+  }
+
+  private fun copy(uri: Uri, limit: Long): Copied {
     val resolver = context.contentResolver
     val mediaType = resolver.getType(uri) ?: "image/png"
     val ext = MimeTypeMap.getSingleton().getExtensionFromMimeType(mediaType) ?: "img"
     val directory = File(context.cacheDir, "pasted-images").apply { mkdirs() }
     val file = File(directory, "${UUID.randomUUID()}.$ext")
-    resolver.openInputStream(uri)?.use { input -> file.outputStream().use { input.copyTo(it) } }
-      ?: throw IllegalStateException("The pasted image could not be opened.")
-    mapOf("uri" to Uri.fromFile(file).toString(), "mediaType" to mediaType, "name" to "Pasted image.$ext")
-  } catch (_: Exception) {
-    // A provider can revoke its grant or refuse the read; the caller counts it.
-    null
+    return try {
+      val within = resolver.openInputStream(uri)?.use { input ->
+        file.outputStream().use { output ->
+          val buffer = ByteArray(64 * 1024)
+          var total = 0L
+          while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            total += read
+            // A provider decides how much it sends; stop at what the field could send on.
+            if (total > limit) return@use false
+            output.write(buffer, 0, read)
+          }
+          true
+        }
+      } ?: throw IllegalStateException("The pasted image could not be opened.")
+      if (within) {
+        Copied.Image(mapOf("uri" to Uri.fromFile(file).toString(), "mediaType" to mediaType, "name" to "Pasted image.$ext"))
+      } else {
+        file.delete()
+        Copied.TooLarge
+      }
+    } catch (_: Exception) {
+      // A provider can revoke its grant or refuse the read.
+      file.delete()
+      Copied.Failed
+    }
   }
 
   private companion object {

@@ -1,4 +1,5 @@
 import {
+  attachmentMaxBytes,
   attachmentMessageMaxBytes,
   attachmentMessageMaxCount,
   type ArtifactContentPart,
@@ -407,6 +408,10 @@ export function useDraftAttachments(options: {
     }
     if (!mounted.current) return;
     if (problem !== null) setNotice(problem);
+    else if (pasted.tooLarge > 0)
+      setNotice(
+        `A pasted image is over ${attachmentMaxBytes / 1_048_576} MB, which a message cannot carry.`,
+      );
     else if (pasted.failed > 0)
       setNotice(
         pasted.failed === 1

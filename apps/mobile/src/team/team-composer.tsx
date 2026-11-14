@@ -14,6 +14,7 @@ import {
 import { ComposerAction } from "../ui/composer-action.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
+import { teamUploadMaxBytes } from "@opensteer/protocol";
 import { StagedAttachments } from "./attachments.js";
 import { PasteTarget, type PastedImages } from "../../modules/paste-target/index.js";
 import { MentionList } from "./mention-list.js";
@@ -154,6 +155,7 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
                 </Pressable>
               ) : null}
               <PasteTarget
+                maxBytes={teamUploadMaxBytes}
                 onPasteImages={(event) => props.onPasteImages(event.nativeEvent)}
                 style={styles.field}
               >

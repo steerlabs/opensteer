@@ -13,10 +13,14 @@ export interface PastedImages {
   readonly images: readonly PastedImage[];
   /** Images on the pasteboard that could not be read. */
   readonly failed: number;
+  /** Images over `maxBytes`, which were not written. */
+  readonly tooLarge: number;
 }
 
 interface PasteTargetProps {
   readonly children: ReactNode;
+  /** The most one image may hold where this field sends it. */
+  readonly maxBytes: number;
   readonly onPasteImages: (event: NativeSyntheticEvent<PastedImages>) => void;
   readonly style?: StyleProp<ViewStyle>;
 }

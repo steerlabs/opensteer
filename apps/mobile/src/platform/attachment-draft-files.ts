@@ -10,6 +10,9 @@ import { Directory, File, Paths } from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import * as Sharing from "expo-sharing";
 import type { HostClient } from "@opensteer/client/host";
+import { discardPastedImage } from "../../modules/paste-target/files.js";
+
+export { discardPastedImage };
 
 import type {
   AttachmentDraftScope,
@@ -162,15 +165,6 @@ export async function importPastedImage(
     return await copyToPrivateDraft(image.uri, image, scope);
   } finally {
     discardPastedImage(image.uri);
-  }
-}
-
-export function discardPastedImage(uri: string): void {
-  try {
-    const file = new File(uri);
-    if (file.exists) file.delete();
-  } catch {
-    // Already gone: the system may clear temporary files at any time.
   }
 }
 

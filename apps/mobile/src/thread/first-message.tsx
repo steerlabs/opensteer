@@ -15,7 +15,11 @@ import {
   type HostSnapshot,
   type ThreadPlacementOption,
 } from "@opensteer/client/host";
-import type { BrowserPageContentPart, ThreadAccessMode } from "@opensteer/core";
+import {
+  attachmentMaxBytes,
+  type BrowserPageContentPart,
+  type ThreadAccessMode,
+} from "@opensteer/core";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useIsFocused } from "@react-navigation/native";
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
@@ -644,7 +648,10 @@ export function FirstMessageComposer(props: {
                 onPress={() => props.inputRef.current?.focus()}
                 style={styles.lane}
               >
-                <PasteTarget onPasteImages={(event) => void staged.paste(event.nativeEvent)}>
+                <PasteTarget
+                  maxBytes={attachmentMaxBytes}
+                  onPasteImages={(event) => void staged.paste(event.nativeEvent)}
+                >
                   <TextInput
                     accessibilityLabel="Message"
                     autoFocus={props.autoFocus}

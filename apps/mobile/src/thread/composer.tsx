@@ -20,6 +20,7 @@ import {
   type UsageLimitNotice,
 } from "@opensteer/client/host";
 import {
+  attachmentMaxBytes,
   attachmentMessageMaxCount,
   type ArtifactContentPart,
   type AuthenticatedUser,
@@ -954,7 +955,10 @@ export function Composer(props: {
                 onPress={() => input.current?.focus()}
                 style={styles.lane}
               >
-                <PasteTarget onPasteImages={(event) => void staged.paste(event.nativeEvent)}>
+                <PasteTarget
+                  maxBytes={attachmentMaxBytes}
+                  onPasteImages={(event) => void staged.paste(event.nativeEvent)}
+                >
                   <TextInput
                     accessibilityLabel="Message"
                     cursorColor={color.ember}
