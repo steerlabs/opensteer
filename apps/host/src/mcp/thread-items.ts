@@ -55,7 +55,7 @@ type ToolStarted = Extract<ActivityEvent, { type: "tool.started" }>;
 
 /** Their text can hold a sign-in, a card, a webhook secret or typed values. Engines spell names their own way. */
 export function withheldTool(name: string): boolean {
-  return /(?:^|[_\s.:/-])(?:use_saved_login|copy_chrome_cookies|use_card|opensteer_automation_create|computer)(?:$|[\s.(])/u.test(
+  return /(?:^|[_\s.:/-])(?:saved_login_request|chrome_cookies_request|card_request|opensteer_automation_create|computer_use)(?:$|[\s.(])/u.test(
     name,
   );
 }

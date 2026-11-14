@@ -3224,7 +3224,7 @@ async function createRequestInTransaction(
     )
       throw new OpensteerError({
         code: "bad_request",
-        message: "Use device_access_request for device access.",
+        message: "Use computer_access_request for device access.",
       });
     const payload = input.payload;
     const runner = await transaction

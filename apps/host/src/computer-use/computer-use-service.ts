@@ -841,7 +841,7 @@ export class ComputerUseService {
             if (!passwords.validateLease({ ...text, deploymentId: this.#deploymentId }))
               throw new ComputerUseError(
                 "failed",
-                "This saved login ended or belongs to another personal deployment. Call use_saved_login again. Nothing was performed.",
+                "This saved login ended or belongs to another personal deployment. Call saved_login_request again. Nothing was performed.",
               );
         };
         check();
@@ -880,14 +880,14 @@ export class ComputerUseService {
           } catch {
             throw new ComputerUseError(
               "failed",
-              "The saved login could not be prepared. Nothing was performed. Call use_saved_login again.",
+              "The saved login could not be prepared. Nothing was performed. Call saved_login_request again.",
             );
           }
           check();
           if (result.status !== "sealed")
             throw new ComputerUseError(
               "failed",
-              "The saved login ended or could not be prepared. Nothing was performed. Call use_saved_login again.",
+              "The saved login ended or could not be prepared. Nothing was performed. Call saved_login_request again.",
             );
           const received = result.envelope.binding;
           if (
@@ -2198,7 +2198,7 @@ function unusableActions(error: z.ZodError, scope: Pick<ComputerUseScope, "kind"
     error.issues.length > problems.length
       ? ` (and ${error.issues.length - problems.length} more)`
       : "";
-  return `Those actions are not usable — ${problems.join("; ")}${more}. Correct those fields as the computer tool describes, ${scope.kind === "app" ? "observe this window again, and act on its snapshot" : "observe the phone again, and act on its observationId"}.`;
+  return `Those actions are not usable — ${problems.join("; ")}${more}. Correct those fields as computer_use describes, ${scope.kind === "app" ? "observe this window again, and act on its snapshot" : "observe the phone again, and act on its observationId"}.`;
 }
 
 function sessionEndedBeforeSend(

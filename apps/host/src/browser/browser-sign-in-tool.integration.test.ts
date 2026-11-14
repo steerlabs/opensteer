@@ -43,7 +43,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       finish = async () => {};
       await cleanup();
     });
-    it("keeps sessionful use_saved_login and origin-fill admission while the personal lease outlives a browser", async () => {
+    it("keeps sessionful saved_login_request and origin-fill admission while the personal lease outlives a browser", async () => {
       const evidence = new PasswordsJourneyEvidence("host/browser-reuse", command, cases, [
         passwordFixture.password,
       ]);
@@ -112,7 +112,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       await evidence.run("sessionless-before-browser", async () => {
         expect(await host.store.listBrowserSessions(host.ownerId)).toEqual([]);
         const result = await client.callTool({
-          name: "use_saved_login",
+          name: "saved_login_request",
           arguments: { site: passwordFixture.site, reason: "Sign in to the fixture app" },
         });
         await evidence.write("sessionless-result.json", result);
@@ -157,7 +157,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       const { sessionId, tabId } = await open();
       await evidence.run("sessionful-sign-in", async () => {
         const result = await client.callTool({
-          name: "use_saved_login",
+          name: "saved_login_request",
           arguments: { tabId, site: passwordFixture.site, reason: "Continue in browser" },
         });
         expect(result.structuredContent, JSON.stringify(result.structuredContent)).toEqual({
@@ -219,7 +219,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       });
       await open();
       const cardResult = client.callTool({
-        name: "use_card",
+        name: "card_request",
         arguments: { site: passwordFixture.site, tabId, reason: "Fill the approved purchase" },
       });
       void cardResult.catch(() => undefined);
@@ -229,7 +229,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
             after: null,
             limit: 64,
           });
-          expect(rows, "use_card did not open its Request").toHaveLength(1);
+          expect(rows, "card_request did not open its Request").toHaveLength(1);
           return { requestId: rows[0]!.id };
         },
         { timeout: 10_000 },
@@ -273,7 +273,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         lastFour: "4242",
       });
       const reused = await client.callTool({
-        name: "use_card",
+        name: "card_request",
         arguments: { site: passwordFixture.site, tabId, reason: "Continue approved purchase" },
       });
       const cardReady = z
@@ -343,7 +343,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         const second = await attach(run, secondSession);
         await fulfillFill(second, secondSession);
         const result = await client.callTool({
-          name: "use_saved_login",
+          name: "saved_login_request",
           arguments: { site: passwordFixture.site, reason: "Return to the phone app" },
         });
         expect(result.structuredContent).toMatchObject({ status: "ready", loginRef });
@@ -356,7 +356,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         if (operation?.type !== "login.authorize") throw new Error("Missing authorization");
         await authority.end(operation.operationId);
         const next = await client.callTool({
-          name: "use_saved_login",
+          name: "saved_login_request",
           arguments: { site: passwordFixture.site, reason: "Reauthorize" },
         });
         const ready = z
@@ -371,7 +371,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         authority.policy.approval = true;
         const site = "https://pin-fixture.test";
         const pending = client.callTool({
-          name: "use_saved_login",
+          name: "saved_login_request",
           arguments: { tabId: exact.tabId, site, reason: "Sign in in the chosen tab" },
         });
         void pending.catch(() => undefined);
@@ -381,7 +381,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
               after: null,
               limit: 64,
             });
-            expect(rows, "use_saved_login did not open its Request").toHaveLength(1);
+            expect(rows, "saved_login_request did not open its Request").toHaveLength(1);
             return rows[0]!.id;
           },
           { timeout: 10_000 },
@@ -416,7 +416,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         expect(closed.ok).toBe(true);
         const starts = authority.commands.filter((c) => c.type === "login.authorize").length;
         const stale = await client.callTool({
-          name: "use_saved_login",
+          name: "saved_login_request",
           arguments: { tabId: exact.tabId, site, reason: "Try the stale tab" },
         });
         expect(stale.isError).toBe(true);

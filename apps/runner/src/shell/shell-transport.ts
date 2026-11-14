@@ -16,7 +16,7 @@ export function shellConnectRefusalMessage(error: ShellConnectError["error"]): s
     return error.message;
   const next =
     error.code === "device-access-off"
-      ? "Use device_access_request if needed."
+      ? "Use computer_access_request if needed."
       : "Do not request access while offline.";
-  return `${error.code}: machineId=${error.machineId}, capability=${error.capability}. ${error.message} ${next}`;
+  return `${error.code}: computerId=${error.machineId}, capability=${error.capability}. ${error.message} ${next}`;
 }

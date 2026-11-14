@@ -215,18 +215,16 @@ describe("Opensteer MCP integration access classes", () => {
     expect(mcp.instructions).toBe("");
 
     const search = listed.tools.find(({ name }) => name === "integration_search");
-    expect(search?.description).toContain("Choose accounts by connectionId.");
+    expect(search?.description).toContain("choose accounts by connectionId");
     expect(search?.description).toContain("Writes need read-write access");
-    expect(search?.description).toContain("by query, provider or runnerId");
+    expect(search?.description).toContain("by query, provider or computerId");
     const call = listed.tools.find(({ name }) => name === "integration_call");
-    expect(call?.description).toContain("Live account/grant checks apply");
+    expect(call?.description).toContain("Live account and grant checks apply");
     const request = listed.tools.find(({ name }) => name === "integration_request");
-    expect(request?.description).toContain(
-      "integration + access + reason; catalog item: catalog instead.",
-    );
+    expect(request?.description).toContain("pass catalog instead");
     const describe = listed.tools.find(({ name }) => name === "integration_describe");
-    expect(describe?.description).toContain("full input/output schemas");
-    expect(request?.description).toContain("Never repeat pending/declined asks");
+    expect(describe?.description).toContain("full input and output schemas");
+    expect(request?.description).toContain("Never repeat a pending or declined ask");
     expect(request?.description).not.toContain("requestSelection");
     // One object for every request shape: Claude Code drops tools whose input
     // root is a union. The Host still enforces each shape when called.
@@ -235,12 +233,9 @@ describe("Opensteer MCP integration access classes", () => {
       properties: {
         access: expect.any(Object),
         account: expect.any(Object),
-        app: expect.any(Object),
         catalog: { maxLength: 64, minLength: 1, type: "string" },
         integration: { maxLength: 64, minLength: 1, type: "string" },
-        kind: { const: "computer-app" },
         reason: { maxLength: requestReasonMaxLength, minLength: 1, type: "string" },
-        runnerId: expect.any(Object),
         server: expect.any(Object),
       },
       required: ["reason"],
@@ -248,7 +243,7 @@ describe("Opensteer MCP integration access classes", () => {
     });
     expect(request?.inputSchema).not.toHaveProperty("oneOf");
     expect(JSON.stringify(request?.inputSchema)).not.toContain("selection");
-    const propose = listed.tools.find(({ name }) => name === "integration_propose");
+    const propose = listed.tools.find(({ name }) => name === "custom_integration_request");
     expect(propose?.inputSchema).toMatchObject({
       properties: {
         description: { maxLength: 240, minLength: 1, type: "string" },
@@ -285,8 +280,7 @@ describe("Opensteer MCP integration access classes", () => {
 
     expect(searched).toMatchObject({
       catalog: expect.any(Array),
-      nextOffset: null,
-      operationNextOffset: null,
+      nextCursor: null,
       operationTotal: 1,
       operations: [
         {
@@ -625,7 +619,12 @@ describe("Opensteer MCP integration access classes", () => {
           {
             params: {
               name: "integration_search",
-              arguments: { query: "no matching service", provider: "google", limit: 1, offset: 10 },
+              arguments: {
+                query: "no matching service",
+                provider: "google",
+                limit: 1,
+                cursor: "10",
+              },
             },
           },
           callExtra(fixture),
@@ -801,18 +800,6 @@ describe("Opensteer MCP integration access classes", () => {
       ),
     ).toBe("Integration operation is no longer available; search again");
     expect(callTool).toHaveBeenCalledTimes(1);
-  });
-
-  it("tells a caller holding the old address how to continue", async () => {
-    const { handler } = await createHarness({ inventory: [] });
-    expect(
-      errorText(
-        await handler(
-          { params: { arguments: { toolRef: "old" }, name: "integration_call" } },
-          callExtra("legacy"),
-        ),
-      ),
-    ).toContain("call integration_search, then pass operation and account");
   });
 
   it("names the read-write fix when a write operation is blocked by a read grant", async () => {
@@ -1210,7 +1197,7 @@ describe("Opensteer MCP integration access classes", () => {
               source: proposal.source.url,
               ...input,
             },
-            name: "integration_propose",
+            name: "custom_integration_request",
           },
         },
         callExtra(key),
@@ -1400,7 +1387,7 @@ describe("Opensteer MCP integration access classes", () => {
   });
 });
 
-describe("integration_request computer-app variant", () => {
+describe("app_access_request", () => {
   const mac = { name: "Alex's Mac", ready: true, runnerId: scope.runnerId };
 
   it("hands a second identical ask the Request already waiting", async () => {
@@ -1408,18 +1395,17 @@ describe("integration_request computer-app variant", () => {
     const args = {
       access: "read" as const,
       app: "Notes",
-      kind: "computer-app" as const,
       reason: "Read the shopping list",
     };
     const first = result(
       await handler(
-        { params: { arguments: args, name: "integration_request" } },
+        { params: { arguments: args, name: "app_access_request" } },
         callExtra("computer-app-replay-1"),
       ),
     );
     const second = result(
       await handler(
-        { params: { arguments: args, name: "integration_request" } },
+        { params: { arguments: args, name: "app_access_request" } },
         callExtra("computer-app-replay-2"),
       ),
     );
@@ -1436,10 +1422,9 @@ describe("integration_request computer-app variant", () => {
           arguments: {
             access: "read",
             app: "Notes",
-            kind: "computer-app",
             reason: "Read the shopping list",
           },
-          name: "integration_request",
+          name: "app_access_request",
         },
       },
       callExtra("computer-app-none"),
@@ -1451,7 +1436,7 @@ describe("integration_request computer-app variant", () => {
   it("enforces each request shape although the advertisement merges them", async () => {
     const { handler } = await createHarness({ inventory: [] });
     for (const [index, attempt] of [
-      { kind: "computer-app", reason: "Read the notes" },
+      { kind: "computer-app", access: "read", app: "Notes", reason: "Read the notes" },
       { access: "read", reason: "Read the notes" },
       { access: "read", catalog: "linear", integration: "linear", reason: "Read the issues" },
     ].entries()) {
@@ -1953,7 +1938,7 @@ describe("computer use discovery", () => {
       },
     ],
   };
-  it("says a runnerId names no Mac of this person's and where to find the right one", async () => {
+  it("says a computerId names no Mac of this person's and where to find the right one", async () => {
     const installedComputerApps = vi.fn();
     const { handler } = await createHarness({
       definitions: [definition],
@@ -1963,12 +1948,12 @@ describe("computer use discovery", () => {
     });
     const unknown = createId("runner");
     const answer = await handler(
-      { params: { name: "integration_search", arguments: { runnerId: unknown } } },
+      { params: { name: "integration_search", arguments: { computerId: unknown } } },
       callExtra("mac-unknown"),
     );
     expect(answer).toMatchObject({ isError: true });
     expect(errorText(answer)).toBe(
-      `No Mac set up for computer use has runnerId ${unknown}. Search "Computer use" with integration_search to list your Macs and their runnerIds.`,
+      `No Mac set up for computer use has computerId ${unknown}. Search "Computer use" with integration_search to list your Macs and their computerIds.`,
     );
     expect(installedComputerApps).not.toHaveBeenCalled();
   });
@@ -1997,7 +1982,7 @@ describe("computer use discovery", () => {
         {
           params: {
             name: "integration_search",
-            arguments: { runnerId: mac.runnerId, query: "note", limit: 2, offset: 4 },
+            arguments: { computerId: mac.runnerId, query: "note", limit: 2, cursor: "4" },
           },
         },
         callExtra("mac-installed"),
@@ -2020,9 +2005,9 @@ describe("computer use discovery", () => {
           "blocked: only the computer owner can unblock it from any Opensteer app",
         ),
       },
-      computer: { runnerId: mac.runnerId, state: "ready", appApproval: "ask" },
+      computer: { computerId: mac.runnerId, state: "ready", appApproval: "ask" },
       total: 20,
-      nextOffset: 6,
+      nextCursor: "6",
       apps: [
         {
           name: "Notes",

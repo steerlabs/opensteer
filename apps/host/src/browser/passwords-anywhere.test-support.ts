@@ -115,8 +115,8 @@ export function passwordsAnywhereJourneys() {
             const client = await connect(run.toolsToken);
             expect(
               (await client.listTools()).tools.map(({ name }) => name),
-              "use_saved_login is a first-class tool without a Browser Session",
-            ).toContain("use_saved_login");
+              "saved_login_request is a first-class tool without a Browser Session",
+            ).toContain("saved_login_request");
             expect(await host.store.listBrowserSessions(host.ownerId)).toEqual([]);
             if (name === "browser-loginFill-required") {
               const browser = await startBrowserRuntime(host.hostPort, "unused-main", {
@@ -137,7 +137,7 @@ export function passwordsAnywhereJourneys() {
               );
               const before = authority.commands.length;
               const result = await client.callTool({
-                name: "use_saved_login",
+                name: "saved_login_request",
                 arguments: { tabId, site: passwordFixture.site, reason: "Read the account" },
               });
               expect(result.structuredContent, JSON.stringify(result.structuredContent)).toEqual({
@@ -153,7 +153,7 @@ export function passwordsAnywhereJourneys() {
             }
             const signIn = () =>
               client.callTool({
-                name: "use_saved_login",
+                name: "saved_login_request",
                 arguments: { site: passwordFixture.site, reason: "Sign in to the synthetic app" },
               });
             if (name === "epoch-47-refusal") {
@@ -185,7 +185,7 @@ export function passwordsAnywhereJourneys() {
                       after: null,
                       limit: 64,
                     });
-                    expect(rows, "use_saved_login did not open its Request").toHaveLength(1);
+                    expect(rows, "saved_login_request did not open its Request").toHaveLength(1);
                     return rows[0]!;
                   },
                   { timeout: 10_000 },
@@ -294,7 +294,7 @@ export function passwordsAnywhereJourneys() {
               expect(
                 (
                   await continuedClient.callTool({
-                    name: "use_saved_login",
+                    name: "saved_login_request",
                     arguments: {
                       site: passwordFixture.site,
                       reason: "Continue the approved sign-in",
@@ -320,7 +320,7 @@ export function passwordsAnywhereJourneys() {
                 });
                 const second = await connect(secondRun.toolsToken);
                 const reused = await second.callTool({
-                  name: "use_saved_login",
+                  name: "saved_login_request",
                   arguments: { site: passwordFixture.site, reason: "Continue in an app" },
                 });
                 expect(reused.structuredContent).toEqual(first.structuredContent);

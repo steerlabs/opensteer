@@ -2040,11 +2040,10 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       expect(narrow).toMatchObject({ access: "read" });
       expect(Object.keys(narrow.toolRefs!).sort()).toEqual(["observe", "release"]);
       const asked = resultJson(
-        await call(agentA3, "integration_request", {
+        await call(agentA3, "app_access_request", {
           access: "read-write",
-          kind: "computer-app",
           reason: "Pay the restaurant bill.",
-          runnerId,
+          computerId: runnerId,
         }),
       );
       expect(asked).toMatchObject({ kind: "computer.app.access", status: "pending" });

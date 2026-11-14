@@ -280,7 +280,7 @@ describe("Product tool handlers", () => {
       originatingThreadId: claims.threadId,
     });
   });
-  it.each(["use_saved_login", "copy_chrome_cookies"] as const)(
+  it.each(["saved_login_request", "chrome_cookies_request"] as const)(
     "keeps %s tab requests admitted through the single sign-in permission",
     async (type) => {
       const current = thread(currentThreadId, nativeHarnessId, "Worker");
@@ -320,7 +320,7 @@ describe("Product tool handlers", () => {
         ),
       ).resolves.toEqual(result);
       expect(
-        type === "use_saved_login" ? useSavedLogin : agentCopyChromeCookies,
+        type === "saved_login_request" ? useSavedLogin : agentCopyChromeCookies,
       ).toHaveBeenCalledWith(expect.objectContaining({ tabId, site: result.site }));
       expect(admitRunToolCall).not.toHaveBeenCalled();
     },
@@ -662,7 +662,7 @@ describe("Product tool handlers", () => {
     expect(enqueueThreadInput).not.toHaveBeenCalled();
   });
 
-  it("admits full access requests from %s before calling the service", async () => {
+  it("sends Full Disk Access requests to their service without device admission", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Client", null, {});
     const request = vi.fn(async () => ({
       kind: "machine.full-disk-access" as const,
@@ -682,24 +682,21 @@ describe("Product tool handlers", () => {
       threads: [current],
     });
     const callId = crypto.randomUUID();
+    const computerId = createId("runner");
     expect(
       await service.handle("run-token", {
-        type: "machine.full-disk-access.request",
+        type: "computer.access.request",
         requestId: callId,
-        computer: "test-mac",
+        computerId,
+        access: "full_disk_access",
         reason: "Read Mail",
       }),
     ).toMatchObject({
-      type: "machine.full-disk-access.request.result",
+      type: "computer.access.request.result",
     });
     expect(request).toHaveBeenCalledWith({
-      callId: mcpToolCallId(
-        `run:${claims.runId}`,
-        callId,
-        "operation",
-        "machine_full_disk_access_request",
-      ),
-      computer: "test-mac",
+      callId: mcpToolCallId(`run:${claims.runId}`, callId, "operation", "computer_access_request"),
+      computerId,
       reason: "Read Mail",
       claims,
     });

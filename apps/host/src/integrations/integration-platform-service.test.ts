@@ -4377,7 +4377,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
         });
         await client.connect(new StreamableHTTPClientTransport(url) as unknown as Transport);
         const result = await client.callTool({
-          name: "computer",
+          name: "computer_use",
           arguments: {
             code: phone
               ? `const p=await phone("Pixel 7");await p.observe();await p.type(${JSON.stringify(args.actions[0]!.text)})`

@@ -86,7 +86,7 @@ import {
   resolveDelegationSpecialist,
 } from "../../agents/specialist-placement.js";
 import { delegationPlacement } from "../../agents/delegation-placement.js";
-import { environmentDiscovery } from "../../agents/environment-discovery.js";
+import { aiAccountDiscovery } from "../ai-accounts.js";
 
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
 import type { MemoryPassService } from "../../agents/memory-pass-service.js";
@@ -125,7 +125,7 @@ interface StandaloneTask {
 const assignedRunRefusal = "A task reaches the person through the task that assigned it";
 const assignedRunNext = "Send it to the parent task with opensteer_task_send.";
 const unknownEnvironment = "Selected execution environment does not exist";
-const chooseExecutionNext = "See the current choices with orchestrator_capabilities.";
+const chooseExecutionNext = "See the current choices with opensteer_ai_account_list.";
 
 export class ProductToolHandlers {
   readonly #deploymentId: DeploymentId;
@@ -384,20 +384,18 @@ export class ProductToolHandlers {
     return { messageId: result.message.id };
   }
 
-  async orchestrator_capabilities({ caller, input }: ToolCall<"orchestrator_capabilities">) {
+  async opensteer_ai_account_list({ caller, input }: ToolCall<"opensteer_ai_account_list">) {
     const currentThread = caller.kind === "connection" ? undefined : callerThread(caller);
-    const claims = { requestedBy: caller.userId };
     const environmentId = await this.#execution.environmentFor(caller.userId);
-    const result = await environmentDiscovery({
+    const result = await aiAccountDiscovery({
       store: this.#store,
-      userId: claims.requestedBy,
+      userId: caller.userId,
       ...(currentThread ? { parent: currentThread } : {}),
       input,
       connected: this.#isEnvironmentConnected,
       canRun: this.#canRunHarness,
       ...(environmentId ? { environmentId } : {}),
     });
-    const harnesses = result.harnesses;
     const source =
       caller.kind === "run"
         ? await this.#store.database
@@ -431,9 +429,7 @@ export class ProductToolHandlers {
         (await this.#store.getThreadForOwner(ancestor.parentThreadId, caller.userId)) ?? undefined;
     }
     return {
-      ...(result.delegationDefault ? { delegationDefault: result.delegationDefault } : {}),
-      harnesses,
-      ...(result.harnessesNextCursor ? { harnessesNextCursor: result.harnessesNextCursor } : {}),
+      ...result,
       accessCeiling: caller.accessMode,
       limits: {
         maxDepth: caller.kind === "connection" ? null : agentDelegationMaxDepth,
@@ -450,26 +446,6 @@ export class ProductToolHandlers {
         maxWaitMs: threadWaitMaxMs,
         taskDeadlineAt: null,
       },
-    };
-  }
-
-  async environment_list({ caller, input }: ToolCall<"environment_list">) {
-    const rows = await this.#store.listEnvironmentsForUser(
-      caller.userId,
-      65,
-      input.environmentCursor ? { afterId: input.environmentCursor } : {},
-    );
-    const environments = rows.slice(0, 64);
-    return {
-      environments: environments.map(({ id, kind, name, capabilities }) => ({
-        id,
-        kind,
-        name,
-        capabilities,
-        connected: this.#isEnvironmentConnected(id),
-        can: { executeTasks: this.#execution.canExecute(id) },
-      })),
-      ...(rows.length > 64 ? { environmentsNextCursor: environments[63]!.id } : {}),
     };
   }
 
@@ -1402,18 +1378,11 @@ export class ProductToolHandlers {
     );
   }
 
-  async browser_profile_list({ caller }: ToolCall<"browser_profile_list">) {
-    const claims = callerContext(caller);
-
-    const profiles = await this.#browser.listAgentProfiles(claims.requestedBy);
-    return { profiles };
-  }
-
-  async use_card({ caller, input, operationKey }: ToolCall<"use_card">) {
+  async card_request({ caller, input, operationKey }: ToolCall<"card_request">) {
     const claims = requireRun(caller).claims;
     return await this.#savedLogins.useCard({
       deploymentId: this.#deploymentId,
-      callId: operationId(caller, operationKey, "use_card"),
+      callId: operationId(caller, operationKey, "card_request"),
       ownerId: claims.requestedBy,
       reason: input.reason,
       runId: claims.runId,
@@ -1423,12 +1392,12 @@ export class ProductToolHandlers {
     });
   }
 
-  async use_saved_login({ caller, input, operationKey }: ToolCall<"use_saved_login">) {
+  async saved_login_request({ caller, input, operationKey }: ToolCall<"saved_login_request">) {
     const claims = requireRun(caller).claims;
     return await this.#savedLogins.useSavedLogin({
       deploymentId: this.#deploymentId,
       loginFill: this.#supportsLoginFill(claims),
-      callId: operationId(caller, operationKey, "use_saved_login"),
+      callId: operationId(caller, operationKey, "saved_login_request"),
       ownerId: claims.requestedBy,
       reason: input.reason,
       runId: claims.runId,
@@ -1438,11 +1407,15 @@ export class ProductToolHandlers {
     });
   }
 
-  async copy_chrome_cookies({ caller, input, operationKey }: ToolCall<"copy_chrome_cookies">) {
+  async chrome_cookies_request({
+    caller,
+    input,
+    operationKey,
+  }: ToolCall<"chrome_cookies_request">) {
     const claims = requireRun(caller).claims;
     return await this.#browserSources.agentCopyChromeCookies({
       deploymentId: this.#deploymentId,
-      callId: operationId(caller, operationKey, "copy_chrome_cookies"),
+      callId: operationId(caller, operationKey, "chrome_cookies_request"),
       ownerId: claims.requestedBy,
       reason: input.reason,
       runId: claims.runId,
@@ -1452,26 +1425,27 @@ export class ProductToolHandlers {
     });
   }
 
-  async device_access_request({ caller, input, operationKey }: ToolCall<"device_access_request">) {
-    const claims = requireRun(caller).claims;
-    const callId = operationId(caller, operationKey, "device_access_request");
-    await this.#store.admitRunToolCall(
-      runAdmission(caller, "device_access_request", input, callId),
-    );
-    return this.#deviceAccess.request({ ...input, callId, claims });
-  }
-
-  async machine_full_disk_access_request({
+  async computer_access_request({
     caller,
     input,
     operationKey,
-  }: ToolCall<"machine_full_disk_access_request">) {
+  }: ToolCall<"computer_access_request">) {
     const claims = requireRun(caller).claims;
-    const requestId = operationId(caller, operationKey, "machine_full_disk_access_request");
-
-    return await this.#machineFullDiskAccess.request({
-      callId: requestId,
-      computer: input.computer,
+    const callId = operationId(caller, operationKey, "computer_access_request");
+    if (input.access === "full_disk_access")
+      return await this.#machineFullDiskAccess.request({
+        callId,
+        computerId: input.computerId,
+        reason: input.reason,
+        claims,
+      });
+    await this.#store.admitRunToolCall(
+      runAdmission(caller, "computer_access_request", input, callId),
+    );
+    return this.#deviceAccess.request({
+      callId,
+      machineId: input.computerId,
+      access: input.access,
       reason: input.reason,
       claims,
     });

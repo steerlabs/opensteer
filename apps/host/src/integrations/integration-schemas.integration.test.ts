@@ -390,17 +390,17 @@ async function searchAll(
   gateway: Gateway,
 ): Promise<{ readonly operations: readonly FoundOperation[]; readonly total: number }> {
   const operations: FoundOperation[] = [];
-  let offset: number | null = 0;
+  let cursor: string | null | undefined;
   let total = 0;
-  while (offset !== null) {
+  while (cursor !== null) {
     const page: Json = await gateway.call("integration_search", {
       limit: 20,
-      offset,
+      ...(cursor ? { cursor } : {}),
       query: apiTitle,
     });
     operations.push(...(page.operations as readonly FoundOperation[]));
     total = page.operationTotal as number;
-    offset = page.operationNextOffset as number | null;
+    cursor = page.nextCursor as string | null;
   }
   for (const found of operations) {
     expect(found).not.toHaveProperty("accounts");
@@ -416,7 +416,7 @@ async function proposeAndInstall(
   runId: import("@opensteer/core").RunId,
 ): Promise<IntegrationInstallationId> {
   const proposed = await startHeldRequest(host, runId, () =>
-    gateway.call("integration_propose", {
+    gateway.call("custom_integration_request", {
       description: "Voice AI agents that answer and place phone calls.",
       kind: "openapi",
       reason: "Manage this person's voice assistants",

@@ -148,7 +148,7 @@ integration("proposal credential guidance", () => {
           .execute(),
       });
       const before = await count();
-      const refusal = await gateway.callRaw("integration_propose", {
+      const refusal = await gateway.callRaw("custom_integration_request", {
         kind: "openapi",
         description: "Read and manage Gmail messages.",
         reason: "Read my Gmail",
@@ -272,7 +272,7 @@ integration("proposal credential guidance", () => {
       closers.unshift(() => gateway.close());
       const catalogBefore = integrationDefinitions.map(integrationDefinitionDigest);
       const propose = (overrides: Json = {}, document: Json = spec()) =>
-        gateway.call("integration_propose", {
+        gateway.call("custom_integration_request", {
           source: JSON.stringify(document),
           kind: "openapi",
           reason: "Use the provider API",
@@ -1127,7 +1127,7 @@ integration("proposal credential guidance", () => {
       const gateway = await integrationGateway(run.integrationTools);
       closers.unshift(() => gateway.close());
       const propose = (overrides: Json = {}) =>
-        gateway.call("integration_propose", {
+        gateway.call("custom_integration_request", {
           source: JSON.stringify(spec()),
           kind: "openapi",
           reason: "Use the provider API",

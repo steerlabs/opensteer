@@ -132,7 +132,7 @@ integration("API-key reconnect incident", () => {
       // The agent proposes the API with an unpinned access Request. Installing
       // it leaves that same Request pending until the owner connects a key.
       const proposing = await startHeldRequest(host, run.runId, () =>
-        gateway.call("integration_propose", {
+        gateway.call("custom_integration_request", {
           access: "read",
           description: "Voice AI agents that answer and place phone calls.",
           kind: "openapi",

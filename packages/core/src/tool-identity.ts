@@ -18,12 +18,13 @@ export const integrationGatewayNamespaces = [
 ] as const;
 
 const gatewayToolNames = new Set([
-  "computer",
+  "computer_use",
   "integration_search",
   "integration_describe",
   "integration_call",
   "integration_request",
-  "integration_propose",
+  "app_access_request",
+  "custom_integration_request",
 ]);
 
 /**

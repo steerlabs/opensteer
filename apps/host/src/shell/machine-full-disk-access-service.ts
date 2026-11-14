@@ -7,7 +7,7 @@ import {
   type UserId,
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
-import { allocateMachineAliases, type RequestCreationResult } from "@opensteer/protocol";
+import type { RequestCreationResult } from "@opensteer/protocol";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import type { ContinuationService } from "../agents/continuation-service.js";
 
@@ -35,18 +35,21 @@ export class MachineFullDiskAccessService {
 
   async request(input: {
     readonly callId: string;
-    readonly computer: string;
+    readonly computerId: RunnerId;
     readonly reason: string;
     readonly claims: RunToolScope;
   }): Promise<RequestCreationResult & { kind: "machine.full-disk-access" }> {
     const { claims } = input;
     const machines = await this.#store.listReachableMachines(claims.requestedBy, claims.runnerId);
-    const aliases = allocateMachineAliases(machines);
-    const machine = machines.find((entry) => aliases.get(entry.runnerId) === input.computer);
+    const machine = machines.find((entry) => entry.runnerId === input.computerId);
     if (!machine)
       throw new OpensteerError({
         code: "bad_request",
-        message: `No reachable computer is called ${input.computer}.`,
+        message: `This Run reaches no computer with that computerId over SSH.${
+          machines.length
+            ? ` It reaches ${machines.map(({ name, runnerId }) => `${name} (${runnerId})`).join(", ")}.`
+            : ""
+        }`,
       });
     if (machine.platform !== "darwin")
       throw new OpensteerError({

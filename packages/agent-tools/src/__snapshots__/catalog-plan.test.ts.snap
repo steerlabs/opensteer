@@ -122,6 +122,121 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "access": "read",
     "callers": [
       "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "aiAccountId": {
+          "description": "Show only this account, to page through its models.",
+          "pattern": "^hin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "cursor": {
+          "description": "nextCursor from the previous page.",
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+        "query": {
+          "description": "Words that must all match a model, provider or account name.",
+          "maxLength": 256,
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "opensteer_ai_account_list",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "rename",
+            "enable",
+            "disable",
+            "set_default",
+            "set_model_limits",
+          ],
+          "type": "string",
+        },
+        "aiAccountId": {
+          "pattern": "^hin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "modelLimits": {
+          "additionalProperties": false,
+          "description": "set_model_limits: the model and its limits.",
+          "properties": {
+            "limits": {
+              "anyOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "contextWindow": {
+                      "exclusiveMinimum": 0,
+                      "maximum": 10000000,
+                      "type": "integer",
+                    },
+                    "maxOutputTokens": {
+                      "exclusiveMinimum": 0,
+                      "maximum": 10000000,
+                      "type": "integer",
+                    },
+                  },
+                  "required": [
+                    "contextWindow",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "type": "null",
+                },
+              ],
+              "description": "New limits, or null to clear them.",
+            },
+            "modelId": {
+              "description": "Model ID from opensteer_ai_account_list.",
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string",
+            },
+          },
+          "required": [
+            "modelId",
+            "limits",
+          ],
+          "type": "object",
+        },
+        "name": {
+          "description": "rename: the new name.",
+          "maxLength": 120,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "aiAccountId",
+        "action",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_ai_account_update",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
       "connection",
     ],
     "input": {
@@ -130,7 +245,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "properties": {},
       "type": "object",
     },
-    "name": "settings_read",
+    "name": "opensteer_defaults_read",
   },
   {
     "access": "settings",
@@ -143,7 +258,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "additionalProperties": false,
       "properties": {
         "accessMode": {
-          "description": "remember_execution: preference no higher than your ceiling; does not change a Thread.",
           "enum": [
             "approval-required",
             "auto-accept-edits",
@@ -152,70 +266,18 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           ],
           "type": "string",
         },
-        "action": {
-          "enum": [
-            "set_default",
-            "configure_model",
-            "set_enabled",
-            "rename",
-            "remember_execution",
-            "set_time_zone",
-          ],
-          "type": "string",
-        },
-        "enabled": {
-          "description": "set_enabled: whether the account may execute.",
-          "type": "boolean",
-        },
-        "environmentId": {
-          "description": "Engine actions: computer containing the engine account.",
-          "pattern": "^env_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "harnessInstanceId": {
-          "description": "Engine actions: exact account ID.",
-          "pattern": "^hin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "name": {
-          "description": "rename: new engine-account label.",
-          "maxLength": 120,
-          "minLength": 1,
-          "type": "string",
-        },
-        "nativeModelId": {
-          "description": "configure_model: native model ID, not display name.",
-          "maxLength": 255,
-          "minLength": 1,
-          "type": "string",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
         "selection": {
           "additionalProperties": false,
-          "description": "remember_execution: saved engine/model selectors.",
+          "description": "AI account and model from opensteer_ai_account_list.",
           "properties": {
-            "environmentId": {
-              "pattern": "^env_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string",
-            },
-            "harnessInstanceId": {
+            "aiAccountId": {
               "pattern": "^hin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "type": "string",
             },
-            "modelSelection": {
+            "model": {
               "additionalProperties": false,
               "properties": {
                 "modelId": {
-                  "maxLength": 255,
-                  "minLength": 1,
-                  "type": "string",
-                },
-                "nativeModelId": {
                   "maxLength": 255,
                   "minLength": 1,
                   "type": "string",
@@ -235,6 +297,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
                       },
                     ],
                   },
+                  "default": {},
                   "propertyNames": {
                     "maxLength": 100,
                     "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
@@ -250,72 +313,43 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
               },
               "required": [
                 "modelId",
-                "options",
                 "providerId",
               ],
               "type": "object",
             },
           },
           "required": [
-            "environmentId",
-            "harnessInstanceId",
-            "modelSelection",
+            "aiAccountId",
+            "model",
           ],
           "type": "object",
         },
-        "settings": {
-          "anyOf": [
-            {
-              "additionalProperties": false,
-              "properties": {
-                "contextWindow": {
-                  "exclusiveMinimum": 0,
-                  "maximum": 10000000,
-                  "type": "integer",
-                },
-                "maxOutputTokens": {
-                  "exclusiveMinimum": 0,
-                  "maximum": 10000000,
-                  "type": "integer",
-                },
-              },
-              "required": [
-                "contextWindow",
-              ],
-              "type": "object",
-            },
-            {
-              "type": "null",
-            },
-          ],
-          "description": "configure_model: limits, or null to clear overrides.",
-        },
         "timeZone": {
-          "description": "set_time_zone: IANA zone, such as America/New_York.",
+          "description": "IANA zone, such as America/New_York.",
           "maxLength": 64,
           "minLength": 1,
           "type": "string",
         },
       },
-      "required": [
-        "action",
-      ],
       "type": "object",
     },
-    "name": "settings_write",
+    "name": "opensteer_defaults_update",
   },
   {
     "access": "read",
     "callers": [
       "run",
+      "program",
       "connection",
     ],
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "after": {
-          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        "cursor": {
+          "description": "nextCursor from the previous page.",
+          "maxLength": 2048,
+          "minLength": 1,
           "type": "string",
         },
       },
@@ -333,15 +367,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "action": {
-          "enum": [
-            "rename",
-            "revoke",
-            "stop_session",
-          ],
-          "type": "string",
-        },
-        "machineId": {
+        "computerId": {
           "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
@@ -350,174 +376,132 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "minLength": 1,
           "type": "string",
         },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
+      },
+      "required": [
+        "computerId",
+        "name",
+      ],
+      "type": "object",
+    },
+    "name": "computer_update",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "computerId": {
+          "description": "computer: the computer to remove.",
+          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
         "sessionId": {
+          "description": "session: a session ID from computer_list.",
           "maxLength": 256,
           "minLength": 1,
           "type": "string",
         },
+        "target": {
+          "enum": [
+            "computer",
+            "session",
+          ],
+          "type": "string",
+        },
       },
       "required": [
-        "action",
+        "target",
       ],
       "type": "object",
     },
-    "name": "computer_write",
+    "name": "computer_remove",
   },
   {
-    "access": "settings",
+    "access": "write",
     "callers": [
       "run",
-      "connection",
     ],
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "action": {
-          "enum": [
-            "list",
-            "disconnect",
-            "uninstall",
-            "revoke_grant",
-          ],
-          "type": "string",
-        },
-        "connectionId": {
-          "description": "disconnect: account connection ID.",
-          "pattern": "^con_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "grantId": {
-          "description": "revoke_grant: grant to remove.",
-          "pattern": "^igr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "installationId": {
-          "description": "uninstall: installed integration ID.",
-          "pattern": "^iin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
+        "code": {
+          "maxLength": 65536,
           "minLength": 1,
           "type": "string",
         },
       },
       "required": [
-        "action",
+        "code",
       ],
       "type": "object",
     },
-    "name": "integration_manage",
+    "name": "computer_use",
   },
   {
-    "access": "settings",
+    "access": "write",
     "callers": [
       "run",
-      "connection",
     ],
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "action": {
+        "access": {
           "enum": [
-            "list",
-            "revoke_binding",
-            "pause",
-            "resume",
+            "browser",
+            "apps",
+            "files",
+            "full_disk_access",
           ],
           "type": "string",
         },
-        "bindingId": {
-          "description": "revoke_binding: existing binding to remove.",
-          "maxLength": 256,
-          "minLength": 1,
-          "type": "string",
-        },
-        "connectionId": {
-          "description": "pause/resume: existing channel connection.",
-          "pattern": "^con_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "action",
-      ],
-      "type": "object",
-    },
-    "name": "channel_manage",
-  },
-  {
-    "access": "settings",
-    "callers": [
-      "run",
-      "connection",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "action": {
-          "enum": [
-            "list",
-            "update",
-            "enable",
-            "disable",
-            "remove",
-            "remove_specialist",
-          ],
-          "type": "string",
-        },
-        "directory": {
-          "description": "update: replacement plugin source folder on its computer.",
-          "maxLength": 4096,
-          "minLength": 1,
-          "type": "string",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "pluginId": {
-          "description": "Plugin to update, enable/disable or remove.",
-          "maxLength": 256,
-          "minLength": 1,
-          "type": "string",
-        },
-        "runnerId": {
-          "description": "update: computer holding the source; omit for existing placement.",
+        "computerId": {
+          "description": "Computer from the refusal or computer_list.",
           "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
-        "specialistId": {
-          "description": "remove_specialist: registration to remove.",
-          "maxLength": 256,
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "description": "Why this task needs that access.",
+          "maxLength": 500,
           "minLength": 1,
           "type": "string",
         },
       },
       "required": [
-        "action",
+        "computerId",
+        "access",
+        "reason",
       ],
       "type": "object",
     },
-    "name": "plugin_manage",
+    "name": "computer_access_request",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object",
+    },
+    "name": "browser_profile_list",
   },
   {
     "access": "settings",
@@ -529,53 +513,454 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "action": {
-          "enum": [
-            "list",
-            "rename",
-            "delete",
-            "clear_history",
-            "remove_history",
-            "remove_site",
-          ],
-          "type": "string",
-        },
         "name": {
-          "description": "rename: new profile label.",
           "maxLength": 120,
-          "minLength": 1,
-          "type": "string",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
           "minLength": 1,
           "type": "string",
         },
         "profileId": {
-          "description": "rename/delete/clear_history/remove_history: profile ID.",
+          "pattern": "^bpr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "required": [
+        "profileId",
+        "name",
+      ],
+      "type": "object",
+    },
+    "name": "browser_profile_update",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "profileId": {
+          "description": "profile, history and history_url: the profile.",
           "pattern": "^bpr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
         "site": {
-          "description": "remove_site: remembered site to remove.",
+          "description": "site: the remembered site.",
           "maxLength": 2048,
           "minLength": 1,
           "type": "string",
         },
+        "target": {
+          "enum": [
+            "profile",
+            "history",
+            "history_url",
+            "site",
+          ],
+          "type": "string",
+        },
         "url": {
-          "description": "remove_history: exact history URL.",
+          "description": "history_url: the exact URL.",
           "maxLength": 2048,
           "minLength": 1,
           "type": "string",
         },
       },
       "required": [
-        "action",
+        "target",
       ],
       "type": "object",
     },
-    "name": "browser_profile_write",
+    "name": "browser_profile_remove",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "description": "Why this task needs the profile.",
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string",
+        },
+        "suggestion": {
+          "description": "Suggestion only: existing profile, new empty profile, or user_choice. The person decides.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "existing",
+                  "type": "string",
+                },
+                "profileId": {
+                  "description": "Existing owner profile to suggest; the person decides.",
+                  "pattern": "^bpr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "kind",
+                "profileId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "new",
+                  "type": "string",
+                },
+                "suggestedName": {
+                  "description": "One or two plain words, such as Personal, Work or Finance.",
+                  "maxLength": 120,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "kind",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "user_choice",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "kind",
+              ],
+              "type": "object",
+            },
+          ],
+        },
+      },
+      "required": [
+        "reason",
+        "suggestion",
+      ],
+      "type": "object",
+    },
+    "name": "browser_profile_request",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "description": "Why this task needs the account.",
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string",
+        },
+        "site": {
+          "description": "Site whose login is needed, such as github.com. Covers its subdomains.",
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+        "tabId": {
+          "description": "Browser tab showing the site's sign-in form; omit for a genuine app.",
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "reason",
+        "site",
+      ],
+      "type": "object",
+    },
+    "name": "saved_login_request",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "description": "Why this task needs the account.",
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string",
+        },
+        "site": {
+          "description": "Site whose login is needed, such as github.com. Covers its subdomains.",
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+        "tabId": {
+          "description": "Browser tab to receive the cookies.",
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "reason",
+        "tabId",
+        "site",
+      ],
+      "type": "object",
+    },
+    "name": "chrome_cookies_request",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string",
+        },
+        "site": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+        "tabId": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "site",
+        "reason",
+        "tabId",
+      ],
+      "type": "object",
+    },
+    "name": "card_request",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object",
+    },
+    "name": "opensteer_plugin_list",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "computerId": {
+          "description": "With pluginId: the computer holding the folder; omit to keep its current place.",
+          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "directory": {
+          "description": "Plugin folder, relative to Agent home unless pluginId is given.",
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string",
+        },
+        "pluginId": {
+          "description": "A person-installed plugin to update.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "directory",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_plugin_install",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+        },
+        "pluginId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "pluginId",
+        "enabled",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_plugin_update",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "pluginId": {
+          "description": "plugin: the plugin to remove.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "specialistId": {
+          "description": "specialist: the registration to remove.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "target": {
+          "enum": [
+            "plugin",
+            "specialist",
+          ],
+          "type": "string",
+        },
+      },
+      "required": [
+        "target",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_plugin_remove",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object",
+    },
+    "name": "opensteer_messaging_bridge_list",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "bridgeId": {
+          "pattern": "^con_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "paused": {
+          "type": "boolean",
+        },
+      },
+      "required": [
+        "bridgeId",
+        "paused",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_messaging_bridge_update",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "routeId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "routeId",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_messaging_bridge_remove",
   },
   {
     "access": "write",
@@ -891,87 +1276,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "type": "object",
     },
     "name": "opensteer_request_withdraw",
-  },
-  {
-    "access": "read",
-    "callers": [
-      "run",
-      "program",
-      "connection",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "environmentCursor": {
-          "pattern": "^env_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-      },
-      "type": "object",
-    },
-    "name": "environment_list",
-  },
-  {
-    "access": "read",
-    "callers": [
-      "run",
-      "program",
-      "connection",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "cursor": {
-          "maxLength": 2048,
-          "minLength": 1,
-          "type": "string",
-        },
-        "harnessCursor": {
-          "pattern": "^hin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "harnessInstanceId": {
-          "pattern": "^hin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "query": {
-          "maxLength": 256,
-          "type": "string",
-        },
-      },
-      "type": "object",
-    },
-    "name": "orchestrator_capabilities",
-  },
-  {
-    "access": "settings",
-    "callers": [
-      "run",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "directory": {
-          "maxLength": 4096,
-          "minLength": 1,
-          "type": "string",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "directory",
-      ],
-      "type": "object",
-    },
-    "name": "plugin_install",
   },
   {
     "access": "write",
@@ -2006,311 +2310,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "callers": [
       "run",
       "program",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {},
-      "type": "object",
-    },
-    "name": "browser_profile_list",
-  },
-  {
-    "access": "write",
-    "callers": [
-      "run",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "reason": {
-          "description": "Why this task needs the account.",
-          "maxLength": 500,
-          "minLength": 1,
-          "type": "string",
-        },
-        "site": {
-          "description": "Site whose login is needed, such as github.com. Covers its subdomains.",
-          "maxLength": 2048,
-          "minLength": 1,
-          "type": "string",
-        },
-        "tabId": {
-          "description": "Browser tab to receive the cookies.",
-          "maxLength": 512,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "reason",
-        "tabId",
-        "site",
-      ],
-      "type": "object",
-    },
-    "name": "copy_chrome_cookies",
-  },
-  {
-    "access": "write",
-    "callers": [
-      "run",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "reason": {
-          "description": "Why this task needs the account.",
-          "maxLength": 500,
-          "minLength": 1,
-          "type": "string",
-        },
-        "site": {
-          "description": "Site whose login is needed, such as github.com. Covers its subdomains.",
-          "maxLength": 2048,
-          "minLength": 1,
-          "type": "string",
-        },
-        "tabId": {
-          "description": "Browser tab showing the site's sign-in form; omit for a genuine app.",
-          "maxLength": 512,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "reason",
-        "site",
-      ],
-      "type": "object",
-    },
-    "name": "use_saved_login",
-  },
-  {
-    "access": "write",
-    "callers": [
-      "run",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "reason": {
-          "maxLength": 500,
-          "minLength": 1,
-          "type": "string",
-        },
-        "site": {
-          "maxLength": 2048,
-          "minLength": 1,
-          "type": "string",
-        },
-        "tabId": {
-          "maxLength": 512,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "site",
-        "reason",
-        "tabId",
-      ],
-      "type": "object",
-    },
-    "name": "use_card",
-  },
-  {
-    "access": "write",
-    "callers": [
-      "run",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "reason": {
-          "description": "Why this task needs the profile.",
-          "maxLength": 500,
-          "minLength": 1,
-          "type": "string",
-        },
-        "suggestion": {
-          "description": "Suggestion only: existing profile, new empty profile, or user_choice. The person decides.",
-          "oneOf": [
-            {
-              "additionalProperties": false,
-              "properties": {
-                "kind": {
-                  "const": "existing",
-                  "type": "string",
-                },
-                "profileId": {
-                  "description": "Existing owner profile to suggest; the person decides.",
-                  "pattern": "^bpr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                  "type": "string",
-                },
-              },
-              "required": [
-                "kind",
-                "profileId",
-              ],
-              "type": "object",
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "kind": {
-                  "const": "new",
-                  "type": "string",
-                },
-                "suggestedName": {
-                  "description": "One or two plain words, such as Personal, Work or Finance.",
-                  "maxLength": 120,
-                  "minLength": 1,
-                  "type": "string",
-                },
-              },
-              "required": [
-                "kind",
-              ],
-              "type": "object",
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "kind": {
-                  "const": "user_choice",
-                  "type": "string",
-                },
-              },
-              "required": [
-                "kind",
-              ],
-              "type": "object",
-            },
-          ],
-        },
-      },
-      "required": [
-        "reason",
-        "suggestion",
-      ],
-      "type": "object",
-    },
-    "name": "browser_profile_request",
-  },
-  {
-    "access": "write",
-    "callers": [
-      "run",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "computer": {
-          "description": "Exact Mac alias from the computers note.",
-          "maxLength": 63,
-          "minLength": 1,
-          "type": "string",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "reason": {
-          "description": "Protected files this task needs and why.",
-          "maxLength": 500,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "computer",
-        "reason",
-      ],
-      "type": "object",
-    },
-    "name": "machine_full_disk_access_request",
-  },
-  {
-    "access": "write",
-    "callers": [
-      "run",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "access": {
-          "enum": [
-            "browser",
-            "apps",
-            "files",
-          ],
-          "type": "string",
-        },
-        "machineId": {
-          "description": "Device id from the refusal or computer_list.",
-          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "reason": {
-          "description": "Why this task needs that access.",
-          "maxLength": 500,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "required": [
-        "machineId",
-        "access",
-        "reason",
-      ],
-      "type": "object",
-    },
-    "name": "device_access_request",
-  },
-  {
-    "access": "read",
-    "callers": [
-      "run",
-      "program",
       "connection",
     ],
     "input": {
@@ -2615,16 +2614,20 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
+        "computerId": {
+          "description": "A Mac or phone from this search's computers or phones, to list its installed apps.",
+          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "cursor": {
+          "description": "nextCursor from the previous page.",
+          "pattern": "^\\d{1,5}$",
+          "type": "string",
+        },
         "limit": {
           "default": 10,
           "maximum": 20,
           "minimum": 1,
-          "type": "integer",
-        },
-        "offset": {
-          "default": 0,
-          "maximum": 10000,
-          "minimum": 0,
           "type": "integer",
         },
         "provider": {
@@ -2636,10 +2639,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
         "query": {
           "default": "",
           "maxLength": 240,
-          "type": "string",
-        },
-        "runnerId": {
-          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
       },
@@ -2734,32 +2733,59 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "name": "integration_call",
   },
   {
-    "access": "write",
+    "access": "read",
     "callers": [
       "run",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object",
+    },
+    "name": "integration_list",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+      "connection",
     ],
     "input": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "code": {
-          "maxLength": 65536,
-          "minLength": 1,
+        "connectionId": {
+          "description": "account: the connection.",
+          "pattern": "^con_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
+        "grantId": {
+          "description": "grant: the grant.",
+          "pattern": "^igr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "installationId": {
+          "description": "integration: the installed integration.",
+          "pattern": "^iin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "target": {
+          "enum": [
+            "account",
+            "integration",
+            "grant",
+          ],
           "type": "string",
         },
       },
       "required": [
-        "code",
+        "target",
       ],
       "type": "object",
     },
-    "name": "computer",
+    "name": "integration_remove",
   },
   {
     "access": "write",
@@ -2782,11 +2808,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "pattern": "^con_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
-        "app": {
-          "maxLength": 255,
-          "minLength": 1,
-          "type": "string",
-        },
         "catalog": {
           "maxLength": 64,
           "minLength": 1,
@@ -2795,10 +2816,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
         "integration": {
           "maxLength": 64,
           "minLength": 1,
-          "type": "string",
-        },
-        "kind": {
-          "const": "computer-app",
           "type": "string",
         },
         "operationKey": {
@@ -2810,10 +2827,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
         "reason": {
           "maxLength": 4000,
           "minLength": 1,
-          "type": "string",
-        },
-        "runnerId": {
-          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
         "server": {
@@ -2828,6 +2841,53 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "type": "object",
     },
     "name": "integration_request",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "access": {
+          "enum": [
+            "read",
+            "read-write",
+          ],
+          "type": "string",
+        },
+        "app": {
+          "description": "Mac app name, path or bundle ID; omit for a phone.",
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string",
+        },
+        "computerId": {
+          "description": "The Mac or phone; omit for an app on the Mac this task runs on.",
+          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "access",
+        "reason",
+      ],
+      "type": "object",
+    },
+    "name": "app_access_request",
   },
   {
     "access": "write",
@@ -2940,7 +3000,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       ],
       "type": "object",
     },
-    "name": "integration_propose",
+    "name": "custom_integration_request",
   },
   {
     "access": "read",

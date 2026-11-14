@@ -62,7 +62,7 @@ function scene() {
   return { input, onError, onLoginSaved, passwords, requests, service, state };
 }
 
-describe("saved-login wakes racing use_saved_login", () => {
+describe("saved-login wakes racing saved_login_request", () => {
   let ready: ReturnType<typeof scene>;
 
   beforeEach(async () => {

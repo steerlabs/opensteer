@@ -1,4 +1,4 @@
-import { administrationTools } from "./administration.js";
+import { aiAccountTools } from "./ai-accounts.js";
 import { opensteer_app_publish, opensteer_app_list, opensteer_app_call } from "./apps.js";
 import {
   opensteer_request_list,
@@ -6,8 +6,8 @@ import {
   opensteer_request_answer,
   opensteer_request_withdraw,
 } from "./requests.js";
-import { environment_list, orchestrator_capabilities } from "./environment.js";
-import { plugin_install } from "./plugins.js";
+import { pluginTools } from "./plugins.js";
+import { messagingBridgeTools } from "./messaging-bridges.js";
 import {
   opensteer_team_file_download,
   opensteer_team_read,
@@ -33,14 +33,8 @@ import {
   opensteer_task_queue,
 } from "./threads.js";
 import { person_notify, person_show } from "./person.js";
-import {
-  browser_profile_list,
-  copy_chrome_cookies,
-  use_saved_login,
-  use_card,
-  browser_profile_request,
-} from "./browser.js";
-import { device_access_request, machine_full_disk_access_request } from "./computer.js";
+import { browserTools } from "./browser.js";
+import { computerTools } from "./computer.js";
 import {
   opensteer_automation_read,
   opensteer_automation_update,
@@ -57,7 +51,11 @@ import {
   opensteer_knowledge_save,
 } from "./knowledge.js";
 export const agentTools = [
-  ...administrationTools,
+  ...aiAccountTools,
+  ...computerTools,
+  ...browserTools,
+  ...pluginTools,
+  ...messagingBridgeTools,
   opensteer_app_publish,
   opensteer_app_list,
   opensteer_app_call,
@@ -65,9 +63,6 @@ export const agentTools = [
   opensteer_request_read,
   opensteer_request_answer,
   opensteer_request_withdraw,
-  environment_list,
-  orchestrator_capabilities,
-  plugin_install,
   opensteer_task_create,
   opensteer_delegation_wait,
   opensteer_subagent_read,
@@ -86,13 +81,6 @@ export const agentTools = [
   opensteer_task_wait,
   opensteer_task_configure,
   opensteer_task_queue,
-  browser_profile_list,
-  copy_chrome_cookies,
-  use_saved_login,
-  use_card,
-  browser_profile_request,
-  machine_full_disk_access_request,
-  device_access_request,
   opensteer_automation_read,
   opensteer_automation_update,
   opensteer_automation_control,
@@ -112,22 +100,18 @@ export const agentTools = [
 export type AgentTool = (typeof agentTools)[number];
 export type AgentToolName = AgentTool["name"];
 
+type RequestTool = Extract<AgentTool, { readonly name: `${string}_request` }>;
+const isRequestTool = (tool: AgentTool): tool is RequestTool => tool.name.endsWith("_request");
 /** The tools that can open a durable Request, and so hold their call for a person. */
-export const requestToolNames = [
-  "browser_profile_request",
-  "integration_propose",
-  "integration_request",
-  "machine_full_disk_access_request",
-  "device_access_request",
-  "copy_chrome_cookies",
-  "use_saved_login",
-  "use_card",
-] as const satisfies readonly AgentToolName[];
+export const requestToolNames: readonly RequestTool["name"][] = agentTools
+  .filter(isRequestTool)
+  .map(({ name }) => name);
 
 export * from "./apps.js";
 export * from "./browser.js";
 export * from "./computer.js";
-export * from "./environment.js";
+export * from "./ai-accounts.js";
+export * from "./messaging-bridges.js";
 export * from "./person.js";
 export * from "./plugins.js";
 export * from "./team.js";
@@ -136,5 +120,3 @@ export * from "./threads.js";
 export * from "./triggers.js";
 export * from "./integrations.js";
 export * from "./knowledge.js";
-
-export * from "./administration.js";

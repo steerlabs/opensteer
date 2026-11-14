@@ -28,31 +28,29 @@ export function computerToolRefs(
  * Every computer-use ask has this one shape. The ordinary `integration` form
  * names no app, so it can neither add an app nor say which one to grant.
  */
-export const computerAppRequestShape =
-  'integration_request {kind: "computer-app", runnerId, app, access, reason}';
+export const computerAppRequestShape = "app_access_request {computerId, app, access, reason}";
 
 /** A phone is asked for whole, so its ask names the phone and no app. */
-export const phoneRequestShape =
-  'integration_request {kind: "computer-app", runnerId, access, reason}';
+export const phoneRequestShape = "app_access_request {computerId, access, reason}";
 
 export const noPhone =
   "No Android phone is set up for agents. The person adds one from Computers in Opensteer, with the phone plugged in.";
 
-/** A `runnerId` that names none of this person's phones set up for agents. */
-export function unknownPhone(runnerId: string): string {
-  return `No Android phone set up for agents has runnerId ${runnerId}. Search "Android phone" with integration_search to list your phones and their runnerIds.`;
+/** A `computerId` that names none of this person's phones set up for agents. */
+export function unknownPhone(computerId: string): string {
+  return `No Android phone set up for agents has computerId ${computerId}. Search "Android phone" with integration_search to list your phones and their computerIds.`;
 }
 
 export const noComputerUseMac =
   "No Mac is set up for computer use. The person sets it up on the Mac they want agents to use.";
 
 /**
- * A `runnerId` that names none of this person's Macs set up for computer
+ * A `computerId` that names none of this person's Macs set up for computer
  * use: a typo, another person's Mac, or one that was removed. Each is fixed
  * the same way, by reading the ids again.
  */
-export function unknownComputerUseMac(runnerId: string): string {
-  return `No Mac set up for computer use has runnerId ${runnerId}. Search "Computer use" with integration_search to list your Macs and their runnerIds.`;
+export function unknownComputerUseMac(computerId: string): string {
+  return `No Mac set up for computer use has computerId ${computerId}. Search "Computer use" with integration_search to list your Macs and their computerIds.`;
 }
 
 export function computerUseNextAction(machine: {
@@ -62,7 +60,7 @@ export function computerUseNextAction(machine: {
 }): string {
   return (
     unusableMachineNextAction(machine) ??
-    `Search with runnerId to list installed apps on ${machine.name}. Request an app with ${computerAppRequestShape}; ${approvalOutcome(machine)}`
+    `Search with computerId to list installed apps on ${machine.name}. Request an app with ${computerAppRequestShape}; ${approvalOutcome(machine)}`
   );
 }
 
@@ -77,7 +75,7 @@ function unusableMachineNextAction(machine: { name: string; state: string }): st
 
 function approvalOutcome(machine: { appApproval: "ask" | "automatic" }): string {
   return machine.appApproval === "automatic"
-    ? "it is approved automatically and becomes available in the computer tool."
+    ? "it is approved automatically and becomes available in computer_use."
     : "the owner can approve it from any Opensteer app.";
 }
 
@@ -140,7 +138,7 @@ export function computerAppDiscovery(facts: ComputerAppDiscoveryFacts): {
     };
   }
   if (facts.callable)
-    return { status, nextAction: "Use the computer tool with app() to see and operate this app." };
+    return { status, nextAction: "Use app() in computer_use to see and operate this app." };
   if (facts.approval)
     return {
       status,
@@ -209,8 +207,8 @@ export function phoneDiscovery(facts: PhoneDiscoveryFacts): {
       approval,
       inUse,
       nextAction: facts.canAct
-        ? "Use the computer tool with phone(): observe, act, and release when you are done so another task can use the phone."
-        : `Use the computer tool with phone(): observe, and release when you are done so another task can use the phone. This task may only look at ${facts.phone.name}; to act, ask with ${phoneRequestShape} and access "read-write".`,
+        ? "Use phone() in computer_use: observe, act, and release when you are done so another task can use the phone."
+        : `Use phone() in computer_use: observe, and release when you are done so another task can use the phone. This task may only look at ${facts.phone.name}; to act, ask with ${phoneRequestShape} and access "read-write".`,
     };
   return {
     approval,

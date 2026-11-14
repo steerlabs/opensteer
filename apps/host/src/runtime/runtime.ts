@@ -2368,6 +2368,7 @@ export async function createHostRuntime(
         (id) => administrationCatalogs?.schedule(id),
       ),
       (ownerId) => integrationStore.listConnections(ownerId),
+      execution.canExecute,
     );
     const agentTools = new OpensteerMcpService({
       teamsAvailable: async () =>

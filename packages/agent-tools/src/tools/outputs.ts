@@ -10,8 +10,6 @@ import {
   AssignmentStatusSchema,
   BrowserProfileIdSchema,
   DelegationModelChoiceSchema,
-  EnvironmentIdSchema,
-  ExecutionEnvironmentKindSchema,
   ExecutionNodeViewSchema,
   HarnessIdSchema,
   HarnessInstanceIdSchema,
@@ -31,6 +29,7 @@ import {
   RunSchema,
   RunnerIdSchema,
   ThreadIdSchema,
+  TimeZoneSchema,
   TriggerOccurrenceIdSchema,
   ThreadSchema,
   ThreadAccessModeSchema,
@@ -43,39 +42,7 @@ import {
   TriggerSummaryViewSchema,
   TriggerWatchActivationViewSchema,
 } from "@opensteer/triggers";
-export const agentHarnessModelsShown = 20;
-export const agentInspectionModelsShown = 100;
-
-const AgentModelSummarySchema = z.object({
-  modelId: ModelIdSchema,
-  providerId: ModelProviderIdSchema,
-});
-export type AgentModelSummary = z.infer<typeof AgentModelSummarySchema>;
-
-const HarnessSummarySchema = z.object({
-  lightModel: DelegationModelChoiceSchema.optional(),
-  driverKind: HarnessIdSchema,
-  enabled: z.boolean(),
-  environmentId: EnvironmentIdSchema,
-  id: HarnessInstanceIdSchema,
-  /** The models this engine profile offers, as its latest catalog reports them. */
-  models: z.array(AgentModelSummarySchema).max(agentHarnessModelsShown),
-  modelsOmitted: z.number().int().nonnegative(),
-  modelsNextCursor: z.string().min(1).max(2_048).optional(),
-  name: z.string().min(1).max(120),
-});
-export type AgentHarnessSummary = z.infer<typeof HarnessSummarySchema>;
-
-const EnvironmentSummarySchema = z.object({
-  capabilities: z.array(z.string()),
-  connected: z.boolean(),
-  id: EnvironmentIdSchema,
-  kind: ExecutionEnvironmentKindSchema,
-  name: z.string().min(1).max(120),
-  can: z.object({ executeTasks: z.boolean() }),
-});
-
-const EnvironmentModelOptionSchema = z.union([
+const AiAccountModelOptionSchema = z.union([
   z.object({
     id: z.string().min(1).max(100),
     values: z.array(z.string().max(255)).min(1).max(32),
@@ -87,52 +54,56 @@ const EnvironmentModelOptionSchema = z.union([
     default: z.boolean().optional(),
   }),
 ]);
-export const EnvironmentHarnessSummarySchema = HarnessSummarySchema.extend({
-  models: z
-    .array(
-      AgentModelSummarySchema.extend({
-        displayName: z.string().min(1).max(120).optional(),
-        options: z.array(EnvironmentModelOptionSchema).min(1).max(16).optional(),
-      }),
-    )
-    .max(8),
-  status: z.enum([
-    "disabled",
-    "disconnected",
-    "unreported",
-    "ready",
-    "authentication-required",
-    "preparing",
-    "unavailable",
-    "error",
-  ]),
+export const AiAccountModelSchema = z.object({
+  modelId: ModelIdSchema,
+  providerId: ModelProviderIdSchema,
+  displayName: z.string().min(1).max(120).optional(),
+  options: z.array(AiAccountModelOptionSchema).min(1).max(16).optional(),
+});
+export type AiAccountModel = z.infer<typeof AiAccountModelSchema>;
+export const AiAccountStatusSchema = z.enum([
+  "disabled",
+  "disconnected",
+  "unreported",
+  "ready",
+  "authentication-required",
+  "preparing",
+  "unavailable",
+  "error",
+]);
+export type AiAccountStatus = z.infer<typeof AiAccountStatusSchema>;
+const AiAccountModelLimitsSchema = z.object({
+  contextWindow: z.number().int().positive(),
+  maxOutputTokens: z.number().int().positive().optional(),
+});
+const AiAccountSchema = z.object({
+  aiAccountId: HarnessInstanceIdSchema,
+  computerId: RunnerIdSchema,
+  name: z.string().min(1).max(120),
+  engine: HarnessIdSchema,
+  enabled: z.boolean(),
+  isDefault: z.boolean(),
+  status: AiAccountStatusSchema,
   detail: z.string().min(1).max(500).optional(),
+  lightModel: DelegationModelChoiceSchema.optional(),
+  models: z.array(AiAccountModelSchema).max(8),
+  modelsOmitted: z.number().int().nonnegative(),
+  modelLimits: z.record(z.string(), AiAccountModelLimitsSchema).optional(),
 });
-export type EnvironmentHarnessSummary = z.infer<typeof EnvironmentHarnessSummarySchema>;
-const DelegationDefaultSchema = z.object({
-  environmentId: EnvironmentIdSchema,
-  harnessInstanceId: HarnessInstanceIdSchema,
-  model: z.object({
-    modelId: ModelIdSchema,
-    options: ModelSelectionSchema.shape.options,
-    providerId: ModelProviderIdSchema,
-  }),
+const AiAccountModelChoiceSchema = z.object({
+  modelId: ModelIdSchema,
+  providerId: ModelProviderIdSchema,
+  options: ModelSelectionSchema.shape.options,
 });
-export const EngineDiscoverySchema = z.object({
-  delegationDefault: DelegationDefaultSchema.optional(),
-  harnesses: z
-    .array(EnvironmentHarnessSummarySchema)
+export const AiAccountListOutputSchema = z.object({
+  accounts: z
+    .array(AiAccountSchema)
     .max(64)
     .refine((rows) => rows.reduce((count, row) => count + row.models.length, 0) <= 40),
-  harnessesNextCursor: HarnessInstanceIdSchema.optional(),
-});
-export type EngineDiscovery = z.infer<typeof EngineDiscoverySchema>;
-export const EnvironmentDiscoverySchema = z.object({
-  environments: z.array(EnvironmentSummarySchema).max(64),
-  environmentsNextCursor: EnvironmentIdSchema.optional(),
-});
-export type EnvironmentDiscovery = z.infer<typeof EnvironmentDiscoverySchema>;
-export const OrchestratorCapabilitiesSchema = EngineDiscoverySchema.extend({
+  nextCursor: z.string().min(1).max(2_048).optional(),
+  delegationDefault: z
+    .object({ aiAccountId: HarnessInstanceIdSchema, model: AiAccountModelChoiceSchema })
+    .optional(),
   accessCeiling: ThreadAccessModeSchema,
   limits: z.object({
     maxDepth: z.number().int().nullable(),
@@ -144,6 +115,17 @@ export const OrchestratorCapabilitiesSchema = EngineDiscoverySchema.extend({
     maxWaitMs: z.number().int(),
     taskDeadlineAt: z.string().nullable(),
   }),
+});
+export type AiAccountListOutput = z.infer<typeof AiAccountListOutputSchema>;
+export const DefaultsOutputSchema = z.object({
+  accessMode: ThreadAccessModeSchema,
+  selection: z
+    .object({ aiAccountId: HarnessInstanceIdSchema, model: AiAccountModelChoiceSchema })
+    .nullable(),
+  timeZone: TimeZoneSchema.nullable(),
+});
+export const DefaultsUpdateOutputSchema = DefaultsOutputSchema.partial().extend({
+  ok: z.literal(true),
 });
 
 export const WindowSchema = z.object({
@@ -243,17 +225,22 @@ export const AppFetchOutputSchema = z.object({
 });
 export const PluginInstallOutputSchema = z.object({
   pluginId: z.string().nullable(),
-  issues: z.array(
-    z.object({
-      message: z.string().optional(),
-      component: z.enum(["manifest", "mcp", "skill"]).optional(),
-      entry: z.string().nullable().optional(),
-      severity: z.string().optional(),
-      code: z.string().optional(),
-    }),
-  ),
-  specialist: z.boolean(),
-  registration: z.object({ id: z.string(), status: z.string(), plugin: z.string() }).nullable(),
+  issues: z
+    .array(
+      z.object({
+        message: z.string().optional(),
+        component: z.enum(["manifest", "mcp", "skill"]).optional(),
+        entry: z.string().nullable().optional(),
+        severity: z.string().optional(),
+        code: z.string().optional(),
+      }),
+    )
+    .optional(),
+  specialist: z.boolean().optional(),
+  registration: z
+    .object({ id: z.string(), status: z.string(), plugin: z.string() })
+    .nullable()
+    .optional(),
 });
 export const PersonMessageOutputSchema = z.object({ messageId: MessageIdSchema });
 export const PersonShowOutputSchema = z.object({
@@ -287,10 +274,13 @@ export const RequestCreationOutputSchema = z.object({
 export const BrowserProfileOutputSchema = z.object({
   id: BrowserProfileIdSchema,
   name: z.string(),
-  home: z.object({ runnerId: RunnerIdSchema, name: z.string(), reachable: z.boolean() }).nullable(),
+  home: z
+    .object({ computerId: RunnerIdSchema, name: z.string(), reachable: z.boolean() })
+    .nullable(),
 });
 export const BrowserProfileListOutputSchema = z.object({
   profiles: z.array(BrowserProfileOutputSchema),
+  sites: z.array(z.object({ site: z.string() })),
 });
 /** A held or pending Request's result also carries what the Host says about it. */
 const heldGuidance = { guidance: z.string().optional() };

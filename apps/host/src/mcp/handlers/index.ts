@@ -34,16 +34,13 @@ export function agentToolHandlers(options: {
     i = options.integrations,
     t = options.triggers;
   const handlers: AgentToolHandlers = {
-    ...administrationToolHandlers(options.administration),
+    ...administrationToolHandlers(options.administration, options.pluginInstall),
     opensteer_app_publish: async (c) =>
       await options.apps.publish(requireRun(c.caller).claims, c.operationKey, c.input),
     opensteer_app_list: async (c) =>
       await options.apps.listForCaller({ requestedBy: c.caller.userId }),
     opensteer_app_call: async (c) => await options.apps.fetch(requireRun(c.caller).claims, c.input),
-    plugin_install: async (c) =>
-      await options.pluginInstall(requireRun(c.caller).claims, c.input.directory),
-    orchestrator_capabilities: async (c) => await p.orchestrator_capabilities(c),
-    environment_list: async (c) => await p.environment_list(c),
+    opensteer_ai_account_list: async (c) => await p.opensteer_ai_account_list(c),
     opensteer_task_create: Object.assign(
       async (c: ToolCall<"opensteer_task_create">) =>
         p.opensteer_task_delegate({ ...c, input: { ...c.input, create: true } }),
@@ -102,13 +99,11 @@ export function agentToolHandlers(options: {
         input: { ...c.input, action: "respond", limit: 50 },
       }),
     opensteer_request_withdraw: async (c) => await p.opensteer_request_withdraw(c),
-    browser_profile_list: async (c) => await p.browser_profile_list(c),
-    use_card: async (c) => await p.use_card(c),
-    use_saved_login: async (c) => await p.use_saved_login(c),
-    copy_chrome_cookies: async (c) => await p.copy_chrome_cookies(c),
+    card_request: async (c) => await p.card_request(c),
+    saved_login_request: async (c) => await p.saved_login_request(c),
+    chrome_cookies_request: async (c) => await p.chrome_cookies_request(c),
     browser_profile_request: async (c) => await p.browser_profile_request(c),
-    device_access_request: async (c) => await p.device_access_request(c),
-    machine_full_disk_access_request: async (c) => await p.machine_full_disk_access_request(c),
+    computer_access_request: async (c) => await p.computer_access_request(c),
     opensteer_automation_read: async (c) => t.read(c),
     opensteer_automation_update: async (c) => t.write(c),
     opensteer_automation_control: async (c) => t.write(c),
@@ -124,9 +119,10 @@ export function agentToolHandlers(options: {
         },
       },
     ),
-    computer: async (c) => await i.computer(c),
+    computer_use: async (c) => await i.computer_use(c),
     integration_request: async (c) => await i.integration_request(c),
-    integration_propose: async (c) => await i.integration_propose(c),
+    app_access_request: async (c) => await i.app_access_request(c),
+    custom_integration_request: async (c) => await i.custom_integration_request(c),
     ...teamToolHandlers({ port: options.team, personalContext: options.personalContextForRun }),
     ...knowledgeToolHandlers({
       port: options.knowledge,

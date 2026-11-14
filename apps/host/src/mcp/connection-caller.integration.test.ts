@@ -592,7 +592,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       accessMode: "full-access",
     });
     for (const name of [
-      "environment_list",
+      "opensteer_ai_account_list",
       "opensteer_request_list",
       "opensteer_automation_list",
       "opensteer_app_list",

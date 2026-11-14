@@ -38,7 +38,7 @@ export function callerListScope(_caller: AgentCaller): AgentThreadListScope {
   return { kind: "personal" };
 }
 const actions = {
-  device_access_request: "device.access.request",
+  computer_access_request: "device.access.request",
   opensteer_task_delegate: "thread.delegate",
   opensteer_task_send: "thread.message",
   person_notify: "person.message",
