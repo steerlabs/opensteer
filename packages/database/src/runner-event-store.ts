@@ -674,6 +674,57 @@ async function applyEventProjection(
     case "reasoning.completed":
       if (event.data.nodeId) await requireRunNode(transaction, event.runId, event.data.nodeId);
       break;
+    case "run.context-measured": {
+      const run = await transaction
+        .selectFrom("runs")
+        .select(["providerSessionId", "maintenance"])
+        .where("id", "=", event.runId)
+        .executeTakeFirstOrThrow();
+      if (run.providerSessionId && !run.maintenance) {
+        const current = await transaction
+          .selectFrom("providerSessions")
+          .select("contextSnapshot")
+          .where("id", "=", run.providerSessionId)
+          .executeTakeFirstOrThrow();
+        const prior = current.contextSnapshot;
+        const generation = event.bindingGeneration;
+        if (
+          !prior ||
+          generation > prior.bindingGeneration ||
+          (generation === prior.bindingGeneration && event.ordinal > prior.ordinal)
+        ) {
+          await transaction
+            .updateTable("providerSessions")
+            .set({
+              contextSnapshot: {
+                ...event.data,
+                sourceRunId: event.runId,
+                bindingGeneration: generation,
+                ordinal: event.ordinal,
+              },
+            })
+            .where("id", "=", run.providerSessionId)
+            .execute();
+        }
+      }
+      break;
+    }
+    case "run.compaction": {
+      if (event.data.status === "created") {
+        const run = await transaction
+          .selectFrom("runs")
+          .select("providerSessionId")
+          .where("id", "=", event.runId)
+          .executeTakeFirstOrThrow();
+        if (run.providerSessionId)
+          await transaction
+            .updateTable("providerSessions")
+            .set({ contextSnapshot: null })
+            .where("id", "=", run.providerSessionId)
+            .execute();
+      }
+      break;
+    }
     case "run.usage":
       if (event.runId) {
         // The Run row is already held FOR NO KEY UPDATE by the caller, so the

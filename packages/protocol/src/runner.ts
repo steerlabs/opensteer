@@ -428,6 +428,8 @@ export const PendingAgentEventSchema = z
     pendingEventVariant("run.interrupted"),
     pendingEventVariant("run.started"),
     pendingEventVariant("run.status"),
+    pendingEventVariant("run.context-measured"),
+    pendingEventVariant("run.compaction"),
     pendingEventVariant("run.usage"),
     pendingEventVariant("run.phase"),
     pendingEventVariant("node.started"),

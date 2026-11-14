@@ -2757,6 +2757,9 @@ async function executeMockCommand(
     // The preview's agents have no clock of the person's to keep.
     case "viewer.timeZone.update":
       return rpcSuccess({ timeZone: command.timeZone, type: command.type });
+    case "settings.idleCompaction.set":
+      client.setIdleCompactionPolicy(command.policy);
+      return rpcSuccess({ type: command.type, policy: command.policy });
     case "viewer.quietTasks.update":
       client.setQuietTaskDays(command.quietTaskDays);
       return rpcSuccess({ quietTaskDays: command.quietTaskDays, type: command.type });
@@ -4800,6 +4803,15 @@ export class MockHostClient implements HostClient {
     await this.rememberExecution(choice).catch(() => undefined);
   }
 
+  async setIdleCompactionPolicy(
+    policy: import("@opensteer/core").IdleCompactionPolicy,
+  ): Promise<void> {
+    await this.dispatch({
+      type: "settings.idleCompaction.set",
+      policy,
+      idempotencyKey: `idle-compaction:${Date.now()}`,
+    });
+  }
   async dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput> {
     const result = await this.rpc["commands.dispatch"](
       browserProfileHomeCommand(command, this.#state.getSnapshot().browserProfileHomes),
@@ -11789,6 +11801,13 @@ class MockHostState {
     this.update(this.snapshot);
   }
 
+  setIdleCompactionPolicy(policy: import("@opensteer/core").IdleCompactionPolicy): void {
+    if (this.snapshot.personalSettings)
+      this.update({
+        ...this.snapshot,
+        personalSettings: { ...this.snapshot.personalSettings, idleCompactionPolicy: policy },
+      });
+  }
   setQuietTaskDays(days: QuietTaskDays): void {
     this.update({ ...this.snapshot, quietTaskDays: days });
   }

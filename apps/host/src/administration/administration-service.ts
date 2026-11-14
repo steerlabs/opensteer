@@ -54,6 +54,7 @@ export type AdministrationDependencies = Pick<
 const coreTypes = [
   "viewer.timeZone.update",
   "viewer.quietTasks.update",
+  "settings.idleCompaction.set",
   "execution.preferences.remember",
   "automaticModels.set",
   "harness.model.configure",
@@ -109,6 +110,11 @@ export class AdministrationService {
   async authorize(caller: AdministrationCaller, command: AdministrationCommand) {
     await requirePersonalOwner(this.dependencies.store.database, caller.userId);
     if (caller.kind === "person") return;
+    if (command.type === "settings.idleCompaction.set")
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Claude compaction preferences require the person",
+      });
     if (command.type.startsWith("automaticModels."))
       throw new OpensteerError({
         code: "forbidden",
@@ -169,6 +175,7 @@ export class AdministrationService {
       command.type === "execution.preferences.remember" ||
       command.type === "viewer.timeZone.update" ||
       command.type === "viewer.quietTasks.update" ||
+      command.type === "settings.idleCompaction.set" ||
       command.type === "browser.site.remove"
     )
       notifyMachinesChanged(this.dependencies.realtime, "unspecified");
@@ -326,6 +333,14 @@ export class AdministrationService {
           type: command.type,
         };
 
+      case "settings.idleCompaction.set":
+        return {
+          type: command.type,
+          policy: await dependencies.store.notificationState.setIdleCompactionPolicy({
+            policy: command.policy,
+            userId,
+          }),
+        };
       case "viewer.quietTasks.update":
         return {
           quietTaskDays: await dependencies.store.notificationState.setQuietTaskDays({

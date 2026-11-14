@@ -89,6 +89,49 @@ afterEach(async () => {
 const noComputersNotice = "No other computers are reachable from this Run.";
 
 describe("Claude Agent SDK harness", () => {
+  it("publishes main context evidence before completion", async () => {
+    const sdk = new FakeSdk((parameters) => {
+      const sessionId = providerSessionId(parameters.options);
+      return scriptedQuery([
+        initMessage(sessionId),
+        {
+          type: "stream_event",
+          session_id: sessionId,
+          parent_tool_use_id: null,
+          uuid: "context-start",
+          request_sent_wall_ms: 100,
+          event: {
+            type: "message_start",
+            message: {
+              usage: {
+                input_tokens: 10,
+                cache_read_input_tokens: 200_000,
+                output_tokens: 5,
+                cache_creation: { ephemeral_5m_input_tokens: 1 },
+              },
+            },
+          },
+        } as unknown as SDKMessage,
+        successMessage(sessionId, "Done."),
+      ]);
+    });
+    const { adapter, session } = await openSession(sdk);
+    const observer = observe(session.events);
+    await send(session, "Continue");
+    await session.stop();
+    await observer.done;
+    const measurement = observer.events.find((event) => event.type === "run.context-measured");
+    expect(measurement?.data).toMatchObject({
+      usedTokens: 200_015,
+      requestStartedAt: 100,
+      promptCacheTtlMs: 300_000,
+    });
+    expect(
+      observer.events.findIndex((event) => event.type === "run.context-measured"),
+    ).toBeLessThan(observer.events.findIndex((event) => event.type === "run.completed"));
+    await adapter.close();
+  });
+
   it("opens only the platform-appropriate Unix socket sandbox access", async () => {
     const providerState = (await context(await temporaryDirectory())).providerState;
     expect(

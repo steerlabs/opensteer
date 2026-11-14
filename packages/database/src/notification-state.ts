@@ -7,6 +7,8 @@ import {
 import "./connection.js";
 import {
   defaultQuietTaskDays,
+  IdleCompactionPolicySchema,
+  type IdleCompactionPolicy,
   OpensteerError,
   QuietTaskDaysSchema,
   type QuietTaskDays,
@@ -138,6 +140,21 @@ export class NotificationStateStore {
     if (!row?.timeZone) return null;
     const parsed = TimeZoneSchema.safeParse(row.timeZone);
     return parsed.success ? parsed.data : null;
+  }
+  async setIdleCompactionPolicy(input: {
+    readonly policy: IdleCompactionPolicy;
+    readonly userId: UserId;
+  }): Promise<IdleCompactionPolicy> {
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      await requirePersonalOwner(transaction, input.userId);
+      const policy = IdleCompactionPolicySchema.parse(input.policy);
+      await transaction
+        .updateTable("personalSettings")
+        .set({ idleCompactionPolicy: policy })
+        .where("ownerId", "=", input.userId)
+        .executeTakeFirstOrThrow();
+      return policy;
+    });
   }
   async setQuietTaskDays(input: {
     readonly administration?: AdministrationCommandIdentity | undefined;

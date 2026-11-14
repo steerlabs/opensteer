@@ -200,6 +200,7 @@ export const runDeliverySelection = sql<import("@opensteer/core").TeamRunDeliver
     and (p.answer_payload is not null or p.publication_state in ('accepted','blocked'))
 )`.as("delivery");
 export function runFromRow(row: {
+  readonly maintenance?: import("@opensteer/core").RunMaintenance | null;
   readonly delivery?: import("@opensteer/core").TeamRunDelivery | null;
   readonly accessMode: ThreadAccessMode;
   readonly activationInputId: MessageId;
@@ -229,6 +230,7 @@ export function runFromRow(row: {
 }): Run {
   const usage = runUsageFromRow(row);
   return RunSchema.parse({
+    ...(row.maintenance ? { maintenance: row.maintenance } : {}),
     delivery: row.delivery ?? null,
     accessMode: row.accessMode,
     activationInputId: row.activationInputId,

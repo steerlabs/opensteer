@@ -120,6 +120,13 @@ function foldTranscriptOwnEvent(
         });
       return upsertEntry(entries, { ...prior, delivery: event.data.delivery });
     }
+    case "run.context-measured":
+      return [...entries];
+    case "run.compaction": {
+      const updated = upsertRunEntry(entries, event, "running");
+      const prior = findEntry(updated, `run:${event.runId}`, "run");
+      return prior ? upsertEntry(updated, { ...prior, compaction: event.data }) : updated;
+    }
     case "run.started":
       return upsertRunEntry(entries, event, "running");
     case "run.status":
@@ -1143,6 +1150,7 @@ function upsertRunEntry(
     // A Stop already asked for holds until the Run ends, whatever it reports meanwhile.
     ...(prior?.stopping === true && !isTerminalRunEntryStatus(status) ? { stopping: true } : {}),
     ...(delivery ? { delivery } : {}),
+    ...(prior?.compaction ? { compaction: prior.compaction } : {}),
     ...(prior?.usage ? { usage: prior.usage } : {}),
     ...(prior?.attempt ? { attempt: prior.attempt } : {}),
     ...(startedBy ? { startedBy } : {}),

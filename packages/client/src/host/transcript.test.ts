@@ -2006,3 +2006,17 @@ it("projects history without changing stored output and keeps whole live output 
     outputPreview: { cut: true },
   });
 });
+
+it("folds native compaction activity into the Run and preserves it through completion", () => {
+  const entries = fold([
+    event("run.compaction", { status: "running", reason: "automatic" }),
+    event("run.compaction", { status: "created", reason: "automatic" }),
+    event("run.completed", { status: "completed", replyMessageId: null }),
+  ]);
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({
+    kind: "run",
+    status: "completed",
+    compaction: { status: "created", reason: "automatic" },
+  });
+});

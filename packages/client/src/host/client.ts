@@ -486,6 +486,7 @@ export type RunEntryStatus =
   "completed" | "failed" | "interrupted" | "queued" | "running" | "starting" | "waiting";
 
 export interface RunEntry {
+  compaction?: import("@opensteer/core").NativeCompactionActivity;
   delivery?: TeamRunDelivery | null;
   /** Absent on an older Host: its waking input is unknown. */
   startedBy?: MessageAuthor;
@@ -1178,6 +1179,7 @@ export interface HostClient {
 
   loadDoneTasks(deploymentId?: string): Promise<void>;
   loadEarlierDoneTasks(deploymentId?: string): Promise<void>;
+  setIdleCompactionPolicy(policy: import("@opensteer/core").IdleCompactionPolicy): Promise<void>;
   setQuietTaskDays(days: QuietTaskDays): Promise<void>;
 
   dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput>;

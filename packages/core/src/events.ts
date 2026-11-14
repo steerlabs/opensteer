@@ -3,6 +3,10 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { AppIdSchema, AppTitleSchema } from "./apps.js";
 import { PlaceIdentitySchema, PlaceIdentityViewSchema } from "./places.js";
 import { z } from "zod";
+import {
+  ProviderContextMeasurementSchema,
+  NativeCompactionActivitySchema,
+} from "./idle-compaction.js";
 import { TeamRunDeliverySchema, TeamRunDeliveryViewSchema } from "./team.js";
 import {
   DelegationIdSchema,
@@ -353,6 +357,8 @@ const eventDataSchemas = {
    * protocol does not report per-turn usage.
    */
   "run.usage": RunUsageSchema,
+  "run.context-measured": ProviderContextMeasurementSchema,
+  "run.compaction": NativeCompactionActivitySchema,
   /**
    * The engine finished a turn while work it started in the background is
    * still running (`background`), or began another turn in the same Run
@@ -568,6 +574,8 @@ const eventDataViewSchemas = {
     personWaiting: z.boolean().optional(),
     startedBy: MessageAuthorViewSchema.optional(),
   }),
+  "run.context-measured": z.object(ProviderContextMeasurementSchema.shape),
+  "run.compaction": z.object(NativeCompactionActivitySchema.shape),
   "run.usage": RunUsageViewSchema,
   "run.phase": z.object({
     ...eventDataSchemas["run.phase"].shape,
@@ -653,6 +661,8 @@ export const AgentEventSchema = z
     makeEventVariant("run.restarted"),
     makeEventVariant("run.started"),
     makeEventVariant("run.status"),
+    makeEventVariant("run.context-measured"),
+    makeEventVariant("run.compaction"),
     makeEventVariant("run.usage"),
     makeEventVariant("run.phase"),
     makeEventVariant("node.started"),
@@ -707,6 +717,8 @@ export const AgentEventViewSchema = z
     makeEventViewVariant("run.restarted"),
     makeEventViewVariant("run.started"),
     makeEventViewVariant("run.status"),
+    makeEventViewVariant("run.context-measured"),
+    makeEventViewVariant("run.compaction"),
     makeEventViewVariant("run.usage"),
     makeEventViewVariant("run.phase"),
     makeEventViewVariant("node.started"),

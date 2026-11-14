@@ -1,3 +1,4 @@
+import { RunMaintenanceSchema } from "./idle-compaction.js";
 import {
   TeamTaskOriginSchema,
   TeamSourceSchema,
@@ -796,6 +797,7 @@ export const RunUsageViewSchema = z.object(runUsageShape);
 export type RunUsage = z.infer<typeof RunUsageSchema>;
 
 const runShape = {
+  maintenance: RunMaintenanceSchema.nullable().optional(),
   delivery: TeamRunDeliverySchema.nullable().default(null),
   accessMode: ThreadAccessModeSchema,
   activationInputId: MessageIdSchema,

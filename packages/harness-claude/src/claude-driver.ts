@@ -10,6 +10,7 @@ import { workflowSessionRoot } from "./workflow-transcript.js";
 import { type ClaudeExecutableInspection } from "./executable.js";
 import { claudeSdkProcess } from "./sdk-process.js";
 import { isRecord } from "@opensteer/shared/isRecord";
+import { ClaudeContextMeasurement } from "./context-measurement.js";
 import { mergeEnvironment } from "@opensteer/shared/userEnvironment";
 import { randomUUID } from "node:crypto";
 import { rmSync, writeFileSync } from "node:fs";
@@ -406,6 +407,8 @@ interface ActiveTurn {
   /** The last result said more of the person's sends wait to run as turns. */
   queuedTurns: boolean;
   /** What the Run consumed, as of its latest turn; stated once, when it ends. */
+  readonly contextMeasurement: ClaudeContextMeasurement;
+  readonly compactionReason: "manual" | "automatic";
   usage?: RunUsage;
   usageBaseline?: SDKResultMessage | undefined;
   usageBaselineKnown?: boolean;
@@ -1649,6 +1652,14 @@ class ClaudeHarnessSession implements HarnessSession {
       },
     );
     const active: ActiveTurn = {
+      contextMeasurement: new ClaudeContextMeasurement(),
+      compactionReason: run.inputs.some((input) =>
+        input.content.some(
+          (part) => part.type === "text" && part.text.trim().toLowerCase() === "/compact",
+        ),
+      )
+        ? "manual"
+        : "automatic",
       abortController: new AbortController(),
       agentCalls: new Map(),
       knownNodes: new Set(),
@@ -2748,6 +2759,23 @@ class ClaudeHarnessSession implements HarnessSession {
       return;
     }
 
+    active.contextMeasurement.accept(message, Date.now());
+    if (message.type === "system") {
+      const result: unknown = Reflect.get(message, "compact_result");
+      const status =
+        subtype === "compact_boundary" || result === "success"
+          ? "created"
+          : result === "failed"
+            ? "failed"
+            : subtype === "status" && Reflect.get(message, "status") === "compacting"
+              ? "running"
+              : null;
+      if (status)
+        this.#publish({
+          type: "run.compaction",
+          data: { status, reason: active.compactionReason },
+        });
+    }
     if (active.idle && (message.type === "stream_event" || message.type === "assistant")) {
       active.idle = false;
       active.wakePending = false;
@@ -2958,6 +2986,8 @@ class ClaudeHarnessSession implements HarnessSession {
 
   /** What the Run consumed, stated once and always before its terminal event. */
   #publishUsage(active: ActiveTurn): void {
+    const measurement = active.contextMeasurement.snapshot();
+    if (measurement) this.#publish({ data: measurement, type: "run.context-measured" });
     const usage = active.usage;
     if (!usage) return;
     delete active.usage;

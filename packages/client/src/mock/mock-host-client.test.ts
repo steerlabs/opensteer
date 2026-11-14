@@ -1019,3 +1019,17 @@ it("seeds an actionable delegated task alongside its parent's places and automat
     client.dispose();
   }
 });
+
+it("shares the compaction policy through the personal settings snapshot", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    await client.setIdleCompactionPolicy({ mode: "beforeCacheExpires" });
+    expect(client.getSnapshot().personalSettings?.idleCompactionPolicy).toEqual({
+      mode: "beforeCacheExpires",
+    });
+    await client.setIdleCompactionPolicy({ mode: "off" });
+    expect(client.getSnapshot().personalSettings?.idleCompactionPolicy).toEqual({ mode: "off" });
+  } finally {
+    client.dispose();
+  }
+});

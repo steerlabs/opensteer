@@ -3335,6 +3335,23 @@ export class HttpHostClient {
     return this.#loadEarlier("done:*");
   }
 
+  async setIdleCompactionPolicy(
+    policy: import("@opensteer/core").IdleCompactionPolicy,
+  ): Promise<void> {
+    const result = await this.#dispatch({
+      type: "settings.idleCompaction.set",
+      policy,
+      idempotencyKey: mutationIdempotencyKey("idle-compaction"),
+    });
+    if (result.type === "settings.idleCompaction.set" && this.#snapshot.personalSettings)
+      this.#update({
+        ...this.#snapshot,
+        personalSettings: {
+          ...this.#snapshot.personalSettings,
+          idleCompactionPolicy: result.policy,
+        },
+      });
+  }
   async setQuietTaskDays(days: QuietTaskDays): Promise<void> {
     const result = await this.#dispatch({
       idempotencyKey: mutationIdempotencyKey("quiet-tasks"),
