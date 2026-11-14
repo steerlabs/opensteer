@@ -8,7 +8,9 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { constants } from "node:fs";
 import { open as openFile } from "node:fs/promises";
+import { isNetworkPath } from "@opensteer/shared/markdownImages";
 import { join } from "node:path";
 import {
   createToolOutput,
@@ -92,12 +94,23 @@ export function createToolImageStore(
     directory,
     prune,
     async putFile(path) {
+      if (isNetworkPath(path)) return undefined;
       try {
-        const handle = await openFile(path, "r");
+        // Nonblocking, so a FIFO an engine names cannot stall the Run's events.
+        const handle = await openFile(path, constants.O_RDONLY | constants.O_NONBLOCK);
         try {
-          const { size } = await handle.stat();
-          if (size > savedImageMaxBytes) return undefined;
-          const bytes = await handle.readFile();
+          const stat = await handle.stat();
+          if (!stat.isFile() || stat.size > savedImageMaxBytes) return undefined;
+          // Read at most one byte past the limit: a file still growing is refused.
+          const buffer = Buffer.alloc(stat.size + 1);
+          let length = 0;
+          for (;;) {
+            const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+            if (bytesRead === 0) break;
+            length += bytesRead;
+            if (length > stat.size) return undefined;
+          }
+          const bytes = buffer.subarray(0, length);
           const type = imageType(bytes);
           return type ? save(bytes, type) : undefined;
         } finally {

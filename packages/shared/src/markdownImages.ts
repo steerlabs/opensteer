@@ -20,10 +20,26 @@ export type MarkdownImageSource =
   | { readonly kind: "remote"; readonly url: string }
   | { readonly kind: "none" };
 
+/**
+ * Two leading separators in any mix is a path Windows opens over the network,
+ * which can send the account's NTLM credentials; refuse it before any file access.
+ */
+export function isNetworkPath(path: string): boolean {
+  return /^[\\/]{2}/.test(path.trim());
+}
+
+/** Renderers hand over a percent-encoded destination; the file's name is decoded once. */
 export function classifyMarkdownImageSource(source: string): MarkdownImageSource {
-  const path = source.trim();
-  if (!path || path.startsWith("//") || path.startsWith("\\\\")) return { kind: "none" };
-  if (/^https?:/i.test(path)) return { kind: "remote", url: path };
+  const trimmed = source.trim();
+  if (/^https?:/i.test(trimmed)) return { kind: "remote", url: trimmed };
+  let path = trimmed;
+  if (!/^file:/i.test(path))
+    try {
+      path = decodeURIComponent(path);
+    } catch {
+      /* A malformed escape is part of the name. */
+    }
+  if (!path || isNetworkPath(path)) return { kind: "none" };
   if (/^file:/i.test(path)) {
     try {
       const url = new URL(path);

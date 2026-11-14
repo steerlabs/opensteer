@@ -17,6 +17,7 @@ import sharp, { type Metadata } from "sharp";
 import { z } from "zod";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import type { AssetUrl, AssetUrlsInput } from "@opensteer/protocol";
+import { isNetworkPath } from "@opensteer/shared/markdownImages";
 import type { FastifyInstance } from "fastify";
 
 const types = {
@@ -77,16 +78,17 @@ export class AssetService {
     return { assets };
   }
   async #resolve(source: string): Promise<string | null> {
-    if (source.startsWith("\\\\") || source.startsWith("//")) return null;
+    if (isNetworkPath(source)) return null;
     if (/^file:/iu.test(source)) {
       const url = new URL(source);
       if (url.hostname && url.hostname !== "localhost") return null;
       source = fileURLToPath(url);
-      if (source.startsWith("//") || source.startsWith("\\\\")) return null;
+      if (isNetworkPath(source)) return null;
     } else if (/^[a-z][a-z\d+.-]*:/iu.test(source) && !/^[a-z]:[\\/]/iu.test(source)) return null;
     const home = this.options.homeDirectory ?? homedir();
     if (source.startsWith("~/")) source = path.join(home, source.slice(2));
-    return path.resolve(await this.options.agentHome(), source);
+    const resolved = path.resolve(await this.options.agentHome(), source);
+    return isNetworkPath(resolved) ? null : resolved;
   }
   async #denied(file: string) {
     const canonical = async (root: string) => realpath(root).catch(() => path.resolve(root));

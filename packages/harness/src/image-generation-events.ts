@@ -75,11 +75,11 @@ export async function* withGeneratedImageReplies(
       !event.data.nodeId
     )
       running.add(event.data.callId);
-    if (
-      event.type === "tool.completed" &&
-      running.delete(event.data.callId) &&
-      !event.data.isError
-    ) {
+    // A failed or cancelled generation keeps the reply held until the Run's
+    // outcome: on Stop, cancellations arrive before `run.interrupted`.
+    const succeeded =
+      event.type === "tool.completed" && running.delete(event.data.callId) && !event.data.isError;
+    if (succeeded) {
       paths.push(
         ...(event.data.output.images ?? [])
           .filter((image) => image.generated)
@@ -102,7 +102,7 @@ export async function* withGeneratedImageReplies(
       running.clear();
     }
     yield event;
-    if (event.type === "tool.completed" && !running.size && held) {
+    if (succeeded && !running.size && held) {
       const final = reply(false);
       if (final) yield final;
     }

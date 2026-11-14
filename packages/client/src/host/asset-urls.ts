@@ -13,6 +13,8 @@ type Entry = {
   value?: AssetUrl;
   /** When `value` was last confirmed by the Host. */
   confirmedAt?: number;
+  /** A call naming this entry is in flight, foreground or background. */
+  asking?: boolean;
   loadRetried?: boolean;
   pending?: Promise<AssetUrl>;
   resolve?: (value: AssetUrl) => void;
@@ -106,7 +108,8 @@ export class AssetUrlStore {
       value &&
       (value.status !== "ok" || Date.parse(value.expiresAt) - Date.now() > margin)
     ) {
-      if (Date.now() - (entry.confirmedAt ?? 0) > revalidateAfter) this.#enqueue(entry);
+      if (!entry.asking && Date.now() - (entry.confirmedAt ?? 0) > revalidateAfter)
+        this.#enqueue(entry);
       return Promise.resolve(value);
     }
     if (entry.pending) return entry.pending;
@@ -117,6 +120,7 @@ export class AssetUrlStore {
     return entry.pending;
   }
   #enqueue(entry: Entry) {
+    entry.asking = true;
     this.#queue.add(entry);
     if (this.#scheduled) return;
     this.#scheduled = true;
@@ -169,6 +173,7 @@ export class AssetUrlStore {
           }
           let changed = false;
           batch.forEach((entry, index) => {
+            entry.asking = false;
             const value = values?.[index];
             // Only the Host's answer is remembered; a failed call is asked again.
             if (value) {

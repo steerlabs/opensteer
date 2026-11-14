@@ -68,6 +68,38 @@ it("emits a stopped reply unchanged", async () => {
   const events = await collect([started("a"), message, stop]);
   expect(events).toEqual([started("a"), message, stop]);
 });
+it("keeps a stopped reply unchanged even after one generation finished", async () => {
+  const stop: HarnessEvent = { type: "run.interrupted", data: { status: "interrupted" } };
+  const events = await collect([
+    started("a"),
+    started("b"),
+    message,
+    completed("a"),
+    completed("b", true),
+    stop,
+  ]);
+  expect(events.slice(-2)).toEqual([message, stop]);
+});
+it("refuses network paths without touching them", async () => {
+  const store = createToolImageStore(join(tmpdir(), "unused-runner"));
+  for (const path of ["//attacker/share/a.png", "/\\attacker/share/a.png", "\\\\attacker\\a.png"])
+    expect(await store.putFile!(path)).toBeUndefined();
+});
+it.skipIf(process.platform === "win32")(
+  "refuses a FIFO an engine names instead of waiting on it",
+  async () => {
+    const { execFileSync } = await import("node:child_process");
+    const root = await mkdtemp(join(tmpdir(), "stored-fifo-"));
+    try {
+      const fifo = join(root, "image.png");
+      execFileSync("mkfifo", [fifo]);
+      const store = createToolImageStore(join(root, "runner"));
+      expect(await store.putFile!(fifo)).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
 it("passes through turns without generation", async () => {
   expect(await collect([message, terminal])).toEqual([message, terminal]);
 });

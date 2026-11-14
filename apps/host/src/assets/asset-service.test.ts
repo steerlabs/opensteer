@@ -66,6 +66,7 @@ it("resolves absolute, home, file URL and relative paths; refuses network author
     "\\\\server\\a.png",
     "\\\\?\\UNC\\server\\a.png",
     "//server/a.png",
+    "/\\server/a.png",
     "file://remote/a.png",
   ])
     expect(await mint(source)).toEqual({ status: "unavailable", reason: "denied" });

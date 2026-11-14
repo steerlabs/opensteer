@@ -75,6 +75,39 @@ it("re-mints before use once an address is within five minutes of expiry", async
   await renewed;
   expect(read).toHaveBeenCalledTimes(2);
 });
+it("asks once while a background re-confirmation is in flight", async () => {
+  const { store, read, thread } = setup();
+  await store.get("d", thread, "/a.png", "preview");
+  await vi.advanceTimersByTimeAsync(31_000);
+  let release: () => void = () => {};
+  read.mockImplementationOnce(
+    (input) =>
+      new Promise((resolve) => {
+        release = () =>
+          resolve({
+            ok: true,
+            data: {
+              assets: input.assets.map(() => ({
+                status: "ok" as const,
+                url: "/media/token-1/a.png",
+                expiresAt: new Date(Date.now() + 8 * 60 * 60_000).toISOString(),
+                revision: "1",
+                width: 100,
+                height: 80,
+                mediaType: "image/png" as const,
+              })),
+            },
+          });
+      }),
+  );
+  await store.get("d", thread, "/a.png", "preview");
+  await vi.advanceTimersByTimeAsync(0);
+  await store.get("d", thread, "/a.png", "preview");
+  await vi.advanceTimersByTimeAsync(0);
+  release();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(read).toHaveBeenCalledTimes(2);
+});
 it("does not remember a failed call as an unavailable image", async () => {
   const { store, read, thread } = setup();
   read.mockRejectedValueOnce(new Error("offline"));

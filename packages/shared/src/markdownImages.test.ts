@@ -97,7 +97,15 @@ it.each([
   [String.raw`\\host\a.png`, "none"],
   [String.raw`\\?\UNC\host\a.png`, "none"],
   ["", "none"],
+  ["/\\attacker/share/a.png", "none"],
+  ["%2F%2Fattacker/a.png", "none"],
 ])("classifies %s", (source, kind) => expect(classifyMarkdownImageSource(source!).kind).toBe(kind));
+it("decodes a renderer's percent-encoded destination exactly once", () => {
+  expect(classifyMarkdownImageSource("/Users/me/Application%20Support/a%2525.png")).toEqual({
+    kind: "local",
+    path: "/Users/me/Application Support/a%25.png",
+  });
+});
 it("strips local inline and reference images while preserving code and remote images", () => {
   const text =
     "![chart](</tmp/a%20b.png>) ![ref][img] `![](/tmp/a.png)` ![web](https://example.com/a.png)\n\n[img]: file:///tmp/b.png";
