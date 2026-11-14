@@ -73,6 +73,7 @@ export const TeamPartnerInviteSchema = z.object({
   expiresAt: IsoDateTimeSchema,
   consumedAt: IsoDateTimeSchema.nullable(),
   revokedAt: IsoDateTimeSchema.nullable(),
+  canRevoke: z.boolean().optional(),
 });
 
 const nonce = z.string().regex(/^[A-Za-z0-9_-]{43}$/u);

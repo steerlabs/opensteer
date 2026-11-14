@@ -33,3 +33,4 @@ export * from "./use-syncing-placeholder.js";
 export * from "./use-tab-filter.js";
 
 export * from "./use-thread-visits.js";
+export * from "./use-team-partner-settings.js";

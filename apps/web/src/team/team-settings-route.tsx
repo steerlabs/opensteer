@@ -1,4 +1,5 @@
 import { TeamPaneGate } from "./team-pane-gate.js";
+import { TeamPartnerSettingsPage } from "./team-partner-settings.js";
 import { useLayoutEffect, useRef, useState } from "react";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router";
 import {
@@ -71,16 +72,18 @@ function TeamSettingsContent() {
   const name = view.snapshot.bootstrap?.teamName ?? view.team.name;
   const nav = (
     <nav aria-label={`${name} settings`} className="team-settings-nav" ref={navRef}>
-      {(["profile", "notifications", ...(admin ? adminPages : [])] as const).map((key) => (
-        <Link
-          aria-current={key === page ? "page" : undefined}
-          className="team-settings-nav__link"
-          key={key}
-          to={`/settings/teams/${encodeURIComponent(teamId)}/${key}`}
-        >
-          {key[0]!.toUpperCase() + key.slice(1)}
-        </Link>
-      ))}
+      {(["profile", "notifications", "partners", ...(admin ? adminPages : [])] as const).map(
+        (key) => (
+          <Link
+            aria-current={key === page ? "page" : undefined}
+            className="team-settings-nav__link"
+            key={key}
+            to={`/settings/teams/${encodeURIComponent(teamId)}/${key}`}
+          >
+            {key === "partners" ? "Partner teams" : key[0]!.toUpperCase() + key.slice(1)}
+          </Link>
+        ),
+      )}
       <Link
         className="team-settings-nav__link"
         to={`/teams/${encodeURIComponent(teamId)}/knowledge`}
@@ -90,7 +93,9 @@ function TeamSettingsContent() {
     </nav>
   );
   const body =
-    page === "people" && can?.manageMembers ? (
+    page === "partners" ? (
+      <TeamPartnerSettingsPage client={view.client} key={view.team.teamId} />
+    ) : page === "people" && can?.manageMembers ? (
       <PeoplePage view={view} />
     ) : page === "groups" && can?.manageGroups ? (
       <GroupsPage view={view} />

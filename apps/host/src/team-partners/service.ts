@@ -104,6 +104,59 @@ export class TeamPartners {
     return { link };
   }
 
+  async preview(actor: TeamActor, text: string) {
+    const offer = parseTeamPartnerOffer(text);
+    if (Date.parse(offer.expiresAt) <= Date.now()) throw partnerError("partner-invite-expired");
+    await this.store.access.database
+      .transaction()
+      .execute((t) => this.store.authorize(t, actor, "propose"));
+    const signal = AbortSignal.any([this.#abort.signal, AbortSignal.timeout(15_000)]);
+    verifiedPartnerDescriptor(await this.#network.discover(offer.origin, signal), offer);
+    const peer = new PartnerSocket(
+      await this.#network.connectSocket(offer.origin, teamPartnerSocketPath, signal),
+    );
+    try {
+      return await withTimeout(
+        (async () => {
+          const nonce = randomBytes(32).toString("base64url");
+          await peer.send({
+            type: "hello",
+            version: teamPartnerProtocolVersion,
+            authority: this.authority,
+            name: this.options.teamName,
+            nonce,
+            approved: false,
+            selector: offer.selector,
+          });
+          const response = TeamPartnerChallengeSchema.parse(await peer.next());
+          verifyPartnerPins(response.authority, offer);
+          verifyPartnerChallenge(
+            response.authority,
+            {
+              purpose: "pair",
+              selector: offer.selector,
+              listenerTeamId: offer.teamId,
+              dialerTeamId: this.authority.document.deploymentId,
+              listenerNonce: response.nonce,
+              dialerNonce: nonce,
+              listenerApproved: response.approved,
+              dialerApproved: false,
+              version: teamPartnerProtocolVersion,
+            },
+            "listener",
+            response.signature,
+          );
+          // No proof or verifier is sent: preview cannot consume an invite or create a link.
+          return { name: response.name, origin: offer.origin, expiresAt: offer.expiresAt };
+        })(),
+        10_000,
+        { signal, timeoutError: () => partnerError("partner-handshake-timeout") },
+      );
+    } finally {
+      await peer.close();
+    }
+  }
+
   async approve(actor: TeamActor, id: string) {
     await this.store.approve(actor, id);
     const row = await this.store.get(id);

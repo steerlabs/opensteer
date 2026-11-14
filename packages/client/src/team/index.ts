@@ -19,3 +19,4 @@ export * from "./team-memberships.js";
 
 export * from "./ask-status.js";
 export * from "./team-runtime-owner.js";
+export * from "./partner-settings.js";
