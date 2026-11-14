@@ -1,4 +1,4 @@
-import { ThreadIdSchema, ToolOutputImageMediaTypeSchema } from "@opensteer/core";
+import { imagePathMaxLength, ThreadIdSchema, ToolOutputImageMediaTypeSchema } from "@opensteer/core";
 import { z } from "zod";
 
 /** Paths one `asset.urls` call can resolve, so a screen of images costs one round trip. */
@@ -17,7 +17,7 @@ export const AssetUrlsInputSchema = z.strictObject({
   assets: z
     .array(
       z.strictObject({
-        path: z.string().min(1).max(4096),
+        path: z.string().min(1).max(imagePathMaxLength),
         variant: AssetVariantSchema,
       }),
     )
@@ -34,7 +34,7 @@ export const AssetUrlSchema = z.discriminatedUnion("status", [
      * route it is using. Its token is the only authority, and it stays the same
      * for the same file, variant and expiry window, so caches keep hitting.
      */
-    url: z.string().startsWith("/").max(2048),
+    url: z.string().startsWith("/").max(8_192),
     expiresAt: z.iso.datetime(),
     /** Changes whenever the file's bytes may have; part of every client cache key. */
     revision: z.string().min(1).max(128),

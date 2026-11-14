@@ -33,6 +33,15 @@ const ToolOutputTruncationViewSchema = z
 /** Images a tool call produced, at most this many per call. */
 export const toolOutputImageMaxCount = 8;
 
+/** Longest image path, in UTF-16 code units, any image contract carries. */
+export const imagePathMaxLength = 1_024;
+
+/**
+ * The tool name every adapter gives an engine's own image generation call, so
+ * the shared Run layer can hold a turn's reply until its images settle.
+ */
+export const imageGenerationToolName = "image_generation";
+
 /** Image types a Host serves and every client can draw. */
 export const ToolOutputImageMediaTypeSchema = z.enum([
   "image/png",
@@ -51,7 +60,7 @@ export type ToolOutputImageMediaType = z.infer<typeof ToolOutputImageMediaTypeSc
  * also shows, as opposed to incidental output such as a screenshot.
  */
 export const ToolOutputImageSchema = z.strictObject({
-  path: z.string().min(1).max(4096),
+  path: z.string().min(1).max(imagePathMaxLength),
   mediaType: ToolOutputImageMediaTypeSchema,
   generated: z.literal(true).optional(),
 });
