@@ -926,9 +926,9 @@ it("delivers an offline disconnect before a fresh offer when the partner reconne
         expect(old.state, "Offline disconnect never reached the follower").toBe("ended");
         const offers = await f.bSession.rpc["team.shares.list"]({});
         expect(
-          offers.ok && offers.data.shares.some((s) => s.id === queued.id && s.state === "offered"),
+          offers.ok && offers.data.shares.find((s) => s.id === queued.id),
           "Fresh offer never arrived after its predecessor ended",
-        ).toBe(true);
+        ).toMatchObject({ state: "offered", canAccept: true, canApprove: false, canEnd: true });
       },
       { timeout: 5000 },
     );

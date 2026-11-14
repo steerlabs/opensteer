@@ -1585,8 +1585,30 @@ export class TeamSharesStore {
         );
       }
       const rows = await q.orderBy("s.createdAt", "desc").limit(50).execute();
+      const member = await this.access.member(t, actor.userId);
+      const { policy } = await t
+        .selectFrom("teamSharingSettings")
+        .select("policy")
+        .executeTakeFirstOrThrow();
+      // Mirrors approve, prepareAccept and end: the Host still rechecks each action.
+      const decides = actor.kind === "human" && (member.role !== "member" || policy === "members");
+      const manages = new Map<TeamChannelId, boolean>();
+      for (const s of rows)
+        if (decides && s.channelId && s.state !== "ended" && !manages.has(s.channelId))
+          manages.set(s.channelId, (await this.access.channel(t, actor, s.channelId)).manage);
       return {
         shares: rows.map((s) => ({
+          canApprove:
+            decides &&
+            policy !== "off" &&
+            s.role === "owner" &&
+            s.state === "offered" &&
+            !s.localApproved &&
+            manages.get(s.channelId!) === true,
+          canAccept: decides && policy !== "off" && s.role === "follower" && s.state === "offered",
+          canEnd:
+            decides && s.state !== "ended" && (!s.channelId || manages.get(s.channelId) === true),
+          peopleOnly: s.peopleOnly,
           id: s.id,
           historyFromShareId: s.historyFromShareId,
           channelId: s.channelId,
