@@ -23,7 +23,7 @@ const rowsSaying = (text: string) =>
 async function openChannel() {
   await mount("/", { team: true });
   await click(element('.side-switch__option:not([data-value="tasks"])'));
-  await click(element(".team-row__main"));
+  await click(element(".team-row[data-channel-id] .team-row__main"));
   await settle();
 }
 

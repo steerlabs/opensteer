@@ -244,7 +244,7 @@ describe("a team's own web app", () => {
     expect(window.location.pathname).toMatch(new RegExp(`/teams/.+/c/${mockTeamChannelId}$`, "u"));
   });
 
-  it("keeps a note's draft when someone else saved first, and saves it on top of theirs", async () => {
+  it("opens an old note link beside the list and restores an earlier version", async () => {
     const { team } = serveTeam({ signedIn: true });
     const noteId = createId("knowledgeNote");
     const topicId = team.knowledge.starterTopicId;
@@ -255,52 +255,52 @@ describe("a team's own web app", () => {
         topicId,
         title: "Refunds",
         body,
-        writer: { kind: "human", userId: leo.userId, name: leo.displayName },
+        writer: { kind: "agent", userId: leo.userId, name: leo.displayName },
       });
     write("Ask Maya.");
+    write("Ask Dana.");
     window.history.replaceState(
       null,
       "",
       `/teams/${mockTeamId}/knowledge/${topicId}/${noteId}/edit`,
     );
     const node = await render();
-    const body = await act(async () =>
-      vi.waitFor(() => node.querySelector<HTMLTextAreaElement>("textarea[aria-label='Note']")!, {
-        timeout: 2_000,
-      }),
-    );
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
-        body,
-        "Ask Maya. Over $500 needs two.",
+      await vi.waitFor(
+        () => {
+          expect(window.location.search).toBe(`?note=${noteId}`);
+          expect(
+            node.querySelector(`tr[data-note-id="${noteId}"]`)?.getAttribute("aria-selected"),
+          ).toBe("true");
+          expect(node.querySelector(".kb-note")?.textContent).toContain("Ask Dana.");
+        },
+        { timeout: 2_000 },
       );
-      body.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    write("Ask Maya or Dana.");
 
-    await act(async () => button(node, "Save")?.click());
+    await act(async () => button(node, "Show 2")?.click());
+    const first = await act(async () =>
+      vi.waitFor(
+        () =>
+          [...node.querySelectorAll<HTMLButtonElement>(".kb-version")].find((row) =>
+            row.textContent?.startsWith("v1"),
+          )!,
+        { timeout: 2_000 },
+      ),
+    );
+    await act(async () => first.click());
+    expect(node.querySelector(".kb-note")?.textContent).toContain("Ask Maya.");
+    await act(async () => button(node, "Restore")?.click());
     await act(async () => {
       await vi.waitFor(
         () =>
-          expect(node.textContent).toContain(
-            "Leo Park changed this note while you were editing it.",
-          ),
+          expect(team.knowledge.notes.get(noteId)?.versions.at(-1)).toMatchObject({
+            version: 3,
+            body: "Ask Maya.",
+            writer: { kind: "human", userId: team.userId },
+          }),
         { timeout: 2_000 },
       );
-    });
-    expect(body.value).toBe("Ask Maya. Over $500 needs two.");
-
-    await act(async () => button(node, "Save")?.click());
-    await act(async () => {
-      await vi.waitFor(
-        () => expect(window.location.pathname).toMatch(new RegExp(`/${noteId}$`, "u")),
-        { timeout: 2_000 },
-      );
-    });
-    expect(team.knowledge.notes.get(noteId)?.versions.at(-1)).toMatchObject({
-      version: 3,
-      body: "Ask Maya. Over $500 needs two.",
-      writer: { kind: "human", userId: team.userId },
     });
   });
 });

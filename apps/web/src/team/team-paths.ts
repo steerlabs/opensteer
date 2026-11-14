@@ -19,7 +19,20 @@ export function channelPath(
   return options.tab ? `${base}/${options.tab}` : base;
 }
 
-/** Knowledge, a topic in it, or a note: `knowledge/:topicId/:noteId/(edit|history)`. */
-export function knowledgePath(teamId: string, ...parts: readonly string[]): string {
-  return teamPath(teamId, ["knowledge", ...parts.map(encodeURIComponent)].join("/"));
+/**
+ * Knowledge: every note, or one topic's (`knowledge/:topicId`), with a note open beside the
+ * list (`?note=`) and the search that narrows it (`?q=`).
+ */
+export function knowledgePath(
+  teamId: string,
+  topicId: string | null = null,
+  noteId: string | null = null,
+  query = "",
+): string {
+  const path = teamPath(teamId, topicId ? `knowledge/${encodeURIComponent(topicId)}` : "knowledge");
+  const search = new URLSearchParams({
+    ...(query ? { q: query } : {}),
+    ...(noteId ? { note: noteId } : {}),
+  }).toString();
+  return search ? `${path}?${search}` : path;
 }

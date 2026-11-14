@@ -713,7 +713,7 @@ describe("a channel and back", () => {
     // Switching sides is the sidebar's own business: nothing navigates.
     await click(element('.side-switch__option:not([data-value="tasks"])'));
     expect(history.length).toBe(entries);
-    await click(element(".team-row__main"));
+    await click(element(".team-row[data-channel-id] .team-row__main"));
     expect(history.length).toBe(entries + 1);
     expect(history.at(-1)!.path).toMatch(/^\/teams\/[^/]+\/c\/[^/]+$/u);
     // The channel fills the window; the page leaves the middle, and its tab stays in Tabs.
@@ -734,7 +734,7 @@ describe("a channel and back", () => {
   it("a tab opened from a channel docks the channel beside its page, and Back fills the window again", async () => {
     await mount("/", { team: true });
     await click(element('.side-switch__option:not([data-value="tasks"])'));
-    await click(element(".team-row__main"));
+    await click(element(".team-row[data-channel-id] .team-row__main"));
     const channel = history.at(-1)!;
     expect(document.querySelector(".place")).toBeNull();
     const place = pageTab();
