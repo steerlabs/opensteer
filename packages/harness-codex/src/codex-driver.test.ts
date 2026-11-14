@@ -4299,7 +4299,7 @@ it("delivers distinct full names for two plugins and a loose review skill", asyn
 });
 
 it("retains tool-result image files without provider base64", async () => {
-  const fixture = await setup("image-output");
+  const fixture = await setup("tool-image-output");
   const session = await fixture.adapter.startSession({
     ...fixture.context,
     imageStore: createToolImageStore(fixture.context.threadStateDirectory),

@@ -221,7 +221,7 @@ async function main() {
   }
   emit({ message: { content: [{ text: prompt, type: "text" }], role: "user" }, type: "user" });
 
-  if (scenario === "image-output") {
+  if (scenario === "tool-image-output") {
     const args = { name: "probe", providerIdentifier: "probe", toolName: "probe", args: {} };
     emit({
       type: "tool_call",

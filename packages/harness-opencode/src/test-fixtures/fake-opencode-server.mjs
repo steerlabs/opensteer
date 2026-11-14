@@ -712,7 +712,7 @@ function runScenario(id, payload) {
       step({ input: 50, output: 20, reasoning: 0, cache: { read: 8, write: 0 } }, 0.5);
       emit("session.idle", { sessionID: id });
       return;
-    case "image-output":
+    case "tool-image-output":
       toolPart("image-1", "probe", "running", { input: {} });
       toolPart("image-1", "probe", "completed", {
         output: "image result",

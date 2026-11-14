@@ -1447,7 +1447,7 @@ function handleTurnStart(message) {
     return;
   }
 
-  if (scenario === "image-output") {
+  if (scenario === "tool-image-output") {
     const item = {
       id: "image-1",
       type: "mcpToolCall",

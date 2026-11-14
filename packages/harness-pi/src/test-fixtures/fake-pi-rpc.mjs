@@ -410,7 +410,7 @@ function ask(request) {
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function runTurn(prompt) {
-  if (scenario === "image-output") {
+  if (scenario === "tool-image-output") {
     send({ type: "tool_execution_start", toolCallId: "image-1", toolName: "probe", args: {} });
     send({
       type: "tool_execution_end",
