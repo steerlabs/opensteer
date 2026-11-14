@@ -16,6 +16,7 @@ import {
   testHostAuthorityKeys,
 } from "../test-support/index.js";
 import { NativeTeamEntry } from "./native-team-entry.js";
+import { TeamRuntimeOwner } from "./team-runtime-owner.js";
 
 let latestVerified: VerifiedHostEndpoint;
 const keys = testHostAuthorityKeys();
@@ -65,7 +66,9 @@ function setup() {
   const listeners = new Set<(state: HostOAuthState) => void>();
   const state = (connection: DeploymentConnection, status: HostOAuthState["status"]) =>
     ({ connection, detail: null, key: "", status }) as HostOAuthState;
+  let runtime = new TeamRuntimeOwner(null);
   const oauth = {
+    teamRuntime: () => runtime,
     refreshTeamAuthorization: vi.fn(async (): Promise<string | null> => null),
     teamEntryFence: () => ({
       generation: 0,
@@ -112,6 +115,10 @@ function setup() {
     callback,
     listeners,
     signOut: () => (signedIn = false),
+    switchAccount: () => {
+      runtime.retire();
+      runtime = new TeamRuntimeOwner(null);
+    },
     entry: new NativeTeamEntry({ oauth, catalog, bootstrap, verify }),
     verify,
     discover: (verified: VerifiedHostEndpoint) => {
@@ -351,7 +358,7 @@ describe("NativeTeamEntry", () => {
   );
 
   it("starts a new Account's entry instead of joining the retired Account's attempt", async () => {
-    const { entry, oauth, verify } = setup();
+    const { entry, oauth, verify, switchAccount } = setup();
     const verified = team();
     let account = new AbortController();
     oauth.teamEntryFence = () => {
@@ -368,6 +375,7 @@ describe("NativeTeamEntry", () => {
     const retired = entry.authorize(input);
     account.abort();
     account = new AbortController();
+    switchAccount();
     const current = entry.authorize(input);
     gate.resolve(verified);
     await expect(retired).resolves.toMatchObject({ status: "superseded" });

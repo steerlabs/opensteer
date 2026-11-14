@@ -94,6 +94,7 @@ export async function previewTeamInvite(
 type TeamEntryOAuth = Pick<
   NativeOAuthManager,
   | "teamEntryFence"
+  | "teamRuntime"
   | "authorizationHeader"
   | "refreshTeamAuthorization"
   | "isTeamSignInSuppressed"
@@ -127,7 +128,7 @@ const entryAttempts = new WeakMap<
     {
       mode: "passive" | "interactive";
       invite: TeamInviteSecret | null;
-      fence: AbortSignal;
+      owner: ReturnType<TeamEntryOAuth["teamRuntime"]>;
       promise: Promise<TeamEntryOutcome>;
     }
   >
@@ -170,8 +171,8 @@ export class NativeTeamEntry {
       let attempts = entryAttempts.get(this.#oauth);
       if (!attempts) entryAttempts.set(this.#oauth, (attempts = new Map()));
       const pending = attempts.get(input.deploymentId);
-      // An attempt from a retired Account or superseded fence never answers a newer caller.
-      const held = pending?.fence.aborted ? undefined : pending;
+      // An attempt started under a retired Account never answers the next Account's caller.
+      const held = pending?.owner === this.#oauth.teamRuntime() ? pending : undefined;
       if (held) {
         if (input.mode === "passive" && held.mode === "interactive")
           return this.#passiveDuringBrowser(input, held.promise, lease);
@@ -203,7 +204,7 @@ export class NativeTeamEntry {
       attempts.set(input.deploymentId, {
         mode: input.mode,
         invite: input.invite ?? null,
-        fence: lease.signal,
+        owner: this.#oauth.teamRuntime(),
         promise,
       });
       return promise;
