@@ -14,6 +14,7 @@ export * from "./integration-platform-store.js";
 export * from "./integration-store.js";
 export * from "./migrations.js";
 export * from "./notification-state.js";
+export * from "./owner-profile-store.js";
 export * from "./notification-store.js";
 export * from "./request-store.js";
 export * from "./schema.js";

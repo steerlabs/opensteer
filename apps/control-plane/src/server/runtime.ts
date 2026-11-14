@@ -1,5 +1,9 @@
 import { appleClientSecret } from "../auth/apple-sign-in.js";
-import { ControlPlaneAuthenticator, createControlPlaneAuth } from "../auth/auth.js";
+import {
+  ControlPlaneAuthenticator,
+  createAccountProfiles,
+  createControlPlaneAuth,
+} from "../auth/auth.js";
 import { BetterAuthAccountAdoptionCompletionGrantIssuer } from "../adoption/adoption-grant-issuer.js";
 import { AdoptionOperationCipher } from "../adoption/adoption-operation-crypto.js";
 import { HttpHostAccountAdoptionProofVerifier } from "../adoption/adoption-verifier.js";
@@ -157,6 +161,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
           database,
           issuer: config.publicOrigin,
         }),
+        accountProfiles: createAccountProfiles(auth, database, config.publicOrigin),
       },
       { logger: config.environment !== "test" },
     );

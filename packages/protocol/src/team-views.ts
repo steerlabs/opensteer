@@ -167,6 +167,7 @@ export const TeamCommandResultViewSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("team.member.role.set") }),
   z.object({ type: z.literal("team.member.remove") }),
   z.object({ type: z.literal("team.owner.transfer") }),
+  z.object({ type: z.literal("team.member.profile.apply"), applied: z.boolean() }),
   z.object({ type: z.literal("team.group.create") }),
   z.object({ type: z.literal("team.group.rename") }),
   z.object({ type: z.literal("team.group.delete") }),
@@ -455,8 +456,17 @@ export const TeamConsistentCutViewSchema = z.discriminatedUnion("type", [
  * Frame views are what a peer reads: unknown fields are dropped, and
  * readTeamFrame skips unknown frame types. Writers keep the strict schemas.
  */
-const [cut, sidebar, sidebarDirty, linkPresence, typing, presence, accessChanged, recipient] =
-  TeamServerFrameSchema.options;
+const [
+  cut,
+  sidebar,
+  sidebarDirty,
+  linkPresence,
+  typing,
+  presence,
+  accessChanged,
+  recipient,
+  memberUpdated,
+] = TeamServerFrameSchema.options;
 export const TeamServerFrameViewSchema = z.discriminatedUnion("type", [
   z.object({ ...cut.shape, cut: TeamConsistentCutViewSchema }),
   z.object({ ...sidebar.shape, sidebar: TeamSidebarViewSchema }),
@@ -466,6 +476,7 @@ export const TeamServerFrameViewSchema = z.discriminatedUnion("type", [
   z.object({ ...presence.shape, people: z.array(presence.shape.people.element.strip()).max(50) }),
   accessChanged.strip(),
   z.object({ ...recipient.shape, recipient: recipient.shape.recipient.strip() }),
+  z.object({ ...memberUpdated.shape, member: TeamMemberViewSchema }),
 ]);
 
 const [subscribe, clientTyping, clientPresence] = TeamClientFrameSchema.options;

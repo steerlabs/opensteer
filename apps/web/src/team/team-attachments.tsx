@@ -21,6 +21,7 @@ import {
   type HostClient,
 } from "@opensteer/client/host";
 import {
+  AccountProfileRelay,
   createMemoryTeamPersistence,
   listedTeams,
   TeamSessionClient,
@@ -43,6 +44,7 @@ import { channelKind } from "./team-view-models.js";
 import { teamTile } from "./team-people.js";
 import { browserTeamSession, desktopTeamSession } from "./team-transports.js";
 import {
+  desktopAccountTeams,
   desktopTeamSessions,
   desktopTeamCoordination,
   previewTeamCoordination,
@@ -116,6 +118,8 @@ interface TeamsValue {
   readonly enter: ((teamId: string) => Promise<void>) | null;
   /** Creating and joining hosted teams in this app; null where they open in the browser. */
   readonly coordination: WebTeamCoordination | null;
+  /** The person's Account name as this app's team sessions relay it; null without one. */
+  readonly profiles: AccountProfileRelay | null;
   readonly account: TeamAccount | null;
   /** Where the app goes when a team is entered; bound by the router. */
   readonly navigator: { current: ((path: string) => void) | null };
@@ -132,6 +136,7 @@ const TeamsContext = createContext<TeamsValue>({
   forget: async () => undefined,
   enter: null,
   coordination: null,
+  profiles: null,
   account: null,
   navigator: { current: null },
 });
@@ -303,13 +308,23 @@ export function TeamsProvider({
   );
   const memberRef = useRef(members);
   memberRef.current = members;
+  // Main holds the Account session, so the desktop reads the name through it.
+  const profiles = useMemo(
+    () =>
+      bridge?.accountTeams
+        ? new AccountProfileRelay(
+            desktopAccountTeams({ accountTeams: bridge.accountTeams.bind(bridge) }, owner),
+          )
+        : null,
+    [bridge, owner],
+  );
   const registry = useMemo(
     () =>
       bridge
         ? new TeamTransportRegistry("desktop", (scope: TeamCacheScope) => {
             const team = memberRef.current.get(scope.teamDeploymentId);
             if (!team) throw new Error("This team is not on this computer.");
-            return desktopTeamSession({
+            const options = desktopTeamSession({
               bridge,
               origin: team.origin,
               scope,
@@ -324,9 +339,10 @@ export function TeamsProvider({
                   owner,
                 ),
             });
+            return profiles ? { ...options, profiles } : options;
           })
         : null,
-    [bridge, owner],
+    [bridge, owner, profiles],
   );
   useEffect(() => {
     setClients(new Map());
@@ -510,10 +526,12 @@ export function TeamsProvider({
       forget,
       enter,
       coordination,
+      profiles,
       account,
       navigator,
     };
   }, [
+    profiles,
     account,
     owner,
     clients,

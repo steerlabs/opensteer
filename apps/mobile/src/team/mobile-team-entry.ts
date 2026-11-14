@@ -31,6 +31,8 @@ const noAccountTeams: AccountTeamsClient = {
   deleteHostedTeam: () => Promise.reject(noAccount()),
   hostedTeamOwners: () => Promise.reject(noAccount()),
   transferHostedTeam: () => Promise.reject(noAccount()),
+  profile: () => Promise.reject(noAccount()),
+  updateProfile: () => Promise.reject(noAccount()),
 };
 
 function noAccount(): Error {

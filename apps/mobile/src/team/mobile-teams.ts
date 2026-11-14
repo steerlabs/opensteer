@@ -21,6 +21,7 @@ import {
   TeamSavedStateSchema,
   TeamTransportRegistry,
   TeamRuntimeOwner,
+  type AccountProfileRelay,
   type TeamCacheScope,
   type TeamPersistence,
   type TeamSessionClient,
@@ -198,7 +199,11 @@ class MobileTeamRuntime {
   readonly #sessions = new Map<string, TeamSessionClient>();
   readonly #states = new Map<string, { state: TeamState; detail: string | null }>();
   readonly #names = new Map<string, string>();
-  readonly #members = new Map<string, Promise<readonly TeamMember[]>>();
+  /** Each team's people, with the access and names revisions the read began at. */
+  readonly #members = new Map<
+    string,
+    { key: string | null; readonly people: Promise<readonly TeamMember[]> }
+  >();
   readonly #detachSessions = new Map<string, () => void>();
   #memo: z.infer<typeof TeamMemoSchema> | null = null;
   #selected: string | null = null;
@@ -228,6 +233,8 @@ class MobileTeamRuntime {
     readonly previews?: NotificationPreviews | null;
     /** Mock mode's computers and the teams each is in, before any computer has said. */
     readonly seed?: Readonly<Record<string, readonly LinkedTeam[]>>;
+    /** The person's Account name, relayed to teams holding an older one. */
+    readonly profiles?: AccountProfileRelay;
   }) {
     this.#onForgotten = options.onForgotten;
     this.owner = options.client.oauth.teamRuntime();
@@ -268,6 +275,7 @@ class MobileTeamRuntime {
         connect: transport.connect,
         readFile: transport.readFile,
         uploadFile: transport.uploadFile,
+        ...(options.profiles ? { profiles: options.profiles } : {}),
       };
     });
     this.#detachOwner = this.owner.own(() => this.#retire());
@@ -581,9 +589,18 @@ class MobileTeamRuntime {
   }
 
   /** The team's people, read once per session: names, handles and faces for its screens. */
-  members(teamId: string): Promise<readonly TeamMember[]> {
+  /**
+   * The team's people, read once per `key` (its sidebar's access and names revisions): a list
+   * read before a change it missed, even while no screen showed it, is read again.
+   */
+  members(teamId: string, key: string | null = null): Promise<readonly TeamMember[]> {
     const held = this.#members.get(teamId);
-    if (held !== undefined) return held;
+    if (held !== undefined && (key === null || held.key === key)) return held.people;
+    // Read before the team's revisions were known, which is moments ago: it stands for them.
+    if (held !== undefined && held.key === null) {
+      held.key = key;
+      return held.people;
+    }
     const loading = (async () => {
       const session = await this.session(teamId);
       const people: TeamMember[] = [];
@@ -601,8 +618,11 @@ class MobileTeamRuntime {
       }
       return people;
     })();
-    this.#members.set(teamId, loading);
-    loading.catch(() => this.#members.delete(teamId));
+    const entry = { key, people: loading };
+    this.#members.set(teamId, entry);
+    loading.catch(() => {
+      if (this.#members.get(teamId) === entry) this.#members.delete(teamId);
+    });
     return loading;
   }
 
@@ -1078,6 +1098,8 @@ type Options = ConstructorParameters<typeof MobileTeamRuntime>[0];
 
 /** One service facade; each Account owns an isolated runtime and its entire mutable state. */
 export class MobileTeams {
+  /** The person's Account name, which this phone's team sessions relay. */
+  readonly profiles: AccountProfileRelay | null;
   readonly #options: Options;
   readonly #listeners = new Set<() => void>();
   #runtime: MobileTeamRuntime;
@@ -1086,6 +1108,7 @@ export class MobileTeams {
   #foreground = true;
   constructor(options: Options) {
     this.#options = options;
+    this.profiles = options.profiles ?? null;
     this.#runtime = new MobileTeamRuntime(options);
   }
   get owner(): TeamRuntimeOwner {
@@ -1114,6 +1137,8 @@ export class MobileTeams {
   }
   #establish(): boolean {
     if (this.owner === this.#options.client.oauth.teamRuntime()) return false;
+    // Another Account signed in: its name is not the one held.
+    this.profiles?.changed();
     this.#detachRuntime?.();
     this.#runtime.dispose();
     this.#runtime = new MobileTeamRuntime(this.#options);

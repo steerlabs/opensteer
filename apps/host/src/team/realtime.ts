@@ -104,6 +104,10 @@ export class TeamRealtimeHub {
         this.#send(peer, { type: "team.agent.recipient", recipient });
     }
   }
+  /** Every member sees every member's name, so each open session redraws it. */
+  memberUpdated(member: Extract<Frame, { type: "team.member.updated" }>["member"]) {
+    for (const peer of this.#peers) this.#send(peer, { type: "team.member.updated", member });
+  }
   #snapshot(actor: TeamActor, subscription: Subscription, version: number) {
     const key = JSON.stringify([
       actor,

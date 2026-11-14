@@ -7,6 +7,7 @@ import {
   HostInstanceIdSchema,
   HostKeyFingerprintSchema,
   IdentityEmailSchema,
+  PersonNameSchema,
   UserIdSchema,
   isBareOrigin,
   isSecureOrLoopbackOrigin,
@@ -815,6 +816,67 @@ export const TeamIdentityAssertionClaimsSchema = z
     }
   });
 export type TeamIdentityAssertionClaims = z.infer<typeof TeamIdentityAssertionClaimsSchema>;
+
+/*
+ * A person's name is owned by their Account once they have one. Account numbers each change and
+ * signs a receipt of the current name; every copy (a linked personal Host, each team) keeps the
+ * highest revision it has verified, so late or repeated deliveries never move a name backwards.
+ * A receipt proves what the name is, never who may act: it carries no session and a distinct
+ * audience, so no Account or Host authenticator accepts it.
+ */
+export const personProfileReceiptAudience = "opensteer-person-profile";
+/** The UserInfo claim carrying a receipt to a team Host signing in through its browser. */
+export const personProfileReceiptClaim = "opensteer_profile";
+/** Long enough to relay to every team, short enough that a leaked one is soon useless. */
+export const personProfileReceiptLifetimeSeconds = 60 * 60;
+export const accountProfilePath = "/v1/account/profile";
+export const hostOwnerProfilePath = "/v1/host/owner-profile";
+
+export const PersonProfileRevisionSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+export const PersonProfileReceiptSchema =
+  AccountHostSessionGrantSchema.brand<"PersonProfileReceipt">();
+export type PersonProfileReceipt = z.infer<typeof PersonProfileReceiptSchema>;
+
+export const PersonProfileReceiptClaimsSchema = z
+  .strictObject({
+    tokenUse: z.literal(personProfileReceiptAudience),
+    iss: DeploymentOriginSchema,
+    aud: z.literal(personProfileReceiptAudience),
+    sub: ControlPlaneAccountIdSchema,
+    iat: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    exp: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    name: PersonNameSchema,
+    revision: PersonProfileRevisionSchema,
+  })
+  .refine(
+    (claims) =>
+      claims.exp > claims.iat && claims.exp - claims.iat <= personProfileReceiptLifetimeSeconds,
+    { message: "Profile receipts may live for at most one hour", path: ["exp"] },
+  );
+export type PersonProfileReceiptClaims = z.infer<typeof PersonProfileReceiptClaimsSchema>;
+
+export const AccountProfileSchema = z.strictObject({
+  name: PersonNameSchema,
+  revision: PersonProfileRevisionSchema,
+  receipt: PersonProfileReceiptSchema,
+});
+export type AccountProfile = z.infer<typeof AccountProfileSchema>;
+
+/**
+ * Applied only when `expectedRevision` is still current; otherwise `applied` is false and
+ * `profile` is the newer name someone saved elsewhere, so nobody's edit is silently overwritten.
+ */
+export const UpdateAccountProfileRequestSchema = z.strictObject({
+  name: PersonNameSchema,
+  expectedRevision: PersonProfileRevisionSchema,
+});
+export type UpdateAccountProfileRequest = z.infer<typeof UpdateAccountProfileRequestSchema>;
+
+export const UpdateAccountProfileResponseSchema = z.strictObject({
+  applied: z.boolean(),
+  profile: AccountProfileSchema,
+});
+export type UpdateAccountProfileResponse = z.infer<typeof UpdateAccountProfileResponseSchema>;
 
 export const IssueHostAccountAdoptionProofRequestSchema = z
   .object({

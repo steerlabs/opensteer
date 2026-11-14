@@ -1251,7 +1251,6 @@ describe("HttpHostClient authentication and onboarding", () => {
 
     expect(client.getSnapshot()).toMatchObject({
       connection: "connecting",
-      ownerName: "Alex",
       session: "authenticated",
     });
     // Claiming is a single call, so there is no window in which the account

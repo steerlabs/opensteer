@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PersonProfileReceiptSchema } from "@opensteer/control-plane-protocol";
 import {
   DeploymentIdSchema,
   IsoDateTimeSchema,
@@ -209,6 +210,14 @@ export const TeamCommandSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({ type: z.literal("team.member.remove"), userId: UserIdSchema }),
   z.strictObject({ type: z.literal("team.owner.transfer"), userId: UserIdSchema }),
+  /**
+   * The caller's own name from an Account-signed receipt. Applied only to the member that Account
+   * signs in as here, and only when newer. Teams that take it return `member.nameRevision`.
+   */
+  z.strictObject({
+    type: z.literal("team.member.profile.apply"),
+    receipt: PersonProfileReceiptSchema,
+  }),
   z.strictObject({ type: z.literal("team.group.create"), id: TeamGroupIdSchema, name: name }),
   z.strictObject({ type: z.literal("team.group.rename"), groupId: TeamGroupIdSchema, name: name }),
   z.strictObject({ type: z.literal("team.group.delete"), groupId: TeamGroupIdSchema }),

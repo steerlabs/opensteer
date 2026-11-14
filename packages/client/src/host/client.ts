@@ -41,6 +41,7 @@ import type {
   ThreadAccessMode,
   ThreadDoneReason,
   QuietTaskDays,
+  PersonName,
   ThreadInputPolicy,
   ThreadInputQueue,
   ThreadStatus,
@@ -50,6 +51,7 @@ import type {
   IconName,
 } from "@opensteer/core";
 import type {
+  OwnerProfileView,
   ApprovedComputerApp,
   BrowserRasterDensity,
   BrowserSessionOpener,
@@ -903,7 +905,8 @@ export interface HostSnapshot {
   machines: MachineSummary[];
   /** Bumped when a machine's access sessions change, so readers refetch. */
   machineRevision: number;
-  ownerName: string | null;
+  /** The personal owner's name; null before bootstrap or from a Host that has none. */
+  ownerProfile: OwnerProfileView | null;
   revision: number;
   session: HostSessionState;
   /**
@@ -1187,6 +1190,12 @@ export interface HostClient {
   loadEarlierDoneTasks(deploymentId?: string): Promise<void>;
   setIdleCompactionPolicy(policy: import("@opensteer/core").IdleCompactionPolicy): Promise<void>;
   setQuietTaskDays(days: QuietTaskDays): Promise<void>;
+  /** False when the Account already had a newer name, which the snapshot then shows. */
+  setOwnerName(
+    name: PersonName | null,
+    /** `ownerProfile.version` when the person began editing. */
+    expectedVersion: string | null,
+  ): Promise<{ readonly applied: boolean }>;
 
   dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput>;
   dispose(): void;

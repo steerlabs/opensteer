@@ -115,6 +115,7 @@ function fixture() {
       timeZoneFor: vi.fn(async () => null),
       setTimeZone: vi.fn(async () => "UTC"),
     },
+    ownerProfile: { read: vi.fn(async () => ({ ownerId: userId, name: "Ada", account: null })) },
   };
   const deps = {
     store,

@@ -96,12 +96,15 @@ export class TeamIdentityAdmission {
       }
     | undefined;
   readonly #identityVerifier: TeamIdentityAssertionVerifier | undefined;
+  readonly #applyProfile: ((userId: UserId, receipt: string) => Promise<boolean>) | undefined;
   constructor(options: {
     access: TeamAccessStore;
     invites: TeamInvitesStore;
     authority: AccountAdoptionAuthority;
     grantVerifier: AccountAdoptionGrantVerifier;
     identityVerifier?: TeamIdentityAssertionVerifier;
+    /** Applies an Account-signed name receipt to the user that Account signs in as here. */
+    applyProfile?: (userId: UserId, receipt: string) => Promise<boolean>;
     installAccountBundle: (bundle: HostAccountAdoptionBundle) => Promise<void>;
     /** Enables Account's hosted bootstrap (`team-hosted-bootstrap-v1`). */
     hosted?: {
@@ -117,8 +120,13 @@ export class TeamIdentityAdmission {
     this.#authority = options.authority;
     this.#verifier = options.grantVerifier;
     this.#identityVerifier = options.identityVerifier;
+    this.#applyProfile = options.applyProfile;
     this.#install = options.installAccountBundle;
     this.#hosted = options.hosted;
+  }
+  /** A browser sign-in carries the person's current Account name; apply it like a relayed one. */
+  async applyProfile(userId: UserId, receipt: string): Promise<boolean> {
+    return this.#applyProfile ? this.#applyProfile(userId, receipt) : false;
   }
   get hostedBootstrapAvailable() {
     return this.#hosted !== undefined;

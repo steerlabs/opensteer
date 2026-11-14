@@ -22,9 +22,10 @@ export function useTeamView(teamId: string | undefined, previews: ReadonlyMap<st
   const team = useTeamAttachment(teamId);
   const client = team?.client ?? null;
   const snapshot = useTeamSession(client);
+  const sidebar = snapshot?.sidebar;
   const { members, status: people } = useTeamMembers(
     client,
-    snapshot?.sidebar?.accessRevision ?? null,
+    sidebar ? `${sidebar.accessRevision}:${sidebar.namesRevision ?? ""}` : null,
   );
   const linkPresence = snapshot?.channel?.linkPresence;
   const words = useMemo<TeamWords | null>(() => {
