@@ -162,6 +162,7 @@ import {
 import { z } from "zod";
 import { AppIdSchema, AppSchema } from "@opensteer/core";
 import { AgentPhoneHostTargetViewSchema } from "./android-phone.js";
+import { AssetUrlsInputSchema, AssetUrlsSchema } from "./assets.js";
 import { AttachmentContentSchema, AttachmentReferenceInputSchema } from "./attachments.js";
 import { AppTabsSchema, HostBootstrapSchema, IdentityConfigViewSchema } from "./bootstrap.js";
 import {
@@ -2052,6 +2053,8 @@ export const hostApi = defineRpc({
     emptyInputSchema,
     z.object({ sessions: z.array(AuthSessionSummaryViewSchema).max(100) }),
   ),
+  /** Personal only: signed addresses for image files on the hosting computer. */
+  "asset.urls": declaration("POST", AssetUrlsInputSchema, AssetUrlsSchema),
   "tool.output.get": declaration(
     "GET",
     z.strictObject({

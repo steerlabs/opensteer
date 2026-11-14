@@ -30,7 +30,35 @@ const ToolOutputTruncationViewSchema = z
     "Tool output omitted bytes must be smaller than the original output",
   );
 
+/** Images a tool call produced, at most this many per call. */
+export const toolOutputImageMaxCount = 8;
+
+/** Image types a Host serves and every client can draw. */
+export const ToolOutputImageMediaTypeSchema = z.enum([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+  "image/avif",
+  "image/svg+xml",
+]);
+export type ToolOutputImageMediaType = z.infer<typeof ToolOutputImageMediaTypeSchema>;
+
+/**
+ * One image a tool call produced, as a file on the hosting computer. Bytes
+ * never ride events: clients load the file through the Host's `asset.urls`.
+ * `generated` marks the call's product (image generation), which the reply
+ * also shows, as opposed to incidental output such as a screenshot.
+ */
+export const ToolOutputImageSchema = z.strictObject({
+  path: z.string().min(1).max(4096),
+  mediaType: ToolOutputImageMediaTypeSchema,
+  generated: z.literal(true).optional(),
+});
+export type ToolOutputImage = z.infer<typeof ToolOutputImageSchema>;
+
 const toolOutputShape = {
+  images: z.array(ToolOutputImageSchema).min(1).max(toolOutputImageMaxCount).optional(),
   text: z
     .string()
     .max(toolOutputTextMaxBytes)
@@ -57,14 +85,19 @@ export function utf8ByteLength(value: string): number {
  * U+FFFD. Oversized text keeps equal head and tail windows with an explicit
  * omission marker between them.
  */
-export function createToolOutput(text: string): ToolOutput {
+export function createToolOutput(
+  text: string,
+  images: readonly ToolOutputImage[] = [],
+): ToolOutput {
+  const imagesField =
+    images.length > 0 ? { images: images.slice(0, toolOutputImageMaxCount) } : {};
   // JSON and PostgreSQL `jsonb` cannot carry U+0000, so the durable form never
   // does. Every driver builds tool output here, which makes this the one place
   // to do it; replacing before measuring keeps the byte budget honest, since
   // U+FFFD is three bytes where NUL was one.
   const sanitized = text.replaceAll("\u0000", "\uFFFD");
   const bytes = encoder.encode(sanitized);
-  if (bytes.byteLength <= toolOutputTextMaxBytes) return { text: sanitized };
+  if (bytes.byteLength <= toolOutputTextMaxBytes) return { ...imagesField, text: sanitized };
 
   const { omittedBytes, text: boundedText } = utf8HeadAndTail(
     bytes,
@@ -75,6 +108,7 @@ export function createToolOutput(text: string): ToolOutput {
   }
 
   return {
+    ...imagesField,
     text: boundedText,
     truncation: { omittedBytes, originalBytes: bytes.byteLength },
   };
