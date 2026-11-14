@@ -618,6 +618,12 @@ vi.mock("./message-hold.js", async () => {
       </>
     ),
     MessageMore: () => null,
+    // A tap opens a waiting bubble to edit; its held menu is the ellipsis's, drawn there.
+    WaitingHold: (props: { children: ReactNode; onPress?: () => void }) => (
+      <div aria-label="Waiting bubble" onClick={props.onPress} role="button">
+        {props.children}
+      </div>
+    ),
   };
 });
 vi.mock("./task-line.js", async () => {
@@ -1004,6 +1010,7 @@ function chatAtWork() {
 function waitingInput(message: MessageEntry, threadId: string): ThreadInputQueue["items"][number] {
   return {
     canCancel: true,
+    canEdit: true,
     canMove: true,
     canSteer: true,
     input: {
@@ -1017,9 +1024,12 @@ function waitingInput(message: MessageEntry, threadId: string): ThreadInputQueue
       replyTarget: null,
       runId: null,
       state: "pending",
+      teamRequestId: null,
+      teamSource: null,
       threadId: threadId as ThreadInputQueue["threadId"],
       updatedAt: at,
     },
+    lease: null,
     message: {
       author: human,
       content: [{ text: message.body, type: "text" }],
@@ -1133,6 +1143,14 @@ function fakeHost(initial: HostSnapshot) {
     data: {},
     ok: true,
   }));
+  // The one waiting message open in place, as the client's editor holds it.
+  const editor = {
+    cancel: vi.fn(async () => undefined),
+    leaseId: "lease-here",
+    revision: 0,
+    save: vi.fn(async (_content: readonly object[]) => ({ editedAt: at, revision: 1 })),
+    touch: vi.fn(),
+  };
   const client = {
     acceptBrowserWatchFrame: vi.fn(),
     activateThread: vi.fn(),
@@ -1148,7 +1166,11 @@ function fakeHost(initial: HostSnapshot) {
     subscribeRunPlace: runPlaces.subscribe,
     browserWatchState: () => connectingWatch,
     cancelThreadInput: vi.fn(async () => undefined),
+    decideTeamAsk: vi.fn(async (_decision: object) => undefined),
+    editWaitingMessage: vi.fn(async (_threadId: string, _messageId: string) => editor),
     latestPlaceOfThread: () => null,
+    ownsEditLease: (leaseId: string) => leaseId === editor.leaseId,
+    releaseWaitingMessage: vi.fn(async (_threadId: string, _messageId: string) => undefined),
     retainBrowserWatch: vi.fn(() => watchRelease),
     subscribeBrowserWatch: () => () => undefined,
     subscribeLatestPlace: () => () => undefined,
@@ -1176,7 +1198,11 @@ function fakeHost(initial: HostSnapshot) {
   };
   return {
     client: client as unknown as HostClient,
+    decideTeamAsk: client.decideTeamAsk,
     dispatch,
+    editWaitingMessage: client.editWaitingMessage,
+    editor,
+    releaseWaitingMessage: client.releaseWaitingMessage,
     runPlaces,
     watchRelease,
     picture(next: BrowserFrameView | null) {
@@ -1328,6 +1354,64 @@ async function type(container: HTMLElement, label: string, words: string): Promi
     field.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await settle();
+}
+
+/** The field a waiting message opens into, or null while none is open. */
+function editField(container: HTMLElement): HTMLTextAreaElement | null {
+  return container.querySelector<HTMLTextAreaElement>(
+    'textarea[aria-label="Edit message"], textarea[aria-label="Edit Maya’s ask"]',
+  );
+}
+
+/** A tap on the waiting bubble holding these words. */
+async function tapWaiting(container: HTMLElement, words: string): Promise<void> {
+  const bubble = [...container.querySelectorAll<HTMLElement>('[aria-label="Waiting bubble"]')].find(
+    (node) => node.textContent?.includes(words),
+  );
+  if (bubble === undefined) throw new Error(`No waiting bubble saying ${words}`);
+  await act(async () => bubble.click());
+  await settle();
+}
+
+/** Maya's ask of the reader's agent, waiting in the task for the reader's answer. */
+function teammateAsk(body: string) {
+  const teamId = "dep_0192f4a1-1111-4000-8000-0000000000aa";
+  const requestId = "treq_0192f4a1-5555-4000-8000-000000000001";
+  const author = {
+    actor: "human",
+    displayName: "Maya",
+    kind: "team-member",
+    teamId,
+    teamUserId: "usr_0192f4a1-6666-4000-8000-000000000001",
+  } as const;
+  const entry: MessageEntry = { ...said(body, null), author } as MessageEntry;
+  const base = waitingInput(entry, workId);
+  const item = {
+    ...base,
+    canCancel: false,
+    canMove: false,
+    canSteer: false,
+    input: {
+      ...base.input,
+      state: "awaiting-approval",
+      teamRequestId: requestId,
+      teamSource: {
+        audience: {
+          channelKind: "public",
+          channelName: "general",
+          memberCount: 12,
+          peopleOnly: false,
+          teamName: "Acme",
+        },
+        channelId: "tch_0192f4a1-7777-4000-8000-000000000001",
+        messageId: null,
+        teamId,
+        threadRootId: null,
+      },
+    },
+    message: { ...base.message, author },
+  } as ThreadInputQueue["items"][number];
+  return { entry, item, requestId, teamId };
 }
 
 function sent(dispatch: ReturnType<typeof fakeHost>["dispatch"]): readonly string[] {
@@ -3011,7 +3095,7 @@ describe("a task", () => {
     ).toBeNull();
   });
 
-  it("shows the first two waiting bubbles, expands the rest, and restores a draft for Edit", async () => {
+  it("shows the first two waiting bubbles, expands the rest, and edits one in place", async () => {
     const task = taskAtWork();
     const waiting = [
       "First queued ask",
@@ -3036,14 +3120,158 @@ describe("a task", () => {
     expect(text(container)).toContain(waiting[3]!.body);
     await press(container, "Show fewer");
     expect(text(container)).not.toContain(waiting[2]!.body);
-    const edit = Array.from(container.querySelectorAll("button")).find(
-      (node) => node.textContent === "Edit",
+
+    await press(container, "Edit");
+    expect(host.editWaitingMessage).toHaveBeenCalledWith(workId, waiting[0]!.id);
+    expect(editField(container)?.value).toBe(waiting[0]!.body);
+    await type(container, "Edit message", "First queued ask, but shorter");
+    expect(host.editor.touch).toHaveBeenCalled();
+    await press(container, "Save");
+    expect(host.editor.save).toHaveBeenCalledWith([
+      { text: "First queued ask, but shorter", type: "text" },
+    ]);
+    // The message is changed where it waits; nothing is taken back or sent anew.
+    expect(host.client.cancelThreadInput).not.toHaveBeenCalled();
+    expect(sent(host.dispatch)).not.toContain("thread.sendMessage");
+    expect(editField(container)).toBeNull();
+  });
+
+  it("lets a waiting message go on as it was when its edit is cancelled", async () => {
+    const task = taskAtWork();
+    const waiting = said("Include the card fees", null);
+    const host = fakeHost(
+      snapshotFor({
+        entries: [...task.entries, waiting],
+        queue: [waitingInput(waiting, workId)],
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
     );
-    expect(edit).toBeDefined();
-    await act(async () => edit!.click());
-    await settle();
-    expect(host.client.cancelThreadInput).toHaveBeenCalledWith(workId, waiting[0]!.id);
-    expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe(waiting[0]!.body);
+    const { container } = await mount(host, workId);
+    await tapWaiting(container, waiting.body);
+    await type(container, "Edit message", "Leave out the card fees");
+    await press(container, "Cancel");
+    expect(host.editor.cancel).toHaveBeenCalled();
+    expect(host.editor.save).not.toHaveBeenCalled();
+    expect(editField(container)).toBeNull();
+    expect(text(container)).toContain(waiting.body);
+  });
+
+  it("keeps an edit the agent took first, and hands it to the composer as a new message", async () => {
+    const task = taskAtWork();
+    const waiting = said("Include the card fees", null);
+    const queued = snapshotFor({
+      entries: [...task.entries, waiting],
+      queue: [waitingInput(waiting, workId)],
+      run: { id: task.runId, status: "running" },
+      threadId: workId,
+    });
+    const host = fakeHost(queued);
+    host.editor.save.mockRejectedValueOnce(
+      new HostClientRequestError({
+        code: "conflict",
+        message: "This message is no longer waiting.",
+        status: 409,
+      }),
+    );
+    const { container } = await mount(host, workId);
+    await tapWaiting(container, waiting.body);
+    await type(container, "Edit message", "Include the card fees and the FX rate");
+    // The edit's lease lapsed and a Run took the message meanwhile.
+    await act(async () =>
+      host.move(
+        snapshotFor({
+          entries: [...task.entries, { ...waiting, runId: task.runId }],
+          queue: [],
+          run: { id: task.runId, status: "running" },
+          threadId: workId,
+        }),
+      ),
+    );
+    await press(container, "Save");
+    expect(editField(container)?.value).toBe("Include the card fees and the FX rate");
+    expect(text(container)).toContain("Your agent already took this message");
+    await press(container, "Send as new message…");
+    expect(editField(container)).toBeNull();
+    expect(
+      container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message"]')?.value,
+    ).toBe("Include the card fees and the FX rate");
+  });
+
+  it("shows a message another device is editing, and lets it go from here", async () => {
+    const task = taskAtWork();
+    const waiting = said("Include the card fees", null);
+    const host = fakeHost(
+      snapshotFor({
+        entries: [...task.entries, waiting],
+        queue: [
+          {
+            ...waitingInput(waiting, workId),
+            lease: {
+              deviceLabel: "Alex's iPad",
+              expiresAt: "2026-10-09T10:02:00.000Z",
+              leaseId: "lease-elsewhere",
+            },
+          },
+        ],
+        run: { id: task.runId, status: "running" },
+        threadId: workId,
+      }),
+    );
+    const { container } = await mount(host, workId);
+    expect(text(container)).toContain("Being edited on Alex's iPad");
+    expect(hasButton(container, "Edit")).toBe(false);
+    await tapWaiting(container, waiting.body);
+    expect(host.editWaitingMessage).not.toHaveBeenCalled();
+    await press(container, "Release");
+    expect(host.releaseWaitingMessage).toHaveBeenCalledWith(workId, waiting.id);
+  });
+
+  it("answers a teammate's ask with the words just saved, naming that version", async () => {
+    const ask = teammateAsk("@My agent is CI green yet?");
+    const host = fakeHost(
+      snapshotFor({ entries: [ask.entry], queue: [ask.item], run: null, threadId: workId }),
+    );
+    const { container } = await mount(host, workId);
+    expect(text(container)).toContain("Maya is asking your agent");
+    expect(text(container)).toContain("Replies in #general · 12 people");
+    await tapWaiting(container, ask.entry.body);
+    expect(hasButton(container, "Save and answer")).toBe(false);
+    await type(container, "Edit Maya’s ask", "@My agent is the integration shard green yet?");
+    await press(container, "Save and answer");
+    expect(host.editor.save).toHaveBeenCalledWith([
+      { text: "@My agent is the integration shard green yet?", type: "text" },
+    ]);
+    expect(host.decideTeamAsk).toHaveBeenCalledWith({
+      decision: "approve",
+      expectedRevision: 1,
+      requestId: ask.requestId,
+      teamId: ask.teamId,
+    });
+    expect(host.editor.save.mock.invocationCallOrder[0]!).toBeLessThan(
+      host.decideTeamAsk.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("ignores a decision tapped as the ask docks, then declines it", async () => {
+    const ask = teammateAsk("@My agent can you check what's on your machine");
+    const host = fakeHost(
+      snapshotFor({ entries: [ask.entry], queue: [ask.item], run: null, threadId: workId }),
+    );
+    const { container } = await mount(host, workId);
+    await press(container, "Decline");
+    expect(host.decideTeamAsk).not.toHaveBeenCalled();
+    const later = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
+    try {
+      await press(container, "Decline");
+    } finally {
+      later.mockRestore();
+    }
+    expect(host.decideTeamAsk).toHaveBeenCalledWith({
+      decision: "decline",
+      requestId: ask.requestId,
+      teamId: ask.teamId,
+    });
   });
 
   it("pins footer growth and removal only while the reader stays at the tail", async () => {
