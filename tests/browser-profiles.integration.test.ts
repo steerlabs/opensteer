@@ -481,7 +481,7 @@ run("Browser profiles through a whole deployment", () => {
       equal(
         evidence,
         `${kind} does not offer retired sign-in`,
-        report.tools!.includes("browser_sign_in"),
+        report.tools!.some((name) => name === "browser_sign_in" || name === "sign_in"),
         false,
       );
     }

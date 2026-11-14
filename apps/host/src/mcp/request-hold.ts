@@ -4,6 +4,8 @@ import { PasswordSignInRequestResponseSchema } from "@opensteer/protocol";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { delay } from "@opensteer/shared/delay";
 import type { ContinuationService } from "../agents/continuation-service.js";
+import { chromeCookiesResult } from "../browser/browser-source-service.js";
+import { savedLoginRequestResult } from "../browser/password-sign-in-service.js";
 import type { RunCaller } from "./agent-caller.js";
 
 type HoldStore = Pick<OpensteerStore, "stopHeldRun"> & {
@@ -136,18 +138,13 @@ function outcomeRecord(
           request.response.kind === "external" ? request.response.value : undefined,
         )
       : undefined;
-  if (tool === "sign_in") {
-    if (
-      response?.outcome === "authorized" &&
-      loginRef &&
-      request.payload.kind === "browser.password-sign-in"
-    )
+  if (tool === "use_saved_login" && request.payload.kind === "browser.password-sign-in") {
+    if (response?.outcome === "authorized" && loginRef)
       return { status: "ready", site: request.payload.site, loginRef, account: response.account };
-    return {
-      requestId: request.id,
-      status: request.status === "declined" ? "declined" : "resolved",
-    };
+    return savedLoginRequestResult(request);
   }
+  if (tool === "copy_chrome_cookies" && request.payload.kind === "browser.sign-in")
+    return chromeCookiesResult(request, false);
   if (tool === "use_card" && request.payload.kind === "browser.password-sign-in") {
     const site = request.payload.site;
     if (response?.outcome === "authorized" && loginRef && outcome.publicCard)

@@ -283,7 +283,7 @@ describe("Product tool handlers", () => {
       originatingThreadId: claims.threadId,
     });
   });
-  it.each(["sign-in"] as const)(
+  it.each(["use-saved-login"] as const)(
     "keeps %s Browser Session requests admitted through the single sign-in permission",
     async (type) => {
       const current = thread(currentThreadId, nativeHarnessId, "Worker");
@@ -292,11 +292,11 @@ describe("Product tool handlers", () => {
         site: "https://example.com",
         reason: "no-saved-login",
       } as const;
-      const agentSignIn = vi.fn(async () => result);
+      const useSavedLogin = vi.fn(async () => result);
       const { service, admitRunToolCall } = makeService({
-        browserSources: {
-          agentSignIn,
-          agentUseCard: async () => {
+        savedLogins: {
+          useSavedLogin,
+          useCard: async () => {
             throw new Error("Unexpected card use");
           },
         },
@@ -320,13 +320,9 @@ describe("Product tool handlers", () => {
       ).resolves.toEqual({
         requestId,
         type: `${type}.result`,
-        // On the result, because a long-lived session keeps the skill it read first.
-        result: {
-          ...result,
-          guidance: expect.stringContaining("call sign_in again"),
-        },
+        result,
       });
-      expect(agentSignIn).toHaveBeenCalledWith(
+      expect(useSavedLogin).toHaveBeenCalledWith(
         expect.objectContaining({
           sessionId,
           site: result.site,
@@ -1039,6 +1035,7 @@ describe("Product tool handlers", () => {
 function makeService(options: {
   personShow?: ConstructorParameters<typeof ProductToolsTestClient>[0]["personShow"];
   browserSources?: ConstructorParameters<typeof ProductToolsTestClient>[0]["browserSources"];
+  savedLogins?: ConstructorParameters<typeof ProductToolsTestClient>[0]["savedLogins"];
   machineFullDiskAccess?: ConstructorParameters<
     typeof ProductToolsTestClient
   >[0]["machineFullDiskAccess"];
@@ -1424,8 +1421,11 @@ function makeService(options: {
           }
         : {}),
       browserSources: options.browserSources ?? {
-        agentSignIn: unexpectedBrowserRequest,
-        agentUseCard: unexpectedBrowserRequest,
+        agentCopyChromeCookies: unexpectedBrowserRequest,
+      },
+      savedLogins: options.savedLogins ?? {
+        useSavedLogin: unexpectedBrowserRequest,
+        useCard: unexpectedBrowserRequest,
       },
       machineFullDiskAccess: options.machineFullDiskAccess ?? {
         request: vi.fn(),

@@ -50,7 +50,7 @@ import {
   HostToRunnerMessageSchema,
 } from "@opensteer/protocol";
 import {
-  AgentBrowserSignInResultSchema,
+  ChromeCookiesResultSchema,
   opensteerChromeExtensionId,
 } from "@opensteer/protocol/browser-sources";
 import { sql } from "kysely";
@@ -568,13 +568,14 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
     });
     const parentRun = { token: parentMessage.command.context.agentTools.token };
     const signIn = async (sessionId: string, target: string) => {
-      const response = await callMcpTool(hostOrigin, parentRun.token, "sign_in", {
+      const response = await callMcpTool(hostOrigin, parentRun.token, "copy_chrome_cookies", {
         reason: "The account page shows the user signed out.",
         sessionId,
         site: target,
       });
-      if (response.isError) throw new Error(`sign_in failed: ${JSON.stringify(response.content)}`);
-      const result = AgentBrowserSignInResultSchema.parse(response.structuredContent);
+      if (response.isError)
+        throw new Error(`copy_chrome_cookies failed: ${JSON.stringify(response.content)}`);
+      const result = ChromeCookiesResultSchema.parse(response.structuredContent);
       agentResults.push(result);
       return result;
     };
@@ -593,7 +594,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
         const request = await vi.waitFor(
           async () => {
             const rows = await signInRequests();
-            expect(rows, "sign_in did not open its Request").toHaveLength(1);
+            expect(rows, "copy_chrome_cookies did not open its Request").toHaveLength(1);
             return runtime.store.requests.get(rows[0]!.id);
           },
           { timeout: 10_000 },
@@ -619,7 +620,12 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       expect(await runtime.store.requests.get(pendingRequestId)).toMatchObject({
         status: "fulfilled",
       });
-      expect(await heldSignIn).toEqual({ status: "resolved", requestId: pendingRequestId });
+      expect(await heldSignIn).toEqual({
+        profileName: null,
+        site: "https://beta.test",
+        sourceName: "Everyday Chrome",
+        status: "copied",
+      });
       const reloaded = await visit(viewerOne, "www.beta.test");
       expect(signedIn(reloaded, "beta")).toBe(true);
       await waitFor("the held call to own delivery of the answer", async () => {
@@ -649,7 +655,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
         profileName: null,
         site: "https://beta.test",
         sourceName: "Everyday Chrome",
-        status: "applied",
+        status: "copied",
       });
       expect((await signInRequests()).length).toBe(before);
       expect(signedIn(await visit(viewerTwo, "www.beta.test"), "beta")).toBe(true);
@@ -672,7 +678,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
             const rows = (await signInRequests()).filter(
               (row) => !before.some(({ id }) => id === row.id),
             );
-            expect(rows, "offline sign_in did not open its Request").toHaveLength(1);
+            expect(rows, "offline copy_chrome_cookies did not open its Request").toHaveLength(1);
             return rows[0]!;
           },
           { timeout: 10_000 },
@@ -701,8 +707,10 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
         );
       });
       expect(await heldOfflineSignIn!).toEqual({
-        status: "resolved",
-        requestId: drainedRequestId,
+        profileName: null,
+        site: "https://alpha.test",
+        sourceName: "Everyday Chrome",
+        status: "copied",
       });
       expect((await rpc.sources()).sources).toEqual([
         expect.objectContaining({ connected: true, id: sourceId }),

@@ -38,7 +38,7 @@ const loginTextSchema = {
   type: "object",
 } as const;
 const loginTextDescription =
-  'Literal text, or {loginRef, field: "username"|"password"|"code"} using the loginRef from sign_in.';
+  'Literal text, or {loginRef, field: "username"|"password"|"code"} using the loginRef from use_saved_login.';
 
 const actionSchema = {
   oneOf: [

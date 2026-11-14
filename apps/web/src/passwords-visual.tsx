@@ -17,7 +17,8 @@ import {
 import { MockHostClient, mockPasswordSignInRequest } from "@opensteer/client/mock";
 import { createId, emptyExecutionPreferences, type Request } from "@opensteer/core";
 import type { PasswordSignInRequestResponse } from "@opensteer/protocol";
-import type { AgentBrowserSignInResult } from "@opensteer/protocol/browser-sources";
+import type { SavedLoginResult } from "@opensteer/protocol";
+import type { ChromeCookiesResult } from "@opensteer/protocol/browser-sources";
 import {
   DesktopDeploymentSummarySchema,
   type DesktopPasswordsStatus,
@@ -40,7 +41,7 @@ import { previewPasswordsSignInCard } from "./desktop/desktop-preview-bridge.js"
  *             `&here` on the approving Mac, starting at `&card=` (see `previewPasswordsSignInCard`);
  *             `&cancel-auth` makes Allow come back as a cancelled Touch ID
  *   cards     every card stage side by side, here and elsewhere
- *   resolved  every way a sign-in ends: cards, Request receipts and `sign_in` steps
+ *   resolved  every way a sign-in ends: cards, Request receipts and agent sign-in steps
  *   settings  Settings → Passwords                            `&state=` below, `&waiting` adds two sign-ins
  *   suggestion the offer under a reply, elsewhere; `&here&state=not-set-up` on the Mac, where
  *             Set up finishes setup; `&need=no-login` asks for the login; `&work` reads as a task
@@ -216,57 +217,55 @@ function cardClient(initial: PasswordSignInCard): PasswordSignInRequestClient {
 
 const endings: readonly (readonly [string, Request])[] = [
   ["Authorized", fulfilled({ outcome: "authorized", account: "t•••@example.com" }, 20)],
-  [
-    "Historical saved-password sign-in",
-    fulfilled({ method: "saved-password", outcome: "signed-in" }, 1),
-  ],
-  ["The person signed in", fulfilled({ method: "person", outcome: "signed-in" }, 2)],
   ["Declined", mockPasswordSignInRequest({ index: 3, status: "declined" })],
   ["Expired", fulfilled({ outcome: "expired" }, 4)],
-  ["Wrong password", fulfilled({ outcome: "failed", reason: "wrong-password" }, 5)],
-  ["Unsupported page", fulfilled({ outcome: "failed", reason: "unsupported-page" }, 6)],
-  ["Blocked destination", fulfilled({ outcome: "failed", reason: "blocked-destination" }, 7)],
-  ["Cleanup failed", fulfilled({ outcome: "failed", reason: "cleanup-failed" }, 8)],
-  ["Busy", fulfilled({ outcome: "failed", reason: "busy" }, 9)],
-  ["Needs a fresh session", fulfilled({ outcome: "failed", reason: "needs-fresh-session" }, 10)],
   ["Passwords off", fulfilled({ outcome: "unavailable", reason: "passwords-off" }, 11)],
-  ["Outcome unknown", fulfilled({ outcome: "outcome-unknown" }, 12)],
   ["Session closed", fulfilled({ outcome: "session-closed" }, 13)],
   ["Interrupted", fulfilled({ outcome: "interrupted" }, 14)],
 ];
 
-/** What `sign_in` can return, as the transcript shows each call. */
-const autonomous: readonly AgentBrowserSignInResult[] = [
-  { method: "saved-password", site: "https://github.com", status: "signed-in" },
-  { method: "person", site: "https://github.com", status: "signed-in" },
-  { expiresAt: "2026-10-11T09:20:00.000Z", site: "https://github.com", status: "needs-code" },
+const site = "https://github.com";
+/** What the two sign-in tools can return, as the transcript shows each call. */
+const autonomous: readonly (
+  | { readonly tool: "use_saved_login"; readonly result: SavedLoginResult }
+  | { readonly tool: "copy_chrome_cookies"; readonly result: ChromeCookiesResult }
+)[] = [
   {
-    replayed: false,
-    requestId: createId("request"),
-    status: "pending",
-    waitingFor: "approval",
+    tool: "use_saved_login",
+    result: {
+      status: "ready",
+      site,
+      loginRef: `lgn_${"0".repeat(32)}`,
+      account: "t•••@example.com",
+    },
   },
   {
-    replayed: false,
-    requestId: createId("request"),
-    status: "pending",
-    waitingFor: "person",
+    tool: "use_saved_login",
+    result: { status: "pending", site, requestId: createId("request"), replayed: false },
   },
-  { reason: "wrong-password", site: "https://github.com", status: "failed" },
-  { reason: "unsupported-page", site: "https://github.com", status: "failed" },
-  { reason: "needs-approval", site: "https://github.com", status: "unavailable" },
-  { reason: "no-code-expected", site: "https://github.com", status: "unavailable" },
-  { requestId: createId("request"), status: "declined" },
-  { profileName: null, site: "https://github.com", sourceName: "Work", status: "applied" },
+  { tool: "use_saved_login", result: { status: "unavailable", site, reason: "no-saved-login" } },
+  { tool: "use_saved_login", result: { status: "declined", site, requestId: createId("request") } },
+  {
+    tool: "copy_chrome_cookies",
+    result: { status: "copied", site, sourceName: "Work", profileName: null },
+  },
+  {
+    tool: "copy_chrome_cookies",
+    result: { status: "pending", site, requestId: createId("request"), replayed: false },
+  },
+  {
+    tool: "copy_chrome_cookies",
+    result: { status: "unavailable", site, reason: "chrome-signed-out" },
+  },
 ];
 
-function signInStep(result: AgentBrowserSignInResult, index: number): ToolEntry {
+function signInStep({ tool, result }: (typeof autonomous)[number], index: number): ToolEntry {
   const createdAt = new Date(Date.UTC(2026, 9, 11, 9, 0, index * 2)).toISOString();
   return {
     arguments: {
       reason: "Download the October statement",
       sessionId: "bss_preview",
-      site: "https://github.com",
+      site,
     },
     callId: `preview-sign-in-${index}`,
     completedAt: createdAt,
@@ -279,7 +278,7 @@ function signInStep(result: AgentBrowserSignInResult, index: number): ToolEntry 
     runId: "run_00000000-0000-4000-8000-000000000004",
     state: "done",
     streamText: "",
-    tool: { name: "sign_in", namespace: "opensteer" },
+    tool: { name: tool, namespace: "opensteer" },
   };
 }
 
@@ -337,9 +336,12 @@ function SuggestionView() {
     {
       ...signInStep(
         {
-          passwords: search.get("need") === "no-login" ? "no-login" : "not-set-up",
-          site: "https://brex.com",
-          status: "not-signed-in",
+          tool: "use_saved_login",
+          result: {
+            status: "unavailable",
+            site: "https://brex.com",
+            reason: search.get("need") === "no-login" ? "no-saved-login" : "passwords-not-set-up",
+          },
         },
         0,
       ),
@@ -347,7 +349,7 @@ function SuggestionView() {
     },
     {
       author: { cause: "preview", kind: "platform" },
-      body: "I can’t sign in to Brex yet because Chrome isn’t signed in to it. You can sign in yourself in the Brex tab, or set up Opensteer Passwords so I can sign in for you. Tell me when you’re ready.",
+      body: "I can’t sign in to Brex yet: Opensteer Passwords has no login for it. You can add one, or sign in yourself in the Brex tab.",
       createdAt: at,
       id: "preview-reply",
       kind: "message",

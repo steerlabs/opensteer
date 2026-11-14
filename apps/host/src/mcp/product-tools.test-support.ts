@@ -42,7 +42,7 @@ import {
 } from "@opensteer/core";
 import { TriggerControlInputSchema } from "@opensteer/triggers";
 import { z } from "zod";
-import { AgentBrowserSignInResultSchema } from "@opensteer/protocol";
+import { SavedLoginResultSchema } from "@opensteer/protocol";
 import {
   AgentBrowserSessionSummarySchema,
   BrowserSessionIdSchema,
@@ -144,7 +144,7 @@ const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
     reason: z.string().trim().min(1).max(500),
     sessionId: BrowserSessionIdSchema.optional(),
     site: z.string().trim().min(1).max(2_048),
-    type: z.literal("sign-in"),
+    type: z.literal("use-saved-login"),
   }),
   z.strictObject({
     ...requestBase,
@@ -272,8 +272,8 @@ const ProductToolResultUnionSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     ...responseBase,
-    result: AgentBrowserSignInResultSchema,
-    type: z.literal("sign-in.result"),
+    result: SavedLoginResultSchema,
+    type: z.literal("use-saved-login.result"),
   }),
   z.strictObject({
     ...responseBase,
@@ -390,6 +390,7 @@ export class ProductToolsTestClient {
       realtime: { observe: () => () => {}, sendToUsers: () => {} },
       browser: unavailableDefaults as never,
       browserSources: unavailableDefaults as never,
+      savedLogins: unavailableDefaults as never,
       deviceAccess: unavailableDefaults as never,
       machineFullDiskAccess: unavailableDefaults as never,
       canRunHarness: () => true,
@@ -496,7 +497,7 @@ export class ProductToolsTestClient {
       [
         "thread.delegate",
         "thread.message",
-        "sign-in",
+        "use-saved-login",
         "browser.profile.request",
         "machine.full-disk-access.request",
         "trigger.control",

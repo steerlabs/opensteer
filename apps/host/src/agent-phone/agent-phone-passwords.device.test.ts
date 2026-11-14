@@ -342,7 +342,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
             expect(observation.treeText).toMatch(/password/iu);
             return;
           }
-          const ready = await signInGateway.call("sign_in", {
+          const ready = await signInGateway.call("use_saved_login", {
             site,
             reason: "Sign in to the synthetic phone app",
           });
@@ -465,7 +465,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
               token: foreign.toolsToken,
             });
             gateways.push(foreignSignIn);
-            const foreignReady = await foreignSignIn.call("sign_in", {
+            const foreignReady = await foreignSignIn.call("use_saved_login", {
               site,
               reason: "Authorize this saved login in the other task",
             });

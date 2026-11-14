@@ -15,7 +15,7 @@ Triggers are personal. Timing controls require an anchor access mode no higher t
 
 Programs use the same MCP as Runs with the program tool list. `delegate_task` returns the task;
 a program or a Run may wait on its `assignmentId` with `thread_wait`, bounded at 100 seconds, or
-observe its `threadId`, whose `items` match `thread_read`. `computer`, `sign_in` and person
+observe its `threadId`, whose `items` match `thread_read`. `computer`, the sign-in tools and person
 message/show tools are Run-only. Delegate when agent judgment or a Run-only tool is needed.
 Programs cannot approve, grant access, handle sign-in credentials or raise their ceiling.
 
