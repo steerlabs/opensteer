@@ -110,6 +110,8 @@ describe("fresh personal/team lineage", () => {
       channelId: channel,
       remoteShareId: null,
       previewSha256: null,
+      cacheOriginalReserved: false,
+      cachePreviewReserved: false,
       sizeBytes: "3",
     });
     expect(row.publicId).toMatch(/^[a-f0-9-]{36}$/);

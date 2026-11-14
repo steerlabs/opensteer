@@ -1,6 +1,6 @@
 import type { WebSocket, RawData } from "ws";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { teamPartnerMaxFrameBytes } from "@opensteer/protocol";
+import { teamPartnerMaxFrameBytes, teamPartnerMaxQueueBytes } from "@opensteer/protocol";
 import { partnerError } from "./identity.js";
 
 export class PartnerSocket {
@@ -33,7 +33,7 @@ export class PartnerSocket {
         binary ||
         bytes > teamPartnerMaxFrameBytes ||
         this.#queue.length >= 32 ||
-        this.#bytes + bytes > 1024 * 1024
+        this.#bytes + bytes > teamPartnerMaxQueueBytes
       ) {
         socket.terminate();
         return;
@@ -78,7 +78,7 @@ export class PartnerSocket {
   }
 
   send(frame: unknown): Promise<void> {
-    if (this.socket.readyState !== 1 || this.socket.bufferedAmount > 1024 * 1024) {
+    if (this.socket.readyState !== 1 || this.socket.bufferedAmount > teamPartnerMaxQueueBytes) {
       this.socket.terminate();
       return Promise.reject(partnerError("partner-disconnected"));
     }

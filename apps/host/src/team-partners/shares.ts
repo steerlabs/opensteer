@@ -171,8 +171,11 @@ export class TeamShares implements TeamChatRelay {
       }
       case "pull":
         return this.store.pull(linkId, op);
-      case "write":
-        return this.store.write(linkId, op);
+      case "write": {
+        const result = await this.store.write(linkId, op);
+        if (op.write.action === "delete") await this.files?.files.collectGarbage();
+        return result;
+      }
       case "end":
         await this.store.end(op.shareId, undefined, { linkId, generation: op.generation });
         this.#cancelSyncRetry(op.shareId);
@@ -281,7 +284,8 @@ export class TeamShares implements TeamChatRelay {
             });
           }
           const batch = parsed.data;
-          await this.store.apply(current.partnerLinkId, current.id, current.generation, batch);
+          if (await this.store.apply(current.partnerLinkId, current.id, current.generation, batch))
+            await this.files?.files.collectGarbage();
           if (!batch.more) break;
         }
       } while (this.#dirty.has(s.id));
@@ -468,7 +472,8 @@ export class TeamShares implements TeamChatRelay {
         message: "The owning team is unreachable. Retry this change.",
       });
     }
-    await this.store.apply(s.partnerLinkId, s.id, s.generation, receipt.batch, false);
+    if (await this.store.apply(s.partnerLinkId, s.id, s.generation, receipt.batch, false))
+      await this.files?.files.collectGarbage();
     return this.store.db.transaction().execute(async (t) => {
       const stored = await t
         .selectFrom("teamMessages")

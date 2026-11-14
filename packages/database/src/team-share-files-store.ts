@@ -68,7 +68,7 @@ export async function bindTeamShareFiles(
     files: readonly TeamShareFile[];
   }[],
 ) {
-  if (!messages.length) return;
+  if (!messages.length) return false;
   const ids = messages.map((m) => m.id).sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
   const files = messages.flatMap((m) => m.files.map((file) => ({ file, message: m })));
   const publicIds = files.map(({ file }) => file.publicId);
@@ -151,6 +151,8 @@ export async function bindTeamShareFiles(
       )
         shareNotFound();
       row = {
+        cacheOriginalReserved: false,
+        cachePreviewReserved: false,
         id,
         publicId: file.publicId,
         remoteShareId: source ? null : shareId,
@@ -233,4 +235,5 @@ export async function bindTeamShareFiles(
         removed.map((r) => r.id),
       )
       .execute();
+  return removed.length > 0;
 }
