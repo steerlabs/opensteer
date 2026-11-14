@@ -1,3 +1,4 @@
+import { TeamEntryRefusalReasonSchema, type TeamEntryRefusalReason } from "@opensteer/protocol";
 import { expect, it, vi } from "vitest";
 import {
   hostApiVersion,
@@ -91,6 +92,26 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
     sockets: Parameters<
       import("../connections/host-transport.js").HostNetwork["openWebSocket"]
     >[0][] = [];
+  let token = "Bearer mock-session";
+  let rejectCredentials = false;
+  let recoveryOutcome:
+    "recovered" | "unavailable" | "account-required" | "update-required" | TeamEntryRefusalReason =
+    "recovered";
+  const { TeamEntryRefusedError } = await import("../auth/native-oauth.js");
+  const { HostSession } = await import("../auth/host-session.js");
+  const { TeamEntryOutcomeError } = await import("./native-team-entry.js");
+  const sessions: InstanceType<typeof HostSession>[] = [];
+  const refresh = vi.fn(async () => {
+    const reason = TeamEntryRefusalReasonSchema.safeParse(recoveryOutcome);
+    if (reason.success) throw new TeamEntryRefusedError(reason.data, "Ask for an invite");
+    if (recoveryOutcome === "update-required")
+      throw new TeamEntryOutcomeError({ status: "update-required" });
+    if (recoveryOutcome === "unavailable") throw new Error("Offline");
+    if (recoveryOutcome === "account-required") return false;
+    token = "Bearer refreshed";
+    return true;
+  });
+  let socketEvents: import("../connections/host-transport.js").HostNetworkSocketEvents | undefined;
   const options: import("../connections/host-transport.js").HostTransportOptions & {
     deploymentId: typeof teamId;
   } = {
@@ -111,15 +132,56 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
     credentials: {
       authorizationHeader: async (target) => {
         credentials.push(target.authority.document.deploymentId);
-        return "Bearer mock-session";
+        return token;
       },
+    },
+    sessions: (attachment) => {
+      const session = new HostSession({
+        attachment,
+        clearDeploymentSession: async () => undefined,
+        exchange: {
+          supports: () => false,
+          probe: async () => "unauthenticated",
+          establish: async () => {
+            throw new Error("Unexpected exchange");
+          },
+        },
+        localOwner: { ownsHostSession: () => false, recoverOwnerSession: async () => false },
+        oauth: {
+          recoverHostAuthorization: refresh,
+          abandonHostSignIn: () => undefined,
+          signInTeam: async () => {
+            throw new Error("Unexpected sign-in");
+          },
+          hostCredentialState: () => {
+            throw new Error("Unexpected state");
+          },
+          signOutHost: async () => {
+            throw new Error("Unexpected sign-out");
+          },
+          subscribe: () => () => undefined,
+          subscribeHostCredentials: () => () => undefined,
+        },
+      });
+      sessions.push(session);
+      return session;
     },
     network: {
       request: async (input) => {
         http.push(input);
+        if (
+          rejectCredentials &&
+          ["/needs-session", "/v1/rpc/team.bootstrap.get"].includes(input.request.path) &&
+          input.authorization !== "Bearer refreshed"
+        )
+          return Response.json(
+            { ok: false, error: { code: "unauthorized", message: "Sign in", retryable: false } },
+            { status: 401 },
+          );
         return new Response("ok");
       },
       openWebSocket: (input, events) => {
+        socketEvents = events;
         sockets.push(input);
         events.open();
         return {
@@ -161,6 +223,143 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
     });
     expect(sockets[0]?.deploymentId).toBe(teamId);
     expect(sockets[0]?.headers).toEqual({ [teamApiVersionHeader]: String(teamApiVersion) });
+    const late = { open: vi.fn(), close: vi.fn(), message: vi.fn(), error: vi.fn() };
+    await transport.openSocket({ path: "/v1/realtime" }, () => late);
+    late.open.mockClear();
+    transport.invalidateSession();
+    socketEvents!.message("outgoing Account data");
+    socketEvents!.open();
+    socketEvents!.error("late error");
+    expect(late.message).not.toHaveBeenCalled();
+    expect(late.open).not.toHaveBeenCalled();
+    expect(late.error).not.toHaveBeenCalled();
+    const resolving = vi.fn();
+    const release = Promise.withResolvers<void>();
+    const delayed = new HostTransport({
+      ...options,
+      credentials: {
+        authorizationHeader: async () => {
+          resolving();
+          await release.promise;
+          return "Bearer outgoing";
+        },
+      },
+    });
+    const stale = delayed.exchange(
+      { path: "/old-identity", method: "GET", headers: {} },
+      async (response) => response.text(),
+    );
+    await vi.waitFor(() => expect(resolving).toHaveBeenCalledOnce(), { timeout: 1000 });
+    delayed.invalidateSession();
+    release.resolve();
+    await expect(stale).rejects.toMatchObject({ code: "deployment-changed" });
+    expect(http.some((call) => call.request.path === "/old-identity")).toBe(false);
+    rejectCredentials = true;
+    const request = () =>
+      pinned.transport.exchange(
+        { path: "/needs-session", method: "GET", headers: {} },
+        async (response) => response.status,
+      );
+    await expect(Promise.all([request(), request()])).resolves.toEqual([200, 200]);
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(
+      http
+        .filter((call) => call.request.path === "/needs-session")
+        .every((call) => call.deploymentId === teamId),
+    ).toBe(true);
+    token = "Bearer expired-again";
+    recoveryOutcome = "unavailable";
+    await expect(request()).rejects.toMatchObject({ code: "unreachable", retryable: true });
+    const { TeamSessionClient } = await import("./team-session-client.js");
+    const { createMemoryTeamPersistence } = await import("./persistence.js");
+    const { mockTeamUserId } = await import("./mock-team-host.js");
+    const scope = { teamDeploymentId: teamId, userId: mockTeamUserId };
+    const persistence = createMemoryTeamPersistence();
+    const saved = {
+      drafts: { channel: "Keep this draft" },
+      pending: [
+        {
+          command: {
+            type: "team.message.send" as const,
+            channelId: mockTeamChannelId,
+            threadRootId: null,
+            clientMessageId: "00000000-0000-4000-8000-000000000001",
+            bodyMarkdown: "Unsent",
+            mentions: [],
+            attachmentIds: [],
+          },
+          createdAt: now,
+          failure: null,
+        },
+      ],
+    };
+    await persistence.save(scope, saved);
+    const client = new TeamSessionClient({
+      scope,
+      persistence,
+      rpc: pinned.rpc,
+      connect: pinned.connect,
+    });
+    try {
+      await expect(client.load(false)).rejects.toMatchObject({ retryable: true });
+      expect(client.getSnapshot().ended).toBeNull();
+      expect(await persistence.load(scope)).toEqual(saved);
+    } finally {
+      client.dispose();
+    }
+    for (const reason of TeamEntryRefusalReasonSchema.options) {
+      recoveryOutcome = reason;
+      const classified = pinnedTeamTransport(options, new URL("https://team.example"));
+      const result = await classified.rpc["team.bootstrap.get"]({});
+      expect(result).toMatchObject({
+        ok: false,
+        error: {
+          reason,
+          retryable: reason !== "not-a-member",
+        },
+      });
+      classified.transport.closeAllSockets();
+    }
+    recoveryOutcome = "update-required";
+    const outdated = pinnedTeamTransport(options, new URL("https://team.example"));
+    try {
+      await expect(outdated.rpc["team.bootstrap.get"]({})).resolves.toMatchObject({
+        ok: false,
+        error: { code: "conflict", reason: "host-too-old", retryable: false },
+      });
+    } finally {
+      outdated.transport.closeAllSockets();
+    }
+    // A separate attachment has no cooldown from the unavailable attempt.
+    recoveryOutcome = "account-required";
+    await expect(
+      transport.exchange(
+        { path: "/needs-session", method: "GET", headers: {} },
+        async (response) => response.status,
+      ),
+    ).resolves.toBe(401);
+    const refused = pinnedTeamTransport(options, new URL("https://team.example"));
+    const ended = new TeamSessionClient({
+      scope,
+      persistence,
+      rpc: refused.rpc,
+      connect: refused.connect,
+    });
+    try {
+      await expect(ended.load(false)).rejects.toMatchObject({ code: "unauthorized" });
+      expect(ended.getSnapshot().ended).toBe("sign-in");
+      expect(await persistence.load(scope)).toEqual(saved);
+    } finally {
+      ended.dispose();
+      refused.transport.closeAllSockets();
+    }
+    recoveryOutcome = "not-a-member";
+    const notMember = pinnedTeamTransport(options, new URL("https://team.example"));
+    await expect(notMember.rpc["team.bootstrap.get"]({})).resolves.toMatchObject({
+      ok: false,
+      error: { code: "forbidden", reason: "not-a-member", message: "Ask for an invite" },
+    });
+    notMember.transport.closeAllSockets();
     const socket = pinned.connect();
     socket.addEventListener("open", () => socket.send("subscription"));
     await vi.waitFor(() =>
@@ -171,5 +370,35 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
   } finally {
     transport.closeAllSockets();
     pinned.transport.closeAllSockets();
+    for (const session of sessions) session.dispose();
   }
+});
+
+it("disposes only the session a retired transport made for itself", async () => {
+  const { HostTransport } = await import("../connections/host-transport.js");
+  const { DeploymentCatalogSchema } = await import("../connections/deployment-catalog.js");
+  const base = {
+    catalog: {
+      load: async () =>
+        DeploymentCatalogSchema.parse({
+          deployments: [],
+          selectedDeploymentId: null,
+          revision: 1,
+          schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
+          updatedAt: new Date(0).toISOString(),
+        }),
+      subscribe: () => () => {},
+    },
+    localRuntime: { current: async () => null },
+    network: {
+      request: async () => new Response("ok"),
+      openWebSocket: () => ({ close() {}, send() {} }),
+    },
+  };
+  const owned = { recoverUnauthorized: async () => "unavailable" as const, dispose: vi.fn() };
+  const shared = { recoverUnauthorized: async () => "unavailable" as const, dispose: vi.fn() };
+  new HostTransport({ ...base, sessions: () => owned }).retire();
+  new HostTransport({ ...base, sessions: shared }).retire();
+  expect(owned.dispose).toHaveBeenCalledOnce();
+  expect(shared.dispose).not.toHaveBeenCalled();
 });

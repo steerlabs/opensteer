@@ -147,7 +147,12 @@ export class TeamAccessStore {
       .where("userId", "=", userId)
       .where("state", "=", "active")
       .executeTakeFirst();
-    requireTeam(member, "Active team membership required");
+    if (!member)
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: "removed",
+        message: "Active team membership required",
+      });
     return member;
   }
   async admin(transaction: Transaction<DatabaseSchema>, actor: TeamActor) {

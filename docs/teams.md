@@ -39,20 +39,62 @@ rerunning the work or duplicating the post; revoked access or cancellation canno
 
 ## Entering a team
 
-The desktop and mobile apps enter a team advertising `team-session-exchange-v1` without a
+Desktop and mobile share `NativeTeamEntry.authorize` for startup, explicit entry and recovery.
+Its short-lived attempt fence handles single-flight entry, supersession and explicit team sign-out,
+including queued continuations and retries. Passive callers may use or refresh a credential while
+browser entry is pending; browser entry releases its slot on callback, expiry or supersession.
+Recovery refreshes a rejected credential before discovery and replays only with a different
+authorization. Native token refresh never exchanges an assertion or publishes logout on refusal.
+Obsolete entry cleanup removes only the catalog revision that attempt created.
+It is independent of Account authorization and persistent viewer state. Entry verifies fresh signed
+discovery before updating the catalog or reusing a credential. With an Account session, they
+enter a team advertising `team-session-exchange-v1` without a
 browser. Account signs a single-use assertion, valid for one minute, of who the person is for
 that exact team Host and app; it proves identity, never membership. The team Host verifies it
 against Account's published keys and, in one transaction, spends it and either signs in an active
 member or admits a newcomer through the invite sent beside it. It then issues the same native
-tokens a browser sign-in would. Older teams keep the browser sign-in; the app carries an invite
-through it only when the team advertises `team-invite-native-continuation-v1`, because older invite
-pages drop the app's sign-in. Otherwise the person joins on the invite page in their browser and
-the app signs in once they come back, a member by then. An invite re-admits a
+tokens a browser sign-in would. Every team credential is bound to the device's Account issuer and subject, or explicitly to
+no Account. Browser flows capture that binding when they start and discard and revoke callbacks
+after an identity change. Legacy credentials without a binding never authorize a request. Binding and sign-out metadata
+are stored separately from the previous credential format so Stable/Beta downgrades preserve Account
+authorization; missing or mismatched binding metadata requires silent reauthorization.
+Credential reads and refreshes enforce the binding even if deletion or revocation fails.
+A `TeamRuntimeOwner` belongs to one Account issuer and subject, or explicitly to no Account.
+Native OAuth creates it during hydration or identity establishment on desktop main and mobile;
+the desktop renderer's team provider owns the corresponding UI runtime. An identity change
+retires the outgoing owner synchronously, before asynchronous credential cleanup: its signal
+aborts, transports and sockets close, viewer clients dispose, and read caches drop. It owns
+the viewer's persistence handles and in-flight team file transfers, uploads, exports,
+notifications and previews. Storage commits, IPC and response delivery, and OS handoffs check
+that owner; aborted or completed exports erase their staged files. Team UI subtrees are keyed
+by the owner id, including nested knowledge and settings screens, so no hook carries an old
+Account's values into the next one. Each surface has one shared terminal and recovery gate.
+
+Token rotation and same-Account reauthorization retain the owner and its drafts. Entry-attempt
+supersession affects only entry work. Hydration preserves credentials for the saved Account.
+Personal Host connections and maintenance requests are outside the team owner. Explicit team
+sign-out suppresses silent entry until an explicit sign-in. Account or JWKS outages remain
+retryable; membership refusals ask for an invite without a browser loop. Among entry refusals, only membership
+refusals (not-a-member or removed) erase the viewer's saved state. For older servers, a reasonless
+forbidden at authenticated bootstrap also removes it; channel permission failures
+do not. Assertion, authority and invite
+refusals preserve drafts and pending sends. An expired assertion is renewed once; another
+assertion expiry remains retryable. Silent entry sends no
+invite unless the person explicitly joins with one. Native browser entry requires `team-native-browser-return-v1`, including entry through an invite.
+Without it, entry asks for a team server update, or an Opensteer Account sign-in on this device
+when the team supports exchange; it opens no browser. Passive entry that needs a browser offers
+explicit Sign in on desktop and mobile. The app carries an invite through browser entry only when
+the team also advertises `team-invite-native-continuation-v1`. An invite re-admits a
 removed person only if it was created after their removal, on every admission path. The
 assertion is requested and exchanged where the credential lives (desktop main, the phone's secure
 storage); neither it nor the tokens reach a renderer. A team just joined shows from its verified
 discovery until Account's directory lists it, and is restored from the device's connection intent
 if the app restarts before then; the intent is kept even when no agent connects from that device.
+
+Drafts and pending sends are stored per team and team user, a key every Account already maps to
+distinctly, so they stay in the location older apps read and survive Stable↔Beta moves. The device
+uses them only after authenticated team bootstrap names that same user. An agent link's owner can
+be a different person and never supplies the device's team identity.
 
 ## Access and removal
 

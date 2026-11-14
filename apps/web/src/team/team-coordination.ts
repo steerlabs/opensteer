@@ -25,6 +25,7 @@ import {
   type TeamConnectionIntentStore,
   type TeamCoordinator,
   type TeamSessionPort,
+  type TeamRuntimeOwner,
   type VerifiedTeam,
 } from "@opensteer/client/team";
 import { DeploymentIdSchema, teamPageUrl, type DeploymentId } from "@opensteer/core";
@@ -46,9 +47,12 @@ import { createDesktopHostFetch } from "../desktop/desktop-host-transport.js";
 /** Account's hosted-team calls through the desktop bridge; main holds the Account session. */
 export function desktopAccountTeams(
   bridge: Required<Pick<OpensteerDesktopBridge, "accountTeams">>,
+  owner?: TeamRuntimeOwner,
 ): AccountTeamsClient {
   const call = async <T>(input: DesktopAccountTeamsCall, schema: z.ZodType<T>): Promise<T> => {
+    owner?.assertCurrent();
     const result = await bridge.accountTeams(input);
+    owner?.assertCurrent();
     if (!result.ok)
       throw new AccountRequestError({
         code: null,
@@ -80,9 +84,12 @@ export function desktopTeamSessions(
   bridge: OpensteerDesktopBridge & Required<Pick<OpensteerDesktopBridge, "teamSessions">>,
   /** Where a team this computer already shows lives, for one not verified since launch. */
   originOf: (teamDeploymentId: DeploymentId) => string | null = () => null,
+  owner?: TeamRuntimeOwner,
 ): TeamSessionPort {
   const call = async <T>(input: DesktopTeamSessionsCall, schema: z.ZodType<T>): Promise<T> => {
+    owner?.assertCurrent();
     const result = await bridge.teamSessions(input);
+    owner?.assertCurrent();
     if (result.ok) return schema.parse(result.data);
     const reason = TeamEntryRefusalReasonSchema.safeParse(result.error.reason);
     if (reason.success) throw new TeamEntryRefusedError(reason.data, result.error.message);
@@ -94,13 +101,24 @@ export function desktopTeamSessions(
   const rpc = (teamDeploymentId: DeploymentId): HostApiClient => {
     const origin = origins.get(teamDeploymentId) ?? originOf(teamDeploymentId);
     if (!origin) throw new Error("Open the team on this computer first.");
-    return createHttpHostApiClient({
+    const client = createHttpHostApiClient({
       baseUrl: new URL(origin),
       bufferedResponses: true,
-      fetch: createDesktopHostFetch(bridge, origin, teamDeploymentId),
+      fetch: (url, init) =>
+        createDesktopHostFetch(
+          bridge,
+          origin,
+          teamDeploymentId,
+        )(url, {
+          ...init,
+          ...(owner
+            ? { signal: AbortSignal.any([owner.signal, ...(init?.signal ? [init.signal] : [])]) }
+            : {}),
+        }),
       kind: "team",
       onAuthenticationRequired: () => undefined,
     });
+    return owner ? owner.rpc(client) : client;
   };
   return {
     verify: async (origin) => {
@@ -110,19 +128,33 @@ export function desktopTeamSessions(
     },
     exchange: async (team, invite) => ({
       ...(await call(
-        { call: "enter", origin: team.authority.canonicalOrigin, invite },
+        {
+          call: "enter",
+          deploymentId: team.authority.deploymentId,
+          origin: team.authority.canonicalOrigin,
+          invite,
+        },
         DesktopTeamEnteredSchema,
       )),
       team,
     }),
     signIn: async (team, invite) => {
-      await call({ call: "sign-in", origin: team.authority.canonicalOrigin, invite }, z.null());
+      await call(
+        {
+          call: "sign-in",
+          deploymentId: team.authority.deploymentId,
+          origin: team.authority.canonicalOrigin,
+          invite,
+        },
+        z.null(),
+      );
       const { member } = unwrapRpcResult(
         await rpc(team.authority.deploymentId)["team.bootstrap.get"]({}),
       );
       return { admitted: invite !== null, member, team };
     },
     joinInBrowser: async (team, invite) => {
+      owner?.assertCurrent();
       await bridge.openExternalUrl({
         url: teamPageUrl({
           origin: team.authority.canonicalOrigin,
@@ -227,6 +259,7 @@ function personalOf(hostClient: HostClient): () => DeploymentId | null {
 /** The desktop's coordinator, once main can both reach Account and enter teams natively. */
 export function desktopTeamCoordination(input: {
   readonly bridge: OpensteerDesktopBridge;
+  readonly owner: TeamRuntimeOwner;
   readonly hostClient: HostClient;
   readonly accountSubject: () => ControlPlaneAccountId | null;
   readonly open: (teamDeploymentId: DeploymentId) => void;
@@ -234,7 +267,10 @@ export function desktopTeamCoordination(input: {
 }): WebTeamCoordination | null {
   const { bridge } = input;
   if (!bridge.accountTeams || !bridge.teamSessions) return null;
-  const account = desktopAccountTeams({ accountTeams: bridge.accountTeams.bind(bridge) });
+  const account = desktopAccountTeams(
+    { accountTeams: bridge.accountTeams.bind(bridge) },
+    input.owner,
+  );
   return {
     account,
     personalDeploymentId: personalOf(input.hostClient),
@@ -243,6 +279,7 @@ export function desktopTeamCoordination(input: {
       sessions: desktopTeamSessions(
         { ...bridge, teamSessions: bridge.teamSessions },
         input.originOf,
+        input.owner,
       ),
       personal: personalTeamLinksPort(input.hostClient),
       intents: localIntentStore,

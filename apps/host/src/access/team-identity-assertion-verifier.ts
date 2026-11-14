@@ -6,7 +6,7 @@ import {
 } from "@opensteer/control-plane-protocol";
 import { OpensteerError } from "@opensteer/core";
 import type { TeamIdentityAssertionVerifier } from "@opensteer/identity";
-import { RemoteAccountJwksVerifier } from "./account-jwks-verifier.js";
+import { AccountJwksUnavailableError, RemoteAccountJwksVerifier } from "./account-jwks-verifier.js";
 
 /**
  * Verifies an Account team identity assertion against Account's published keys. The issuer is
@@ -30,11 +30,19 @@ export class RemoteTeamIdentityAssertionVerifier implements TeamIdentityAssertio
       const verified = await this.#verifier.verify(token, `${teamIdentityGrantLifetimeSeconds}s`);
       return TeamIdentityAssertionClaimsSchema.parse(verified.payload);
     } catch (error) {
+      if (error instanceof AccountJwksUnavailableError)
+        throw new OpensteerError({
+          code: "timeout",
+          retryable: true,
+          message: "Account keys are unavailable",
+          cause: error,
+        });
+      const expired = error instanceof Error && "code" in error && error.code === "ERR_JWT_EXPIRED";
       throw new OpensteerError({
         cause: error,
         code: "unauthorized",
         message: "Account identity assertion is invalid or expired",
-        reason: "assertion-invalid",
+        reason: expired ? "assertion-expired" : "assertion-invalid",
       });
     }
   }

@@ -384,6 +384,7 @@ function mobileClient(): MobileRoot {
       : networkTeamTransport({
           catalog: client.catalog,
           credentials: client.teamCredentials,
+          oauth: client.oauth,
           network: createTransportNetwork({
             fetch: mobileHostFetch,
             openWebSocket: openReactNativeSocket,

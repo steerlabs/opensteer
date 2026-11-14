@@ -24,7 +24,11 @@ export function useFocusedRead<Value>(
   readonly failure: string | null;
   readonly reload: () => void;
 } {
-  const [value, setValue] = useState<Value | null>(null);
+  const [answer, setAnswer] = useState<{
+    session: TeamSessionClient;
+    key: string;
+    value: Value;
+  } | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
   const reader = useRef(read);
@@ -36,7 +40,7 @@ export function useFocusedRead<Value>(
       void reader.current(session).then(
         (next) => {
           if (!current) return;
-          setValue(next);
+          setAnswer({ session, key, value: next });
           setFailure(null);
         },
         (error: unknown) => current && setFailure(failureWords(error, "The team didn't answer.")),
@@ -47,7 +51,11 @@ export function useFocusedRead<Value>(
     }, [session, key, generation]),
   );
   const reload = useCallback(() => setGeneration((next) => next + 1), []);
-  return { value, failure, reload };
+  return {
+    value: answer?.session === session && answer.key === key ? answer.value : null,
+    failure,
+    reload,
+  };
 }
 
 interface NotePages {

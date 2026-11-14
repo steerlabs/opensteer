@@ -175,7 +175,7 @@ export class TeamIdentityAdmission {
         message: "Team session exchange is unavailable",
       });
     const claims = await this.#identityVerifier.verify(assertion);
-    if (!sameAuthority(claims.authority, this.#authority)) refuseEntry("assertion-invalid");
+    if (!sameAuthority(claims.authority, this.#authority)) refuseEntry("authority-changed");
     return claims;
   }
   /**
@@ -897,6 +897,7 @@ async function spendAssertion(t: Transaction<DatabaseSchema>, claims: TeamIdenti
 
 const entryRefusals = {
   "assertion-invalid": "Your Opensteer sign-in could not be verified. Try again.",
+  "authority-changed": "The team authority changed. Open its address again.",
   "not-a-member": "You're not a member of this team. Ask for an invite.",
 } as const;
 

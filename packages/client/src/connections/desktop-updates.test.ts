@@ -1,3 +1,4 @@
+import { TeamRuntimeOwner } from "@opensteer/client/team";
 import { HostSession } from "../auth/host-session.js";
 import type { NativeOAuthManager } from "../auth/native-oauth.js";
 import type { HostSessionExchange } from "../auth/host-session-exchange.js";
@@ -18,7 +19,7 @@ import {
 } from "../test-support/host-authority.js";
 import type { HostNetworkRequest } from "./host-transport.js";
 
-function fixture(epoch = hostApiVersion - 1, scoped = false) {
+function fixture(epoch = hostApiVersion - 1, scoped = false, owner = new TeamRuntimeOwner(null)) {
   const keys = testHostAuthorityKeys();
   const authority = signTestDiscoveryEnvelope(
     {
@@ -88,7 +89,7 @@ function fixture(epoch = hostApiVersion - 1, scoped = false) {
   const authorizationHeader = vi.fn(async () => "PersonalRemote owner-session");
   const service = new DesktopUpdatesService({
     catalog: { load: async () => catalog, subscribe: () => () => {} },
-    credentials: { authorizationHeader },
+    credentials: { authorizationHeader, teamRuntime: () => owner },
     localRuntime: { current: async () => null },
     network: {
       request,
@@ -130,6 +131,118 @@ function fixture(epoch = hostApiVersion - 1, scoped = false) {
     catalog,
   };
 }
+
+it.each(["transport", "credential"])(
+  "fences team maintenance requests on Account change via %s",
+  async (stage) => {
+    const origin = "https://team.example";
+    const authority = signTestDiscoveryEnvelope(
+      {
+        deploymentId: createId("deployment"),
+        hostInstanceId: createId("hostInstance"),
+        canonicalOrigin: origin,
+        deploymentShape: { kind: "team" },
+        hostKey: { algorithm: "Ed25519" },
+      },
+      testHostAuthorityKeys(),
+    );
+    const now = new Date().toISOString();
+    const connection = DeploymentConnectionSchema.parse({
+      authority,
+      bootstrapMethods: ["oidc"],
+      kind: "team",
+      reachability: "canonical",
+      endpoints: [{ kind: "canonical", origin, verifiedAt: now }],
+      source: { kind: "manual" },
+      name: "Team",
+      createdAt: now,
+      updatedAt: now,
+      lastUsedAt: null,
+    });
+    const gate = Promise.withResolvers<Response>();
+    const maintenance = vi.fn(async () => gate.promise);
+    const credentialGate = Promise.withResolvers<void>();
+    const read = vi.fn();
+    const owner = new TeamRuntimeOwner(null);
+    const service = new DesktopUpdatesService({
+      catalog: {
+        load: async () =>
+          DeploymentCatalogSchema.parse({
+            deployments: [connection],
+            selectedDeploymentId: authority.document.deploymentId,
+            revision: 1,
+            schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
+            updatedAt: now,
+          }),
+        subscribe: () => () => {},
+      },
+      deploymentId: authority.document.deploymentId,
+      localRuntime: { current: async () => null },
+      credentials: {
+        teamRuntime: () => owner,
+        authorizationHeader: async () => {
+          read();
+          if (stage === "credential") await credentialGate.promise;
+          return "Bearer outgoing";
+        },
+      },
+      network: {
+        request: async (input) =>
+          input.url.endsWith("/.well-known/opensteer")
+            ? Response.json({
+                kind: "team",
+                apiVersion: 1,
+                authority,
+                bootstrapMethods: ["oidc"],
+                capabilities: [],
+              })
+            : maintenance(),
+        openWebSocket: () => {
+          throw new Error("No maintenance socket");
+        },
+      },
+    });
+    const pending = service.status();
+    const rejected = expect(pending).rejects.toMatchObject({ code: "deployment-changed" });
+    try {
+      await vi.waitFor(
+        () => expect(stage === "credential" ? read : maintenance).toHaveBeenCalledOnce(),
+        { timeout: 1000 },
+      );
+      owner.retire();
+      credentialGate.resolve();
+      gate.resolve(
+        Response.json({ supported: true, state: null, operation: null, revision: "host:0" }),
+      );
+      await rejected;
+      if (stage === "credential") expect(maintenance).not.toHaveBeenCalled();
+    } finally {
+      credentialGate.resolve();
+      gate.resolve(Response.json({}));
+    }
+  },
+);
+
+it.each([false, true])(
+  "keeps personal update requests during Account changes (scoped: %s)",
+  async (scoped) => {
+    const owner = new TeamRuntimeOwner(null);
+    const { service, maintenance, status } = fixture(hostApiVersion, scoped, owner);
+    const response = Promise.withResolvers<Response>();
+    maintenance.mockImplementationOnce(async () => {
+      return response.promise;
+    });
+    const pending = service.status();
+    try {
+      await vi.waitFor(() => expect(maintenance).toHaveBeenCalledOnce(), { timeout: 1000 });
+      owner.retire();
+      response.resolve(Response.json(status));
+      await expect(pending).resolves.toEqual(status);
+    } finally {
+      response.resolve(Response.json(status));
+    }
+  },
+);
 
 it.each([hostApiVersion - 1, hostApiVersion + 1])(
   "verifies the signed route below attachment and reaches maintenance across epoch %s",

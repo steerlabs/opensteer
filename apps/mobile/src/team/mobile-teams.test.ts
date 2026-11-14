@@ -1,10 +1,18 @@
+import { TeamEntryOutcomeError, TeamRuntimeOwner } from "@opensteer/client/team";
+import { HostVersionMismatchError } from "@opensteer/client/connections";
+import { HostClientRequestError } from "@opensteer/client/host";
+import { TeamEntryRefusalReasonSchema } from "@opensteer/protocol";
+import { TeamEntryRefusedError } from "@opensteer/client/auth";
+import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import {
   DeploymentConnectionSchema,
+  DeploymentCatalogStore,
+  type VerifiedHostEndpoint,
   type DeploymentConnection,
 } from "@opensteer/client/connections";
 import type { MockTeamHost, TeamCacheScope } from "@opensteer/client/team";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
-import { createId, DeploymentIdSchema, OpensteerError } from "@opensteer/core";
+import { createId, DeploymentIdSchema, TeamChannelIdSchema, OpensteerError } from "@opensteer/core";
 import type { HostApiClient } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { MobileClient } from "../client/mobile-client.js";
@@ -18,7 +26,7 @@ import {
   mockTeamOrigin,
 } from "../client/mock-mode.js";
 import type { NotificationPreviews } from "../notifications/notification-preview.js";
-import { MobileTeams, type TeamTransport } from "./mobile-teams.js";
+import { MobileTeams, teamFailure, type TeamTransport } from "./mobile-teams.js";
 import { mockTeamReaderId, mockTeamTransport } from "./team-transport.js";
 
 const connections: readonly DeploymentConnection[] = mockDeploymentConnections()
@@ -39,6 +47,10 @@ const connections: readonly DeploymentConnection[] = mockDeploymentConnections()
  */
 function fixture(
   options: {
+    readonly bootstrapFailures?: number;
+    /** Every non-Acme bootstrap answers as an older team server refusing a removed member. */
+    readonly legacyRefusal?: boolean;
+    readonly files?: MemoryPrivateFilesystem;
     readonly previews?: Pick<NotificationPreviews, "attach" | "clear">;
     /** Answers a team command in place of the mock team Host. */
     readonly dispatch?: (command: { readonly type: string }) => unknown;
@@ -46,6 +58,8 @@ function fixture(
     readonly catalog?: readonly { connection: DeploymentConnection; signedIn: boolean }[];
   } = {},
 ) {
+  let bootstrapFailures = options.bootstrapFailures ?? 0;
+  let bootstrapCalls = 0;
   const hosts = new Map<string, MockTeamHost>();
   const mock = mockTeamTransport(hosts);
   let releaseAcme!: () => void;
@@ -62,10 +76,26 @@ function fixture(
               await acmeAnswers;
               return target["team.bootstrap.get"](input);
             }
-          : name === "commands.dispatch" && options.dispatch !== undefined
-            ? async (input: { readonly type: string }) =>
-                options.dispatch!(input) ?? target["commands.dispatch"](input as never)
-            : Reflect.get(target, name, receiver),
+          : name === "team.bootstrap.get" && !acme && options.legacyRefusal
+            ? async () => {
+                throw new HostClientRequestError({
+                  code: "forbidden",
+                  status: 403,
+                  message: "Active team membership required",
+                });
+              }
+            : name === "team.bootstrap.get" && !acme && options.bootstrapFailures !== undefined
+              ? async (input: never) => {
+                  if (bootstrapCalls++ > 0 && bootstrapFailures > 0) {
+                    bootstrapFailures--;
+                    throw new Error("Team offline");
+                  }
+                  return target["team.bootstrap.get"](input);
+                }
+              : name === "commands.dispatch" && options.dispatch !== undefined
+                ? async (input: { readonly type: string }) =>
+                    options.dispatch!(input) ?? target["commands.dispatch"](input as never)
+                : Reflect.get(target, name, receiver),
     }) as HostApiClient;
     return { ...inner, rpc };
   };
@@ -78,7 +108,31 @@ function fixture(
       ...(options.catalog ?? []),
     ],
   };
+  let suppressed = false;
+  let owner = new TeamRuntimeOwner(null);
+  const identities = new Set<() => void>();
+  let entryGeneration = 0;
   const client = {
+    oauth: {
+      teamRuntime: () => owner,
+      subscribeAccountIdentityChanges: (listener: () => void) => {
+        identities.add(listener);
+        return () => identities.delete(listener);
+      },
+      accountIdentity: () => null,
+      teamEntryFence: () => {
+        const generation = entryGeneration;
+        return {
+          generation,
+          signal: new AbortController().signal,
+          assertCurrent: () => {
+            if (generation !== entryGeneration) throw new Error("Entry superseded");
+          },
+        };
+      },
+      hostCredentialState: () => ({ detail: null }),
+      isTeamSignInSuppressed: () => suppressed,
+    },
     subscribe: (listener: () => void) => {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -90,7 +144,7 @@ function fixture(
   const teams = new MobileTeams({
     client,
     directory: "/private/teams-test",
-    files: new MemoryPrivateFilesystem(),
+    files: options.files ?? new MemoryPrivateFilesystem(),
     previews: (options.previews ?? null) as NotificationPreviews | null,
     transport,
     verify: () => Promise.reject(new Error("No network in this test.")),
@@ -106,8 +160,27 @@ function fixture(
     hosts,
     signOut,
     releaseAcme,
+    reauthorize: () => {
+      entryGeneration++;
+    },
+    switchAccount: () => {
+      owner.retire();
+      owner = new TeamRuntimeOwner({ issuer: "https://accounts.test", subject: "B" });
+      for (const listener of identities) listener();
+    },
     showComputer(deploymentId: string) {
       snapshot = { ...snapshot, selection: { deploymentId, hostClient: null } } as never;
+      for (const listener of listeners) listener();
+    },
+    suppress() {
+      suppressed = true;
+      for (const listener of listeners) listener();
+    },
+    loseAuthorization() {
+      snapshot = {
+        ...snapshot,
+        teams: snapshot.teams.map((team) => ({ ...team, signedIn: false })),
+      };
       for (const listener of listeners) listener();
     },
     sockets: () =>
@@ -116,6 +189,62 @@ function fixture(
 }
 
 describe("the one team socket a phone keeps", () => {
+  it("retries an unloaded remembered viewer and starts its realtime connection", async () => {
+    const f = fixture({ bootstrapFailures: 1 });
+    try {
+      const session = await f.teams.session(mockFamilyTeamId);
+      await f.teams.select(mockFamilyTeamId);
+      expect(f.teams.team(mockFamilyTeamId)?.state).toBe("offline");
+      expect(session.getSnapshot().bootstrap).toBeNull();
+      await f.teams.select(mockFamilyTeamId);
+      expect(session.getSnapshot().bootstrap).not.toBeNull();
+      expect(f.teams.team(mockFamilyTeamId)?.state).toBe("live");
+      expect(f.sockets()[mockFamilyTeamId]).toBe(1);
+    } finally {
+      f.teams.dispose();
+    }
+  });
+
+  it("treats an older server's reasonless refusal of a new viewer as removal", async () => {
+    const f = fixture({ legacyRefusal: true });
+    try {
+      await expect(f.teams.session(mockFamilyTeamId)).rejects.toThrow();
+      expect(f.teams.team(mockFamilyTeamId)?.state).toBe("removed");
+    } finally {
+      f.teams.dispose();
+    }
+  });
+
+  it("shows sign-in immediately when a live team is explicitly suppressed", async () => {
+    const f = fixture();
+    f.teams.start();
+    await f.teams.select(mockFamilyTeamId);
+    await vi.waitFor(() => expect(f.teams.team(mockFamilyTeamId)?.state).toBe("live"), {
+      timeout: 1000,
+    });
+    f.suppress();
+    expect(f.teams.team(mockFamilyTeamId)?.state).toBe("signed-out");
+    expect(f.teams.team(mockFamilyTeamId)?.session).toBeNull();
+    f.teams.dispose();
+  });
+
+  it("retains an open team's draft when authorization temporarily disappears", async () => {
+    const f = fixture();
+    f.teams.start();
+    const session = await f.teams.session(mockFamilyTeamId);
+    await session.setDraft(
+      {
+        kind: "channel",
+        channelId: TeamChannelIdSchema.parse("tch_00000000-0000-4000-8000-000000000001"),
+      },
+      "Keep this draft",
+    );
+    f.loseAuthorization();
+    expect(Object.values(session.getSnapshot().drafts)).toEqual(["Keep this draft"]);
+    expect(session.getSnapshot().ended).toBeNull();
+    f.teams.dispose();
+  });
+
   it("never lets a slower, older selection replace the team now in view", async () => {
     const f = fixture();
     const acme = f.teams.select(mockTeamId);
@@ -198,7 +327,11 @@ describe("the one team socket a phone keeps", () => {
     const read = host.read.bind(host);
     vi.spyOn(host, "read").mockImplementation((name, input) => {
       if (name === "team.bootstrap.get")
-        throw new OpensteerError({ code: "forbidden", message: "Membership removed" });
+        throw new OpensteerError({
+          code: "forbidden",
+          reason: "removed",
+          message: "Membership removed",
+        });
       return read(name, input);
     });
     // The team closes the removed member's socket.
@@ -270,3 +403,246 @@ describe("the teams a phone lists", () => {
     f.teams.dispose();
   });
 });
+
+describe("adding a computer's team to the phone", () => {
+  it.each([
+    "member",
+    "refused-member",
+    "refused-no-account",
+    "no-account",
+    "old-team",
+    "not-member",
+    "outage",
+    "sign-out-during-discovery",
+    "account-switch-during-discovery",
+  ])("uses the shared entry policy for %s", async (mode) => {
+    const connection = connections[0]!;
+    const teamId = connection.authority.document.deploymentId;
+    const verifying = Promise.withResolvers<void>();
+    const verified: VerifiedHostEndpoint = {
+      discovery: connection.authority.document,
+      discoveryEnvelope: connection.authority,
+      endpoint: connection.endpoints[0]!,
+      bootstrapMethods: ["oidc"],
+      capabilities:
+        mode === "old-team"
+          ? ["native-oauth", "team-native-browser-return-v1"]
+          : ["native-oauth", "team-session-exchange-v1", "team-native-browser-return-v1"],
+    };
+    const catalog = new DeploymentCatalogStore({
+      filePath: "/private/mobile-entry/catalog.json",
+      privateFiles: new MemoryPrivateFilesystem(),
+    });
+    const lease = {
+      issuer: "https://account.example",
+      subject: ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`),
+      authorization: "Bearer account",
+      signal: new AbortController().signal,
+    };
+    const exchange = vi.fn(async () => {
+      if (mode === "not-member")
+        throw new TeamEntryRefusedError("not-a-member", "Ask for an invite");
+      if (mode === "outage") throw new Error("Account unreachable");
+      return { admitted: false, member: {} };
+    });
+    const browser = vi.fn(async (held: DeploymentConnection) => ({
+      status: "signed-in",
+      connection: held,
+    }));
+    let entryCurrent = true;
+    const owner = new TeamRuntimeOwner(null);
+    const client = {
+      catalog,
+      oauth: {
+        teamRuntime: () => owner,
+        subscribeAccountIdentityChanges: () => () => undefined,
+        accountIdentity: () => null,
+        teamEntryFence: () => {
+          const captured = entryCurrent;
+          return {
+            generation: 0,
+            signal: new AbortController().signal,
+            assertCurrent: () => {
+              if (captured !== entryCurrent) throw new Error("Entry changed");
+            },
+          };
+        },
+        accountAuthorizationLease: async () => (mode.endsWith("no-account") ? null : lease),
+        authorizationHeader: async () => null,
+        resumeTeamSignIn: async () => {},
+        isTeamSignInSuppressed: () => false,
+        exchangeTeamSession: exchange,
+        beginHostSignIn: browser,
+        hostCredentialState: () => ({ status: "signed-out" }),
+        subscribeHostCredentials: () => () => {},
+      },
+      subscribe: () => () => {},
+      getSnapshot: () => ({
+        selection: { deploymentId: mockDeploymentId, hostClient: null },
+        teams: mode.startsWith("refused-") ? [{ connection, signedIn: true }] : [],
+      }),
+    } as unknown as MobileClient;
+    const teams = new MobileTeams({
+      client,
+      directory: "/private/mobile-entry",
+      files: new MemoryPrivateFilesystem(),
+      transport: () => {
+        throw new Error("No socket needed for entry");
+      },
+      verify: async () => {
+        await verifying.promise;
+        return verified;
+      },
+      seed: {
+        [mockDeploymentId]: [
+          { teamId, origin: connection.authority.document.canonicalOrigin, teamName: "Acme" },
+        ],
+      },
+    });
+    teams.start();
+    await vi.waitFor(() => expect(teams.team(teamId), "team row never loaded").not.toBeNull(), {
+      timeout: 1000,
+    });
+    if (mode === "no-account") {
+      verifying.resolve();
+      await teams.addToPhone(teamId, false).catch(() => {});
+      expect(teams.team(teamId)?.state).toBe("signed-out");
+      expect(browser).not.toHaveBeenCalled();
+    }
+    const adding = teams.addToPhone(teamId);
+    expect(teams.team(teamId)?.state).toBe("loading");
+    if (mode.endsWith("during-discovery")) entryCurrent = false;
+    verifying.resolve();
+    try {
+      if (mode.endsWith("during-discovery")) {
+        await expect(adding).rejects.toThrow();
+        expect((await catalog.load()).deployments).toHaveLength(0);
+        expect(exchange).not.toHaveBeenCalled();
+        expect(browser).not.toHaveBeenCalled();
+        return;
+      }
+      if (mode === "not-member" || mode === "outage") {
+        await expect(adding).rejects.toThrow();
+        expect(teams.team(teamId)?.state).toBe(mode === "not-member" ? "join" : "offline");
+      } else await adding;
+      expect(browser).toHaveBeenCalledTimes(
+        mode.endsWith("no-account") || mode === "old-team" ? 1 : 0,
+      );
+      expect(exchange).toHaveBeenCalledTimes(
+        mode.endsWith("no-account") || mode === "old-team" ? 0 : 1,
+      );
+    } finally {
+      teams.dispose();
+    }
+  });
+});
+
+it.each([...TeamEntryRefusalReasonSchema.options, "removed", undefined])(
+  "presents authorization refusal %s without implying an unconfirmed removal",
+  (reason) => {
+    const error = new HostClientRequestError({
+      code: "forbidden",
+      status: 403,
+      message: "Refused",
+      ...(reason ? { reason } : {}),
+    });
+    expect(teamFailure(error)).toBe(
+      reason === "not-a-member" ? "join" : reason === "removed" ? "removed" : "offline",
+    );
+  },
+);
+
+it.each([
+  ["client-too-old", "update-app"],
+  ["host-too-old", "update-server"],
+] as const)("tells the person who must update when entry finds %s", (code, state) => {
+  const error = new TeamEntryOutcomeError({
+    status: "update-required",
+    error: new HostVersionMismatchError(code),
+  });
+  expect(teamFailure(error)).toBe(state);
+});
+
+it("retires an Account runtime before its pending bootstrap can populate the replacement", async () => {
+  const f = fixture();
+  f.teams.start();
+  const owner = f.teams.owner;
+  const pending = f.teams.session(mockTeamId);
+  const rejected = expect(pending).rejects.toThrow();
+  await vi.waitFor(() => expect(f.hosts.has(mockTeamId), "bootstrap never started").toBe(true), {
+    timeout: 1000,
+  });
+  f.switchAccount();
+  expect(owner.signal.aborted).toBe(true);
+  expect(f.teams.owner).not.toBe(owner);
+  expect(
+    f.teams.getSnapshot().teams.every((team) => team.session === null && team.userId === null),
+  ).toBe(true);
+  f.releaseAcme();
+  await rejected;
+  expect(
+    f.teams.getSnapshot().teams.every((team) => team.session === null && team.userId === null),
+  ).toBe(true);
+  f.teams.dispose();
+});
+it("keeps draft persistence through same-Account reauthorization and entry supersession", async () => {
+  const f = fixture();
+  f.teams.start();
+  try {
+    const owner = f.teams.owner;
+    const session = await f.teams.session(mockFamilyTeamId);
+    const scope = {
+      kind: "channel" as const,
+      channelId: TeamChannelIdSchema.parse("tch_00000000-0000-4000-8000-000000000001"),
+    };
+    await session.setDraft(scope, "Before");
+    f.reauthorize();
+    await session.setDraft(scope, "After");
+    expect(f.teams.owner).toBe(owner);
+    expect(owner.signal.aborted).toBe(false);
+    expect(Object.values(session.getSnapshot().drafts)).toEqual(["After"]);
+  } finally {
+    f.teams.dispose();
+  }
+});
+
+it.each([true, false])(
+  "keeps drafts and pending sends from before the upgrade for their own viewer only (same: %s)",
+  async (sameViewer) => {
+    const { teamFilePersistence } = await import("./mobile-teams.js");
+    const files = new MemoryPrivateFilesystem();
+    const f = fixture({ files });
+    const scope = {
+      teamDeploymentId: mockFamilyTeamId,
+      userId: sameViewer ? mockTeamReaderId : createId("user"),
+    };
+    const legacy = teamFilePersistence(files, "/private/teams-test/teams");
+    const saved = {
+      drafts: { channel: "Upgrade draft" },
+      pending: [
+        {
+          command: {
+            type: "team.message.send" as const,
+            channelId: createId("teamChannel"),
+            threadRootId: null,
+            clientMessageId: crypto.randomUUID(),
+            bodyMarkdown: "Upgrade pending send",
+            mentions: [],
+            attachmentIds: [],
+          },
+          createdAt: new Date().toISOString(),
+          failure: null,
+        },
+      ],
+    };
+    await legacy.save(scope, saved);
+    try {
+      const session = await f.teams.session(mockFamilyTeamId);
+      await session.load(false);
+      expect(session.getSnapshot()).toMatchObject(sameViewer ? saved : { drafts: {}, pending: [] });
+      expect(await legacy.load(scope)).toEqual(saved);
+    } finally {
+      f.teams.dispose();
+    }
+  },
+);

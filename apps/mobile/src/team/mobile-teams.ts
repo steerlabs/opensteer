@@ -1,5 +1,6 @@
+import { bootstrapMembershipRefused, teamEntryRefusalOutcome } from "@opensteer/protocol";
+import { TeamEntryRefusedError } from "@opensteer/client/auth";
 import {
-  deploymentConnectionFromVerifiedEndpoints,
   HostVersionMismatchError,
   type DeploymentConnection,
   type PrivateFilesystem,
@@ -15,8 +16,11 @@ import {
 import {
   listedTeams,
   NativeTeamEntry,
+  assertTeamEntryOutcome,
+  TeamEntryOutcomeError,
   TeamSavedStateSchema,
   TeamTransportRegistry,
+  TeamRuntimeOwner,
   type TeamCacheScope,
   type TeamPersistence,
   type TeamSessionClient,
@@ -52,7 +56,14 @@ export interface TeamTransport {
 
 /** How a team stands on this phone, as the drawer and a team screen say it. */
 export type TeamState =
-  "signed-out" | "loading" | "live" | "offline" | "update-app" | "update-server" | "removed";
+  | "signed-out"
+  | "loading"
+  | "live"
+  | "offline"
+  | "update-app"
+  | "update-server"
+  | "removed"
+  | "join";
 
 export interface MobileTeam {
   readonly teamId: string;
@@ -172,15 +183,16 @@ const TeamMemoSchema = z.strictObject({
  * to the team in view and relies on push for the rest; a team out of view
  * still paints its drawer section from its last answer.
  */
-export class MobileTeams {
+class MobileTeamRuntime {
   readonly registry: TeamTransportRegistry;
+  readonly owner: TeamRuntimeOwner;
   readonly #client: MobileClient;
   readonly #transport: (connection: DeploymentConnection, scope: TeamCacheScope) => TeamTransport;
   readonly #verify: (origin: string) => Promise<VerifiedHostEndpoint>;
   readonly #entry: NativeTeamEntry;
   readonly #usersFile: string;
   readonly #seed: Readonly<Record<string, readonly LinkedTeam[]>>;
-  readonly #files: PrivateFilesystem;
+  readonly #files: ReturnType<TeamRuntimeOwner["files"]>;
   readonly #previews: NotificationPreviews | null;
   readonly #listeners = new Set<() => void>();
   readonly #sessions = new Map<string, TeamSessionClient>();
@@ -197,6 +209,7 @@ export class MobileTeams {
   #foreground = true;
   #linksFor: HostClient | null = null;
   #snapshot: MobileTeamsSnapshot = { computerId: null, teams: [], unlinked: [], selected: null };
+  readonly #detachOwner: () => void;
   #detachClient: (() => void) | null = null;
 
   constructor(options: {
@@ -210,31 +223,63 @@ export class MobileTeams {
     /** Mock mode's computers and the teams each is in, before any computer has said. */
     readonly seed?: Readonly<Record<string, readonly LinkedTeam[]>>;
   }) {
+    this.owner = options.client.oauth.teamRuntime();
     this.#seed = options.seed ?? {};
     this.#client = options.client;
-    this.#transport = options.transport;
+    this.#transport = (connection, scope) => {
+      const owner = this.owner;
+      owner.assertCurrent();
+      const transport = options.transport(connection, scope);
+      return { ...transport, rpc: owner.rpc(transport.rpc) };
+    };
     this.#verify = options.verify;
     this.#entry = new NativeTeamEntry({
       oauth: options.client.oauth,
+      verify: options.verify,
       catalog: options.client.catalog,
+      bootstrap: async (connection) =>
+        unwrapRpcResult(
+          await this.#transport(connection, {
+            teamDeploymentId: connection.authority.document.deploymentId,
+            userId: placeholderUser,
+          }).rpc["team.bootstrap.get"]({}),
+        ).member,
     });
-    this.#files = options.files;
+    this.#files = this.owner.files(options.files);
     this.#previews = options.previews ?? null;
     this.#usersFile = `${options.directory}/teams.json`;
-    const persistence = teamFilePersistence(options.files, `${options.directory}/teams`);
     this.registry = new TeamTransportRegistry("mobile", (scope) => {
       const connection = this.#connection(scope.teamDeploymentId);
       if (connection === null) throw new TeamAccessError("This team is no longer on this phone.");
       const transport = this.#transport(connection, scope);
       return {
         scope,
+        owner: this.owner,
         rpc: transport.rpc,
-        persistence,
+        // Keyed by team and team user, so each viewer's drafts are already their own.
+        persistence: teamFilePersistence(this.#files, `${options.directory}/teams`),
         connect: transport.connect,
         readFile: transport.readFile,
         uploadFile: transport.uploadFile,
       };
     });
+    this.#detachOwner = this.owner.own(() => this.#retire());
+  }
+
+  #retire(): void {
+    this.#selection++;
+    this.registry.dispose();
+    for (const id of this.#sessions.keys()) {
+      this.#drop(id);
+      void this.#previews?.clear(DeploymentIdSchema.parse(id));
+    }
+    this.#memo = null;
+    this.#states.clear();
+    this.#names.clear();
+    this.#members.clear();
+    this.#recent.clear();
+    this.#linksFor = null;
+    this.#selected = null;
   }
 
   start(): void {
@@ -243,17 +288,23 @@ export class MobileTeams {
       const shown = this.#snapshot.computerId;
       // Signed out of a team, here or by its own screen: its session and partition go.
       for (const teamId of this.#sessions.keys())
-        if (!this.#signedIn(teamId)) void this.#signedOut(teamId);
+        if (
+          !this.#connection(teamId) ||
+          this.#client.oauth.isTeamSignInSuppressed(this.#connection(teamId)!)
+        )
+          void this.#signedOut(teamId);
       this.#publish();
       // Another computer on screen: its team takes the one socket.
       if (this.#snapshot.computerId !== shown) void this.select(this.#selected);
       this.#learnLinks();
     });
-    void this.#loadMemo().then(() => {
-      this.#publish();
-      this.#learnLinks();
-      void this.select(this.#selected);
-    });
+    void this.#loadMemo()
+      .then(() => {
+        this.#publish();
+        this.#learnLinks();
+        void this.select(this.#selected);
+      })
+      .catch(() => undefined);
   }
 
   /** The app went to the background or came back: no socket while nobody looks. */
@@ -272,22 +323,25 @@ export class MobileTeams {
     if (personal === null || personal === this.#linksFor || selection.deploymentId === null) return;
     this.#linksFor = personal;
     const computerId = selection.deploymentId;
-    void new PersonalTeamLinks(personal.rpc).list().then(
-      async (links) => {
-        await this.#loadMemo();
-        const linked = links
-          .filter((link) => link.state !== "revoked" && link.state !== "leaving")
-          .map((link) => ({ teamId: link.teamId, origin: link.origin, teamName: link.teamName }));
-        this.#memo = {
-          ...this.#memo!,
-          computers: { ...this.#memo!.computers, [computerId]: linked },
-        };
-        await this.#saveMemo();
-        this.#publish();
-        void this.select(this.#selected);
-      },
-      () => undefined,
-    );
+    const owner = this.owner;
+    void owner
+      .run(() => new PersonalTeamLinks(personal.rpc).list())
+      .then(
+        async (links) => {
+          await this.#loadMemo();
+          const linked = links
+            .filter((link) => link.state !== "revoked" && link.state !== "leaving")
+            .map((link) => ({ teamId: link.teamId, origin: link.origin, teamName: link.teamName }));
+          this.#memo = {
+            ...this.#memo!,
+            computers: { ...this.#memo!.computers, [computerId]: linked },
+          };
+          await this.#saveMemo();
+          this.#publish();
+          void this.select(this.#selected);
+        },
+        () => undefined,
+      );
   }
 
   /** Records that a computer joined a team from this phone. */
@@ -311,7 +365,8 @@ export class MobileTeams {
     this.#detachClient = null;
     for (const detach of this.#detachSessions.values()) detach();
     this.#detachSessions.clear();
-    this.registry.dispose();
+    this.#detachOwner();
+    this.#retire();
   }
 
   readonly getSnapshot = (): MobileTeamsSnapshot => this.#snapshot;
@@ -362,27 +417,23 @@ export class MobileTeams {
    * A team the computer being shown is in, but whose Host this phone has not
    * reached yet: it is added and the person signs in to it, as on any device.
    */
-  async addToPhone(teamId: string): Promise<void> {
+  async addToPhone(teamId: string, interactive = true): Promise<void> {
     const team = this.team(teamId);
     if (team === null) throw new TeamAccessError("This team is no longer on this computer.");
-    if (!team.onPhone) {
-      const verified = await this.#verify(team.origin);
-      if (verified.discovery.deploymentId !== teamId)
-        throw new Error("That address now answers as a different team.");
-      await this.#client.catalog.upsert(
-        deploymentConnectionFromVerifiedEndpoints({
-          accountAccess: null,
-          endpoints: [verified],
-          kind: "team",
-          name: team.name,
-          source: { kind: "manual" },
-        }),
-      );
-    }
-    if (!this.#signedIn(teamId) || this.#states.get(teamId)?.state === "signed-out") {
-      await this.#client.signIn(teamId);
+    if (!interactive && this.#signedIn(teamId)) return;
+    this.#setState(teamId, "loading", null);
+    try {
+      const outcome = await this.#entry.authorize({
+        deploymentId: DeploymentIdSchema.parse(teamId),
+        origin: team.origin,
+        mode: interactive ? "interactive" : "passive",
+      });
+      assertTeamEntryOutcome(outcome);
       this.#states.delete(teamId);
       this.#publish();
+    } catch (error) {
+      this.#fail(teamId, error);
+      throw error;
     }
   }
 
@@ -412,7 +463,13 @@ export class MobileTeams {
         this.#names.set(teamId, bootstrap.teamName);
         await this.#rememberUser(teamId, userId);
       } catch (error) {
-        this.#fail(teamId, error);
+        if (error instanceof HostClientRequestError && bootstrapMembershipRefused(error))
+          this.#setState(
+            teamId,
+            error.reason === "not-a-member" ? "join" : "removed",
+            error.message,
+          );
+        else this.#fail(teamId, error);
         throw error;
       }
     }
@@ -453,6 +510,7 @@ export class MobileTeams {
    * stays current. None while the app is in the background.
    */
   async select(teamId: string | null): Promise<void> {
+    const owner = this.owner;
     const generation = ++this.#selection;
     const { computerId } = this.#snapshot;
     if (teamId !== null && computerId !== null) this.#recent.set(computerId, teamId);
@@ -462,11 +520,14 @@ export class MobileTeams {
       await this.registry.select(null);
       return;
     }
-    const current = () => generation === this.#selection;
+    const current = () => !owner.signal.aborted && generation === this.#selection;
     try {
+      if (!this.#signedIn(target)) await this.addToPhone(target, false);
+      if (!this.#signedIn(target) || !current()) return;
       const session = await this.session(target);
       const userId = this.#memo?.users[target];
       if (userId === undefined || !current()) return;
+      this.#setState(target, "loading", null);
       await this.registry.select({ teamDeploymentId: target, userId });
       if (current() && session.getSnapshot().bootstrap !== null)
         this.#setState(target, "live", null);
@@ -586,24 +647,13 @@ export class MobileTeams {
     verified: VerifiedHostEndpoint,
     invite: TeamInviteSecret | null,
   ): Promise<TeamMember> {
+    const owner = this.owner;
     const teamId = verified.discovery.deploymentId;
-    if (this.#connection(teamId) === null)
-      await this.#client.catalog.upsert(
-        deploymentConnectionFromVerifiedEndpoints({
-          accountAccess: null,
-          endpoints: [verified],
-          kind: "team",
-          name: new URL(verified.discovery.canonicalOrigin).hostname,
-          source: { kind: "manual" },
-        }),
-      );
-    const connection = (await this.#client.catalog.load()).deployments.find(
+    await owner.run(() => this.#entry.ensureAuthorized(verified, invite));
+    const connection = (await owner.run(() => this.#client.catalog.load())).deployments.find(
       ({ authority }) => authority.document.deploymentId === teamId,
     );
-    if (connection === undefined)
-      throw new TeamAccessError("This team is no longer on this phone.");
-    if (!this.#signedIn(teamId)) await this.#client.signIn(teamId, invite);
-    if (!this.#signedIn(teamId)) throw new Error("Sign in to finish joining.");
+    if (!connection) throw new TeamAccessError("This team is no longer on this phone.");
     return (await this.#settle(connection)).member;
   }
 
@@ -616,9 +666,10 @@ export class MobileTeams {
     verified: VerifiedHostEndpoint,
     invite: TeamInviteSecret | null,
   ): Promise<{ readonly admitted: boolean; readonly member: TeamMember }> {
-    const entered = await this.#entry.enter(verified, invite);
+    const owner = this.owner;
+    const entered = await owner.run(() => this.#entry.enter(verified, invite));
     const teamId = verified.discovery.deploymentId;
-    const connection = (await this.#client.catalog.load()).deployments.find(
+    const connection = (await owner.run(() => this.#client.catalog.load())).deployments.find(
       ({ authority }) => authority.document.deploymentId === teamId,
     );
     // Opening the team learns the same once the phone shows it; this only saves that wait.
@@ -628,19 +679,21 @@ export class MobileTeams {
 
   /** A team entered before a restart stays on this phone until Account's directory lists it. */
   async restore(origin: string, teamId: DeploymentId): Promise<void> {
-    await this.#entry.restore(teamId, () => this.verifyTeam(origin));
+    await this.#entry.restore(teamId, origin);
   }
 
   /** Learns the team's name and who the reader is, and shows it on the computer being shown. */
   async #settle(connection: DeploymentConnection) {
+    const owner = this.owner;
     const teamId = connection.authority.document.deploymentId;
     const transport = this.#transport(connection, {
       teamDeploymentId: teamId,
       userId: placeholderUser,
     });
     const bootstrap = unwrapRpcResult(await transport.rpc["team.bootstrap.get"]({}));
+    owner.assertCurrent();
     this.#names.set(teamId, bootstrap.teamName);
-    await this.#rememberUser(teamId, bootstrap.member.userId);
+    await owner.run(() => this.#rememberUser(teamId, bootstrap.member.userId));
     await this.adopt({
       teamId,
       origin: connection.authority.document.canonicalOrigin,
@@ -685,8 +738,10 @@ export class MobileTeams {
 
   /** Removes a team from this phone without asking it anything (after removal). */
   async forget(teamId: string): Promise<void> {
+    const owner = this.owner;
     const userId = this.#memo?.users[teamId];
-    if (userId !== undefined) await this.registry.remove({ teamDeploymentId: teamId, userId });
+    if (userId !== undefined)
+      await owner.run(() => this.registry.remove({ teamDeploymentId: teamId, userId }));
     this.#drop(teamId);
     this.#states.delete(teamId);
     if (this.#memo !== null) {
@@ -701,22 +756,22 @@ export class MobileTeams {
           ]),
         ),
       };
-      await this.#saveMemo();
+      await owner.run(() => this.#saveMemo());
     }
     const connection = this.#connection(teamId);
     if (connection !== null) {
-      await this.#client.signOut(teamId).catch(() => undefined);
+      await owner.run(() => this.#client.signOut(teamId).catch(() => undefined));
       // An entry this phone added itself; one Account's directory lists comes back with it.
       if (connection.source.kind === "manual" || connection.accountAccess === null)
-        await this.#client.remove(teamId);
+        await owner.run(() => this.#client.remove(teamId));
     }
     this.#publish();
   }
 
   /**
    * The team ended this reader's session: they were removed, must sign in
-   * again, or the team's login now names someone else. The session has already
-   * purged its own partition; this phone stops holding it and says why.
+   * again, or the team's login now names someone else. Reauthentication keeps
+   * the partition until bootstrap verifies who returned.
    */
   #ended(teamId: string, session: TeamSessionClient): void {
     if (this.#sessions.get(teamId) !== session) return;
@@ -728,14 +783,26 @@ export class MobileTeams {
       void this.#forgetUser(teamId).then(() => this.select(this.#selected));
       return;
     }
-    this.#setState(teamId, ended === "removed" ? "removed" : "signed-out", null);
+    this.#setState(
+      teamId,
+      teamEntryRefusalOutcome(session.getSnapshot().refusalReason) === "membership" &&
+        session.getSnapshot().refusalReason !== "removed"
+        ? "join"
+        : ended === "removed"
+          ? "removed"
+          : "signed-out",
+      null,
+    );
   }
 
   /** Signed out of the team on this phone: its drafts and unsent messages go with it. */
   async #signedOut(teamId: string): Promise<void> {
+    const owner = this.owner;
+    this.#setState(teamId, "signed-out", null);
     const userId = this.#memo?.users[teamId];
     this.#drop(teamId);
-    if (userId !== undefined) await this.registry.remove({ teamDeploymentId: teamId, userId });
+    if (userId !== undefined)
+      await owner.run(() => this.registry.remove({ teamDeploymentId: teamId, userId }));
     this.#publish();
   }
 
@@ -784,7 +851,11 @@ export class MobileTeams {
 
   async #loadMemo(): Promise<void> {
     if (this.#memo !== null) return;
-    const stored = await this.#files.readFile(this.#usersFile, 256 * 1024).catch(() => null);
+    const owner = this.owner;
+    const stored = await this.#files
+      .readFile(`${this.#usersFile}.${owner.partition}`, 256 * 1024)
+      .catch(() => null);
+    owner.assertCurrent();
     let memo: z.infer<typeof TeamMemoSchema> = {
       schemaVersion: 1,
       users: {},
@@ -818,13 +889,14 @@ export class MobileTeams {
   }
 
   async #saveMemo(): Promise<void> {
-    await this.#files.writeFileAtomic(
-      this.#usersFile,
-      JSON.stringify(TeamMemoSchema.parse(this.#memo)),
-    );
+    const owner = this.owner;
+    owner.assertCurrent();
+    const path = `${this.#usersFile}.${owner.partition}`;
+    await this.#files.writeFileAtomic(path, JSON.stringify(TeamMemoSchema.parse(this.#memo)));
   }
 
   #publish(): void {
+    if (this.owner.signal.aborted) return;
     const state = this.#client.getSnapshot();
     const computerId = state.selection.deploymentId;
     const catalog = new Map(
@@ -876,16 +948,24 @@ export class MobileTeams {
     const held = this.#states.get(team.teamId);
     const session = this.#sessions.get(team.teamId) ?? null;
     const state: TeamState =
-      entry === null || !entry.signedIn
+      entry && this.#client.oauth.isTeamSignInSuppressed(entry.connection)
         ? "signed-out"
-        : (held?.state ?? (session?.getSnapshot().bootstrap ? "live" : "loading"));
+        : (held?.state ??
+          (entry === null || !entry.signedIn
+            ? "signed-out"
+            : session?.getSnapshot().bootstrap
+              ? "live"
+              : "loading"));
     return {
       teamId: team.teamId,
       onPhone: entry !== null,
       name: this.#names.get(team.teamId) ?? team.teamName,
       origin: team.origin,
       state,
-      detail: held?.detail ?? null,
+      detail:
+        held?.detail ??
+        (entry ? this.#client.oauth.hostCredentialState(entry.connection).detail : null) ??
+        null,
       session,
       userId: this.#memo?.users[team.teamId] ?? null,
     };
@@ -901,12 +981,33 @@ const placeholderUser = UserIdSchema.parse("usr_00000000-0000-4000-8000-00000000
 
 /** What a failed team call says about the team, for the drawer and its banner. */
 export function teamFailure(error: unknown): TeamState {
+  if (error instanceof TeamEntryOutcomeError) {
+    if (error.outcome.status === "sign-in-required" || error.outcome.status === "suppressed")
+      return "signed-out";
+    if (error.outcome.status === "update-required")
+      return error.outcome.error instanceof HostVersionMismatchError &&
+        error.outcome.error.code === "client-too-old"
+        ? "update-app"
+        : "update-server";
+  }
+  if (
+    error instanceof TeamEntryRefusedError &&
+    teamEntryRefusalOutcome(error.reason) === "membership"
+  )
+    return "join";
   if (error instanceof HostVersionMismatchError)
     return error.code === "client-too-old" ? "update-app" : "update-server";
   if (error instanceof HostClientRequestError) {
+    if (teamEntryRefusalOutcome(error.reason) === "membership")
+      return error.reason === "removed" ? "removed" : "join";
+    if (teamEntryRefusalOutcome(error.reason) === "retryable") return "offline";
+    if (error.reason === "host-too-old") return "update-server";
+    if (
+      ["client-too-old", "unsupported-version", "api-version-mismatch"].includes(error.reason ?? "")
+    )
+      return "update-app";
     if (error.code === "unauthorized") return "signed-out";
-    if (error.code === "forbidden" || error.code === "not_found") return "removed";
-    if (error.code === "version_mismatch" || error.code === "upgrade_required") return "update-app";
+    if (error.code === "forbidden" || error.code === "not_found") return "offline";
   }
   if (error instanceof TeamAccessError) return "removed";
   return "offline";
@@ -917,7 +1018,10 @@ export function teamFailure(error: unknown): TeamState {
  * inside — the protected credential. One file per partition, so removing a
  * team or a person removes exactly theirs.
  */
-export function teamFilePersistence(files: PrivateFilesystem, directory: string): TeamPersistence {
+export function teamFilePersistence(
+  files: Pick<PrivateFilesystem, "readFile" | "writeFileAtomic" | "ensureDirectory" | "removeFile">,
+  directory: string,
+): TeamPersistence {
   const path = (scope: TeamCacheScope): string =>
     `${directory}/${DeploymentIdSchema.parse(scope.teamDeploymentId)}.${UserIdSchema.parse(scope.userId)}.json`;
   return {
@@ -939,4 +1043,108 @@ export function teamFilePersistence(files: PrivateFilesystem, directory: string)
       await files.removeFile(path(scope));
     },
   };
+}
+
+type Options = ConstructorParameters<typeof MobileTeamRuntime>[0];
+
+/** One service facade; each Account owns an isolated runtime and its entire mutable state. */
+export class MobileTeams {
+  readonly #options: Options;
+  readonly #listeners = new Set<() => void>();
+  #runtime: MobileTeamRuntime;
+  #detachRuntime: (() => void) | null = null;
+  #detachIdentity: (() => void) | null = null;
+  #foreground = true;
+  constructor(options: Options) {
+    this.#options = options;
+    this.#runtime = new MobileTeamRuntime(options);
+  }
+  get owner(): TeamRuntimeOwner {
+    return this.#runtime.owner;
+  }
+  get registry() {
+    return this.#runtime.registry;
+  }
+  readonly getSnapshot = () => this.#runtime.getSnapshot();
+  readonly subscribe = (listener: () => void) => {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  };
+  #publish = () => {
+    for (const listener of this.#listeners) listener();
+  };
+  start(): void {
+    if (this.#detachIdentity) return;
+    this.#detachIdentity = this.#options.client.oauth.subscribeAccountIdentityChanges(() =>
+      this.#establish(),
+    );
+    if (!this.#establish()) {
+      this.#detachRuntime = this.#runtime.subscribe(this.#publish);
+      this.#runtime.start();
+    }
+  }
+  #establish(): boolean {
+    if (this.owner === this.#options.client.oauth.teamRuntime()) return false;
+    this.#detachRuntime?.();
+    this.#runtime.dispose();
+    this.#runtime = new MobileTeamRuntime(this.#options);
+    this.#detachRuntime = this.#runtime.subscribe(this.#publish);
+    this.#runtime.foreground(this.#foreground);
+    this.#runtime.start();
+    this.#publish();
+    return true;
+  }
+  dispose(): void {
+    this.#detachIdentity?.();
+    this.#detachIdentity = null;
+    this.#detachRuntime?.();
+    this.#runtime.dispose();
+  }
+  foreground(active: boolean): void {
+    this.#foreground = active;
+    this.#runtime.foreground(active);
+  }
+  #run<Value>(work: (runtime: MobileTeamRuntime) => Promise<Value>): Promise<Value> {
+    const runtime = this.#runtime;
+    return runtime.owner.run(() => work(runtime));
+  }
+  readonly team = (...args: Parameters<MobileTeamRuntime["team"]>) => this.#runtime.team(...args);
+  readonly teamAt = (...args: Parameters<MobileTeamRuntime["teamAt"]>) =>
+    this.#runtime.teamAt(...args);
+  readonly teamsOn = (...args: Parameters<MobileTeamRuntime["teamsOn"]>) =>
+    this.#runtime.teamsOn(...args);
+  readonly computersIn = (...args: Parameters<MobileTeamRuntime["computersIn"]>) =>
+    this.#runtime.computersIn(...args);
+  readonly forgetMembers = (...args: Parameters<MobileTeamRuntime["forgetMembers"]>) =>
+    this.#runtime.forgetMembers(...args);
+  readonly addToPhone = (...args: Parameters<MobileTeamRuntime["addToPhone"]>) =>
+    this.#run((runtime) => runtime.addToPhone(...args));
+  readonly session = (...args: Parameters<MobileTeamRuntime["session"]>) =>
+    this.#run((runtime) => runtime.session(...args));
+  readonly select = (...args: Parameters<MobileTeamRuntime["select"]>) =>
+    this.#runtime.select(...args);
+  readonly refresh = (...args: Parameters<MobileTeamRuntime["refresh"]>) =>
+    this.#run((runtime) => runtime.refresh(...args));
+  readonly members = (...args: Parameters<MobileTeamRuntime["members"]>) =>
+    this.#run((runtime) => runtime.members(...args));
+  readonly destination = (...args: Parameters<MobileTeamRuntime["destination"]>) =>
+    this.#run((runtime) => runtime.destination(...args));
+  readonly locate = (...args: Parameters<MobileTeamRuntime["locate"]>) =>
+    this.#run((runtime) => runtime.locate(...args));
+  readonly verifyTeam = (...args: Parameters<MobileTeamRuntime["verifyTeam"]>) =>
+    this.#run((runtime) => runtime.verifyTeam(...args));
+  readonly signIn = (...args: Parameters<MobileTeamRuntime["signIn"]>) =>
+    this.#run((runtime) => runtime.signIn(...args));
+  readonly enter = (...args: Parameters<MobileTeamRuntime["enter"]>) =>
+    this.#run((runtime) => runtime.enter(...args));
+  readonly restore = (...args: Parameters<MobileTeamRuntime["restore"]>) =>
+    this.#run((runtime) => runtime.restore(...args));
+  readonly adopt = (...args: Parameters<MobileTeamRuntime["adopt"]>) =>
+    this.#run((runtime) => runtime.adopt(...args));
+  readonly redeem = (...args: Parameters<MobileTeamRuntime["redeem"]>) =>
+    this.#run((runtime) => runtime.redeem(...args));
+  readonly leave = (...args: Parameters<MobileTeamRuntime["leave"]>) =>
+    this.#run((runtime) => runtime.leave(...args));
+  readonly forget = (...args: Parameters<MobileTeamRuntime["forget"]>) =>
+    this.#run((runtime) => runtime.forget(...args));
 }

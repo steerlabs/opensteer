@@ -1,3 +1,4 @@
+import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { useCallback, useRef, useState, useSyncExternalStore } from "react";
 import { useLocation, useNavigate } from "react-router";
 import type { TeamSessionClient, TeamSessionSnapshot } from "@opensteer/client/team";
@@ -247,6 +248,7 @@ export function TeamSideFor({
   const { openInvite, openNewChannel, openNewMessage } = useTeamDialogs();
   const connection = useTeamSessionValue(client, selectConnection);
   const ended = useTeamSessionValue(client, (snapshot) => snapshot?.ended ?? null);
+  const refusal = useTeamSessionValue(client, (snapshot) => snapshot?.refusalReason ?? null);
   const [loadingMore, setLoadingMore] = useState(false);
   const navigate = useNavigate();
   const { pathname } = useLocation();
@@ -280,25 +282,39 @@ export function TeamSideFor({
       ended
         ? surface === "team-web"
           ? window.location.reload()
-          : go("/teams")
+          : enter && (ended === "sign-in" || ended === "viewer-changed")
+            ? void enter(teamId).catch((error: unknown) => toast.error(actionErrorMessage(error)))
+            : go("/teams")
         : client?.connect(),
   });
   const hrefFor = useCallback((channelId: string) => channelPath(teamId, channelId), [teamId]);
   if (!team) return null;
-  if (!team.client)
+  if (!team.client || teamEntryRefusalOutcome(refusal) === "membership")
     return (
       <div className="team-left">
         <TeamTile tile={teamTile(team.teamId, team.name)} />
         <div className="team-left__text">
           <p className="team-left__title">{team.name}</p>
           <p className="team-left__detail">
-            {enter ? "Not signed in on this computer" : `Opens at ${new URL(team.origin).host}`}
+            {team.failure === "pending"
+              ? "Opening team…"
+              : team.failure === "unavailable"
+                ? "Team temporarily unavailable. Try again."
+                : team.failure === "update-app"
+                  ? "Update Opensteer to open this team."
+                  : team.failure === "update-server"
+                    ? "This team's server needs an update."
+                    : team.failure === "join" || teamEntryRefusalOutcome(refusal) === "membership"
+                      ? "Ask a team member for an invite."
+                      : enter
+                        ? "Not signed in on this computer"
+                        : `Opens at ${new URL(team.origin).host}`}
           </p>
         </div>
         {enter ? (
           <button
             className="btn btn--small"
-            disabled={entering}
+            disabled={entering || team.failure === "pending"}
             onClick={() => {
               setEntering(true);
               void enter(team.teamId)
@@ -307,7 +323,15 @@ export function TeamSideFor({
             }}
             type="button"
           >
-            {entering ? "Signing in…" : "Sign in"}
+            {entering || team.failure === "pending"
+              ? "Opening…"
+              : team.failure === "unavailable" ||
+                  team.failure === "update-app" ||
+                  team.failure === "update-server"
+                ? "Retry"
+                : team.failure === "join" || teamEntryRefusalOutcome(refusal) === "membership"
+                  ? "Join"
+                  : "Sign in"}
           </button>
         ) : (
           <a className="btn btn--small" href={team.origin} rel="noreferrer" target="_blank">

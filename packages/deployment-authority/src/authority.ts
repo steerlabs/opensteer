@@ -170,6 +170,8 @@ export const HostCapabilitySchema = z.enum([
   "voice-run-v1",
   /** Team Hosts: `POST /v1/team/session/exchange` turns an Account team identity assertion into a session. */
   "team-session-exchange-v1",
+  /** Team web sign-in preserves the native authorization return. */
+  "team-native-browser-return-v1",
   /**
    * Team Hosts: one current reusable invite (`team.invite.reset`, `team.invite.current.get`)
    * and `POST /v1/team/invites/preview`.

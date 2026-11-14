@@ -133,16 +133,11 @@ describe("team session lifecycle", () => {
   });
 
   it.each(["desktop", "web", "mobile"] as const)(
-    "rejoins %s as the same viewer only after the ended partition is removed",
+    "rejoins %s as the same viewer with drafts preserved after reauthentication",
     async (platform) => {
       const host = new MockTeamHost();
       const persistence = createMemoryTeamPersistence();
-      const cleanup = Promise.withResolvers<void>();
-      const remove = persistence.remove.bind(persistence);
-      vi.spyOn(persistence, "remove").mockImplementation(async (selected) => {
-        await cleanup.promise;
-        await remove(selected);
-      });
+      const remove = vi.spyOn(persistence, "remove");
       const create = vi.fn((selected: TeamCacheScope) => ({
         scope: selected,
         persistence,
@@ -163,16 +158,14 @@ describe("team session lifecycle", () => {
         await first.setDraft(channelScope, "Old credentials");
         authenticated = false;
         host.dispose();
-        await vi.waitFor(() => expect(persistence.remove).toHaveBeenCalledOnce(), {
+        await vi.waitFor(() => expect(first.getSnapshot().ended).toBe("sign-in"), {
           timeout: 1000,
         });
         expect(first.getSnapshot().ended).toBe("sign-in");
         authenticated = true;
         const joining = Promise.all([registry.join(scope), registry.join(scope)]);
         await Promise.resolve();
-        expect(create).toHaveBeenCalledOnce();
         expect(host.socketCount).toBe(0);
-        cleanup.resolve();
         const [second, concurrent] = await joining;
         expect(second).not.toBe(first);
         expect(concurrent).toBe(second);
@@ -181,7 +174,7 @@ describe("team session lifecycle", () => {
           timeout: 1000,
         });
         expect(second.getSnapshot().bootstrap?.member.userId).toBe(mockTeamUserId);
-        expect(second.getSnapshot().drafts).toEqual({});
+        expect(Object.values(second.getSnapshot().drafts)).toEqual(["Old credentials"]);
         expect(host.socketCount).toBe(1);
         await second.setDraft(channelScope, "Fresh credentials");
         await first.load();
@@ -198,9 +191,8 @@ describe("team session lifecycle", () => {
           () => expect(second.getSnapshot().channel?.messages[0]?.bodyMarkdown).toBe("match 0"),
           { timeout: 1000 },
         );
-        expect(persistence.remove).toHaveBeenCalledOnce();
+        expect(remove).not.toHaveBeenCalled();
       } finally {
-        cleanup.resolve();
         registry.dispose();
         host.dispose();
       }
@@ -217,7 +209,11 @@ describe("team session lifecycle", () => {
       const read = f.host.read.bind(f.host);
       vi.spyOn(f.host, "read").mockImplementation((name, input) => {
         if (name === "team.bootstrap.get")
-          throw new OpensteerError({ code: "forbidden", message: "Membership removed" });
+          throw new OpensteerError({
+            code: "forbidden",
+            reason: "removed",
+            message: "Membership removed",
+          });
         return read(name, input);
       });
       f.host.dispose();

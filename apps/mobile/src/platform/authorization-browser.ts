@@ -24,18 +24,16 @@ export interface AuthorizationSessionOpener {
  * authentication session, so the returned URL is fed to the broker rather than
  * waiting for the operating system to route the scheme to a cold start.
  *
- * The redirect this session watches for is read out of the authorize URL's own
- * `redirect_uri`, and must be one of this build's two registered callbacks: an
- * authorize URL pointing anywhere else is refused before a browser opens, so a
- * tampered issuer cannot make the app watch for a redirect it does not own.
+ * The OAuth owner supplies the callback for invite continuations. Only this
+ * build's registered callbacks can open a system authorization session.
  */
 export function createAuthorizationBrowser(options: {
   readonly broker: { accept(url: string): boolean; settled(): Promise<void> };
   readonly browser: AuthorizationSessionOpener;
   readonly oauth: NativeOAuthIdentity;
-}): (url: string) => Promise<void> {
-  return async (url) => {
-    const redirect = authorizationRedirectOf(url, options.oauth);
+}): (url: string, callback?: string) => Promise<void> {
+  return async (url, callback) => {
+    const redirect = authorizationRedirectOf(url, options.oauth, callback);
     // Host OAuth may federate to the Account immediately after Account OAuth.
     // Sharing the system browser's cookies turns that second trip into a
     // redirect instead of asking the person to authenticate twice.
@@ -98,7 +96,11 @@ export function createIntegrationAuthorizationBrowser(options: {
   };
 }
 
-export function authorizationRedirectOf(authorizeUrl: string, oauth: NativeOAuthIdentity): string {
+export function authorizationRedirectOf(
+  authorizeUrl: string,
+  oauth: NativeOAuthIdentity,
+  callback?: string,
+): string {
   let parsed: URL;
   try {
     parsed = new URL(authorizeUrl);
@@ -108,7 +110,7 @@ export function authorizationRedirectOf(authorizeUrl: string, oauth: NativeOAuth
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     throw new Error("An authorization address must be served over HTTP.");
   }
-  const redirect = parsed.searchParams.get("redirect_uri");
+  const redirect = callback ?? parsed.searchParams.get("redirect_uri");
   if (redirect !== oauth.accountCallback && redirect !== oauth.hostCallback) {
     throw new Error("This authorization address does not return to Opensteer on this device.");
   }

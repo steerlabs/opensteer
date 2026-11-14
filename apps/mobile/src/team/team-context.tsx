@@ -14,7 +14,6 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
@@ -78,7 +77,8 @@ export function useTeamsSnapshot(): MobileTeamsSnapshot {
 }
 
 export function useTeam(teamId: string): MobileTeam | null {
-  return useTeamsSnapshot().teams.find((team) => team.teamId === teamId) ?? null;
+  const snapshot = useTeamsSnapshot();
+  return [...snapshot.teams, ...snapshot.unlinked].find((team) => team.teamId === teamId) ?? null;
 }
 
 const emptySnapshot: TeamSessionSnapshot = {
@@ -194,32 +194,50 @@ export function useTeamPreviews(
   messages: readonly TeamMessage[],
 ): ReadonlyMap<string, string> {
   const [previews, setPreviews] = useState<ReadonlyMap<string, string>>(new Map());
-  const asked = useRef(new Set<string>());
+  const lifetime = useMemo(() => ({ current: true, asked: new Set<string>() }), [session]);
+  useEffect(() => {
+    lifetime.current = true;
+    setPreviews(new Map());
+    return () => {
+      lifetime.current = false;
+    };
+  }, [lifetime]);
   useEffect(() => {
     if (session === null) return;
     for (const message of messages) {
       for (const file of message.attachments) {
-        if (file.preview === null || asked.current.has(file.id)) continue;
-        asked.current.add(file.id);
+        if (file.preview === null || lifetime.asked.has(file.id)) continue;
+        lifetime.asked.add(file.id);
         void session
           .file(file)
-          .then((blob) => (blob === null ? null : dataUri(blob)))
+          .then((blob) => (blob === null ? null : dataUri(blob, session.signal)))
           .then(
             (uri) => {
-              if (uri !== null) setPreviews((held) => new Map(held).set(file.id, uri));
+              if (lifetime.current && !session.signal.aborted && uri !== null)
+                setPreviews((held) => new Map(held).set(file.id, uri));
             },
-            () => asked.current.delete(file.id),
+            () => lifetime.asked.delete(file.id),
           );
       }
     }
-  }, [messages, session]);
-  return previews;
+  }, [messages, session, lifetime]);
+  return session?.signal.aborted ? new Map() : previews;
 }
 
 /** A Blob the platform made, as something an Image can draw. */
-export function dataUri(blob: Blob): Promise<string> {
+export function dataUri(blob: Blob, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
+    const abort = () => {
+      reader.abort();
+      reject(signal?.reason);
+    };
+    if (signal?.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    signal?.addEventListener("abort", abort, { once: true });
+    reader.onloadend = () => signal?.removeEventListener("abort", abort);
     reader.onerror = () => reject(new Error("The file could not be read."));
     reader.onload = () =>
       typeof reader.result === "string"

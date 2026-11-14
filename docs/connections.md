@@ -198,6 +198,10 @@ selection; Set up again after confirmed removal needs a fresh identity. Late exc
 session artifacts. Other Deployments and the hosting supervisor keep their authority. Leave and
 Account sign-out are in [Runner and desktop](computers.md#runner-and-desktop).
 
+Pinned team transports recover against their own attachment, independently of the selected personal
+Host. A 401 permits one serialized credential refresh and one replay behind the attachment fence;
+an unavailable refresh stays retryable and preserves credentials, drafts and pending sends.
+
 ## The place list
 
 Account rows show only while signed in: expiry hides them, sign-out removes them. Status comes only
@@ -206,3 +210,6 @@ verified Account read or an identity-checked manual probe. A failed check is nev
 and a failed refresh never renews stale evidence. Only the Account refusing the refresh grant ends
 its session; network failure, rate limiting and outage stay retryable
 ([`deployment-access-service.ts`](../apps/desktop/src/connections/deployment-access-service.ts)).
+
+Native team entry, Account runtime ownership and their independent lifetimes are described in
+[Team entry](teams.md#entering-a-team).

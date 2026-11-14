@@ -16,3 +16,4 @@ export * from "./mock-hosted-teams.js";
 export * from "./hosted-team-address.js";
 export * from "../mock/mock-team-world.js";
 export * from "./team-memberships.js";
+export * from "./team-runtime-owner.js";
