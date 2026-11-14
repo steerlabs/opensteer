@@ -10775,7 +10775,7 @@ class MockHostState {
         {
           text: [
             `${heading}: ${worker.title}`,
-            `Task Thread: ${worker.id} · Assignment: ${assignment.id}`,
+            `Task: ${worker.id} · Delegation: ${assignment.id}`,
             ...(assignment.resultText ? ["", assignment.resultText] : []),
           ].join("\n"),
           type: "text",
