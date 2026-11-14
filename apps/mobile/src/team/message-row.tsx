@@ -1,13 +1,29 @@
-import { memo, type ReactNode } from "react";
+import type { TeamAskOwnerControl } from "@opensteer/client/team";
+import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
-import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
+import {
+  color,
+  controlFontScaleLimit,
+  material,
+  pillHeight,
+  radius,
+  space,
+  touchTarget,
+} from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { MessageAttachments } from "./attachments.js";
 import { MessageBody } from "./message-body.js";
 import { AgentStatusCard } from "./status-card.js";
 import type { StatusFace } from "./status-words.js";
-import { Avatar, FaceStack } from "./team-marks.js";
-import type { AgentCardView, MessageView, ThreadSummaryView } from "./team-models.js";
+import { AgentOrb, Avatar, FaceStack } from "./team-marks.js";
+import type {
+  AgentCardView,
+  AskStatusView,
+  MessageView,
+  ThreadSummaryView,
+} from "./team-models.js";
+
+type AskDecision = Extract<TeamAskOwnerControl, { readonly kind: "decide" }>;
 
 /** The face column every row shares, so names and words line up down the timeline. */
 export const faceColumn = 36;
@@ -22,6 +38,10 @@ export interface MessageRowActions {
   /** The owner's own agent reply: its private task. */
   readonly onOpenTask: (messageId: string) => void;
   readonly onUnsent: (messageId: string, choice: "edit" | "delete" | "retry") => void;
+  /** The reader answers an ask of their own agent, as the teammate wrote it. */
+  readonly onDecideAsk: (control: AskDecision, decision: "approve" | "decline") => Promise<void>;
+  /** Opens the reader's task an ask waits in. */
+  readonly onOpenAskTask: (threadId: string) => void;
 }
 
 /**
@@ -105,9 +125,7 @@ export const MessageRow = memo(
             </View>
           ) : null}
           {message.askStatuses?.map((status) => (
-            <AppText key={status.id} role="caption" tone="muted">
-              {status.label}
-            </AppText>
+            <AskStatus actions={actions} key={status.id} status={status} />
           ))}
           {message.agentRun === null ? null : (
             <View style={styles.runFoot}>
@@ -137,6 +155,113 @@ export const MessageRow = memo(
     left.message.continued === right.message.continued &&
     left.message.send === right.message.send,
 );
+
+/**
+ * Where an ask of someone's agent stands. Its owner answers here instead,
+ * unless they already changed the task's copy, which only the task can show.
+ */
+function AskStatus(props: {
+  readonly actions: MessageRowActions;
+  readonly status: AskStatusView;
+}): ReactNode {
+  const { actions, status } = props;
+  const { control } = status;
+  if (control.kind === "decide")
+    return <AskDecisionControl control={control} onDecide={actions.onDecideAsk} />;
+  if (control.kind === "review-edited")
+    return (
+      <View style={styles.askLine}>
+        <AppText role="caption" tone="muted">
+          Edited
+        </AppText>
+        <TextAction label="Review" onPress={() => actions.onOpenAskTask(control.threadId)} />
+      </View>
+    );
+  return (
+    <AppText role="caption" tone="muted">
+      {status.label}
+    </AppText>
+  );
+}
+
+/**
+ * One plate split in two, the agent's orb on the side that sends it to work.
+ * The faces are compact, as everything under a chat message is; each half
+ * still takes a full touch.
+ */
+function AskDecisionControl(props: {
+  readonly control: AskDecision;
+  readonly onDecide: MessageRowActions["onDecideAsk"];
+}): ReactNode {
+  const [pending, setPending] = useState<"approve" | "decline" | null>(null);
+  const mounted = useRef(true);
+  useEffect(
+    () => () => {
+      mounted.current = false;
+    },
+    [],
+  );
+  const decide = (decision: "approve" | "decline"): void => {
+    if (pending !== null) return;
+    setPending(decision);
+    void props.onDecide(props.control, decision).finally(() => {
+      if (mounted.current) setPending(null);
+    });
+  };
+  return (
+    <View style={styles.split}>
+      <Pressable
+        accessibilityHint="Your agent works on it on your computer and replies here"
+        accessibilityRole="button"
+        accessibilityState={{ busy: pending === "approve", disabled: pending !== null }}
+        disabled={pending !== null}
+        onPress={() => decide("approve")}
+        style={styles.splitHit}
+      >
+        {({ pressed }) => (
+          <View style={[styles.splitFace, styles.splitLead, pressed && styles.splitPressed]}>
+            {pending === "approve" ? (
+              <ActivityIndicator color={color.ember} size="small" style={styles.splitSpinner} />
+            ) : (
+              <AgentOrb size={14} />
+            )}
+            <AppText
+              maxFontSizeMultiplier={controlFontScaleLimit}
+              numberOfLines={1}
+              role="caption"
+              style={styles.splitGo}
+            >
+              Let my agent answer
+            </AppText>
+          </View>
+        )}
+      </Pressable>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ busy: pending === "decline", disabled: pending !== null }}
+        disabled={pending !== null}
+        onPress={() => decide("decline")}
+        style={styles.splitHit}
+      >
+        {({ pressed }) => (
+          <View style={[styles.splitFace, styles.splitTrail, pressed && styles.splitPressed]}>
+            {pending === "decline" ? (
+              <ActivityIndicator color={color.muted} size="small" style={styles.splitSpinner} />
+            ) : null}
+            <AppText
+              maxFontSizeMultiplier={controlFontScaleLimit}
+              numberOfLines={1}
+              role="caption"
+              style={styles.splitNo}
+            >
+              Decline
+            </AppText>
+          </View>
+        )}
+      </Pressable>
+    </View>
+  );
+}
 
 /** The time, or what is keeping the message from being sent. */
 function SendStateLabel(props: { readonly message: MessageView }): ReactNode {
@@ -313,6 +438,38 @@ const factTone = StyleSheet.create({
 });
 
 const styles = StyleSheet.create({
+  askLine: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: space[8],
+    minHeight: touchTarget - 8,
+  },
+  // Under the words, at the touch's full height; the faces are drawn inside it.
+  split: { alignSelf: "flex-start", flexDirection: "row", marginTop: 2 },
+  splitFace: {
+    ...material.plate,
+    alignItems: "center",
+    borderColor: color.lineStrong,
+    flexDirection: "row",
+    gap: space[6],
+    minHeight: pillHeight,
+    paddingHorizontal: space[10] + 1,
+  },
+  splitGo: { color: color.text, fontWeight: "600" },
+  splitHit: { justifyContent: "center", minHeight: touchTarget },
+  // The two halves meet in one rule, the plate's own edge.
+  splitLead: {
+    borderBottomLeftRadius: radius.sm,
+    borderRightWidth: 0,
+    borderTopLeftRadius: radius.sm,
+  },
+  splitNo: { color: color.textSoft, fontWeight: "500" },
+  splitPressed: { backgroundColor: material.selected.backgroundColor },
+  splitSpinner: { height: 14, transform: [{ scale: 0.7 }], width: 14 },
+  splitTrail: {
+    borderBottomRightRadius: radius.sm,
+    borderTopRightRadius: radius.sm,
+  },
   day: { alignItems: "center", flexDirection: "row", gap: space[10], paddingVertical: space[12] },
   dayLabel: { color: color.muted, fontWeight: "600" },
   dayRule: { backgroundColor: color.line, flex: 1, height: StyleSheet.hairlineWidth },

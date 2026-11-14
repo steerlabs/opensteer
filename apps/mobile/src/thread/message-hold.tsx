@@ -6,6 +6,7 @@ import { contactSupport } from "../report-mail.js";
 import { color, type } from "../theme.js";
 import { Sheet } from "../ui/sheet.js";
 import { HoldMenu } from "./hold-menu.js";
+import type { LinkAction } from "./link-context.js";
 import {
   messageActions,
   type MessageAction,
@@ -98,6 +99,33 @@ export function MessageHold(
         </Sheet>
       ) : null}
     </>
+  );
+}
+
+/**
+ * A message still waiting for the agent: held, the actions the Host allows on
+ * it; tapped, whatever the list of waiting messages makes of a tap.
+ */
+export function WaitingHold(props: {
+  readonly actions: readonly LinkAction[];
+  readonly children: ReactNode;
+  readonly onAction: (id: string) => void;
+  readonly onPress?: (() => void) | undefined;
+  readonly previewBottomEndRadius: number;
+  readonly previewRadius: number;
+  readonly style?: StyleProp<ViewStyle>;
+}): ReactNode {
+  return (
+    <HoldMenu
+      actions={props.actions}
+      onAction={props.onAction}
+      onPress={props.onPress}
+      previewBottomEndRadius={props.previewBottomEndRadius}
+      previewRadius={props.previewRadius}
+      style={props.style}
+    >
+      {props.children}
+    </HoldMenu>
   );
 }
 

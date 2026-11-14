@@ -83,6 +83,11 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
   readonly threadId: string;
   /** What covers the pane's top: the bar, or a floating title beside a page. */
   readonly top: number;
+  /**
+   * A field in the conversation itself holds the keyboard, such as a waiting
+   * message open in place: the page folds as it does when there is no room.
+   */
+  readonly yielding?: boolean;
 }): ReactNode {
   const { beside, clearance, hostClient, onInset, threadId, top } = props;
   const entry = useRunPlace(hostClient, props.runId);
@@ -142,7 +147,7 @@ export const RunPageSlot = memo(function RunPageSlot(props: {
           transcript: Math.round(runPageKeptTranscript * Math.min(fontScale, 2)),
           width: Math.min(size.width, column),
         });
-  const fits = page !== null;
+  const fits = page !== null && props.yielding !== true;
   // The size is whole points; Android lays out in fractions, so a page as wide as the pane
   // falls short of it by less than one.
   const fullWidth = page !== null && page.width >= Math.floor(size.width);

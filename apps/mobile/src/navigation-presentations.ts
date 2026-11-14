@@ -20,6 +20,7 @@ export const screenPresentations = {
   ConversationActivity: "formSheet",
   ThreadAround: "formSheet",
   RunningNow: "formSheet",
+  MessageHistory: "formSheet",
   QuietlyMoved: "formSheet",
   NotificationsIntro: "formSheet",
   Settings: "modal",

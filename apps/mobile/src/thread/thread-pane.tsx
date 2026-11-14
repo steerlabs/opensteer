@@ -35,11 +35,13 @@ import {
   type TranscriptGroup,
   type TranscriptVoice,
   type ThreadSummary,
+  type WaitingAsk,
+  type WaitingInput,
 } from "@opensteer/client/host";
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
 import type { BrowserPageContentPart } from "@opensteer/core";
 import { useTeamsSnapshot } from "../team/team-context.js";
-import { useHostSnapshot, useThreadInputQueue } from "@opensteer/client/react";
+import { useHostSnapshot, useThreadInputQueue, useWaitingInputs } from "@opensteer/client/react";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { conversationActions } from "./conversation-actions.js";
 import {
@@ -71,7 +73,7 @@ import {
 import Animated from "react-native-reanimated";
 import { canRespondToRequests, showsHostLive } from "@opensteer/client/host";
 import type { ThreadDraftQuote } from "../client/thread-drafts.js";
-import type { ArtifactContentPart } from "@opensteer/core";
+import type { ArtifactContentPart, ContentPart } from "@opensteer/core";
 import {
   paramsDestination,
   sameDestination,
@@ -115,7 +117,9 @@ import { AgentListNestedContext, AgentMemoryContext } from "./subagent-rows.js";
 import { RunningNowCapsule } from "./running-now.js";
 import { RunPageSlot } from "./run-page.js";
 import { PasswordsSuggestion } from "./passwords-suggestion.js";
-import { QueuedMessages } from "./queued-messages.js";
+import { useWaitingEdit } from "./waiting-edit.js";
+import { useAskDecisions, WaitingAskDock, WaitingEditBar } from "./waiting-dock.js";
+import { WaitingInputs } from "./waiting-inputs.js";
 import {
   TranscriptComputersContext,
   computerLine,
@@ -445,16 +449,30 @@ function ThreadPaneForUser(
   }, [atTail, deploymentId, focused, historical, notifications, props.threadId]);
 
   const inputQueue = useThreadInputQueue(hostClient, threadId);
-  // A queued message taken back to be reworded, on its way into the composer.
+  const waiting = useWaitingInputs(hostClient, threadId);
+  const editing = useWaitingEdit(hostClient, threadId, waiting);
+  const askDecisions = useAskDecisions(hostClient);
+  // Words handed to the composer: an update to answer, or an edit the agent
+  // took first, on its way to being sent as a new message.
   const [restoredDraft, setRestoredDraft] = useState<{
     readonly attachments?: readonly ArtifactContentPart[];
     readonly key: number;
     readonly quote?: ThreadDraftQuote | null;
     readonly text: string;
   } | null>(null);
-  const restoreQueuedDraft = useCallback(
-    (message: { readonly attachments: readonly ArtifactContentPart[]; readonly text: string }) =>
-      setRestoredDraft((current) => ({ ...message, key: (current?.key ?? 0) + 1 })),
+  const sendAsNew = useCallback(
+    (words: { readonly parts: readonly ContentPart[]; readonly text: string } | null) => {
+      if (words === null) return;
+      // Files go with it by reference; a page or app it named was this edit's alone.
+      const attachments = words.parts.filter(
+        (part): part is ArtifactContentPart => part.type === "artifact",
+      );
+      setRestoredDraft((current) => ({
+        attachments,
+        key: (current?.key ?? 0) + 1,
+        text: words.text,
+      }));
+    },
     [],
   );
 
@@ -1037,13 +1055,16 @@ function ThreadPaneForUser(
   const queueCanRespond = canRespond && thread?.status !== "archived";
   const queueFooter = useMemo(
     () =>
-      thread !== null && !conversational && inputQueue !== null ? (
+      // An open edit stays drawn whatever the queue says, so its words are never lost.
+      thread !== null && !conversational && (waiting !== null || editing.edit !== null) ? (
         <TranscriptHostClientContext value={hostClient}>
-          <QueuedMessages
+          <WaitingInputs
             canRespond={queueCanRespond}
+            editing={editing}
             hostClient={hostClient}
-            onEdit={restoreQueuedDraft}
-            queue={inputQueue}
+            items={waiting ?? noWaiting}
+            paused={inputQueue?.paused ?? false}
+            threadId={threadId}
             viewerUserId={viewerUserId}
           />
         </TranscriptHostClientContext>
@@ -1052,12 +1073,24 @@ function ThreadPaneForUser(
       thread,
       conversational,
       inputQueue,
+      waiting,
+      editing,
       queueCanRespond,
       hostClient,
-      restoreQueuedDraft,
+      threadId,
       viewerUserId,
     ],
   );
+  // The first ask still waiting for its answer, decided from the dock.
+  const dockedAsk =
+    conversational || !queueCanRespond
+      ? null
+      : (waiting?.find((item): item is WaitingAsk => item.kind === "ask" && !item.approving) ??
+        null);
+  const editedItem =
+    editing.edit === null
+      ? null
+      : (waiting?.find((item) => item.messageId === editing.edit?.messageId) ?? null);
   const passwordsOffer = useMemo(() => passwordsSetupOffer(groups), [groups]);
   const listFooter =
     passwordsOffer !== null && viewerUserId !== null && !(voiceThread && onCall) ? (
@@ -1278,6 +1311,7 @@ function ThreadPaneForUser(
           scrolledUp={historical || !atTail}
           threadId={threadId}
           top={headerClearance}
+          yielding={editing.edit !== null}
         />
       )}
       {/* An older window has to be left deliberately, and the way out is to
@@ -1329,10 +1363,14 @@ function ThreadPaneForUser(
       </OverDock>
     </View>
   );
+  // While a waiting message is open in place, the dock is its edit bar alone:
+  // with the keyboard up on a small phone, anything else docked here leaves
+  // no room for the words being edited. It all returns on Save or Cancel.
+  const editingInPlace = editing.edit !== null;
   const dock = (
     <>
       {/* An older window can't say what runs now; back at the latest, it returns. */}
-      {snapshot.user === null || voiceThread || historical ? null : (
+      {snapshot.user === null || voiceThread || historical || editingInPlace ? null : (
         <RunningNowCapsule
           hostClient={hostClient}
           onOpen={openRunningNow}
@@ -1361,10 +1399,10 @@ function ThreadPaneForUser(
       ) : null}
       {snapshot.user === null ? null : (
         <>
-          {voiceThread && onCall ? null : (
+          {(voiceThread && onCall) || editingInPlace ? null : (
             <ThreadServerApprovals hostClient={hostClient} threadId={thread.id} />
           )}
-          {voiceThread && onCall ? null : (
+          {(voiceThread && onCall) || editingInPlace ? null : (
             <WaitingQuestions
               canRespond={canRespond}
               deploymentId={props.deploymentId}
@@ -1396,83 +1434,103 @@ function ThreadPaneForUser(
               <UsageNotice notice={usageNotice} onOpen={openSettings} />
             </>
           ) : (
-            <View>
-              <Composer
-                variant={conversational ? "conversation" : "work"}
-                voice={false}
-                accessMode={thread.accessMode}
-                accessModes={placement?.accessModes ?? null}
-                canRespond={canRespond}
-                deploymentId={props.deploymentId}
-                // Identity, not decoration: the composer's draft and its pending
-                // command belong to one Thread on one Deployment, so a navigation to
-                // another Thread builds a new one rather than inheriting this one's.
-                key={`${props.deploymentId}:${snapshot.user.id}:${thread.id}`}
-                disabledReason={disabledReason}
-                readOnly={thread.status === "archived"}
-                drafts={client.drafts}
-                driverKind={placement?.driverKind}
-                executionBlockedReason={
-                  placement === null
-                    ? "This AI account is no longer here."
-                    : !placement.available
-                      ? placement.detail
-                      : null
-                }
-                engineName={placement?.engineName ?? thread.harnessLabel}
-                usageNotice={usageNotice}
-                highlightRequestId={props.requestId}
-                hostClient={props.hostClient}
-                // A thread with no model chosen yet says so on the pill, rather
-                // than naming a blank.
-                modelLabel={thread.modelLabel.trim() === "" ? "Choose model" : thread.modelLabel}
-                model={
-                  placement?.models.find(
-                    (m) =>
-                      m.providerId === thread.modelSelection.providerId &&
-                      m.modelId === thread.modelSelection.modelId,
-                  ) ?? null
-                }
-                modelOptions={thread.modelSelection.options}
-                mutationGate={mutationGate}
-                conversationActions={actionsBesidePage}
-                page={companion?.page ?? null}
-                onChangeModel={openSettings}
-                placeholder={
-                  teamOrigin !== null
-                    ? "Message your agent privately"
-                    : threadComposerPlaceholder(items.length === 0 && !canLoadEarlier)
-                }
-                requests={dockableRequests}
-                restore={restoredDraft}
-                running={stopTarget !== null}
-                // A task card in a conversation stops its own task, and a task's
-                // title menu stops the task. In a conversation this ends only the
-                // reply under way; in a task it leaves the task paused.
-                stopLabel={
-                  conversational
-                    ? "Stop the reply"
-                    : task?.open === true
-                      ? "Pause this task"
-                      : "Stop this run"
-                }
-                runStopping={activity === "stopping"}
-                // The sheet's own guard, in the sheet's own words: the model pill
-                // and the access menu change the same settings from here, so a
-                // change already in flight — including one whose sheet has since
-                // been dismissed — has to close both doors, not just that one.
-                settingsDisabledReason={settingsDisabledReason({
-                  canRespond,
-                  hasRun: threadRuns.length > 0,
-                  mutationOwner,
-                  kind: "thread",
-                  thread,
-                })}
-                subagentTitles={subagentTitles}
-                threadId={thread.id}
-                user={snapshot.user}
-              />
-            </View>
+            <>
+              {editingInPlace ? (
+                <WaitingEditBar
+                  canRespond={queueCanRespond}
+                  decisions={askDecisions}
+                  editing={editing}
+                  item={editedItem}
+                  onSendAsNew={sendAsNew}
+                />
+              ) : dockedAsk === null ? null : (
+                <Animated.View entering={enter} exiting={exit} key={dockedAsk.messageId}>
+                  <WaitingAskDock
+                    ask={dockedAsk}
+                    canRespond={queueCanRespond}
+                    decisions={askDecisions}
+                  />
+                </Animated.View>
+              )}
+              {/* Kept mounted while a waiting message is edited: it owns a send in flight. */}
+              <View style={editingInPlace ? styles.hidden : undefined}>
+                <Composer
+                  variant={conversational ? "conversation" : "work"}
+                  voice={false}
+                  accessMode={thread.accessMode}
+                  accessModes={placement?.accessModes ?? null}
+                  canRespond={canRespond}
+                  deploymentId={props.deploymentId}
+                  // Identity, not decoration: the composer's draft and its pending
+                  // command belong to one Thread on one Deployment, so a navigation to
+                  // another Thread builds a new one rather than inheriting this one's.
+                  key={`${props.deploymentId}:${snapshot.user.id}:${thread.id}`}
+                  disabledReason={disabledReason}
+                  readOnly={thread.status === "archived"}
+                  drafts={client.drafts}
+                  driverKind={placement?.driverKind}
+                  executionBlockedReason={
+                    placement === null
+                      ? "This AI account is no longer here."
+                      : !placement.available
+                        ? placement.detail
+                        : null
+                  }
+                  engineName={placement?.engineName ?? thread.harnessLabel}
+                  usageNotice={usageNotice}
+                  highlightRequestId={props.requestId}
+                  hostClient={props.hostClient}
+                  // A thread with no model chosen yet says so on the pill, rather
+                  // than naming a blank.
+                  modelLabel={thread.modelLabel.trim() === "" ? "Choose model" : thread.modelLabel}
+                  model={
+                    placement?.models.find(
+                      (m) =>
+                        m.providerId === thread.modelSelection.providerId &&
+                        m.modelId === thread.modelSelection.modelId,
+                    ) ?? null
+                  }
+                  modelOptions={thread.modelSelection.options}
+                  mutationGate={mutationGate}
+                  conversationActions={actionsBesidePage}
+                  page={companion?.page ?? null}
+                  onChangeModel={openSettings}
+                  placeholder={
+                    teamOrigin !== null
+                      ? "Message your agent privately"
+                      : threadComposerPlaceholder(items.length === 0 && !canLoadEarlier)
+                  }
+                  requests={dockableRequests}
+                  restore={restoredDraft}
+                  running={stopTarget !== null}
+                  // A task card in a conversation stops its own task, and a task's
+                  // title menu stops the task. In a conversation this ends only the
+                  // reply under way; in a task it leaves the task paused.
+                  stopLabel={
+                    conversational
+                      ? "Stop the reply"
+                      : task?.open === true
+                        ? "Pause this task"
+                        : "Stop this run"
+                  }
+                  runStopping={activity === "stopping"}
+                  // The sheet's own guard, in the sheet's own words: the model pill
+                  // and the access menu change the same settings from here, so a
+                  // change already in flight — including one whose sheet has since
+                  // been dismissed — has to close both doors, not just that one.
+                  settingsDisabledReason={settingsDisabledReason({
+                    canRespond,
+                    hasRun: threadRuns.length > 0,
+                    mutationOwner,
+                    kind: "thread",
+                    thread,
+                  })}
+                  subagentTitles={subagentTitles}
+                  threadId={thread.id}
+                  user={snapshot.user}
+                />
+              </View>
+            </>
           )}
         </>
       )}
@@ -1554,6 +1612,8 @@ function ThreadHeader(props: {
     </View>
   );
 }
+
+const noWaiting: readonly WaitingInput[] = [];
 
 /** A message as a quote: who wrote it, and enough of it to recognize. */
 function draftQuoteFrom(message: MessageEntry): ThreadDraftQuote {
@@ -1735,6 +1795,7 @@ const styles = StyleSheet.create({
   jumpHome: { alignItems: "center", left: 0, position: "absolute", right: 0 },
   jumpPressed: { ...material.floatPressed },
   passwords: { marginTop: space[10] },
+  hidden: { display: "none" },
 });
 
 /** A team channel's name, as the team this phone holds says it; null until it has. */
