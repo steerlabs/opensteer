@@ -5,7 +5,12 @@ import "./styles/index.css";
 import { useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter, Outlet, Route, Routes } from "react-router";
-import { HostClientRequestError, type HostClient, type MessageEntry } from "@opensteer/client/host";
+import {
+  HostClientRequestError,
+  waitingInputs,
+  type HostClient,
+  type MessageEntry,
+} from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import {
   ThreadInputQueueViewSchema,
@@ -18,9 +23,8 @@ import {
 import { AgentTranscript } from "./components/agent-activity.js";
 import { ShellContext } from "./components/app-shell.js";
 import { artifactPart, type SentContentPart } from "./components/attachments/attachment-parts.js";
-import type { ComposerRestore } from "./components/composer.js";
 import { InputSurface } from "./components/input-surface.js";
-import { QueuedMessages } from "./components/queued-messages.js";
+import { WaitingInputs } from "./components/waiting-inputs.js";
 import { ToastProvider } from "./components/toast.js";
 
 /**
@@ -42,7 +46,7 @@ import { ToastProvider } from "./components/toast.js";
  *   model-refused  the Host refuses images for this thread's model
  *   fence          uploads in flight when the composer moves to another thread
  *   transcript     sent messages: thumbnails, file chips, preview, download
- *   queue          a queued message with files; Edit hands them back
+ *   queue          a queued message with files, waiting at the foot
  *   unreadable     the kept message for this thread cannot be read; nothing
  *                  sends until the person discards it
  *   no-storage     the browser refuses to keep messages; nothing sends, the
@@ -317,8 +321,7 @@ function Shell() {
 function Fixture() {
   const calls = useSyncExternalStore(subscribeHostCalls, () => hostCalls);
   const [threadIndex, setThreadIndex] = useState(0);
-  const [queue, setQueue] = useState(initialQueue);
-  const [restored, setRestored] = useState<ComposerRestore | null>(null);
+  const queue = initialQueue;
   const thread = threads[threadIndex % threads.length]!;
   return (
     <main className="attachments-visual">
@@ -352,15 +355,13 @@ function Fixture() {
             entries={transcript}
             queued={
               queue ? (
-                <QueuedMessages
+                <WaitingInputs
                   client={client}
                   disabled={false}
-                  onEdit={(taken) => {
-                    setQueue(null);
-                    setRestored((current) => ({ ...taken, key: (current?.key ?? 0) + 1 }));
-                  }}
+                  inputs={waitingInputs(queue, { ownsLease: () => false })}
                   onError={noOp}
-                  queue={queue}
+                  paused={queue.paused}
+                  threadId={queue.threadId}
                   viewerUserId={author.userId}
                 />
               ) : null
@@ -375,7 +376,6 @@ function Fixture() {
           key={`${deploymentId}:${author.userId}:${thread.id}`}
           placeholder="Ask Opensteer…"
           requests={[]}
-          restoredDraft={restored}
           running={queue !== null}
           threadId={thread.id}
         />
@@ -554,8 +554,10 @@ function queuedWith(text: string, attachments: readonly ArtifactContentPart[]): 
     items: [
       {
         canCancel: true,
+        canEdit: false,
         canMove: true,
         canSteer: false,
+        lease: null,
         input: {
           cancelReason: null,
           causalChainId: createId("causalChain"),
