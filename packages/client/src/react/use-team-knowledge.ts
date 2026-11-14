@@ -149,13 +149,25 @@ export function useKnowledgeNote(
   const key = `${sessionKey(session)}:${noteId}:${topicId ?? ""}`;
   const keyRef = useRef(key);
   keyRef.current = key;
+  const noteLoad = useRef(0);
   const historyLoad = useRef(0);
   /** Versions were asked for, so a reload reads them again too. */
   const historyOpen = useRef(false);
 
+  /** The team refused a read: drop all that was read for this note, and every read on its way. */
+  const drop = useCallback((failure: unknown) => {
+    noteLoad.current++;
+    historyLoad.current++;
+    historyOpen.current = false;
+    setError(failure);
+    setRead(null);
+    setHistory(null);
+  }, []);
+
   useEffect(() => {
     if (!session) return;
-    let live = true;
+    const load = ++noteLoad.current;
+    const live = () => load === noteLoad.current;
     setError(null);
     void Promise.all([
       session.rpc["team.knowledge.note.get"]({ noteId }).then(unwrapRpcResult),
@@ -163,21 +175,17 @@ export function useKnowledgeNote(
         ? null
         : session.rpc["team.knowledge.topic.get"]({ topicId }).then(unwrapRpcResult),
     ]).then(
-      ([note, topic]) => live && setRead({ key, note, topic }),
+      ([note, topic]) => live() && setRead({ key, note, topic }),
       (failure: unknown) => {
-        if (!live) return;
-        setError(failure);
-        if (!refused(failure)) return;
-        historyLoad.current++;
-        historyOpen.current = false;
-        setRead(null);
-        setHistory(null);
+        if (!live()) return;
+        if (refused(failure)) drop(failure);
+        else setError(failure);
       },
     );
     return () => {
-      live = false;
+      noteLoad.current++;
     };
-  }, [session, key, noteId, topicId, generation]);
+  }, [session, key, noteId, topicId, generation, drop]);
 
   useEffect(() => {
     historyLoad.current++;
@@ -214,12 +222,21 @@ export function useKnowledgeNote(
               loading: false,
               error: null,
             }),
-          (failure: unknown) =>
-            load === historyLoad.current &&
-            setHistory({ key: at, versions: after, hasMore: true, loading: false, error: failure }),
+          (failure: unknown) => {
+            if (load !== historyLoad.current) return;
+            if (refused(failure)) drop(failure);
+            else
+              setHistory({
+                key: at,
+                versions: after,
+                hasMore: true,
+                loading: false,
+                error: failure,
+              });
+          },
         );
     },
-    [session, noteId],
+    [session, noteId, drop],
   );
 
   const current = read?.key === key ? read : null;

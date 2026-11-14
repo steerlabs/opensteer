@@ -77,8 +77,11 @@ function Knowledge({
   const [params, setParams] = useSearchParams();
   const openNote = KnowledgeNoteIdSchema.safeParse(params.get("note"));
   const noteId = openNote.success ? openNote.data : null;
-  const [text, setText] = useState(() => params.get("q") ?? "");
-  const query = useSettledText(text);
+  // The address holds the search the list answers; the field writes to it once typing settles,
+  // and follows it when Back or Forward changes it.
+  const query = params.get("q") ?? "";
+  const [text, setText] = useState(query);
+  const settled = useSettledText(text);
   const topics = useKnowledgeTopics(session);
   const notes = useKnowledgeNotes(session, { topicId, query });
   const [dialog, setDialog] = useState<"new" | "access" | "edit" | null>(null);
@@ -86,21 +89,30 @@ function Knowledge({
   const list = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if ((params.get("q") ?? "") === query) return;
+    if (settled === query) return;
     setParams(
       (held) => {
         const next = new URLSearchParams(held);
-        if (query) next.set("q", query);
+        if (settled) next.set("q", settled);
         else next.delete("q");
         return next;
       },
       { replace: true },
     );
+  }, [settled]);
+  useEffect(() => {
+    if (query !== settled) setText(query);
   }, [query]);
 
-  const refresh = () => {
+  /** Bumped on each refresh, so the open note reads again with the list. */
+  const [round, setRound] = useState(0);
+  const refreshList = () => {
     topics.reload();
     notes.reload();
+  };
+  const refresh = () => {
+    refreshList();
+    setRound((next) => next + 1);
   };
   useOnReturn(refresh);
 
@@ -240,7 +252,8 @@ function Knowledge({
           <NotePanel
             key={noteId}
             noteId={noteId}
-            onChanged={refresh}
+            onChanged={refreshList}
+            round={round}
             onClose={() => show(null)}
             topicHref={(topic) => href(topic)}
             topics={all}
@@ -652,6 +665,7 @@ function NotePanel({
   noteId,
   onChanged,
   onClose,
+  round,
   topicHref,
   topics,
   view,
@@ -659,6 +673,8 @@ function NotePanel({
   readonly noteId: KnowledgeNoteId;
   readonly onChanged: () => void;
   readonly onClose: () => void;
+  /** Changes whenever the page reads again (a return to the window, an access change). */
+  readonly round: number;
   readonly topicHref: (topic: KnowledgeTopicId) => string;
   readonly topics: readonly TeamTopic[];
   readonly view: TeamView;
@@ -666,6 +682,13 @@ function NotePanel({
   const toast = useToast();
   const navigate = useNavigate();
   const read = useKnowledgeNote(view.client, noteId, null);
+  const opened = useRef(round);
+  const { reload } = read;
+  useEffect(() => {
+    if (round === opened.current) return;
+    opened.current = round;
+    reload();
+  }, [round, reload]);
   const [viewing, setViewing] = useState<number | null>(null);
   const { note, history } = read;
   const topic = note ? topics.find((row) => row.id === note.topicId) : undefined;

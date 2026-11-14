@@ -105,6 +105,24 @@ it("drops an open note and its versions when a reload is refused", async () => {
   }
 });
 
+it("drops an open note and its versions when asking for older versions is refused", async () => {
+  let readable = true;
+  const session = account(() =>
+    readable ? Promise.resolve("Leadership plan") : Promise.reject(forbidden()),
+  );
+  const view = mount();
+  try {
+    await act(async () => view.render(session));
+    await act(async () => view.seen.open?.showHistory());
+    readable = false;
+    await act(async () => view.seen.open?.moreHistory());
+    expect(view.seen.open).toMatchObject({ note: null, history: null });
+    expect(view.seen.open?.error).toMatchObject({ code: "forbidden" });
+  } finally {
+    act(() => view.unmount());
+  }
+});
+
 function forbidden() {
   return Object.assign(new Error("That topic doesn't exist or you can't read it."), {
     code: "forbidden",

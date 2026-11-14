@@ -303,4 +303,21 @@ describe("a team's own web app", () => {
       );
     });
   });
+  it("follows Back to the search the address holds", async () => {
+    serveTeam({ signedIn: true });
+    window.history.replaceState(null, "", `/teams/${mockTeamId}/knowledge?q=refunds`);
+    const node = await render();
+    const field = () => node.querySelector<HTMLInputElement>("input[aria-label='Search notes']");
+    await act(async () => {
+      await vi.waitFor(() => expect(field()?.value).toBe("refunds"), { timeout: 2_000 });
+    });
+    await act(async () => {
+      window.history.pushState(null, "", `/teams/${mockTeamId}/knowledge?q=maya`);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    await act(async () => {
+      await vi.waitFor(() => expect(field()?.value).toBe("maya"), { timeout: 2_000 });
+    });
+    expect(window.location.search).toBe("?q=maya");
+  });
 });

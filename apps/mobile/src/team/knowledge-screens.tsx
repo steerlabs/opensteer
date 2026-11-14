@@ -569,8 +569,16 @@ export function TeamNoteScreen(
                   </AppText>
                 </Pressable>
               ))}
-          {history?.loading ? <ActivityIndicator color={color.muted} /> : null}
-          {history !== null && !history.loading && history.hasMore ? (
+          {history === null ? null : history.loading ? (
+            <ActivityIndicator color={color.muted} />
+          ) : history.error !== null ? (
+            <View style={styles.versionsFailed}>
+              <AppText role="caption" style={styles.grow} tone="danger">
+                {failure(history.error)}
+              </AppText>
+              <TextButton label="Try again" onPress={() => void read.moreHistory()} />
+            </View>
+          ) : history.hasMore ? (
             <TextButton label="Older versions" onPress={() => void read.moreHistory()} />
           ) : null}
         </View>
@@ -658,6 +666,12 @@ const styles = StyleSheet.create({
   versionN: { width: 26 },
   versionOn: { backgroundColor: color.surfaceRaised },
   versions: { gap: 0 },
+  versionsFailed: {
+    alignItems: "center",
+    flexDirection: "row",
+    gap: space[12],
+    paddingTop: space[10],
+  },
   versionsHead: {
     alignItems: "center",
     borderBottomWidth: StyleSheet.hairlineWidth,
