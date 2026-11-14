@@ -789,6 +789,27 @@ assert(rows.length === 1 && !rows[0].current, 'unselected filtered inventory');`
     expect(opened.stdout.trim()).toBe([...kit.opens.values()][0]!.tabId);
   });
 
+  it("keeps a browser with work in flight connected while a script walks more browsers", async () => {
+    const kit = await startTabJourney({ phones: 5 });
+    const held = kit.holdPhoneQuery();
+    const [busy, ...others] = kit.phoneIds;
+    const running = kit.run(
+      `await switchTab(${JSON.stringify(busy)});
+const pending = page.locator('body').innerText();
+for (const id of ${JSON.stringify(others)}) await switchTab(id);
+console.log(await pending);`,
+    );
+    await withTimeout(held.entered, 10_000, {
+      timeoutError: () => new Error("the first phone's page read never started"),
+    });
+    // The script has switched through every phone, so the first is no longer selected.
+    await waitForBrowserState(
+      () => kit.calls.filter((call) => call.path === "tabs/use").length === kit.phoneIds.length,
+    );
+    held.release();
+    expect((await running).stdout.trim()).toBe("Phone text");
+  });
+
   it("keeps every upload chunk on its captured browser while switching", async () => {
     const kit = await startTabJourney();
     const directory = await mkdtemp(join(tmpdir(), "opensteer-tab-upload-"));

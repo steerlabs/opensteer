@@ -69,6 +69,25 @@ function createFacade(base) {
       return agent(path, keyed);
     }
   };
+  /** Runs work on an adapter, which stays connected until the work settles. */
+  const track = (adapter, work) => {
+    adapter.busy += 1;
+    let result;
+    try {
+      result = adapter.harness.run(work);
+    } catch (error) {
+      adapter.busy -= 1;
+      throw error;
+    }
+    // Locators refuse unknown properties, so only a real promise is awaited for.
+    if (!(result instanceof Promise)) {
+      adapter.busy -= 1;
+      return result;
+    }
+    return result.finally(() => {
+      adapter.busy -= 1;
+    });
+  };
   const release = async (adapter) => {
     try {
       await adapter.harness.detach();
@@ -85,7 +104,8 @@ function createFacade(base) {
     } else {
       for (const [sessionId, idle] of adapters) {
         if (adapters.size < OPEN_BROWSERS) break;
-        if (idle === active) continue;
+        // A browser with work in flight stays; the limit is exceeded until it settles.
+        if (idle === active || idle.busy > 0) continue;
         adapters.delete(sessionId);
         await release(idle).catch(() => undefined);
       }
@@ -96,6 +116,7 @@ function createFacade(base) {
           : await CdpClient.connect(base, binding.sessionId);
       adapter = {
         backend,
+        busy: 0,
         client,
         harness:
           backend === "actions" ? createActionsHarness(client) : createBrowserHarness(client),
@@ -179,7 +200,7 @@ function createFacade(base) {
                 "This page handle belongs to a tab you left. Use fresh page handles after switchTab() or newTab().",
               );
             return handle(
-              adapter.harness.run(() => member.apply(value, args)),
+              track(adapter, () => member.apply(value, args)),
               adapter,
               generation,
             );
@@ -204,7 +225,7 @@ function createFacade(base) {
             let owner = selected.harness.page;
             for (const part of keys) owner = owner[part];
             return handle(
-              selected.harness.run(() => owner[key](...args)),
+              track(selected, () => owner[key](...args)),
               selected,
               epoch,
             );
@@ -219,7 +240,7 @@ function createFacade(base) {
       const method = adapter.harness[name];
       if (!method)
         throw new Error(`${name} is unavailable in this browser (${adapter.backend} backend).`);
-      return adapter.harness.run(() => method(...args));
+      return track(adapter, () => method(...args));
     };
   const facade = {
     page: pageProxy(),

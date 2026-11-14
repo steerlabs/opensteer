@@ -386,23 +386,32 @@ export function expectGroupsReleasedBeforeDetach(kit: Kit): string[] {
   return [...groups.keys()];
 }
 
-export async function startTabJourney() {
+/** Two real Chromium browsers plus `phones` fake phone browsers, each its own session. */
+export async function startTabJourney({ phones: phoneCount = 1 } = {}) {
   const first = await startActionJourney("20", {});
   const second = await startActionJourney("20", {});
   const kits = [first, second];
   const calls: Array<{ path: string; input: Record<string, unknown> }> = [];
   const opens = new Map<string, BrowserAgentTabOpenResult>();
   let uncertainOpen = false;
-  const phoneId = BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
-  const phoneSession = createBrowserSessionId();
-  const phoneBinding = {
-    surfaceId: phoneId,
-    documentId: "phone-doc",
-    geometryRevision: 1,
-    title: "Phone",
-    url: "https://phone.test/",
-    state: "live",
-  };
+  const phones = Array.from({ length: phoneCount }, () => {
+    const id = BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
+    return {
+      id,
+      session: createBrowserSessionId(),
+      binding: {
+        surfaceId: id,
+        documentId: "phone-doc",
+        geometryRevision: 1,
+        title: "Phone",
+        url: "https://phone.test/",
+        state: "live",
+      },
+    };
+  });
+  const phoneId = phones[0]!.id;
+  // A page read on the first phone waits here while held.
+  let heldQuery: { entered: () => void; released: Promise<void> } | null = null;
   const bridge = await startHarnessBridge(
     async (method, parameters, sessionId, browserSessionId) => {
       const kit = kits.find((candidate) => candidate.claims.sessionId === browserSessionId);
@@ -435,17 +444,18 @@ export async function startTabJourney() {
             groupId: null,
           })),
         );
-        rows.push({
-          tabId: phoneId,
-          title: "Phone",
-          url: phoneBinding.url,
-          profile: null,
-          computer: "Phone",
-          state: "open",
-          usedByThisTask: false,
-          usedByOtherTask: false,
-          groupId: null,
-        });
+        for (const phone of phones)
+          rows.push({
+            tabId: phone.id,
+            title: "Phone",
+            url: phone.binding.url,
+            profile: null,
+            computer: "Phone",
+            state: "open",
+            usedByThisTask: false,
+            usedByOtherTask: false,
+            groupId: null,
+          });
         if (path === "tabs") {
           const parsed = BrowserAgentTabListQuerySchema.parse(Object.fromEntries(query));
           const filtered = rows.filter(
@@ -463,10 +473,11 @@ export async function startTabJourney() {
         }
         if (path === "tabs/use") {
           const { tabId } = BrowserAgentTabUseInputSchema.parse(input);
-          if (tabId === phoneId)
+          const phone = phones.find((candidate) => candidate.id === tabId);
+          if (phone)
             return BrowserAgentTabUseResultSchema.parse({
               tabId,
-              sessionId: phoneSession,
+              sessionId: phone.session,
               backend: "actions",
               reloaded: false,
             });
@@ -534,6 +545,13 @@ export async function startTabJourney() {
       actions: async (raw) => {
         const message = BrowserActionRequestSchema.parse(raw);
         const type = message.action.type;
+        const phone = phones.find((candidate) => candidate.session === message.sessionId);
+        if (!phone) throw new Error("Wrong phone binding");
+        const phoneBinding = phone.binding;
+        if (type === "dom.query" && phone === phones[0] && heldQuery) {
+          heldQuery.entered();
+          await heldQuery.released;
+        }
         const response = BrowserActionResponseSchema.parse({
           id: message.id,
           result:
@@ -566,6 +584,14 @@ export async function startTabJourney() {
     calls,
     opens,
     phoneId,
+    phoneIds: phones.map((phone) => phone.id),
+    /** Holds the first phone's next page reads until `release`. */
+    holdPhoneQuery: () => {
+      const entered = Promise.withResolvers<void>();
+      const released = Promise.withResolvers<void>();
+      heldQuery = { entered: () => entered.resolve(), released: released.promise };
+      return { entered: entered.promise, release: () => released.resolve() };
+    },
     uncertainOpen: () => {
       uncertainOpen = true;
     },

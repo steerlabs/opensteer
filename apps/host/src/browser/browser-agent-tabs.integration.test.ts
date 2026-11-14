@@ -263,6 +263,48 @@ integration("agent tabs", () => {
     expect(restored.reloaded).toBe(true);
   });
 
+  it("reopens a dormant tab in its restarted browser as the agent's page", async () => {
+    const f = await setup();
+    const kept = await f.guest();
+    const saved = await f.guest();
+    f.runtime.publishTabs(
+      {
+        surfaces: [
+          { id: kept.tabId, title: "Kept", url: "https://kept.test/", state: "live" },
+          { id: saved.tabId, title: "Saved", url: "https://saved.test/", state: "live" },
+        ],
+      },
+      kept.sessionId,
+    );
+    await f.browser.flushPendingTabDescriptors();
+    f.runtime.sendServer({ type: "browser.status", state: "closed" }, kept.sessionId);
+    await vi.waitFor(
+      async () =>
+        expect(
+          (await f.host.store.getBrowserSessionForOwner(kept.sessionId, f.host.ownerId))?.state,
+        ).toBe("closed"),
+      { timeout: 2000 },
+    );
+    // Restoring one tab restarts its browser; its sibling stays dormant until used.
+    await f.browser.useAgentTab(f.actor, kept.tabId);
+    const before = f.runtime.receivedCommands().length;
+    await f.browser.useAgentTab(f.actor, saved.tabId).catch(() => undefined);
+    const reopen = f.runtime
+      .receivedCommands()
+      .slice(before)
+      .map(
+        (message) =>
+          (message as { command?: { method?: string; parameters?: Record<string, unknown> } })
+            .command,
+      )
+      .find(
+        (command) =>
+          command?.method === browserHostMethods.openTab &&
+          command.parameters?.idempotencyKey === `restore:${saved.tabId}`,
+      );
+    expect(reopen?.parameters?.operationAuthority).toEqual(expect.any(String));
+  });
+
   it("lists the person's arrangement with complete URLs, identity, filters, pagination and totals without waking tabs", async () => {
     const f = await setup();
     const opened = await f.guest();

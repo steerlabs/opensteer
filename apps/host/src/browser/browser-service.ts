@@ -1056,6 +1056,25 @@ export class BrowserService {
                 idempotencyKey: `restore:${tabId}`,
                 surfaceId: tabId,
                 ...(url === "about:blank" ? {} : { url }),
+                // Signed so the runtime credits the agent, not the person, with this page.
+                ...(agent
+                  ? {
+                      operationAuthority: this.#signer.issue({
+                        creationOrigin: "agent",
+                        access: "read-write",
+                        identity: { kind: "fresh" },
+                        runtimeId: previous.runtimeId,
+                        sessionId,
+                        subject: ownerId,
+                        operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
+                        remainingBudgetMs: 18_000,
+                        initialNavigation: {
+                          operationKey: `restore:${tabId}`,
+                          ...(url === "about:blank" ? {} : { url }),
+                        },
+                      }),
+                    }
+                  : {}),
               },
             },
           }),
