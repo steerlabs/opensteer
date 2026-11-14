@@ -46,8 +46,8 @@ export const hostApiVersion = 57;
  * compatibility policy in docs/teams.md before changing either; the wire
  * snapshot test refuses a breaking schema change without a bump.
  */
-// Shared work requires version 7; unshared teams still serve explicit-kind version 5 peers.
-export const teamApiVersion = 7;
+// Shared work requires version 6; unshared teams still serve explicit-kind version 5 peers.
+export const teamApiVersion = 6;
 export const minimumTeamApiVersion = 5;
 export const teamOAuthVersionParameter = "opensteer_team_api_version";
 export const teamOidcStatePrefix = "ost-team-api-";

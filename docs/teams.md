@@ -141,8 +141,8 @@ session exchange both admit through `TeamInvitesStore.acceptInTransaction`
 
 ## Transport and versions
 
-Team API version 7 carries shared-channel state, external audiences and the asker's team. Shared
-channels (including follower archives) require version 7 for apps and personal Opensteer. Older
+Team API version 6 carries shared-channel state, external audiences and the asker's team. Shared
+channels (including follower archives) require version 6 for apps and personal Opensteer. Older
 peers see only unshared channels in discovery and cross-channel results, cannot read or write shared
 channels, and receive no shared-channel requests on personal links. Version 5 remains the minimum
 for unshared work because it already sends explicit request kinds. Sharing an open channel ends an
