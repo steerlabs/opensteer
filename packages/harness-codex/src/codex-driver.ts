@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { CodexAdditionalContext } from "./additional-context.js";
 import { requestToolNames } from "@opensteer/agent-tools";
 import { backgroundLightModels, voiceCallSeed } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
@@ -288,6 +290,7 @@ export interface CodexLaunch {
 /** Every Codex adapter runs with the same provider capabilities. */
 const codexHarnessCapabilities: HarnessCapabilities = Object.freeze({
   voiceCalls: true,
+  perTurnEffortOption: "effort",
   approvals: true,
   attachments: true,
   messageAttachments: {
@@ -1236,7 +1239,10 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
    * `acceptForSession` — was given; only this Run may rely on it.
    */
   #sessionApprovalGranted = false;
-  readonly #resumed: boolean;
+  readonly #additionalContextBuilder = new CodexAdditionalContext();
+  #additionalContext: Record<string, { kind: "application"; value: string }> = {};
+  #contextCompacted = false;
+  #contextRestore: Promise<void> = Promise.resolve();
   readonly #publisher: TurnPublisher;
   readonly #onClose: (session: CodexHarnessSession) => void;
   readonly #pendingRequests = new Map<RequestId, PendingServerRequest>();
@@ -1258,7 +1264,6 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
   private constructor(
     config: CodexHarnessConfig,
     context: HarnessSessionContext,
-    resumed: boolean,
     acquire: (lifetime: AbortSignal) => Promise<CodexAppServer>,
     log: HarnessLog | undefined,
     onClose: (session: CodexHarnessSession) => void,
@@ -1267,7 +1272,6 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     this.#config = config;
     this.#log = log;
     this.#context = context;
-    this.#resumed = resumed;
     this.#onClose = onClose;
     this.#publisher = new TurnPublisher({
       maxBytes: config.maxEventBytes,
@@ -1292,14 +1296,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         message: "Codex session was cancelled before startup",
       });
     }
-    const session = new CodexHarnessSession(
-      config,
-      context,
-      mode.type === "resume",
-      acquire,
-      log,
-      onClose,
-    );
+    const session = new CodexHarnessSession(config, context, acquire, log, onClose);
     try {
       await session.#initialize(mode);
       return session;
@@ -1328,6 +1325,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
   }
 
   async execute(run: HarnessRunInput): Promise<void> {
+    await this.#contextRestore;
     this.#assertUsable();
     if (this.#activeTurn) {
       throw new OpensteerError({
@@ -1338,11 +1336,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     assertSameEnvironment(this.#context.environment, run.environment);
     const initialContext = initialContinuationContextPrompt(this.#context);
     const overrides = turnOverrides(this.#context);
-    const additionalContext = runAdditionalContext(this.#context, this.#resumed);
-    additionalContext.opensteer_skills = {
-      kind: "application",
-      value: (await renderHarnessSkillCatalog(this.#context.skills)) ?? "(No skills selected.)",
-    };
+    const additionalContext = await this.#buildAdditionalContext();
     // The one request both measured for image budgeting and sent.
     const turnStart = (input: readonly JsonObject[]): JsonObject => ({
       ...overrides,
@@ -1415,6 +1409,48 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       run.signal.removeEventListener("abort", abort);
       if (this.#activeTurn === active) this.#activeTurn = undefined;
     }
+  }
+
+  async #buildAdditionalContext(): Promise<JsonObject> {
+    const families: Record<string, string> = {
+      opensteer_computers: this.#context.machineAccessNotice,
+      opensteer_current_instructions: [
+        "Current Opensteer and task instructions for this Run follow. They replace their counterparts from earlier Runs.",
+        this.#context.platformGuide,
+        this.#context.instructions?.trim()
+          ? this.#context.instructions
+          : "(There are no current task instructions.)",
+        durableHistoryWindowNotice(this.#context),
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+    };
+    for (const skill of this.#context.skills?.skills ?? []) {
+      const id = createHash("sha256").update(skill.fullName).digest("hex");
+      families[`opensteer_skills_${id}`] = (await renderHarnessSkillCatalog({ skills: [skill] }))!;
+    }
+    this.#additionalContext = this.#additionalContextBuilder.build(families);
+    return this.#additionalContext;
+  }
+
+  #restoreAdditionalContext(): void {
+    if (!this.#contextCompacted) return;
+    this.#contextCompacted = false;
+    const entries = this.#additionalContext;
+    // Injection during a turn triggers another sample; queue it only after turn/completed.
+    this.#contextRestore = this.#contextRestore.then(async () => {
+      await this.#requireClient().request("thread/inject_items", {
+        threadId: this.#requireCodexThreadId(),
+        items: Object.entries(entries).map(([key, entry]) => ({
+          type: "message",
+          role: "developer",
+          content: [{ type: "input_text", text: `<${key}>${entry.value}</${key}>` }],
+        })),
+      });
+    });
+    void this.#contextRestore.catch((error: unknown) =>
+      this.#handleConnectionFailure(toHarnessError(error, "Codex context restoration failed")),
+    );
   }
 
   #voiceFinal = "";
@@ -1590,9 +1626,12 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
    * on: the root takes it as a new turn of the same Run.
    */
   async #startFollowUpTurn(active: ActiveTurn, input: HarnessSteerInput): Promise<void> {
+    await this.#contextRestore;
+    const additionalContext = await this.#buildAdditionalContext();
     const threadId = this.#requireCodexThreadId();
     const turnStart = (steered: readonly JsonObject[]): JsonObject => ({
       ...turnOverrides(this.#context),
+      additionalContext,
       input: [...steered],
       threadId,
     });
@@ -1670,6 +1709,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     if (this.#sessionApprovalGranted || this.#pendingRequests.size > 0) return false;
     if (!this.#server?.usable) return false;
     try {
+      await this.#contextRestore;
       const client = this.#requireClient();
       for (const threadId of [this.#requireCodexThreadId(), ...this.#childThreads]) {
         await client.request("thread/backgroundTerminals/clean", { threadId });
@@ -2138,6 +2178,8 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
         break;
       case "item/completed":
         if (this.#isActiveTurn(params)) {
+          if (isRecord(params.item) && params.item.type === "contextCompaction")
+            this.#contextCompacted = true;
           this.#continueAnsweredTurn();
           this.#noteSubagentActivity(params.item, this.#requireCodexThreadId());
           this.#publishItemCompleted(params.item);
@@ -2616,6 +2658,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     this.#setActiveTurnId(active, turnId);
     const status = requireString(turn.status, "turn/completed params.turn.status");
     active.providerTurnOpen = false;
+    this.#restoreAdditionalContext();
     if (this.#context.voiceCall) {
       // A failed turn is one request that didn't go through, not the end of the call.
       this.#settleVoiceTurn();
@@ -4313,7 +4356,7 @@ function threadStartupOptions(context: HarnessSessionContext): JsonObject {
     approvalPolicy: access.approvalPolicy,
     approvalsReviewer: access.approvalsReviewer,
     cwd: context.workspacePath,
-    ...(developerInstructions ? { developerInstructions } : {}),
+    ...(context.voiceCall && developerInstructions ? { developerInstructions } : {}),
     model: harnessModelId(context.modelSelection),
     // Native-user preserves Codex's trust-write boundary. Isolated services use
     // a session-flag permission profile that cannot expose Runner private state.
@@ -4328,40 +4371,6 @@ function threadStartupOptions(context: HarnessSessionContext): JsonObject {
                 : "workspace-write"
             : "read-only",
         }),
-  };
-}
-
-/**
- * Per-Run facts travel on the turn, not only on thread startup: Codex renders
- * `developerInstructions` when it builds a conversation's initial context, so
- * a resumed thread would otherwise keep an earlier Run's facts. The platform
- * guide and Agent home instructions need this refresh only on resume;
- * a fresh thread already has them in `developerInstructions`. This also lets a
- * long-lived thread receive a changed capability guide. `additionalContext` is keyed and diffed by
- * Codex, which emits a developer message when a value changes and nothing when
- * it repeats; a key that is dropped emits nothing either, which is why empty
- * current values are sent as text rather than omitted.
- */
-function runAdditionalContext(
-  context: Pick<HarnessSessionContext, "instructions" | "machineAccessNotice" | "platformGuide">,
-  resumed: boolean,
-): JsonObject {
-  return {
-    opensteer_computers: { kind: "application", value: context.machineAccessNotice },
-    ...(resumed
-      ? {
-          opensteer_current_instructions: {
-            kind: "application",
-            value: [
-              "Current Opensteer and task instructions for this Run follow. They replace their counterparts from earlier Runs.",
-              context.platformGuide,
-              context.instructions?.trim()
-                ? context.instructions
-                : "(There are no current task instructions.)",
-            ].join("\n\n"),
-          },
-        }
-      : {}),
   };
 }
 
