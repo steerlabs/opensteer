@@ -87,6 +87,8 @@ export class OwnerProfileStore {
     const name = PersonNameSchema.parse(input.name);
     return withPersonalTransaction(this.#database, async (transaction) => {
       const current = await lockedProfile(transaction);
+      // Lock order: the principal this writes ranks before the link it holds steady.
+      await lockOwnerPrincipal(transaction, current.ownerId);
       const link = await activeLink(transaction);
       if (
         !link ||
@@ -192,14 +194,28 @@ async function ownerProfile(
   };
 }
 
-/** The Account link this Host may speak for its owner through: active, and not being unlinked. */
+/**
+ * The Account link this Host may speak for its owner through: active, and not being unlinked.
+ * Shared-locked, so no unlink or relink commits until this transaction does.
+ */
 async function activeLink(transaction: Transaction<DatabaseSchema>) {
   const link = await transaction
     .selectFrom("personalRemoteAccountLink")
     .select(["accountOperation", "issuer", "linkGeneration", "state", "subject"])
     .where("singletonKey", "=", "opensteer-account")
+    .forShare()
     .executeTakeFirst();
   return link && link.state === "active" && link.accountOperation?.kind !== "unlink" ? link : null;
+}
+
+async function lockOwnerPrincipal(transaction: Transaction<DatabaseSchema>, ownerId: UserId) {
+  await transaction
+    .selectFrom("principals")
+    .select("id")
+    .where("kind", "=", "user")
+    .where("userId", "=", ownerId)
+    .forUpdate()
+    .execute();
 }
 
 async function lockedProfile(transaction: Transaction<DatabaseSchema>): Promise<OwnerProfile> {

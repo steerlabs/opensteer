@@ -124,6 +124,20 @@ export class AccountProfiles {
     transaction: Transaction<ControlPlaneDatabaseSchema>,
     authority: HostAuthority,
   ): Promise<ControlPlaneAccountId> {
+    const candidate = await transaction
+      .selectFrom("deployments")
+      .select("ownerAccountId")
+      .where("id", "=", authority.deploymentId)
+      .executeTakeFirst();
+    if (!candidate)
+      throw new ControlPlaneError("forbidden", "Only a linked personal Host has an owner");
+    // Lock order: an Account's user row before its deployments, as Account deletion takes them.
+    await transaction
+      .selectFrom("users")
+      .select("id")
+      .where("id", "=", candidate.ownerAccountId)
+      .forNoKeyUpdate()
+      .executeTakeFirst();
     await requireCurrentAuthority(transaction, authority);
     const deployment = await transaction
       .selectFrom("deployments")
@@ -137,7 +151,8 @@ export class AccountProfiles {
       deployment.lifecycle !== "active" ||
       !link.success ||
       link.data.issuer !== this.#issuer ||
-      link.data.subject !== deployment.ownerAccountId
+      link.data.subject !== deployment.ownerAccountId ||
+      deployment.ownerAccountId !== candidate.ownerAccountId
     )
       throw new ControlPlaneError("forbidden", "Only a linked personal Host has an owner");
     return deployment.ownerAccountId;

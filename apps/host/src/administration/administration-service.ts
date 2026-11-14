@@ -366,7 +366,7 @@ export class AdministrationService {
           ...(await dependencies.ownerProfile.update(
             userId,
             command.name,
-            command.expectedRevision,
+            command.expectedVersion,
           )),
           type: command.type,
         };

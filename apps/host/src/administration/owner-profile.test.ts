@@ -71,7 +71,7 @@ it("keeps a name on this computer while no Account is linked, including clearing
   const { owner, changes } = service(memory.store, null);
   expect(await owner.update(ownerId, null, null)).toEqual({
     applied: true,
-    profile: { name: null, accountBacked: false, revision: null },
+    profile: { name: null, accountBacked: false, version: null },
   });
   expect(changes()).toBe(1);
   await expect(owner.update(createId("user") as UserId, name("Mallory"), null)).rejects.toThrow(
@@ -96,21 +96,75 @@ it("saves to the linked Account first, against the version the person was editin
   // The person edited their own name, and the Host has linked since: start from the Account's.
   expect(await owner.update(ownerId, name("Ada L."), null)).toEqual({
     applied: true,
-    profile: { name: "Ada L.", accountBacked: true, revision: 4 },
+    profile: { name: "Ada L.", accountBacked: true, version: "acct_ada:4" },
   });
   // They began editing at revision 4; another device saved 5 meanwhile, and this Host caught up.
   remote = accountProfile("Ada from phone", 5);
   await owner.refresh();
-  expect(await owner.update(ownerId, name("Stale draft"), 4)).toEqual({
+  expect(await owner.update(ownerId, name("Stale draft"), "acct_ada:4")).toEqual({
     applied: false,
-    profile: { name: "Ada from phone", accountBacked: true, revision: 5 },
+    profile: { name: "Ada from phone", accountBacked: true, version: "acct_ada:5" },
   });
   expect(requests).toEqual([
     { name: "Ada L.", expectedRevision: 3 },
     { name: "Stale draft", expectedRevision: 4 },
   ]);
   // An Account always has a name: clearing it is refused rather than half-applied.
-  await expect(owner.update(ownerId, null, 5)).rejects.toMatchObject({ code: "bad_request" });
+  await expect(owner.update(ownerId, null, "acct_ada:5")).rejects.toMatchObject({
+    code: "bad_request",
+  });
+});
+
+it("never saves an edit begun for one Account to another", async () => {
+  const memory = memoryStore(
+    { ownerId, name: name("Ada"), account: { ...linkA, revision: 3 } },
+    linkB,
+  );
+  const saved: string[] = [];
+  const linked: OwnerProfileAccount = {
+    readOwnerProfile: async () => null,
+    // The live link decides, as remote access does: an edit for another Account is refused.
+    updateOwnerProfile: async (request, subject) => {
+      if (subject !== memory.state.link?.subject)
+        throw Object.assign(new Error("another Account"), { code: "conflict" });
+      saved.push(request.name);
+      return { account: linkB, applied: true, profile: accountProfile(request.name, 4) };
+    },
+  };
+  const { owner } = service(memory.store, linked);
+  // Ada's draft, opened before the computer was relinked to Bea's Account at the same revision.
+  await expect(owner.update(ownerId, name("Ada draft"), "acct_ada:3")).rejects.toMatchObject({
+    code: "conflict",
+  });
+  expect(saved).toEqual([]);
+});
+
+it("runs a refresh queued behind one that failed", async () => {
+  const memory = memoryStore(
+    { ownerId, name: name("Ada"), account: { ...linkA, revision: 3 } },
+    linkA,
+  );
+  let reads = 0;
+  let fail: (error: Error) => void = () => undefined;
+  const linked: OwnerProfileAccount = {
+    readOwnerProfile: () => {
+      reads++;
+      return reads === 1
+        ? new Promise((_resolve, reject) => {
+            fail = reject;
+          })
+        : Promise.resolve({ account: linkB, profile: accountProfile("Bea", 1) });
+    },
+    updateOwnerProfile: async () => null,
+  };
+  const { owner } = service(memory.store, linked);
+  const first = owner.refresh();
+  memory.state.link = linkB;
+  void owner.refresh();
+  fail(new Error("old link is gone"));
+  await first;
+  expect(reads).toBe(2);
+  expect(memory.current().name).toBe("Bea");
 });
 
 it("never lets an answer read through an old link change the name", async () => {
@@ -150,7 +204,9 @@ it("never lets an answer read through an old link change the name", async () => 
   expect(reads).toBe(2);
   expect(memory.current()).toMatchObject({ name: "Bea", account: { subject: "acct_bea" } });
   // A save answered by the old link is refused, never applied over the new Account's name.
-  await expect(owner.update(ownerId, name("Ada"), 1)).rejects.toMatchObject({ code: "conflict" });
+  await expect(owner.update(ownerId, name("Ada"), "acct_bea:1")).rejects.toMatchObject({
+    code: "conflict",
+  });
   expect(memory.current().name).toBe("Bea");
 });
 
@@ -169,6 +225,6 @@ it("keeps the name and drops the Account when the link ends, then saves it here"
   expect(changes()).toBe(1);
   expect(await owner.update(ownerId, name("Ada Local"), null)).toEqual({
     applied: true,
-    profile: { name: "Ada Local", accountBacked: false, revision: null },
+    profile: { name: "Ada Local", accountBacked: false, version: null },
   });
 });

@@ -9,7 +9,11 @@ import type { OwnerProfileView } from "@opensteer/protocol";
 /** The linked Account as this Host reaches it; null while no link is active. */
 export interface OwnerProfileAccount {
   readOwnerProfile(): Promise<{ account: OwnerNameLink; profile: AccountProfile } | null>;
-  updateOwnerProfile(request: UpdateAccountProfileRequest): Promise<{
+  /** Refused with `conflict` unless the live link is to `subject`'s Account. */
+  updateOwnerProfile(
+    request: UpdateAccountProfileRequest,
+    subject: string,
+  ): Promise<{
     account: OwnerNameLink;
     applied: boolean;
     profile: AccountProfile;
@@ -53,19 +57,19 @@ export class OwnerProfileService {
   }
 
   /**
-   * `expectedRevision` is the Account revision the person was looking at when they began editing,
-   * so an edit begun before a rename elsewhere never overwrites it. `applied` is false then, and
-   * the view is the newer name, so the person sees it before choosing again.
+   * `expectedVersion` is the view's `version` when the person began editing: the Account and
+   * revision they saw. A rename elsewhere since makes `applied` false and the view the newer name,
+   * so the person sees it before choosing again; another Account since is refused outright.
    */
   async update(
     userId: UserId,
     name: PersonName | null,
-    expectedRevision: number | null,
+    expectedVersion: string | null,
   ): Promise<{ readonly applied: boolean; readonly profile: OwnerProfileView }> {
     const current = await this.#store.read();
     if (!current || current.ownerId !== userId)
       throw new OpensteerError({ code: "forbidden", message: "The personal owner is required." });
-    const linked = await this.#saveToAccount(current, name, expectedRevision);
+    const linked = await this.#saveToAccount(current, name, expectedVersion);
     if (linked) return linked;
     const profile = await this.#store.setLocal({ userId, name });
     this.#changed();
@@ -79,10 +83,16 @@ export class OwnerProfileService {
       return this.#refreshing;
     }
     const run = async (): Promise<void> => {
+      let failure: unknown;
       do {
         this.#again = false;
-        await this.#refresh();
+        failure = undefined;
+        // A read through an old link may fail; the one queued behind it still runs.
+        await this.#refresh().catch((error: unknown) => {
+          failure = error;
+        });
       } while (this.#again);
+      if (failure !== undefined) throw failure;
     };
     this.#refreshing = run().finally(() => {
       this.#refreshing = undefined;
@@ -101,23 +111,32 @@ export class OwnerProfileService {
     if (await this.#store.seed(computerName)) this.#changed();
   }
 
-  async #saveToAccount(current: OwnerProfile, name: PersonName | null, edited: number | null) {
+  async #saveToAccount(current: OwnerProfile, name: PersonName | null, edited: string | null) {
     if (!this.#account) return null;
-    let expectedRevision = edited ?? current.account?.revision;
-    if (expectedRevision === undefined) {
+    let expected =
+      edited !== null
+        ? parseVersion(edited)
+        : current.account && {
+            subject: current.account.subject,
+            revision: current.account.revision,
+          };
+    if (!expected) {
       // The person edited a name of their own, and the Host has linked since: start from the
       // Account's current one.
       const fetched = await this.#account.readOwnerProfile();
       if (!fetched) return this.#detached();
       await this.#apply(fetched.account, fetched.profile);
-      expectedRevision = fetched.profile.revision;
+      expected = { subject: fetched.account.subject, revision: fetched.profile.revision };
     }
     if (name === null)
       throw new OpensteerError({
         code: "bad_request",
         message: "Your Opensteer Account needs a name. Enter the name others should see.",
       });
-    const saved = await this.#account.updateOwnerProfile({ name, expectedRevision });
+    const saved = await this.#account.updateOwnerProfile(
+      { name, expectedRevision: expected.revision },
+      expected.subject,
+    );
     if (!saved) return this.#detached();
     const applied = await this.#apply(saved.account, saved.profile);
     if (applied.stale)
@@ -160,6 +179,15 @@ export function ownerProfileView(profile: OwnerProfile): OwnerProfileView {
   return {
     name: profile.name,
     accountBacked: profile.account !== null,
-    revision: profile.account?.revision ?? null,
+    version: profile.account ? `${profile.account.subject}:${profile.account.revision}` : null,
   };
+}
+
+/** The Account and revision an edit began from; opaque to clients. */
+function parseVersion(version: string): { subject: string; revision: number } {
+  const separator = version.lastIndexOf(":");
+  const revision = Number(version.slice(separator + 1));
+  if (separator <= 0 || !Number.isSafeInteger(revision) || revision < 1)
+    throw new OpensteerError({ code: "bad_request", message: "The name's version is invalid." });
+  return { subject: version.slice(0, separator), revision };
 }

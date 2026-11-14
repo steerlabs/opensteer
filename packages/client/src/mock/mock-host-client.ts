@@ -4796,13 +4796,13 @@ export class MockHostClient implements HostClient {
 
   async setOwnerName(
     name: PersonName | null,
-    expectedRevision: number | null,
+    expectedVersion: string | null,
   ): Promise<{ readonly applied: boolean }> {
     const result = unwrapRpcResult(
       await this.rpc["commands.dispatch"]({
         idempotencyKey: crypto.randomUUID(),
         name,
-        expectedRevision,
+        expectedVersion,
         type: "viewer.name.update",
       }),
     );
@@ -11951,7 +11951,7 @@ class MockHostState {
     this.update({ ...this.snapshot, quietTaskDays: days });
   }
   setOwnerProfileName(name: PersonName | null): OwnerProfileView {
-    const ownerProfile = { name, accountBacked: false, revision: null };
+    const ownerProfile = { name, accountBacked: false, version: null };
     this.update({ ...this.snapshot, ownerProfile });
     return ownerProfile;
   }
@@ -13131,7 +13131,7 @@ function createInitialSnapshot(): HostSnapshot {
       signupPolicy: "closed",
     },
     machines: mockMachines.map((machine) => ({ ...machine })),
-    ownerProfile: { name: "Alex", accountBacked: false, revision: null },
+    ownerProfile: { name: "Alex", accountBacked: false, version: null },
     session: "authenticated",
     sessionSurface: "canonical",
     machineRevision: 0,

@@ -33,8 +33,8 @@ export function YourNameScreen(props: StaticScreenProps<YourNameParams>): ReactN
   const readOwner = useCallback(() => host?.getSnapshot().ownerProfile ?? null, [host]);
   const owner = useSyncExternalStore(subscribe, readOwner, readOwner);
   const [account, setAccount] = useState<AccountProfile | null>(null);
-  // What the person is editing: the stored name and its revision when the screen opened.
-  const [base, setBase] = useState<{ name: string | null; revision: number | null } | null>(null);
+  // What the person is editing: the stored name and its version when the screen opened.
+  const [base, setBase] = useState<{ name: string | null; version: string | null } | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,7 +46,8 @@ export function YourNameScreen(props: StaticScreenProps<YourNameParams>): ReactN
       if (!current) return;
       setAccount(profile);
       setBase(
-        (held) => held ?? (profile ? { name: profile.name, revision: profile.revision } : null),
+        (held) =>
+          held ?? (profile ? { name: profile.name, version: String(profile.revision) } : null),
       );
     });
     return () => {
@@ -55,7 +56,7 @@ export function YourNameScreen(props: StaticScreenProps<YourNameParams>): ReactN
   }, [profiles, target]);
   useEffect(() => {
     if (target === "owner" && owner !== null)
-      setBase((held) => held ?? { name: owner.name, revision: owner.revision });
+      setBase((held) => held ?? { name: owner.name, version: owner.version });
   }, [owner, target]);
 
   const stored = target === "owner" ? (owner?.name ?? null) : (account?.name ?? null);
@@ -80,27 +81,29 @@ export function YourNameScreen(props: StaticScreenProps<YourNameParams>): ReactN
     }
     setSaving(true);
     setError(null);
-    const saved: Promise<{ applied: boolean; revision: number | null }> =
+    // Each answer carries the name now stored, so a refused save shows the newer one.
+    const saved: Promise<{ applied: boolean; name: string | null; version: string | null }> =
       target === "owner" && host !== null
-        ? host.setOwnerName(name, base.revision).then(({ applied }) => {
+        ? host.setOwnerName(name, base.version).then(({ applied }) => {
             profiles?.changed();
-            return { applied, revision: host.getSnapshot().ownerProfile?.revision ?? null };
+            const now = host.getSnapshot().ownerProfile;
+            return { applied, name: now?.name ?? null, version: now?.version ?? null };
           })
-        : profiles !== null && name !== null && base.revision !== null
+        : profiles !== null && name !== null && base.version !== null
           ? profiles
-              .update({ name, expectedRevision: base.revision })
+              .update({ name, expectedRevision: Number(base.version) })
               .then(({ applied, profile }) => {
                 setAccount(profile);
-                return { applied, revision: profile.revision };
+                return { applied, name: profile.name, version: String(profile.revision) };
               })
           : Promise.reject(new Error("Sign in to your Opensteer Account to set your name."));
     void saved
-      .then(({ applied, revision }) => {
+      .then(({ applied, name: current, version }) => {
         if (applied) {
           navigation.goBack();
           return;
         }
-        setBase({ name: stored, revision });
+        setBase({ name: current, version });
         setDraft(null);
         setError(conflict);
       })

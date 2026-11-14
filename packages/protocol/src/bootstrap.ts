@@ -91,8 +91,8 @@ export type AppTab = z.infer<typeof AppTabSchema>;
 export const OwnerProfileViewSchema = z.object({
   name: PersonNameSchema.nullable(),
   accountBacked: z.boolean(),
-  /** The Account revision of `name` while `accountBacked`; an edit sends the one it began from. */
-  revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),
+  /** Opaque, while `accountBacked`: the Account and revision of `name`. An edit sends the one it began from. */
+  version: z.string().min(1).max(256).nullable(),
 });
 export type OwnerProfileView = z.infer<typeof OwnerProfileViewSchema>;
 

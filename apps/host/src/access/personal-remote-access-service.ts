@@ -973,10 +973,19 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     return { account: link.account, profile: await link.client.ownerProfile() };
   }
 
-  /** Saves a new owner name to the linked Account; null while no link is active. */
-  async updateOwnerProfile(request: UpdateAccountProfileRequest) {
+  /**
+   * Saves a new owner name to the linked Account; null while no link is active. Refused when the
+   * link is to another Account than the one the person was editing for.
+   */
+  async updateOwnerProfile(request: UpdateAccountProfileRequest, subject: string) {
     const link = await this.#activeLink();
     if (!link) return null;
+    if (link.account.subject !== subject)
+      throw new OpensteerError({
+        code: "conflict",
+        message:
+          "This computer is now linked to another Opensteer Account. Check your name, then try again.",
+      });
     return { account: link.account, ...(await link.client.updateOwnerProfile(request)) };
   }
 

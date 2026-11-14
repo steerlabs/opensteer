@@ -199,7 +199,11 @@ class MobileTeamRuntime {
   readonly #sessions = new Map<string, TeamSessionClient>();
   readonly #states = new Map<string, { state: TeamState; detail: string | null }>();
   readonly #names = new Map<string, string>();
-  readonly #members = new Map<string, Promise<readonly TeamMember[]>>();
+  /** Each team's people, with the access and names revisions the read began at. */
+  readonly #members = new Map<
+    string,
+    { readonly key: string | null; readonly people: Promise<readonly TeamMember[]> }
+  >();
   readonly #detachSessions = new Map<string, () => void>();
   #memo: z.infer<typeof TeamMemoSchema> | null = null;
   #selected: string | null = null;
@@ -582,9 +586,18 @@ class MobileTeamRuntime {
   }
 
   /** The team's people, read once per session: names, handles and faces for its screens. */
-  members(teamId: string): Promise<readonly TeamMember[]> {
+  /**
+   * The team's people, read once per `key` (its sidebar's access and names revisions): a list
+   * read before a change it missed, even while no screen showed it, is read again.
+   */
+  members(teamId: string, key: string | null = null): Promise<readonly TeamMember[]> {
     const held = this.#members.get(teamId);
-    if (held !== undefined) return held;
+    if (held !== undefined && (key === null || held.key === key)) return held.people;
+    // Read before the team's revisions were known, which is moments ago: it stands for them.
+    if (held !== undefined && held.key === null) {
+      this.#members.set(teamId, { key, people: held.people });
+      return held.people;
+    }
     const loading = (async () => {
       const session = await this.session(teamId);
       const people: TeamMember[] = [];
@@ -602,8 +615,11 @@ class MobileTeamRuntime {
       }
       return people;
     })();
-    this.#members.set(teamId, loading);
-    loading.catch(() => this.#members.delete(teamId));
+    const entry = { key, people: loading };
+    this.#members.set(teamId, entry);
+    loading.catch(() => {
+      if (this.#members.get(teamId) === entry) this.#members.delete(teamId);
+    });
     return loading;
   }
 

@@ -27,12 +27,12 @@ export function OwnerNameRow() {
           : "Your agent calls you by this name. It stays on this computer until you sign in."
       }
       name={profile.name}
-      revision={profile.revision}
-      save={async (name, revision) => {
-        const { applied } = await hostClient.setOwnerName(name, revision);
+      version={profile.version}
+      save={async (name, version) => {
+        const { applied } = await hostClient.setOwnerName(name, version);
         // Teams hold a copy only of an Account's name; this device's sessions relay the new one.
         profiles?.changed();
-        return { applied, revision: hostClient.getSnapshot().ownerProfile?.revision ?? null };
+        return { applied, version: hostClient.getSnapshot().ownerProfile?.version ?? null };
       }}
     />
   );
@@ -60,23 +60,27 @@ export function AccountNameRow() {
   }, [profiles]);
   if (!profiles || !account) return null;
   const owner = snapshot.ownerProfile;
+  const link = deploymentAccess?.personalAccountLink;
+  // Only this computer's own Opensteer, linked to the Account this app is signed in to.
   const throughHost =
-    owner?.accountBacked === true && deploymentAccess?.personalAccountLink?.status === "linked";
+    owner?.accountBacked === true &&
+    link?.status === "linked" &&
+    link.deploymentId === snapshot.deploymentId;
   return (
     <NameEditor
       clearable={false}
       detail="Teammates see this name, and your agent calls you by it. Handles stay the same."
-      name={account.name}
-      revision={account.revision}
-      save={async (name, revision) => {
-        if (throughHost && name !== null) {
-          const { applied } = await hostClient.setOwnerName(name, revision);
+      name={throughHost ? owner.name : account.name}
+      version={throughHost ? owner.version : String(account.revision)}
+      save={async (name, version) => {
+        if (name === null || version === null) return { applied: false, version };
+        if (throughHost) {
+          const { applied } = await hostClient.setOwnerName(name, version);
           profiles.changed();
-          return { applied, revision: hostClient.getSnapshot().ownerProfile?.revision ?? null };
+          return { applied, version: hostClient.getSnapshot().ownerProfile?.version ?? null };
         }
-        if (name === null || revision === null) return { applied: false, revision };
-        const result = await profiles.update({ name, expectedRevision: revision });
-        return { applied: result.applied, revision: result.profile.revision };
+        const result = await profiles.update({ name, expectedRevision: Number(version) });
+        return { applied: result.applied, version: String(result.profile.revision) };
       }}
     />
   );
@@ -85,19 +89,20 @@ export function AccountNameRow() {
 /** One name, shown as a row that turns into a field; saved against the version opened. */
 function NameEditor(props: {
   readonly name: PersonName | null;
-  readonly revision: number | null;
+  /** Opaque: what a save sends to say which name it began from. */
+  readonly version: string | null;
   /** Whether an empty name is allowed (shown as "You"). */
   readonly clearable: boolean;
   readonly detail: string;
   readonly save: (
     name: PersonName | null,
-    revision: number | null,
-  ) => Promise<{ readonly applied: boolean; readonly revision: number | null }>;
+    version: string | null,
+  ) => Promise<{ readonly applied: boolean; readonly version: string | null }>;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   // The version the person is editing, so a rename made elsewhere meanwhile is never overwritten.
-  const [editedRevision, setEditedRevision] = useState<number | null>(null);
+  const [editedVersion, setEditedVersion] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -109,7 +114,7 @@ function NameEditor(props: {
   const valid = name !== null || (draft.trim() === "" && props.clearable);
   const open = () => {
     setDraft(props.name ?? "");
-    setEditedRevision(props.revision);
+    setEditedVersion(props.version);
     setMessage(null);
     setEditing(true);
   };
@@ -123,11 +128,11 @@ function NameEditor(props: {
     setPending(true);
     setMessage(null);
     void props
-      .save(name, editedRevision)
-      .then(({ applied, revision }) => {
+      .save(name, editedVersion)
+      .then(({ applied, version }) => {
         if (applied) setEditing(false);
         else {
-          setEditedRevision(revision);
+          setEditedVersion(version);
           setMessage(conflict);
         }
       })

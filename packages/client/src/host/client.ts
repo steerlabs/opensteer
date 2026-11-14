@@ -1193,8 +1193,8 @@ export interface HostClient {
   /** False when the Account already had a newer name, which the snapshot then shows. */
   setOwnerName(
     name: PersonName | null,
-    /** `ownerProfile.revision` when the person began editing. */
-    expectedRevision: number | null,
+    /** `ownerProfile.version` when the person began editing. */
+    expectedVersion: string | null,
   ): Promise<{ readonly applied: boolean }>;
 
   dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput>;
