@@ -825,19 +825,10 @@ button.side-needs:hover {
   scrollbar-width: thin;
 }
 
-/* Rows land whole: the lists snap to row tops, and their script ends each
-   window at a row's foot — by its height when the layout changes, by
-   `--side-cut` inside the section when a scroll comes to rest. */
-.side-section--tasks .side-list {
-  --side-cut: 0px;
-  align-self: start;
-  height: calc(100% - var(--side-cut));
-  max-height: 100%;
-  scroll-snap-type: y mandatory;
-}
-
-/* Tabs' list runs to its sheet's foot: a row in part under it says there is
-   more. */
+/* Tasks scrolls freely: its rows differ in height (an ask line, a day), so no
+   snap could land on them without moving the list after the person lets go.
+   Tabs' list snaps its rows to its top and runs to its sheet's foot: a row in
+   part under it says there is more. */
 .side-section--tabs .side-list {
   height: 100%;
   border-bottom-width: 0;

@@ -10,6 +10,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { harnessCatalogEntry } from "@opensteer/core";
+import { readTail, type TailReading } from "@opensteer/shared/tailFollow";
 import {
   subagentDetail,
   subagentFooter,
@@ -132,15 +133,20 @@ export function SubagentPane({
   };
   const titleRef = useRef<HTMLHeadingElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
-  const follows = useRef(false);
+  const tail = useRef<TailReading>({ follows: false, offset: 0 });
   useLayoutEffect(() => {
-    follows.current = false;
+    tail.current = { follows: false, offset: 0 };
     titleRef.current?.focus({ preventScroll: true });
   }, [nodeId]);
   // Like the transcript: follow the newest step only once the reader is at the end.
   useLayoutEffect(() => {
     const scroller = scrollRef.current;
-    if (scroller && follows.current) scroller.scrollTop = scroller.scrollHeight;
+    if (!scroller) return;
+    const max = scroller.scrollHeight - scroller.clientHeight;
+    tail.current = readTail(tail.current, scroller.scrollTop, max, false);
+    if (!tail.current.follows) return;
+    scroller.scrollTop = scroller.scrollHeight;
+    tail.current = { follows: true, offset: scroller.scrollTop };
   }, [detail?.entries, view?.state]);
   const kind = view?.card.origin === "task" ? "task" : "subagent";
   const hop = siblings && siblings.total > 1 ? siblings : null;
@@ -221,9 +227,12 @@ export function SubagentPane({
         className="subagent-pane__scroll"
         onScroll={(event) => {
           const scroller = event.currentTarget;
-          follows.current =
-            scroller.scrollTop > 0 &&
-            scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 48;
+          tail.current = readTail(
+            tail.current,
+            scroller.scrollTop,
+            scroller.scrollHeight - scroller.clientHeight,
+            true,
+          );
         }}
         ref={scrollRef}
       >

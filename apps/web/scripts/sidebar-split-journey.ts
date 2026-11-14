@@ -22,11 +22,11 @@ const heightKey = "opensteer.sidebar-tabs-height";
 
 /**
  * What a frame must never show, found in the page so a frame loop can use it
- * too: a row in part at either edge of Tasks or at Tabs' top (but at Tabs'
- * end, where its last row stands whole at the panel's foot instead), or,
- * Tabs being longer than its room, any band between Tabs' list and its
- * panel's foot (the list runs to it; a row in part there is the cue there is
- * more).
+ * too: a row in part at Tabs' top (but at its end, where its last row stands
+ * whole at the panel's foot instead), or, Tabs being longer than its room,
+ * any band between Tabs' list and its panel's foot (the list runs to it; a
+ * row in part there is the cue there is more). Tasks scrolls freely, so a row
+ * in part at its edges is no fault.
  */
 const partsScript = `globalThis.__splitParts = () => {
   const parts = [];
@@ -36,31 +36,28 @@ const partsScript = `globalThis.__splitParts = () => {
     panel.getBoundingClientRect().bottom -
     parseFloat(panelStyle.borderBottomWidth) -
     parseFloat(panelStyle.paddingBottom);
-  for (const list of document.querySelectorAll(
-    ".side-section--tasks .side-list, .side-section--tabs .side-list",
-  )) {
-    const tabs = !list.closest(".side-section--tasks");
-    const end = tabs && list.scrollTop >= list.scrollHeight - list.clientHeight - 1;
+  const list = panel.querySelector(".side-list");
+  if (list) {
+    const end = list.scrollTop >= list.scrollHeight - list.clientHeight - 1;
     // The window inside the list's edge lines, to the fraction of a pixel it is laid out in.
     const box = list.getBoundingClientRect();
     const style = getComputedStyle(list);
     const top = box.top + parseFloat(style.borderTopWidth);
     const bottom = box.bottom - parseFloat(style.borderBottomWidth);
-    if (tabs && list.scrollHeight > list.clientHeight + 0.5 && Math.abs(footer - box.bottom) > 0.5)
+    if (list.scrollHeight > list.clientHeight + 0.5 && Math.abs(footer - box.bottom) > 0.5)
       parts.push({ list: "tabs", band: footer - box.bottom });
     for (const row of list.children) {
       const r = row.getBoundingClientRect();
       if (r.height < 2) continue;
       const seen = Math.min(r.bottom, bottom) - Math.max(r.top, top);
-      if (seen > 0.5 && ((r.top < top - 0.5 && !end) || (!tabs && r.bottom > bottom + 0.5)))
+      if (seen > 0.5 && r.top < top - 0.5 && !end)
         parts.push({
-          list: list.closest(".side-section--tasks") ? "tasks" : "tabs",
+          list: "tabs",
           top: r.top - top,
           bottom: r.bottom - top,
           window: bottom - top,
           scrollTop: list.scrollTop,
           maxHeight: list.style.maxHeight,
-          cut: list.style.getPropertyValue("--side-cut"),
           moving: [...document.querySelectorAll(".side-list")].map((each) =>
             each.hasAttribute("data-moving") || each.hasAttribute("data-sorting"),
           ),
@@ -76,7 +73,7 @@ const partsScript = `globalThis.__splitParts = () => {
 interface ListState {
   /** Rows wholly in view. */
   readonly whole: number;
-  /** Rows in view only in part where none may be: either edge of Tasks, Tabs' top. */
+  /** Rows in view only in part where none may be: Tabs' top. */
   readonly parts: number;
   /** The height of each row beyond the window's foot, in order. */
   readonly below: readonly number[];
@@ -112,9 +109,9 @@ interface Layout {
 
 async function layout(page: Page): Promise<Layout> {
   return page.evaluate((key) => {
-    // Tabs, last, may show a row in part at its foot, under the footer's line, or at its
-    // top once scrolled to its end.
-    const listState = (selector: string, footOpen: boolean) => {
+    // A row in part at a list's foot says there is more, and so does one at its top once it
+    // is scrolled to its end.
+    const listState = (selector: string) => {
       const list = document.querySelector<HTMLElement>(selector);
       if (!list)
         return {
@@ -144,10 +141,7 @@ async function layout(page: Page): Promise<Layout> {
           whole++;
           continue;
         }
-        if (
-          footOpen &&
-          (r.top >= top - 0.5 || list.scrollTop >= list.scrollHeight - list.clientHeight - 1)
-        )
+        if (r.top >= top - 0.5 || list.scrollTop >= list.scrollHeight - list.clientHeight - 1)
           continue;
         parts++;
         partRows.push([r.top - top, r.bottom - top]);
@@ -212,8 +206,8 @@ async function layout(page: Page): Promise<Layout> {
         tabs.querySelector<HTMLElement>(".side-list")!.getBoundingClientRect().bottom,
       tasksFloor: parseFloat(getComputedStyle(tasks).minHeight),
       tabsFloor: parseFloat(getComputedStyle(tabs).minHeight),
-      tasks: listState(".side-section--tasks .side-list", false),
-      tabs: listState(".side-section--tabs .side-list", true),
+      tasks: listState(".side-section--tasks .side-list"),
+      tabs: listState(".side-section--tabs .side-list"),
       openInView,
     };
   }, heightKey);
@@ -575,11 +569,7 @@ function tabsStill(before: Layout, after: Layout, step: string) {
 
 /** Rows shown in part where none may be, or a band under Tabs' list, as a check would report them. */
 function noParts(state: Layout, step: string) {
-  expectThat(
-    { step, tasks: state.tasks, tabs: state.tabs },
-    state.tasks.parts === 0 && state.tabs.parts === 0,
-    `${step}: a row shows in part`,
-  );
+  expectThat({ step, tabs: state.tabs }, state.tabs.parts === 0, `${step}: a row shows in part`);
   expectThat(
     { step, band: state.tabsBand, overflows: state.tabs.overflows },
     !state.tabs.overflows || Math.abs(state.tabsBand) < 0.5,
@@ -630,6 +620,37 @@ try {
         "the line does not offer to move",
       );
       return { state, cursor };
+    },
+  );
+
+  await check(
+    "Tasks stays where a scroll stops, and nothing moves or resizes it after",
+    async () => {
+      const list = page.locator(".side-section--tasks .side-list");
+      const read = () =>
+        list.evaluate((node) => ({
+          top: node.scrollTop,
+          height: node.getBoundingClientRect().height,
+        }));
+      const before = await read();
+      const box = (await list.boundingBox())!;
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      // Part of a row's pitch, so the scroll stops between rows.
+      await page.mouse.wheel(0, 50);
+      await page.waitForTimeout(150);
+      const stopped = await read();
+      // Well past any settling a script could do once the scroll is still.
+      await page.waitForTimeout(500);
+      const later = await read();
+      await list.evaluate((node) => (node.scrollTop = 0));
+      expectThat(
+        { before, stopped, later },
+        stopped.top > before.top &&
+          Math.abs(later.top - stopped.top) < 0.5 &&
+          Math.abs(later.height - before.height) < 0.5,
+        "Tasks moved or resized after its scroll stopped",
+      );
+      return { before, stopped, later };
     },
   );
 
@@ -883,7 +904,7 @@ try {
   );
 
   await check(
-    "a drag that turns back, with the open task at Tasks' foot, keeps it in view and every row whole",
+    "a drag that turns back, with the open task at Tasks' foot, keeps it in view",
     async () => {
       await page.mouse.dblclick((await layout(page)).line!.x, (await layout(page)).line!.y + 2);
       await settle(page);
@@ -948,7 +969,7 @@ try {
     },
   );
 
-  await check("a window resized while the line is held keeps every row whole", async () => {
+  await check("a window resized while the line is held keeps Tabs' rows whole", async () => {
     await holdLine(page, [-40], async () => {
       await page.setViewportSize({ width: 1440, height: 720 });
       await page.waitForTimeout(200);

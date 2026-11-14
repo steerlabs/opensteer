@@ -3555,6 +3555,25 @@ describe("a conversation in a pane that changes shape", () => {
     });
     expect(harness.scrollToOffset).toHaveBeenLastCalledWith({ animated: false, offset: 1400 });
 
+    // However near the foot, a drag up is reading back; only the foot follows again.
+    const near = (y: number) =>
+      act(() => {
+        list().onScrollBeginDrag?.();
+        list().onScroll?.({
+          nativeEvent: {
+            contentOffset: { x: 0, y },
+            contentSize: { height: 2000, width: 390 },
+            layoutMeasurement: { height: 600, width: 390 },
+          },
+        });
+        list().onScrollEndDrag?.();
+      });
+    near(1350);
+    harness.scrollToOffset.mockReset();
+    act(() => list().onContentSizeChange?.(390, 2000));
+    expect(harness.scrollToOffset).not.toHaveBeenCalled();
+    near(1400);
+
     // With the keyboard up the newest entry is past its inset, not under it.
     const inset = (bottom: number) =>
       list().renderScrollComponent?.({}).props.onContentInsetChange?.({ bottom, top: 0 });

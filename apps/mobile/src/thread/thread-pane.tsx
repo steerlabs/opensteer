@@ -1,4 +1,5 @@
 import { TranscriptImageContext } from "@opensteer/client/react";
+import { readTail, type TailReading } from "@opensteer/shared/tailFollow";
 import { useThreadVisits } from "@opensteer/client/react";
 import {
   messageAuthorName,
@@ -197,9 +198,6 @@ export function sameThreadHeader(
   );
 }
 
-/** How close to the bottom still counts as watching the newest entry. */
-const tailThreshold = 96;
-
 interface ThreadPaneProps {
   readonly deploymentId: string;
   /**
@@ -352,7 +350,8 @@ function ThreadPaneForUser(
   const { loadError, reload, snapshot } = props;
   const viewerUserId = snapshot.user?.id ?? null;
   const listRef = useRef<FlatList<TranscriptItem>>(null);
-  const pinned = useRef(true);
+  // Whether the list follows the newest entry, and where it stood when last read or moved.
+  const tail = useRef<TailReading>({ follows: true, offset: 0 });
   const seenSequence = useRef<string | null>(null);
   const [pendingMessages, setPendingMessages] = useState(0);
   // The reader's own scrolling: a finger on the list, and the fling it
@@ -368,7 +367,9 @@ function ThreadPaneForUser(
   const extent = useRef({ content: 0, inset: 0, viewport: 0 });
   const scrollToLatest = useCallback((animated: boolean): void => {
     const { content, inset, viewport } = extent.current;
-    listRef.current?.scrollToOffset({ animated, offset: Math.max(0, content - viewport + inset) });
+    const offset = Math.max(0, content - viewport + inset);
+    tail.current = { ...tail.current, offset };
+    listRef.current?.scrollToOffset({ animated, offset });
   }, []);
   const renderScroll = useCallback(
     (scrollProps: ScrollViewProps) => (
@@ -583,7 +584,7 @@ function ThreadPaneForUser(
     if (anchorMessageId === null || anchored.current === anchorMessageId) return;
     anchored.current = anchorMessageId;
     setHistorical(true);
-    pinned.current = false;
+    tail.current = { ...tail.current, follows: false };
     setAtTail(false);
     void hostClient.loadTranscriptAround(threadId, anchorMessageId).catch((error: unknown) => {
       setFailure(operationDetail(error, "That update could not be opened."));
@@ -604,7 +605,7 @@ function ThreadPaneForUser(
         anchorShown.current = null;
         props.onAnchorReleased?.();
         setHistorical(false);
-        pinned.current = true;
+        tail.current = { ...tail.current, follows: true };
         setAtTail(true);
         scrollToLatest(false);
       })
@@ -751,7 +752,7 @@ function ThreadPaneForUser(
     (place: LinkedPlace, entryId: string): void => {
       if (place.index >= 0) {
         scrollAttempts.current = 0;
-        pinned.current = false;
+        tail.current = { ...tail.current, follows: false };
         setAtTail(false);
         listRef.current?.scrollToIndex({
           animated: false,
@@ -855,7 +856,7 @@ function ThreadPaneForUser(
     [conversation, conversational],
   );
   useEffect(() => {
-    if (pinned.current) {
+    if (tail.current.follows) {
       seenSequence.current = observed;
       setPendingMessages(0);
       return;
@@ -1077,7 +1078,7 @@ function ThreadPaneForUser(
 
   // Never under a finger: the list moves only where the reader puts it.
   const keepPinned = (): void => {
-    if (pinned.current && !dragging.current) scrollToLatest(false);
+    if (tail.current.follows && !dragging.current) scrollToLatest(false);
   };
 
   const appForeground = useAppForeground();
@@ -1085,26 +1086,28 @@ function ThreadPaneForUser(
 
   const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>): void => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
-    const fromTail =
-      contentSize.height + extent.current.inset - contentOffset.y - layoutMeasurement.height;
-    const tail = fromTail < tailThreshold;
-    // Only the reader's own finger takes them off the newest entry. The list
-    // also moves by itself — rows measured after the jump to the end, a page
-    // arriving above, the dock growing as a Request docks — and reading any of
-    // those as "scrolled up" strands a reader who never touched it. Each of
-    // them changes the content or the list's size, and `keepPinned` answers
-    // that; returning here also lets an animated jump to the end finish.
-    if (!tail && !dragging.current && !flinging.current) return;
-    pinned.current = tail;
+    const max = contentSize.height + extent.current.inset - layoutMeasurement.height;
+    // Only the reader's own finger, and the fling it releases, decide whether
+    // they follow. The list also moves by itself — rows measured after the
+    // jump to the end, a page arriving above, the dock growing as a Request
+    // docks — and each of those changes the content or the list's size, which
+    // `keepPinned` answers.
+    const own = dragging.current || flinging.current;
+    if (!own) {
+      tail.current = { ...tail.current, offset: contentOffset.y };
+      return;
+    }
+    tail.current = readTail(tail.current, contentOffset.y, max, true);
+    const follows = tail.current.follows;
     // Only a change repaints: a scroll fires many times a second and the pill
     // is the only thing on screen that depends on it.
-    setAtTail((current) => (current === tail ? current : tail));
+    setAtTail((current) => (current === follows ? current : follows));
     // Asked for a screen ahead of the top, so the page lands above the reader,
     // where the list keeps their place, instead of under them at the edge.
     if (
       contentOffset.y < layoutMeasurement.height &&
       contentSize.height > layoutMeasurement.height &&
-      !tail
+      !follows
     )
       loadEarlier();
   };
@@ -1305,7 +1308,7 @@ function ThreadPaneForUser(
                   returnToLatest();
                   return;
                 }
-                pinned.current = true;
+                tail.current = { ...tail.current, follows: true };
                 scrollToLatest(true);
               }}
               style={({ pressed }) => [styles.jump, pressed && styles.jumpPressed]}

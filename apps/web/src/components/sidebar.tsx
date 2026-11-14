@@ -108,7 +108,7 @@ import {
   taskAt,
   type WorkspaceNavigation,
 } from "./workspace/navigation.js";
-import { revealInList, useScrollEdges, useWholeRows } from "./workspace/scroll-edges.js";
+import { revealInList, useScrollEdges } from "./workspace/scroll-edges.js";
 import { useTabCloser } from "./workspace/tab-closer.js";
 import { TabGroupHeader, tabGroupStyle } from "./workspace/tab-group.js";
 import { NativeTabMenu, TabMenu, nativeTabMenuOffered } from "./workspace/tab-menu.js";
@@ -270,7 +270,6 @@ export function Sidebar({
   const searchOpener = useRef<HTMLElement | null>(null);
   const searchOnOpen = useRef(false);
   const [tabsHeight, commitTabsHeight] = useTabsHeight();
-  useWholeRows(listsRef, !collapsed);
   const { openDrawer } = workspace;
   const openThreadId = taskAt(pathname);
   const openRowThreadId = openThreadId === null ? null : listedRowThreadId(snapshot, openThreadId);
@@ -825,7 +824,7 @@ export function Sidebar({
                   </button>
                 </div>
               )}
-              <SideList labelledBy="sidebar-tasks" listRef={tasksList} whole>
+              <SideList labelledBy="sidebar-tasks" listRef={tasksList}>
                 <RowMotion
                   snap={false}
                   list={tasksList}
@@ -1039,33 +1038,23 @@ function sectionFloor(rows: number): CSSProperties {
 }
 
 /**
- * A section's rows: they scroll on their own, a hairline only at an edge with
- * more beyond; `whole` lists show only whole rows. Tabs, last, is not one: it
- * runs to the footer, its rows snapping to its top, but at its end, where its
- * last row stands whole on the footer's line.
+ * A section's rows: they scroll on their own, as the platform scrolls them,
+ * with a hairline only at an edge with more beyond.
  */
 function SideList({
   children,
   labelledBy,
   listRef,
-  whole = false,
 }: {
   readonly children: ReactNode;
   readonly labelledBy?: string;
   readonly listRef?: RefObject<HTMLUListElement | null>;
-  readonly whole?: boolean;
 }) {
   const ownRef = useRef<HTMLUListElement | null>(null);
   const ref = listRef ?? ownRef;
   useScrollEdges(ref);
   return (
-    <ul
-      aria-labelledby={labelledBy}
-      className="side-list"
-      data-scroll-edges=""
-      data-whole-rows={whole ? "" : undefined}
-      ref={ref}
-    >
+    <ul aria-labelledby={labelledBy} className="side-list" data-scroll-edges="" ref={ref}>
       {children}
     </ul>
   );

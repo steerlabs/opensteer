@@ -796,3 +796,60 @@ describe("a conversation's page above it at phone width", () => {
     }
   });
 });
+
+describe("a conversation's foot", () => {
+  const task = "thr_00000000-0000-4000-8000-000000000902";
+  /** The transcript scrolls 400px of `content`; the rest of the layout is not measured. */
+  function transcriptGeometry(geometry: { content: number }) {
+    const size = (element: Element, key: "clientHeight" | "scrollHeight") =>
+      element.classList.contains("transcript-scroll")
+        ? { clientHeight: 400, scrollHeight: geometry.content }[key]
+        : 0;
+    for (const key of ["clientHeight", "scrollHeight"] as const)
+      vi.spyOn(HTMLElement.prototype, key, "get").mockImplementation(function (this: HTMLElement) {
+        return size(this, key);
+      });
+  }
+  const scrollTo = (scroller: HTMLElement, top: number) =>
+    act(async () => {
+      scroller.scrollTop = top;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+  const arrives = (body: string) =>
+    act(async () => {
+      await client.dispatch({
+        type: "thread.sendMessage",
+        threadId: task,
+        content: [{ type: "text", text: body }],
+        delivery: "queue",
+        idempotencyKey: `foot-${body}`,
+      });
+    });
+
+  it("lets go at the reader's first scroll up, however near the foot, and never pulls them back", async () => {
+    await mount(`/tasks/${task}`);
+    const geometry = { content: 2000 };
+    transcriptGeometry(geometry);
+    const scroller = element<HTMLElement>(".transcript-scroll");
+    // The first scroll after a resize only takes the new geometry in; the second reaches the foot.
+    for (const _ of [1, 2]) await scrollTo(scroller, 1600);
+    geometry.content = 2100;
+    await arrives("The first reply");
+    expect(scroller.scrollTop, "A reader at the foot was not kept there").toBe(2100);
+
+    await scrollTo(scroller, 1670);
+    geometry.content = 2200;
+    await arrives("The second reply");
+    expect(scroller.scrollTop, "A reader 30px up was pulled back to the foot").toBe(1670);
+    expect(element(".transcript__jump")).not.toBeNull();
+
+    // Back at the foot, they follow again; a scroll up landing with new content is still theirs.
+    await scrollTo(scroller, 1800);
+    geometry.content = 2300;
+    await arrives("The third reply");
+    expect(scroller.scrollTop).toBe(2300);
+    geometry.content = 2400;
+    await scrollTo(scroller, 1850);
+    expect(scroller.scrollTop, "A scroll up beside a reflow was taken for the reflow").toBe(1850);
+  });
+});
