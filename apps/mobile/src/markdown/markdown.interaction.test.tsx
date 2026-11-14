@@ -42,6 +42,7 @@ vi.mock("../ui/copy-mark.js", () => ({
   ),
 }));
 vi.mock("../ui/primitives.js", () => ({ monoFontFamily: "Menlo" }));
+vi.mock("expo-image", () => ({ Image: () => null }));
 vi.mock("../ui/symbol.js", () => ({
   Symbol: (props: { name: string }) => <i data-symbol={props.name} />,
 }));
