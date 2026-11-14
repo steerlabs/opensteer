@@ -6,7 +6,7 @@ import {
   type Message,
   type Request,
 } from "@opensteer/core";
-import type { ThreadItem } from "@opensteer/agent-tools/outputs";
+import { toolMessageAuthor, type ThreadItem } from "@opensteer/agent-tools/outputs";
 import type { AgentThreadActivityItem } from "@opensteer/database";
 
 /** With a message's other parts, this keeps one item inside the agent output limit. */
@@ -43,7 +43,7 @@ export function messageItem(message: Message, maxChars: number, offset = 0): Thr
     type: "message",
     status: "published",
     runId: message.runId,
-    author: message.author,
+    author: toolMessageAuthor(message.author),
     title: null,
     ...itemText(text, maxChars, offset),
     ...(places.length ? { places } : {}),

@@ -14,7 +14,6 @@ import {
   HarnessIdSchema,
   HarnessInstanceIdSchema,
   MessageIdSchema,
-  MessageSchema,
   ModelIdSchema,
   ModelProviderIdSchema,
   ModelSelectionSchema,
@@ -26,6 +25,8 @@ import {
   RequestStatusSchema,
   RequestPresentationSchema,
   RequestAnswererViewSchema,
+  MessageAuthorViewSchema,
+  TriggerIdSchema,
   RunSchema,
   RunnerIdSchema,
   ThreadIdSchema,
@@ -247,6 +248,51 @@ export const PersonShowOutputSchema = z.object({
   status: z.enum(["sent-unconfirmed", "no-device-connected", "already-requested"]),
   connectedDevices: z.number().int().nonnegative(),
 });
+const [
+  humanAuthor,
+  agentAuthor,
+  triggerAuthor,
+  watchAuthor,
+  platformAuthor,
+  connectionAuthor,
+  memberAuthor,
+] = MessageAuthorViewSchema.options;
+/** Authors as tools present them: an agent names its task, an automation or watch its automation. */
+const ToolMessageAuthorSchema = z.discriminatedUnion("kind", [
+  humanAuthor,
+  agentAuthor.omit({ threadId: true }).extend({ taskId: ThreadIdSchema }),
+  triggerAuthor.omit({ triggerId: true }).extend({ automationId: TriggerIdSchema }),
+  watchAuthor.omit({ triggerId: true }).extend({ automationId: TriggerIdSchema }),
+  platformAuthor,
+  connectionAuthor,
+  memberAuthor,
+]);
+const [deviceAnswerer, agentAnswerer] = RequestAnswererViewSchema.options;
+const ToolRequestAnswererSchema = z.union([
+  deviceAnswerer,
+  agentAnswerer.omit({ threadId: true }).extend({ taskId: ThreadIdSchema }),
+]);
+type ToolMessageAuthor = z.infer<typeof ToolMessageAuthorSchema>;
+export function toolMessageAuthor(
+  author: z.infer<typeof MessageAuthorViewSchema>,
+): ToolMessageAuthor {
+  if (author.kind === "agent") {
+    const { threadId, ...rest } = author;
+    return { ...rest, taskId: threadId };
+  }
+  if (author.kind === "trigger" || author.kind === "watch") {
+    const { triggerId, ...rest } = author;
+    return { ...rest, automationId: triggerId };
+  }
+  return author;
+}
+export function toolRequestAnswerer(
+  answerer: z.infer<typeof RequestAnswererViewSchema>,
+): z.infer<typeof ToolRequestAnswererSchema> {
+  if (!("kind" in answerer)) return answerer;
+  const { threadId, ...rest } = answerer;
+  return { ...rest, taskId: threadId };
+}
 export const RequestOutputSchema = z.object({
   id: RequestIdSchema,
   kind: RequestKindSchema,
@@ -258,7 +304,7 @@ export const RequestOutputSchema = z.object({
   title: z.string().optional(),
   revision: z.string().optional(),
   presentation: RequestPresentationSchema.optional(),
-  settlementProvenance: RequestAnswererViewSchema.nullable().optional(),
+  settlementProvenance: ToolRequestAnswererSchema.nullable().optional(),
 });
 export const RequestListOutputSchema = z.object({
   requests: z.array(RequestOutputSchema),
@@ -435,7 +481,7 @@ export const ThreadItemSchema = z.object({
   type: z.string(),
   status: z.string(),
   runId: RunSchema.shape.id.nullable(),
-  author: MessageSchema.shape.author.optional(),
+  author: ToolMessageAuthorSchema.optional(),
   title: z.string().nullable(),
   text: z.string().nullable(),
   textTruncated: z.boolean(),
@@ -469,7 +515,7 @@ export const ThreadQueueOutputSchema = z.object({
     .array(
       z.object({
         messageId: MessageIdSchema,
-        author: MessageSchema.shape.author,
+        author: ToolMessageAuthorSchema,
         preview: z.string().max(500),
         truncated: z.boolean(),
         canCancel: z.boolean(),

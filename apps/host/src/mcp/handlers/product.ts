@@ -3,6 +3,7 @@ type DelegationCall = ToolCall<"opensteer_task_delegate"> & {
 };
 import type { DeviceAccessService } from "../../administration/device-access-service.js";
 import { threadWaitMaxMs } from "@opensteer/agent-tools/tools";
+import { toolMessageAuthor, toolRequestAnswerer } from "@opensteer/agent-tools/outputs";
 import {
   readAgentThreadRecent,
   readAgentThreadActivity,
@@ -1713,7 +1714,7 @@ export class ProductToolHandlers {
           .join("\n");
         return {
           messageId: message.id,
-          author: message.author,
+          author: toolMessageAuthor(message.author),
           preview: text.slice(0, 500),
           truncated: text.length > 500,
           canCancel: item.canCancel,
@@ -1962,9 +1963,11 @@ function agentRequest(request: Request) {
     createdAt: request.createdAt,
     revision: requestRevision(request),
     settlementProvenance: request.settlementProvenance
-      ? "kind" in request.settlementProvenance
-        ? request.settlementProvenance
-        : { deviceLabel: request.settlementProvenance.deviceLabel }
+      ? toolRequestAnswerer(
+          "kind" in request.settlementProvenance
+            ? request.settlementProvenance
+            : { deviceLabel: request.settlementProvenance.deviceLabel },
+        )
       : request.settlementProvenance,
   };
 }
