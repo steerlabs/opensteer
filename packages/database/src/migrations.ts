@@ -142,7 +142,7 @@ export function migrationProvider(): MigrationProvider {
               message_id bigint,
               channel_id text not null,
               thread_root_id bigint,
-              target_user_ids text[] not null,
+              target_bindings jsonb not null,
               mentioned_agent_handles text[] not null,
               body_markdown text not null,
               attachment_ids jsonb not null,

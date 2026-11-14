@@ -13,6 +13,7 @@ import {
   type UserId,
   type TeamAgentRequestState,
   type TeamAskDecision,
+  type TeamAskOutcome,
 } from "@opensteer/core";
 import {
   PersonalTeamRequestSchema,
@@ -22,6 +23,7 @@ import {
 } from "@opensteer/protocol";
 import { sql, type Insertable, type Kysely, type Selectable } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
+import { personalTeamReturnPost } from "./personal-team-return-provenance.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { appendHostDeploymentEvent, eventFromRow } from "./deployment-events.js";
@@ -75,12 +77,29 @@ export class PersonalTeamRequestsStore {
       .executeTakeFirst();
   }
 
-  async recordPost(input: Insertable<DatabaseSchema["personalTeamPosts"]>) {
+  async recordPost(
+    input: Omit<Insertable<DatabaseSchema["personalTeamPosts"]>, "targetBindings"> & {
+      readonly askOutcomes?: readonly TeamAskOutcome[] | undefined;
+    },
+  ) {
+    const { askOutcomes, ...post } = input;
+    const targetBindings = (askOutcomes ?? []).flatMap((ask) =>
+      ask.outcome === "queued" &&
+      ask.handle &&
+      ask.requestId &&
+      input.mentionedAgentHandles.includes(`${ask.handle}-agent`)
+        ? [{ ownerUserId: ask.ownerUserId, handle: ask.handle, requestId: ask.requestId }]
+        : [],
+    );
     await this.prunePosts();
     await withPersonalTransaction(this.database, async (tx) => {
       await tx
         .insertInto("personalTeamPosts")
-        .values({ ...input, attachmentIds: sql`${JSON.stringify(input.attachmentIds)}::jsonb` })
+        .values({
+          ...post,
+          targetBindings: sql`${JSON.stringify(targetBindings)}::jsonb`,
+          attachmentIds: sql`${JSON.stringify(input.attachmentIds)}::jsonb`,
+        })
         .onConflict((conflict) =>
           conflict.columns(["teamDeploymentId", "clientMessageId"]).doNothing(),
         )
@@ -108,7 +127,7 @@ export class PersonalTeamRequestsStore {
       )
         throw new OpensteerError({ code: "conflict", message: "Team post identity changed." });
       if (input.messageId !== null) {
-        if (!input.targetUserIds.length) {
+        if (!targetBindings.length) {
           await tx
             .deleteFrom("personalTeamPosts")
             .where("teamDeploymentId", "=", input.teamDeploymentId)
@@ -117,7 +136,10 @@ export class PersonalTeamRequestsStore {
         } else
           await tx
             .updateTable("personalTeamPosts")
-            .set({ messageId: input.messageId, targetUserIds: input.targetUserIds })
+            .set({
+              messageId: input.messageId,
+              targetBindings: sql`${JSON.stringify(targetBindings)}::jsonb`,
+            })
             .where("teamDeploymentId", "=", input.teamDeploymentId)
             .where("clientMessageId", "=", input.clientMessageId)
             .where("messageId", "is", null)
@@ -137,6 +159,7 @@ export class PersonalTeamRequestsStore {
   }
 
   async mirrors(teamId: DeploymentId) {
+    await this.pruneReturns(teamId);
     const rows = await this.database
       .selectFrom("personalTeamRequests")
       .selectAll()
@@ -145,7 +168,10 @@ export class PersonalTeamRequestsStore {
         eb.or([
           eb("terminalState", "is", null),
           eb("publicationState", "=", "pending"),
-          eb.and([eb("kind", "=", "return"), eb("remoteState", "!=", "done")]),
+          eb.and([
+            eb("kind", "=", "return"),
+            eb("remoteState", "in", ["queued", "working", "needs_you"]),
+          ]),
         ]),
       )
       .orderBy("createdAt")
@@ -154,9 +180,43 @@ export class PersonalTeamRequestsStore {
     return rows.map(personalTeamRequestMirrorFromRow);
   }
 
+  async pruneReturns(teamId: DeploymentId) {
+    await this.database
+      .deleteFrom("personalTeamRequests")
+      .where("teamDeploymentId", "=", teamId)
+      .where("kind", "=", "return")
+      .where((eb) =>
+        eb.or([
+          eb("createdAt", "<=", new Date(Date.now() - 14 * 86400000)),
+          eb("finishedAt", "<=", new Date(Date.now() - 14 * 86400000)),
+          eb(
+            "requestId",
+            "in",
+            eb
+              .selectFrom("personalTeamRequests")
+              .select("requestId")
+              .where("teamDeploymentId", "=", teamId)
+              .where("kind", "=", "return")
+              .where("terminalState", "is not", null)
+              .orderBy("createdAt", "desc")
+              .orderBy("requestId", "desc")
+              .offset(128),
+          ),
+        ]),
+      )
+      .execute();
+  }
+
   async observe(
     input: PersonalTeamRequestMirror & { readonly createdAt: string },
   ): Promise<boolean> {
+    await this.pruneReturns(input.teamId);
+    const rejected =
+      input.kind === "return" && !(await personalTeamReturnPost(this.database, input));
+    const returnPayload =
+      rejected && input.returnPayload
+        ? { ...input.returnPayload, bodyMarkdown: null, attachments: [] }
+        : input.returnPayload;
     const saved = await this.database
       .insertInto("personalTeamRequests")
       .values({
@@ -165,21 +225,21 @@ export class PersonalTeamRequestsStore {
         kind: input.kind,
         remoteState: input.remoteState,
         presentation: input.presentation,
-        returnPayload: input.returnPayload,
+        returnPayload,
         consentExpiresAt: input.consentExpiresAt,
         localDecision: null,
         decisionAt: null,
-        returnAdmission: null,
+        returnAdmission: rejected ? "undeliverable" : null,
         triggerMessageId: input.triggerMessageId,
         localTaskId: null,
         localInputId: null,
         runId: null,
         source: input.source,
-        publicationState: "pending",
-        terminalState: null,
+        publicationState: rejected ? "blocked" : "pending",
+        terminalState: rejected ? "done" : null,
         acceptedMessageId: null,
-        createdAt: input.createdAt,
-        finishedAt: null,
+        createdAt: input.kind === "return" ? new Date() : input.createdAt,
+        finishedAt: rejected ? new Date() : null,
       })
       .onConflict((conflict) => conflict.doNothing())
       .returning("requestId")
@@ -190,9 +250,15 @@ export class PersonalTeamRequestsStore {
       current.kind !== input.kind ||
       current.triggerMessageId !== input.triggerMessageId ||
       !isDeepStrictEqual(current.presentation, input.presentation) ||
-      !isDeepStrictEqual(current.returnPayload, input.returnPayload)
+      !isDeepStrictEqual(
+        current.returnPayload,
+        current.terminalState && input.returnPayload
+          ? { ...input.returnPayload, bodyMarkdown: null, attachments: [] }
+          : input.returnPayload,
+      )
     )
       throw new OpensteerError({ code: "conflict", message: "Team request presentation changed" });
+    await this.pruneReturns(input.teamId);
     return Boolean(saved);
   }
 
@@ -361,6 +427,7 @@ export class PersonalTeamRequestsStore {
         .set({
           runId,
           terminalState: state,
+          returnPayload: sql`case when kind = 'return' then return_payload || '{"bodyMarkdown":null,"attachments":[]}'::jsonb else return_payload end`,
           finishedAt: new Date().toISOString(),
           publicationState: sql`case when local_task_id is null then 'blocked' else publication_state end`,
         })

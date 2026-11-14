@@ -386,8 +386,15 @@ it("round-trips an agent ask through owner consent and one private authored retu
         attachmentIds: [],
       },
     );
-    expect(post.askOutcomes).toEqual([{ ownerUserId: team.owner.userId, outcome: "queued" }]);
     const ask = (await team.team.requests.pending(mayaLink))[0]!;
+    expect(post.askOutcomes).toEqual([
+      {
+        ownerUserId: team.owner.userId,
+        handle: "maya",
+        requestId: ask.request.id,
+        outcome: "queued",
+      },
+    ]);
     expect(ask.request).toMatchObject({
       kind: "ask",
       state: "awaiting_approval",
@@ -411,6 +418,11 @@ it("round-trips an agent ask through owner consent and one private authored retu
     const context = await maya.tools.context(admitted.runId!);
     expect(context.asker).toEqual({ displayName: "Tim", actor: "agent" });
     expect((await needsYouPage(maya.database, { userId: maya.owner.userId })).count).toBe(0);
+    await team.database
+      .updateTable("teamMembers")
+      .set({ handle: "renamed-maya" })
+      .where("userId", "=", team.owner.userId)
+      .execute();
     await maya.answer(ask.request.id, "@tim-agent The launch is ready.");
     const replyPage = await team.team.chat.page(
       team.member,
@@ -429,7 +441,12 @@ it("round-trips an agent ask through owner consent and one private authored retu
     expect(returned.returnPayload).toMatchObject({
       outcome: "answered",
       resumeRunId: asking.runId,
-      author: { teamUserId: team.owner.userId, displayName: "Maya", actor: "agent" },
+      author: {
+        teamUserId: team.owner.userId,
+        displayName: "Maya",
+        actor: "agent",
+        handle: "maya",
+      },
     });
     await tim.deliver();
     await tim.publisher.deliver(team.deploymentId, returned);
@@ -463,6 +480,11 @@ it("round-trips an agent ask through owner consent and one private authored retu
         .execute(),
     ).toHaveLength(1);
 
+    await team.database
+      .updateTable("teamMembers")
+      .set({ handle: "maya" })
+      .where("userId", "=", team.owner.userId)
+      .execute();
     await tim.tools.post({ runId: asking.runId, operationId: "ask-decline" }, team.deploymentId, {
       channelId: team.channel.id,
       bodyMarkdown: "@maya-agent Another question.",

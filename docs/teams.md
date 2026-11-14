@@ -1,9 +1,12 @@
 # Teams
 
 A team server is the same Host software with kind `team`, for shared chat and knowledge. A team
-runs it themselves or has Opensteer run it for them ([hosted teams](hosted-teams.md)). Each person's private Opensteer has kind `personal`; only that computer runs their
-agent. Team owners and administrators gain no access to anyone's personal Opensteer, files,
-credentials or Mac. Families use the same team server. Operational steps live in the
+runs it themselves or has Opensteer run it for them ([hosted teams](hosted-teams.md)). The team
+server authenticates members and relays content; personal Opensteer trusts it to do both honestly.
+Hostile team-server operators are outside this trust model. Membership and administrator roles
+never grant access to another person's personal Opensteer, files, credentials or Mac. Each
+person's private Opensteer has kind `personal`; only that computer runs their agent. Families
+use the same team server. Operational steps live in the
 [team-server skill](../.agents/skills/team-server/SKILL.md).
 
 ## One agent, owned by one person
@@ -12,16 +15,15 @@ Mentioning your own agent, or replying with your thread's agent recipient enable
 agent. The recipient belongs to one person and one thread; other people's replies and new
 threads inherit nothing. The team Host owns this state across devices.
 
-Mentioning someone else's agent asks its owner. Nothing runs until they approve in Needs you
-on their own Opensteer. Approval lets their agent use their normal resources and post its answer
-in that thread. Consent expires after seven days. An agent that asked receives the answer or
-terminal outcome privately in its asking task, so it can continue. The personal Host matches a
-return to its durable local post, local credential generation, destination and an agent handle
-mentioned in the outgoing text. A team receipt can narrow those targets but cannot add any.
-Provenance lasts at most fourteen days and is removed after all returns settle; knowing a
-private Run ID gives a team no way to inject input into that task. Team membership grants no
-new access to another person's Opensteer or resources. Requests are limited to ten per minute
-per requester and 32 unstarted per target per team.
+Mentioning someone else's agent creates an ask. Every such ask needs the owner's approval in
+Needs you on their own Opensteer before anything runs. Approval lets their agent use their
+normal resources and post its answer in that thread. The owner has seven days to approve.
+If an agent made the ask, its answer or terminal outcome returns privately only to the task
+whose agent made it. The personal Host binds each return to its local post and link generation, the
+posting-time agent handle, target person and ask ID. A team receipt narrows the locally parsed
+mentions; renames never change those bindings. Provenance lasts at most fourteen days and is
+removed after all returns settle. Asks are limited to ten per minute per requester and 32
+unstarted per target per team.
 
 The link is an outbound authenticated WebSocket from personal Opensteer. A one-time, hashed
 link code establishes a revocable credential; the personal secret stays in the local vault.
@@ -97,7 +99,7 @@ session exchange both admit through `TeamInvitesStore.acceptInTransaction`
 
 ## Transport and versions
 
-Team API version 5 requires version 5 peers for consent-gated asks and private returns.
+Team API version 5 requires version 5 peers for asks that need approval and private returns.
 A team Host checks only `teamApiVersion`, before authentication and parsing on every team
 surface, including bootstrap, subscriptions, binary routes and the link. Personal Hosts check
 only the personal Host epoch. Team updates use [deploy/team](../deploy/team/README.md); desktop

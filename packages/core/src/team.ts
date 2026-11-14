@@ -72,6 +72,8 @@ export const TeamAgentRequestKindSchema = z.enum(["self", "ask", "return"]);
 export type TeamAgentRequestKind = z.infer<typeof TeamAgentRequestKindSchema>;
 export const TeamAskOutcomeSchema = z.strictObject({
   ownerUserId: UserIdSchema,
+  handle: TeamHandleSchema.optional(),
+  requestId: TeamAgentRequestIdSchema.optional(),
   outcome: z.enum(["queued", "people-only", "no-access", "no-link", "rate-limited"]),
 });
 export type TeamAskOutcome = z.infer<typeof TeamAskOutcomeSchema>;

@@ -285,17 +285,24 @@ describe("fresh personal/team lineage", () => {
       localDecision: "decline",
       presentation,
     });
-    const insertReceipt = () =>
-      sql`insert into personal_team_requests(team_deployment_id,request_id,kind,trigger_message_id,local_task_id,local_input_id,publication_state,source,return_payload,return_admission)
-      values(${teamId},${createId("teamAgentRequest")},'return',${trigger},null,null,'pending',${JSON.stringify(source)}::jsonb,${JSON.stringify(payload)}::jsonb,'undeliverable')`.execute(
+    const rejectedId = createId("teamAgentRequest");
+    const insertReceipt = (id = createId("teamAgentRequest")) =>
+      sql`insert into personal_team_requests(team_deployment_id,request_id,kind,trigger_message_id,local_task_id,local_input_id,publication_state,source,return_payload)
+      values(${teamId},${id},'return',${trigger},null,null,'pending',${JSON.stringify(source)}::jsonb,${JSON.stringify(payload)}::jsonb)`.execute(
         database,
       );
-    await insertReceipt();
+    await insertReceipt(rejectedId);
     await expect(insertReceipt()).rejects.toMatchObject({ code: "23505" });
+    await database
+      .updateTable("personalTeamRequests")
+      .set({ returnAdmission: "undeliverable" })
+      .where("requestId", "=", rejectedId)
+      .execute();
+    await insertReceipt();
     const receipt = await database
       .selectFrom("personalTeamRequests")
       .selectAll()
-      .where("kind", "=", "return")
+      .where("requestId", "=", rejectedId)
       .executeTakeFirstOrThrow();
     expect(personalTeamRequestMirrorFromRow(receipt)).toMatchObject({
       kind: "return",

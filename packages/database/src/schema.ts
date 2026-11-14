@@ -1998,7 +1998,13 @@ export interface DatabaseSchema {
     messageId: TeamMessageId | null;
     channelId: TeamChannelId;
     threadRootId: TeamMessageId | null;
-    targetUserIds: readonly UserId[];
+    targetBindings: JsonColumn<
+      readonly {
+        readonly ownerUserId: UserId;
+        readonly handle: string;
+        readonly requestId: TeamAgentRequestId;
+      }[]
+    >;
     mentionedAgentHandles: readonly string[];
     bodyMarkdown: string;
     attachmentIds: JsonColumn<readonly TeamBlobId[]>;
@@ -2504,6 +2510,7 @@ export interface TeamLinkTable {
   revokedAt: NullableTimestamp;
 }
 export interface TeamAgentRequestTable {
+  targetAgentHandle: Generated<string | null>;
   kind: Generated<TeamAgentRequestKind>;
   presentation: ColumnType<
     TeamAskPresentation | null,

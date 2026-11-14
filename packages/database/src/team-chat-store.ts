@@ -917,9 +917,9 @@ export class TeamChatStore {
       );
     }
     // Requester and target rows serialize budgets across channel writers.
-    await transaction
+    const targetMembers = await transaction
       .selectFrom("teamMembers")
-      .select("userId")
+      .select(["userId", "handle"])
       .where("userId", "in", [
         ...new Set([
           actor.userId,
@@ -928,7 +928,7 @@ export class TeamChatStore {
       ])
       .orderBy("userId")
       .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
+      .execute();
     await lockTeamMessages(transaction, [
       ...(input.statusMessageIds ?? []),
       ...(input.threadRootId ? [input.threadRootId] : []),
@@ -998,7 +998,13 @@ export class TeamChatStore {
     );
     if (actor.kind === "human" && (ownMention || sticky?.enabled)) targets.add(actor.userId);
     if (input.publication) targets.clear();
-    const admissions: { ownerUserId: UserId; linkId: TeamLinkId; kind: "self" | "ask" }[] = [];
+    const admissions: {
+      id: TeamAgentRequestId;
+      targetAgentHandle: string;
+      ownerUserId: UserId;
+      linkId: TeamLinkId;
+      kind: "self" | "ask";
+    }[] = [];
     const outcomes: TeamAskOutcome[] = [];
     let minute = targets.size
       ? Number(
@@ -1038,11 +1044,15 @@ export class TeamChatStore {
             : minute >= 10 || Number(queued.count) >= 32
               ? "rate-limited"
               : "queued";
-      outcomes.push({ ownerUserId, outcome });
+      const handle = targetMembers.find((member) => member.userId === ownerUserId)!.handle;
+      const requestId = outcome === "queued" ? createId("teamAgentRequest") : undefined;
+      outcomes.push({ ownerUserId, outcome, ...(requestId ? { handle, requestId } : {}) });
       if (ownerUserId === actor.userId) wake = outcome === "no-access" ? "people-only" : outcome;
       if (outcome !== "queued" || !targetLink) continue;
       minute++;
       admissions.push({
+        id: requestId!,
+        targetAgentHandle: handle,
         ownerUserId,
         linkId: targetLink.id,
         kind: ownerUserId === actor.userId ? "self" : "ask",
@@ -1080,7 +1090,6 @@ export class TeamChatStore {
       await transaction
         .insertInto("teamAgentRequests")
         .values({
-          id: createId("teamAgentRequest"),
           ...admission,
           channelId: row.channelId,
           threadRootId: input.threadRootId ?? row.id,

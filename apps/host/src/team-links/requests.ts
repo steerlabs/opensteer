@@ -302,9 +302,7 @@ export class PersonalTeamRequests {
         await this.options.requests.recordPost({
           ...post,
           messageId: result.messageId,
-          targetUserIds: (result.askOutcomes ?? [])
-            .filter((ask) => ask.outcome === "queued")
-            .map((ask) => ask.ownerUserId),
+          askOutcomes: result.askOutcomes,
         });
       } catch (error) {
         if (

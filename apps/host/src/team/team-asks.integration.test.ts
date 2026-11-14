@@ -367,13 +367,13 @@ describe("consent-gated team asks", () => {
       mentions: [],
       attachmentIds: [],
     });
+    const ask = (await requests.pending(targetLink))[0]!.request;
     expect(sent.askOutcomes).toEqual(
       expect.arrayContaining([
-        { ownerUserId: target.userId, outcome: "queued" },
+        { ownerUserId: target.userId, handle: "alex", requestId: ask.id, outcome: "queued" },
         { ownerUserId: casey, outcome: "no-link" },
       ]),
     );
-    const ask = (await requests.pending(targetLink))[0]!.request;
     expect(
       (await chat.message(asker, channelId, sent.message.id)).requests.map((r) => r.id),
     ).toEqual([ask.id]);

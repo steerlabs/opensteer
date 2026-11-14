@@ -1,3 +1,4 @@
+import { personalTeamReturnPost } from "./personal-team-return-provenance.js";
 import { sql } from "kysely";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import type { RevokedRunGrant } from "./run-grants.js";
@@ -348,6 +349,7 @@ export async function admitTeamReturn(
         await tx
           .updateTable("personalTeamRequests")
           .set({
+            returnPayload: sql`return_payload || '{"bodyMarkdown":null,"attachments":[]}'::jsonb`,
             returnAdmission: "undeliverable",
             publicationState: "blocked",
             terminalState: "done",
@@ -367,45 +369,14 @@ export async function admitTeamReturn(
         input.ownerId,
         `team-return:${input.teamId}:${payload.originAskId}`,
       );
-      const post = await tx
-        .selectFrom("personalTeamPosts")
-        .selectAll()
-        .where("teamDeploymentId", "=", input.teamId)
-        .where("clientMessageId", "=", payload.triggerClientMessageId)
-        .where("localLinkId", "=", link.id)
-        .where("remoteLinkId", "=", link.remoteLinkId)
-        .where("runId", "=", payload.resumeRunId)
-        .where("channelId", "=", mirror.source.channelId)
-        .where("createdAt", ">", new Date(Date.now() - 14 * 86400000))
-        .executeTakeFirst();
-      if (
-        !post ||
-        payload.author.teamUserId === link.remoteOwnerUserId ||
-        !payload.author.handle ||
-        !post.mentionedAgentHandles.includes(`${payload.author.handle}-agent`) ||
-        (post.threadRootId !== null && post.threadRootId !== mirror.source.threadRootId)
-      )
-        return reject();
+      const post = await personalTeamReturnPost(tx, {
+        teamId: input.teamId,
+        triggerMessageId: mirror.triggerMessageId,
+        source: mirror.source,
+        returnPayload: payload,
+      });
+      if (!post) return reject();
       if (post.messageId === null) return { events: [] };
-      if (
-        !post.targetUserIds.includes(payload.author.teamUserId) ||
-        post.messageId !== mirror.triggerMessageId ||
-        (post.threadRootId ?? post.messageId) !== mirror.source.threadRootId
-      )
-        return reject();
-      const consumed = await tx
-        .selectFrom("personalTeamRequests")
-        .select("requestId")
-        .where("teamDeploymentId", "=", input.teamId)
-        .where("returnAdmission", "=", "admitted")
-        .where(
-          sql<string>`return_payload->>'triggerClientMessageId'`,
-          "=",
-          payload.triggerClientMessageId,
-        )
-        .where(sql<string>`return_payload->'author'->>'handle'`, "=", payload.author.handle)
-        .executeTakeFirst();
-      if (consumed) return reject();
       const run = await tx
         .selectFrom("runs")
         .select(["threadId", "requestedBy"])
@@ -452,6 +423,7 @@ export async function admitTeamReturn(
           localTaskId: run.threadId,
           localInputId: queued.message.id,
           runId: queued.run?.id ?? null,
+          returnPayload: sql`return_payload || '{"bodyMarkdown":null,"attachments":[]}'::jsonb`,
           returnAdmission: "admitted",
           publicationState: "accepted",
           terminalState: "done",
@@ -460,12 +432,7 @@ export async function admitTeamReturn(
         .where("teamDeploymentId", "=", input.teamId)
         .where("requestId", "=", input.requestId)
         .execute();
-      await consumeTeamPost(
-        tx,
-        input.teamId,
-        payload.triggerClientMessageId,
-        payload.author.teamUserId,
-      );
+      await consumeTeamPost(tx, input.teamId, payload.triggerClientMessageId, payload.originAskId);
       return { events: queued.events };
     });
   } catch (error) {
@@ -481,6 +448,7 @@ export async function admitTeamReturn(
       await tx
         .updateTable("personalTeamRequests")
         .set({
+          returnPayload: sql`return_payload || '{"bodyMarkdown":null,"attachments":[]}'::jsonb`,
           returnAdmission: "undeliverable",
           publicationState: "blocked",
           terminalState: "done",
@@ -504,7 +472,7 @@ export async function admitTeamReturn(
           tx,
           input.teamId,
           payload.triggerClientMessageId,
-          payload.author.teamUserId,
+          payload.originAskId,
         );
     });
     return { events: [] };
@@ -515,11 +483,14 @@ async function consumeTeamPost(
   tx: Transaction<DatabaseSchema>,
   teamId: DeploymentId,
   clientMessageId: string,
-  userId: UserId,
+  requestId: TeamAgentRequestId,
 ) {
   await tx
     .updateTable("personalTeamPosts")
-    .set({ targetUserIds: sql`array_remove(target_user_ids, ${userId})` })
+    .set({
+      targetBindings: sql`(select coalesce(jsonb_agg(target), '[]'::jsonb)
+      from jsonb_array_elements(target_bindings) target where target->>'requestId' <> ${requestId})`,
+    })
     .where("teamDeploymentId", "=", teamId)
     .where("clientMessageId", "=", clientMessageId)
     .execute();
@@ -527,6 +498,6 @@ async function consumeTeamPost(
     .deleteFrom("personalTeamPosts")
     .where("teamDeploymentId", "=", teamId)
     .where("clientMessageId", "=", clientMessageId)
-    .where(sql<number>`cardinality(target_user_ids)`, "=", 0)
+    .where(sql<number>`jsonb_array_length(target_bindings)`, "=", 0)
     .execute();
 }

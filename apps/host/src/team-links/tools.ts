@@ -192,7 +192,6 @@ export class TeamRunTools {
       messageId: null,
       channelId: input.channelId,
       threadRootId: input.threadRootId ?? null,
-      targetUserIds: [],
       mentionedAgentHandles,
       bodyMarkdown: input.bodyMarkdown,
       attachmentIds: [...input.attachmentIds],
@@ -232,9 +231,7 @@ export class TeamRunTools {
       await this.requests.recordPost({
         ...provenance,
         messageId: result.messageId,
-        targetUserIds: (result.askOutcomes ?? [])
-          .filter((ask) => ask.outcome === "queued")
-          .map((ask) => ask.ownerUserId),
+        askOutcomes: result.askOutcomes,
       });
     await this.onPost?.(teamId);
     if (claimsReply) {

@@ -67,7 +67,7 @@ export async function createTeamAskReturn(
     author: {
       teamUserId: ask.ownerUserId,
       displayName: owner.displayName,
-      handle: owner.handle,
+      handle: ask.targetAgentHandle ?? owner.handle,
       actor: "agent" as const,
     },
     originAskId: ask.id,

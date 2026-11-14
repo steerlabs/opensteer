@@ -9260,6 +9260,15 @@
                 "type": "string",
                 "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
               },
+              "handle": {
+                "type": "string",
+                "maxLength": 48,
+                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              },
               "outcome": {
                 "type": "string",
                 "enum": [
@@ -14740,6 +14749,15 @@
                           "ownerUserId": {
                             "type": "string",
                             "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                          },
+                          "handle": {
+                            "type": "string",
+                            "maxLength": 48,
+                            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                          },
+                          "requestId": {
+                            "type": "string",
+                            "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                           },
                           "outcome": {
                             "type": "string",

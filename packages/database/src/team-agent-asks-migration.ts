@@ -4,6 +4,7 @@ export async function migrateTeamAgentAsks(database: Kysely<unknown>): Promise<v
   await sql`
     alter table team_agent_requests
       add column kind text not null default 'self' check (kind in ('self','ask','return')),
+      add column target_agent_handle text,
       add column presentation jsonb,
       add column return_payload jsonb,
       add column consent_expires_at timestamptz;
@@ -55,7 +56,7 @@ export async function migrateTeamAgentAsks(database: Kysely<unknown>): Promise<v
       and (return_payload is null or (jsonb_typeof(return_payload)='object'
         and nullif(return_payload->>'originAskId','') is not null
         and nullif(return_payload->>'resumeRunId','') is not null)));
-    create unique index personal_team_requests_return_origin on personal_team_requests(team_deployment_id,(return_payload->>'originAskId')) where kind='return';
+    create unique index personal_team_requests_return_origin on personal_team_requests(team_deployment_id,(return_payload->>'originAskId')) where kind='return' and return_admission is distinct from 'undeliverable';
     create index personal_team_requests_pending_consent on personal_team_requests(created_at desc,request_id desc)
       where kind='ask' and remote_state='awaiting_approval' and local_decision is null;
   `.execute(database);

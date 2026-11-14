@@ -151,7 +151,7 @@ async function consentFixture(base: StoreFixture) {
                 id: input.requestId,
                 kind: "return",
                 consentExpiresAt: null,
-                state: "done",
+                state: input.decision === "decline" ? "cancelled" : "done",
               },
             };
           }
@@ -373,7 +373,14 @@ describeStore("personal team consent and returns", (it) => {
       messageId: f.frame.request.triggerMessageId,
       channelId: f.origin.channelId,
       threadRootId: f.origin.threadRootId,
-      targetUserIds: [returned.returnPayload.author!.teamUserId],
+      askOutcomes: [
+        {
+          ownerUserId: returned.returnPayload.author!.teamUserId,
+          handle: "maya",
+          requestId: returned.returnPayload.originAskId,
+          outcome: "queued",
+        },
+      ],
       mentionedAgentHandles: ["maya-agent"],
       bodyMarkdown: "@maya-agent help",
       attachmentIds: [],
@@ -451,6 +458,7 @@ describeStore("personal team consent and returns", (it) => {
       const saved = (await f.store.mirror(f.origin.teamId, returned.request.id))!;
       expect(saved).toMatchObject({
         returnAdmission: "admitted",
+        returnPayload: { bodyMarkdown: null, attachments: [] },
         taskId: asking.receipt.taskId,
         runId: null,
       });
@@ -647,6 +655,7 @@ describeStore("personal team consent and returns", (it) => {
     const f = await consentFixture(storeFixture);
     const asking = await f.ask();
     let clientMessageId = "";
+    const originAskId = createId("teamAgentRequest");
     const target = f.frame.presentation!.asker;
     const rpc = () => ({
       call: async (input: TeamLinkCallInput): Promise<TeamLinkResult> => {
@@ -660,7 +669,14 @@ describeStore("personal team consent and returns", (it) => {
           return {
             kind: "receipt",
             messageId: f.source.messageId,
-            askOutcomes: [{ ownerUserId: target.teamUserId, outcome: "queued" }],
+            askOutcomes: [
+              {
+                ownerUserId: target.teamUserId,
+                handle: "maya",
+                requestId: originAskId,
+                outcome: "queued",
+              },
+            ],
           };
         }
         return f.publisher.options.rpc(f.origin.teamId).call(input);
@@ -688,7 +704,7 @@ describeStore("personal team consent and returns", (it) => {
       },
       returnPayload: {
         triggerClientMessageId: clientMessageId,
-        originAskId: createId("teamAgentRequest"),
+        originAskId,
         resumeRunId: asking.receipt.runId!,
         outcome: "answered" as const,
         bodyMarkdown: "Genuine answer",
@@ -729,6 +745,15 @@ describeStore("personal team consent and returns", (it) => {
         (await f.store.mirror(f.origin.teamId, forged.request.id))?.returnAdmission,
         field,
       ).toBe("undeliverable");
+      expect(
+        (await f.store.mirror(f.origin.teamId, forged.request.id))?.returnPayload,
+      ).toMatchObject({
+        bodyMarkdown: null,
+        attachments: [],
+      });
+      expect((await f.store.mirrors(f.origin.teamId)).map((row) => row.requestId)).not.toContain(
+        forged.request.id,
+      );
     }
     await f.publisher.deliver(f.origin.teamId, returned);
     expect((await f.store.mirror(f.origin.teamId, returned.request.id))?.returnAdmission).toBe(
@@ -751,6 +776,7 @@ describeStore("personal team consent and returns", (it) => {
     const f = await consentFixture(storeFixture);
     const asking = await f.ask();
     const secondUser = createId("user");
+    const secondAskId = createId("teamAgentRequest");
     const returned = {
       ...f.frame,
       presentation: null,
@@ -781,7 +807,16 @@ describeStore("personal team consent and returns", (it) => {
       messageId: f.source.messageId,
       channelId: f.origin.channelId,
       threadRootId: f.origin.threadRootId,
-      targetUserIds: [returned.returnPayload.author.teamUserId, secondUser],
+      askOutcomes: [
+        {
+          ownerUserId: returned.returnPayload.author.teamUserId,
+          handle: "maya",
+          requestId: returned.returnPayload.originAskId,
+          outcome: "queued",
+        },
+        { ownerUserId: secondUser, handle: "jo", requestId: secondAskId, outcome: "queued" },
+        { ownerUserId: createId("user"), handle: "refused", outcome: "no-link" },
+      ],
       mentionedAgentHandles: ["maya-agent", "jo-agent", "refused-agent"],
       bodyMarkdown: "@maya-agent @jo-agent @refused-agent help",
       attachmentIds: [],
@@ -790,8 +825,8 @@ describeStore("personal team consent and returns", (it) => {
     await f.publisher.deliver(f.origin.teamId, returned);
     expect(
       (await f.store.post(f.origin.teamId, returned.returnPayload.triggerClientMessageId))
-        ?.targetUserIds,
-    ).toEqual([secondUser]);
+        ?.targetBindings,
+    ).toEqual([{ ownerUserId: secondUser, handle: "jo", requestId: secondAskId }]);
     const duplicate = {
       ...returned,
       request: { ...returned.request, id: createId("teamAgentRequest") },
@@ -801,16 +836,24 @@ describeStore("personal team consent and returns", (it) => {
         author: { ...returned.returnPayload.author, teamUserId: secondUser },
       },
     };
-    await f.publisher.deliver(f.origin.teamId, duplicate);
-    expect((await f.store.mirror(f.origin.teamId, duplicate.request.id))?.returnAdmission).toBe(
-      "undeliverable",
-    );
+    for (const handle of ["maya", "refused", "jo"]) {
+      const mismatched = structuredClone(duplicate);
+      mismatched.request.id = createId("teamAgentRequest");
+      mismatched.returnPayload.originAskId =
+        handle === "refused" ? secondAskId : createId("teamAgentRequest");
+      mismatched.returnPayload.author.handle = handle;
+      await f.publisher.deliver(f.origin.teamId, mismatched);
+      expect(
+        (await f.store.mirror(f.origin.teamId, mismatched.request.id))?.returnAdmission,
+        handle,
+      ).toBe("undeliverable");
+    }
     const second = {
       ...duplicate,
       request: { ...duplicate.request, id: createId("teamAgentRequest") },
       returnPayload: {
         ...duplicate.returnPayload,
-        originAskId: createId("teamAgentRequest"),
+        originAskId: secondAskId,
         outcome: "declined" as const,
         bodyMarkdown: null,
         author: { ...duplicate.returnPayload.author, handle: "jo" },
@@ -823,6 +866,82 @@ describeStore("personal team consent and returns", (it) => {
     expect(
       await f.store.post(f.origin.teamId, returned.returnPayload.triggerClientMessageId),
     ).toBeUndefined();
+  });
+
+  it("bounds rejected return retention even while negative acknowledgements are offline", async ({
+    storeFixture,
+  }) => {
+    const f = await consentFixture(storeFixture);
+    const returned = {
+      ...f.frame,
+      presentation: null,
+      request: {
+        ...f.frame.request,
+        id: createId("teamAgentRequest"),
+        kind: "return" as const,
+        state: "queued" as const,
+        consentExpiresAt: null,
+      },
+      returnPayload: {
+        triggerClientMessageId: crypto.randomUUID(),
+        originAskId: createId("teamAgentRequest"),
+        resumeRunId: createId("run"),
+        outcome: "answered" as const,
+        bodyMarkdown: "Unmatched answer body",
+        attachments: [
+          {
+            id: createId("teamBlob"),
+            filename: "unmatched.txt",
+            mediaType: "text/plain",
+            sizeBytes: 4,
+          },
+        ],
+        author: { ...f.frame.presentation!.asker, actor: "agent" as const, handle: "maya" },
+      },
+    };
+    f.offline(true);
+    await expect(f.publisher.deliver(f.origin.teamId, returned)).rejects.toMatchObject({
+      code: "runner_offline",
+    });
+    const rejected = await f.database
+      .selectFrom("personalTeamRequests")
+      .selectAll()
+      .where("requestId", "=", returned.request.id)
+      .executeTakeFirstOrThrow();
+    const expiredId = createId("teamAgentRequest");
+    await f.database
+      .insertInto("personalTeamRequests")
+      .values(
+        Array.from({ length: 130 }, (_, i) => ({
+          ...rejected,
+          requestId: i === 0 ? expiredId : createId("teamAgentRequest"),
+          returnPayload: { ...rejected.returnPayload!, originAskId: createId("teamAgentRequest") },
+          finishedAt: new Date(Date.now() - (i === 0 ? 15 * 86400000 : i)),
+        })),
+      )
+      .execute();
+    await f.store.mirrors(f.origin.teamId);
+    const retained = await f.database
+      .selectFrom("personalTeamRequests")
+      .selectAll()
+      .where("kind", "=", "return")
+      .execute();
+    expect(retained.length).toBeLessThanOrEqual(128);
+    expect(retained.map((row) => row.requestId)).not.toContain(expiredId);
+    expect(
+      retained.every(
+        (row) =>
+          row.returnPayload?.bodyMarkdown === null && row.returnPayload.attachments.length === 0,
+      ),
+    ).toBe(true);
+    const expired = retained[0]!;
+    await f.database
+      .updateTable("personalTeamRequests")
+      .set({ createdAt: new Date(Date.now() - 15 * 86400000) })
+      .where("requestId", "=", expired.requestId)
+      .execute();
+    await f.store.mirrors(f.origin.teamId);
+    expect(await f.store.mirror(f.origin.teamId, expired.requestId)).toBeNull();
   });
 
   it("expires provenance after seven days of consent plus seven days of execution", async ({
@@ -943,7 +1062,14 @@ describeStore("personal team consent and returns", (it) => {
         messageId: f.source.messageId,
         channelId: f.origin.channelId,
         threadRootId: f.origin.threadRootId,
-        targetUserIds: [f.userId],
+        askOutcomes: [
+          {
+            ownerUserId: f.userId,
+            handle: "maya",
+            requestId: createId("teamAgentRequest"),
+            outcome: "queued",
+          },
+        ],
         mentionedAgentHandles: ["maya-agent"],
         bodyMarkdown: "@maya-agent help",
         attachmentIds: [],
@@ -1018,7 +1144,14 @@ describeStore("personal team consent and returns", (it) => {
             return {
               kind: "receipt",
               messageId: f.source.messageId,
-              askOutcomes: [{ ownerUserId: target.teamUserId, outcome: "queued" }],
+              askOutcomes: [
+                {
+                  ownerUserId: target.teamUserId,
+                  handle: "maya",
+                  requestId: returned.returnPayload.originAskId,
+                  outcome: "queued",
+                },
+              ],
             };
           }
           return f.publisher.options.rpc(f.origin.teamId).call(input);
