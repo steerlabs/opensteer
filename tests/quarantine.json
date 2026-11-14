@@ -679,8 +679,9 @@
     "deadline": "2026-11-21T00:00:00Z",
     "sha": null,
     "evidence": [
-      "The case runs a real Host, caller Runner, Passwords authority and browser runtime and takes 26.8-28.3 s of its 30 s budget on green main CI (runs 43590821103, 43602883795) and 20.6 s locally. It timed out at 33.4 s and 33.6 s in integration shards on PR #596 (runs 43575596695, 43603283226) while other files passed; no assertion failed.",
-      "Acceptance: find where the case spends its time (setup, browser runtime start, lease and stream waits) and remove the avoidable waits so it finishes well inside the 30 s budget on CI, without lengthening the timeout or weakening its lease, sessionful reuse and origin-fill assertions. Split it into independent cases only if each keeps the same authority coverage."
+      "The case takes 26.8-29.4 s of its 30 s budget on green main CI and about 20 s locally, and timed out at 32.6-33.6 s in three PR #596 runs (43575596695, 43603283226, 43604586505); no assertion failed.",
+      "Per-phase timing locally: 15 of the 20 s are two fixed waits. (1) browser-close-keeps-lease: closeAgentSession takes 5.0 s because the fake runtime in browser-runtime.test-support.ts ignores browser.close, so the Host waits out waitForSocketClose's 5 s deadline; the real runtime answers browser.closed at once. Answering it there drops the case to ~15 s but makes browser-presence's 'patches viewers with page and acting changes' case fail every time, so the fixture and that case must change together. (2) exact-tab-request: the decline RPC takes 10.0 s because PasswordSignInService.#decline waits declineAnswerMs (10 s) for a settlement after the authority has already answered login.cancelled; the desktop authority emits nothing after that reply, so a person's Decline also takes ~10 s in production.",
+      "Acceptance: settle a decline when the authority answers login.cancelled (a product change to password sign-in, which needs maintainer approval), and have the fake runtime answer browser.close with browser-presence updated to match. The case should then finish well inside 30 s with its lease, sessionful reuse and origin-fill assertions unchanged and no longer timeout."
     ]
   }
 ]
