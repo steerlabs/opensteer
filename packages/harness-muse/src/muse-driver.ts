@@ -137,6 +137,7 @@ const museCapabilities: HarnessCapabilities = Object.freeze({
   steering: true,
   toolCalls: true,
   userInput: true,
+  warmReuse: true,
 });
 
 const setupMethods = [
@@ -618,6 +619,8 @@ interface ActiveTurn {
   readonly settledNodes: Set<string>;
   readonly workflowPhases: Map<string, string[]>;
   readonly subagents: Set<string>;
+  guidance?: string;
+  guidanceGeneration?: number;
   interruptRequested: boolean;
   rootCompleted: boolean;
   started: boolean;
@@ -641,7 +644,7 @@ class MuseHarnessSession implements HarnessSession {
   readonly events: AsyncIterable<HarnessEvent>;
   readonly #config: MuseHarnessConfig;
   readonly #dependencies: MuseHarnessDependencies;
-  readonly #context: HarnessSessionContext;
+  #context: HarnessSessionContext;
   readonly #onClose: (session: MuseHarnessSession) => void;
   readonly #publisher: TurnPublisher;
   readonly #pending = new Map<RequestId, MusePending>();
@@ -649,6 +652,11 @@ class MuseHarnessSession implements HarnessSession {
   #active: ActiveTurn | undefined;
   #closed = false;
   #compacting = false;
+  #guidanceGeneration = 0;
+  #deliveredGuidance: string | undefined;
+  readonly #completedCompactions = new Set<string>();
+  readonly #processLifetime = new AbortController();
+  readonly #abortListener = () => void this.stop();
   #skillCatalog: string | undefined;
   #latestUsage: SubscriptionUsage | undefined;
   #stopPromise: Promise<void> | undefined;
@@ -670,7 +678,7 @@ class MuseHarnessSession implements HarnessSession {
       maxItems: config.maxEventItems,
     });
     this.events = this.#publisher.events;
-    context.signal.addEventListener("abort", () => void this.stop(), { once: true });
+    context.signal.addEventListener("abort", this.#abortListener, { once: true });
   }
 
   static async open(
@@ -742,6 +750,7 @@ class MuseHarnessSession implements HarnessSession {
       const roots = await Promise.all(
         [workspace, ...this.#context.writableRoots].map((path) => realpath(path)),
       );
+      this.#skillCatalog = await renderHarnessSkillCatalog(this.#context.skills);
       const input = await museTurnInput(run.inputs, run.attachments, this.#turnNotices(run));
       const result = parseMuseTurnStart(
         await host.startTurn({
@@ -902,6 +911,24 @@ class MuseHarnessSession implements HarnessSession {
     this.#pending.delete(requestId);
   }
 
+  rebind(context: HarnessSessionContext): void {
+    if (this.#active) throw new Error("A Muse session cannot be rebound during a Run");
+    this.#context.signal.removeEventListener("abort", this.#abortListener);
+    this.#context = context;
+    context.signal.addEventListener("abort", this.#abortListener, { once: true });
+  }
+
+  async releaseForReuse(): Promise<boolean> {
+    return (
+      !this.#closed &&
+      !this.#publisher.unusable &&
+      !this.#active &&
+      !this.#compacting &&
+      !!this.#host &&
+      this.#pending.size === 0
+    );
+  }
+
   stop(): Promise<void> {
     this.#stopPromise ??= this.#stop(true);
     return this.#stopPromise;
@@ -909,6 +936,10 @@ class MuseHarnessSession implements HarnessSession {
 
   async #launch(resume: boolean): Promise<void> {
     if (this.#closed) throw new Error("Muse Code session is closed");
+    this.#deliveredGuidance = undefined;
+    this.#guidanceGeneration++;
+    this.#completedCompactions.clear();
+    this.#compacting = false;
     const environment = await museEnvironment(
       this.#context.environment,
       this.#context.providerState,
@@ -928,7 +959,7 @@ class MuseHarnessSession implements HarnessSession {
       onProtocolError: (error) =>
         this.#hostFailure(toHarnessError(error, "Muse Code protocol failed")),
       onServerRequest: (method, params) => this.#serverRequest(method, params),
-      signal: this.#context.signal,
+      signal: this.#processLifetime.signal,
       startupTimeoutMs: this.#config.startupTimeoutMs,
       wrapProcessLaunch: this.#context.wrapProcessLaunch,
     });
@@ -1005,6 +1036,26 @@ class MuseHarnessSession implements HarnessSession {
       this.#latestUsage = parsed;
       return;
     }
+    if (method === "session/compactionStarted") this.#compacting = true;
+    if (method === "session/compactionCompleted") {
+      this.#compacting = false;
+      this.#guidanceGeneration++;
+      this.#deliveredGuidance = undefined;
+    }
+    if (method === "item/completed") {
+      const parsed = MuseItemEventSchema.safeParse(params);
+      if (
+        parsed.success &&
+        parsed.data.item.kind === "compaction" &&
+        parsed.data.item.status === "completed" &&
+        !this.#completedCompactions.has(parsed.data.item.itemId)
+      ) {
+        this.#completedCompactions.add(parsed.data.item.itemId);
+        this.#compacting = false;
+        this.#guidanceGeneration++;
+        this.#deliveredGuidance = undefined;
+      }
+    }
     if (!active || active.terminal) return;
     if (method === "turn/started") {
       const turnId = recordString(params, "turnId");
@@ -1049,8 +1100,6 @@ class MuseHarnessSession implements HarnessSession {
       }
       return;
     }
-    if (method === "session/compactionStarted") this.#compacting = true;
-    if (method === "session/compactionCompleted") this.#compacting = false;
   }
 
   /**
@@ -1421,10 +1470,15 @@ class MuseHarnessSession implements HarnessSession {
   }
 
   #turnNotices(run: HarnessRunInput): readonly string[] {
+    const guidance = [this.#context.platformGuide, this.#context.instructions, this.#skillCatalog]
+      .filter(Boolean)
+      .join("\n\n");
+    if (this.#active) {
+      this.#active.guidance = guidance;
+      this.#active.guidanceGeneration = this.#guidanceGeneration;
+    }
     return [
-      this.#context.platformGuide,
-      this.#context.instructions,
-      this.#skillCatalog,
+      ...(guidance !== this.#deliveredGuidance ? [guidance] : []),
       this.#context.machineAccessNotice,
       durableHistoryWindowNotice(this.#context),
       initialContinuationContextPrompt(this.#context),
@@ -1460,6 +1514,8 @@ class MuseHarnessSession implements HarnessSession {
 
   #terminal(active: ActiveTurn, status: "completed" | "interrupted"): void {
     if (active.terminal) return;
+    if (status === "completed" && active.guidanceGeneration === this.#guidanceGeneration)
+      this.#deliveredGuidance = active.guidance;
     if (active.usage) this.#publish({ data: active.usage, type: "run.usage" });
     active.nodes.endAll(status === "completed" ? "completed" : "interrupted");
     active.terminal = true;
@@ -1518,11 +1574,13 @@ class MuseHarnessSession implements HarnessSession {
   async #stop(notify: boolean): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#context.signal.removeEventListener("abort", this.#abortListener);
     await this.interrupt().catch(() => undefined);
     this.#cancelPending("source-closed");
     const active = this.#active;
     if (active && !active.terminal) this.#terminal(active, "interrupted");
     await this.#host?.close();
+    this.#processLifetime.abort();
     this.#host = undefined;
     this.#publisher.closeStream();
     if (notify) this.#onClose(this);
@@ -1669,6 +1727,7 @@ function tokenUsage(usage: {
   const cachedInputTokens = Math.max(usage.cacheReadTokens ?? usage.cachedTokens, 0);
   return {
     cachedInputTokens,
+    cacheWriteTokens: Math.max(usage.cacheWriteTokens ?? 0, 0),
     inputTokens: Math.max(usage.inputTokens - cachedInputTokens - (usage.cacheWriteTokens ?? 0), 0),
     outputTokens: usage.outputTokens,
     reasoningTokens: usage.reasoningTokens,

@@ -141,6 +141,74 @@ describe("Muse Code authentication", () => {
 });
 
 describe("Muse Code sessions", () => {
+  it.each(["guidance-compaction", "guidance-compaction-item"])(
+    "reuses guidance until changed or compacted and preserves cache writes: %s",
+    async (scenario) => {
+      const fixture = await setup(scenario);
+      const adapter = await fixture.driver.create({
+        config: {},
+        instanceId: fixture.context.harnessInstanceId,
+        sourceId: "meta",
+      });
+      const previous = new AbortController();
+      const session = await adapter.startSession({ ...fixture.context, signal: previous.signal });
+      const observer = observe(session.events);
+      try {
+        await session.execute(fixture.turn("one"));
+        expect(await session.releaseForReuse?.()).toBe(true);
+        session.rebind?.({ ...fixture.context, machineAccessNotice: "Computer offline 4m" });
+        previous.abort();
+        await session.execute(fixture.turn("two"));
+        await session.execute(fixture.turn("three"));
+        session.rebind?.({ ...fixture.context, instructions: "Changed instructions." });
+        await session.execute(fixture.turn("four"));
+        const turns = (await fixture.messages())
+          .filter((entry) => entry.message?.method === "turn/start")
+          .map((entry) => JSON.stringify(entry.message?.params?.input));
+        expect(turns[0]).toContain(fixture.context.instructions);
+        expect(turns[1]).not.toContain(fixture.context.instructions);
+        expect(turns[1]).toContain("Computer offline 4m");
+        expect(turns[2]).toContain(fixture.context.instructions);
+        expect(turns[3]).toContain("Changed instructions.");
+        expect(observer.events.find((event) => event.type === "run.usage")?.data).toMatchObject({
+          inputTokens: 5,
+          cachedInputTokens: 2,
+          cacheWriteTokens: 3,
+        });
+      } finally {
+        await session.stop();
+        await observer.done;
+        await adapter.close();
+      }
+    },
+  );
+
+  it("resends guidance when the previous turn did not complete successfully", async () => {
+    const fixture = await setup("guidance-cancelled");
+    const adapter = await fixture.driver.create({
+      config: {},
+      instanceId: fixture.context.harnessInstanceId,
+      sourceId: "meta",
+    });
+    const session = await adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    try {
+      await session.execute(fixture.turn("one"));
+      await session.execute(fixture.turn("two"));
+      const turns = (await fixture.messages()).filter(
+        (entry) => entry.message?.method === "turn/start",
+      );
+      expect(turns).toHaveLength(2);
+      for (const turn of turns)
+        expect(JSON.stringify(turn.message?.params?.input)).toContain(fixture.context.instructions);
+    } finally {
+      await session.stop();
+      await observer.done;
+      await adapter.close();
+    }
+    expect(await session.releaseForReuse?.()).toBe(false);
+  });
+
   it("pins the canonical workspace, keeps MCP secrets off argv, and emits usage before completion", async () => {
     const fixture = await setup("happy");
     const adapter = await fixture.driver.create({
@@ -242,6 +310,8 @@ describe("Muse Code sessions", () => {
     const observer = observe(session.events);
     const executing = session.execute(fixture.turn("begin"));
     await observer.waitFor("run.started");
+    expect(await session.releaseForReuse?.()).toBe(false);
+    expect(() => session.rebind?.(fixture.context)).toThrow(/during a Run/u);
     await session.steer?.({ input: humanInput("new direction") });
     await executing;
     const steer = (await fixture.messages()).find(
