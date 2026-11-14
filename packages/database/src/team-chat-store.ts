@@ -53,6 +53,7 @@ import {
 } from "./team-access-store.js";
 import { appendTeamAudit, type TeamAgentOperation } from "./team-audit-store.js";
 import { bindTeamFiles, teamFileView } from "./team-files-store.js";
+import { bindTeamShareFiles } from "./team-share-files-store.js";
 import { teamPrincipalProfiles } from "./team-principals-store.js";
 
 type Mention = z.infer<typeof TeamMentionSchema>;
@@ -1034,14 +1035,10 @@ export class TeamChatStore {
   ) {
     TeamMarkdownSchema.parse(input.bodyMarkdown);
     requireTeam(
-      input.bodyMarkdown.trim() || input.attachmentIds.length,
+      input.bodyMarkdown.trim() || input.attachmentIds.length || input.partner?.attachments?.length,
       "A message needs text or files",
     );
-    const shared = await requireOwnerChannel(
-      transaction,
-      input.channelId,
-      input.attachmentIds.length,
-    );
+    const shared = await requireOwnerChannel(transaction, input.channelId);
     if (input.partner)
       await authorizePartnerWrite(transaction, actor, input.channelId, input.partner);
     else requireTeam((await this.access.channel(transaction, actor, input.channelId)).post);
@@ -1223,7 +1220,28 @@ export class TeamChatStore {
           }),
         )
         .execute();
-    await bindTeamFiles(transaction, actor, row, input.attachmentIds);
+    if (input.partner) {
+      const principal = await transaction
+        .selectFrom("teamPrincipals")
+        .select("homeTeamId")
+        .where("id", "=", actor.userId)
+        .executeTakeFirstOrThrow();
+      await bindTeamShareFiles(
+        transaction,
+        this.identity.teamId,
+        row.channelId,
+        input.partner.shareId,
+        [
+          {
+            id: row.id,
+            authorId: actor.userId,
+            authorKind: actor.kind,
+            authorTeamId: principal.homeTeamId,
+            files: input.partner.attachments ?? [],
+          },
+        ],
+      );
+    } else await bindTeamFiles(transaction, actor, row, input.attachmentIds);
     const asker = admissions.some((a) => a.kind === "ask")
       ? await teamPrincipalProfiles(transaction)
           .where("p.id", "=", actor.userId)

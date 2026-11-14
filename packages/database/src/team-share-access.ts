@@ -6,6 +6,7 @@ export interface TeamPartnerWriteContext {
   shareId: string;
   partnerLinkId: string;
   generation: number;
+  attachments?: readonly import("@opensteer/protocol").TeamShareFile[];
 }
 export function shareNotFound(): never {
   throw new OpensteerError({ code: "not_found", message: "Shared channel not found" });
@@ -56,7 +57,6 @@ export async function authorizePartnerWrite(
 export async function requireOwnerChannel(
   t: Transaction<DatabaseSchema>,
   channelId: TeamChannelId,
-  attachments = 0,
 ) {
   const share = await channelShare(t, channelId);
   if (share?.role === "follower")
@@ -67,11 +67,6 @@ export async function requireOwnerChannel(
         share.state === "ended"
           ? "This shared channel is disconnected"
           : "Shared channel writes require the owner relay",
-    });
-  if (share && share.state !== "ended" && attachments)
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "Files are not supported in shared channels yet",
     });
   return share?.state === "active" ? share : undefined;
 }

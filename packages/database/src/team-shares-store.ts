@@ -46,9 +46,15 @@ import {
   type TeamPartnerWriteContext,
 } from "./team-share-access.js";
 import { appendTeamAudit } from "./team-audit-store.js";
+import {
+  bindTeamShareFiles,
+  exportTeamShareFiles,
+  teamShareFileView,
+} from "./team-share-files-store.js";
 
 type Tx = Transaction<DatabaseSchema>;
 export type Share = Selectable<TeamShareTable>;
+export { shareNotFound } from "./team-share-access.js";
 export class TeamSharesStore {
   readonly access: TeamAccessStore;
   readonly chat: TeamChatStore;
@@ -169,14 +175,6 @@ export class TeamSharesStore {
           .where((eb) => eb.or([eb("state", "!=", "ended"), eb("role", "=", "follower")]))
           .executeTakeFirst()),
         "This channel already has a share",
-      );
-      requireTeam(
-        !(await t
-          .selectFrom("teamMessageAttachments")
-          .select("messageId")
-          .where("channelId", "=", channelId)
-          .executeTakeFirst()),
-        "Files are not supported in shared channels yet",
       );
       requireTeam(
         !(await t
@@ -351,6 +349,7 @@ export class TeamSharesStore {
             "agentLinkId",
             "personalDeploymentId",
             "callerRunId",
+            "attachmentPublicIds",
           ])
           .expression(
             t
@@ -366,6 +365,7 @@ export class TeamSharesStore {
                 "agentLinkId",
                 "personalDeploymentId",
                 "callerRunId",
+                "attachmentPublicIds",
               ])
               .where("shareId", "=", s.historyFromShareId),
           )
@@ -622,7 +622,7 @@ export class TeamSharesStore {
     if (!rows.length) return [];
     const ids = rows.map((r) => r.id);
     const rootIds = rows.flatMap((r) => (r.threadRootId ? [r.threadRootId] : []));
-    const [principals, roots, pins] = await Promise.all([
+    const [principals, roots, pins, attachments] = await Promise.all([
       t
         .selectFrom("teamPrincipals")
         .selectAll()
@@ -642,6 +642,7 @@ export class TeamSharesStore {
         .select(["n.messageId", "p.homeTeamId", "p.homeUserId"])
         .where("n.messageId", "in", ids)
         .execute(),
+      exportTeamShareFiles(t, ids),
     ]);
     return rows.map((r) => {
       const p = principals.find((p) => p.id === r.authorUserId)!;
@@ -662,6 +663,7 @@ export class TeamSharesStore {
         editedAt: r.editedAt?.toISOString() ?? null,
         deletedAt: r.deletedAt?.toISOString() ?? null,
         pinnedBy: pin ? { teamId: pin.homeTeamId, userId: pin.homeUserId } : null,
+        attachments: r.deletedAt ? [] : (attachments.get(r.id) ?? []),
       });
     });
   }
@@ -873,7 +875,7 @@ export class TeamSharesStore {
             bodyMarkdown: w.bodyMarkdown,
             mentions: [],
             attachmentIds: [],
-            partner: context,
+            partner: { ...context, attachments: w.attachments },
           })
         ).message.id;
       });
@@ -945,7 +947,7 @@ export class TeamSharesStore {
           ? await this.access.link(t, actor, provenance.linkId)
           : null;
       requireTeam(actor.kind !== "agent" || link);
-      if (write.action === "send")
+      if (write.action === "send") {
         await t
           .insertInto("teamShareRelays")
           .values({
@@ -959,11 +961,39 @@ export class TeamSharesStore {
             agentLinkId: link?.id ?? null,
             personalDeploymentId: link?.personalDeploymentId ?? null,
             callerRunId: provenance?.runId ?? null,
+            attachmentPublicIds: write.attachments.map((f) => f.publicId),
           })
           .onConflict((c) =>
             c.columns(["shareId", "authorUserId", "authorKind", "clientMessageId"]).doNothing(),
           )
           .execute();
+        const files = write.attachments.length
+          ? await t
+              .selectFrom("teamBlobs")
+              .selectAll()
+              .where("channelId", "=", s.channelId!)
+              .where(
+                "publicId",
+                "in",
+                write.attachments.map((f) => f.publicId),
+              )
+              .orderBy("id")
+              .forNoKeyUpdate()
+              .execute()
+          : [];
+        requireTeam(files.length === write.attachments.length);
+        for (const file of write.attachments) {
+          const row = files.find((r) => r.publicId === file.publicId)!;
+          requireTeam(
+            row.state === "ready" &&
+              !row.remoteShareId &&
+              row.uploaderUserId === actor.userId &&
+              row.uploaderKind === actor.kind &&
+              JSON.stringify(teamShareFileView(row, this.chat.identity.teamId)) ===
+                JSON.stringify(file),
+          );
+        }
+      }
       if (write.action === "edit")
         await t
           .updateTable("teamShareRelays")
@@ -1114,6 +1144,9 @@ export class TeamSharesStore {
               l.clientMessageId === row.clientMessageId &&
               (l.publicId === null || l.publicId === row.publicId) &&
               l.threadRootPublicId === row.threadRootPublicId &&
+              (row.deletedAt ||
+                JSON.stringify(l.attachmentPublicIds) ===
+                  JSON.stringify(row.attachments.map((f) => f.publicId))) &&
               (row.deletedAt || l.bodyMarkdown === row.bodyMarkdown),
           );
           if (!proof) shareNotFound();
@@ -1151,6 +1184,7 @@ export class TeamSharesStore {
               )!.bodyMarkdown,
               threadRootPublicId: row.threadRootPublicId,
               publicId: row.publicId,
+              attachmentPublicIds: proof!.attachmentPublicIds,
             })),
           )
           .onConflict((c) =>
@@ -1234,6 +1268,19 @@ export class TeamSharesStore {
           .execute();
       // Message locks precede all mention and pin changes; each relation is changed in key order.
       const savedIds = saved.map((r) => r.id).sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
+      await bindTeamShareFiles(
+        t,
+        this.chat.identity.teamId,
+        s.channelId!,
+        s.id,
+        saved.map(({ row, id, principalId }) => ({
+          id,
+          authorId: principalId,
+          authorKind: row.authorKind,
+          authorTeamId: row.author.teamId,
+          files: row.deletedAt ? [] : row.attachments,
+        })),
+      );
       if (savedIds.length) {
         await t
           .selectFrom("teamMentions")

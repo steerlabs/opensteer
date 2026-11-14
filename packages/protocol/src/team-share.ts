@@ -7,6 +7,7 @@ import {
   UserIdSchema,
 } from "@opensteer/core";
 import { TeamRequestTextSchema as TeamMarkdownSchema } from "@opensteer/core";
+import { TeamFileSchema, teamUploadMaxBytes } from "./team-chat.js";
 
 export const teamShareCapability = "team-shared-channels-v1";
 export const teamShareMaxRows = 100_000;
@@ -14,6 +15,26 @@ export const teamShareMaxBytes = 128 * 1024 * 1024;
 export const teamShareRosterBytes = 128 * 1024;
 export const teamShareBatchRows = 32;
 export const teamShareBatchBytes = 240 * 1024;
+export const teamShareFileChunkBytes = 128 * 1024;
+export const teamShareFileBytesPerMinute = 256 * 1024 * 1024;
+export const TeamShareFileSchema = z.strictObject({
+  teamId: DeploymentIdSchema,
+  publicId: z.uuid(),
+  filename: TeamFileSchema.shape.filename,
+  mediaType: TeamFileSchema.shape.mediaType,
+  sizeBytes: TeamFileSchema.shape.sizeBytes.positive(),
+  sha256: TeamFileSchema.shape.sha256,
+  preview: TeamFileSchema.shape.preview
+    .unwrap()
+    .extend({
+      sha256: TeamFileSchema.shape.sha256,
+    })
+    .nullable(),
+});
+export type TeamShareFile = z.infer<typeof TeamShareFileSchema>;
+export const TeamShareFileChunkSchema = z.strictObject({
+  bytes: z.base64().max(Math.ceil(teamShareFileChunkBytes / 3) * 4),
+});
 export const TeamSharePersonRefSchema = z.strictObject({
   teamId: DeploymentIdSchema,
   userId: UserIdSchema,
@@ -38,6 +59,7 @@ export const TeamShareRowSchema = z.strictObject({
   editedAt: IsoDateTimeSchema.nullable(),
   deletedAt: IsoDateTimeSchema.nullable(),
   pinnedBy: TeamSharePersonRefSchema.nullable(),
+  attachments: z.array(TeamShareFileSchema).max(10).default([]),
 });
 export type TeamShareRow = z.infer<typeof TeamShareRowSchema>;
 export const TeamShareCursorSchema = z.strictObject({
@@ -66,6 +88,7 @@ export const TeamShareWriteSchema = z.discriminatedUnion("action", [
     clientMessageId: z.uuid(),
     bodyMarkdown: TeamMarkdownSchema,
     threadRootPublicId: z.uuid().nullable(),
+    attachments: z.array(TeamShareFileSchema).max(10).default([]),
   }),
   z.strictObject({
     action: z.literal("edit"),
@@ -115,6 +138,13 @@ export const TeamShareOperationSchema = z.discriminatedUnion("op", [
     write: TeamShareWriteSchema,
   }),
   z.strictObject({ op: z.literal("end"), ...scope }),
+  z.strictObject({
+    op: z.literal("file"),
+    ...scope,
+    publicId: z.uuid(),
+    part: z.enum(["original", "preview"]),
+    offset: z.number().int().nonnegative().max(teamUploadMaxBytes),
+  }),
 ]);
 export type TeamShareOperation = z.infer<typeof TeamShareOperationSchema>;
 export type TeamSharePerson = z.infer<typeof TeamSharePersonSchema>;

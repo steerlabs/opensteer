@@ -15,6 +15,8 @@ import type { z } from "zod";
 import type { DatabaseSchema, TeamBlobTable, TeamMessageTable } from "./schema.js";
 import { TeamAccessStore, requireTeam } from "./team-access-store.js";
 import { appendTeamAudit } from "./team-audit-store.js";
+import { shareNotFound } from "./team-share-access.js";
+export { teamShareFileView } from "./team-share-files-store.js";
 
 export interface TeamFileAgent {
   readonly linkId: TeamLinkId;
@@ -137,12 +139,20 @@ export class TeamFilesStore {
         // disk; an unfinished image holds the largest preview it may still send.
         await sql`select pg_advisory_xact_lock(hashtextextended('team-storage', 0))`.execute(t);
         const { used } = await t
-          .selectFrom("teamBlobs")
-          .select(
-            sql<string>`coalesce(sum(${sql.ref("sizeBytes")} + coalesce(${sql.ref("previewSizeBytes")}, case when ${sql.ref("state")} = 'uploading' and ${sql.ref("declaredType")} like 'image/%' then ${teamPreviewMaxBytes} else 0 end)), 0)`.as(
-              "used",
-            ),
+          .selectFrom(
+            t
+              .selectFrom("teamBlobs")
+              .select([
+                "storageKey",
+                sql<string>`max(size_bytes + coalesce(preview_size_bytes, case when state = 'uploading' and declared_type like 'image/%' then ${teamPreviewMaxBytes} else 0 end))`.as(
+                  "reservedBytes",
+                ),
+              ])
+              .where("remoteShareId", "is", null)
+              .groupBy("storageKey")
+              .as("files"),
           )
+          .select(sql<string>`coalesce(sum(reserved_bytes),0)`.as("used"))
           .executeTakeFirstOrThrow();
         const reserved = metadata.sizeBytes + (image ? teamPreviewMaxBytes : 0);
         if (Number(used) + reserved > this.#storageLimitBytes)
@@ -195,6 +205,7 @@ export class TeamFilesStore {
       previewMediaType: "image/png" | "image/jpeg" | "image/webp" | null;
       previewSizeBytes: number;
       previewStorageKey: string | null;
+      previewSha256?: string | null;
     },
   ) {
     const observed = await this.access.database
@@ -237,6 +248,7 @@ export class TeamFilesStore {
           previewStorageKey: input.previewStorageKey,
           previewMediaType: input.previewMediaType,
           previewSizeBytes: input.previewSizeBytes || null,
+          previewSha256: input.previewSha256 ?? null,
           completedAt: new Date(),
         })
         .where("id", "=", id)
@@ -337,8 +349,32 @@ export class TeamFilesStore {
         .where("id", "=", id)
         .where("state", "=", "ready")
         .executeTakeFirst();
-      requireTeam(row);
+      if (!row) shareNotFound();
       requireTeam((await this.access.channel(t, actor, row.channelId)).read);
+      let remoteShareId = row.remoteShareId;
+      if (remoteShareId) {
+        const share = await t
+          .selectFrom("teamShares as s")
+          .innerJoin("teamPartnerLinks as l", "l.id", "s.partnerLinkId")
+          .innerJoin("teamPrincipals as p", (join) =>
+            join.on("p.id", "=", row.uploaderUserId).onRef("p.homeTeamId", "=", "l.partnerTeamId"),
+          )
+          .select("s.id")
+          .where("s.channelId", "=", row.channelId)
+          .where("s.state", "=", "active")
+          .where("l.state", "=", "active")
+          .where((eb) =>
+            eb.exists(
+              eb
+                .selectFrom("teamSharingSettings")
+                .select("singletonKey")
+                .where("policy", "!=", "off"),
+            ),
+          )
+          .executeTakeFirst();
+        if (!share) shareNotFound();
+        remoteShareId = share.id;
+      }
       const bound = await t
         .selectFrom("teamMessageAttachments as a")
         .innerJoin("teamMessages as m", "m.id", "a.messageId")
@@ -346,7 +382,7 @@ export class TeamFilesStore {
         .where("a.blobId", "=", id)
         .where("m.deletedAt", "is", null)
         .executeTakeFirst();
-      requireTeam(bound, "Only sent attachments can be downloaded");
+      if (!bound) shareNotFound();
       if (actor.kind === "agent" && recordRead)
         await appendTeamAudit(t, {
           actor,
@@ -358,7 +394,7 @@ export class TeamFilesStore {
           channelId: row.channelId,
           metadata: { personalDeploymentId: link?.personalDeploymentId ?? null },
         });
-      return { ...row, messageId: bound.messageId };
+      return { ...row, remoteShareId, messageId: bound.messageId };
     });
   }
   async page(actor: TeamActor, channelId: TeamChannelId, before?: TeamMessageId) {
