@@ -50,6 +50,7 @@ export async function sendPendingMessage(
       ...(command.browserPage === undefined ? [] : [command.browserPage]),
       ...(command.attachments ?? []),
     ],
+    ...(command.compaction ? { compaction: command.compaction } : {}),
     delivery: command.delivery,
     idempotencyKey: command.idempotencyKey,
     // Only the source id: the Host resolves the quoted message under this

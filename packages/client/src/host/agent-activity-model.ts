@@ -693,6 +693,7 @@ export function conversationRows(
  * a reply, a task that needs the reader, a failure or its work on a computer.
  */
 function conversationTurnShows(turn: Turn, { atComputer, live }: ConversationRowOptions): boolean {
+  if (turn.run?.compaction) return true;
   const { composing, reply, startHold, unprompted } = conversationTurn(turn);
   const ended =
     turn.run !== null &&

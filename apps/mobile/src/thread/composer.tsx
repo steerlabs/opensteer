@@ -1,3 +1,6 @@
+import { useMobileClient } from "../ui/mobile-client-context.js";
+import { useCompactionOffer } from "@opensteer/client/react";
+import { compactionOfferText } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { useHostSelector } from "@opensteer/client/react";
 import { useFocusEffect } from "@react-navigation/native";
@@ -566,7 +569,19 @@ export function Composer(props: {
     void deliverExclusively(pending);
   }, [deliverExclusively, pending, props.canRespond, readOnly]);
 
-  const sendMessage = async (sourceText: string): Promise<void> => {
+  const returnHint = useHostSelector(
+    hostClient,
+    (snapshot) => snapshot.threads.find((t) => t.id === threadId)?.returnHint,
+  );
+  const compactionOffer = useCompactionOffer(
+    returnHint,
+    `${deploymentId}/${userId}/${threadId}`,
+    useMobileClient().usageNotices,
+  );
+  const sendMessage = async (
+    sourceText: string,
+    choice?: import("@opensteer/core").CompactionSendChoice,
+  ): Promise<void> => {
     if (
       !canSend ||
       inFlight.current ||
@@ -602,6 +617,7 @@ export function Composer(props: {
       // still hand a refused message's files back, or delete the copies once
       // the Host has them.
       await drafts.claimPending(deploymentId, userId, threadId, {
+        ...(choice || compactionOffer.visible ? { compaction: choice ?? "compactFirst" } : {}),
         ...(attachments.length > 0
           ? { attachments, localUris: carried.map((item) => item.localUri) }
           : {}),
@@ -852,6 +868,32 @@ export function Composer(props: {
           Done · Sending reopens it
         </AppText>
       ) : null}
+      {compactionOffer.visible ? (
+        <View style={{ padding: space[14] }}>
+          <AppText role="caption" tone="muted">
+            {compactionOfferText}
+          </AppText>
+          <Pressable
+            accessibilityRole="button"
+            disabled={!canSend}
+            onPress={() => void send()}
+            style={{ minHeight: touchTarget, justifyContent: "center" }}
+          >
+            <AppText role="caption">Summarize and send</AppText>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            disabled={!canSend}
+            onPress={() => {
+              compactionOffer.dismiss();
+              void sendMessage(draftText.current, "keepFullHistory");
+            }}
+            style={{ minHeight: touchTarget, justifyContent: "center" }}
+          >
+            <AppText role="caption">Send with full history</AppText>
+          </Pressable>
+        </View>
+      ) : null}
       <DictationStatus controller={dictation} snapshot={dictationState} owner={owner} />
       <VoiceDock />
       {surface !== null && typedField !== null ? (
@@ -975,7 +1017,13 @@ export function Composer(props: {
                             busy={sending}
                             disabled={!canSend}
                             kind="send"
-                            label={sending ? "Sending" : "Send message"}
+                            label={
+                              sending
+                                ? "Sending"
+                                : compactionOffer.visible
+                                  ? "Summarize and send"
+                                  : "Send message"
+                            }
                             onPress={() => void send()}
                           />
                         )}

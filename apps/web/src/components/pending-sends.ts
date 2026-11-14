@@ -41,6 +41,7 @@ export function sendMessageCommand(
         ...submission.attachments,
       ],
     ),
+    ...(submission.compaction ? { compaction: submission.compaction } : {}),
     delivery: "queue",
     idempotencyKey: submission.idempotencyKey,
     // Only the source id travels: the Host looks the quoted message up under
@@ -103,6 +104,7 @@ function pendingSubmission(command: PendingSendCommand): PendingSubmission {
   return {
     attachments: artifactParts(command.content),
     body: messageText(command.content),
+    ...(command.compaction ? { compaction: command.compaction } : {}),
     // The accepted content, exactly: a retry after a reload sends the same message.
     content: command.content.map((part) => ContentPartSchema.parse(part)),
     ...placeParts(command.content),
