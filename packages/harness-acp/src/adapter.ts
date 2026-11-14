@@ -335,8 +335,7 @@ class AcpHarnessSession implements HarnessSession {
         !this.#processEnded &&
         !["cancelled", "refusal", "error"].includes(result.stopReason)
       ) {
-        if (prepared.compacts) this.#guidance.compacted();
-        else if (prepared.ticket) this.#guidance.acknowledge(prepared.ticket);
+        this.#guidance.acknowledge(prepared.ticket);
       }
       this.#finish(active, active.interruptRequested ? "interrupted" : "completed");
       await active.completion.promise;
@@ -541,16 +540,9 @@ class AcpHarnessSession implements HarnessSession {
 
   async #promptBlocks(run: HarnessRunInput): Promise<{
     blocks: readonly AcpPromptBlock[];
-    ticket?: GuidanceTicket;
-    compacts?: boolean;
+    ticket: GuidanceTicket;
   }> {
     const parts = run.inputs.flatMap((input) => resolvedInputSequence(input, run.attachments));
-    const rawText = run.inputs
-      .flatMap((input) => input.content)
-      .filter((part) => part.type === "text")
-      .map((part) => part.text)
-      .join("\n");
-    const slashCommand = rawText.trimStart().startsWith("/");
     const blocks: AcpPromptBlock[] = [];
     for (const part of parts) {
       if (part.type === "text") blocks.push({ type: "text", text: part.text });
@@ -563,14 +555,6 @@ class AcpHarnessSession implements HarnessSession {
         });
       }
     }
-    if (slashCommand)
-      return {
-        compacts: /^\/compact(?:\s|$)/u.test(rawText.trimStart()),
-        blocks: [
-          { type: "text", text: rawText },
-          ...blocks.filter((block) => block.type !== "text"),
-        ],
-      };
     const guidance = [
       this.#context.platformGuide,
       this.#context.instructions,

@@ -342,6 +342,13 @@ function serve() {
                   scope: "once",
                 },
                 {
+                  acceptsFeedback: false,
+                  choiceId: "approve-session",
+                  decision: "approved",
+                  label: "Allow for this session",
+                  scope: "session",
+                },
+                {
                   acceptsFeedback: true,
                   choiceId: "reject-once",
                   decision: "rejected",

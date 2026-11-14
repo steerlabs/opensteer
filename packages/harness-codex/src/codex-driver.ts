@@ -1239,7 +1239,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
    * `acceptForSession` — was given; only this Run may rely on it.
    */
   #sessionApprovalGranted = false;
-  readonly #additionalContextBuilder = new CodexAdditionalContext();
+  #additionalContextBuilder: Promise<CodexAdditionalContext> | undefined;
   #additionalContext: Record<string, { kind: "application"; value: string }> = {};
   #contextCompacted = false;
   #contextRestore: Promise<void> = Promise.resolve();
@@ -1429,7 +1429,10 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
       const id = createHash("sha256").update(skill.fullName).digest("hex");
       families[`opensteer_skills_${id}`] = (await renderHarnessSkillCatalog({ skills: [skill] }))!;
     }
-    this.#additionalContext = this.#additionalContextBuilder.build(families);
+    this.#additionalContextBuilder ??= CodexAdditionalContext.open(
+      join(this.#context.threadStateDirectory, "codex-context-keys.json"),
+    );
+    this.#additionalContext = await (await this.#additionalContextBuilder).build(families);
     return this.#additionalContext;
   }
 

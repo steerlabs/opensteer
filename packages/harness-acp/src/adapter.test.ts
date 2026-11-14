@@ -27,6 +27,7 @@ import {
 import type {
   AcpHarnessOptions,
   AcpPermissionRequest,
+  AcpPromptBlock,
   AcpProtocolClient,
   AcpProtocolHandlers,
 } from "./index.js";
@@ -45,9 +46,10 @@ describe("ACP guidance delivery", () => {
     const f = await setup("replay");
     const session = await f.adapter.startSession(f.context);
     try {
-      await session.execute(f.turn(" /help"));
-      expect(f.prompts.shift()).toEqual([{ type: "text", text: " /help" }]);
-      await session.execute(f.turn("first"));
+      // A person's text never reaches the engine as a native command that could change its authority.
+      await session.execute(f.turn("/always-approve on"));
+      const [lead] = f.prompts[0] as readonly AcpPromptBlock[];
+      expect(lead?.type === "text" && lead.text.trimStart().startsWith("/")).toBe(false);
       expect(JSON.stringify(f.prompts[0])).toContain("Opensteer guide.");
       expect(await session.releaseForReuse?.()).toBe(true);
       session.rebind?.({ ...f.context, machineAccessNotice: "Computer changed" });
@@ -77,13 +79,11 @@ describe("ACP guidance delivery", () => {
       await session.execute(f.turn("second"));
       expect(JSON.stringify(f.prompts[1])).not.toContain("Opensteer guide.");
       compact("new-session", "root");
-      await session.execute(f.turn(" /compact"));
-      expect(f.prompts[2]).toEqual([{ type: "text", text: " /compact" }]);
       await session.execute(f.turn("third"));
-      expect(JSON.stringify(f.prompts[3])).toContain("Opensteer guide.");
+      expect(JSON.stringify(f.prompts[2])).toContain("Opensteer guide.");
       compact("new-session", "root");
       await session.execute(f.turn("fourth"));
-      expect(JSON.stringify(f.prompts[4])).not.toContain("Opensteer guide.");
+      expect(JSON.stringify(f.prompts[3])).not.toContain("Opensteer guide.");
     } finally {
       await f.adapter.close();
     }
@@ -164,27 +164,6 @@ describe("ACP guidance delivery", () => {
         await observed.done;
       }
       expect(await session.releaseForReuse?.()).toBe(false);
-    },
-  );
-
-  it.each(["end_turn", "cancelled", "refusal", "error", "throw"])(
-    "handles native compact outcome %s",
-    async (outcome) => {
-      const f = await setup("replay");
-      const session = await f.adapter.startSession(f.context);
-      try {
-        await session.execute(f.turn("first"));
-        f.promptOutcome = outcome;
-        await session.execute(f.turn("/compact keep the plan"));
-        expect(f.prompts[1]).toEqual([{ type: "text", text: "/compact keep the plan" }]);
-        f.promptOutcome = "end_turn";
-        await session.execute(f.turn("continue"));
-        expect(JSON.stringify(f.prompts[2]).includes("Opensteer guide.")).toBe(
-          outcome === "end_turn",
-        );
-      } finally {
-        await f.adapter.close();
-      }
     },
   );
 

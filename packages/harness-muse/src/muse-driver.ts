@@ -654,6 +654,7 @@ class MuseHarnessSession implements HarnessSession {
   #closed = false;
   #compacting = false;
   #guidance = new GuidanceDelivery();
+  #approvalOutlivesRun = false;
   readonly #processLifetime = new AbortController();
   readonly #abortListener = () => void this.stop();
   #skillCatalog: string | undefined;
@@ -886,6 +887,7 @@ class MuseHarnessSession implements HarnessSession {
           sessionId: this.providerSessionReference,
         }),
       );
+      this.#noteApprovalScope(choice);
       this.#pending.delete(requestId);
       return;
     }
@@ -923,6 +925,7 @@ class MuseHarnessSession implements HarnessSession {
       !this.#publisher.unusable &&
       !this.#active &&
       !this.#compacting &&
+      !this.#approvalOutlivesRun &&
       !!this.#host &&
       this.#pending.size === 0
     );
@@ -1366,6 +1369,12 @@ class MuseHarnessSession implements HarnessSession {
         sessionId: this.providerSessionReference,
       }),
     );
+    this.#noteApprovalScope(choice);
+  }
+
+  /** Muse keeps an approval scoped beyond one call for the session, so that session serves no later Run. */
+  #noteApprovalScope(choice: { readonly decision: string; readonly scope?: string }): void {
+    if (choice.decision === "approved" && choice.scope !== "once") this.#approvalOutlivesRun = true;
   }
 
   #openApproval(request: ApprovalRequestParams): void {

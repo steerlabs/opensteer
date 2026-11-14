@@ -457,32 +457,37 @@ describe("Muse Code sessions", () => {
     await adapter.close();
   });
 
-  it("keeps a child approval routable after its foreground turn completes", async () => {
-    const fixture = await setup("child-approval");
-    const context = { ...fixture.context, accessMode: "approval-required" as const };
-    const adapter = await fixture.driver.create({
-      config: {},
-      instanceId: context.harnessInstanceId,
-      sourceId: "meta",
-    });
-    const session = await adapter.startSession(context);
-    const observer = observe(session.events);
-    const executing = session.execute(fixture.turn("check"));
-    const opened = await observer.waitFor("request.opened");
-    expect((await observer.waitFor("run.phase")).data.phase).toBe("background");
-    expect(opened.data.request.originatingNodeId).toBeTruthy();
-    await session.resolveRequest(opened.data.request.id, {
-      kind: "choice",
-      optionId: "approve-once",
-    });
-    await executing;
-    await observer.waitFor("run.completed");
-    expect(observer.events.map((event) => event.type)).toEqual(
-      expect.arrayContaining(["node.started", "node.completed", "run.completed"]),
-    );
-    await session.stop();
-    await adapter.close();
-  });
+  it.each([
+    ["approve-once", true],
+    ["approve-session", false],
+  ] as const)(
+    "keeps a child approval routable after its foreground turn completes (%s)",
+    async (optionId, reusable) => {
+      const fixture = await setup("child-approval");
+      const context = { ...fixture.context, accessMode: "approval-required" as const };
+      const adapter = await fixture.driver.create({
+        config: {},
+        instanceId: context.harnessInstanceId,
+        sourceId: "meta",
+      });
+      const session = await adapter.startSession(context);
+      const observer = observe(session.events);
+      const executing = session.execute(fixture.turn("check"));
+      const opened = await observer.waitFor("request.opened");
+      expect((await observer.waitFor("run.phase")).data.phase).toBe("background");
+      expect(opened.data.request.originatingNodeId).toBeTruthy();
+      await session.resolveRequest(opened.data.request.id, { kind: "choice", optionId });
+      await executing;
+      await observer.waitFor("run.completed");
+      expect(observer.events.map((event) => event.type)).toEqual(
+        expect.arrayContaining(["node.started", "node.completed", "run.completed"]),
+      );
+      // An approval that outlives its call would carry this Run's authority into the next.
+      expect(await session.releaseForReuse?.()).toBe(reusable);
+      await session.stop();
+      await adapter.close();
+    },
+  );
 
   it("cancels a workflow using its real run identifier", async () => {
     const fixture = await setup("workflow-cancel");
