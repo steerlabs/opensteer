@@ -426,7 +426,7 @@ export function TeamsProvider({
 
   const leave = useCallback(
     async (teamId: string) => {
-      const owner = sessionOf(teamId)?.getSnapshot().bootstrap?.member.userId;
+      const scope = sessionOf(teamId)?.scope;
       const coordinated =
         coordination !== null &&
         (world === null || worldTeams.some((team) => team.teamId === teamId));
@@ -436,7 +436,7 @@ export function TeamsProvider({
         if (!session) throw new Error("Sign in to the team before leaving it.");
         await session.leave();
       }
-      if (registry && owner) await registry.remove({ teamDeploymentId: teamId, userId: owner });
+      if (registry && scope) await registry.remove(scope);
       await reload();
     },
     [linked, coordination, world, worldTeams, sessionOf, registry, reload],
@@ -444,9 +444,9 @@ export function TeamsProvider({
 
   const forget = useCallback(
     async (teamId: string) => {
-      const owner = sessionOf(teamId)?.getSnapshot().bootstrap?.member.userId;
+      const scope = sessionOf(teamId)?.scope;
       await sessionOf(teamId)?.remove();
-      if (registry && owner) await registry.remove({ teamDeploymentId: teamId, userId: owner });
+      if (registry && scope) await registry.remove(scope);
       setForgotten((held) => new Set([...held, teamId]));
     },
     [sessionOf, linked, registry],

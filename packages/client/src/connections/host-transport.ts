@@ -110,6 +110,8 @@ export class HostTransport {
   readonly #network: HostNetwork;
   readonly #expectedKind: "personal" | "team" | undefined;
   readonly #sessions: HostSessionRecovery | null;
+  /** Sessions this transport made from a factory are its own to dispose; shared ones are not. */
+  readonly #ownsSessions: boolean;
   readonly #requestControllers = new Set<AbortController>();
   readonly #sockets = new Set<HostNetworkSocket>();
   #sessionGeneration = 0;
@@ -138,6 +140,7 @@ export class HostTransport {
     });
     this.#network = options.network;
     this.#expectedKind = options.expectedKind;
+    this.#ownsSessions = typeof options.sessions === "function";
     this.#sessions =
       typeof options.sessions === "function"
         ? options.sessions({
@@ -442,6 +445,12 @@ export class HostTransport {
     for (const controller of this.#requestControllers)
       controller.abort(new HostTransportError("deployment-changed"));
     this.closeAllSockets();
+  }
+
+  /** Ends this transport for good: its requests, sockets and any session it made. */
+  retire(): void {
+    this.invalidateSession();
+    if (this.#ownsSessions) this.#sessions?.dispose?.();
   }
 
   closeAllSockets(): void {

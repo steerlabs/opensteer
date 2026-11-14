@@ -102,6 +102,10 @@ export class TeamSessionClient {
   readonly signal: AbortSignal;
   readonly #releaseOwner: (() => void) | undefined;
   readonly #options: TeamSessionOptions;
+  /** Who this session reads as; unlike the bootstrap, it survives the session ending. */
+  get scope(): TeamCacheScope {
+    return this.#options.scope;
+  }
   readonly #listeners = new Set<() => void>();
   #snapshot: TeamSessionSnapshot = {
     agentRecipients: [],

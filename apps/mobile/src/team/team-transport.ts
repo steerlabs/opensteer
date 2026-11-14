@@ -34,7 +34,7 @@ export function networkTeamTransport(options: {
       options.oauth.subscribeHostCredentials((state) => {
         if (!options.oauth.isTeamSignInSuppressed(state.connection)) return;
         const id = state.connection.authority.document.deploymentId;
-        transports.get(id)?.transport.invalidateSession();
+        transports.get(id)?.transport.retire();
         transports.delete(id);
       }),
     );
@@ -75,7 +75,7 @@ export function networkTeamTransport(options: {
       );
       transports.set(deploymentId, pinned);
       const transport = pinned.transport;
-      owner.own(() => transport.invalidateSession());
+      owner.own(() => transport.retire());
     }
     const held = pinned;
     return {

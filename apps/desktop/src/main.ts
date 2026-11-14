@@ -623,9 +623,10 @@ async function runDesktop(
     },
   };
   const sessionsForAttachment = (attachment: import("@opensteer/client/auth").HostAttachment) => {
-    const sessions = new HostSession({
+    const sessions: HostSession = new HostSession({
       ...deviceSessionOptions,
       attachment,
+      onDispose: () => sessionOwners.delete(sessions),
       clearDeploymentSession: (id) => hostNetwork.clearDeploymentSession(id),
       exchange: hostSessionExchange,
       localOwner: personal,

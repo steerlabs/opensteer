@@ -996,6 +996,7 @@ export class DesktopHostTransport extends HostTransport {
     this.#disposed = true;
     this.#unsubscribeCatalog();
     this.closeAllConnections();
+    for (const team of this.#teams.values()) team.retire();
     this.#teams.clear();
     this.#summaries.clear();
   }
@@ -1031,6 +1032,7 @@ export class DesktopHostTransport extends HostTransport {
     this.#teams.set(deploymentId, team);
     owner?.own(() => {
       this.#closeTransportSockets(team);
+      team.retire();
       this.#teams.delete(deploymentId);
     });
     return team;

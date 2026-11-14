@@ -6,6 +6,7 @@ import { createId } from "@opensteer/core";
 import {
   MockTeamHost,
   createMemoryTeamPersistence,
+  mockTeamChannelId,
   type TeamSessionOptions,
 } from "@opensteer/client/team";
 import type { HostClient } from "@opensteer/client/host";
@@ -315,6 +316,74 @@ it("stops desktop sign-in if the Account switches while team verification is pen
     expect(calls.mock.calls.map(([input]) => input.call)).not.toContain("sign-in");
   } finally {
     verification.resolve({ ok: false, error: { message: "Cancelled" } });
+    await act(async () => root.unmount());
+    host.dispose();
+  }
+});
+
+it("erases a signed-out team's drafts when the person removes it from this computer", async () => {
+  const host = new MockTeamHost();
+  const persistence = createMemoryTeamPersistence();
+  transport.create.mockImplementation((options: TeamSessionOptions) => ({
+    ...options,
+    rpc: host.rpc,
+    connect: host.connect,
+    persistence,
+  }));
+  const hostClient = {
+    rpc: {
+      "teams.links.list": async () => ({
+        ok: true,
+        data: {
+          links: [
+            {
+              teamId: host.teamId,
+              hostInstanceId: createId("hostInstance"),
+              origin: host.origin,
+              teamName: "Team",
+              ownerUserId: host.userId,
+              state: "active",
+              remoteLinkId: null,
+              updateRequiredBy: null,
+              lastContactAt: null,
+            },
+          ],
+        },
+      }),
+    },
+  } as unknown as HostClient;
+  let value: ReturnType<typeof useTeams> | undefined;
+  function Read() {
+    value = useTeams();
+    return null;
+  }
+  const root = createRoot(document.createElement("div"));
+  try {
+    await act(async () =>
+      root.render(
+        <TeamsProvider
+          surface={{ kind: "desktop", bridge: {} as OpensteerDesktopBridge, hostClient }}
+        >
+          <Read />
+        </TeamsProvider>,
+      ),
+    );
+    await vi.waitFor(
+      () =>
+        expect(
+          value?.teams[0]?.client?.getSnapshot().bootstrap,
+          "team never attached",
+        ).toBeTruthy(),
+      { timeout: 1000 },
+    );
+    const client = value!.teams[0]!.client!;
+    await client.setDraft({ kind: "channel", channelId: mockTeamChannelId }, "Draft");
+    const scope = { teamDeploymentId: host.teamId, userId: host.userId };
+    await act(async () => client.remove("sign-in"));
+    expect(await persistence.load(scope)).not.toBeNull();
+    await act(async () => value!.forget(host.teamId));
+    expect(await persistence.load(scope)).toBeNull();
+  } finally {
     await act(async () => root.unmount());
     host.dispose();
   }

@@ -122,6 +122,7 @@ export interface HostSessionRecovery {
   assertSessionAllowed?(deploymentId: string): Promise<void>;
   sessionEnded?(attachment: SelectedAttachment): void;
   recoverUnauthorized(attachment: SelectedAttachment): Promise<HostSessionRecoveryOutcome>;
+  dispose?(): void;
 }
 
 /**
@@ -179,6 +180,7 @@ export class HostSession implements HostSessionRecovery {
   readonly #endedSessions = new Map<string, Promise<void>>();
   readonly #abandonEpochs = new Map<string, number>();
   readonly #accountCredentialRejected: () => void | Promise<void>;
+  readonly #onDispose: (() => void) | undefined;
   readonly #attachment: HostAttachment;
   readonly #attemptDeployments = new Map<string, string>();
   readonly #clearDeploymentSession: (deploymentId: string) => Promise<void>;
@@ -203,6 +205,7 @@ export class HostSession implements HostSessionRecovery {
     readonly onUnauthorized?: (attachment: SelectedAttachment) => Promise<void>;
     readonly onSessionEnded?: (attachment: SelectedAttachment) => Promise<void>;
     readonly accountCredentialRejected?: () => void | Promise<void>;
+    readonly onDispose?: () => void;
     readonly attachment: HostAttachment;
     readonly clearDeploymentSession: (deploymentId: string) => Promise<void>;
     readonly exchange: Pick<HostSessionExchange, "establish" | "probe" | "supports">;
@@ -215,6 +218,7 @@ export class HostSession implements HostSessionRecovery {
     this.#onUnauthorized = options.onUnauthorized ?? (async () => undefined);
     this.#onSessionEnded = options.onSessionEnded ?? (async () => undefined);
     this.#accountCredentialRejected = options.accountCredentialRejected ?? (() => undefined);
+    this.#onDispose = options.onDispose;
     this.#attachment = options.attachment;
     this.#clearDeploymentSession = options.clearDeploymentSession;
     this.#exchange = options.exchange;
@@ -421,6 +425,7 @@ export class HostSession implements HostSessionRecovery {
     this.#recoveries.clear();
     this.#recoveryFailures.clear();
     this.#attemptDeployments.clear();
+    this.#onDispose?.();
   }
 
   #abandonEpoch(deploymentId: string): number {
