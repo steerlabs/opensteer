@@ -5562,7 +5562,7 @@ export async function delegateThreadInTransaction(
       !parentRun ||
       parentRun.threadId !== input.origin.parentThreadId ||
       parentRun.requestedBy !== input.createdBy ||
-      !["running", "waiting"].includes(parentRun.status)
+      !["starting", "running", "waiting"].includes(parentRun.status)
     ) {
       throw new OpensteerError({
         code: "forbidden",

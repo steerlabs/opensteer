@@ -441,11 +441,16 @@ describeStore("PostgreSQL store", (it) => {
       count: "1",
     });
   });
-  it("commits thread.delegate admission and child creation atomically", async ({
+  it("commits thread.delegate admission and child creation atomically before run.started commits", async ({
     storeFixture,
   }) => {
     const { startRunFixture, store, database } = storeFixture;
     const source = await startRunFixture("agent-delegate-atomic-receipt");
+    await database
+      .updateTable("runs")
+      .set({ status: "starting", startedAt: null })
+      .where("id", "=", source.run.id)
+      .execute();
     const requestId = randomUUID();
     const admissionRequest = {
       action: "thread.delegate" as const,

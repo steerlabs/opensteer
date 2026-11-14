@@ -40,6 +40,8 @@ for (const key of [
   "OPENSTEER_STATE_IMPORT_E2E_ARTIFACT_DIR",
   "OPENSTEER_PASSKEY_POLICY_E2E_ARTIFACT_DIR",
   "OPENSTEER_CDP_BOUNDARY_E2E_ARTIFACT_DIR",
+  "OPENSTEER_BROWSER_CLEANUP_E2E_ARTIFACT_DIR",
+  "OPENSTEER_EDITING_HOST_EVIDENCE_DIR",
 ]) {
   process.env[key] ??= join(directory, "artifacts", `${slot}-${file}`, key.toLowerCase());
 }

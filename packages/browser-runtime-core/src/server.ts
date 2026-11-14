@@ -274,7 +274,8 @@ export class BrowserRuntimeServer {
             }),
           );
         }
-        for (const frame of queued) await attached.handle(frame);
+        // The controller owns command ordering; a paste may await a later part.
+        for (const frame of queued) void attached.handle(frame).catch(() => undefined);
         queued.length = 0;
       },
       async (error: unknown) => {
