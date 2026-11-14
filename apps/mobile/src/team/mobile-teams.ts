@@ -202,7 +202,7 @@ class MobileTeamRuntime {
   /** Each team's people, with the access and names revisions the read began at. */
   readonly #members = new Map<
     string,
-    { readonly key: string | null; readonly people: Promise<readonly TeamMember[]> }
+    { key: string | null; readonly people: Promise<readonly TeamMember[]> }
   >();
   readonly #detachSessions = new Map<string, () => void>();
   #memo: z.infer<typeof TeamMemoSchema> | null = null;
@@ -595,7 +595,7 @@ class MobileTeamRuntime {
     if (held !== undefined && (key === null || held.key === key)) return held.people;
     // Read before the team's revisions were known, which is moments ago: it stands for them.
     if (held !== undefined && held.key === null) {
-      this.#members.set(teamId, { key, people: held.people });
+      held.key = key;
       return held.people;
     }
     const loading = (async () => {

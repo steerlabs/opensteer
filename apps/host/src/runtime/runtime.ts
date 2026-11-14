@@ -523,7 +523,11 @@ export async function createHostRuntime(
     const initializePersonal = async () => {
       if (initializedPersonal) return initializedPersonal;
       initializingPersonal ??= initializePersonalState(database, personalConfig, realtime)
-        .then((execution) => (initializedPersonal = execution))
+        .then(async (execution) => {
+          // The owner's first name is in place before anyone reads it.
+          if (execution) await ownerProfile.seed(config.ownerNameSeed ?? null);
+          return (initializedPersonal = execution);
+        })
         .finally(() => {
           initializingPersonal = undefined;
         });

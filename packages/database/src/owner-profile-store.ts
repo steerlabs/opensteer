@@ -175,7 +175,7 @@ async function ownerProfile(
     .selectFrom("personalSettings")
     .select(["ownerId", "ownerName", "ownerNameAccount", "ownerNameRevision"])
     .where("singletonKey", "=", "personal")
-    .$call((query) => (lock ? query.forUpdate() : query))
+    .$call((query) => (lock ? query.forNoKeyUpdate() : query))
     .executeTakeFirst();
   if (!row) return null;
   // Stored before the canonical form existed: shown in it, never refused.
@@ -214,7 +214,7 @@ async function lockOwnerPrincipal(transaction: Transaction<DatabaseSchema>, owne
     .select("id")
     .where("kind", "=", "user")
     .where("userId", "=", ownerId)
-    .forUpdate()
+    .forNoKeyUpdate()
     .execute();
 }
 
