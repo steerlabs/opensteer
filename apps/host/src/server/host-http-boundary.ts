@@ -14,7 +14,8 @@ export function installHostHttpBoundary(app: FastifyInstance): void {
   });
   app.setErrorHandler((error, request, reply) => {
     const normalized = normalizeHostError(error);
-    if (normalized.status >= 500) request.log.error({ err: error }, "request failed");
+    if (normalized.status >= 500 && !request.url.startsWith("/media/"))
+      request.log.error({ err: error }, "request failed");
     void reply.status(normalized.status).send({ error: normalized.error });
   });
 }

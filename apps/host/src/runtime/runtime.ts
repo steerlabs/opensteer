@@ -1,3 +1,4 @@
+import { AssetService } from "../assets/asset-service.js";
 import { IdleCompactionService } from "../agents/idle-compaction-service.js";
 import { admitIdleCompaction, idleCompactionCandidates } from "@opensteer/database/idle-compaction";
 import { DeviceAccessService } from "../administration/device-access-service.js";
@@ -2526,6 +2527,16 @@ export async function createHostRuntime(
             }
           : {}),
         attachments,
+        assets: new AssetService({
+          authSecret: config.authSecret,
+          dataDirectory,
+          runnerDataDirectory: resolve(
+            process.env.OPENSTEER_RUNNER_DATA_DIR ?? resolve(dataDirectory, "..", "runner"),
+          ),
+          agentHome: async () => (await personalExecution()).options.agentHome.path,
+          owns: async (threadId, ownerId) =>
+            Boolean(await store.getThreadForOwner(threadId, ownerId)),
+        }),
         runFiles: runFileRelay,
         apps,
         appOriginSigningKey: createHmac("sha256", config.authSecret)
