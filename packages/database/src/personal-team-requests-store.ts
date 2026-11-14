@@ -279,6 +279,21 @@ export class PersonalTeamRequestsStore {
         .executeTakeFirst();
       if (!row || row.kind !== "ask")
         throw new OpensteerError({ code: "not_found", message: "Pending team ask not found." });
+      if (row.terminalState === "failed" && !row.localTaskId) {
+        if (decision !== "decline")
+          throw new OpensteerError({
+            code: "conflict",
+            message: row.blockedReason ?? "This team ask has ended.",
+          });
+        const saved = await tx
+          .updateTable("personalTeamRequests")
+          .set({ blockedReason: null })
+          .where("teamDeploymentId", "=", teamId)
+          .where("requestId", "=", requestId)
+          .returningAll()
+          .executeTakeFirstOrThrow();
+        return personalTeamRequestMirrorFromRow(saved);
+      }
       if (row.localDecision) {
         if (row.localDecision !== decision)
           throw new OpensteerError({
@@ -305,6 +320,29 @@ export class PersonalTeamRequestsStore {
         .returningAll()
         .executeTakeFirstOrThrow();
       return personalTeamRequestMirrorFromRow(saved);
+    });
+  }
+
+  async failDecision(
+    teamId: DeploymentId,
+    requestId: TeamAgentRequestId,
+    reason: string,
+  ): Promise<void> {
+    await withPersonalTransaction(this.database, async (tx) => {
+      await tx
+        .updateTable("personalTeamRequests")
+        .set({
+          terminalState: "failed",
+          publicationState: "blocked",
+          blockedReason: reason,
+          finishedAt: new Date(),
+        })
+        .where("teamDeploymentId", "=", teamId)
+        .where("requestId", "=", requestId)
+        .where("kind", "=", "ask")
+        .where("localTaskId", "is", null)
+        .where("terminalState", "is", null)
+        .execute();
     });
   }
 

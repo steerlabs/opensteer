@@ -131,3 +131,99 @@ describe.each(["approve", "decline"] as const)("%s decision", (decision) => {
     }
   });
 });
+
+it("refreshes the loaded Needs you range without losing an older review or retaining settled cards", async () => {
+  const asks = Array.from({ length: 105 }, (_, i) => ({
+    ...ask,
+    requestId: createId("teamAgentRequest"),
+    createdAt: new Date(Date.parse(at) - i * 1000).toISOString(),
+  }));
+  let rows = [...asks];
+  const mock = new MockHostClient({ latencyMs: 0, teamAsks: asks });
+  const transport = new MockPersonalHost(mock);
+  const client = new HttpHostClient({
+    baseUrl: "http://mock-host",
+    webSocketFactory: transport.connect,
+    refreshIntervalMs: 0,
+    fetch: async (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname !== "/v1/rpc/needsYou.get") return transport.fetch(input, init);
+      const query = JSON.parse(url.searchParams.get("input") ?? String(init?.body));
+      const offset = query.before ? Number(query.before) : 0;
+      const entries = rows.slice(offset, offset + 50);
+      const end = offset + entries.length;
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          data: {
+            count: rows.length,
+            entries,
+            window: {
+              byteCount: 100,
+              itemCount: entries.length,
+              totalItems: rows.length,
+              hasMore: end < rows.length,
+              nextBefore: end < rows.length ? String(end) : null,
+            },
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    },
+  });
+  try {
+    await client.load();
+    await vi.waitFor(
+      () =>
+        expect([...transport.sockets][0]?.sent.length, "client never subscribed").toBeGreaterThan(
+          0,
+        ),
+      { timeout: 1000 },
+    );
+    [...transport.sockets][0]!.deliver({ type: "host.requests-changed" });
+    await vi.waitFor(
+      () =>
+        expect(
+          client.getSnapshot().needsYou?.entries,
+          "first Needs you page never arrived",
+        ).toHaveLength(50),
+      { timeout: 1000 },
+    );
+    await client.loadEarlierNeedsYou();
+    const older = asks[99]!;
+    expect(client.getSnapshot().needsYou?.entries).toContainEqual(older);
+    rows = [
+      {
+        ...ask,
+        requestId: createId("teamAgentRequest"),
+        createdAt: new Date(Date.parse(at) + 1000).toISOString(),
+      },
+      ...asks.filter((entry) => entry !== asks[50] && entry !== asks[51]),
+    ];
+    [...transport.sockets][0]!.deliver({ type: "host.requests-changed" });
+    await vi.waitFor(
+      () =>
+        expect(client.getSnapshot().needsYou?.count, "Needs you refresh never arrived").toBe(
+          rows.length,
+        ),
+      { timeout: 1000 },
+    );
+    const refreshed = client.getSnapshot().needsYou!;
+    expect(refreshed.entries).toContainEqual(older);
+    expect(refreshed.entries).not.toContainEqual(asks[50]);
+    expect(refreshed.entries).not.toContainEqual(asks[51]);
+    expect(
+      new Set(
+        refreshed.entries.map((entry) =>
+          entry.kind === "team-ask" ? entry.requestId : entry.request.id,
+        ),
+      ).size,
+    ).toBe(refreshed.entries.length);
+    await client.loadEarlierNeedsYou();
+    expect(client.getSnapshot().needsYou?.entries).toEqual(rows);
+  } finally {
+    client.dispose();
+    transport.dispose();
+    mock.dispose();
+  }
+});
