@@ -2932,6 +2932,63 @@ describe("Claude Agent SDK harness", () => {
     await adapter.close();
   });
 
+  it.each([
+    ["compact_boundary", "run.completed"],
+    ["failed", "run.failed"],
+  ] as const)(
+    "starts a compaction Run before its first progress and ends it by Claude's compaction outcome (%s)",
+    async (outcome, terminal) => {
+      const reference = "123e4567-e89b-42d3-a456-426614174002";
+      const system = (fields: Record<string, unknown>) =>
+        message({ session_id: reference, type: "system", uuid: randomProviderUuid(), ...fields });
+      const sdk = new FakeSdk((parameters) => {
+        const drained = (async () => {
+          for await (const _input of streamingPrompt(parameters));
+        })();
+        return generatedQuery(async function* () {
+          yield initMessage(reference);
+          yield system({ status: "compacting", subtype: "status" });
+          yield outcome === "failed"
+            ? system({ compact_result: "failed", status: null, subtype: "status" })
+            : system({ compact_metadata: { trigger: "manual" }, subtype: "compact_boundary" });
+          // Claude reports the local command itself as successful either way.
+          yield successMessage(reference, "");
+          await drained;
+        });
+      });
+      const directory = await temporaryDirectory();
+      const driver = new ClaudeHarnessDriver({ executable: fakeClaudeExecutable, sdk });
+      const adapter = await driver.create({
+        sourceId: "anthropic",
+        config: {},
+        instanceId: createId("harnessInstance"),
+      });
+      const session = await adapter.resumeSession(reference, await context(directory));
+      const observer = observe(session.events);
+      await session.execute({
+        maintenance: {
+          kind: "claude-compaction",
+          reason: "idle",
+          sourceRunId: createId("run"),
+          providerSessionId: createId("providerSession"),
+        },
+        environment: {},
+        inputs: [humanInput("Compact")],
+        context: noThreadContext,
+        reports: { messages: [], omittedCount: 0, throughSequence: null },
+        requestedBy: createId("user"),
+        runId: createId("run"),
+        signal: new AbortController().signal,
+      });
+      await session.stop();
+      await observer.done;
+      const types = observer.events.map((event) => event.type);
+      expect(types.indexOf("run.started")).toBeLessThan(types.indexOf("run.compaction"));
+      expect(types).toContain(terminal);
+      await adapter.close();
+    },
+  );
+
   it("tells the model this Run's computer inventory on every turn, resumed or not", async () => {
     const received: SDKUserMessage[][] = [];
     const sdk = new FakeSdk((parameters) => {

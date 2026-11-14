@@ -627,6 +627,7 @@ export function Composer(props: {
         text: sourceText.trim(),
         threadId,
       });
+      if (choice === "keepFullHistory") compactionOffer.dismiss();
       // Do not erase words typed while the durable claim was being written.
       if (draftText.current === sourceText) changeText("");
       changeQuote(null);
@@ -655,7 +656,7 @@ export function Composer(props: {
   const latestSend = useRef({ canSend, sendMessage });
   latestSend.current = { canSend, sendMessage };
   const finishingSend = useRef(false);
-  const send = async (): Promise<void> => {
+  const send = async (choice?: import("@opensteer/core").CompactionSendChoice): Promise<void> => {
     if (finishingSend.current) return;
     finishingSend.current = true;
     try {
@@ -670,6 +671,7 @@ export function Composer(props: {
         return;
       await latestSend.current.sendMessage(
         result.kind === "committed" ? result.text : draftText.current,
+        choice,
       );
     } finally {
       finishingSend.current = false;
@@ -876,7 +878,7 @@ export function Composer(props: {
           <Pressable
             accessibilityRole="button"
             disabled={!canSend}
-            onPress={() => void send()}
+            onPress={() => void send("compactFirst")}
             style={{ minHeight: touchTarget, justifyContent: "center" }}
           >
             <AppText role="caption">Summarize and send</AppText>
@@ -884,10 +886,7 @@ export function Composer(props: {
           <Pressable
             accessibilityRole="button"
             disabled={!canSend}
-            onPress={() => {
-              compactionOffer.dismiss();
-              void sendMessage(draftText.current, "keepFullHistory");
-            }}
+            onPress={() => void send("keepFullHistory")}
             style={{ minHeight: touchTarget, justifyContent: "center" }}
           >
             <AppText role="caption">Send with full history</AppText>

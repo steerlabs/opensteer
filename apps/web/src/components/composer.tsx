@@ -622,6 +622,7 @@ export function Composer({
       setError(claimError instanceof Error ? claimError.message : "The message was not kept.");
       return;
     }
+    if (choice === "keepFullHistory") compactionOffer?.dismiss();
     attempted.current = submission.idempotencyKey;
     const ids = carried.map((item) => item.localId);
     setSending(new Set(ids));
@@ -637,12 +638,12 @@ export function Composer({
 
   const latestSubmit = useRef(submit);
   latestSubmit.current = submit;
-  const finishAndSend = async () => {
+  const finishAndSend = async (choice?: import("@opensteer/core").CompactionSendChoice) => {
     if (waitingSend.current) return;
     waitingSend.current = true;
     try {
       if (!dictating) {
-        await latestSubmit.current();
+        await latestSubmit.current(latestDraft.current, choice);
         return;
       }
       const finish = dictation ? await dictation.stop(owner) : { kind: "idle" as const };
@@ -654,7 +655,10 @@ export function Composer({
         finish.kind === "aborted"
       )
         return;
-      await latestSubmit.current(finish.kind === "committed" ? finish.text : latestDraft.current);
+      await latestSubmit.current(
+        finish.kind === "committed" ? finish.text : latestDraft.current,
+        choice,
+      );
     } finally {
       waitingSend.current = false;
     }
@@ -1072,7 +1076,7 @@ export function Composer({
             className="btn btn--small btn--primary"
             type="button"
             disabled={!canSend}
-            onClick={() => void finishAndSend()}
+            onClick={() => void finishAndSend("compactFirst")}
           >
             Summarize and send
           </button>
@@ -1080,10 +1084,7 @@ export function Composer({
             className="btn btn--small"
             type="button"
             disabled={!canSend}
-            onClick={() => {
-              compactionOffer.dismiss();
-              void submit(latestDraft.current, "keepFullHistory");
-            }}
+            onClick={() => void finishAndSend("keepFullHistory")}
           >
             Send with full history
           </button>

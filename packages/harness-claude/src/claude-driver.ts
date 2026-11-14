@@ -411,6 +411,8 @@ interface ActiveTurn {
   readonly contextMeasurement: ClaudeContextMeasurement;
   readonly compactionReason: "manual" | "automatic" | "idle" | "before-send";
   readonly maintenance: boolean;
+  /** Claude reported a failed compaction, even if the command's own result says success. */
+  compactionFailed?: boolean;
   usage?: RunUsage;
   usageBaseline?: SDKResultMessage | undefined;
   usageBaselineKnown?: boolean;
@@ -2803,11 +2805,15 @@ class ClaudeHarnessSession implements HarnessSession {
             : subtype === "status" && Reflect.get(message, "status") === "compacting"
               ? "running"
               : null;
-      if (status)
+      if (status) {
+        // A native /compact can report progress before anything else of the Run.
+        this.#ensureRunStarted(active);
+        if (status === "failed") active.compactionFailed = true;
         this.#publish({
           type: "run.compaction",
           data: { status, reason: active.compactionReason },
         });
+      }
     }
     if (active.idle && (message.type === "stream_event" || message.type === "assistant")) {
       active.idle = false;
@@ -2868,6 +2874,21 @@ class ClaudeHarnessSession implements HarnessSession {
         consumed.every((uuid) => active.contextOnly.has(uuid))
       )
         return;
+      if (
+        message.subtype === "success" &&
+        !message.is_error &&
+        active.maintenance &&
+        active.compactionFailed
+      ) {
+        this.#publishFailure(
+          active,
+          new OpensteerError({
+            code: "harness_error",
+            message: "Claude could not create a summary",
+          }),
+        );
+        return;
+      }
       if (message.subtype === "success" && !message.is_error) {
         const text = message.result || this.#latestAssistantText;
         this.#publish({
