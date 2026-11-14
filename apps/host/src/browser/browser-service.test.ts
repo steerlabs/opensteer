@@ -3879,15 +3879,14 @@ describe("BrowserService", () => {
     }
   });
 
-  it("refuses a late command without restoring an ended Run's actor or attachment", async () => {
+  it("answers a late command without restoring an ended Run's actor or attachment", async () => {
     const f = await actorAdmissionFixture();
     try {
       await f.service.detachAgentSessionsForBinding(f.authority.agentBindingId);
       const resolveActors = vi.spyOn(f.backing, "resolvePlaceActors");
-      await expect(f.cdp.request({ method: "Browser.getVersion" })).rejects.toMatchObject({
-        name: "BrowserCdpConnectionEnded",
-      });
-      expect(f.forwarded).toHaveLength(0);
+      await expect(f.cdp.request({ method: "Browser.getVersion" })).resolves.toEqual({});
+      expect(f.forwarded).toHaveLength(1);
+      expect(f.forwarded[0]?.actorToken).toBeUndefined();
       expect(resolveActors).not.toHaveBeenCalled();
       expect(
         await f.backing.listActiveBrowserSessionsForAgentBinding(f.authority.agentBindingId),

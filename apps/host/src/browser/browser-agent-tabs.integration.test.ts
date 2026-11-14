@@ -136,6 +136,15 @@ integration("agent tabs", () => {
         operationKey: randomUUID(),
       }),
     ).rejects.toMatchObject({ message: expect.stringContaining("ambiguous") });
+    // Guest's computer is chosen only among this person's browser computers.
+    await expect(
+      f.browser.openAgentTab(f.actor, {
+        identity: { kind: "guest", computer: createId("environment") },
+        operationKey: randomUUID(),
+      }),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("does not run a connected browser"),
+    });
   });
 
   it("serializes concurrent opens of one profile through browser startup", async () => {
