@@ -7,6 +7,13 @@ import {
   MessageIdSchema,
   SequenceSchema,
   TeamAgentRequestIdSchema,
+  TeamAgentRequestKindSchema,
+  TeamAgentRequestStateSchema,
+  TeamAskPresentationSchema,
+  TeamAskDecisionSchema,
+  TeamAskOutcomeSchema,
+  TeamAgentReturnPayloadSchema,
+  TeamReturnAdmissionSchema,
   TeamBlobIdSchema,
   TeamChannelIdSchema,
   TeamLinkIdSchema,
@@ -72,9 +79,17 @@ export const PersonalTeamLinkSchema = z.strictObject({
   lastContactAt: IsoDateTimeSchema.nullable(),
 });
 export type PersonalTeamLink = z.infer<typeof PersonalTeamLinkSchema>;
-export const PersonalTeamRequestSchema = z.strictObject({
+export const PersonalTeamRequestMirrorSchema = z.strictObject({
   teamId: DeploymentIdSchema,
   requestId: TeamAgentRequestIdSchema,
+  kind: TeamAgentRequestKindSchema.default("self"),
+  remoteState: TeamAgentRequestStateSchema.default("queued"),
+  presentation: TeamAskPresentationSchema.nullable().default(null),
+  consentExpiresAt: IsoDateTimeSchema.nullable().default(null),
+  localDecision: TeamAskDecisionSchema.nullable().default(null),
+  decisionAt: IsoDateTimeSchema.nullable().default(null),
+  returnPayload: TeamAgentReturnPayloadSchema.nullable().default(null),
+  returnAdmission: TeamReturnAdmissionSchema.nullable().default(null),
   answerMessageId: MessageIdSchema.nullable().default(null),
   answerPayload: z
     .strictObject({
@@ -87,13 +102,18 @@ export const PersonalTeamRequestSchema = z.strictObject({
   deliveryVia: z.enum(["final", "tool"]).nullable().default(null),
   blockedReason: z.string().min(1).max(500).nullable().default(null),
   triggerMessageId: TeamMessageIdSchema,
-  taskId: ThreadIdSchema,
-  inputId: z.string().min(1).max(255),
+  taskId: ThreadIdSchema.nullable(),
+  inputId: z.string().min(1).max(255).nullable(),
   runId: RunIdSchema.nullable(),
   publicationState: z.enum(["pending", "accepted", "blocked"]),
   terminalState: z.enum(["done", "failed", "stopped", "cancelled"]).nullable(),
   replyMessageId: TeamMessageIdSchema.nullable(),
   source: TeamSourceSchema,
+});
+export type PersonalTeamRequestMirror = z.infer<typeof PersonalTeamRequestMirrorSchema>;
+export const PersonalTeamRequestSchema = PersonalTeamRequestMirrorSchema.extend({
+  taskId: ThreadIdSchema,
+  inputId: z.string().min(1).max(255),
 });
 export type PersonalTeamRequest = z.infer<typeof PersonalTeamRequestSchema>;
 export const TeamLinkWebSocketHeadersSchema = z.strictObject({
@@ -150,7 +170,12 @@ export const TeamLinkClientFrameSchema = z.discriminatedUnion("type", [
       )
       .max(32),
   }),
-  z.strictObject({ ...call, ...request, type: z.literal("accept") }),
+  z.strictObject({
+    ...call,
+    ...request,
+    type: z.literal("accept"),
+    decision: TeamAskDecisionSchema.optional(),
+  }),
   z.strictObject({ ...call, ...request, type: z.literal("context") }),
   z.strictObject({
     ...call,
@@ -213,12 +238,21 @@ export const TeamLinkClientFrameSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({ ...call, type: z.literal("revoke") }),
   z.strictObject({ type: z.literal("ping") }),
+  z.strictObject({
+    ...call,
+    type: z.literal("reconcile"),
+    requestIds: z.array(TeamAgentRequestIdSchema).max(200),
+  }),
 ]);
 export type TeamLinkClientFrame = z.infer<typeof TeamLinkClientFrameSchema>;
 export const TeamLinkResultSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("accepted"), request: TeamAgentRequestSchema }),
   z.strictObject({ kind: z.literal("context"), context: TeamRequestContextSchema }),
-  z.strictObject({ kind: z.literal("receipt"), messageId: TeamMessageIdSchema.nullable() }),
+  z.strictObject({
+    kind: z.literal("receipt"),
+    messageId: TeamMessageIdSchema.nullable(),
+    askOutcomes: z.array(TeamAskOutcomeSchema).max(21).optional(),
+  }),
   z.strictObject({ kind: z.literal("read"), result: TeamReadResultSchema }),
   z.strictObject({ kind: z.literal("search"), result: TeamSearchPageSchema }),
   z.strictObject({ kind: z.literal("knowledge.topics"), result: TeamKnowledgeTopicsResultSchema }),
@@ -227,9 +261,22 @@ export const TeamLinkResultSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("file"), file: TeamFileSchema, source: TeamSourceSchema }),
   z.strictObject({ kind: z.literal("ok") }),
   z.strictObject({ kind: z.literal("channels"), result: TeamChannelsResultSchema }),
+  z.strictObject({
+    kind: z.literal("reconciled"),
+    requests: z
+      .array(
+        z.strictObject({
+          requestId: TeamAgentRequestIdSchema,
+          request: TeamAgentRequestSchema.nullable(),
+        }),
+      )
+      .max(200),
+  }),
 ]);
 export const TeamRunRequestSchema = z.strictObject({
   request: TeamAgentRequestSchema,
+  presentation: TeamAskPresentationSchema.nullable().default(null),
+  returnPayload: TeamAgentReturnPayloadSchema.nullable().default(null),
   source: TeamSourceSchema,
   bodyMarkdown: TeamMarkdownSchema,
   attachments: z.array(TeamFileSchema).max(10),

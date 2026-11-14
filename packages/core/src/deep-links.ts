@@ -193,3 +193,31 @@ export function parseMobileOpenDeepLink(
     return null;
   }
 }
+
+export function buildMobileNeedsYouDeepLink(deploymentId: DeploymentId): string {
+  return `${mobileDeepLinkScheme}:/deployments/${DeploymentIdSchema.parse(deploymentId)}/needs-you`;
+}
+
+export function parseMobileNeedsYouDeepLink(
+  value: string,
+): { readonly deploymentId: DeploymentId } | null {
+  if (!value.startsWith(`${mobileDeepLinkScheme}:/deployments/`)) return null;
+  try {
+    const url = new URL(value);
+    const segments = url.pathname.split("/");
+    if (
+      url.host ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      segments.length !== 4 ||
+      segments[3] !== "needs-you"
+    )
+      return null;
+    const id = DeploymentIdSchema.safeParse(segments[2]);
+    return id.success ? { deploymentId: id.data } : null;
+  } catch {
+    return null;
+  }
+}

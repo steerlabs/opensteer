@@ -200,6 +200,7 @@ export const databaseLockOrder = [
   // Independent credential and access lifecycles have no earlier observed dependencies.
   "credentials",
   "personal_team_links",
+  "personal_team_posts",
   "machine_access_events",
   "machine_access_sessions",
   "advisory:personal-remote-access",

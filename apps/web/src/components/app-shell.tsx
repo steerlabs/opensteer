@@ -331,6 +331,10 @@ export function AppShell({
     sidebarWidthRange,
   );
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
+  const [needsYouNotification, setNeedsYouNotification] = useState<{
+    deploymentId: string;
+    id: string;
+  } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [accountSignIn, setAccountSignIn] = useState<{
     readonly added: boolean;
@@ -698,7 +702,7 @@ export function AppShell({
   // that conversation right now.
   useEffect(() => {
     return hostClient.subscribeNotifications((notification) => {
-      if (isReadingThread(notification.threadId)) return;
+      if (notification.threadId && isReadingThread(notification.threadId)) return;
       const viewed = hostClient.getSnapshot().deploymentId;
       if (nativeDesktopBridge && viewed && !deviceNotificationsOn(viewed)) return;
       // Parsed here because a notification addresses a destination: one that
@@ -730,6 +734,13 @@ export function AppShell({
   const openNotification = useCallback(
     (target: DesktopNotificationTarget) => {
       if (!deploymentId || target.deploymentId !== deploymentId) return;
+      if (target.threadId === null) {
+        openConversation("/");
+        setNeedsYouNotification({ deploymentId: target.deploymentId, id: target.notificationId });
+        setSidebarCollapsed(false);
+        setMobileNavigationOpen(true);
+        return;
+      }
       openConversation(
         conversationPath(target.threadId),
         target.messageId ? { messageId: target.messageId } : undefined,
@@ -973,6 +984,11 @@ export function AppShell({
                     hostClient={hostClient}
                     mobile={mobileNavigation}
                     mobileOpen={mobileNavigation && mobileNavigationOpen && drawerReady}
+                    needsYouNotificationId={
+                      needsYouNotification?.deploymentId === deploymentId
+                        ? needsYouNotification.id
+                        : null
+                    }
                     onCloseMobile={closeMobileNavigation}
                     onLoadEarlierTasks={async () => {
                       try {

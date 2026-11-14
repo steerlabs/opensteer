@@ -1,6 +1,7 @@
 import { createId, type DeploymentId, type TeamTaskOrigin, type ThreadId } from "@opensteer/core";
 import { PersonalTeamLinkSchema, type PersonalTeamLink } from "@opensteer/protocol";
 import type { Insertable, Kysely, Selectable } from "kysely";
+import { withPersonalTransaction } from "./personal-transaction.js";
 import type { DatabaseSchema } from "./schema.js";
 
 export type StoredPersonalTeamLink = Selectable<DatabaseSchema["personalTeamLinks"]>;
@@ -45,30 +46,38 @@ export class PersonalTeamLinksStore {
     input: Omit<Insertable<DatabaseSchema["personalTeamLinks"]>, "id" | "createdAt">,
     credential: PersonalTeamCredential,
   ): Promise<void> {
-    await this.database.transaction().execute(async (tx) => {
+    await withPersonalTransaction(this.database, async (tx) => {
       await tx.insertInto("credentials").values(credential).execute();
+      const id = createId("credential");
       await tx
         .insertInto("personalTeamLinks")
         .values({
           ...input,
-          id: createId("credential"),
+          id,
           createdAt: new Date().toISOString(),
         })
         .onConflict((conflict) =>
           conflict.column("teamDeploymentId").doUpdateSet({
             ...input,
+            id,
           }),
         )
+        .execute();
+      await tx
+        .deleteFrom("personalTeamPosts")
+        .where("teamDeploymentId", "=", input.teamDeploymentId)
         .execute();
     });
   }
 
   async state(teamId: DeploymentId, state: StoredPersonalTeamLink["state"]): Promise<void> {
-    await this.database
-      .updateTable("personalTeamLinks")
-      .set({ state })
-      .where("teamDeploymentId", "=", teamId)
-      .execute();
+    await withPersonalTransaction(this.database, async (tx) => {
+      await tx
+        .updateTable("personalTeamLinks")
+        .set({ state })
+        .where("teamDeploymentId", "=", teamId)
+        .execute();
+    });
   }
 
   async versionMismatch(teamId: DeploymentId, behind: "personal" | "team"): Promise<void> {
@@ -102,17 +111,19 @@ export class PersonalTeamLinksStore {
       readonly ownerUserId: NonNullable<PersonalTeamLink["ownerUserId"]>;
     },
   ): Promise<void> {
-    await this.database
-      .updateTable("personalTeamLinks")
-      .set({
-        state: "active",
-        remoteLinkId: link.id,
-        remoteOwnerUserId: link.ownerUserId,
-        lastContactAt: new Date().toISOString(),
-      })
-      .where("teamDeploymentId", "=", teamId)
-      .where("state", "not in", ["leaving", "revoked"])
-      .execute();
+    await withPersonalTransaction(this.database, async (tx) => {
+      await tx
+        .updateTable("personalTeamLinks")
+        .set({
+          state: "active",
+          remoteLinkId: link.id,
+          remoteOwnerUserId: link.ownerUserId,
+          lastContactAt: new Date().toISOString(),
+        })
+        .where("teamDeploymentId", "=", teamId)
+        .where("state", "not in", ["leaving", "revoked"])
+        .execute();
+    });
   }
 
   view(link: StoredPersonalTeamLink): PersonalTeamLink {

@@ -199,14 +199,14 @@ describe("standing team link authority", () => {
       channelId,
       threadRootId: null,
       clientMessageId: randomUUID(),
-      bodyMarkdown: "trigger words",
+      bodyMarkdown: "@maya-agent trigger words",
       attachmentIds: [],
       mentions: [{ kind: "agent", userId: fixture.userId }],
     });
     const pending = (await requests.pending(linkId)).find(
       (r) => r.request.triggerMessageId === sent.message.id,
     )!;
-    expect(pending).toMatchObject({ bodyMarkdown: "trigger words", attachments: [] });
+    expect(pending).toMatchObject({ bodyMarkdown: "@maya-agent trigger words", attachments: [] });
     await requests.accept(linkId, pending.request.id);
     const context = await requests.context(linkId, pending.request.id);
     expect(context).not.toHaveProperty("messages");
@@ -444,7 +444,7 @@ describe("standing team link authority", () => {
         channelId,
         threadRootId: null,
         clientMessageId: randomUUID(),
-        bodyMarkdown: "x".repeat(16384),
+        bodyMarkdown: "@maya-agent " + "x".repeat(16372),
         attachmentIds: [],
         mentions: [{ kind: "agent", userId: fixture.userId }],
       });
@@ -478,6 +478,171 @@ describe("standing team link authority", () => {
     expect(endpoint.isOnline(fixture.userId)).toBe(true);
     socket.emit("close");
   });
+  for (const stuck of ["unacked", "rejected"] as const)
+    it(`refills the return window with one ${stuck} return among 11`, async () => {
+      const returnWindowSize = 5;
+      endpoint = new TeamLinkEndpoint({ ...endpoint.options, returnWindowSize });
+      const sender = await fixture.member("Alex");
+      await chat.setAccess(human(), channelId, access.revision, [
+        { subject: { kind: "person", userId: fixture.userId }, level: "post", manage: true },
+        { subject: { kind: "person", userId: sender }, level: "post", manage: false },
+      ]);
+      await chat.send(
+        { kind: "human", userId: sender },
+        {
+          channelId,
+          threadRootId: null,
+          clientMessageId: randomUUID(),
+          bodyMarkdown: "@maya-agent help",
+          mentions: [],
+          attachmentIds: [],
+        },
+      );
+      const consent = (await requests.pending(linkId))[0]!;
+      const returns = Array.from({ length: 11 }, () => ({
+        id: createId("teamAgentRequest"),
+        kind: "return" as const,
+        ownerUserId: fixture.userId,
+        channelId,
+        threadRootId: consent.request.threadRootId,
+        triggerMessageId: consent.request.triggerMessageId,
+        linkId,
+        state: "queued" as const,
+        steps: sql<[]>`'[]'::jsonb`,
+        changeSeq: "1",
+        returnPayload: {
+          originAskId: createId("teamAgentRequest"),
+          resumeRunId: runId,
+          outcome: "declined" as const,
+          bodyMarkdown: null,
+          attachments: [],
+          author: { teamUserId: sender, displayName: "Alex", actor: "agent" as const },
+        },
+      }));
+      // The origin rows need only supply the publication lookup; returns cannot recursively return.
+      for (const row of returns) row.returnPayload.originAskId = row.id;
+      await fixture.database.insertInto("teamAgentRequests").values(returns).execute();
+      class Socket extends EventEmitter {
+        bufferedAmount = 0;
+        delivered = new Map<string, number>();
+        completed = new Set<string>();
+        outstanding = new Set<string>();
+        maxOutstanding = 0;
+        pending: string[] = [];
+        accepting = false;
+        stuckId: string | undefined;
+        acceptNext() {
+          if (this.accepting) return;
+          const id = this.pending.shift();
+          if (!id) return;
+          this.accepting = true;
+          this.emit(
+            "message",
+            Buffer.from(
+              JSON.stringify({
+                type: "accept",
+                id,
+                requestId: id,
+                ...(id === this.stuckId ? { decision: "decline" } : {}),
+              }),
+            ),
+            false,
+          );
+        }
+        drained = Promise.withResolvers<void>();
+        send(encoded: string) {
+          const frame = JSON.parse(encoded);
+          if (frame.type === "requests")
+            for (const item of frame.requests) {
+              const id = item.request.id as string;
+              this.delivered.set(id, (this.delivered.get(id) ?? 0) + 1);
+              if (item.request.kind === "return") {
+                this.outstanding.add(id);
+                this.maxOutstanding = Math.max(this.maxOutstanding, this.outstanding.size);
+                this.stuckId ??= id;
+                if (stuck === "unacked" && id === this.stuckId) continue;
+                this.pending.push(id);
+                queueMicrotask(() => this.acceptNext());
+              }
+            }
+          if (frame.type === "error")
+            this.drained.reject(
+              new Error(`${JSON.stringify(frame)} after ${this.completed.size} acknowledgments`),
+            );
+          if (frame.type === "result") {
+            this.completed.add(frame.id);
+            // A third acknowledgment must pass while the second pending scan is held.
+            if (this.completed.size === 3) refillReleased.resolve();
+            this.outstanding.delete(frame.id);
+            this.accepting = false;
+            queueMicrotask(() => this.acceptNext());
+            if (this.completed.size === returns.length - (stuck === "unacked" ? 1 : 0))
+              this.drained.resolve();
+          }
+        }
+        close() {
+          this.emit("close");
+        }
+        terminate() {
+          this.emit("close");
+        }
+      }
+      const refillReleased = Promise.withResolvers<void>();
+      const pending = requests.pending.bind(requests);
+      const pendingSpy = vi.spyOn(requests, "pending").mockImplementation(async (...args) => {
+        const page = await pending(...args);
+        if (pendingSpy.mock.calls.length === 2)
+          await withTimeout(refillReleased.promise, 4000, {
+            timeoutError: () =>
+              new Error(
+                `Acknowledgments stopped at ${socket.completed.size} while the refill was in flight`,
+              ),
+          });
+        return page;
+      });
+      const socket = new Socket();
+      await endpoint.attach(socket as unknown as WebSocket, linkId);
+      try {
+        socket.emit(
+          "message",
+          Buffer.from(JSON.stringify({ type: "hello", teamApiVersion, terminalRequests: [] })),
+          false,
+        );
+        await withTimeout(socket.drained.promise, 5000, {
+          timeoutError: () =>
+            new Error(
+              `Only ${socket.completed.size} of ${returns.length} returns were acknowledged`,
+            ),
+        });
+        // Half-window refills free at least three slots; allow four pages and a final empty scan.
+        expect(pendingSpy.mock.calls.length).toBeLessThanOrEqual(5);
+        expect(socket.maxOutstanding).toBeLessThanOrEqual(returnWindowSize);
+        expect(socket.completed).toEqual(
+          new Set(
+            returns
+              .filter((row) => stuck === "rejected" || row.id !== socket.stuckId)
+              .map((row) => row.id),
+          ),
+        );
+        expect(socket.delivered.get(consent.request.id)).toBe(1);
+        expect([...socket.delivered.values()].every((count) => count === 1)).toBe(true);
+        expect(new Set((await requests.pending(linkId)).map((item) => item.request.id))).toEqual(
+          new Set([consent.request.id, ...(stuck === "unacked" ? [socket.stuckId] : [])]),
+        );
+        if (stuck === "rejected")
+          expect(
+            await fixture.database
+              .selectFrom("teamAgentRequests")
+              .select(["state", "failureCode"])
+              .where("id", "=", socket.stuckId as (typeof returns)[number]["id"])
+              .executeTakeFirstOrThrow(),
+          ).toMatchObject({ state: "cancelled", failureCode: null });
+      } finally {
+        refillReleased.resolve();
+        socket.close();
+      }
+    });
+
   it("uploads and downloads under standing authority, binds only the same uploader and channel, and closes revoked streams", async () => {
     const metadata = {
       channelId,

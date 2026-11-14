@@ -1,13 +1,14 @@
+import { TeamAskReview } from "../team/team-ask-review.js";
 import Animated from "react-native-reanimated";
 import { move } from "../ui/motion.js";
 import { SavedTasks } from "./saved-tasks.js";
 import {
+  needsYouEntryKey,
   doneTaskList,
   listedRowThreadId,
   quietlyMoved,
   quietSeenScope,
   sameTaskListSource,
-  taskAttention,
   taskList,
   taskTime,
   type DoneTaskList,
@@ -96,6 +97,7 @@ export interface SidebarActions {
   readonly close: () => void;
   /** Home: a new task's composer. */
   readonly onHome: () => void;
+  readonly onOpenNeedsYou: (deploymentId: string) => void;
   /** The Done page: every task in Done, newest Done first. */
   readonly onOpenDone: () => void;
   /** The sheet naming the tasks just moved to Done for the reader. */
@@ -343,15 +345,17 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
       )
       .finally(() => setLoadingEarlier(false));
   }, [hostClient, loadingEarlier]);
+  const [reviewAskKey, setReviewAskKey] = useState<string | null>(null);
+  const needsPage = useSyncExternalStore(
+    useCallback((notify) => hostClient?.subscribe(notify) ?? (() => {}), [hostClient]),
+    useCallback(() => hostClient?.getSnapshot().needsYou ?? null, [hostClient]),
+  );
+  const teamAsks = needsPage?.entries.filter((entry) => entry.kind === "team-ask") ?? [];
+  const reviewAsk = teamAsks.find((entry) => needsYouEntryKey(entry) === reviewAskKey);
   const openNeedsYou = useCallback(() => {
-    if (hostClient === null || deploymentId === null || model === null) return;
-    const first = model.list.working.find((task) => task.tone === "needs-you");
-    if (first === undefined) return;
-    const ask = taskAttention(hostClient.getSnapshot()).find(
-      ({ threadId }) => threadId === first.threadId,
-    );
-    actions.onOpenTask(deploymentId, first.threadId, ask?.requestId);
-  }, [actions, deploymentId, hostClient, model]);
+    if (hostClient === null || deploymentId === null) return;
+    actions.onOpenNeedsYou(deploymentId);
+  }, [actions, deploymentId, hostClient]);
   // The Thread in front has its draft in front of the reader already.
   const unsentReply = (threadId: string): boolean =>
     threadId !== selectedRowId && replies.has(threadId);
@@ -359,7 +363,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   const now = Date.now();
   const list = model?.list ?? null;
   const shown = list === null ? [] : [...list.working, ...list.ready];
-  const needsYou = list?.working.filter((task) => task.tone === "needs-you").length ?? 0;
+  const needsYou = needsPage?.count ?? 0;
   const doneCount = model?.done?.total ?? list?.done.length ?? 0;
   const moved =
     model === null || seen === null || model.quietScope === null
@@ -381,6 +385,14 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
         },
       ]}
     >
+      {reviewAsk && hostClient ? (
+        <TeamAskReview
+          key={needsYouEntryKey(reviewAsk)}
+          entry={reviewAsk}
+          client={hostClient}
+          onClose={() => setReviewAskKey(null)}
+        />
+      ) : null}
       <View style={styles.head}>
         <Text
           accessibilityRole="header"
@@ -422,6 +434,20 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
         ) : (
           <>
             <TasksHead needsYou={needsYou} onNeedsYou={openNeedsYou} />
+            {teamAsks.map((entry) => (
+              <Pressable
+                key={entry.requestId}
+                accessibilityRole="button"
+                onPress={() => setReviewAskKey(needsYouEntryKey(entry))}
+                style={{ padding: space[16] }}
+              >
+                <AppText>
+                  {entry.presentation.asker.displayName}
+                  {entry.presentation.asker.actor === "agent" ? "'s agent" : ""} · #
+                  {entry.presentation.audience.channelName}
+                </AppText>
+              </Pressable>
+            ))}
             {shown.length === 0 ? (
               <AppText role="caption" style={styles.empty} tone="muted">
                 {doneCount === 0 && !list.hasMore

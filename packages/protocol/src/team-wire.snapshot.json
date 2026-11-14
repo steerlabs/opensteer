@@ -1,6 +1,6 @@
 {
-  "teamApiVersion": 4,
-  "minimumTeamApiVersion": 4,
+  "teamApiVersion": 5,
+  "minimumTeamApiVersion": 5,
   "input": {
     "rpc team.agent.recipient.get": {
       "type": "object",
@@ -3497,6 +3497,28 @@
                       "type": "string",
                       "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                     },
+                    "kind": {
+                      "default": "self",
+                      "type": "string",
+                      "enum": [
+                        "self",
+                        "ask",
+                        "return"
+                      ]
+                    },
+                    "consentExpiresAt": {
+                      "default": null,
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                          "format": "date-time"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "ownerUserId": {
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -3518,6 +3540,8 @@
                     "state": {
                       "type": "string",
                       "enum": [
+                        "awaiting_approval",
+                        "declined",
                         "queued",
                         "working",
                         "needs_you",
@@ -3619,6 +3643,7 @@
                             "access_revoked",
                             "link_revoked",
                             "trigger_deleted",
+                            "trigger_edited",
                             "execution_failed"
                           ]
                         },
@@ -4037,6 +4062,28 @@
                       "type": "string",
                       "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                     },
+                    "kind": {
+                      "default": "self",
+                      "type": "string",
+                      "enum": [
+                        "self",
+                        "ask",
+                        "return"
+                      ]
+                    },
+                    "consentExpiresAt": {
+                      "default": null,
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                          "format": "date-time"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "ownerUserId": {
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -4058,6 +4105,8 @@
                     "state": {
                       "type": "string",
                       "enum": [
+                        "awaiting_approval",
+                        "declined",
                         "queued",
                         "working",
                         "needs_you",
@@ -4159,6 +4208,7 @@
                             "access_revoked",
                             "link_revoked",
                             "trigger_deleted",
+                            "trigger_edited",
                             "execution_failed"
                           ]
                         },
@@ -4571,6 +4621,28 @@
                 "type": "string",
                 "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
               },
+              "kind": {
+                "default": "self",
+                "type": "string",
+                "enum": [
+                  "self",
+                  "ask",
+                  "return"
+                ]
+              },
+              "consentExpiresAt": {
+                "default": null,
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                    "format": "date-time"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "ownerUserId": {
                 "type": "string",
                 "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -4592,6 +4664,8 @@
               "state": {
                 "type": "string",
                 "enum": [
+                  "awaiting_approval",
+                  "declined",
                   "queued",
                   "working",
                   "needs_you",
@@ -4693,6 +4767,7 @@
                       "access_revoked",
                       "link_revoked",
                       "trigger_deleted",
+                      "trigger_edited",
                       "execution_failed"
                     ]
                   },
@@ -4990,6 +5065,28 @@
                       "type": "string",
                       "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                     },
+                    "kind": {
+                      "default": "self",
+                      "type": "string",
+                      "enum": [
+                        "self",
+                        "ask",
+                        "return"
+                      ]
+                    },
+                    "consentExpiresAt": {
+                      "default": null,
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                          "format": "date-time"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "ownerUserId": {
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -5011,6 +5108,8 @@
                     "state": {
                       "type": "string",
                       "enum": [
+                        "awaiting_approval",
+                        "declined",
                         "queued",
                         "working",
                         "needs_you",
@@ -5112,6 +5211,7 @@
                             "access_revoked",
                             "link_revoked",
                             "trigger_deleted",
+                            "trigger_edited",
                             "execution_failed"
                           ]
                         },
@@ -5418,6 +5518,28 @@
                           "type": "string",
                           "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                         },
+                        "kind": {
+                          "default": "self",
+                          "type": "string",
+                          "enum": [
+                            "self",
+                            "ask",
+                            "return"
+                          ]
+                        },
+                        "consentExpiresAt": {
+                          "default": null,
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "ownerUserId": {
                           "type": "string",
                           "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -5439,6 +5561,8 @@
                         "state": {
                           "type": "string",
                           "enum": [
+                            "awaiting_approval",
+                            "declined",
                             "queued",
                             "working",
                             "needs_you",
@@ -5540,6 +5664,7 @@
                                 "access_revoked",
                                 "link_revoked",
                                 "trigger_deleted",
+                                "trigger_edited",
                                 "execution_failed"
                               ]
                             },
@@ -6542,6 +6667,28 @@
                 "type": "string",
                 "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
               },
+              "kind": {
+                "default": "self",
+                "type": "string",
+                "enum": [
+                  "self",
+                  "ask",
+                  "return"
+                ]
+              },
+              "consentExpiresAt": {
+                "default": null,
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                    "format": "date-time"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "ownerUserId": {
                 "type": "string",
                 "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -6563,6 +6710,8 @@
               "state": {
                 "type": "string",
                 "enum": [
+                  "awaiting_approval",
+                  "declined",
                   "queued",
                   "working",
                   "needs_you",
@@ -6664,6 +6813,7 @@
                       "access_revoked",
                       "link_revoked",
                       "trigger_deleted",
+                      "trigger_edited",
                       "execution_failed"
                     ]
                   },
@@ -7025,6 +7175,28 @@
                       "type": "string",
                       "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                     },
+                    "kind": {
+                      "default": "self",
+                      "type": "string",
+                      "enum": [
+                        "self",
+                        "ask",
+                        "return"
+                      ]
+                    },
+                    "consentExpiresAt": {
+                      "default": null,
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                          "format": "date-time"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "ownerUserId": {
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -7046,6 +7218,8 @@
                     "state": {
                       "type": "string",
                       "enum": [
+                        "awaiting_approval",
+                        "declined",
                         "queued",
                         "working",
                         "needs_you",
@@ -7147,6 +7321,7 @@
                             "access_revoked",
                             "link_revoked",
                             "trigger_deleted",
+                            "trigger_edited",
                             "execution_failed"
                           ]
                         },
@@ -7454,6 +7629,28 @@
                       "type": "string",
                       "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                     },
+                    "kind": {
+                      "default": "self",
+                      "type": "string",
+                      "enum": [
+                        "self",
+                        "ask",
+                        "return"
+                      ]
+                    },
+                    "consentExpiresAt": {
+                      "default": null,
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                          "format": "date-time"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "ownerUserId": {
                       "type": "string",
                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -7475,6 +7672,8 @@
                     "state": {
                       "type": "string",
                       "enum": [
+                        "awaiting_approval",
+                        "declined",
                         "queued",
                         "working",
                         "needs_you",
@@ -7576,6 +7775,7 @@
                             "access_revoked",
                             "link_revoked",
                             "trigger_deleted",
+                            "trigger_edited",
                             "execution_failed"
                           ]
                         },
@@ -8840,6 +9040,28 @@
                     "type": "string",
                     "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                   },
+                  "kind": {
+                    "default": "self",
+                    "type": "string",
+                    "enum": [
+                      "self",
+                      "ask",
+                      "return"
+                    ]
+                  },
+                  "consentExpiresAt": {
+                    "default": null,
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                        "format": "date-time"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "ownerUserId": {
                     "type": "string",
                     "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -8861,6 +9083,8 @@
                   "state": {
                     "type": "string",
                     "enum": [
+                      "awaiting_approval",
+                      "declined",
                       "queued",
                       "working",
                       "needs_you",
@@ -8962,6 +9186,7 @@
                           "access_revoked",
                           "link_revoked",
                           "trigger_deleted",
+                          "trigger_edited",
                           "execution_failed"
                         ]
                       },
@@ -9024,6 +9249,42 @@
             "rate-limited",
             "people-only"
           ]
+        },
+        "askOutcomes": {
+          "maxItems": 21,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ownerUserId": {
+                "type": "string",
+                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              },
+              "handle": {
+                "type": "string",
+                "maxLength": 48,
+                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "queued",
+                  "people-only",
+                  "no-access",
+                  "no-link",
+                  "rate-limited"
+                ]
+              }
+            },
+            "required": [
+              "ownerUserId",
+              "outcome"
+            ]
+          }
         }
       },
       "required": [
@@ -10738,6 +10999,28 @@
                                   "type": "string",
                                   "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                                 },
+                                "kind": {
+                                  "default": "self",
+                                  "type": "string",
+                                  "enum": [
+                                    "self",
+                                    "ask",
+                                    "return"
+                                  ]
+                                },
+                                "consentExpiresAt": {
+                                  "default": null,
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                                      "format": "date-time"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
                                 "ownerUserId": {
                                   "type": "string",
                                   "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -10759,6 +11042,8 @@
                                 "state": {
                                   "type": "string",
                                   "enum": [
+                                    "awaiting_approval",
+                                    "declined",
                                     "queued",
                                     "working",
                                     "needs_you",
@@ -10860,6 +11145,7 @@
                                         "access_revoked",
                                         "link_revoked",
                                         "trigger_deleted",
+                                        "trigger_edited",
                                         "execution_failed"
                                       ]
                                     },
@@ -10924,6 +11210,28 @@
                             "type": "string",
                             "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                           },
+                          "kind": {
+                            "default": "self",
+                            "type": "string",
+                            "enum": [
+                              "self",
+                              "ask",
+                              "return"
+                            ]
+                          },
+                          "consentExpiresAt": {
+                            "default": null,
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                                "format": "date-time"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "ownerUserId": {
                             "type": "string",
                             "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -10945,6 +11253,8 @@
                           "state": {
                             "type": "string",
                             "enum": [
+                              "awaiting_approval",
+                              "declined",
                               "queued",
                               "working",
                               "needs_you",
@@ -11046,6 +11356,7 @@
                                   "access_revoked",
                                   "link_revoked",
                                   "trigger_deleted",
+                                  "trigger_edited",
                                   "execution_failed"
                                 ]
                               },
@@ -11556,6 +11867,28 @@
                                   "type": "string",
                                   "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                                 },
+                                "kind": {
+                                  "default": "self",
+                                  "type": "string",
+                                  "enum": [
+                                    "self",
+                                    "ask",
+                                    "return"
+                                  ]
+                                },
+                                "consentExpiresAt": {
+                                  "default": null,
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                                      "format": "date-time"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
                                 "ownerUserId": {
                                   "type": "string",
                                   "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -11577,6 +11910,8 @@
                                 "state": {
                                   "type": "string",
                                   "enum": [
+                                    "awaiting_approval",
+                                    "declined",
                                     "queued",
                                     "working",
                                     "needs_you",
@@ -11678,6 +12013,7 @@
                                         "access_revoked",
                                         "link_revoked",
                                         "trigger_deleted",
+                                        "trigger_edited",
                                         "execution_failed"
                                       ]
                                     },
@@ -11751,6 +12087,28 @@
                             "type": "string",
                             "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                           },
+                          "kind": {
+                            "default": "self",
+                            "type": "string",
+                            "enum": [
+                              "self",
+                              "ask",
+                              "return"
+                            ]
+                          },
+                          "consentExpiresAt": {
+                            "default": null,
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                                "format": "date-time"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "ownerUserId": {
                             "type": "string",
                             "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -11772,6 +12130,8 @@
                           "state": {
                             "type": "string",
                             "enum": [
+                              "awaiting_approval",
+                              "declined",
                               "queued",
                               "working",
                               "needs_you",
@@ -11873,6 +12233,7 @@
                                   "access_revoked",
                                   "link_revoked",
                                   "trigger_deleted",
+                                  "trigger_edited",
                                   "execution_failed"
                                 ]
                               },
@@ -12369,6 +12730,13 @@
             "type": {
               "type": "string",
               "const": "accept"
+            },
+            "decision": {
+              "type": "string",
+              "enum": [
+                "approve",
+                "decline"
+              ]
             }
           },
           "required": [
@@ -12880,6 +13248,33 @@
           "required": [
             "type"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "type": {
+              "type": "string",
+              "const": "reconcile"
+            },
+            "requestIds": {
+              "maxItems": 200,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              }
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "requestIds"
+          ]
         }
       ]
     },
@@ -12998,6 +13393,28 @@
                         "type": "string",
                         "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                       },
+                      "kind": {
+                        "default": "self",
+                        "type": "string",
+                        "enum": [
+                          "self",
+                          "ask",
+                          "return"
+                        ]
+                      },
+                      "consentExpiresAt": {
+                        "default": null,
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                            "format": "date-time"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "ownerUserId": {
                         "type": "string",
                         "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -13019,6 +13436,8 @@
                       "state": {
                         "type": "string",
                         "enum": [
+                          "awaiting_approval",
+                          "declined",
                           "queued",
                           "working",
                           "needs_you",
@@ -13120,6 +13539,7 @@
                               "access_revoked",
                               "link_revoked",
                               "trigger_deleted",
+                              "trigger_edited",
                               "execution_failed"
                             ]
                           },
@@ -13148,6 +13568,269 @@
                       "replyMessageId",
                       "failureCode",
                       "changeSeq"
+                    ]
+                  },
+                  "presentation": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "asker": {
+                            "type": "object",
+                            "properties": {
+                              "teamUserId": {
+                                "type": "string",
+                                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                              },
+                              "displayName": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 160
+                              },
+                              "actor": {
+                                "type": "string",
+                                "enum": [
+                                  "human",
+                                  "agent"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "teamUserId",
+                              "displayName",
+                              "actor"
+                            ]
+                          },
+                          "bodyMarkdown": {
+                            "type": "string",
+                            "maxLength": 16384
+                          },
+                          "attachments": {
+                            "maxItems": 10,
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^tbl_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                },
+                                "filename": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 255
+                                },
+                                "mediaType": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 255
+                                },
+                                "sizeBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 104857600
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "filename",
+                                "mediaType",
+                                "sizeBytes"
+                              ]
+                            }
+                          },
+                          "destination": {
+                            "type": "object",
+                            "properties": {
+                              "teamId": {
+                                "type": "string",
+                                "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                              },
+                              "channelId": {
+                                "type": "string",
+                                "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                              },
+                              "threadRootId": {
+                                "type": "string",
+                                "maxLength": 19,
+                                "pattern": "^[1-9][0-9]*$"
+                              }
+                            },
+                            "required": [
+                              "teamId",
+                              "channelId",
+                              "threadRootId"
+                            ]
+                          },
+                          "audience": {
+                            "type": "object",
+                            "properties": {
+                              "teamName": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 160
+                              },
+                              "channelName": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 160
+                              },
+                              "channelKind": {
+                                "type": "string",
+                                "enum": [
+                                  "public",
+                                  "private",
+                                  "dm",
+                                  "group_dm"
+                                ]
+                              },
+                              "memberCount": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "peopleOnly": {
+                                "type": "boolean"
+                              }
+                            },
+                            "required": [
+                              "teamName",
+                              "channelName",
+                              "channelKind",
+                              "memberCount",
+                              "peopleOnly"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "asker",
+                          "bodyMarkdown",
+                          "attachments",
+                          "destination",
+                          "audience"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "returnPayload": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "author": {
+                            "type": "object",
+                            "properties": {
+                              "teamUserId": {
+                                "type": "string",
+                                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                              },
+                              "displayName": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 160
+                              },
+                              "actor": {
+                                "type": "string",
+                                "enum": [
+                                  "human",
+                                  "agent"
+                                ]
+                              },
+                              "handle": {
+                                "type": "string",
+                                "maxLength": 48,
+                                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                              }
+                            },
+                            "required": [
+                              "teamUserId",
+                              "displayName",
+                              "actor"
+                            ]
+                          },
+                          "originAskId": {
+                            "type": "string",
+                            "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                          },
+                          "triggerClientMessageId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "resumeRunId": {
+                            "type": "string",
+                            "pattern": "^run_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                          },
+                          "outcome": {
+                            "type": "string",
+                            "enum": [
+                              "answered",
+                              "declined",
+                              "expired",
+                              "cancelled",
+                              "failed"
+                            ]
+                          },
+                          "bodyMarkdown": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "maxLength": 16384
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "attachments": {
+                            "maxItems": 10,
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^tbl_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                },
+                                "filename": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 255
+                                },
+                                "mediaType": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 255
+                                },
+                                "sizeBytes": {
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 104857600
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "filename",
+                                "mediaType",
+                                "sizeBytes"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "originAskId",
+                          "resumeRunId",
+                          "outcome",
+                          "bodyMarkdown",
+                          "attachments"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
                     ]
                   },
                   "source": {
@@ -13371,6 +14054,28 @@
                           "type": "string",
                           "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                         },
+                        "kind": {
+                          "default": "self",
+                          "type": "string",
+                          "enum": [
+                            "self",
+                            "ask",
+                            "return"
+                          ]
+                        },
+                        "consentExpiresAt": {
+                          "default": null,
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                              "format": "date-time"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "ownerUserId": {
                           "type": "string",
                           "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -13392,6 +14097,8 @@
                         "state": {
                           "type": "string",
                           "enum": [
+                            "awaiting_approval",
+                            "declined",
                             "queued",
                             "working",
                             "needs_you",
@@ -13493,6 +14200,7 @@
                                 "access_revoked",
                                 "link_revoked",
                                 "trigger_deleted",
+                                "trigger_edited",
                                 "execution_failed"
                               ]
                             },
@@ -13546,6 +14254,28 @@
                               "type": "string",
                               "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                             },
+                            "kind": {
+                              "default": "self",
+                              "type": "string",
+                              "enum": [
+                                "self",
+                                "ask",
+                                "return"
+                              ]
+                            },
+                            "consentExpiresAt": {
+                              "default": null,
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                                  "format": "date-time"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
                             "ownerUserId": {
                               "type": "string",
                               "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -13567,6 +14297,8 @@
                             "state": {
                               "type": "string",
                               "enum": [
+                                "awaiting_approval",
+                                "declined",
                                 "queued",
                                 "working",
                                 "needs_you",
@@ -13668,6 +14400,7 @@
                                     "access_revoked",
                                     "link_revoked",
                                     "trigger_deleted",
+                                    "trigger_edited",
                                     "execution_failed"
                                   ]
                                 },
@@ -13696,6 +14429,151 @@
                             "replyMessageId",
                             "failureCode",
                             "changeSeq"
+                          ]
+                        },
+                        "presentation": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "asker": {
+                                  "type": "object",
+                                  "properties": {
+                                    "teamUserId": {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                    },
+                                    "displayName": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 160
+                                    },
+                                    "actor": {
+                                      "type": "string",
+                                      "enum": [
+                                        "human",
+                                        "agent"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "teamUserId",
+                                    "displayName",
+                                    "actor"
+                                  ]
+                                },
+                                "bodyMarkdown": {
+                                  "type": "string",
+                                  "maxLength": 16384
+                                },
+                                "attachments": {
+                                  "maxItems": 10,
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "id": {
+                                        "type": "string",
+                                        "pattern": "^tbl_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                      },
+                                      "filename": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 255
+                                      },
+                                      "mediaType": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 255
+                                      },
+                                      "sizeBytes": {
+                                        "type": "integer",
+                                        "minimum": 0,
+                                        "maximum": 104857600
+                                      }
+                                    },
+                                    "required": [
+                                      "id",
+                                      "filename",
+                                      "mediaType",
+                                      "sizeBytes"
+                                    ]
+                                  }
+                                },
+                                "destination": {
+                                  "type": "object",
+                                  "properties": {
+                                    "teamId": {
+                                      "type": "string",
+                                      "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                    },
+                                    "channelId": {
+                                      "type": "string",
+                                      "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                    },
+                                    "threadRootId": {
+                                      "type": "string",
+                                      "maxLength": 19,
+                                      "pattern": "^[1-9][0-9]*$"
+                                    }
+                                  },
+                                  "required": [
+                                    "teamId",
+                                    "channelId",
+                                    "threadRootId"
+                                  ]
+                                },
+                                "audience": {
+                                  "type": "object",
+                                  "properties": {
+                                    "teamName": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 160
+                                    },
+                                    "channelName": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 160
+                                    },
+                                    "channelKind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "public",
+                                        "private",
+                                        "dm",
+                                        "group_dm"
+                                      ]
+                                    },
+                                    "memberCount": {
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "peopleOnly": {
+                                      "type": "boolean"
+                                    }
+                                  },
+                                  "required": [
+                                    "teamName",
+                                    "channelName",
+                                    "channelKind",
+                                    "memberCount",
+                                    "peopleOnly"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "asker",
+                                "bodyMarkdown",
+                                "attachments",
+                                "destination",
+                                "audience"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
                           ]
                         },
                         "instructionsMarkdown": {
@@ -13861,6 +14739,42 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "askOutcomes": {
+                      "maxItems": 21,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "ownerUserId": {
+                            "type": "string",
+                            "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                          },
+                          "handle": {
+                            "type": "string",
+                            "maxLength": 48,
+                            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                          },
+                          "requestId": {
+                            "type": "string",
+                            "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                          },
+                          "outcome": {
+                            "type": "string",
+                            "enum": [
+                              "queued",
+                              "people-only",
+                              "no-access",
+                              "no-link",
+                              "rate-limited"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "ownerUserId",
+                          "outcome"
+                        ]
+                      }
                     }
                   },
                   "required": [
@@ -13878,6 +14792,11 @@
                     "result": {
                       "type": "object",
                       "properties": {
+                        "ownerHandle": {
+                          "type": "string",
+                          "maxLength": 48,
+                          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                        },
                         "page": {
                           "type": "object",
                           "properties": {
@@ -14122,6 +15041,28 @@
                                           "type": "string",
                                           "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                                         },
+                                        "kind": {
+                                          "default": "self",
+                                          "type": "string",
+                                          "enum": [
+                                            "self",
+                                            "ask",
+                                            "return"
+                                          ]
+                                        },
+                                        "consentExpiresAt": {
+                                          "default": null,
+                                          "anyOf": [
+                                            {
+                                              "type": "string",
+                                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                                              "format": "date-time"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
                                         "ownerUserId": {
                                           "type": "string",
                                           "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -14143,6 +15084,8 @@
                                         "state": {
                                           "type": "string",
                                           "enum": [
+                                            "awaiting_approval",
+                                            "declined",
                                             "queued",
                                             "working",
                                             "needs_you",
@@ -14244,6 +15187,7 @@
                                                 "access_revoked",
                                                 "link_revoked",
                                                 "trigger_deleted",
+                                                "trigger_edited",
                                                 "execution_failed"
                                               ]
                                             },
@@ -14767,6 +15711,28 @@
                                           "type": "string",
                                           "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                                         },
+                                        "kind": {
+                                          "default": "self",
+                                          "type": "string",
+                                          "enum": [
+                                            "self",
+                                            "ask",
+                                            "return"
+                                          ]
+                                        },
+                                        "consentExpiresAt": {
+                                          "default": null,
+                                          "anyOf": [
+                                            {
+                                              "type": "string",
+                                              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                                              "format": "date-time"
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
+                                          ]
+                                        },
                                         "ownerUserId": {
                                           "type": "string",
                                           "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -14788,6 +15754,8 @@
                                         "state": {
                                           "type": "string",
                                           "enum": [
+                                            "awaiting_approval",
+                                            "declined",
                                             "queued",
                                             "working",
                                             "needs_you",
@@ -14889,6 +15857,7 @@
                                                 "access_revoked",
                                                 "link_revoked",
                                                 "trigger_deleted",
+                                                "trigger_edited",
                                                 "execution_failed"
                                               ]
                                             },
@@ -15788,6 +16757,227 @@
                   "required": [
                     "kind",
                     "result"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "reconciled"
+                    },
+                    "requests": {
+                      "maxItems": 200,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "requestId": {
+                            "type": "string",
+                            "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                          },
+                          "request": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string",
+                                    "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                  },
+                                  "kind": {
+                                    "default": "self",
+                                    "type": "string",
+                                    "enum": [
+                                      "self",
+                                      "ask",
+                                      "return"
+                                    ]
+                                  },
+                                  "consentExpiresAt": {
+                                    "default": null,
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                                        "format": "date-time"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "ownerUserId": {
+                                    "type": "string",
+                                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                  },
+                                  "channelId": {
+                                    "type": "string",
+                                    "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                  },
+                                  "threadRootId": {
+                                    "type": "string",
+                                    "maxLength": 19,
+                                    "pattern": "^[1-9][0-9]*$"
+                                  },
+                                  "triggerMessageId": {
+                                    "type": "string",
+                                    "maxLength": 19,
+                                    "pattern": "^[1-9][0-9]*$"
+                                  },
+                                  "state": {
+                                    "type": "string",
+                                    "enum": [
+                                      "awaiting_approval",
+                                      "declined",
+                                      "queued",
+                                      "working",
+                                      "needs_you",
+                                      "done",
+                                      "failed",
+                                      "cancelled",
+                                      "stopped"
+                                    ]
+                                  },
+                                  "steps": {
+                                    "maxItems": 8,
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "enum": [
+                                            "browsed",
+                                            "read_files",
+                                            "edited_files",
+                                            "ran_commands",
+                                            "used_integration",
+                                            "searched_team",
+                                            "asked_you"
+                                          ]
+                                        },
+                                        "count": {
+                                          "type": "integer",
+                                          "minimum": 0,
+                                          "maximum": 9007199254740991
+                                        }
+                                      },
+                                      "required": [
+                                        "kind",
+                                        "count"
+                                      ]
+                                    }
+                                  },
+                                  "createdAt": {
+                                    "type": "string",
+                                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                                    "format": "date-time"
+                                  },
+                                  "acceptedAt": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                                        "format": "date-time"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "expiresAt": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                                        "format": "date-time"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "finishedAt": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                                        "format": "date-time"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "replyMessageId": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "maxLength": 19,
+                                        "pattern": "^[1-9][0-9]*$"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "failureCode": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "enum": [
+                                          "expired",
+                                          "access_revoked",
+                                          "link_revoked",
+                                          "trigger_deleted",
+                                          "trigger_edited",
+                                          "execution_failed"
+                                        ]
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ]
+                                  },
+                                  "changeSeq": {
+                                    "type": "string",
+                                    "pattern": "^(0|[1-9][0-9]*)$"
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "ownerUserId",
+                                  "channelId",
+                                  "threadRootId",
+                                  "triggerMessageId",
+                                  "state",
+                                  "steps",
+                                  "createdAt",
+                                  "acceptedAt",
+                                  "expiresAt",
+                                  "finishedAt",
+                                  "replyMessageId",
+                                  "failureCode",
+                                  "changeSeq"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "requestId",
+                          "request"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "requests"
                   ]
                 }
               ]

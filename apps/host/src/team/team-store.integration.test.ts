@@ -78,16 +78,33 @@ describe("team transaction authority", () => {
     );
     return id;
   }
-  function send(
+  async function send(
     channelId: Parameters<TeamChatStore["send"]>[1]["channelId"],
     body = "hello",
     actor = owner,
     mentions: Parameters<TeamChatStore["send"]>[1]["mentions"] = [],
     root: Parameters<TeamChatStore["send"]>[1]["threadRootId"] = null,
   ) {
+    const targets = mentions.length
+      ? await fixture.database
+          .selectFrom("teamMembers")
+          .select(["userId", "handle"])
+          .where(
+            "userId",
+            "in",
+            mentions.map((m) => m.userId),
+          )
+          .execute()
+      : [];
+    const prefix = mentions
+      .map(
+        (m) =>
+          `@${targets.find((r) => r.userId === m.userId)!.handle}${m.kind === "agent" ? "-agent" : ""}`,
+      )
+      .join(" ");
     return chat.send(actor, {
       channelId,
-      bodyMarkdown: body,
+      bodyMarkdown: prefix ? `${prefix} ${body}` : body,
       clientMessageId: randomUUID(),
       threadRootId: root,
       mentions,
@@ -555,15 +572,17 @@ describe("team transaction authority", () => {
       const replyId =
         claim === "none"
           ? null
-          : await requests.post(l, { ...post, publication: claim === "publication" });
+          : (await requests.post(l, { ...post, publication: claim === "publication" })).messageId;
       if (claim !== "none") {
         expect(
-          await requests.post(l, {
-            ...post,
-            clientMessageId: randomUUID(),
-            publication: true,
-            bodyMarkdown: "automatic final",
-          }),
+          (
+            await requests.post(l, {
+              ...post,
+              clientMessageId: randomUUID(),
+              publication: true,
+              bodyMarkdown: "automatic final",
+            })
+          ).messageId,
         ).toBe(replyId);
       }
       expect(await requests.receipt(l, request.id)).toBe(replyId);
@@ -607,7 +626,9 @@ describe("team transaction authority", () => {
     const context = await requests.context(l, request.id);
     expect(context).not.toHaveProperty("messages");
     expect(context.instructionsRevision).toBe(c.instructionsRevision);
-    expect((await requests.pending(l))[0]?.bodyMarkdown).toBe(root.message.bodyMarkdown);
+    expect((await requests.pending(l)).find((r) => r.request.id === request.id)?.bodyMarkdown).toBe(
+      root.message.bodyMarkdown,
+    );
     expect(context.request.triggerMessageId).toBe(root.message.id);
   });
 
@@ -1164,7 +1185,7 @@ describe("team transaction authority", () => {
     expect((await send(c.id, "people only", owner, [], first.message.id)).wake).toBe("people-only");
   });
 
-  it("keeps other-agent references inert and leaves refused rate-limit asks as stored messages", async () => {
+  it("refuses agents without posting access and leaves rate-limit messages stored", async () => {
     const member = await person("Mentioned");
     const c = await channel();
     await chat.setAccess(owner, c.id, access.revision, [
@@ -1389,7 +1410,7 @@ describe("team transaction authority", () => {
         channelId: c.id,
         threadRootId: null,
         clientMessageId: randomUUID(),
-        bodyMarkdown: "ask",
+        bodyMarkdown: "@maya-agent ask",
         mentions: [{ kind: "agent", userId: owner.userId }],
         attachmentIds: [file.id],
       });

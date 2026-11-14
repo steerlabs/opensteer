@@ -6,6 +6,7 @@ import {
 } from "@opensteer/core";
 import {
   admitTeamTaskRequest,
+  admitTeamReturn,
   cancelTeamTaskRequest,
   findTeamTaskAdmission,
 } from "@opensteer/database/task-admission-store";
@@ -56,6 +57,15 @@ export class TaskAdmissionService implements TaskAdmissionPort {
     });
     this.options.publish(admitted.events);
     return admitted.receipt;
+  }
+
+  async admitTeamReturn(input: Parameters<TaskAdmissionPort["admitTeamReturn"]>[0]): Promise<void> {
+    const settings = await personalSettings(this.options.database);
+    const result = await admitTeamReturn(this.options.database, {
+      ...input,
+      ownerId: settings.ownerId,
+    });
+    this.options.publish(result.events);
   }
 
   async cancelTeamRequest(

@@ -2095,9 +2095,11 @@ async function lockThreadInputPreconditions(
   const sourceRunId =
     input.source.kind === "agent"
       ? input.source.runId
-      : input.source.kind === "platform"
-        ? input.source.sourceRunId
-        : null;
+      : input.source.kind === "team-member"
+        ? (input.source.resumeRunId ?? null)
+        : input.source.kind === "platform"
+          ? input.source.sourceRunId
+          : null;
   const runIds = [
     ...new Set([active?.id, sourceRunId].filter((id): id is RunId => Boolean(id))),
   ].sort();
@@ -2139,6 +2141,34 @@ async function lockThreadInputPreconditions(
     .where("id", "=", input.threadId)
     .forNoKeyUpdate()
     .executeTakeFirstOrThrow();
+  if (input.source.kind === "team-member" && input.source.resumeRunId) {
+    const run = await transaction
+      .selectFrom("runs")
+      .select(["threadId", "requestedBy", "assignmentId"])
+      .where("id", "=", input.source.resumeRunId)
+      .executeTakeFirst();
+    const assignment = run?.assignmentId
+      ? await transaction
+          .selectFrom("delegations")
+          .select("status")
+          .where("id", "=", run.assignmentId)
+          .executeTakeFirst()
+      : null;
+    if (
+      !run ||
+      run.threadId !== thread.id ||
+      run.requestedBy !== input.requestedBy ||
+      thread.createdBy !== input.requestedBy ||
+      thread.doneAt ||
+      thread.status === "archived" ||
+      (run.assignmentId && assignment?.status !== "open")
+    )
+      throw new OpensteerError({
+        code: "conflict",
+        reason: teamReturnUndeliverableReason,
+        message: "Team return is undeliverable.",
+      });
+  }
   if (input.source.kind === "platform" && input.source.cause === taskQuestionCause) {
     const question = await taskQuestionNoticeSource(
       transaction,
@@ -2250,6 +2280,13 @@ async function assertThreadInputCapacity(
 }
 function normalizedThreadInputSource(source: ThreadInputSource): ThreadInputSource {
   switch (source.kind) {
+    case "team-member":
+      return {
+        kind: "team-member",
+        teamId: source.teamId,
+        requestId: source.requestId,
+        ...(source.resumeRunId ? { resumeRunId: source.resumeRunId } : {}),
+      };
     case "human":
       return {
         kind: "human",
@@ -2438,7 +2475,10 @@ export async function enqueueThreadInputInTransaction(
       code: "bad_request",
       message: "freshContext requires queue delivery.",
     });
-  if (request.teamRequest && (policy !== "queue" || request.source.kind !== "human"))
+  if (
+    request.teamRequest &&
+    (policy !== "queue" || !["human", "team-member"].includes(request.source.kind))
+  )
     throw new OpensteerError({
       code: "bad_request",
       message: "A team request must be its own queued input.",
@@ -2575,9 +2615,11 @@ export async function enqueueThreadInputInTransaction(
   const sourceRunId =
     request.source.kind === "agent"
       ? request.source.runId
-      : request.source.kind === "platform"
-        ? request.source.sourceRunId
-        : null;
+      : request.source.kind === "team-member"
+        ? (request.source.resumeRunId ?? null)
+        : request.source.kind === "platform"
+          ? request.source.sourceRunId
+          : null;
   const sourceRun = sourceRunId
     ? await transaction
         .selectFrom("runs")
@@ -2673,6 +2715,7 @@ export async function enqueueThreadInputInTransaction(
   const joinsBackground =
     !request.freshContext &&
     request.source.kind !== "channel" &&
+    request.source.kind !== "team-member" &&
     !request.teamRequest &&
     activeRun?.replyTarget?.kind !== "team-thread" &&
     !conversational &&
@@ -2978,6 +3021,7 @@ export async function enqueueThreadInputInTransaction(
 
 /** The platform cause an automation that stopped working is told to its Thread with. */
 export const automationStoppedCause = "automation-stopped";
+export const teamReturnUndeliverableReason = "team-return-undeliverable";
 async function resolveThreadInputFacts(
   transaction: Transaction<DatabaseSchema>,
   input: {
@@ -2988,6 +3032,72 @@ async function resolveThreadInputFacts(
   },
 ): Promise<ResolvedThreadInputFacts> {
   const { source } = input;
+  if (source.kind === "team-member") {
+    await requirePersonalOwner(transaction, input.requestedBy);
+    const mirror = await transaction
+      .selectFrom("personalTeamRequests")
+      .selectAll()
+      .where("teamDeploymentId", "=", source.teamId)
+      .where("requestId", "=", source.requestId)
+      .executeTakeFirstOrThrow();
+    const asker =
+      mirror.kind === "ask" &&
+      mirror.localDecision === "approve" &&
+      ["queued", "working", "needs_you"].includes(mirror.remoteState) &&
+      !mirror.terminalState
+        ? mirror.presentation?.asker
+        : mirror.kind === "return"
+          ? mirror.returnPayload?.author
+          : null;
+    if (!asker)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Team input has no approved author.",
+      });
+    const resume = source.resumeRunId
+      ? await transaction
+          .selectFrom("runs")
+          .select(["causalChainId", "threadId", "requestedBy"])
+          .where("id", "=", source.resumeRunId)
+          .executeTakeFirst()
+      : null;
+    if (
+      mirror.kind === "return" &&
+      (!resume ||
+        mirror.returnPayload?.resumeRunId !== source.resumeRunId ||
+        resume.threadId !== input.targetThread.id ||
+        resume.requestedBy !== input.requestedBy)
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Team return does not belong to this task.",
+      });
+    const principal = await transaction
+      .selectFrom("principals")
+      .select("id")
+      .where("kind", "=", "user")
+      .where("userId", "=", input.requestedBy)
+      .executeTakeFirstOrThrow();
+    return {
+      actorPrincipalId: principal.id,
+      author: MessageAuthorSchema.parse({
+        kind: "team-member",
+        teamId: source.teamId,
+        teamUserId: asker.teamUserId,
+        displayName: asker.displayName,
+        actor: asker.actor,
+      }),
+      authoritySource: {
+        kind: "team-request",
+        teamId: source.teamId,
+        requestId: source.requestId,
+        userId: input.requestedBy,
+      },
+      causalChainId: resume?.causalChainId ?? null,
+      kind: "input",
+      replyTarget: null,
+    };
+  }
   if (source.kind === "channel") requireBoundedIdentity(source.ingressId, "Channel ingress", 255);
   if (source.kind === "human" || source.kind === "channel") {
     const channelSource =

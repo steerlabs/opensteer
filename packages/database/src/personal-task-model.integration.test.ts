@@ -926,6 +926,7 @@ it("bounds Deployment-wide Needs you and rolls navigation up without changing Re
   expect(
     first.entries.every(
       (entry) =>
+        entry.kind === "request" &&
         entry.originThreadId === child.id &&
         entry.navigationThreadId === parent.id &&
         entry.request.originatingThreadId === child.id,
@@ -937,9 +938,13 @@ it("bounds Deployment-wide Needs you and rolls navigation up without changing Re
     before: first.window.nextBefore!,
   });
   expect(second).toMatchObject({ count: 3, window: { hasMore: false, itemCount: 1 } });
-  expect(new Set([...first.entries, ...second.entries].map((entry) => entry.request.id)).size).toBe(
-    3,
-  );
+  expect(
+    new Set(
+      [...first.entries, ...second.entries]
+        .filter((entry) => entry.kind === "request")
+        .map((entry) => entry.request.id),
+    ).size,
+  ).toBe(3);
   expect(await f.database.selectFrom("requests").select("originatingThreadId").execute()).toEqual(
     Array.from({ length: 3 }, () => ({ originatingThreadId: child.id })),
   );
@@ -1291,10 +1296,9 @@ it("shows a Request from an automation's own task, or work it handed out, on the
   const { needsYouPage } = await import("./needs-you-store.js");
   expect(
     Object.fromEntries(
-      (await needsYouPage(f.database, { userId: f.userId })).entries.map((entry) => [
-        entry.request.id,
-        entry.navigationThreadId,
-      ]),
+      (await needsYouPage(f.database, { userId: f.userId })).entries
+        .filter((entry) => entry.kind === "request")
+        .map((entry) => [entry.request.id, entry.navigationThreadId]),
     ),
   ).toEqual({ [fromMonitor]: parent.id, [fromHelper]: parent.id });
 });

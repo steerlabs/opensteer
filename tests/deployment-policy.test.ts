@@ -182,12 +182,6 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     reason:
       "Credential and attention reads distinguish personal computers from team sessions; only team credentials follow the Account identity.",
   },
-  "apps/mobile/src/notifications/notification-routing.ts": {
-    counts: {
-      "destination.kind": 2,
-    },
-    reason: "A team notice destination is distinct from the currently visible Personal task.",
-  },
   "apps/mobile/src/screens/add-deployment.tsx": {
     counts: {
       "props.kind": 1,

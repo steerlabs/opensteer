@@ -1,7 +1,13 @@
+import { teamMentions, teamMessage } from "@opensteer/shared/teamMentions";
 import { shareTeamFile } from "./team-file-export.js";
 import { MenuView, type MenuComponentRef } from "@expo/ui/community/menu";
 import { PersonalTeamLinks, watchTeamReplyRead, unwrapRpcResult } from "@opensteer/client/host";
-import { teamScopeKey, type TeamSessionClient, type TeamTimeline } from "@opensteer/client/team";
+import {
+  teamAskRefusalNotice,
+  teamScopeKey,
+  type TeamSessionClient,
+  type TeamTimeline,
+} from "@opensteer/client/team";
 import {
   TeamAgentRequestIdSchema,
   TeamChannelIdSchema,
@@ -564,7 +570,7 @@ function Place(props: {
           channelId,
           messageId: saving.id,
           bodyMarkdown: words,
-          mentions: writtenMentions(words, props.members),
+          mentions: [...teamMentions(words, props.members)],
         });
         if (openEdit.current === saving) {
           setText(saving.draft);
@@ -582,14 +588,13 @@ function Place(props: {
     if (words === "" && files.length === 0) return;
     if (staged.some((row) => row.fileId === null)) return;
     const asking = rootId === null && toMyAgent && reach === "available" && me !== null;
-    const body = asking ? `@${teamAgentHandle(me.handle)} ${words}` : words;
-    const found = writtenMentions(body, props.members);
-    const mentioned = asking
-      ? [
-          { userId: me.userId, kind: "agent" as const },
-          ...found.filter((row) => row.userId !== me.userId || row.kind !== "agent"),
-        ]
-      : found;
+    const message = me
+      ? teamMessage(
+          { body: words, toMyAgent: asking },
+          me,
+          new Map(props.members.map((member) => [member.userId, member])),
+        )
+      : { bodyMarkdown: words, mentions: teamMentions(words, props.members) };
     try {
       session.typing(channelId, rootId, false);
       await sendFromComposer(
@@ -598,8 +603,8 @@ function Place(props: {
         {
           channelId,
           threadRootId: rootId,
-          bodyMarkdown: body,
-          mentions: mentioned.slice(0, 20),
+          bodyMarkdown: message.bodyMarkdown,
+          mentions: [...message.mentions],
           attachmentIds: files as never,
         },
         () => {
@@ -750,6 +755,10 @@ function Place(props: {
       ? "This channel is archived."
       : "You can read this channel but not post here.";
   const typingKey = JSON.stringify([channelId, rootId]);
+  const refusalNotice = teamAskRefusalNotice(
+    snapshot.sendNotices[teamScopeKey(view.scope)] ?? [],
+    (id) => props.members.find((member) => member.userId === id)?.displayName ?? "That person",
+  );
   const composer: TeamComposerProps = {
     placeholder:
       rootId !== null
@@ -793,7 +802,15 @@ function Place(props: {
               </View>
             ),
           }
-        : {}),
+        : refusalNotice !== null
+          ? {
+              hint: (
+                <AppText role="caption" style={styles.line} tone="muted">
+                  {refusalNotice}
+                </AppText>
+              ),
+            }
+          : {}),
   };
   const byId = (id: string) => view.messages.find((message) => message.id === id) ?? null;
   return (
@@ -892,27 +909,6 @@ export function activeMention(text: string, cursor: number): string | null {
   const before = text.slice(0, cursor);
   const match = /(^|\s)@([a-z0-9-]*)$/i.exec(before);
   return match === null ? null : match[2]!.toLowerCase();
-}
-
-/**
- * The structured mentions a message's words carry: `@maya` names a person and
- * `@maya-agent` their agent. A handle nobody here has stays plain text.
- */
-export function writtenMentions(
-  body: string,
-  members: readonly Pick<TeamMember, "handle" | "userId">[],
-): { readonly userId: TeamMember["userId"]; readonly kind: "person" | "agent" }[] {
-  const byHandle = new Map(members.map((member) => [member.handle, member.userId]));
-  const found = new Map<string, { userId: TeamMember["userId"]; kind: "person" | "agent" }>();
-  for (const match of body.matchAll(/(?:^|\s)@([a-z0-9]+(?:-[a-z0-9]+)*)/g)) {
-    const handle = match[1]!;
-    const agent = handle.endsWith("-agent");
-    const userId = byHandle.get(agent ? handle.slice(0, -"-agent".length) : handle);
-    if (userId === undefined) continue;
-    const kind = agent ? "agent" : "person";
-    found.set(`${userId}:${kind}`, { userId, kind });
-  }
-  return [...found.values()];
 }
 
 const styles = StyleSheet.create({

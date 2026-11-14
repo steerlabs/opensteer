@@ -1,5 +1,6 @@
 import {
   parseMobileThreadDeepLink,
+  parseMobileNeedsYouDeepLink,
   parseTeamPageAppLink,
   type DeploymentId,
   type RequestId,
@@ -28,6 +29,7 @@ const NotificationPayloadSchema = z.looseObject({ deepLink: z.string().min(1).ma
  * anything, and nothing here approves, denies or answers a Request.
  */
 export type NotificationDestination =
+  | { readonly kind: "needs-you"; readonly deepLink: string; readonly deploymentId: DeploymentId }
   | {
       readonly kind: "thread";
       readonly deepLink: string;
@@ -53,6 +55,8 @@ export function notificationDestination(payload: NotificationData): Notification
   const { deepLink } = parsed.data;
   const team = parseTeamPageAppLink(deepLink, "mobile") ?? parseTeamNoticeLink(deepLink);
   if (team !== null) return { kind: "team", deepLink, origin: team.origin };
+  const needsYou = parseMobileNeedsYouDeepLink(deepLink);
+  if (needsYou) return { kind: "needs-you", deepLink, deploymentId: needsYou.deploymentId };
   const link = parseMobileThreadDeepLink(deepLink);
   if (link === null) return null;
   return {
@@ -88,7 +92,7 @@ export function shouldPresentNotification(
 ): boolean {
   if (visible === null || !atLatest) return true;
   const destination = notificationDestination(payload);
-  if (destination === null || destination.kind === "team") return true;
+  if (destination === null || destination.kind !== "thread") return true;
   return !(
     destination.deploymentId === visible.deploymentId && destination.threadId === visible.threadId
   );
@@ -114,7 +118,7 @@ export async function dismissThreadNotifications(input: {
 }): Promise<void> {
   for (const notification of await input.presented()) {
     const destination = notificationDestination(notification.payload);
-    if (destination === null || destination.kind === "team") continue;
+    if (destination === null || destination.kind !== "thread") continue;
     if (
       destination.deploymentId !== input.visible.deploymentId ||
       destination.threadId !== input.visible.threadId
