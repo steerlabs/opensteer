@@ -1,4 +1,5 @@
 import {
+  type CompactionReturnHint,
   compactionReturnEligibleAt,
   idleCompactionWindow,
   type RunId,
@@ -137,9 +138,47 @@ export async function compactionIsEligible(
     .select("messageId")
     .where("threadId", "=", threadId)
     .where("state", "in", ["pending", "claimed", "unknown"])
+    .$if(
+      executingRunId !== undefined &&
+        maintenance.reason === "before-send" &&
+        maintenance.pairedInputId !== undefined,
+      (q) => q.where("messageId", "!=", maintenance.pairedInputId!),
+    )
     .$if(executingRunId !== undefined, (q) =>
       q.where((eb) => eb.or([eb("runId", "is", null), eb("runId", "!=", executingRunId!)])),
     )
     .executeTakeFirst();
   return !inputs;
+}
+
+export async function compactionReturnHint(
+  database: Kysely<DatabaseSchema>,
+  threadId: ThreadId,
+  nowMs = Date.now(),
+): Promise<CompactionReturnHint | null> {
+  const session = await database
+    .selectFrom("providerSessions")
+    .selectAll()
+    .where("threadId", "=", threadId)
+    .where("active", "=", true)
+    .executeTakeFirst();
+  const snapshot = session?.contextSnapshot;
+  if (!snapshot) return null;
+  const eligibleAt = compactionReturnEligibleAt(snapshot);
+  return {
+    eligible: await compactionIsEligible(
+      database,
+      threadId,
+      {
+        kind: "claude-compaction",
+        reason: "before-send",
+        providerSessionId: session.id,
+        sourceRunId: snapshot.sourceRunId,
+      },
+      Math.max(nowMs, eligibleAt),
+    ),
+    eligibleAt,
+    sourceRunId: snapshot.sourceRunId,
+    sessionRevision: `${session.id}:${snapshot.bindingGeneration}:${snapshot.ordinal}`,
+  };
 }

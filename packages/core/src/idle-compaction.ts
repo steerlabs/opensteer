@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ProviderSessionIdSchema, RunIdSchema } from "./ids.js";
+import { ProviderSessionIdSchema, RunIdSchema, MessageIdSchema } from "./ids.js";
 
 export const IdleCompactionPolicySchema = z.strictObject({
   mode: z.enum(["onReturn", "beforeCacheExpires", "off"]),
@@ -21,6 +21,7 @@ export const ProviderContextSnapshotSchema = ProviderContextMeasurementSchema.ex
 });
 export type ProviderContextSnapshot = z.infer<typeof ProviderContextSnapshotSchema>;
 export const RunMaintenanceSchema = z.strictObject({
+  pairedInputId: MessageIdSchema.optional(),
   kind: z.literal("claude-compaction"),
   reason: z.enum(["idle", "before-send"]),
   sourceRunId: RunIdSchema,

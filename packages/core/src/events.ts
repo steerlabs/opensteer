@@ -1,3 +1,4 @@
+import { CompactionReturnHintSchema } from "./idle-compaction.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 import { AppIdSchema, AppTitleSchema } from "./apps.js";
@@ -281,6 +282,7 @@ const eventDataSchemas = {
    * `doneReason` says the Host moved it there; absent before it could.
    */
   "thread.state-changed": z.strictObject({
+    returnHint: CompactionReturnHintSchema.nullable().optional(),
     latestRunCompletedAt: IsoDateTimeSchema.nullable().optional(),
     status: ThreadStatusSchema,
     inputQueuePaused: z.boolean(),

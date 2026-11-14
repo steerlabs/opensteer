@@ -1,3 +1,4 @@
+import { compactionReturnHint } from "./compaction-eligibility.js";
 import { deploymentEventsAfter } from "./deployment-events.js";
 import { needsYouPage } from "./needs-you-store.js";
 import { personalSettings } from "./personal-settings-store.js";
@@ -324,7 +325,12 @@ export async function deploymentSnapshot(
           .executeTakeFirstOrThrow(),
       ]);
       const threads = boundedSerializedPrefix(
-        threadsFromRows(threadRows.slice(0, maxThreads)),
+        await Promise.all(
+          threadsFromRows(threadRows.slice(0, maxThreads)).map(async (thread) => ({
+            ...thread,
+            returnHint: await compactionReturnHint(transaction, thread.id),
+          })),
+        ),
         maxThreads,
         Math.min(192 * 1_024, maxSerializedBytes),
       );
@@ -561,7 +567,12 @@ export async function taskPageForUser(
           .execute(),
         tasks.select(({ fn }) => fn.countAll<string>().as("count")).executeTakeFirstOrThrow(),
       ]);
-      const threads = threadsFromRows(rows.slice(0, maxItems));
+      const threads = await Promise.all(
+        threadsFromRows(rows.slice(0, maxItems)).map(async (thread) => ({
+          ...thread,
+          returnHint: await compactionReturnHint(transaction, thread.id),
+        })),
+      );
       const lines = await taskLines(
         transaction,
         threads.map(({ id }) => id),
@@ -830,7 +841,10 @@ export async function threadEventPageForOwner(
       return {
         asOfSequence: await deploymentHead(transaction),
         events,
-        thread: threadFromRow(thread),
+        thread: {
+          ...threadFromRow(thread),
+          returnHint: await compactionReturnHint(transaction, input.threadId),
+        },
         threadId: input.threadId,
         window: {
           byteCount: serializedArrayBytes(events),

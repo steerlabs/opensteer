@@ -1,3 +1,4 @@
+import { markThreadStatePending } from "./thread-state-pending.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalReadTransaction, withPersonalTransaction } from "./personal-transaction.js";
 import {
@@ -153,6 +154,12 @@ export class NotificationStateStore {
         .set({ idleCompactionPolicy: policy })
         .where("ownerId", "=", input.userId)
         .executeTakeFirstOrThrow();
+      const threads = await transaction
+        .selectFrom("threads")
+        .select("id")
+        .where("createdBy", "=", input.userId)
+        .execute();
+      for (const thread of threads) await markThreadStatePending(transaction, thread.id);
       return policy;
     });
   }

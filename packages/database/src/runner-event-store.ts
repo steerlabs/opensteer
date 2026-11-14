@@ -1292,7 +1292,11 @@ export async function commitRunnerEvent(
       .returningAll()
       .executeTakeFirstOrThrow();
     const projection = await applyEventProjection(transaction, event, links, attempt);
-    if (event.type.startsWith("request."))
+    if (
+      event.type.startsWith("request.") ||
+      event.type === "run.context-measured" ||
+      event.type === "run.compaction"
+    )
       await markThreadStatePending(transaction, event.threadId);
     const advanced = await transaction
       .updateTable("runs")

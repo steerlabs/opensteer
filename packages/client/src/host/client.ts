@@ -227,6 +227,7 @@ export interface HarnessSummary {
 }
 
 export interface ThreadSummary {
+  returnHint?: import("@opensteer/core").CompactionReturnHint | null | undefined;
   lastVisitedAt: string | null;
   latestRunCompletedAt: string | null;
   /** When a person last asked for work; task lists order by this time. */
@@ -981,6 +982,7 @@ export interface CreateHarnessInstanceInput {
 }
 
 export interface SendMessageInput {
+  compaction?: import("@opensteer/core").CompactionSendChoice;
   body: string;
   content?: readonly ContentPart[];
   quotedMessageId?: string;

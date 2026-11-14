@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+import { compactionReturnHint } from "./compaction-eligibility.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import "./connection.js";
 import {
@@ -89,10 +91,24 @@ export async function projectThreadState(
     })
     .where("id", "=", threadId)
     .executeTakeFirstOrThrow();
-  if (!changed && !force) return [];
+  const returnHint = await compactionReturnHint(transaction, threadId);
+  const previous = await transaction
+    .selectFrom("deploymentEvents")
+    .select("data")
+    .where("threadId", "=", threadId)
+    .where("type", "=", "thread.state-changed")
+    .orderBy("sequence", "desc")
+    .limit(1)
+    .executeTakeFirst();
+  const priorHint =
+    previous?.data && typeof previous.data === "object" && "returnHint" in previous.data
+      ? previous.data.returnHint
+      : null;
+  if (!changed && !force && isDeepStrictEqual(priorHint, returnHint)) return [];
   return [
     await appendHostDeploymentEvent(transaction, {
       data: {
+        returnHint,
         status,
         title: thread.title,
         icon: thread.icon,

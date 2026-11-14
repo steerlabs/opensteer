@@ -573,6 +573,9 @@ export class RunnerRuntime {
   }
 
   async harnessDrivers(): Promise<readonly RunnerHarnessDriver[]> {
+    for (const { kind } of this.#harnesses.listDrivers()) this.#refreshDriverInstallation(kind);
+    const claude = this.#harnesses.listDrivers().find(({ kind }) => kind === "claude");
+    if (claude) await this.#driverInstallationInspections.get(claude.kind);
     return this.#harnesses.listDrivers().map(({ kind, readiness }) => {
       this.#refreshDriverInstallation(kind);
       const installation =

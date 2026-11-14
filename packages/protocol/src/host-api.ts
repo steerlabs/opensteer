@@ -1,6 +1,6 @@
 import { TeamCommandResultViewSchema, teamReadViews } from "./team-views.js";
 import { NeedsYouPageSchema } from "./needs-you.js";
-import { IdleCompactionPolicySchema } from "@opensteer/core";
+import { CompactionSendChoiceSchema, IdleCompactionPolicySchema } from "@opensteer/core";
 import { ToolOutputViewSchema } from "@opensteer/core";
 import { AutomaticModelsViewSchema } from "./automatic-models.js";
 import { TeamCommandSchema, teamReadSchemas } from "./team-api.js";
@@ -420,6 +420,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     .strictObject({
       content: MessageContentSchema,
       delivery: ThreadInputPolicySchema.extract(["queue", "steer"]).optional().default("queue"),
+      compaction: CompactionSendChoiceSchema.optional(),
       freshContext: z.boolean().optional(),
       idempotencyKey: idempotencyKeySchema,
       threadId: ThreadIdSchema,

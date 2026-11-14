@@ -1,3 +1,4 @@
+import { compactionReturnHint } from "./compaction-eligibility.js";
 import { projectDeviceAccessAssignment } from "@opensteer/protocol";
 import {
   lockDeploymentEvents,
@@ -221,6 +222,7 @@ export type ThreadInputSource =
       readonly principalId: string;
     };
 export interface EnqueueThreadInputRequest {
+  readonly compaction?: import("@opensteer/core").CompactionSendChoice;
   readonly maintenance?: import("@opensteer/core").RunMaintenance;
   readonly maintenanceNowMs?: number;
   readonly freshContext?: boolean;
@@ -953,7 +955,9 @@ export async function getThreadForOwner(
     .where("threads.id", "=", threadId)
     .where("threads.createdBy", "=", ownerId)
     .executeTakeFirst();
-  return row ? threadFromRow(row) : null;
+  return row
+    ? { ...threadFromRow(row), returnHint: await compactionReturnHint(database, threadId) }
+    : null;
 }
 export function admitRunToolCall(
   database: Kysely<DatabaseSchema>,
@@ -1002,7 +1006,10 @@ export async function readThreadForOwner(
         .execute();
       return {
         messages: messagesFromRows(messageRows.reverse()),
-        thread: threadFromRow(threadRow),
+        thread: {
+          ...threadFromRow(threadRow),
+          returnHint: await compactionReturnHint(transaction, threadId),
+        },
       };
     },
     "repeatable read",

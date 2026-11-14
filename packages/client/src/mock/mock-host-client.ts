@@ -2706,6 +2706,7 @@ async function executeMockCommand(
       }
       const result = await client.sendMessage({
         body,
+        ...(command.compaction ? { compaction: command.compaction } : {}),
         content: command.content,
         ...(command.freshContext !== undefined ? { freshContext: command.freshContext } : {}),
         threadId: command.threadId,
@@ -3497,6 +3498,7 @@ function mockAuthenticatedSession(snapshot: HostSnapshot) {
 
 function mockThread(thread: ThreadSummary): Thread {
   return ThreadSchema.parse({
+    returnHint: thread.returnHint ?? null,
     lastVisitedAt: thread.lastVisitedAt,
     latestRunCompletedAt: thread.latestRunCompletedAt,
     providerSessionId: thread.providerSessionId,
@@ -9970,6 +9972,7 @@ class MockHostState {
       sequence: String(this.sequence),
       createdAt: this.now().toISOString(),
       data: {
+        returnHint: thread.returnHint ?? null,
         title: name.title ?? thread.title,
         icon: name.icon ?? thread.icon,
         doneAt: thread.doneAt,
@@ -10265,6 +10268,38 @@ class MockHostState {
       : null;
 
     const timestamp = this.now().toISOString();
+    if (
+      input.compaction === "compactFirst" &&
+      thread.returnHint?.eligible &&
+      this.snapshot.personalSettings?.idleCompactionPolicy?.mode !== "off" &&
+      this.now().getTime() >= thread.returnHint.eligibleAt &&
+      !thread.inputQueuePaused &&
+      !this.snapshot.runQueue.some((run) => run.threadId === input.threadId)
+    ) {
+      const compactionRunId = this.nextId("run");
+      const marker: TranscriptEntry = {
+        error: null,
+        replyMessageId: null,
+        kind: "run",
+        id: `run:${compactionRunId}`,
+        runId: compactionRunId,
+        createdAt: timestamp,
+        status: "completed",
+        compaction: { status: "created", reason: "before-send" },
+      };
+      const compactedThread = { ...thread, returnHint: null };
+      thread = compactedThread;
+      this.update({
+        ...this.snapshot,
+        threads: this.snapshot.threads.map((item) =>
+          item.id === input.threadId ? compactedThread : item,
+        ),
+        transcripts: {
+          ...this.snapshot.transcripts,
+          [thread.id]: [...(this.snapshot.transcripts[thread.id] ?? []), marker],
+        },
+      });
+    }
     const userEntry: TranscriptEntry = {
       author: mockHumanAuthor(),
       attachments: input.content?.filter((part) => part.type === "artifact") ?? [],

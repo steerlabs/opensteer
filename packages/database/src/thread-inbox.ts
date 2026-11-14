@@ -2466,6 +2466,7 @@ export function cancelSettledTaskQuestionNotice(
 export async function enqueueThreadInputInTransaction(
   transaction: Transaction<DatabaseSchema>,
   request: EnqueueThreadInputRequest,
+  prepared?: Awaited<ReturnType<typeof lockThreadInputPreconditions>>,
 ): Promise<EnqueuedThreadInput> {
   let content = ContentPartSchema.array().min(1).parse(request.content);
   if (
@@ -2501,6 +2502,7 @@ export async function enqueueThreadInputInTransaction(
             }
           : {
               content,
+              ...(request.compaction ? { compaction: request.compaction } : {}),
               policy,
               ...(request.freshContext ? { freshContext: true } : {}),
               source: normalizedThreadInputSource(request.source),
@@ -2533,7 +2535,13 @@ export async function enqueueThreadInputInTransaction(
     }
     return replayThreadInput(transaction, existing);
   }
-  const preconditions = await lockThreadInputPreconditions(transaction, request);
+  if (request.compaction === "compactFirst" && request.source.kind === "human")
+    await lockCommandIdempotency(
+      transaction,
+      request.requestedBy,
+      `compact-send:${createHash("sha256").update(request.idempotencyKey).digest("hex")}`,
+    );
+  const preconditions = prepared ?? (await lockThreadInputPreconditions(transaction, request));
   const { executionValid, prelockedActiveRunId } = preconditions;
   let thread = preconditions.thread;
   if (
@@ -2547,20 +2555,71 @@ export async function enqueueThreadInputInTransaction(
   )
     throw new OpensteerError({ code: "conflict", message: "Compaction is no longer eligible" });
   const messageId = createId("message");
+  const compactionEvents: AgentEvent[] = [];
+  if (
+    request.compaction === "compactFirst" &&
+    request.source.kind === "human" &&
+    policy === "queue" &&
+    !request.freshContext
+  ) {
+    const session = await transaction
+      .selectFrom("providerSessions")
+      .selectAll()
+      .where("threadId", "=", thread.id)
+      .where("active", "=", true)
+      .executeTakeFirst();
+    if (session?.contextSnapshot) {
+      const maintenance = {
+        kind: "claude-compaction",
+        reason: "before-send",
+        providerSessionId: session.id,
+        sourceRunId: session.contextSnapshot.sourceRunId,
+        pairedInputId: messageId,
+      } as const;
+      if (await compactionIsEligible(transaction, thread.id, maintenance, Date.now())) {
+        const admitted = await enqueueThreadInputInTransaction(
+          transaction,
+          {
+            threadId: thread.id,
+            requestedBy: request.requestedBy,
+            maintenance,
+            idempotencyKey: `compact-send:${createHash("sha256").update(request.idempotencyKey).digest("hex")}`,
+            policy: "queue",
+            content: [{ type: "text", text: "/compact" }],
+            source: {
+              kind: "platform",
+              cause: "claude-compaction",
+              sourceRunId: maintenance.sourceRunId,
+            },
+          },
+          preconditions,
+        );
+        compactionEvents.push(...admitted.events);
+        thread = {
+          ...thread,
+          nextMessageSequence: String(BigInt(thread.nextMessageSequence) + 1n),
+        };
+      }
+    }
+  }
   const facts = await resolveThreadInputFacts(transaction, {
     messageId,
     requestedBy: request.requestedBy,
     source: request.source,
     targetThread: thread,
   });
-  const passEvents: AgentEvent[] = [];
+  const passEvents: AgentEvent[] = [...compactionEvents];
   if (request.source.kind === "human" && policy !== "report" && prelockedActiveRunId) {
     const prior = await transaction
       .selectFrom("runs")
-      .select(["id", "status", "maintenance"])
+      .select(["id", "status", "maintenance", "bindingGeneration"])
       .where("id", "=", prelockedActiveRunId)
       .executeTakeFirst();
-    if (prior?.status === "queued" && prior.maintenance?.reason === "idle")
+    if (
+      prior?.maintenance?.reason === "idle" &&
+      (prior.status === "queued" ||
+        (prior.status === "starting" && prior.bindingGeneration === null))
+    )
       passEvents.push(
         ...(await finalizeRunTransaction(transaction, {
           runId: prior.id,

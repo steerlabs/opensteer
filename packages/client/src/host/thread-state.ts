@@ -6,17 +6,17 @@ const unloadedThreadLimit = 4096;
 export type ThreadName = Pick<ThreadSummary, "title" | "icon"> &
   Partial<Pick<ThreadSummary, "doneAt" | "doneReason" | "latestRunCompletedAt" | "lastVisitedAt">>;
 
-type ThreadState = Pick<
+type ThreadState = { returnHint?: ThreadSummary["returnHint"] } & Pick<
   ThreadSummary,
   "status" | "inputQueuePaused" | "pendingRequests" | "updatedAt"
 > & {
-  readonly doneAt?: ThreadSummary["doneAt"] | undefined;
-  readonly doneReason?: ThreadSummary["doneReason"] | undefined;
-  readonly title?: string | undefined;
-  readonly icon?: ThreadSummary["icon"] | undefined;
-  readonly latestRunCompletedAt?: string | null | undefined;
-  readonly stateSequence: Sequence;
-};
+    readonly doneAt?: ThreadSummary["doneAt"] | undefined;
+    readonly doneReason?: ThreadSummary["doneReason"] | undefined;
+    readonly title?: string | undefined;
+    readonly icon?: ThreadSummary["icon"] | undefined;
+    readonly latestRunCompletedAt?: string | null | undefined;
+    readonly stateSequence: Sequence;
+  };
 
 export class ThreadStateProjection {
   readonly #loaded = new Map<string, ThreadState>();
@@ -76,6 +76,7 @@ export class ThreadStateProjection {
     this.#loaded.set(summary.id, { ...state, updatedAt });
     return {
       ...summary,
+      returnHint: state.returnHint === undefined ? summary.returnHint : state.returnHint,
       doneAt: state.doneAt,
       doneReason: state.doneReason ?? null,
       title: state.title,
@@ -138,6 +139,7 @@ export class ThreadStateProjection {
         incoming.latestRunCompletedAt === undefined
           ? previous?.latestRunCompletedAt
           : incoming.latestRunCompletedAt,
+      returnHint: incoming.returnHint === undefined ? previous?.returnHint : incoming.returnHint,
       status: incoming.status,
       inputQueuePaused: incoming.inputQueuePaused,
       pendingRequests: incoming.pendingRequests,

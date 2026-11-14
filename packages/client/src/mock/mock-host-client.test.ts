@@ -1033,3 +1033,48 @@ it("shares the compaction policy through the personal settings snapshot", async 
     client.dispose();
   }
 });
+
+it("shows a Host return hint and compacts once before the mock human message", async () => {
+  const client = createClient();
+  try {
+    const thread = await client.createThread(threadInput(client));
+    const hint = {
+      eligible: true,
+      eligibleAt: 0,
+      sourceRunId: createId("run"),
+      sessionRevision: "session:1:2",
+    };
+    const event = AgentEventSchema.parse({
+      eventId: createId("event"),
+      type: "thread.state-changed",
+      threadId: thread.id,
+      environmentId: thread.environmentId,
+      runId: null,
+      sequence: String(client.getSnapshot().revision + 1),
+      createdAt: fixedNow.toISOString(),
+      data: { status: "idle", pendingRequests: 0, inputQueuePaused: false, returnHint: hint },
+    });
+    if (event.type !== "thread.state-changed") throw new Error("Wrong event");
+    client.applyThreadStateChanged(event);
+    expect(client.getSnapshot().threads.find((item) => item.id === thread.id)?.returnHint).toEqual(
+      hint,
+    );
+    await client.dispatch({
+      type: "thread.sendMessage",
+      threadId: thread.id,
+      idempotencyKey: "compact-mock",
+      compaction: "compactFirst",
+      content: [{ type: "text", text: "Continue" }],
+    });
+    expect(
+      client
+        .getSnapshot()
+        .transcripts[thread.id]?.filter((entry) => entry.kind === "run" && entry.compaction),
+    ).toMatchObject([{ compaction: { status: "created", reason: "before-send" } }]);
+    expect(
+      client.getSnapshot().threads.find((item) => item.id === thread.id)?.returnHint,
+    ).toBeNull();
+  } finally {
+    client.dispose();
+  }
+});

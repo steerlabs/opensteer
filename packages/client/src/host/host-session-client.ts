@@ -6052,6 +6052,7 @@ function toThreadSummary(
   const environment = environments.find((item) => item.id === thread.environmentId);
   const harness = harnesses.find((item) => item.id === thread.harnessInstanceId);
   return {
+    returnHint: thread.returnHint,
     doneAt: thread.doneAt,
     doneReason: thread.doneReason,
     accessMode: thread.accessMode,
