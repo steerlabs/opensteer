@@ -111,6 +111,7 @@ export class TeamPartners {
   readonly #opening = new Map<string, Promise<void>>();
   readonly #retry = new Map<string, ReturnType<typeof setTimeout>>();
   readonly #attempts = new Map<string, number>();
+  readonly #offers = new Map<string, TeamPartnerOffer>();
   readonly #abort = new AbortController();
   readonly #network: TeamPartnerNetwork;
 
@@ -166,14 +167,11 @@ export class TeamPartners {
       descriptor.authority,
       new URL(offer.origin).hostname.slice(0, 160),
     );
+    this.#offers.set(row.id, offer);
     try {
       await this.store.access.outsideHumanSession(() => this.#open(row, offer));
     } catch (error) {
-      if (
-        error instanceof OpensteerError &&
-        (error.reason === "partner-pairing-refused" || error.reason === "identity-mismatch")
-      )
-        await this.store.access.outsideHumanSession(() => this.store.abandonProposal(row.id));
+      await this.store.access.outsideHumanSession(() => this.#failed(row.id, error));
       throw error;
     }
     const result = await this.store.list(actor, this.connected, { id: row.id });
@@ -245,6 +243,7 @@ export class TeamPartners {
 
   async revoke(actor: TeamActor, id: string) {
     await this.store.revoke(id, actor);
+    this.#offers.delete(id);
     await this.#data?.revoked(id);
     const row = await this.store.get(id);
     if (row) await this.#closeLink(id, { type: "revoked" });
@@ -424,6 +423,7 @@ export class TeamPartners {
           const current = await this.store.seen(row.id, ready.approved, response.name);
           if (current.state === "revoked") throw partnerError();
           entry.active = current.state === "active";
+          this.#offers.delete(row.id);
           this.#attempts.delete(row.id);
         })(),
         10_000,
@@ -438,7 +438,6 @@ export class TeamPartners {
       );
     } catch (error) {
       await entry.peer.close();
-      if (!offer) this.#schedule(row.id);
       throw error;
     }
   }
@@ -562,20 +561,39 @@ export class TeamPartners {
           .transaction()
           .execute((t) => this.store.policy(t));
         if (policy === "off") return;
-        await this.#open(row);
+        const offer = this.#offers.get(id);
+        if (offer && Date.parse(offer.expiresAt) <= Date.now())
+          throw partnerError("partner-invite-expired");
+        await this.#open(row, offer);
       } catch (error) {
-        const reason =
-          error instanceof OpensteerError &&
-          (error.reason === "identity-mismatch" || error.reason === "unsupported-partner-version")
-            ? error.reason
-            : "unreachable";
-        await this.store.failed(id, reason);
-        if (reason !== "identity-mismatch") this.#schedule(id);
-        else this.#cancelRetry(id);
+        await this.#failed(id, error);
       }
     });
     this.#opening.set(id, job);
     this.#track(job.finally(() => this.#opening.delete(id)));
+  }
+
+  async #failed(id: string, error: unknown) {
+    const offer = this.#offers.get(id);
+    if (
+      offer &&
+      (Date.parse(offer.expiresAt) <= Date.now() ||
+        (error instanceof OpensteerError &&
+          (error.reason === "partner-pairing-refused" || error.reason === "identity-mismatch")))
+    ) {
+      this.#offers.delete(id);
+      this.#cancelRetry(id);
+      await this.store.abandonProposal(id);
+      return;
+    }
+    const reason =
+      error instanceof OpensteerError &&
+      (error.reason === "identity-mismatch" || error.reason === "unsupported-partner-version")
+        ? error.reason
+        : "unreachable";
+    await this.store.failed(id, reason);
+    if (reason !== "identity-mismatch") this.#schedule(id);
+    else this.#cancelRetry(id);
   }
 
   #schedule(id: string) {
@@ -610,6 +628,7 @@ export class TeamPartners {
     this.#unsubscribeAccess();
     this.lifetimes.stop();
     this.#abort.abort();
+    this.#offers.clear();
     for (const id of this.#retry.keys()) this.#cancelRetry(id);
     await Promise.all([...this.#entries].map((entry) => entry.peer.close()));
     await Promise.allSettled(this.#jobs);

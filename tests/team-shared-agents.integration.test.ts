@@ -2,7 +2,7 @@ import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import { startTeamKnowledge } from "../apps/host/src/knowledge/team-knowledge.js";
 import { appendTeamAudit } from "../packages/database/src/team-audit-store.js";
 import { needsYouPage } from "../packages/database/src/index.js";
-import { TeamRunRequestSchema } from "../packages/protocol/src/index.js";
+import { TeamRunRequestSchema, teamShareBatchRows } from "../packages/protocol/src/index.js";
 import { randomUUID } from "node:crypto";
 import { expect, it, vi } from "vitest";
 import { createId, SequenceSchema } from "../packages/core/src/index.js";
@@ -249,9 +249,13 @@ for (const direction of ["owner-to-follower", "follower-to-owner"] as const) {
   });
 }
 
-it.each([true, false])(
-  "binds a cross-team return to its own personal task after owner approval (forward=%s)",
-  async (forward) => {
+it.each([
+  { forward: true, catchUp: false },
+  { forward: false, catchUp: false },
+  { forward: false, catchUp: true },
+])(
+  "binds a cross-team return to its own personal task after owner approval (forward=$forward, catch-up=$catchUp)",
+  async ({ forward, catchUp }) => {
     const f = await sharedFixture();
     const source = forward ? f.a : f.b,
       target = forward ? f.b : f.a;
@@ -265,6 +269,8 @@ it.each([true, false])(
       peers.push(alice);
       const bob = await sharedPersonalHost(target, targetUser);
       peers.push(bob);
+      const shares = source.host.team.shares!;
+      const paused = catchUp ? vi.spyOn(shares, "sync").mockResolvedValue() : undefined;
       const run = await alice.runs.startTask(alice.task.threadId, "Ask Bravo");
       const posted = await alice.tools.post(
         { runId: run.runId, operationId: "cross-team-ask" },
@@ -304,7 +310,53 @@ it.each([true, false])(
         ask.request.id,
         "approve",
       );
+      if (catchUp)
+        for (let index = 0; index < teamShareBatchRows; index++)
+          await command(f.aSession, {
+            type: "team.message.send",
+            channelId: f.aid,
+            threadRootId: null,
+            clientMessageId: randomUUID(),
+            bodyMarkdown: `While Bravo was behind: ${index}`,
+            mentions: [],
+            attachmentIds: [],
+          });
       await bob.answer(ask.request.id, "The launch is ready");
+      if (catchUp) {
+        const refId = posted.askOutcomes?.[0]?.requestId;
+        if (!refId) throw new Error("No shared ask reference");
+        const apply = shares.store.apply.bind(shares.store);
+        let deferred = false;
+        const applying = vi.spyOn(shares.store, "apply").mockImplementation(async (...args) => {
+          const result = await apply(...args);
+          const ref = await source.database
+            .selectFrom("teamShareAsks")
+            .select(["status", "outcome", "replyMessageId"])
+            .where("id", "=", refId)
+            .executeTakeFirstOrThrow();
+          if (ref.status?.replyPublicId && !ref.replyMessageId) {
+            expect(ref.outcome).toBeNull();
+            expect(
+              (await source.host.team.requests.pending(alice.linkId)).filter(
+                (r) => r.request.kind === "return",
+              ),
+            ).toHaveLength(0);
+            deferred = true;
+          }
+          return result;
+        });
+        paused!.mockRestore();
+        await shares.sync(await shares.store.get(f.shareId));
+        applying.mockRestore();
+        expect(deferred, "Catch-up never retained the answer before its reply arrived").toBe(true);
+        expect(
+          await source.database
+            .selectFrom("teamShareAsks")
+            .select(["outcome", "replyMessageId"])
+            .where("id", "=", refId)
+            .executeTakeFirstOrThrow(),
+        ).toMatchObject({ outcome: "answered", replyMessageId: expect.any(String) });
+      }
       await vi.waitFor(
         async () =>
           expect(

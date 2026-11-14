@@ -1,6 +1,7 @@
 import {
   exportSharedAsks,
   importSharedAsks,
+  completeSharedAskReplies,
   applySharedAskStatus,
   sharedAskStates,
   cancelSharedAsks,
@@ -1671,6 +1672,12 @@ export class TeamSharesStore {
           await cancelSharedAsks(t, withdrawn, changeSeq, "trigger_edited");
         }
         await importSharedAsks(t, this.chat, { ...s, peopleOnly }, saved, changeSeq);
+        await completeSharedAskReplies(
+          t,
+          s.id,
+          saved.map((item) => item.row.publicId),
+          changeSeq,
+        );
         if (s.ready) {
           const outgoing = saved.filter((r) => r.fresh && !r.row.deletedAt);
           if (outgoing.length)

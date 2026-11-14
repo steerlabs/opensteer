@@ -257,6 +257,15 @@ export async function applySharedAskStatus(
     (!localCancellation && ref.status && BigInt(ref.status.revision) >= BigInt(status.revision))
   )
     return false;
+  return completeSharedAskStatus(t, ref, status, changeSeq);
+}
+
+async function completeSharedAskStatus(
+  t: Tx,
+  ref: Selectable<DatabaseSchema["teamShareAsks"]>,
+  status: TeamShareAskStatus,
+  changeSeq: string,
+) {
   const reply = status.replyPublicId
     ? await t
         .selectFrom("teamMessages")
@@ -269,7 +278,15 @@ export async function applySharedAskStatus(
         .where("deletedAt", "is", null)
         .executeTakeFirst()
     : null;
-  if (status.replyPublicId && !reply) return false;
+  if (status.replyPublicId && !reply) {
+    if (ref.outcome) return false;
+    await t
+      .updateTable("teamShareAsks")
+      .set({ status, changeSeq })
+      .where("id", "=", ref.id)
+      .execute();
+    return true;
+  }
   await t
     .updateTable("teamShareAsks")
     .set({ status, outcome: status.outcome, replyMessageId: reply?.id ?? null, changeSeq })
@@ -312,6 +329,24 @@ export async function cancelSharedAsks(
     .execute();
   for (const ref of refs)
     await applySharedAskStatus(t, ref.id, failedSharedAsk(changeSeq, failure), changeSeq, true);
+}
+
+export async function completeSharedAskReplies(
+  t: Tx,
+  shareId: string,
+  publicIds: readonly string[],
+  changeSeq: string,
+) {
+  const pending = await t
+    .selectFrom("teamShareAsks")
+    .selectAll()
+    .where("shareId", "=", shareId)
+    .where("localRequestId", "is", null)
+    .where("outcome", "is", null)
+    .where(sql<string>`status->>'replyPublicId'`, "in", [...publicIds])
+    .orderBy("id")
+    .execute();
+  for (const ref of pending) await completeSharedAskStatus(t, ref, ref.status!, changeSeq);
 }
 
 export async function importSharedAsks(
