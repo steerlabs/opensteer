@@ -2796,7 +2796,7 @@ export async function createHostRuntime(
             initializePersonalState(database, personalConfig, realtime).then(async (service) => {
               if (!service) return;
               await ensureLinks();
-              if (config.ownerNameSeed) await ownerProfile.seed(config.ownerNameSeed);
+              await ownerProfile.seed(config.ownerNameSeed ?? null);
               ownerProfile.refreshSoon();
             }),
             ...(personalRemoteAccess ? [personalRemoteAccess.purgeExpiredAccountLinkKeys()] : []),

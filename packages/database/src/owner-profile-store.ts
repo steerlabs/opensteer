@@ -1,4 +1,5 @@
 import {
+  localMachineOwnerEmail,
   normalizePersonName,
   OpensteerError,
   PersonNameSchema,
@@ -136,20 +137,24 @@ export class OwnerProfileStore {
   }
 
   /**
-   * The hosting computer's name for its user, used once: only while nobody has chosen, cleared
-   * or adopted a name, so a person who cleared theirs is never renamed behind their back.
+   * The owner's first name, used once: only while nobody has chosen, cleared or adopted one, so
+   * a person who cleared theirs is never renamed behind their back. An owner who signed up gave
+   * a name; the desktop's implicit owner takes `computerName`, its computer account's full name.
    */
-  async seed(nameInput: string): Promise<boolean> {
-    const name = normalizePersonName(nameInput);
-    if (!name) return false;
+  async seed(computerName: string | null): Promise<boolean> {
     return withPersonalTransaction(this.#database, async (transaction) => {
       const current = await lockedProfile(transaction);
       const row = await transaction
         .selectFrom("personalSettings")
-        .select("ownerNameSetAt")
-        .where("singletonKey", "=", "personal")
+        .innerJoin("users", "users.id", "personalSettings.ownerId")
+        .select(["personalSettings.ownerNameSetAt", "users.displayName", "users.email"])
+        .where("personalSettings.singletonKey", "=", "personal")
         .executeTakeFirstOrThrow();
       if (row.ownerNameSetAt !== null || current.account) return false;
+      const name = normalizePersonName(
+        row.email === localMachineOwnerEmail ? (computerName ?? "") : row.displayName,
+      );
+      if (!name) return false;
       await write(transaction, current.ownerId, {
         ownerName: name,
         ownerNameAccount: null,

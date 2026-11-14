@@ -1,4 +1,4 @@
-import { createId, type PersonName } from "@opensteer/core";
+import { createId, localMachineOwnerEmail, type PersonName } from "@opensteer/core";
 import { sql } from "kysely";
 import { afterEach, expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
@@ -23,12 +23,19 @@ async function personal() {
   });
   const fixture = await seedPersonalFixture(database, "/opensteer-names-test");
   const store = new OwnerProfileStore(database);
-  // An owner who signed up starts with the name they gave.
+  // An owner who signed up starts with the name they gave, not the computer's.
+  expect((await store.read())?.name).toBeNull();
+  expect(await store.seed("Computer Name")).toBe(true);
   expect((await store.read())?.name).toBe("Alex");
-  // The desktop's implicit owner has none until anyone sets one.
+  // The desktop's implicit owner has a placeholder instead, and no name until anyone sets one.
   await database
     .updateTable("personalSettings")
     .set({ ownerName: null, ownerNameSetAt: null })
+    .execute();
+  await database
+    .updateTable("users")
+    .set({ email: localMachineOwnerEmail })
+    .where("id", "=", fixture.userId)
     .execute();
   return { database, store, userId: fixture.userId };
 }

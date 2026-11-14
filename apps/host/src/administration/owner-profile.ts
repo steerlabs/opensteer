@@ -96,9 +96,9 @@ export class OwnerProfileService {
     void this.refresh().catch(this.#report);
   }
 
-  /** The hosting computer's name for its user; used only before anyone names the owner. */
-  async seed(name: string): Promise<void> {
-    if (await this.#store.seed(name)) this.#changed();
+  /** The owner's first name, before anyone sets one; see `OwnerProfileStore.seed`. */
+  async seed(computerName: string | null): Promise<void> {
+    if (await this.#store.seed(computerName)) this.#changed();
   }
 
   async #saveToAccount(current: OwnerProfile, name: PersonName | null, edited: number | null) {
