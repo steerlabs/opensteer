@@ -3,7 +3,7 @@
 Apps render on the person's device, inline in their Thread or as a tab beside it. Each card resolves
 its app ID to the latest publication, even in old history, and the origin Thread owns the app. Stored
 HTML and the database belong in the same backup as Host attachments. App authors follow the shipped
-[apps reference](../apps/runner/agent-skills/skills/threads/references/apps.md).
+[apps reference](../apps/runner/agent-skills/skills/tasks/references/apps.md).
 
 An app stays beside its conversation so the person can ask for changes. App tabs belong to the
 personal owner and synchronize across their devices; team membership never exposes an app, its

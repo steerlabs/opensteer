@@ -102,7 +102,7 @@ it("uses production worker wakes and requires a brief outcome for task wakes", a
         `${label} pass due (${timestamp}). Load opensteer:memory and follow its ${label === "Light" ? "light-pass" : "nightly"} reference.`,
       );
       expect(activity, `${c.id} carries the Host's list`).toMatch(
-        /^(?:No new conversations since your last pass at |New since your last pass at )/u,
+        /^(?:No new tasks since your last pass at |New since your last pass at )/u,
       );
       wakes += 1;
     }

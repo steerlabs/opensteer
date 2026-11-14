@@ -3842,7 +3842,7 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
       tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
       toolsRevision: "test-tools-v1",
       instructions: "Host Opensteer instructions",
-      skills: ["opensteer:threads"],
+      skills: ["opensteer:tasks"],
       token: "test-agent-tools-token",
       url: "https://host.example/internal/v1/mcp",
     },

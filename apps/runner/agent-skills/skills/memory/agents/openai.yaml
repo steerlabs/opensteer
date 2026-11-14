@@ -6,4 +6,4 @@ dependencies:
   tools:
     - type: "mcp"
       value: "opensteer"
-      description: "Opensteer Thread and Trigger tools"
+      description: "Opensteer task and automation tools"

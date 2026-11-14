@@ -1141,7 +1141,7 @@ describeStore("managed memory passes", (it) => {
     });
     const shared = await thread("Shared channel", {});
     const first = await wake(f, light, (await tick(f, base, light)).occurrence.id, "activity-1");
-    expect(wakeText(first).join("\n")).toContain("No new conversations");
+    expect(wakeText(first).join("\n")).toContain("No new tasks");
     await finish(f, first.run!, "completed");
     await expect(
       wake(f, light, (await tick(f, base, light)).occurrence.id, "activity-idle"),
@@ -1163,8 +1163,8 @@ describeStore("managed memory passes", (it) => {
     const next = await tick(f, base, light);
     const second = await wake(f, light, next.occurrence.id, "activity-2");
     const text = wakeText(second).join("\n");
-    expect(text).toContain(`"Voice": threadId ${voice.id}, 1 new messages`);
-    expect(text).toContain(`threadId ${base.thread.id}, 1 new messages`);
+    expect(text).toContain(`"Voice": taskId ${voice.id}, 1 new messages`);
+    expect(text).toContain(`taskId ${base.thread.id}, 1 new messages`);
     expect(text).toContain(shared.id);
     expect(text).not.toContain("Waiting");
     expect(text).not.toContain(light.anchorThreadId);
@@ -1209,7 +1209,7 @@ describeStore("managed memory passes", (it) => {
     });
     await finish(f, other.run!, "completed");
     const retried = await wake(f, light, (await tick(f, base, light)).occurrence.id, "activity-3");
-    expect(wakeText(retried).join("\n")).toContain(`"Voice": threadId ${voice.id}, 2 new messages`);
+    expect(wakeText(retried).join("\n")).toContain(`"Voice": taskId ${voice.id}, 2 new messages`);
 
     // A published report is readable before any Run consumes it.
     await finish(f, retried.run!, "completed");
@@ -1231,7 +1231,7 @@ describeStore("managed memory passes", (it) => {
     });
     const after = await wake(f, light, (await tick(f, base, light)).occurrence.id, "activity-4");
     expect(wakeText(after).join("\n")).toContain(
-      `"Reported": threadId ${reported.id}, 1 new messages`,
+      `"Reported": taskId ${reported.id}, 1 new messages`,
     );
   });
   it("replays an accepted pass's wake without choosing its model again", async ({

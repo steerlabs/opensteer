@@ -644,7 +644,7 @@ describe("wire protocol", () => {
           tools: ["thread_read", "thread_send"],
           toolsRevision: "test-tools-v1",
           instructions: "Host Opensteer instructions",
-          skills: ["opensteer:threads"],
+          skills: ["opensteer:tasks"],
           token: "agent-tools-token",
           url: "https://host.example.test/internal/v1/mcp",
         },

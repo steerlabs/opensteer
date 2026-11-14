@@ -21,10 +21,10 @@ Do not substitute the browser merely because an account is not connected:
 use the browser only when the user asks for website interaction, the work is inherently visual, or
 no integration applies.
 
-Trigger executions carry the full integration tool surface, including `integration_request` and
-`integration_propose`. A Request lands on the anchor task for the person to resolve; it does not resume a completed program occurrence. A later occurrence finds current readiness.
+Automation programs carry the program integration tools, including `integration_request` and
+`custom_integration_request`. A Request lands on the automation's task for the person to resolve; it does not resume a completed program occurrence. A later occurrence finds current readiness.
 Filing the same ask again from a later occurrence is safe: an equivalent pending Request is returned
-with `replayed: true` rather than duplicated, and the result says so. State in the thread output
+with `replayed: true` rather than duplicated, and the result says so. State in the program output
 what is still waiting on whom.
 
 ## Computer-hosted integrations

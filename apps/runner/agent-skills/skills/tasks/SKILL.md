@@ -1,20 +1,20 @@
 ---
-name: threads
-description: Find, read, delegate, continue, configure, queue, interrupt or cancel Opensteer work.
+name: tasks
+description: Find, read, create, delegate, continue, configure, queue, interrupt or stop Opensteer tasks.
 ---
 
-# Threads and tasks
+# Tasks and delegation
 
-A Thread holds durable history; a Run is one execution; a task is private durable work, optionally assigned by another task. Use native workers for Run-local work, `delegate_task` for independent work or durable continuation.
+A task is private durable work with its own history; a Run is one turn. A delegation is work one task or program gives another, whose result returns. Use native workers for Run-local work, `opensteer_task_delegate` for independent work or durable continuation.
 
-- Automations: keep reminders here; use `trigger_write` with `ownTask: true` for ongoing monitors, or program `delegate_task` with `standalone: true` for a new listed task per run. Check in code first. State belongs under `automations/<trigger-id>/` in Agent home. Start child checks from the monitor task and queue repeated checks with `freshContext: true`, including criteria, destination and state path each time. Briefly say what happened on each background wake; send real finds to the asking task with `thread_send` queue or email through a connected integration. A `report` never notifies.
-- New work: `delegate_task`, optionally with a ready `specialist`. Finished task: `delegate_task` with `threadId`. Active task: `thread_send`.
-- Your tasks: `thread_list({parentThreadId: "self"})`. What one did and where: `thread_read`, with `view: "activity"` for its tools. One task's state: `task_status`.
-- Pause work: `thread_interrupt`, resumable with `thread_queue`. Stop it for good: `task_cancel`.
-- Engine or model: `thread_configure`. Waiting inputs: `thread_queue`. Rename, done or reopen: `thread_update`.
+- Automations: keep reminders here; use `opensteer_automation_create` with `ownTask: true` for ongoing monitors, or a program calling `opensteer_task_create` for a new listed task per run. Check in code first. State belongs under `automations/<automation-id>/` in Agent home. Start child checks from the monitor task and queue repeated checks with `freshContext: true`, including criteria, destination and state path each time. Briefly say what happened on each background wake; send real finds to the asking task with `opensteer_task_send` queue or email through a connected integration. A `report` never notifies.
+- New work: `opensteer_task_delegate`, optionally with a ready `specialist`. Finished task: `opensteer_task_delegate` with `taskId`. Active task: `opensteer_task_send`. A top-level task nothing returns from: `opensteer_task_create`.
+- Your delegated tasks: `opensteer_task_list` with `parentTaskId`. What one did and where: `opensteer_task_read`, with `view: "activity"` for its tools. One delegation's state: `opensteer_delegation_status`.
+- Pause work: `opensteer_task_interrupt`, resumable with `opensteer_task_resume`. Stop a delegation for good: `opensteer_delegation_cancel`.
+- AI account or model: `opensteer_task_configure`. Waiting inputs: `opensteer_task_queue`. Rename, done or reopen: `opensteer_task_update`.
 
-Runs and programs get a task's final result automatically unless the assigner read it through `task_status` or a settled wait first. `thread_wait` accepts an `assignmentId` or conversation `threadId` for a bounded wait of up to 100 seconds. `delegate_task` mode `wait` uses the same waiter. An empty result still settles the task. Connections get no Assignment: wait on `threadId`. Timeout or disconnect stops nothing. `orchestrator_capabilities` reports execution choices, the access ceiling and enforced budgets.
+Runs and programs get a delegation's final result automatically unless they read it first through `opensteer_delegation_status` or a settled wait. `opensteer_delegation_wait` takes a `delegationId` and `opensteer_task_wait` a `taskId`; each waits at most 100 seconds. `opensteer_task_delegate` mode `wait` uses the same waiter. An empty result still settles the delegation. Connections get no delegation: wait on `taskId`. Timeout or disconnect stops nothing. `opensteer_ai_account_list` reports AI accounts, models, the access ceiling and enforced budgets.
 
-Delegation preserves the access ceiling. On an Assignment, `person_message` and `person_show` are refused even when listed: send what the person should hear or see to your assigner.
+Delegation preserves the access ceiling. On a delegation, `person_notify` and `person_show` are refused even when listed: send what the person should hear or see to the delegating task.
 
-Read [coordination](references/coordination.md) to pick a target, message, delegate or forward places; [lifecycle](references/lifecycle.md) for results, blockers and cancelling; [show](references/show.md) to show places; use thread_read query/before/itemId to search and page earlier context; [apps](references/apps.md) to publish or call an app.
+Read [coordination](references/coordination.md) to pick a target, message, delegate or forward places; [lifecycle](references/lifecycle.md) for results, blockers and cancelling; [show](references/show.md) to show places; use `opensteer_task_read` `query`, `cursor` and `itemId` to search and page earlier context; [apps](references/apps.md) to publish or call an app.

@@ -750,7 +750,7 @@ async function setup(scenario: Scenario, real: { readonly agent?: string } = {})
       tools: ["thread_read", "integration_call", "computer"],
       toolsRevision: "test-tools-v1",
       instructions: "Host Opensteer instructions",
-      skills: ["opensteer:threads"],
+      skills: ["opensteer:tasks"],
       token: "agent-token",
       url: "https://host/mcp",
     },

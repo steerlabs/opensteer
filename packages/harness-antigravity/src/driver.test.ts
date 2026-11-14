@@ -483,7 +483,7 @@ async function setupTurn(scenario: TurnScenario, deadlineMs = 500) {
       tools: ["thread_read", "integration_call", "computer"],
       toolsRevision: "test-tools-v1",
       instructions: "Host Opensteer instructions",
-      skills: ["opensteer:threads"],
+      skills: ["opensteer:tasks"],
       token: "agent-token",
       url: "https://host/mcp",
     },
