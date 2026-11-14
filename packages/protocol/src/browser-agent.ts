@@ -7,7 +7,7 @@ import {
   BrowserTabGroupIdSchema,
   BrowserTabWriteInputSchema,
   browserTabGroupsMaxPerOwner,
-  EnvironmentIdSchema,
+  RunnerIdSchema,
 } from "@opensteer/core";
 import { BrowserTabWriteResultSchema } from "./browser.js";
 
@@ -120,7 +120,7 @@ export const BrowserAgentTabOpenInputSchema = z.strictObject({
   identity: z.discriminatedUnion("kind", [
     /** A profile ID, or a profile name that names exactly one profile. */
     z.strictObject({ kind: z.literal("profile"), profile: z.string().trim().min(1).max(200) }),
-    z.strictObject({ kind: z.literal("guest"), computer: EnvironmentIdSchema.optional() }),
+    z.strictObject({ kind: z.literal("guest"), computer: RunnerIdSchema.optional() }),
   ]),
   operationKey: OperationKeySchema,
 });

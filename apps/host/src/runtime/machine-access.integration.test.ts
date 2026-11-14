@@ -118,7 +118,7 @@ integration("Machine access, end to end", () => {
       omittedMachines: 0,
     });
     expect(launch.machineAccessNotice).toContain(
-      `- example-mac (macOS, online): shares ${readShare} (read-only), ${writeShare} (read-write); commands allowed; port forwarding off; macOS Full Disk Access off (some protected data may be unavailable).`,
+      `- example-mac (macOS, online): shares ${readShare} (read-only), ${writeShare} (read-write); commands allowed; port forwarding off; macOS Full Disk Access off (some protected data may be unavailable; computerId ${target.runnerId}).`,
     );
 
     const knownHosts = await readFile(join(launch.launchDirectory, "known_hosts"), "utf8");

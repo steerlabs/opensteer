@@ -459,7 +459,7 @@ function renderMachineNoticeFullAccess(machine: MachineAccessRunMachine): string
   if (machine.platform !== "darwin" || machine.fullDiskAccess === null) return "";
   return machine.fullDiskAccess
     ? "; macOS Full Disk Access on"
-    : "; macOS Full Disk Access off (some protected data may be unavailable)";
+    : `; macOS Full Disk Access off (some protected data may be unavailable; computerId ${machine.runnerId})`;
 }
 
 export function fitMachineAccessNotice(context: MachineAccessRunContext): MachineAccessRunContext {
