@@ -412,9 +412,10 @@ it("allows a freshly verified pairing retry after an incorrect invite verifier",
   }
 });
 
-it("a lost ready response must not abandon an already-consumed pairing", async () => {
+it("automatically resumes pairing after the listener commits but its ready response is lost", async () => {
   const f = await pairFixture();
   try {
+    await command(f.aSession, { type: "team.sharing.policy.set", policy: "members" });
     const offer = await invite(f.aSession);
     const send = PartnerSocket.prototype.send;
     let dropped = false;
@@ -437,13 +438,9 @@ it("a lost ready response must not abandon an already-consumed pairing", async (
     await expect(redeem(f.bSession, offer)).rejects.toThrow();
     fault.mockRestore();
     expect(dropped).toBe(true);
-    await expect(redeem(f.bSession, offer)).resolves.toMatchObject({
-      role: "dialer",
-      state: "pending",
-    });
-    const aLink = (await list(f.aSession)).find((link) => link.state !== "revoked")!;
-    await command(f.aSession, { type: "team.partner.approve", linkId: aLink.id });
     await active(f.aSession, f.bSession);
+    expect(await list(f.aSession)).toHaveLength(1);
+    expect(await list(f.bSession)).toHaveLength(1);
   } finally {
     await f.close();
   }
