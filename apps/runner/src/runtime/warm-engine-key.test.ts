@@ -1,5 +1,11 @@
 import { expect, it } from "vitest";
-import { createId, TeamSourceSchema, SequenceSchema } from "@opensteer/core";
+import {
+  createId,
+  ModelIdSchema,
+  ModelSelectionSchema,
+  SequenceSchema,
+  TeamSourceSchema,
+} from "@opensteer/core";
 import { warmEngineKey } from "./warm-engine-pool.js";
 it("invalidates warm reuse for tool inventory, instructions, roots and discovered skills while preserving per-Run credential rebinding", () => {
   const context = {
@@ -63,6 +69,39 @@ it("invalidates warm reuse for tool inventory, instructions, roots and discovere
   };
   expect(warmEngineKey(team)).toBe(warmEngineKey(privateTurn));
   expect(warmEngineKey(team)).toBe(before);
+  const selectionChanged = {
+    ...input,
+    context: {
+      ...context,
+      modelSelection: ModelSelectionSchema.parse({
+        ...context.modelSelection,
+        modelId: "another",
+        options: { effort: "low" },
+      }),
+    },
+  };
+  expect(warmEngineKey(selectionChanged)).not.toBe(before);
+  expect(
+    warmEngineKey({
+      ...selectionChanged,
+      warmSelection: { model: true, options: ["effort", "fast"] },
+    }),
+  ).toBe(warmEngineKey({ ...input, warmSelection: { model: true, options: ["effort", "fast"] } }));
+  expect(
+    warmEngineKey({
+      ...selectionChanged,
+      warmSelection: { model: true, options: ["effort", "fast"] },
+      context: {
+        ...selectionChanged.context,
+        modelSelection: ModelSelectionSchema.parse({
+          ...selectionChanged.context.modelSelection,
+          options: { effort: "low", thinking: false },
+        }),
+      },
+    }),
+  ).not.toBe(
+    warmEngineKey({ ...input, warmSelection: { model: true, options: ["effort", "fast"] } }),
+  );
   expect(
     warmEngineKey({
       ...team,
@@ -78,6 +117,20 @@ it("invalidates warm reuse for tool inventory, instructions, roots and discovere
   context.agentTools.token = "rotated";
   expect(warmEngineKey(input)).toBe(before);
   for (const change of [
+    { ...input, baseEnvironment: { MODE: "changed" } },
+    { ...input, runtimeBoundary: "isolated-service" },
+    { ...input, providerSessionReference: "different-thread" },
+    { ...input, context: { ...context, harnessInstanceId: createId("harnessInstance") } },
+    {
+      ...input,
+      context: {
+        ...context,
+        modelSelection: {
+          ...context.modelSelection,
+          modelId: ModelIdSchema.parse("different-model"),
+        },
+      },
+    },
     { ...input, instructions: "Changed home instructions" },
     { ...input, homeSkillsDigest: "home:changed" },
     { ...input, writableRoots: ["/task", "/another-home"] },

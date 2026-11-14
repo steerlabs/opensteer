@@ -492,7 +492,10 @@ function runScenario(id, payload) {
         textPart("Working on the original request.");
         step({ input: 40, output: 9 }, 0.01);
         if (holdMs > 0) {
-          heldTurn = setTimeout(() => emit("session.idle", { sessionID: id }), holdMs);
+          heldTurn = setTimeout(() => {
+            emit("session.idle", { sessionID: id });
+            capture({ kind: "held-turn-finished" });
+          }, holdMs);
         }
         return;
       }

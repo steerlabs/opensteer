@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { RunAgentToolsPlanSchema } from "@opensteer/protocol";
 import { agentToolsPlanForRun } from "../agents/agent-tools-plan.js";
 it("keeps standing team inventory stable across tasks and invalidates a warm plan when instructions or inventory change", () => {
@@ -30,4 +30,25 @@ it("keeps standing team inventory stable across tasks and invalidates a warm pla
   expect(agentToolsPlanForRun({ ...input, voiceCall: true }).toolsRevision).not.toBe(
     ordinary.toolsRevision,
   );
+});
+
+vi.mock("@opensteer/shared/advertisedJsonSchema", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@opensteer/shared/advertisedJsonSchema")>();
+  return { ...actual, advertisedJsonSchema: vi.fn(actual.advertisedJsonSchema) };
+});
+
+it("revises a warm plan when the schema engines see changes", async () => {
+  const { advertisedJsonSchema } = await import("@opensteer/shared/advertisedJsonSchema");
+  const input = {
+    url: "http://localhost/mcp",
+    token: "token",
+    purpose: "task" as const,
+    accessMode: "auto" as const,
+  };
+  const before = agentToolsPlanForRun(input);
+  vi.mocked(advertisedJsonSchema).mockReturnValueOnce({
+    type: "object",
+    properties: { added: { type: "string" } },
+  });
+  expect(agentToolsPlanForRun(input).toolsRevision).not.toBe(before.toolsRevision);
 });

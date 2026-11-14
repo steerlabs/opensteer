@@ -141,6 +141,74 @@ describe("Muse Code authentication", () => {
 });
 
 describe("Muse Code sessions", () => {
+  it.each(["guidance-compaction", "guidance-compaction-item"])(
+    "reuses guidance until changed or compacted and preserves cache writes: %s",
+    async (scenario) => {
+      const fixture = await setup(scenario);
+      const adapter = await fixture.driver.create({
+        config: {},
+        instanceId: fixture.context.harnessInstanceId,
+        sourceId: "meta",
+      });
+      const previous = new AbortController();
+      const session = await adapter.startSession({ ...fixture.context, signal: previous.signal });
+      const observer = observe(session.events);
+      try {
+        await session.execute(fixture.turn("one"));
+        expect(await session.releaseForReuse?.()).toBe(true);
+        session.rebind?.({ ...fixture.context, machineAccessNotice: "Computer offline 4m" });
+        previous.abort();
+        await session.execute(fixture.turn("two"));
+        await session.execute(fixture.turn("three"));
+        session.rebind?.({ ...fixture.context, instructions: "Changed instructions." });
+        await session.execute(fixture.turn("four"));
+        const turns = (await fixture.messages())
+          .filter((entry) => entry.message?.method === "turn/start")
+          .map((entry) => JSON.stringify(entry.message?.params?.input));
+        expect(turns[0]).toContain(fixture.context.instructions);
+        expect(turns[1]).not.toContain(fixture.context.instructions);
+        expect(turns[1]).toContain("Computer offline 4m");
+        expect(turns[2]).toContain(fixture.context.instructions);
+        expect(turns[3]).toContain("Changed instructions.");
+        expect(observer.events.find((event) => event.type === "run.usage")?.data).toMatchObject({
+          inputTokens: 5,
+          cachedInputTokens: 2,
+          cacheWriteTokens: 3,
+        });
+      } finally {
+        await session.stop();
+        await observer.done;
+        await adapter.close();
+      }
+    },
+  );
+
+  it("resends guidance when the previous turn did not complete successfully", async () => {
+    const fixture = await setup("guidance-cancelled");
+    const adapter = await fixture.driver.create({
+      config: {},
+      instanceId: fixture.context.harnessInstanceId,
+      sourceId: "meta",
+    });
+    const session = await adapter.startSession(fixture.context);
+    const observer = observe(session.events);
+    try {
+      await session.execute(fixture.turn("one"));
+      await session.execute(fixture.turn("two"));
+      const turns = (await fixture.messages()).filter(
+        (entry) => entry.message?.method === "turn/start",
+      );
+      expect(turns).toHaveLength(2);
+      for (const turn of turns)
+        expect(JSON.stringify(turn.message?.params?.input)).toContain(fixture.context.instructions);
+    } finally {
+      await session.stop();
+      await observer.done;
+      await adapter.close();
+    }
+    expect(await session.releaseForReuse?.()).toBe(false);
+  });
+
   it("pins the canonical workspace, keeps MCP secrets off argv, and emits usage before completion", async () => {
     const fixture = await setup("happy");
     const adapter = await fixture.driver.create({
@@ -242,6 +310,8 @@ describe("Muse Code sessions", () => {
     const observer = observe(session.events);
     const executing = session.execute(fixture.turn("begin"));
     await observer.waitFor("run.started");
+    expect(await session.releaseForReuse?.()).toBe(false);
+    expect(() => session.rebind?.(fixture.context)).toThrow(/during a Run/u);
     await session.steer?.({ input: humanInput("new direction") });
     await executing;
     const steer = (await fixture.messages()).find(
@@ -387,31 +457,55 @@ describe("Muse Code sessions", () => {
     await adapter.close();
   });
 
-  it("keeps a child approval routable after its foreground turn completes", async () => {
-    const fixture = await setup("child-approval");
-    const context = { ...fixture.context, accessMode: "approval-required" as const };
+  it.each([
+    ["approve-once", true],
+    ["approve-session", false],
+  ] as const)(
+    "keeps a child approval routable after its foreground turn completes (%s)",
+    async (optionId, reusable) => {
+      const fixture = await setup("child-approval");
+      const context = { ...fixture.context, accessMode: "approval-required" as const };
+      const adapter = await fixture.driver.create({
+        config: {},
+        instanceId: context.harnessInstanceId,
+        sourceId: "meta",
+      });
+      const session = await adapter.startSession(context);
+      const observer = observe(session.events);
+      const executing = session.execute(fixture.turn("check"));
+      const opened = await observer.waitFor("request.opened");
+      expect((await observer.waitFor("run.phase")).data.phase).toBe("background");
+      expect(opened.data.request.originatingNodeId).toBeTruthy();
+      await session.resolveRequest(opened.data.request.id, { kind: "choice", optionId });
+      await executing;
+      await observer.waitFor("run.completed");
+      expect(observer.events.map((event) => event.type)).toEqual(
+        expect.arrayContaining(["node.started", "node.completed", "run.completed"]),
+      );
+      // An approval that outlives its call would carry this Run's authority into the next.
+      expect(await session.releaseForReuse?.()).toBe(reusable);
+      await session.stop();
+      await adapter.close();
+    },
+  );
+
+  it("never reuses a session whose workflow child was granted a session-wide approval", async () => {
+    const fixture = await setup("child-approval-session");
     const adapter = await fixture.driver.create({
       config: {},
-      instanceId: context.harnessInstanceId,
+      instanceId: fixture.context.harnessInstanceId,
       sourceId: "meta",
     });
-    const session = await adapter.startSession(context);
+    const session = await adapter.startSession({ ...fixture.context, accessMode: "full-access" });
     const observer = observe(session.events);
-    const executing = session.execute(fixture.turn("check"));
-    const opened = await observer.waitFor("request.opened");
-    expect((await observer.waitFor("run.phase")).data.phase).toBe("background");
-    expect(opened.data.request.originatingNodeId).toBeTruthy();
-    await session.resolveRequest(opened.data.request.id, {
-      kind: "choice",
-      optionId: "approve-once",
-    });
-    await executing;
-    await observer.waitFor("run.completed");
-    expect(observer.events.map((event) => event.type)).toEqual(
-      expect.arrayContaining(["node.started", "node.completed", "run.completed"]),
-    );
-    await session.stop();
-    await adapter.close();
+    try {
+      await session.execute(fixture.turn("check"));
+      await observer.waitFor("run.completed");
+      expect(await session.releaseForReuse?.()).toBe(false);
+    } finally {
+      await session.stop();
+      await adapter.close();
+    }
   });
 
   it("cancels a workflow using its real run identifier", async () => {

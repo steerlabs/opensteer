@@ -740,6 +740,38 @@ describe("Pi sessions", () => {
     },
   );
 
+  it("rebinds a warm session with fresh user notices and stable system text", async () => {
+    const fixture = await setup();
+    const previous = new AbortController();
+    const session = await fixture.adapter.startSession({
+      ...fixture.context,
+      signal: previous.signal,
+    });
+    const instructionsPath = join(
+      fixture.context.threadStateDirectory,
+      "opensteer-instructions.md",
+    );
+    const stable = await readFile(instructionsPath, "utf8");
+    try {
+      await session.execute(fixture.turn("one"));
+      expect(await session.releaseForReuse?.()).toBe(true);
+      session.rebind?.({
+        ...fixture.context,
+        machineAccessNotice: "Computer offline",
+      });
+      previous.abort();
+      await session.execute(fixture.turn("two"));
+      const prompts = (await fixture.capture()).filter((entry) => entry.type === "prompt");
+      expect(prompts).toHaveLength(2);
+      expect(String(prompts[1]?.message)).toContain("Computer offline");
+      expect(await readFile(instructionsPath, "utf8")).toBe(stable);
+    } finally {
+      await session.stop();
+      await fixture.adapter.close();
+    }
+    expect(await session.releaseForReuse?.()).toBe(false);
+  });
+
   it("writes the extension and the instructions into Thread state at 0600", async () => {
     const fixture = await setup();
     const session = await fixture.adapter.startSession(fixture.context);
@@ -747,7 +779,7 @@ describe("Pi sessions", () => {
     const extensionPath = join(fixture.context.threadStateDirectory, piExtensionFileName);
     expect((await stat(extensionPath)).mode & 0o777).toBe(0o600);
     const extension = await readFile(extensionPath, "utf8");
-    expect(extension).toContain(noComputersNotice);
+    expect(extension).not.toContain(noComputersNotice);
     expect(extension).toContain("thread_read");
     // No credential ever reaches the file the model's own commands could read.
     expect(extension).not.toContain(fixture.context.agentTools.token);
@@ -1601,7 +1633,7 @@ describe("Pi inputs and instructions", () => {
     await fixture.adapter.close();
   });
 
-  it("puts the durable-history notice in front of the model when there is earlier history", () => {
+  it("keeps changing Run notices out of stable system instructions", () => {
     const context = {
       agentTools: {
         tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
@@ -1621,7 +1653,17 @@ describe("Pi inputs and instructions", () => {
     const text = piInstructions(context, tools);
     expect(text).toContain("Platform guide.");
     expect(text).toContain("Workspace instructions.");
-    expect(text).toContain("most recent 3 durable messages");
+    expect(text).not.toContain("most recent 3 durable messages");
+    expect(
+      piInstructions(
+        {
+          ...context,
+          machineAccessNotice: "offline 4m",
+          historyWindow: { byteCount: 50, hasEarlier: true, itemCount: 9 },
+        },
+        tools,
+      ),
+    ).toBe(text);
     expect(text).toContain("thread_read");
   });
 });

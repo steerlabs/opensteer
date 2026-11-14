@@ -153,14 +153,15 @@ integration("chat attachment delivery through a whole deployment", () => {
         .where("id", "=", threadId)
         .execute();
     });
-    // Another selection starts an engine of its own, which resumes the
-    // conversation and must find every file again.
+    // A selection Codex fixes when it loads a thread starts an engine of its
+    // own, which resumes the conversation and must find every file again.
     await stack.updateThreadExecution(
       threadId,
       ModelSelectionSchema.parse({
         modelId: "gpt-5.6-sol",
         options: {
           effort: "high",
+          speed: "priority",
         },
         providerId: "openai",
       }),

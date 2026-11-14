@@ -135,7 +135,6 @@ export async function planMachineAccess(options: {
   readonly environment: Readonly<Record<string, string>>;
   readonly helperBinary: string;
   readonly machineAccess: MachineAccessRunContext;
-  readonly now?: number;
   readonly platform?: NodeJS.Platform;
 }): Promise<MachineAccessPlan> {
   const platform = options.platform ?? process.platform;
@@ -151,10 +150,8 @@ export async function planMachineAccess(options: {
     return { reason: ineligible ?? "platform" };
   }
   // What the note lists is what the ssh config addresses: one fitted list
-  // feeds both, so the note never names a computer the Run cannot reach, and
-  // one clock reading keeps the delivered note the size that was fitted.
-  const now = options.now ?? Date.now();
-  const inventory = fitMachineAccessNotice(options.machineAccess, now);
+  // feeds both, so the note never names a computer the Run cannot reach.
+  const inventory = fitMachineAccessNotice(options.machineAccess);
   if (inventory.machines.length === 0) return { reason: "none-reachable" };
   const path = options.environment.PATH;
   const clients = path ? await resolveClientBinaries(path) : undefined;
@@ -163,7 +160,7 @@ export async function planMachineAccess(options: {
     clients,
     helperBinary: resolve(options.helperBinary),
     inventory,
-    notice: renderMachineAccessNotice(inventory, now),
+    notice: renderMachineAccessNotice(inventory),
     platform,
   };
 }
@@ -465,19 +462,17 @@ function renderMachineNoticeFullAccess(machine: MachineAccessRunMachine): string
     : "; macOS Full Disk Access off (some protected data may be unavailable)";
 }
 
-export function fitMachineAccessNotice(
-  context: MachineAccessRunContext,
-  now = Date.now(),
-): MachineAccessRunContext {
+export function fitMachineAccessNotice(context: MachineAccessRunContext): MachineAccessRunContext {
   const machines = [...context.machines];
   let omittedMachines = context.omittedMachines;
   while (
     machines.length > 0 &&
     Buffer.byteLength(
-      renderMachineAccessNotice(
-        { callerMachineName: context.callerMachineName, machines, omittedMachines },
-        now,
-      ),
+      renderMachineAccessNotice({
+        callerMachineName: context.callerMachineName,
+        machines,
+        omittedMachines,
+      }),
       "utf8",
     ) > machineAccessNoticeMaxBytes
   ) {
@@ -511,7 +506,6 @@ export function machineAccessUnavailableSentence(reason: MachineAccessUnavailabl
 
 export function renderMachineAccessNotice(
   context: MachineAccessRunContext,
-  now = Date.now(),
   unavailable?: MachineAccessUnavailableReason,
 ): string {
   if (context.machines.length === 0 && context.omittedMachines === 0)
@@ -523,17 +517,15 @@ export function renderMachineAccessNotice(
           unavailable ? ` ${machineAccessUnavailableSentence(unavailable)}` : ""
         }`
       : "Other computers you can reach over SSH (ssh, scp, sftp, rsync, git as usual; no interactive terminal, so run non-interactive commands):",
-    ...context.machines.map((machine) => {
-      const platform = machine.platform === "darwin" ? "macOS" : "Linux";
-      const status =
-        machine.status === "online"
-          ? "online"
-          : machine.lastSeenAt
-            ? `offline ${relativeTime(Date.parse(machine.lastSeenAt), now)}`
-            : "offline, never seen";
-      const shares = renderMachineNoticeShares(machine.shares);
-      return `- ${machine.alias} (${platform}, ${status}): ${shares}; commands ${machine.commands ? "allowed" : "off"}; port forwarding ${machine.forwarding ? "allowed" : "off"}${renderMachineNoticeFullAccess(machine)}.`;
-    }),
+    ...context.machines
+      .toSorted((a, b) => (a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0))
+      .map((machine) => {
+        const platform = machine.platform === "darwin" ? "macOS" : "Linux";
+        const status =
+          machine.status === "online" ? "online" : machine.lastSeenAt ? "offline" : "never seen";
+        const shares = renderMachineNoticeShares(machine.shares);
+        return `- ${machine.alias} (${platform}, ${status}): ${shares}; commands ${machine.commands ? "allowed" : "off"}; port forwarding ${machine.forwarding ? "allowed" : "off"}${renderMachineNoticeFullAccess(machine)}.`;
+      }),
   ];
   if (context.omittedMachines > 0) {
     lines.push(
@@ -737,14 +729,4 @@ function parseSshG(output: string): Readonly<Record<string, string>> {
     if (space > 0) parsed[line.slice(0, space)] ??= line.slice(space + 1);
   }
   return parsed;
-}
-
-function relativeTime(then: number, now: number): string {
-  const milliseconds = Math.max(0, now - then);
-  const minutes = Math.floor(milliseconds / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 48) return `${hours}h`;
-  return `${Math.floor(hours / 24)}d`;
 }

@@ -1071,7 +1071,9 @@ interface Captured {
   readonly rootInterrupted?: string | null;
   readonly params?: {
     readonly threadId?: string;
-    readonly additionalContext?: { readonly opensteer_computers?: { readonly value?: string } };
+    readonly additionalContext?: {
+      readonly opensteer_computers_000001?: { readonly value?: string };
+    };
   };
 }
 
@@ -1082,7 +1084,7 @@ function turnsOf(capture: readonly Captured[]): Turn[] {
   );
   const notices = capture.flatMap((line) =>
     line.method === "turn/start" && line.params?.threadId && runThreads.has(line.params.threadId)
-      ? [line.params?.additionalContext?.opensteer_computers?.value ?? ""]
+      ? [line.params?.additionalContext?.opensteer_computers_000001?.value ?? ""]
       : [],
   );
   const pids = capture.flatMap((line) => (line.fakeTurn ? [line.fakeTurn.pid] : []));

@@ -314,7 +314,7 @@ function serve() {
           finishTurn();
           return;
         }
-        if (scenario === "child-approval") {
+        if (scenario === "child-approval" || scenario === "child-approval-session") {
           notification("item/started", {
             item: {
               childSessionId: "019a3333-3333-7333-8333-333333333333",
@@ -334,12 +334,23 @@ function serve() {
             params: {
               approvalId: "approval-1",
               availableChoices: [
+                ...(scenario === "child-approval-session"
+                  ? []
+                  : [
+                      {
+                        acceptsFeedback: false,
+                        choiceId: "approve-once",
+                        decision: "approved",
+                        label: "Allow once",
+                        scope: "once",
+                      },
+                    ]),
                 {
                   acceptsFeedback: false,
-                  choiceId: "approve-once",
+                  choiceId: "approve-session",
                   decision: "approved",
-                  label: "Allow once",
-                  scope: "once",
+                  label: "Allow for this session",
+                  scope: "session",
                 },
                 {
                   acceptsFeedback: true,
@@ -416,13 +427,17 @@ function serve() {
       return;
     }
     if (method === "approval/decide") {
-      response(id, {
-        approvalId: params.approvalId,
-        commandId: params.commandId,
-        status: "accepted",
-        terminal: true,
-      });
-      if (scenario === "child-approval") {
+      const accepted = () =>
+        response(id, {
+          approvalId: params.approvalId,
+          commandId: params.commandId,
+          status: "accepted",
+          terminal: true,
+        });
+      // Muse can apply a decision and finish before it answers the command.
+      if (scenario === "child-approval-session") setTimeout(accepted, 200);
+      else accepted();
+      if (scenario === "child-approval" || scenario === "child-approval-session") {
         queueMicrotask(() =>
           notification("item/completed", {
             item: {
@@ -530,13 +545,24 @@ function serve() {
     delta("message-1", "from Muse", "text");
   }
 
+  let finishedTurns = 0;
   function finishTurn() {
+    finishedTurns++;
+    if (scenario === "guidance-compaction" && finishedTurns === 2) {
+      notification("session/compactionCompleted", { sessionId });
+    }
     notification("session/tokenUsage", {
       promptTokens: 11,
       sessionId,
       totalTokens: 15,
       turnId,
-      usage: { cachedTokens: 2, inputTokens: 10, outputTokens: 4, reasoningTokens: 1 },
+      usage: {
+        cachedTokens: 2,
+        cacheWriteTokens: 3,
+        inputTokens: 10,
+        outputTokens: 4,
+        reasoningTokens: 1,
+      },
     });
     notification("item/completed", {
       item: {
@@ -552,10 +578,28 @@ function serve() {
     notification("turn/completed", {
       sessionId,
       sourceRange: { first: "2", last: "3" },
-      terminal: "completed",
+      terminal:
+        scenario === "guidance-cancelled" && finishedTurns === 1 ? "cancelled" : "completed",
       turnId,
-      usage: { cachedTokens: 2, inputTokens: 10, outputTokens: 4, reasoningTokens: 1 },
+      usage: {
+        cachedTokens: 2,
+        cacheWriteTokens: 3,
+        inputTokens: 10,
+        outputTokens: 4,
+        reasoningTokens: 1,
+      },
       viewCursor: "v4",
     });
+    if (scenario === "guidance-compaction-item" && finishedTurns === 2) {
+      notification("item/completed", {
+        item: {
+          itemId: "guidance-compaction",
+          kind: "compaction",
+          revision: 1,
+          status: "completed",
+          turnId,
+        },
+      });
+    }
   }
 }
