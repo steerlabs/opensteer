@@ -51,12 +51,10 @@ export function agentToolsPlanForRun(input: {
 }
 
 /** The input schema engines see for a tool; the Run plan's revision hashes exactly this. */
-export function advertisedToolInputSchema(
-  tool: {
-    readonly input: Parameters<typeof toJsonSchemaCompat>[0];
-    readonly advertisedInputSchema?: Readonly<Record<string, unknown>>;
-  },
-): Record<string, unknown> {
+export function advertisedToolInputSchema(tool: {
+  readonly input: Parameters<typeof toJsonSchemaCompat>[0];
+  readonly advertisedInputSchema?: Readonly<Record<string, unknown>>;
+}): Record<string, unknown> {
   return advertisedJsonSchema(
     tool.advertisedInputSchema ??
       toJsonSchemaCompat(tool.input, { strictUnions: true, pipeStrategy: "input" }),

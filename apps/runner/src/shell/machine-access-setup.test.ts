@@ -844,23 +844,21 @@ describe("machine access notice", () => {
   });
   it("renders online, offline, shares and omitted machines", () => {
     const context = machineContext();
-    const notice = renderMachineAccessNotice(
-      {
-        callerMachineName: "cloud-1",
-        machines: [
-          context.machines[0]!,
-          {
-            ...machine("build-box", "Build box"),
-            commands: false,
-            forwarding: false,
-            lastSeenAt: "2026-09-13T10:00:00.000Z",
-            shares: [{ mode: "read", path: "/srv/data" }],
-            status: "offline",
-          },
-        ],
-        omittedMachines: 3,
-      },
-    );
+    const notice = renderMachineAccessNotice({
+      callerMachineName: "cloud-1",
+      machines: [
+        context.machines[0]!,
+        {
+          ...machine("build-box", "Build box"),
+          commands: false,
+          forwarding: false,
+          lastSeenAt: "2026-09-13T10:00:00.000Z",
+          shares: [{ mode: "read", path: "/srv/data" }],
+          status: "offline",
+        },
+      ],
+      omittedMachines: 3,
+    });
     expect(notice).toContain("alpha (macOS, online)");
     expect(notice).toContain("build-box (macOS, offline)");
     expect(notice).toContain("/srv/data (read-only); commands off; port forwarding off.");
