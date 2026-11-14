@@ -21,6 +21,7 @@ import {
   TeamSavedStateSchema,
   TeamTransportRegistry,
   TeamRuntimeOwner,
+  type AccountProfileRelay,
   type TeamCacheScope,
   type TeamPersistence,
   type TeamSessionClient,
@@ -226,6 +227,8 @@ class MobileTeamRuntime {
     readonly previews?: NotificationPreviews | null;
     /** Mock mode's computers and the teams each is in, before any computer has said. */
     readonly seed?: Readonly<Record<string, readonly LinkedTeam[]>>;
+    /** The person's Account name, relayed to teams holding an older one. */
+    readonly profiles?: AccountProfileRelay;
   }) {
     this.owner = options.client.oauth.teamRuntime();
     this.#seed = options.seed ?? {};
@@ -265,6 +268,7 @@ class MobileTeamRuntime {
         connect: transport.connect,
         readFile: transport.readFile,
         uploadFile: transport.uploadFile,
+        ...(options.profiles ? { profiles: options.profiles } : {}),
       };
     });
     this.#detachOwner = this.owner.own(() => this.#retire());
@@ -1073,6 +1077,8 @@ type Options = ConstructorParameters<typeof MobileTeamRuntime>[0];
 
 /** One service facade; each Account owns an isolated runtime and its entire mutable state. */
 export class MobileTeams {
+  /** The person's Account name, which this phone's team sessions relay. */
+  readonly profiles: AccountProfileRelay | null;
   readonly #options: Options;
   readonly #listeners = new Set<() => void>();
   #runtime: MobileTeamRuntime;
@@ -1081,6 +1087,7 @@ export class MobileTeams {
   #foreground = true;
   constructor(options: Options) {
     this.#options = options;
+    this.profiles = options.profiles ?? null;
     this.#runtime = new MobileTeamRuntime(options);
   }
   get owner(): TeamRuntimeOwner {
@@ -1109,6 +1116,8 @@ export class MobileTeams {
   }
   #establish(): boolean {
     if (this.owner === this.#options.client.oauth.teamRuntime()) return false;
+    // Another Account signed in: its name is not the one held.
+    this.profiles?.changed();
     this.#detachRuntime?.();
     this.#runtime.dispose();
     this.#runtime = new MobileTeamRuntime(this.#options);

@@ -1,5 +1,5 @@
 import { IdleCompactionPolicyViewSchema, PersonalSettingsSchema } from "@opensteer/core";
-import { AuthSessionIdSchema, QuietTaskDaysSchema } from "@opensteer/core";
+import { AuthSessionIdSchema, PersonNameSchema, QuietTaskDaysSchema } from "@opensteer/core";
 import {
   AppIdSchema,
   AppTitleSchema,
@@ -84,6 +84,16 @@ export const AppTabSchema = z.object({
 export const AppTabsSchema = z.array(AppTabSchema).max(500);
 export type AppTab = z.infer<typeof AppTabSchema>;
 
+/**
+ * The personal owner's name: null shows as "You". While `accountBacked`, the linked Opensteer
+ * Account owns it and a name is required.
+ */
+export const OwnerProfileViewSchema = z.object({
+  name: PersonNameSchema.nullable(),
+  accountBacked: z.boolean(),
+});
+export type OwnerProfileView = z.infer<typeof OwnerProfileViewSchema>;
+
 export const HostBootstrapSchema = z.object({
   deploymentId: DeploymentIdSchema,
   sessionId: AuthSessionIdSchema,
@@ -106,6 +116,8 @@ export const HostBootstrapSchema = z.object({
   environments: z.array(HostBootstrapEnvironmentSchema).max(400),
   executionPreferences: ExecutionPreferencesViewSchema,
   quietTaskDays: QuietTaskDaysSchema,
+  /** Absent from Hosts before `viewer.name.update`; its presence is the capability. */
+  ownerProfile: OwnerProfileViewSchema.optional(),
   harnesses: z.array(HostBootstrapHarnessSchema).max(400),
   identityConfig: IdentityConfigViewSchema,
   machines: z.array(MachineSummarySchema).max(400),

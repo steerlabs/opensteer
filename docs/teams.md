@@ -107,6 +107,24 @@ distinctly, so they stay in the location older apps read and survive Stable↔Be
 uses them only after authenticated team bootstrap names that same user. An agent link's owner can
 be a different person and never supplies the device's team identity.
 
+## Names
+
+A name is the person's, never the team's: no per-team names, and admins cannot rename anyone.
+Once someone has an Opensteer Account it holds their one name, numbers every change and signs a
+receipt of it ([AccountProfiles](../apps/control-plane/src/account/account-profiles.ts)). Account
+cannot reach team servers, so a team takes a member's name only from such a receipt: one the
+member's own app relays when the team's copy is older (`team.member.profile.apply`), or the one
+in the UserInfo of a browser sign-in. Either way the team checks Account's signature and that the
+receipt's Account signs in as that user, and applies it only when newer, so a late or replayed
+receipt never moves a name backwards. A rename is presentation, not access: it publishes
+`team.member.updated` and never moves the access revision, which would reload every session.
+Handles are fixed at join, and messages reference user ids, so history shows the current name.
+
+A personal Opensteer with no Account link owns its owner's name; it may be empty (shown as "You")
+and starts as the computer account's full name until anyone sets one. Linking adopts the
+Account's name, a rename while linked is saved to Account first (never queued), and unlinking
+keeps the last name ([owner profile](../apps/host/src/administration/owner-profile.ts)).
+
 ## Access and removal
 
 Channel membership and topic grants define access, including nested groups. A channel marked

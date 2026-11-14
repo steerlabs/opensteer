@@ -56,11 +56,13 @@ import {
   type AutomaticModelConfig,
   type AutomaticModelRole,
   type QuietTaskDays,
+  type PersonName,
 } from "@opensteer/core";
 import {
   automaticModelCatalogView,
   AutomaticModelsViewSchema,
   type AutomaticModelsView,
+  type OwnerProfileView,
 } from "@opensteer/protocol";
 import { MockDesktopUpdates, type MockDesktopUpdateScenario } from "./mock-desktop-updates.js";
 import { MockSettingsFixtures } from "./settings-fixtures.js";
@@ -2814,6 +2816,12 @@ async function executeMockCommand(
     case "viewer.quietTasks.update":
       client.setQuietTaskDays(command.quietTaskDays);
       return rpcSuccess({ quietTaskDays: command.quietTaskDays, type: command.type });
+    case "viewer.name.update":
+      return rpcSuccess({
+        applied: true,
+        profile: client.setOwnerProfileName(command.name),
+        type: command.type,
+      });
     case "thread.access.update": {
       const thread = await client.updateThreadAccessMode(command);
       return rpcSuccess({
@@ -4784,6 +4792,18 @@ export class MockHostClient implements HostClient {
   /** Moves a task to Done as the Host's quiet pass would, so the preview can show it. */
   moveQuietly(threadId: string): void {
     this.#state.moveQuietly(threadId);
+  }
+
+  async setOwnerName(name: PersonName | null): Promise<{ readonly applied: boolean }> {
+    const result = unwrapRpcResult(
+      await this.rpc["commands.dispatch"]({
+        idempotencyKey: crypto.randomUUID(),
+        name,
+        type: "viewer.name.update",
+      }),
+    );
+    if (result.type !== "viewer.name.update") throw new Error("Setting command mismatch.");
+    return { applied: result.applied };
   }
 
   async setQuietTaskDays(days: QuietTaskDays): Promise<void> {
@@ -11926,6 +11946,11 @@ class MockHostState {
   setQuietTaskDays(days: QuietTaskDays): void {
     this.update({ ...this.snapshot, quietTaskDays: days });
   }
+  setOwnerProfileName(name: PersonName | null): OwnerProfileView {
+    const ownerProfile = { name, accountBacked: false };
+    this.update({ ...this.snapshot, ownerProfile });
+    return ownerProfile;
+  }
 
   /** Each asked-for Done list: the reader's Done tasks, newest Done first. */
   private doneTaskLists(
@@ -13102,7 +13127,7 @@ function createInitialSnapshot(): HostSnapshot {
       signupPolicy: "closed",
     },
     machines: mockMachines.map((machine) => ({ ...machine })),
-    ownerName: "Alex",
+    ownerProfile: { name: "Alex", accountBacked: false },
     session: "authenticated",
     sessionSurface: "canonical",
     machineRevision: 0,

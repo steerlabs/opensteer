@@ -242,6 +242,25 @@ function AccountSettingsContent(props: {
     return <NativeSettingsPage sections={sections} />;
   }
 
+  // The person's name first: what their agent calls them and, signed in, what teammates see.
+  const owner = host?.getSnapshot().ownerProfile ?? null;
+  if (owner !== null)
+    sections.push({
+      key: "name",
+      title: "",
+      rows: [
+        {
+          key: "name",
+          kind: "button",
+          label: owner.name ?? "Add your name",
+          detail: owner.accountBacked
+            ? "Your name · teammates see it"
+            : "Your name · stays on your computer",
+          opens: true,
+          onPress: () => navigation.navigate("YourName"),
+        },
+      ],
+    });
   if (accountModel !== null) {
     const signedIn = accountModel.action?.kind === "sign-out";
     sections.push({

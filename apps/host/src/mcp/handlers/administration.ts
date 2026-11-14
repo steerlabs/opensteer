@@ -220,15 +220,17 @@ export class AdministrationToolHandlers {
   async settings_read({ caller }: ToolCall<"settings_read">) {
     const store = this.service.dependencies.store;
     const environments = await store.listEnvironmentsForUser(caller.userId);
-    const [instances, preferences, timeZone] = await Promise.all([
+    const [instances, preferences, timeZone, owner] = await Promise.all([
       store.listHarnessInstances({ environmentIds: environments.map(({ id }) => id) }),
       store.getExecutionPreferences(caller.userId),
       store.notificationState.timeZoneFor(caller.userId),
+      store.ownerProfile.read(),
     ]);
     return {
       harnesses: instances.map(harnessView),
       preferences,
       timeZone,
+      ownerName: owner?.name ?? null,
     };
   }
   async computer_list({ caller, input }: ToolCall<"computer_list">) {

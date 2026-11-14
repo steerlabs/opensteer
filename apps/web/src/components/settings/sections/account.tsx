@@ -9,6 +9,7 @@ import { useShell } from "../../app-shell.js";
 import { deploymentMutationsBlockedReason } from "../../deployment-operation.js";
 import { SignOutDialog } from "../../places/place-account.js";
 import { SectionHeader, SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
+import { OwnerNameRow } from "./owner-name.js";
 import { RemoteAccessCard } from "./remote-access-card.js";
 
 /**
@@ -23,6 +24,9 @@ export function AccountSection() {
   return (
     <>
       <SectionHeader title="Account" />
+      <SettingsGroup heading={null} headingId="settings-account-name">
+        <OwnerNameRow />
+      </SettingsGroup>
       <SettingsGroup heading={null} headingId="settings-account">
         {desktopBridge ? (
           <AccountSessionRow account={deploymentAccess?.account ?? null} />

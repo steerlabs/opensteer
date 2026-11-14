@@ -194,12 +194,27 @@ export function useTeamMembers(
     [session, channelId],
   );
   const handles = useSyncExternalStore(subscribePeople, readHandles, readHandles);
+  // Renames the team announced since the list was read, laid over it in place.
+  const readUpdates = useCallback(() => session?.getSnapshot().memberUpdates, [session]);
+  const updates = useSyncExternalStore(subscribePeople, readUpdates, readUpdates);
+  const members = useMemo(
+    () =>
+      updates
+        ? read.members.map((member) => {
+            const renamed = updates[member.userId];
+            return renamed && (renamed.nameRevision ?? 0) >= (member.nameRevision ?? 0)
+              ? renamed
+              : member;
+          })
+        : read.members,
+    [read.members, updates],
+  );
   const directory = useMemo(
-    () => teamPeopleDirectory(read.members, remotePeople, handles),
-    [read.members, remotePeople, handles],
+    () => teamPeopleDirectory(members, remotePeople, handles),
+    [members, remotePeople, handles],
   );
   return {
-    members: read.members,
+    members,
     directory,
     status: read.status,
     failure: read.failure,

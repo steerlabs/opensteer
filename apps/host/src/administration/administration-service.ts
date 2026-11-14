@@ -44,6 +44,7 @@ export type AdministrationDependencies = Pick<
   | "runners"
   | "channels"
   | "realtime"
+  | "ownerProfile"
 > & {
   readonly reconcileIdleCompaction?: () => Promise<void>;
   readonly publishDeploymentEvent: (event: import("@opensteer/core").AgentEvent) => void;
@@ -55,6 +56,7 @@ export type AdministrationDependencies = Pick<
 const coreTypes = [
   "viewer.timeZone.update",
   "viewer.quietTasks.update",
+  "viewer.name.update",
   "settings.idleCompaction.set",
   "execution.preferences.remember",
   "automaticModels.set",
@@ -116,6 +118,9 @@ export class AdministrationService {
         code: "forbidden",
         message: "Claude compaction preferences require the person",
       });
+    // A name is what others see; it changes only when the person saves it.
+    if (command.type === "viewer.name.update")
+      throw new OpensteerError({ code: "forbidden", message: "Changing your name requires you" });
     if (command.type.startsWith("automaticModels."))
       throw new OpensteerError({
         code: "forbidden",
@@ -351,6 +356,17 @@ export class AdministrationService {
           }),
           type: command.type,
         };
+      case "viewer.name.update": {
+        if (!dependencies.ownerProfile)
+          throw new OpensteerError({
+            code: "not_found",
+            message: "This Opensteer has no owner name",
+          });
+        return {
+          ...(await dependencies.ownerProfile.update(userId, command.name)),
+          type: command.type,
+        };
+      }
       case "viewer.timeZone.update":
         return {
           timeZone: await dependencies.store.notificationState.setTimeZone({

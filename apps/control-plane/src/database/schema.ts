@@ -52,6 +52,8 @@ export interface UserTable {
   /** The deletion attempt holding this Account's fence; see `beginAccountDeletion`. */
   deletionAttemptId: string | null;
   deletionFencedUntil: NullableTimestamp;
+  /** Bumped by every name change; see `AccountProfiles`. */
+  nameRevision: ColumnType<string, never, string>;
 }
 
 export interface AuthAccountTable {

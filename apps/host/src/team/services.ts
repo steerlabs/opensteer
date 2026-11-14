@@ -52,6 +52,7 @@ import { TeamLinkService } from "./link-service.js";
 import { TeamFileService } from "./file-service.js";
 import { TeamShareFiles } from "../team-partners/files.js";
 import { TeamRealtimeHub } from "./realtime.js";
+import type { PersonProfileReceiptVerifier } from "../access/person-profile-receipt-verifier.js";
 
 export function assertTeamApiVersion(headers: Headers) {
   if (!acceptsTeamApiVersion(headers.get(teamApiVersionHeader)))
@@ -88,6 +89,8 @@ export interface TeamServiceOptions {
     command: Extract<HostApiCommand, { type: "notification.preview.register" }>,
   ) => Promise<void>;
   readonly publishPush: (delivery: TeamPushDelivery) => Promise<void>;
+  /** Verifies the Account-signed names members relay; absent where no Account is configured. */
+  readonly profileReceipts?: PersonProfileReceiptVerifier;
   /** A hosted team's Account id and the #general its bootstrap created; null when self-hosted. */
   readonly hostedTeam?: () => Promise<{
     readonly hostedTeamId: HostedTeamId;
@@ -206,6 +209,20 @@ export async function startTeamServices(options: TeamServiceOptions) {
   // A removal has committed; on failure the next maintenance pass frees its files.
   const freeFiles = () =>
     fileService.collectGarbage().catch(() => options.backgroundError("team-maintenance"));
+  /** One path for every name a team takes from an Account: relayed by an app or a browser sign-in. */
+  async function applyProfile(userId: UserId, receipt: unknown): Promise<boolean> {
+    requireTeam(options.profileReceipts, "This team cannot verify names");
+    const claims = await options.profileReceipts.verify(receipt);
+    const applied = await members.applyAccountName({
+      userId,
+      issuer: claims.iss,
+      subject: claims.sub,
+      name: claims.name,
+      revision: claims.revision,
+    });
+    if (applied?.member) realtime.memberUpdated(applied.member);
+    return applied !== null;
+  }
   async function dispatch(actor: TeamActor, raw: unknown): Promise<unknown> {
     requireTeam(actor.kind === "human", "Human session required for team commands");
     const command = TeamCommandSchema.parse(raw);
@@ -367,6 +384,8 @@ export async function startTeamServices(options: TeamServiceOptions) {
       case "team.owner.transfer":
         await members.change(actor, command.userId, "owner");
         break;
+      case "team.member.profile.apply":
+        return { type: command.type, applied: await applyProfile(actor.userId, command.receipt) };
       case "team.group.create":
         await groups.create(actor, command.id, command.name);
         break;
@@ -644,6 +663,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
     requests,
     files: fileService,
     realtime,
+    applyProfile,
     async rpc(
       headers: Headers,
       name: string,

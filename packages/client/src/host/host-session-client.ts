@@ -40,6 +40,7 @@ import {
   ExecutionNodeIdSchema,
   nodeDetailEventNodeId,
   type QuietTaskDays,
+  type PersonName,
   AgentEventViewSchema,
   BrowserSurfaceIdSchema,
   LiveItemViewSchema,
@@ -3400,6 +3401,16 @@ export class HttpHostClient {
         },
       });
   }
+  async setOwnerName(name: PersonName | null): Promise<{ readonly applied: boolean }> {
+    const result = await this.#dispatch({
+      idempotencyKey: mutationIdempotencyKey("owner-name"),
+      name,
+      type: "viewer.name.update",
+    });
+    if (result.type !== "viewer.name.update") return { applied: false };
+    this.#update({ ...this.#snapshot, ownerProfile: result.profile });
+    return { applied: result.applied };
+  }
   async setQuietTaskDays(days: QuietTaskDays): Promise<void> {
     const result = await this.#dispatch({
       idempotencyKey: mutationIdempotencyKey("quiet-tasks"),
@@ -3696,7 +3707,7 @@ export class HttpHostClient {
             ownerViewRevision,
           ),
         ),
-        ownerName: payload.user.displayName,
+        ownerProfile: payload.ownerProfile ?? null,
         session: "authenticated",
         sessionId: payload.sessionId,
         sessionSurface: payload.sessionSurface,
@@ -6027,7 +6038,7 @@ function emptySnapshot(): HostSnapshot {
     identityConfig: null,
     inputQueues: {},
     machines: [],
-    ownerName: null,
+    ownerProfile: null,
     revision: 0,
     session: "checking",
     sessionSurface: null,

@@ -466,6 +466,7 @@ const migrationProvider = {
       "0019_hosted_team_bootstrap": hostedTeamBootstrapMigration,
       "0020_team_ready_notifications": teamReadyNotificationsMigration,
       "0021_account_deletion_fence": accountDeletionFenceMigration,
+      "0022_account_name_revision": accountNameRevisionMigration,
     };
   },
 };
@@ -608,6 +609,19 @@ export const hostedTeamsMigration: Migration = {
     await sql`
       create index hosted_teams_pending on public.hosted_teams (created_at)
       where state <> 'deleted' or phase <> 'deleted'
+    `.execute(database);
+  },
+};
+
+/**
+ * Numbers each change to an Account's name so every copy keeps the newest. Add-only: a previous
+ * release never reads it, and its rows take revision 1.
+ */
+const accountNameRevisionMigration: Migration = {
+  async up(database) {
+    await sql`
+      alter table public.users
+        add column name_revision bigint not null default 1 check (name_revision >= 1)
     `.execute(database);
   },
 };

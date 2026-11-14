@@ -125,7 +125,7 @@ export const settingsItems: Readonly<Record<SettingsSectionId, SettingsRailItem>
   account: {
     id: "account",
     label: "Account",
-    description: "Your Opensteer sign-in",
+    description: "Your name and Opensteer sign-in",
   },
   general: {
     id: "general",

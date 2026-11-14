@@ -1,7 +1,7 @@
 import type { TeamPerson } from "@opensteer/client/team";
 import { useEffect, useSyncExternalStore } from "react";
 import type { TeamMember } from "@opensteer/protocol";
-import type { TeamSessionClient } from "@opensteer/client/team";
+import type { TeamSessionClient, TeamSessionSnapshot } from "@opensteer/client/team";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import type { PersonView, TeamTileView } from "../components/team/team-models.js";
 
@@ -41,16 +41,32 @@ export interface PeopleState {
   readonly status: "reading" | "read" | "failed";
 }
 
-/** One team's member directory, read page by page once and again after an access change. */
+/**
+ * One team's member directory, read page by page once and again after an access change, with
+ * renames the team announces laid over it as they arrive.
+ */
 class TeamPeople {
   readonly #client: TeamSessionClient;
   readonly #listeners = new Set<() => void>();
   #state: PeopleState = { members: new Map(), status: "reading" };
   #load = 0;
   #revision: string | null = null;
+  #updates: TeamSessionSnapshot["memberUpdates"];
 
   constructor(client: TeamSessionClient) {
     this.#client = client;
+    client.subscribe(() => this.#applyUpdates());
+  }
+
+  #applyUpdates(): void {
+    const updates = this.#client.getSnapshot().memberUpdates;
+    if (updates === this.#updates) return;
+    this.#updates = updates;
+    if (!updates || this.#state.members.size === 0) return;
+    const members = new Map(this.#state.members);
+    for (const member of Object.values(updates))
+      if (members.has(member.userId)) members.set(member.userId, member);
+    this.#set({ members });
   }
 
   getState = (): PeopleState => this.#state;
@@ -76,6 +92,10 @@ class TeamPeople {
         for (const member of page.members) members.set(member.userId, member);
         after = page.hasMore ? page.members.at(-1)?.userId : undefined;
       } while (after && members.size < memberBound);
+      // A rename that arrived while this read was in flight may be newer than the page.
+      for (const member of Object.values(this.#client.getSnapshot().memberUpdates ?? {}))
+        if ((members.get(member.userId)?.nameRevision ?? 0) < (member.nameRevision ?? 0))
+          members.set(member.userId, member);
       this.#set({ members, status: "read" });
     })().catch(() => {
       if (load === this.#load && this.#state.status !== "read") this.#set({ status: "failed" });

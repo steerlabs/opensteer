@@ -316,4 +316,6 @@ export const TeamServerFrameSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({ type: z.literal("team.access.changed"), accessRevision: SequenceSchema }),
   z.strictObject({ type: z.literal("team.agent.recipient"), recipient: TeamAgentRecipientSchema }),
+  /** A member's name changed; access did not, so nothing reloads. */
+  z.strictObject({ type: z.literal("team.member.updated"), member: TeamMemberSchema }),
 ]);

@@ -127,7 +127,7 @@ function useReport() {
 }
 
 function ProfilePage({ view }: { readonly view: TeamView }) {
-  const { coordination, leave } = useTeams();
+  const { coordination, leave, surface } = useTeams();
   const { openDelete, openTransfer } = useTeamDialogs();
   const navigate = useNavigate();
   const report = useReport();
@@ -151,7 +151,23 @@ function ProfilePage({ view }: { readonly view: TeamView }) {
     <>
       <SettingsGroup heading="Your profile" headingId="team-profile">
         <SettingsRow
-          detail={`@${me.handle} · your agent is @${me.handle}-agent`}
+          action={
+            // The name is the person's own, kept in their Account; the team only shows it.
+            surface === "team-web" ? null : (
+              <button
+                className="btn btn--small"
+                onClick={() => void navigate("/settings/account")}
+                type="button"
+              >
+                Edit name
+              </button>
+            )
+          }
+          detail={
+            surface === "team-web"
+              ? `@${me.handle} · your agent is @${me.handle}-agent. Change your name in the Opensteer app under Settings → Account.`
+              : `@${me.handle} · your agent is @${me.handle}-agent. Handles stay the same when you rename.`
+          }
           title={me.displayName}
         />
         <SettingsRow
