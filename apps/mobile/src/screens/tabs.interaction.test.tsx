@@ -448,6 +448,9 @@ vi.mock("@react-navigation/native", async () => {
     },
   };
 });
+vi.mock("../../modules/paste-target/index.js", () => ({
+  PasteTarget: ({ children }: { children?: ReactNode }) => <>{children}</>,
+}));
 vi.mock("expo", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
   return {

@@ -78,6 +78,10 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
   #pendingPicture: { channelId: string; tabId: string } | null = null;
   replay: ReplayLedgerState = { version: 1, highWaterAt: 0, entries: [] };
   actionGate: (() => Promise<void>) | null = null;
+  /** Holds native activation open, as the main thread can before it reaches it. */
+  foregroundGate: (() => Promise<void>) | null = null;
+  /** The views' own foreground, which native restores a retained tab only in. */
+  foreground = false;
   actionError: PhoneBrowserError | null = null;
   erasure: "deleted" | "pending-restart" = "deleted";
   mountError: PhoneBrowserError | null = null;
@@ -171,7 +175,9 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
     return this.qualification;
   }
   async setForeground(input: Input<"setForeground">) {
+    if (this.foregroundGate) await this.foregroundGate();
     this.#check(input, "setForeground");
+    this.foreground = input.active;
   }
   async verifyAttach(input: Input<"verifyAttach">) {
     this.#check(input, "verifyAttach");
@@ -278,6 +284,8 @@ export class FakePhoneBrowserNative implements PhoneBrowserNativePort {
       throw new PhoneBrowserError("forbidden", "The profile authority changed.");
     if (input.restoreFrom) {
       const retained = this.tabs.get(input.tabId);
+      if (!this.foreground)
+        throw new PhoneBrowserError("forbidden", "Native views are not in the foreground.");
       if (
         !retained ||
         retained.state === "live" ||

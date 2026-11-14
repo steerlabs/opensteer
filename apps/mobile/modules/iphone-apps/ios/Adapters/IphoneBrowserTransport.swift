@@ -20,6 +20,7 @@ public final class IphoneBrowserTransport: @unchecked Sendable {
   private var clockDate = Date()
   private var clockTick = DispatchTime.now().uptimeNanoseconds
   private var socket: URLSessionWebSocketTask?
+  private var stream: UUID?
   private var observer: (([String: Any]) -> Void)?
   private var erasureObserver: (([String: Any]) -> Void)?
   private static let nativeConnection = PhoneBrowserConnection(now: { shared.now() },
@@ -72,11 +73,12 @@ public final class IphoneBrowserTransport: @unchecked Sendable {
     let date = try WireField.date(welcome, "serverTime")
     let heartbeat = try WireField.int(welcome, "heartbeatIntervalMs", range: 1_000...300_000)
     clockLock.lock(); clockDate = date; clockTick = DispatchTime.now().uptimeNanoseconds; clockLock.unlock()
-    lock.lock(); self.socket = socket; heartbeatIntervalMs = heartbeat; lock.unlock()
-    try connection.adopt(welcome, sender: { [weak socket] message, completion in
+    lock.lock(); self.socket = socket; stream = nil; heartbeatIntervalMs = heartbeat; lock.unlock()
+    let adopted = try connection.adopt(welcome, sender: { [weak socket] message, completion in
       guard let socket else { completion(PhoneBrowserFailure.unavailable); return }
       socket.send(message, completionHandler: completion)
     }, close: { [weak socket] in socket?.cancel(with: .goingAway, reason: nil) })
+    lock.lock(); if self.socket === socket { stream = adopted }; lock.unlock()
   }
 
   @discardableResult func fence(reason: String) -> Int {
@@ -97,7 +99,18 @@ public final class IphoneBrowserTransport: @unchecked Sendable {
 
   func offline(reason: String) {
     connection.offline(reason: reason)
-    lock.lock(); socket?.cancel(with: .goingAway, reason: nil); socket = nil; lock.unlock()
+    lock.lock(); socket?.cancel(with: .goingAway, reason: nil); socket = nil; stream = nil; lock.unlock()
+  }
+
+  /// Takes the stream offline only while it is still `expected`: a replaced connection's late
+  /// failure must not end the one that followed it. The connection decides under its own lock,
+  /// since its timers take this lock while holding theirs. Returns whether it did.
+  @discardableResult func offline(reason: String, ifCurrent expected: URLSessionWebSocketTask) -> Bool {
+    lock.lock(); let current = socket === expected ? stream : nil; lock.unlock()
+    guard let current, connection.offline(reason: reason, stream: current) else { return false }
+    lock.lock(); if socket === expected { socket = nil; stream = nil }; lock.unlock()
+    expected.cancel(with: .goingAway, reason: nil)
+    return true
   }
 
   func erase(deploymentId: String, completion: @escaping (Bool) -> Void) {

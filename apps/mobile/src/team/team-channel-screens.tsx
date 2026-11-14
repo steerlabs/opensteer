@@ -18,7 +18,12 @@ import {
   teamPageUrl,
   type TeamMessageId,
 } from "@opensteer/core";
-import type { HostApiCommandInput, TeamMember, TeamMessage } from "@opensteer/protocol";
+import {
+  teamUploadMaxBytes,
+  type HostApiCommandInput,
+  type TeamMember,
+  type TeamMessage,
+} from "@opensteer/protocol";
 import { useFocusEffect, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import {
@@ -60,7 +65,10 @@ import type {
   StagedAttachmentView,
 } from "./team-models.js";
 import type { TeamComposerProps } from "./team-composer.js";
+import { discardPastedImage } from "../../modules/paste-target/files.js";
+import type { PastedImages } from "../../modules/paste-target/index.js";
 import {
+  pastedTeamSource,
   pickTeamPhoto,
   uploadRefusal,
   uploadToTeam,
@@ -500,6 +508,24 @@ function Place(props: {
   };
   const [staged, setStaged] = useState<readonly Staged[]>([]);
   const [failure, setFailure] = useState<string | null>(null);
+  // Pasted images are this screen's own temporary copies: each goes once its
+  // row leaves the strip (removed or sent), and all go with the screen.
+  const pastedFiles = useRef(new Map<string, string>());
+  useEffect(() => {
+    const held = new Set(staged.map((row) => row.source.localId));
+    for (const [localId, uri] of pastedFiles.current)
+      if (!held.has(localId)) {
+        pastedFiles.current.delete(localId);
+        discardPastedImage(uri);
+      }
+  }, [staged]);
+  useEffect(() => {
+    const files = pastedFiles.current;
+    return () => {
+      for (const uri of files.values()) discardPastedImage(uri);
+      files.clear();
+    };
+  }, []);
   const draftTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const changeText = (next: string): void => {
     setText(next);
@@ -562,7 +588,27 @@ function Place(props: {
 
   const attach = async (): Promise<void> => {
     const source = await pickTeamPhoto().catch(() => null);
-    if (source === null || session.owner?.signal.aborted) return;
+    if (source !== null) await stage(source);
+  };
+
+  const pasteImages = (pasted: PastedImages): void => {
+    // An edit changes only the words; an image pasted into it belongs to no message.
+    if (editing !== null) {
+      for (const image of pasted.images) discardPastedImage(image.uri);
+      return;
+    }
+    if (pasted.tooLarge > 0)
+      setFailure(`A pasted image is over ${teamUploadMaxBytes / 1_048_576} MB.`);
+    else if (pasted.failed > 0) setFailure("A pasted image could not be read.");
+    for (const image of pasted.images) {
+      const source = pastedTeamSource(image);
+      pastedFiles.current.set(source.localId, source.uri);
+      void stage(source);
+    }
+  };
+
+  const stage = async (source: TeamUploadSource): Promise<void> => {
+    if (session.owner?.signal.aborted) return;
     const refused = uploadRefusal(source);
     const entry: Staged = { source, fileId: null, refused, failed: null };
     setStaged((held) => [...held, entry]);
@@ -813,6 +859,7 @@ function Place(props: {
     onMention: () => changeText(`${text.slice(0, selection.start)}@${text.slice(selection.end)}`),
     attachments: staged.map(stagedView),
     onAttach: () => void attach(),
+    onPasteImages: pasteImages,
     onRemoveAttachment: (id) =>
       setStaged((held) => held.filter((row) => row.source.localId !== id)),
     onSend: () => void send(),

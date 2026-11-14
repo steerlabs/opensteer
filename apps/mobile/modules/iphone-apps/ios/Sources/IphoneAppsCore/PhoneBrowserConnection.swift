@@ -98,7 +98,8 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
     tickets.removeAll(); permits.removeAll(); channels.removeAll(); agents.removeAll(); actions.removeAll()
   }
 
-  public func adopt(_ welcome: [String: Any], sender: @escaping Sender, close: @escaping () -> Void) throws {
+  /// Returns the adopted stream's identity, for `offline(reason:stream:)`.
+  @discardableResult public func adopt(_ welcome: [String: Any], sender: @escaping Sender, close: @escaping () -> Void) throws -> UUID {
     lock.lock(); defer { lock.unlock() }
     if admission.fence != nil { offline(reason: "stream-replaced") }
     guard ledger != nil else { throw PhoneBrowserFailure.unavailable }
@@ -109,6 +110,16 @@ public final class PhoneBrowserConnection: @unchecked Sendable {
     self.keys = keys; self.sender = sender; closeTransport = close
     armLease()
     observer?(online(admission.fence!))
+    return streamRevision
+  }
+
+  /// Takes `stream` offline only while it is still the adopted one: a replaced
+  /// stream's late failure must not end the stream that followed it.
+  @discardableResult public func offline(reason: String, stream: UUID) -> Bool {
+    lock.lock(); defer { lock.unlock() }
+    guard stream == streamRevision, admission.fence != nil else { return false }
+    offline(reason: reason)
+    return true
   }
 
   public func offline(reason: String) {

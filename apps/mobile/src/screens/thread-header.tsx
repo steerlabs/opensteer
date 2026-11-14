@@ -6,6 +6,7 @@ import { Platform, StyleSheet, View, type LayoutChangeEvent } from "react-native
 import { headerFontScaleLimit, space } from "../theme.js";
 import {
   AroundButton,
+  aroundBarItem,
   aroundHeaderOptions,
   barOverContentOptions,
   type AroundWidths,
@@ -22,6 +23,8 @@ import { AppText } from "../ui/primitives.js";
 import { barGlassInset, barTitleWidth, barYield, useBarTitleRoom } from "../ui/bar-title.js";
 import { GlassSurface, useLiquidGlass } from "../ui/glass.js";
 import { useHostUserId } from "../ui/mobile-client-context.js";
+import { useVerticalBar } from "../ui/vertical-bar.js";
+import { nativeHeaderItem } from "../ui/header-item.js";
 
 interface ScopedHeader {
   readonly header: ThreadHeaderState;
@@ -172,7 +175,10 @@ function ThreadTitle(
   const [page, updatePage] = useRunPageView(props.hostClient, props.threadId);
   const foldedRunId = page.shown === "folded" ? page.runId : null;
   const room = page.room;
-  const hasEnd = glance !== null || foldedRunId !== null;
+  // Beside a vertical bar, Around is a plain item there; only a folded page stays in the row.
+  const verticalBar = useVerticalBar();
+  const aroundInRow = glance !== null && !verticalBar;
+  const hasEnd = aroundInRow || foldedRunId !== null;
   const glass = useLiquidGlass();
   const [around, setAround] = useState<AroundWidths | null>(null);
   const [need, setNeed] = useState<number | null>(null);
@@ -190,7 +196,7 @@ function ThreadTitle(
   const barRoom = useBarTitleRoom();
   const besideAround =
     (hasEnd && glass ? 2 * barGlassInset : 0) + (foldedRunId === null ? 0 : foldedPageWidth);
-  const measured = glance === null ? null : around;
+  const measured = aroundInRow ? around : null;
   const yielded =
     measured === null || need === null
       ? 0
@@ -209,6 +215,7 @@ function ThreadTitle(
   );
   const { deploymentId, hostClient, threadId } = props;
   useLayoutEffect(() => {
+    const openAround = () => navigation.navigate("ThreadAround", { deploymentId, threadId });
     navigation.setOptions(
       aroundHeaderOptions(
         !hasEnd ? null : (
@@ -235,19 +242,21 @@ function ThreadTitle(
                 threadId={threadId}
               />
             )}
-            {glance === null ? null : (
+            {!aroundInRow || glance === null ? null : (
               <AroundButton
                 glance={glance}
                 onWidths={onAroundWidths}
                 yielded={yielded}
-                onPress={() => navigation.navigate("ThreadAround", { deploymentId, threadId })}
+                onPress={openAround}
               />
             )}
           </View>
         ),
+        verticalBar && glance !== null ? nativeHeaderItem(aroundBarItem(glance, openAround)) : null,
       ),
     );
   }, [
+    aroundInRow,
     deploymentId,
     foldedRunId,
     glance,
@@ -258,6 +267,7 @@ function ThreadTitle(
     room,
     threadId,
     updatePage,
+    verticalBar,
     yielded,
   ]);
   return (

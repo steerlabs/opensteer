@@ -145,6 +145,39 @@ describe("phone browser manager", () => {
       );
     },
   );
+  test("a connection arriving while the app comes back waits for native, so the tab is restored", async () => {
+    const fixture = await setup();
+    await fixture.present();
+    const leaving = fixture.manager.setForeground(false);
+    // The second report of leaving ("inactive", then "background") joins the first.
+    await fixture.manager.setForeground(false);
+    await leaving;
+    expect(fixture.native.foreground).toBe(false);
+    const reached = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    fixture.native.foregroundGate = async () => {
+      reached.resolve();
+      await release.promise;
+    };
+    const forward = fixture.manager.setForeground(true);
+    await withTimeout(reached.promise, 1000, {
+      timeoutError: () => new Error("Activation never reached native"),
+    });
+    const sessionId = `bsn_${uuid()}`;
+    const restored = fixture.reconnect({ sessionId });
+    // Everything the new connection can do before native finishes activating.
+    await new Promise((resolve) => setImmediate(resolve));
+    release.resolve();
+    await withTimeout(Promise.all([forward, restored]), 1000, {
+      timeoutError: () => new Error("Coming back never settled"),
+    });
+    expect(fixture.native.foreground).toBe(true);
+    expect(fixture.native.tabs.get(fixture.surfaceId)?.sessionId).toBe(sessionId);
+    expect(fixture.server()).toContainEqual(
+      expect.objectContaining({ type: "browser.snapshot", sessionId }),
+    );
+  });
+
   test("sends a completed profile inventory once per native connection, not after each attachment", async () => {
     const fixture = await setup();
     await fixture.attach();
