@@ -51,6 +51,7 @@ function fixture() {
   const browser = {
     newContext: vi.fn(async () => context as unknown as BrowserContext),
     newBrowserCDPSession: vi.fn(async () => cdp as unknown as CDPSession),
+    version: () => "151.0.7922.34",
   } as unknown as Browser;
   const kill = vi.fn(async () => {});
   const server = { kill, wsEndpoint: () => "ws://127.0.0.1/fake" } as unknown as BrowserServer;
