@@ -585,25 +585,28 @@ export function isWaitingInputState(
 }
 
 /**
- * A waiting message a person edited keeps its place and lifecycle in the
- * conversation; only its words, files and edit mark change. An entry not
- * loaded stays unloaded: an edit never draws a message.
+ * A waiting message rewritten in place keeps its place and lifecycle in the
+ * conversation; only its words, files and edit mark change. Without `edit` the
+ * Host rewrote it (a gathered assignment return), so its edit mark stays. An
+ * entry not loaded stays unloaded: an edit never draws a message.
  */
 export function withEditedMessage(
   entries: readonly TranscriptEntry[],
   message: MessageView,
-  edit: MessageEdit,
+  edit: MessageEdit | undefined,
 ): TranscriptEntry[] {
   const held = entries.find((entry) => entry.id === message.id);
-  if (held?.kind !== "message" || (held.edit?.revision ?? 0) > edit.revision) return [...entries];
-  const edited = toMessageEntry({ ...message, edit }, held.policy);
+  if (held?.kind !== "message" || (edit && (held.edit?.revision ?? 0) > edit.revision))
+    return [...entries];
+  const mark = edit ?? held.edit;
+  const edited = toMessageEntry({ ...message, ...(mark ? { edit: mark } : {}) }, held.policy);
   if (!edited) return [...entries];
-  const { places: _places, ...kept } = held;
+  const { places: _places, edit: _edit, ...kept } = held;
   const next: MessageEntry = {
     ...kept,
     attachments: edited.attachments ?? [],
     body: edited.body,
-    edit,
+    ...(mark ? { edit: mark } : {}),
     pages: edited.pages ?? [],
     ...(edited.places ? { places: edited.places } : {}),
   };

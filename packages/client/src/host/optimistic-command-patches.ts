@@ -607,19 +607,22 @@ export function withEditedWaitingMessage(
   snapshot: HostSnapshot,
   threadId: string,
   message: MessageView,
-  edit: MessageEdit,
+  edit: MessageEdit | undefined,
   input?: ThreadInputQueueItem["input"],
 ): HostSnapshot {
   const transcript = snapshot.transcripts[threadId];
-  const stale = (held: MessageView) => (held.edit?.revision ?? 0) > edit.revision;
+  const stale = (held: MessageView) =>
+    edit !== undefined && (held.edit?.revision ?? 0) > edit.revision;
   const needsYou = snapshot.needsYou;
-  const asks = needsYou?.entries.some(
-    (entry) => entry.kind === "team-ask" && entry.task?.messageId === message.id,
-  );
+  const asks =
+    edit !== undefined &&
+    needsYou?.entries.some(
+      (entry) => entry.kind === "team-ask" && entry.task?.messageId === message.id,
+    );
   return {
     ...snapshot,
     // An ask's Needs-you entry names the version an approval from it acts on.
-    ...(needsYou && asks
+    ...(needsYou && asks && edit
       ? {
           needsYou: {
             ...needsYou,
@@ -637,10 +640,17 @@ export function withEditedWaitingMessage(
       snapshot.inputQueues,
       threadId,
       (item) => item.message.id === message.id,
-      (item) =>
-        stale(item.message)
-          ? item
-          : { ...item, ...(input ? { input } : {}), lease: null, message: { ...message, edit } },
+      (item) => {
+        if (stale(item.message)) return item;
+        const mark = edit ?? item.message.edit;
+        return {
+          ...item,
+          ...(input ? { input } : {}),
+          // A person's save ends the lease it was made under; a Host rewrite leaves it.
+          lease: edit ? null : item.lease,
+          message: { ...message, ...(mark ? { edit: mark } : {}) },
+        };
+      },
     ),
     ...(transcript
       ? {
