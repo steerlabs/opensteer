@@ -145,7 +145,7 @@ export const integration_search = defineAgentTool({
   name: "integration_search",
   title: "Find integration operations",
   description:
-    "Find service operations, accounts and setup by query, provider or computerId. Returns each operation's name, effect and input, the accounts with their connectionIds, and every built-in catalog id, with details for matches. Tell personal and work accounts apart by their address, never by display name alone, and choose accounts by connectionId. Writes need read-write access. Search Computer use or Android phone for Macs and phones, then pass a computerId to list its installed apps; phone apps include launch package names.",
+    "Find service operations, accounts and setup by query, provider or computerId. Returns each operation's name, effect and input, the accounts with their connectionIds, and every built-in catalog id, with details for matches; provider only orders the catalog. Tell personal and work accounts apart by their address, never by display name alone, and choose accounts by connectionId. Writes need read-write access. Search Computer use or Android phone for Macs and phones, then pass a computerId to list its installed apps; phone apps include launch package names.",
   input: SearchInputSchema,
   output: IntegrationSearchOutputSchema,
   access: "read",
@@ -246,7 +246,7 @@ export const integration_request = defineAgentTool({
   name: "integration_request",
   title: "Request integration access",
   description:
-    "Ask the person to set up, reconnect or grant access to a service. For an installed integration pass integration, access and reason; for a catalog item pass catalog instead, omitting access only to install it alone. Access is personal and pending grants none. Never repeat a pending or declined ask; credentials belong in the Request. Mac apps and phones use app_access_request; a service missing from the catalog uses custom_integration_request.",
+    "Ask the person to set up, reconnect or grant access to a service. For an installed integration pass integration, access and reason; for a catalog item pass catalog instead, omitting access only to install it alone. Access is personal and pending grants none; programs receive no continuation. Never repeat a pending or declined ask; credentials belong in the Request. Mac apps and phones use app_access_request; a service missing from the catalog uses custom_integration_request.",
   input: RequestInputSchema,
   output: IntegrationRequestOutputSchema,
   access: "write",
