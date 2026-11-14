@@ -77,6 +77,7 @@ describe("packaged Codex feature boundary", () => {
           .sort(),
       );
       expect(enabled).toContain("shell_snapshot");
+      expect(enabled).toContain("image_generation");
       expect(enabled).not.toContain("plugins");
     } finally {
       await client.close();

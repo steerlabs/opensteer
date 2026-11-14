@@ -790,6 +790,63 @@ function handleClientMethod(message) {
           capture({ fakeDetachedChild: detached.pid });
         }
       }
+      if (scenario.startsWith("image-")) {
+        current().turnId = "image-turn";
+        send({
+          id: message.id,
+          result: { turn: { id: current().turnId, status: "inProgress", items: [] } },
+        });
+        const item = {
+          type: "imageGeneration",
+          id: "image-call",
+          status: "inProgress",
+          revisedPrompt: "A tree",
+          transparentBackground: false,
+        };
+        const itemEvent = (method, value) =>
+          send({
+            method,
+            params: { threadId: current().id, turnId: current().turnId, item: value },
+          });
+        itemEvent("item/started", item);
+        if (scenario !== "image-only")
+          itemEvent("item/completed", {
+            type: "agentMessage",
+            id: "answer",
+            phase: "final_answer",
+            text: "Here is your tree",
+          });
+        if (scenario === "image-stop") {
+          sendTurnCompleted("completed");
+          break;
+        }
+        const completed = {
+          ...item,
+          status: "completed",
+          savedPath: "/tmp/tree.webp",
+          result: "SECRET_BASE64_IMAGE_BYTES",
+        };
+        if (scenario === "image-failed") {
+          completed.status = "failed";
+          completed.failure = { message: "Renderer failed" };
+        }
+        if (scenario === "image-usage") completed.failure = { type: "usageLimitExceeded" };
+        if (scenario === "image-missing-path") delete completed.savedPath;
+        if (scenario === "image-cancelled") completed.status = "cancelled";
+        if (scenario === "image-blank-path") completed.savedPath = "   ";
+        if (scenario === "image-file-id") {
+          delete completed.result;
+          completed.fileId = "opaque-file-id";
+        }
+        if (scenario === "image-late") sendTurnCompleted("completed");
+        itemEvent("item/completed", completed);
+        if (scenario === "image-duplicate-path") {
+          itemEvent("item/started", { ...item, id: "image-call-2" });
+          itemEvent("item/completed", { ...completed, id: "image-call-2" });
+        }
+        if (scenario !== "image-late") sendTurnCompleted("completed");
+        break;
+      }
       handleTurnStart(message);
       break;
     case "turn/steer":

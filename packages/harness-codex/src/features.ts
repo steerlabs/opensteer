@@ -26,6 +26,8 @@ export const codexApprovedFeatures: ReadonlySet<string> = new Set([
   // tier its model selection chose, and clears a previous tier otherwise.
   "fast_mode",
   "guardian_reuse_parent_compaction",
+  // Codex saves generated images locally; Opensteer delivers their file references.
+  "image_generation",
   "in_app_chat",
   "in_app_dictation",
   "in_app_local_automation",
