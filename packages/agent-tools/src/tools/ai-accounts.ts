@@ -9,7 +9,7 @@ import { defineAgentTool } from "../registry.js";
 import { CursorSchema } from "./inputs.js";
 import {
   AiAccountListOutputSchema,
-  DefaultsOutputSchema,
+  DefaultsReadOutputSchema,
   DefaultsUpdateOutputSchema,
 } from "./outputs.js";
 
@@ -88,9 +88,9 @@ export const opensteer_defaults_read = defineAgentTool({
   name: "opensteer_defaults_read",
   title: "Read new-task defaults",
   description:
-    "Read what a new task starts with: its AI account, model and access mode, and the person's time zone.",
+    "Read the person's name and time zone, and what a new task starts with: its AI account, model and access mode.",
   input: z.strictObject({}),
-  output: DefaultsOutputSchema,
+  output: DefaultsReadOutputSchema,
   access: "read",
   callers: ["run", "connection"] as const,
 });

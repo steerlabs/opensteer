@@ -2,11 +2,13 @@ import { oauthProvider } from "@better-auth/oauth-provider";
 import {
   ControlPlaneAccountIdSchema,
   controlPlaneOAuthScopes,
+  personProfileReceiptClaim,
   type ControlPlaneAccountId,
 } from "@opensteer/control-plane-protocol";
 import {
   NativeOAuthRegistrationMetadataSchema,
   normalizeIdentityEmail,
+  personNameFromSignIn,
   type NativeOAuthApplication,
 } from "@opensteer/core";
 import { betterAuth, type BetterAuthOptions } from "better-auth";
@@ -16,6 +18,7 @@ import type { Kysely } from "kysely";
 import { ControlPlaneError } from "../server/errors.js";
 import type { ControlPlaneDatabaseSchema } from "../database/schema.js";
 import { appleOrigin } from "./apple-sign-in.js";
+import { AccountProfiles } from "../account/account-profiles.js";
 import { isOfficialNativeReference } from "../database/store.js";
 
 export const controlPlaneAuthPath = "/api/auth";
@@ -56,7 +59,8 @@ export function createControlPlaneAuth(
     transaction: true,
     type: "postgres",
   } as unknown as BetterAuthOptions["database"];
-  return betterAuth({
+  let profiles: AccountProfiles | undefined;
+  const auth = betterAuth({
     account: {
       // Account records can predate their first Google sign-in, so the trusted
       // provider must link its verified email to the existing record.
@@ -125,7 +129,7 @@ export function createControlPlaneAuth(
               data: {
                 ...user,
                 email,
-                name: normalizedAccountDisplayName(user.name, email),
+                name: personNameFromSignIn(user.name, email),
               },
             };
           },
@@ -143,6 +147,8 @@ export function createControlPlaneAuth(
       "/sign-in/email",
       "/sign-up/email",
       "/unlink-account",
+      // A name changes only through AccountProfiles, which numbers every change.
+      "/update-user",
     ],
     emailAndPassword: { enabled: false },
     plugins: [
@@ -190,6 +196,15 @@ export function createControlPlaneAuth(
         // and mobile clients read the Account email from the ID token.
         customIdTokenClaims: ({ user, scopes }) =>
           scopes.includes("email") ? { email: user.email } : {},
+        // A team Host's browser sign-in applies the same signed, numbered name a native app relays.
+        customUserInfoClaims: async ({ user, scopes }) =>
+          scopes.includes("profile") && profiles
+            ? {
+                [personProfileReceiptClaim]: (
+                  await profiles.read(ControlPlaneAccountIdSchema.parse(user.id))
+                ).receipt,
+              }
+            : {},
       }),
     ],
     rateLimit: {
@@ -239,9 +254,28 @@ export function createControlPlaneAuth(
     },
     verification: { modelName: "authVerifications" },
   });
+  profiles = new AccountProfiles({
+    database,
+    issuer: config.publicOrigin,
+    sign: async (payload) => (await auth.api.signJWT({ body: { payload } })).token,
+  });
+  return auth;
 }
 
 export type ControlPlaneAuth = ReturnType<typeof createControlPlaneAuth>;
+
+/** Account's name service, signing with the same key as every other Account JWT. */
+export function createAccountProfiles(
+  auth: ControlPlaneAuth,
+  database: Kysely<ControlPlaneDatabaseSchema>,
+  issuer: URL,
+): AccountProfiles {
+  return new AccountProfiles({
+    database,
+    issuer,
+    sign: async (payload) => (await auth.api.signJWT({ body: { payload } })).token,
+  });
+}
 
 interface AccountPrincipal {
   readonly accountId: ControlPlaneAccountId;
@@ -409,10 +443,4 @@ export function isRecentAccountAuthentication(value: Date | null | undefined, no
 
 function internalAuthId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID()}`;
-}
-
-function normalizedAccountDisplayName(value: string, normalizedEmail: string): string {
-  const normalized = value.normalize("NFKC").trim();
-  const bounded = [...normalized].slice(0, 120).join("");
-  return bounded || normalizedEmail.slice(0, 120);
 }

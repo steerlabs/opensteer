@@ -24,7 +24,7 @@ const { startPhase, timePhase } = require("../../../scripts/release-phase-timing
 async function verifyPackagedDesktop(context) {
   globalThis.opensteerCollectTiming?.();
   await timePhase("package.after-pack", () => verifyPackagedDesktopContents(context));
-  globalThis.opensteerSignTiming = startPhase("package.sign");
+  globalThis.opensteerSignTiming = startPhase("package.sign-and-notarize");
 }
 async function verifyPackagedDesktopContents(context) {
   const resources = resourcesDirectory(context);

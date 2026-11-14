@@ -9,6 +9,7 @@ import { createControlPlaneDatabase } from "./database.js";
 import type { ControlPlaneDatabaseSchema } from "./schema.js";
 import { CONTROL_PLANE_BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
 import {
+  accountNameRevisionMigration,
   betterAuth17Migration,
   directoryVisibilityMigration,
   hostIdentityMigration,
@@ -348,5 +349,43 @@ integration("Better Auth 1.7 Account migration", () => {
       }),
     );
     expect(revoke.status).toBe(200);
+  });
+});
+
+integration("Account name revision migration", () => {
+  const databaseName = `opensteer_account_names_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+  let maintenance: Pool;
+  let database: Kysely<ControlPlaneDatabaseSchema>;
+  const urlForDatabase = (name: string) => {
+    const url = new URL(databaseUrl ?? "postgres://unconfigured");
+    url.pathname = `/${name}`;
+    return url.toString();
+  };
+  beforeAll(async () => {
+    maintenance = new Pool({ connectionString: urlForDatabase("postgres") });
+    await maintenance.query(`create database ${databaseName}`);
+    database = createControlPlaneDatabase({ connectionString: urlForDatabase(databaseName) });
+    await sql.raw(CONTROL_PLANE_BASELINE_SCHEMA_SQL).execute(database);
+  });
+  afterAll(async () => {
+    await database?.destroy();
+    await maintenance?.query(`drop database if exists ${databaseName}`);
+    await maintenance?.end();
+  });
+
+  it("replaces whole-email fallback names and keeps names people were given", async () => {
+    await sql`
+      insert into public.users (id, display_name, email, email_verified) values
+        ('acct_00000000-0000-4000-8000-000000000001', 'ada.lovelace@example.test', 'ada.lovelace@example.test', true),
+        ('acct_00000000-0000-4000-8000-000000000002', 'Grace Hopper', 'grace@example.test', true)
+    `.execute(database);
+    await accountNameRevisionMigration.up(database);
+    const rows = await sql<{ displayName: string; nameRevision: string }>`
+      select display_name, name_revision from public.users order by id
+    `.execute(database);
+    expect(rows.rows).toEqual([
+      { displayName: "Ada Lovelace", nameRevision: "1" },
+      { displayName: "Grace Hopper", nameRevision: "1" },
+    ]);
   });
 });

@@ -220,6 +220,7 @@ import type {
   RunnerAuxiliaryStream,
   RunnerStreamLossReason,
 } from "@opensteer/orchestration";
+import type { OwnerProfileService } from "./administration/owner-profile.js";
 import type { PersonalRemoteAccessService } from "./access/personal-remote-access-service.js";
 import {
   availableSessionExchangeArms,
@@ -420,6 +421,8 @@ export interface HostServerDependencies {
   readonly localBootstrap?: { readonly service: LocalBootstrapService } | undefined;
   /** Present when reachability is routed personal. */
   readonly personalRemoteAccess?: { readonly service: PersonalRemoteAccessService } | undefined;
+  /** The personal owner's name; absent on a team Host. */
+  readonly ownerProfile?: OwnerProfileService;
   /** What active Runs are streaming, for readers that open a Thread mid-turn. */
   readonly liveRuns: Pick<LiveRunRegistry, "threadFrames">;
   readonly realtime: RealtimeHub;
@@ -1154,6 +1157,7 @@ export async function createHostServer(
         quietTaskDays,
         machines,
         storedCatalogs,
+        ownerProfile,
       ] = await Promise.all([
         dependencies.store.listHarnessInstances({
           environmentIds: environments.map(({ id }) => id),
@@ -1174,7 +1178,10 @@ export async function createHostServer(
         dependencies.store.notificationState.quietTaskDaysFor(ownerId),
         machineSummaries(session),
         dependencies.store.listHarnessCatalogs(environments.map(({ id }) => id)),
+        dependencies.ownerProfile?.view(),
       ]);
+      // A rename made on another device or in the Account reaches this Host when someone looks.
+      dependencies.ownerProfile?.refreshSoon();
       return rpcSuccess(
         HostBootstrapSchema.parse({
           deploymentId: dependencies.discovery.document.deploymentId,
@@ -1209,6 +1216,7 @@ export async function createHostServer(
           }),
           executionPreferences,
           quietTaskDays,
+          ...(ownerProfile ? { ownerProfile } : {}),
           harnesses: visibleHarnesses.map((harness) => ({
             ...harnessView(harness),
             automaticEligible:

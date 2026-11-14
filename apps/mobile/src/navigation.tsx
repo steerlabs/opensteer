@@ -36,6 +36,7 @@ import { NotificationsIntroScreen } from "./screens/notifications-intro.js";
 import { OpenAppScreen } from "./screens/open-app.js";
 import { ScheduleScreen, type ScheduleDestination } from "./screens/schedule.js";
 import { SchedulesScreen } from "./screens/schedules.js";
+import { YourNameScreen, type YourNameParams } from "./screens/your-name.js";
 import {
   SettingsAccountScreen,
   SettingsSessionDetailScreen,
@@ -61,7 +62,6 @@ import { ThreadScreen } from "./screens/thread.js";
 import { WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
 import { SidebarShell } from "./sidebar/sidebar-shell.js";
 import { DoneTasksScreen } from "./screens/done-tasks.js";
-import { TeamHomeScreen } from "./team/team-home-screen.js";
 import {
   TeamChannelScreen,
   TeamThreadScreen,
@@ -196,8 +196,6 @@ const RootStack = createNativeStackNavigator({
         title: "Moved to Done for you",
       },
     },
-    // A team's page from its drawer row: channels, then DMs; its menu is the title.
-    TeamHome: { screen: TeamHomeScreen, options: { title: "" } },
     // Every tab this person may see, from the sidebar. A tab opened from here
     // is shown alone.
     Tabs: { screen: TabsScreen, options: { headerLargeTitle: true, title: "Tabs" } },
@@ -481,6 +479,7 @@ const RootStack = createNativeStackNavigator({
       },
     },
     SettingsAccount: { screen: SettingsAccountScreen, options: { title: "Account" } },
+    YourName: { screen: YourNameScreen, options: { title: "Your name" } },
     SettingsSessionDetail: {
       screen: SettingsSessionDetailScreen,
       options: { title: "Signed-in device" },
@@ -692,7 +691,6 @@ type OpensteerRootParamList = {
   readonly ConnectOpensteer: { readonly teamId: string };
   readonly DoneTasks: { readonly deploymentId: string };
   readonly QuietlyMoved: { readonly deploymentId: string };
-  readonly TeamHome: { readonly teamId: string };
   readonly AddDeployment: undefined;
   readonly SetUpPhone: { readonly deploymentId: string };
   readonly AgentAuthorization: { readonly deploymentId: string; readonly requestId: string };
@@ -730,6 +728,7 @@ type OpensteerRootParamList = {
   readonly SettingsAiSharing: undefined;
   readonly SettingsGeneral: { readonly deploymentId: string };
   readonly SettingsAccount: { readonly deploymentId: string };
+  readonly YourName: YourNameParams;
   readonly SettingsSessionDetail: { readonly deploymentId: string; readonly sessionId: string };
   readonly SettingsDevices: { readonly deploymentId: string };
   readonly SettingsMessaging: { readonly deploymentId: string };

@@ -107,6 +107,24 @@ distinctly, so they stay in the location older apps read and survive Stable↔Be
 uses them only after authenticated team bootstrap names that same user. An agent link's owner can
 be a different person and never supplies the device's team identity.
 
+## Names
+
+A name is the person's, never the team's: no per-team names, and admins cannot rename anyone.
+Once someone has an Opensteer Account it holds their one name, numbers every change and signs a
+receipt of it ([AccountProfiles](../apps/control-plane/src/account/account-profiles.ts)). Account
+cannot reach team servers, so a team takes a member's name only from such a receipt: one the
+member's own app relays when the team's copy is older (`team.member.profile.apply`), or the one
+in the UserInfo of a browser sign-in. Either way the team checks Account's signature and that the
+receipt's Account signs in as that user, and applies it only when newer, so a late or replayed
+receipt never moves a name backwards. A rename is presentation, not access: it publishes
+`team.member.updated` and never moves the access revision, which would reload every session.
+Handles are fixed at join, and messages reference user ids, so history shows the current name.
+
+A personal Opensteer with no Account link owns its owner's name; it may be empty (shown as "You")
+and starts as the computer account's full name until anyone sets one. Linking adopts the
+Account's name, a rename while linked is saved to Account first (never queued), and unlinking
+keeps the last name ([owner profile](../apps/host/src/administration/owner-profile.ts)).
+
 ## Access and removal
 
 Channel membership and topic grants define access, including nested groups. A channel marked
@@ -160,16 +178,17 @@ window, not an exact match ([authority.ts](../packages/deployment-authority/src/
   discovery or the link's `ready` frame and enforces its own minimum. Discovery also advertises
   the team's minimum, so an app below it is told to update before it sends anything.
 - Changes are additive by default and keep the version: new commands, reads, optional fields
-  and frame types. The team Host parses commands and reads strictly, so a client uses a new
-  input only when the team advertises a capability for it. Every other reader is tolerant:
+  and frame types. The team Host parses commands and reads strictly. Every other reader is tolerant:
   replies and realtime and link frames, in both directions, drop unknown fields, and frame
-  readers skip frame types they do not know. A sender relies on a new field or frame type only
-  when the peer's version reads it. Two things stay strict: the signed discovery document, and
+  readers skip frame types they do not know. A sender uses new behavior only when the peer
+  advertises its capability. Two things stay strict: the signed discovery document, and
   the search and knowledge inputs a link frame carries, because a dropped filter or version
   guard would change the answer.
-- Bump `teamApiVersion` only for a change an older peer would misread or refuse. Whoever bumps
-  decides `minimumTeamApiVersion`: keep the old version and speak it to older peers, or raise
-  the minimum and strand them with an update message.
+- Move `teamApiVersion` only for a change an older peer would misread. Raise
+  `minimumTeamApiVersion` only for a security reason or once published Stable team servers
+  already speak that version. The [Stable compatibility guard](../.github/scripts/ci-team-api.mjs)
+  enforces the published `desktop-v*` floor; a security exception needs an explicit guard change
+  and Tim's approval. Self-hosted Stable teams must keep working as apps update.
 - A refusal names the side that is behind: the app or personal Opensteer says "Update
   Opensteer", and a team older than the peer's minimum says the team server needs an update.
 

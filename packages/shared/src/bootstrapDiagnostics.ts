@@ -146,6 +146,7 @@ export const bootstrapNoticeSources = [
   "browser.membership",
   "browser.groups",
   "computer-apps.status",
+  "owner-profile",
   "computer-use.sessions",
   "phone-tab",
   "integration.connections",

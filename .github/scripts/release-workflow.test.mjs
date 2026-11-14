@@ -67,9 +67,8 @@ test("read-only preflight, secret-free discovery and only stable publication app
   // A Beta must never reach people before the Account service it may depend on.
   assert.ok(workflow.jobs["publish-insider"].needs.includes("account"));
   assert.match(workflow.jobs.account.if, /channel == 'beta'/);
-  // Hosted teams move only to a Stable that Tim published.
-  assert.ok(workflow.jobs["team-provisioner"].needs.includes("publish-stable"));
-  assert.match(workflow.jobs["team-provisioner"].if, /needs\.publish-stable\.result == 'success'/);
+  assert.ok(workflow.jobs["team-provisioner"].needs.includes("publish-insider"));
+  assert.ok(!workflow.jobs["team-provisioner"].needs.includes("publish-stable"));
   assert.ok(workflow.jobs.build.needs.includes("discover"));
   assert.match(
     workflow.jobs.build.steps.find((step) => step.run?.includes("stampReleaseVersion")).run,
@@ -101,6 +100,102 @@ test("read-only preflight, secret-free discovery and only stable publication app
   assert.match(
     workflow.jobs.build.steps.find((step) => step.name === "Delete signing material").if,
     /always/,
+  );
+});
+test("hosted teams deploy only after Beta publication, using that release's digests", () => {
+  const job = workflow.jobs["team-provisioner"];
+  const enabled = (
+    channel,
+    publication,
+    images = "success",
+    cancelled = false,
+    discover = { result: "success", outputs: { skip: "false" } },
+  ) =>
+    Boolean(
+      runInNewContext(job.if.replace(/^\$\{\{\s*|\s*\}\}$/g, ""), {
+        needs: {
+          preflight: { outputs: { channel } },
+          discover,
+          "publish-insider": { result: publication },
+          "publish-stable": { result: channel === "stable" ? "success" : "skipped" },
+          "team-images": { result: images },
+        },
+        cancelled: () => cancelled,
+      }),
+    );
+  assert.equal(enabled("beta", "success"), true);
+  for (const publication of ["skipped", "failure", "cancelled"])
+    assert.equal(enabled("beta", publication), false);
+  assert.equal(enabled("stable", "skipped"), false);
+  assert.equal(enabled("stable", "success"), false);
+  assert.equal(enabled("beta", "success", "failure"), false);
+  assert.equal(enabled("beta", "success", "success", true), false);
+  // A full rerun after a failed deploy finds the Beta already published and verified by
+  // discover, skips publication, and must still be able to finish the deployment.
+  const published = { result: "success", outputs: { skip: "true" } };
+  assert.equal(enabled("beta", "skipped", "success", false, published), true);
+  assert.equal(enabled("beta", "skipped", "failure", false, published), false);
+  assert.equal(enabled("stable", "skipped", "success", false, published), false);
+  assert.equal(
+    enabled("beta", "skipped", "success", false, { result: "failure", outputs: { skip: "true" } }),
+    false,
+  );
+  assert.ok(job.needs.includes("discover"));
+  assert.equal(job.env.TEAM_HOST_IMAGE, "${{ needs.team-images.outputs.host_image }}");
+  assert.equal(job.env.TEAM_GATEWAY_IMAGE, "${{ needs.team-images.outputs.gateway_image }}");
+});
+
+test("observer preflight fails before signing and persists one interpreter for launch tooling", () => {
+  const steps = workflow.jobs.build.steps;
+  const probe = steps.findIndex((step) => step.name === "Probe launch observer");
+  assert.ok(probe > steps.findIndex((step) => step.name === "Install launch tooling"));
+  assert.ok(probe < steps.findIndex((step) => step.name === "Sign, notarize and staple desktop"));
+  assert.equal(steps[probe]["timeout-minutes"], 1);
+  assert.match(steps[probe].run, /smoke-desktop-release-python.ts/);
+  // Job env cannot read the runner context (GitHub rejects the whole workflow), so a
+  // step exports the path before signing.
+  for (const [name, value] of Object.entries(workflow.jobs.build.env ?? {}))
+    assert.doesNotMatch(String(value), /\$\{\{\s*runner\./, name);
+  const locate = steps.findIndex((step) => step.name === "Locate release phase timings");
+  assert.match(
+    steps[locate].run,
+    /OPENSTEER_RELEASE_TIMING_FILE=\$RUNNER_TEMP\/release-timing\.jsonl.*GITHUB_ENV/,
+  );
+  assert.ok(locate < steps.findIndex((step) => step.name === "Sign, notarize and staple desktop"));
+  assert.equal(workflow.jobs.build.env.OPENSTEER_MAC_SIGN_TIMINGS, "1");
+  const timing = steps.find((step) => step.name === "Release phase timings");
+  assert.equal(timing.if, "always()");
+  assert.equal(timing.with.path, "${{ runner.temp }}/release-timing.jsonl");
+});
+
+test("directory packaging keeps notarization and the final public archive and verification gates", () => {
+  const packaging = readFileSync(
+    new URL("../../apps/desktop/scripts/package-macos.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(packaging, /"--mac",\s*"--dir"/);
+  assert.doesNotMatch(packaging, /deferNotarization \? \["--dir"/);
+  assert.doesNotMatch(JSON.stringify(workflow.jobs.build), /DEFER_NOTARIZATION/);
+  const config = parseDocument(
+    readFileSync(new URL("../../apps/desktop/electron-builder.base.yml", import.meta.url), "utf8"),
+  ).toJS();
+  assert.equal(config.mac.notarize, true);
+  assert.equal(config.mac.hardenedRuntime, true);
+  assert.match(packaging, /"--deep",\s*"--strict"/);
+  assert.match(packaging, /"stapler", "validate"/);
+  assert.match(packaging, /"--assess"/);
+  const verify = workflow.jobs.build.steps.find(
+    (step) => step.name === "Verify and prepare exact release bytes",
+  ).run;
+  assert.match(verify, /xcrun stapler validate "\$app"/);
+  assert.match(verify, /spctl -a -vv -t exec "\$app"/);
+  assert.match(
+    verify,
+    /ditto -c -k --sequesterRsrc --keepParent "\$app" "\$RUNNER_TEMP\/Opensteer.zip"/,
+  );
+  assert.match(
+    workflow.jobs.build.steps.find((step) => step.name === "Prepare checked release bytes").run,
+    /--app-zip "\$RUNNER_TEMP\/Opensteer.zip"/,
   );
 });
 test("team images build natively per architecture and expose digests to later jobs", () => {
@@ -525,12 +620,24 @@ test("preflight refuses missing, failed, pending or non-main qualification of th
       { head_sha: "b".repeat(40) },
       { head_branch: "other" },
       { event: "pull_request" },
+      { event: "schedule" },
+      { event: "workflow_dispatch" },
     ]) {
       f.state.runs = [{ ...valid, ...mutation }];
       assert.throws(() => preflight({ root: f.root, event: "push" }, f.run));
     }
     f.state.runs = [valid, { ...valid, id: 43, run_number: 8, conclusion: "failure" }];
     assert.throws(() => preflight({ root: f.root, event: "push" }, f.run));
+    // A rerun keeps its run number/id; GitHub exposes only its latest attempt.
+    f.state.runs = [{ ...valid, run_attempt: 2, conclusion: "failure" }];
+    assert.throws(() => preflight({ root: f.root, event: "push" }, f.run), /must succeed/);
+    f.state.runs = [{ ...valid, run_attempt: 2, status: "in_progress", conclusion: null }];
+    assert.throws(() => preflight({ root: f.root, event: "push" }, f.run), /Waiting for main CI/);
+    f.state.runs = [{ ...valid, run_attempt: 2 }];
+    f.state.jobs = [{ ...job, conclusion: "failure" }];
+    assert.throws(() => preflight({ root: f.root, event: "push" }, f.run), /Check must succeed/);
+    f.state.jobs = [job];
+    assert.deepEqual(preflight({ root: f.root, event: "push" }, f.run), f.source);
     f.state.runs = [];
     assert.throws(() => preflight({ root: f.root, event: "push" }, f.run));
     f.state.runs = [valid];

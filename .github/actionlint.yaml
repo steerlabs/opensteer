@@ -1,0 +1,4 @@
+# Runner labels newer than actionlint's built-in list.
+self-hosted-runner:
+  labels:
+    - macos-26

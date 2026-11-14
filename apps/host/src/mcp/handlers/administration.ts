@@ -271,11 +271,12 @@ export class AdministrationToolHandlers {
   async opensteer_defaults_read({ caller }: ToolCall<"opensteer_defaults_read">) {
     const store = this.service.dependencies.store;
     await this.service.actor(caller);
-    const [preferences, timeZone] = await Promise.all([
+    const [preferences, timeZone, owner] = await Promise.all([
       store.getExecutionPreferences(caller.userId),
       store.notificationState.timeZoneFor(caller.userId),
+      store.ownerProfile.read(),
     ]);
-    return { ...defaultsView(preferences), timeZone };
+    return { ...defaultsView(preferences), timeZone, ownerName: owner?.name ?? null };
   }
   async opensteer_defaults_update(c: ToolCall<"opensteer_defaults_update">) {
     let changed: Record<string, unknown> = { ok: true };

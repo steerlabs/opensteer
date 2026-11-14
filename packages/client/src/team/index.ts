@@ -22,3 +22,4 @@ export * from "./team-runtime-owner.js";
 export * from "./partner-settings.js";
 export * from "./shared-channels.js";
 export * from "./channel-shares.js";
+export * from "./account-profile-relay.js";

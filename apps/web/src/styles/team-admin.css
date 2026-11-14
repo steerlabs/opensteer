@@ -214,35 +214,6 @@
   color: var(--muted);
 }
 
-.name-field {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-8);
-  min-width: 0;
-}
-
-.name-field .text-input {
-  max-width: 18rem;
-}
-
-.tile-colors {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-6);
-}
-
-.tile-colors__swatch {
-  width: 22px;
-  height: 22px;
-  border-radius: 7px;
-  box-shadow: var(--edge-mark);
-}
-
-.tile-colors__swatch[aria-checked="true"] {
-  outline: 2px solid var(--text);
-  outline-offset: 2px;
-}
-
 @media (max-width: 700px) {
   .groups-admin {
     grid-template-columns: 1fr;

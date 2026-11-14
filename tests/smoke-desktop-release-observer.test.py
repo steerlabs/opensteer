@@ -60,6 +60,17 @@ class ObserverTest(unittest.TestCase):
             self.assertIn(phase, trace)
         self.assertNotIn('owner=9 ', trace)
 
+    def test_probe_loads_both_frameworks_without_querying_windows(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            observer = self.load(lambda *_: self.fail('probe queried the screen'))
+            with patch.object(observer['select'], 'kqueue', create=True,
+                              return_value=types.SimpleNamespace(close=lambda: None)):
+                observer['probe']()
+        for marker in ['executable=', 'version=', 'framework=CoreGraphics',
+                       'framework=CoreFoundation', 'probe.ready']:
+            self.assertIn(marker, output.getvalue())
+
     def test_unmatched_poll_names_other_visible_owners(self):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):

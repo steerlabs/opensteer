@@ -40,16 +40,22 @@ case "$*" in
   *"get deployment team-provisioner"*) cat "$FAKE_DIR/live" 2>/dev/null || true ;;
   kustomize*) printf '"@PROVISIONER_IMAGE@" "@TEAM_HOST_IMAGE@" "@TEAM_GATEWAY_IMAGE@" "@SOURCE_REVISION@"\\n' ;;
   "apply -f -") cat > "$FAKE_DIR/applied" ;;
+  *"rollout status"*) if [[ $ROLLOUT_FAILS == true ]]; then exit 1; fi ;;
 esac
 `,
     { mode: 0o755 },
   );
-  const run = (source, { live, refs = images } = {}) => {
+  const run = (source, { live, refs = images, rolloutFails = false } = {}) => {
     if (live) writeFileSync(path.join(root, "live"), live);
     const result = spawnSync("bash", [script, ...refs, source], {
       cwd: root,
       encoding: "utf8",
-      env: { ...process.env, FAKE_DIR: root, PATH: `${bin}:${process.env.PATH}` },
+      env: {
+        ...process.env,
+        FAKE_DIR: root,
+        PATH: `${bin}:${process.env.PATH}`,
+        ROLLOUT_FAILS: String(rolloutFails),
+      },
     });
     const file = (name) =>
       existsSync(path.join(root, name)) ? readFileSync(path.join(root, name), "utf8") : "";
@@ -79,5 +85,30 @@ test("refuses an unpinned team image and never rolls teams back to an older sour
     assert.doesNotMatch(older.calls, /apply|rollout/);
   } finally {
     f.cleanup();
+  }
+});
+
+test("an unknown live revision fails closed instead of replacing the fleet", () => {
+  const f = fixture();
+  try {
+    const result = f.run(f.newer, { live: "f".repeat(40) });
+    assert.equal(result.status, 1);
+    assert.doesNotMatch(result.calls, /apply|rollout/);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("reruns can finish the same source but failed readiness never restores older team images", () => {
+  for (const rolloutFails of [false, true]) {
+    const f = fixture();
+    try {
+      const result = f.run(f.newer, { live: f.newer, rolloutFails });
+      assert.equal(result.status, rolloutFails ? 1 : 0);
+      assert.match(result.calls, /rollout status.*--timeout=10m/);
+      assert.doesNotMatch(result.calls, /rollout undo/);
+    } finally {
+      f.cleanup();
+    }
   }
 });

@@ -258,22 +258,8 @@ export function TeamComposer({
   const shownPlaceholder = toAgent ? "Ask your agent…" : placeholder;
   return (
     <div className="team-composer">
-      {onAgentRecipient && (toAgent || ready) ? (
-        <button
-          className="team-composer__recipient"
-          type="button"
-          onClick={() => setToAgent(!toAgent)}
-        >
-          {toAgent ? "→ your agent ✕" : "+ your agent"}
-        </button>
-      ) : null}
       <div
-        className={[
-          "composer",
-          "team-composer__box",
-          toAgent && !onAgentRecipient ? "team-composer__box--agent" : "",
-          dropping ? "composer--dropping" : "",
-        ]
+        className={["composer", "team-composer__box", dropping ? "composer--dropping" : ""]
           .filter(Boolean)
           .join(" ")}
         onDragEnter={onDrag}
@@ -293,11 +279,16 @@ export function TeamComposer({
         ) : null}
         {staged.length > 0 ? <StagedFiles files={staged} onRemove={onRemoveFile} /> : null}
         <div className="team-composer__line">
-          {toAgent && !onAgentRecipient ? (
-            <span className="mention mention--agent team-composer__chip">
+          {toAgent ? (
+            <button
+              className="mention mention--agent team-composer__chip"
+              onClick={() => setToAgent(false)}
+              title="Don’t ask my agent"
+              type="button"
+            >
               <span aria-hidden className="mention__dot" />
               @My agent
-            </span>
+            </button>
           ) : null}
           <textarea
             aria-activedescendant={mention && items.length > 0 ? `${listId}-${active}` : undefined}
@@ -371,7 +362,7 @@ export function TeamComposer({
           >
             <Icon name="at" />
           </button>
-          {onAgentRecipient ? null : agent.kind === "people-only" ? (
+          {agent.kind === "people-only" ? (
             <span className="team-composer__people-only">
               <PeopleOnlyBadge />
               <span>Agents can’t be asked, read or search here.</span>

@@ -73,6 +73,8 @@ import {
   type SidebarActions,
   type SidebarDestination,
 } from "./sidebar-panel.js";
+import { sideOfScreen, type SidebarSide } from "./sidebar-side.js";
+import type { TeamPlace } from "./team-side.js";
 
 /**
  * The sidebar around the app's one native stack.
@@ -106,6 +108,14 @@ const destinations: ReadonlySet<string> = new Set<SidebarDestination>([
   "Home",
   "Schedules",
   "Tabs",
+]);
+
+/** Team places a team's side presents over the screen in front rather than making top-level. */
+const presentedTeamPlaces: ReadonlySet<TeamPlace["name"]> = new Set([
+  "TeamInvites",
+  "TeamNewChannel",
+  "TeamNewMessage",
+  "TeamSettings",
 ]);
 
 /**
@@ -195,6 +205,21 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
       ? topParams["threadId"]
       : null;
   const openTeamId = typeof topParams?.["teamId"] === "string" ? topParams["teamId"] : null;
+  const openChannelId =
+    topLevel?.name === "TeamChannel" && typeof topParams?.["channelId"] === "string"
+      ? topParams["channelId"]
+      : null;
+  // The side follows the screen in front each time that changes, including back
+  // to one shown before; in between, only the person moves it. Kept here, so the
+  // drawer and the column agree. The panel shows Tasks for a team it no longer lists.
+  const frontSide = sideOfScreen(topLevel);
+  const [side, setSide] = useState<SidebarSide>(frontSide ?? "tasks");
+  const frontKey = topLevel?.key ?? null;
+  const [sideFront, setSideFront] = useState(frontKey);
+  if (sideFront !== frontKey) {
+    setSideFront(frontKey);
+    if (frontSide !== null) setSide(frontSide);
+  }
   const swipes = sidebarSwipes(focused, props.state);
   // The exact tab, app or phone in front, as its route names it; held while
   // the route's params are, so the panel is not redrawn for the same one.
@@ -392,7 +417,10 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
             ...(requestId === undefined ? {} : { requestId }),
           },
         }),
-      onOpenTeam: (teamId) => go({ name: "TeamHome", params: { teamId } }),
+      onOpenTeamPlace: (place) =>
+        presentedTeamPlaces.has(place.name)
+          ? present(StackActions.push(place.name, place.params))
+          : go(place),
       onTeams: () => go({ name: "Teams", params: {} }),
       onTeamSetup: (hostedTeamId) => present(StackActions.push("TeamSetup", { hostedTeamId })),
       onSearch: () => show("TaskSearch"),
@@ -431,8 +459,11 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                   docked={false}
                   scroll={scrollMemory}
                   shelves={shelfMemory}
+                  onSide={setSide}
+                  openChannelId={openChannelId}
                   openTeamId={openTeamId}
                   selectedThreadId={selectedThreadId}
+                  side={side}
                   visible={visible}
                 />
               )
@@ -469,8 +500,11 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                       docked
                       scroll={scrollMemory}
                       shelves={shelfMemory}
+                      onSide={setSide}
+                      openChannelId={openChannelId}
                       openTeamId={openTeamId}
                       selectedThreadId={selectedThreadId}
+                      side={side}
                       visible
                     />
                   </Pane>

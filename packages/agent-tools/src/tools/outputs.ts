@@ -31,6 +31,7 @@ import {
   RunnerIdSchema,
   ThreadIdSchema,
   TimeZoneSchema,
+  PersonNameSchema,
   TriggerOccurrenceIdSchema,
   ThreadSchema,
   ThreadAccessModeSchema,
@@ -124,6 +125,10 @@ export const DefaultsOutputSchema = z.object({
     .object({ aiAccountId: HarnessInstanceIdSchema, model: AiAccountModelChoiceSchema })
     .nullable(),
   timeZone: TimeZoneSchema.nullable(),
+});
+export const DefaultsReadOutputSchema = DefaultsOutputSchema.extend({
+  /** Null until the person sets one in Settings → Account. */
+  ownerName: PersonNameSchema.nullable(),
 });
 export const DefaultsUpdateOutputSchema = DefaultsOutputSchema.partial().extend({
   ok: z.literal(true),

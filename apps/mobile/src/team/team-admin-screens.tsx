@@ -151,11 +151,7 @@ export function TeamSettingsScreen(props: TeamParams): ReactNode {
     <Screen edgeToEdge>
       <TeamSettingsBody
         actions={{
-          onProfile: () =>
-            Alert.alert(
-              bootstrap.member.displayName,
-              `Your handle is @${bootstrap.member.handle}; your agent's is @${bootstrap.member.handle}-agent. Your name comes from your Opensteer Account.`,
-            ),
+          onProfile: () => navigation.navigate("YourName", { target: "account" }),
           onNotifications: () =>
             Alert.alert(
               "Notifications",

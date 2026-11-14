@@ -32,6 +32,8 @@ const noAccountTeams: AccountTeamsClient = {
   deleteHostedTeam: () => Promise.reject(noAccount()),
   hostedTeamOwners: () => Promise.reject(noAccount()),
   transferHostedTeam: () => Promise.reject(noAccount()),
+  profile: () => Promise.reject(noAccount()),
+  updateProfile: () => Promise.reject(noAccount()),
 };
 
 function noAccount(): Error {
@@ -130,7 +132,7 @@ export async function openTeamGeneral(
     )?.channel.id;
   if (!navigationRef.isReady()) return;
   navigationRef.dispatch(StackActions.popToTop());
-  if (channelId === undefined) navigationRef.navigate("TeamHome", { teamId: teamDeploymentId });
+  if (channelId === undefined) navigationRef.navigate("TeamChannels", { teamId: teamDeploymentId });
   else navigationRef.navigate("TeamChannel", { teamId: teamDeploymentId, channelId });
 }
 

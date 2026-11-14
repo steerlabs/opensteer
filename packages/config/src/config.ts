@@ -1,5 +1,5 @@
 import { HostAccountAdoptionBundleSchema } from "@opensteer/control-plane-protocol";
-import { deploymentPolicy } from "@opensteer/core";
+import { deploymentPolicy, normalizePersonName } from "@opensteer/core";
 import {
   allowsPlaintextRunnerTransport,
   DeploymentIdSchema,
@@ -119,6 +119,12 @@ const optionalDeploymentName = z.preprocess(
   z.string().trim().min(1).max(120).optional(),
 );
 
+// The hosting computer's name for its user; anything that is not a usable person name is dropped.
+const optionalOwnerNameSeed = z.preprocess(
+  (value) => (typeof value === "string" ? (normalizePersonName(value) ?? undefined) : undefined),
+  z.string().optional(),
+);
+
 const optionalEnrollmentToken = z.preprocess(
   (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
   z.string().trim().min(16).max(4_096).optional(),
@@ -168,6 +174,7 @@ const HostEnvironmentSchema = z.object({
   OPENSTEER_DATABASE_URL: z.string().min(1),
   OPENSTEER_DEPLOYMENT_ID: DeploymentIdSchema.optional(),
   OPENSTEER_DEPLOYMENT_NAME: optionalDeploymentName,
+  OPENSTEER_OWNER_NAME_SEED: optionalOwnerNameSeed,
   OPENSTEER_CREDENTIAL_KEY_PATH: optionalPath,
   OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN: optionalEnrollmentToken,
   OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST: optionalEnrollmentTokenDigest,
@@ -288,6 +295,8 @@ export interface HostConfig {
   readonly teamStorageLimitBytes?: number;
   /** The place's display name as its own Door shows it; presentation metadata, not identity. */
   readonly deploymentName?: string;
+  /** The hosting computer's full name for its user: the personal owner's first name, if unset. */
+  readonly ownerNameSeed?: string;
   /** Apex portal this Deployment belongs to, for the "back to the portal"
    * navigation its own web UI and the Desktop app render. It is cell-level
    * navigation metadata rather than trust material, so any Deployment may
@@ -647,6 +656,9 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
       ? {}
       : { teamStorageLimitBytes: parsed.OPENSTEER_TEAM_STORAGE_LIMIT_BYTES }),
     ...(deploymentName ? { deploymentName } : {}),
+    ...(parsed.OPENSTEER_OWNER_NAME_SEED
+      ? { ownerNameSeed: parsed.OPENSTEER_OWNER_NAME_SEED }
+      : {}),
     ...(parsed.OPENSTEER_PERSONAL_ACCOUNT_ISSUER
       ? { personalAccountIssuer: new URL(parsed.OPENSTEER_PERSONAL_ACCOUNT_ISSUER) }
       : {}),

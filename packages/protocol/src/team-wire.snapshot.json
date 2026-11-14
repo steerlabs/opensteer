@@ -1685,6 +1685,26 @@
       ],
       "additionalProperties": false
     },
+    "command team.member.profile.apply": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.member.profile.apply"
+        },
+        "receipt": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 16384,
+          "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"
+        }
+      },
+      "required": [
+        "type",
+        "receipt"
+      ],
+      "additionalProperties": false
+    },
     "command team.group.create": {
       "type": "object",
       "properties": {
@@ -3464,6 +3484,11 @@
               "type": "string",
               "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
               "format": "date-time"
+            },
+            "nameRevision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
             }
           },
           "required": [
@@ -3727,6 +3752,10 @@
             "accessRevision": {
               "type": "string",
               "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "namesRevision": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
             }
           },
           "required": [
@@ -3981,6 +4010,10 @@
           ]
         },
         "accessRevision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "namesRevision": {
           "type": "string",
           "pattern": "^(0|[1-9][0-9]*)$"
         }
@@ -7418,6 +7451,11 @@
                 "type": "string",
                 "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
                 "format": "date-time"
+              },
+              "nameRevision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
               }
             },
             "required": [
@@ -11729,6 +11767,22 @@
         "type"
       ]
     },
+    "command team.member.profile.apply": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.member.profile.apply"
+        },
+        "applied": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "applied"
+      ]
+    },
     "command team.group.create": {
       "type": "object",
       "properties": {
@@ -12497,6 +12551,11 @@
               "type": "string",
               "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
               "format": "date-time"
+            },
+            "nameRevision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
             }
           },
           "required": [
@@ -15106,6 +15165,10 @@
                 "accessRevision": {
                   "type": "string",
                   "pattern": "^(0|[1-9][0-9]*)$"
+                },
+                "namesRevision": {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)$"
                 }
               },
               "required": [
@@ -15295,6 +15358,88 @@
           "required": [
             "type",
             "recipient"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "team.member.updated"
+            },
+            "member": {
+              "type": "object",
+              "properties": {
+                "userId": {
+                  "type": "string",
+                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                "displayName": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                },
+                "handle": {
+                  "type": "string",
+                  "maxLength": 48,
+                  "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                },
+                "image": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "owner",
+                    "admin",
+                    "member"
+                  ]
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "removed"
+                  ]
+                },
+                "generation": {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)$"
+                },
+                "joinedAt": {
+                  "type": "string",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                  "format": "date-time"
+                },
+                "nameRevision": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "userId",
+                "displayName",
+                "handle",
+                "image",
+                "role",
+                "state",
+                "generation",
+                "joinedAt"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "member"
           ]
         }
       ]

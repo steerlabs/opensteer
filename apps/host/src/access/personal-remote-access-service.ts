@@ -33,6 +33,7 @@ import {
   RevokeConnectRequestSchema,
   type RevokeConnectRequest,
   type RevokeConnectResponse,
+  type UpdateAccountProfileRequest,
   personalHostAccessRouteEnvelopeSha256,
   type IssuePersonalHostAccountLinkChallengeResponse,
   type PersonalHostAccessAuthority,
@@ -118,6 +119,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
   readonly #fetch: typeof globalThis.fetch;
   readonly #accountOperations = new Map<string, Promise<RevokeConnectResponse | undefined>>();
   readonly #disconnectRunners: () => Promise<void>;
+  readonly #accountLinkChanged: () => void;
 
   constructor(options: {
     readonly authority: PersonalHostAccessAuthority;
@@ -134,6 +136,8 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     readonly grantVerifier?: PersonalAccountGrantVerifier;
     readonly fetch?: typeof globalThis.fetch;
     readonly now?: () => Date;
+    /** Called after a link becomes active or ends, so what follows the Account can catch up. */
+    readonly onAccountLinkChanged?: () => void;
   }) {
     this.desktopUpdates = new PersonalDesktopUpdate(
       new PersonalDesktopUpdateStore(options.database),
@@ -153,6 +157,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     this.#fetch = options.fetch ?? globalThis.fetch;
     this.#now = options.now ?? (() => new Date());
     this.#disconnectRunners = options.disconnectRunners ?? (async () => undefined);
+    this.#accountLinkChanged = options.onAccountLinkChanged ?? (() => undefined);
   }
 
   status(): Promise<PersonalRemoteAccessStatus> {
@@ -958,6 +963,51 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
    * needs no later attempt either: activation seeds the Account's copy from
    * this same signed document, so the next start is the next refresh.
    */
+  /**
+   * The owner's name as the linked Account holds it, with the Account it came from; null while no
+   * link is active. Never inside a Host transaction: this waits on the Account.
+   */
+  async readOwnerProfile() {
+    const link = await this.#activeLink();
+    if (!link) return null;
+    return { account: link.account, profile: await link.client.ownerProfile() };
+  }
+
+  /**
+   * Saves a new owner name to the linked Account; null while no link is active. Refused when the
+   * link is to another Account than the one the person was editing for.
+   */
+  async updateOwnerProfile(request: UpdateAccountProfileRequest, subject: string) {
+    const link = await this.#activeLink();
+    if (!link) return null;
+    if (link.account.subject !== subject)
+      throw new OpensteerError({
+        code: "conflict",
+        message:
+          "This computer is now linked to another Opensteer Account. Check your name, then try again.",
+      });
+    return { account: link.account, ...(await link.client.updateOwnerProfile(request)) };
+  }
+
+  async #activeLink() {
+    if (!this.#grantVerifier) return null;
+    const linked = await this.#database
+      .selectFrom("personalRemoteAccountLink")
+      .selectAll()
+      .where("singletonKey", "=", "opensteer-account")
+      .executeTakeFirst();
+    if (!linked || linked.state !== "active" || linked.accountOperation?.kind === "unlink")
+      return null;
+    return {
+      account: {
+        issuer: linked.issuer,
+        subject: linked.subject,
+        linkGeneration: linked.linkGeneration,
+      },
+      client: this.#accountClient(linked),
+    };
+  }
+
   async publishAccountAuthority(): Promise<"published" | "unlinked"> {
     if (!this.#grantVerifier) return "unlinked";
     await this.#resumeAccountOperation();
@@ -1230,6 +1280,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
       }
     });
     this.administration.changed();
+    if (operation.kind === "activate" || operation.kind === "unlink") this.#accountLinkChanged();
     if (ended.length) {
       const announce = () => this.#identity.announceSessionsEnded(ended);
       if (afterResponse) afterResponse(announce);

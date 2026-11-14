@@ -107,7 +107,7 @@ async function main(): Promise<void> {
       names: ["ComputerUseHelper"],
       sourceRevision: process.env.OPENSTEER_SOURCE_REVISION ?? "",
       cacheDirectory: process.env.OPENSTEER_NATIVE_BUILD_CACHE_DIRECTORY,
-      inputs: () => nativeReleaseInputs(repositoryRoot, "computer-use", identity, architectures),
+      inputs: () => nativeReleaseInputs(repositoryRoot, "computer-use", architectures),
       build,
       verify: (files) => verifyNativeProducts(files, architectures),
       packageAndVerify,

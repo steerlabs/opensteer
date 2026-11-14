@@ -9,6 +9,7 @@ import { resolveTeamTaskExecution } from "./team-task-execution.js";
 import { ReconcileLoop, reconcileServices } from "./reconcile-loop.js";
 import { TeamRunEvents } from "./team-run-events.js";
 import { initializePersonalState } from "./personal-state.js";
+import { OwnerProfileService } from "../administration/owner-profile.js";
 import { createTeamHostRuntime } from "./team-runtime.js";
 import { AgentHomeFiles } from "../threads/agent-home-files.js";
 import { createPersonalTeamLinkServices } from "../team-links/index.js";
@@ -26,7 +27,7 @@ import {
   personalDeploymentOwner,
 } from "@opensteer/database";
 import { readPersonalResources } from "../browser/personal-snapshot.js";
-import { deploymentPolicy } from "@opensteer/core";
+import { deploymentPolicy, localMachineOwnerEmail } from "@opensteer/core";
 import { RequestHold } from "../mcp/request-hold.js";
 import { ThreadNaming } from "../agents/thread-naming.js";
 import { QuietTasks } from "../threads/quiet-tasks.js";
@@ -524,7 +525,11 @@ export async function createHostRuntime(
     const initializePersonal = async () => {
       if (initializedPersonal) return initializedPersonal;
       initializingPersonal ??= initializePersonalState(database, personalConfig, realtime)
-        .then((execution) => (initializedPersonal = execution))
+        .then(async (execution) => {
+          // The owner's first name is in place before anyone reads it.
+          if (execution) await ownerProfile.seed(config.ownerNameSeed ?? null);
+          return (initializedPersonal = execution);
+        })
         .finally(() => {
           initializingPersonal = undefined;
         });
@@ -608,7 +613,7 @@ export async function createHostRuntime(
         ? {
             localMachineOwner: {
               displayName: "You",
-              email: "owner@personal.opensteer.invalid",
+              email: localMachineOwnerEmail,
             },
           }
         : {}),
@@ -662,8 +667,18 @@ export async function createHostRuntime(
           ...(options.accountDirectoryFetch ? { fetch: options.accountDirectoryFetch } : {}),
           identity,
           keys,
+          onAccountLinkChanged: () => {
+            void ownerProfile.refresh().catch(reportOwnerProfileError);
+          },
         })
       : undefined;
+    let reportOwnerProfileError: (error: unknown) => void = () => {};
+    const ownerProfile = new OwnerProfileService({
+      store: store.ownerProfile,
+      account: personalRemoteAccess ?? null,
+      changed: () => notifyMachinesChanged(realtime, "owner-profile"),
+      report: (error) => reportOwnerProfileError(error),
+    });
     await personalRemoteAccess?.purgeExpiredAccountLinkKeys();
     const tokens = new SignedTokenService(keys, {
       deploymentId: deployment.id,
@@ -2600,6 +2615,7 @@ export async function createHostRuntime(
         ...(personalRemoteAccess
           ? { personalRemoteAccess: { service: personalRemoteAccess } }
           : {}),
+        ownerProfile,
         realtime,
         publishDeploymentEvent,
         runnerAuthenticator,
@@ -2686,6 +2702,8 @@ export async function createHostRuntime(
       app.log.error({ runId, err: error }, "Run computer-use teardown failed");
     reportBrowserSignInError = (error) =>
       app.log.warn({ err: error }, "Chrome sign-in delivery failed");
+    reportOwnerProfileError = (error) =>
+      app.log.warn({ err: error }, "Owner name refresh from the Opensteer Account failed");
     reportBrowserPresenceError = (error) =>
       app.log.warn({ err: error }, "Browser presence delivery failed");
     reportBrowserUsageError = (error) =>
@@ -2797,7 +2815,10 @@ export async function createHostRuntime(
               }
             })(),
             initializePersonalState(database, personalConfig, realtime).then(async (service) => {
-              if (service) await ensureLinks();
+              if (!service) return;
+              await ensureLinks();
+              await ownerProfile.seed(config.ownerNameSeed ?? null);
+              ownerProfile.refreshSoon();
             }),
             ...(personalRemoteAccess ? [personalRemoteAccess.purgeExpiredAccountLinkKeys()] : []),
             // What a work location can run is durable state like any other, so it

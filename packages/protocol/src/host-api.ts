@@ -104,6 +104,7 @@ import {
   ThreadViewSchema,
   TimeZoneSchema,
   QuietTaskDaysSchema,
+  PersonNameSchema,
   TriggerIdSchema,
   TriggerOccurrenceIdSchema,
   WaitingRequestViewSchema,
@@ -163,7 +164,12 @@ import { AppIdSchema, AppSchema } from "@opensteer/core";
 import { AgentPhoneHostTargetViewSchema } from "./android-phone.js";
 import { AssetUrlsInputSchema, AssetUrlsSchema } from "./assets.js";
 import { AttachmentContentSchema, AttachmentReferenceInputSchema } from "./attachments.js";
-import { AppTabsSchema, HostBootstrapSchema, IdentityConfigViewSchema } from "./bootstrap.js";
+import {
+  AppTabsSchema,
+  HostBootstrapSchema,
+  IdentityConfigViewSchema,
+  OwnerProfileViewSchema,
+} from "./bootstrap.js";
 import {
   BrowserSignInDecisionSchema,
   BrowserSignInOutcomeSchema,
@@ -507,6 +513,15 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("viewer.quietTasks.update"),
     idempotencyKey: idempotencyKeySchema,
     quietTaskDays: QuietTaskDaysSchema,
+  }),
+  // The personal owner's own name; null shows "You" and is refused while an Account owns it.
+  // Sent only to Hosts whose bootstrap carries `ownerProfile`.
+  z.strictObject({
+    type: z.literal("viewer.name.update"),
+    idempotencyKey: idempotencyKeySchema,
+    name: PersonNameSchema.nullable(),
+    /** `ownerProfile.version` when the person began editing. */
+    expectedVersion: OwnerProfileViewSchema.shape.version,
   }),
   z.strictObject({
     continuation: z
@@ -1197,6 +1212,12 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     type: z.literal("settings.idleCompaction.set"),
   }),
   z.object({ quietTaskDays: QuietTaskDaysSchema, type: z.literal("viewer.quietTasks.update") }),
+  // `applied` is false when the Account already had a newer name, which `profile` then shows.
+  z.object({
+    applied: z.boolean(),
+    profile: OwnerProfileViewSchema,
+    type: z.literal("viewer.name.update"),
+  }),
   z.object({
     asOfSequence: SequenceSchema,
     thread: ThreadViewSchema,

@@ -24,6 +24,7 @@ import { GroupsAdmin, PeopleAdmin, type TeamRole } from "../components/team/team
 import { PeopleOnlyBadge } from "../components/team/team-marks.js";
 import { useToast } from "../components/toast.js";
 import { actionErrorMessage } from "../ui-utils.js";
+import { AccountNameRow } from "../components/settings/sections/owner-name.js";
 import { useTeams } from "./team-attachments.js";
 import {
   InvitePanel,
@@ -127,7 +128,7 @@ function useReport() {
 }
 
 function ProfilePage({ view }: { readonly view: TeamView }) {
-  const { coordination, leave } = useTeams();
+  const { coordination, leave, profiles } = useTeams();
   const { openDelete, openTransfer } = useTeamDialogs();
   const navigate = useNavigate();
   const report = useReport();
@@ -150,10 +151,21 @@ function ProfilePage({ view }: { readonly view: TeamView }) {
   return (
     <>
       <SettingsGroup heading="Your profile" headingId="team-profile">
-        <SettingsRow
-          detail={`@${me.handle} · your agent is @${me.handle}-agent`}
-          title={me.displayName}
-        />
+        {profiles ? (
+          // The name is the person's own, kept in their Account; the team only shows it.
+          <>
+            <AccountNameRow />
+            <SettingsRow
+              detail={`Your agent is @${me.handle}-agent. Handles stay the same when you rename.`}
+              title={`@${me.handle}`}
+            />
+          </>
+        ) : (
+          <SettingsRow
+            detail={`@${me.handle} · your agent is @${me.handle}-agent. Change your name in the Opensteer app under Settings → Account.`}
+            title={me.displayName}
+          />
+        )}
         <SettingsRow
           action={
             line === "none" || line === "failed" ? (

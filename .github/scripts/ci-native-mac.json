@@ -79,7 +79,10 @@
         "apps/desktop/native/computer-use/Tests/Fixtures/helper-wire.json",
         "apps/desktop/native/passwords/Tests/Fixtures/passwords-wire.json",
         "packages/core/src/fixtures/notification-preview-v1.json",
-        "packages/runner-auth/fixtures/device-proofs.v1.json"
+        "packages/runner-auth/fixtures/device-proofs.v1.json",
+        "scripts/quarantine-runner.ts",
+        "scripts/quarantine.ts",
+        "tests/quarantine.json"
       ],
       "lane": true
     },
@@ -137,6 +140,7 @@
       ],
       "scripts": [
         "apps/desktop/scripts/prove-release-native.ts",
+        "apps/desktop/scripts/release-native-cache-inputs.ts",
         "apps/desktop/scripts/build-computer-use-helper.ts",
         "apps/desktop/scripts/build-passwords-broker.ts",
         "apps/desktop/scripts/build-dictation-helper.ts"

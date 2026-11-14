@@ -327,7 +327,8 @@ export function unchangedPlan(sha) {
     reasons: [`main has not changed since the full run of ${sha}`],
     affected: [],
     nativeMac: [],
-    lanes: Object.fromEntries(lanes.map((lane) => [lane, false])),
+    // Time-based quarantine expiry and published Stable compatibility still gate an idle main.
+    lanes: Object.fromEntries(lanes.map((lane) => [lane, lane === "lint"])),
   };
 }
 export function detect({
