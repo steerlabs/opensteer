@@ -15,6 +15,9 @@ export default defineConfig({
   // here, keyed by path relative to the root; outside the checkout, fresh worktrees
   // inherit them.
   cacheDir: path.join(homedir(), ".cache/opensteer/vitest/unit"),
+  resolve: {
+    alias: { electron: path.resolve(import.meta.dirname, "tests/electron-unit.test-support.ts") },
+  },
   test: {
     coverage: {
       provider: "v8",
