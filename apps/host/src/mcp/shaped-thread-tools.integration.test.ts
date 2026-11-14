@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { expect, vi } from "vitest";
 import { sql } from "kysely";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { ownTestDatabaseProducer } from "@opensteer/database/test-support/database";
 import {
   createId,
   BrowserSurfaceIdSchema,
@@ -45,6 +47,8 @@ import {
   deliverTaskQuestionNotice,
   cancelSettledTaskQuestionNotice,
   requestInsert,
+  createDatabase,
+  OpensteerStore,
 } from "@opensteer/database";
 import {
   describeStore,
@@ -53,6 +57,7 @@ import {
   liveRequest,
   testContinuationIdentity,
   type StoreFixture,
+  readEmptyPersonalResources,
 } from "@opensteer/database/test-support/store";
 import { CommandService, KeyedAdmissionQueue, RealtimeHub } from "@opensteer/orchestration";
 import {
@@ -65,6 +70,7 @@ import {
 import { BrowserService } from "../browser/browser-service.js";
 import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js";
 import { ThreadService } from "../threads/thread-service.js";
+import { ThreadWaitService } from "../threads/thread-wait.js";
 import { ProductToolHandlers } from "./handlers/product.js";
 import type { AgentCaller, RunCaller } from "./agent-caller.js";
 import { TaskQuestionNotices } from "../threads/task-question-notices.js";
@@ -899,6 +905,98 @@ async function tool(
 }
 
 describeStore("shaped agent Thread tools", (it) => {
+  for (const ending of ["timeout", "disconnect"] as const) {
+    it(`joins a blocked store snapshot and returns its checkout on ${ending}`, async ({
+      storeFixture,
+    }) => {
+      const f = await storeFixture.createRunFixture(`blocked-wait-${ending}`);
+      const { database } = await ownTestDatabaseProducer(storeFixture.databaseUrl, async () => {
+        const database = createDatabase({
+          connectionString: storeFixture.databaseUrl,
+          maxConnections: 1,
+        });
+        return { database, close: () => database.destroy() };
+      });
+      const store = new OpensteerStore(database, {
+        readPersonalResources: readEmptyPersonalResources,
+      });
+      const locked = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const blocker = storeFixture.database.transaction().execute(async (tx) => {
+        // MVCC reads ignore row locks; an exclusive relation lock blocks the real store's SELECT.
+        await sql`lock table threads in access exclusive mode`.execute(tx);
+        locked.resolve();
+        await withTimeout(release.promise, 3000, {
+          timeoutError: () => new Error("Snapshot blocker was not released"),
+        });
+      });
+      void blocker.catch(locked.reject);
+      const controller = new AbortController();
+      const disconnected = new Error("Disconnected");
+      const unsubscribe = vi.fn();
+      const reading = Promise.withResolvers<void>();
+      const service = new ThreadWaitService({
+        subscribe: () => unsubscribe,
+        read: ({ signal, expiresAt }) =>
+          withDatabaseOperationSignal(signal, expiresAt, async () => {
+            reading.resolve();
+            await store.getThreadForOwner(f.thread.id, f.userId);
+            return { connected: true, messages: [] };
+          }),
+      });
+      let pending: Promise<unknown> | undefined;
+      try {
+        await withTimeout(locked.promise, 1000, {
+          timeoutError: () => new Error("Thread relation was not locked"),
+        });
+        pending = service.wait({
+          timeoutMs: ending === "timeout" ? 100 : 2000,
+          signal: controller.signal,
+        });
+        const outcome = pending.then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error }),
+        );
+        await withTimeout(reading.promise, 1000, {
+          timeoutError: () => new Error("Snapshot did not start"),
+        });
+        if (ending === "disconnect") {
+          await vi.waitFor(
+            async () => {
+              const { rows } = await sql<{
+                count: number;
+              }>`select count(*)::int as count from pg_stat_activity
+              where datname = current_database() and wait_event_type = 'Lock'`.execute(
+                storeFixture.database,
+              );
+              expect(rows[0]?.count, "Snapshot never reached the relation lock").toBe(1);
+            },
+            { timeout: 500 },
+          );
+          controller.abort(disconnected);
+        }
+        const result = await withTimeout(outcome, 1000, {
+          timeoutError: () => new Error("Thread wait did not join its cancelled store read"),
+        });
+        if (ending === "timeout") expect(result).toMatchObject({ value: { status: "timed_out" } });
+        else expect(result).toEqual({ error: disconnected });
+        expect(unsubscribe).toHaveBeenCalledOnce();
+        expect(
+          (
+            await withTimeout(sql`select 1 as alive`.execute(database), 500, {
+              timeoutError: () => new Error("Thread wait retained the only checkout"),
+            })
+          ).rows,
+        ).toEqual([{ alive: 1 }]);
+      } finally {
+        controller.abort(disconnected);
+        release.resolve();
+        await withTimeout(Promise.all([blocker, pending?.catch(() => undefined)]), 1000, {
+          timeoutError: () => new Error("Blocked snapshot did not release its checkout"),
+        });
+      }
+    });
+  }
   it("reads only a reachable subagent's paged, clipped items and fences its Stop to the current attempt", async ({
     storeFixture,
   }) => {
