@@ -38,6 +38,80 @@ vi.mock("./chromium-clipboard.js", () => ({
   },
 }));
 
+it.each(["ready", "acquiring"] as const)(
+  "retires a %s private CDP before awaiting native close and fences new attachments",
+  async (state) => {
+    const f = await nativeCloseFixture();
+    const retired = Promise.withResolvers<void>();
+    const nativeClose = Promise.withResolvers<void>();
+    const events = new EventEmitter();
+    let physicallyClosed = false;
+    const page = Object.assign(events, {
+      isClosed: () => physicallyClosed,
+      close: vi.fn(async () => {
+        await retired.promise;
+        await nativeClose.promise;
+        physicallyClosed = true;
+        events.emit("close");
+      }),
+    });
+    const session = Object.assign(new EventEmitter(), {
+      send: vi.fn(async () => ({})),
+      detach: vi.fn(async () => retired.resolve()),
+    });
+    const acquired = Promise.withResolvers<typeof session>();
+    let attaching: Promise<import("@opensteer/browser-runtime-core").CdpSession> | undefined;
+    let closing: Promise<void> | undefined;
+    let launched: Awaited<ReturnType<typeof f.launcher.launch>> | undefined;
+    try {
+      launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      vi.spyOn(f.context, "pages").mockReturnValue([page as unknown as Page]);
+      f.context.newCDPSession.mockReturnValue(acquired.promise);
+      if (state === "ready") acquired.resolve(session);
+      const handle = launched.context.pages()[0]!;
+      attaching = handle.cdp();
+      void attaching.catch(() => undefined);
+      const channel = state === "ready" ? await attaching : undefined;
+      vi.useFakeTimers();
+      closing = handle.close();
+      await vi.advanceTimersByTimeAsync(0);
+      if (state === "acquiring") {
+        expect(
+          page.close,
+          "Native close must not join an unready CDP acquisition",
+        ).toHaveBeenCalledOnce();
+        acquired.resolve(session);
+        await vi.advanceTimersByTimeAsync(0);
+        await expect(attaching).rejects.toThrow(/clos/i);
+      }
+      expect(
+        session.detach,
+        "Native close cannot finish until its private CDP is retired",
+      ).toHaveBeenCalledOnce();
+      expect(handle.isClosed(), "A closing page must refuse new work").toBe(true);
+      await expect(handle.cdp()).rejects.toThrow(/clos/i);
+      await expect(handle.agentCdp()).rejects.toThrow(/clos/i);
+      if (channel) await expect(channel.send("Runtime.evaluate")).rejects.toThrow(/closed/i);
+      const duplicate = handle.close();
+      nativeClose.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      await closing;
+      await duplicate;
+      expect(page.close).toHaveBeenCalledOnce();
+      expect(f.context.newCDPSession).toHaveBeenCalledOnce();
+    } finally {
+      acquired.resolve(session);
+      retired.resolve();
+      nativeClose.resolve();
+      await closing;
+      vi.useRealTimers();
+      f.exit();
+      await launched?.close();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  },
+);
+
 describe("Chromium child environment", () => {
   it("keeps only required headless Linux variables", () => {
     const environment = createChromiumChildEnvironment(
