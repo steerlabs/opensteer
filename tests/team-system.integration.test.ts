@@ -410,7 +410,9 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
       .selectAll()
       .where("id", "=", local.requestId)
       .executeTakeFirstOrThrow();
-    expect(request.state).toBe("needs_you");
+    // The terminal receipt is held. The last live status is needs_you or, once the
+    // answer resumes the Run, working; which one reaches the team first is a race.
+    expect(["needs_you", "working"]).toContain(request.state);
     expect(request.finishedAt).toBeNull();
     const replyMessageId = request.replyMessageId;
     if (replyMessageId === null) throw new Error("The published request named no reply");
