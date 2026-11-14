@@ -1730,6 +1730,7 @@ export interface MockHostClientOptions {
   devices?: "seeded" | "absent";
   readonly browserPreferencesStorage?: BrowserPreferencesStorage;
   readonly quietTasksAvailable?: boolean;
+  readonly agentImagesAvailable?: boolean;
   /** The platform's lifecycle, reported to display sockets as the real client reports it. */
   readonly lifecycle?: ClientLifecycle;
   /** Automations covering every state the Automations page shows; seeded by default. */
@@ -6175,6 +6176,7 @@ class MockHostState {
       browserTabGroups: this.tabGroups,
 
       quietTasksAvailable: options.quietTasksAvailable ?? true,
+      agentImagesAvailable: options.agentImagesAvailable ?? true,
     };
     const firstRun = options.world === "first-run";
     this.snapshot = firstRun ? firstRunWorld(initial) : initial;

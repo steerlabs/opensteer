@@ -1,5 +1,4 @@
-import { useContext } from "react";
-import { TranscriptImageContext } from "@opensteer/client/react";
+import { useTranscriptImages } from "@opensteer/client/react";
 import { classifyMarkdownImageSource } from "@opensteer/shared/markdownImages";
 import { AssetImage } from "./asset-image.js";
 import { isValidElement, memo, useMemo, useRef, type ComponentProps, type MouseEvent } from "react";
@@ -62,9 +61,9 @@ function TranscriptLink({ children, href }: ComponentProps<"a">) {
 }
 
 function TranscriptImage({ alt, src }: ComponentProps<"img">) {
-  const context = useContext(TranscriptImageContext);
+  const images = useTranscriptImages();
   const source = classifyMarkdownImageSource(typeof src === "string" ? src : "");
-  if (context && context.client.getSnapshot().deploymentShape?.kind === "personal") {
+  if (images) {
     if (source.kind === "local") return <AssetImage path={source.path} alt={alt ?? ""} />;
     if (source.kind === "remote")
       return <TranscriptLink href={source.url}>{alt || source.url}</TranscriptLink>;

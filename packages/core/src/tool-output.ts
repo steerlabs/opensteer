@@ -59,11 +59,12 @@ export type ToolOutputImageMediaType = z.infer<typeof ToolOutputImageMediaTypeSc
  * `generated` marks the call's product (image generation), which the reply
  * also shows, as opposed to incidental output such as a screenshot.
  */
-export const ToolOutputImageSchema = z.strictObject({
+const toolOutputImageShape = {
   path: z.string().min(1).max(imagePathMaxLength),
   mediaType: ToolOutputImageMediaTypeSchema,
   generated: z.literal(true).optional(),
-});
+} as const;
+export const ToolOutputImageSchema = z.strictObject(toolOutputImageShape);
 export type ToolOutputImage = z.infer<typeof ToolOutputImageSchema>;
 
 const toolOutputShape = {
@@ -80,6 +81,7 @@ const toolOutputShape = {
 export const ToolOutputSchema = z.strictObject(toolOutputShape);
 export const ToolOutputViewSchema = z.object({
   ...toolOutputShape,
+  images: z.array(z.object(toolOutputImageShape)).min(1).max(toolOutputImageMaxCount).optional(),
   truncation: ToolOutputTruncationViewSchema.optional(),
 });
 export type ToolOutput = z.infer<typeof ToolOutputSchema>;

@@ -18,6 +18,7 @@ import { z } from "zod";
 import { OpensteerError, type UserId } from "@opensteer/core";
 import type { AssetUrl, AssetUrlsInput } from "@opensteer/protocol";
 import { isNetworkPath } from "@opensteer/shared/markdownImages";
+import { noFollowFlag } from "@opensteer/shared/privateFiles";
 import type { FastifyInstance } from "fastify";
 
 const types = {
@@ -123,10 +124,7 @@ export class AssetService {
       if (await this.#denied(file)) return { status: "unavailable", reason: "denied" };
       const type = mediaType(file);
       if (!type) return { status: "unavailable", reason: "unsupported" };
-      const handle = await open(
-        file,
-        constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-      );
+      const handle = await open(file, constants.O_RDONLY | noFollowFlag() | constants.O_NONBLOCK);
       try {
         const s = await handle.stat();
         if (!s.isFile()) return { status: "unavailable", reason: "unsupported" };
@@ -273,10 +271,7 @@ export class AssetService {
           const c = this.#verify(request.params.token);
           if (!c || request.params.name !== path.basename(c.path) || (await this.#denied(c.path)))
             return reply.code(404).send();
-          handle = await open(
-            c.path,
-            constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-          );
+          handle = await open(c.path, constants.O_RDONLY | noFollowFlag() | constants.O_NONBLOCK);
           const s = await handle.stat();
           const type = mediaType(c.path);
           if (!s.isFile() || !type || revision(s) !== revision(c)) return reply.code(404).send();
@@ -285,10 +280,7 @@ export class AssetService {
             const cached = await this.#preview(c, handle);
             await handle.close();
             handle = undefined;
-            handle = await open(
-              cached,
-              constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
-            );
+            handle = await open(cached, constants.O_RDONLY | noFollowFlag() | constants.O_NONBLOCK);
           }
           const length = (await handle.stat()).size;
           reply.headers({

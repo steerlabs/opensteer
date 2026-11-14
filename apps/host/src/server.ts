@@ -2843,7 +2843,12 @@ export async function advertisedBootstrapMethods(
 export function advertisedCapabilities(
   dependencies: Pick<
     HostServerDependencies,
-    "attachments" | "authenticator" | "personalRemoteAccess" | "passkeys" | "notificationPreviews"
+    | "assets"
+    | "attachments"
+    | "authenticator"
+    | "personalRemoteAccess"
+    | "passkeys"
+    | "notificationPreviews"
   >,
 ): readonly HostCapability[] {
   return [
@@ -2876,6 +2881,7 @@ export function advertisedCapabilities(
     "browser-search-suggestions-v1",
     "tab-reopen-v1",
     "browser-profile-manage-v1",
+    ...(dependencies.assets ? (["agent-images-v1"] as const) : []),
     ...(dependencies.authenticator.identity.nativeOpenIdConfiguration()
       ? (["native-oauth"] as const)
       : []),

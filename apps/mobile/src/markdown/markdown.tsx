@@ -1,4 +1,4 @@
-import { TranscriptImageContext } from "@opensteer/client/react";
+import { useTranscriptImages } from "@opensteer/client/react";
 import { classifyMarkdownImageSource } from "@opensteer/shared/markdownImages";
 import { AssetImage } from "./asset-image.js";
 import { splitMarkdownBlocks } from "@opensteer/shared/markdown";
@@ -496,9 +496,9 @@ const styles = StyleSheet.create({
 });
 
 function MarkdownImage({ src, alt }: { src: string; alt: string }) {
-  const context = useContext(TranscriptImageContext);
+  const images = useTranscriptImages();
   const source = classifyMarkdownImageSource(src);
-  if (context && context.client.getSnapshot().deploymentShape?.kind === "personal") {
+  if (images) {
     if (source.kind === "local") return <AssetImage path={source.path} alt={alt} />;
     if (source.kind === "remote") return <Link url={source.url}>{alt || source.url}</Link>;
   }

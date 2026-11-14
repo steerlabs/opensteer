@@ -75,6 +75,23 @@ it("re-mints before use once an address is within five minutes of expiry", async
   await renewed;
   expect(read).toHaveBeenCalledTimes(2);
 });
+it("re-confirms on a new mount so an overwritten, re-shown file updates", async () => {
+  const { store, read, thread, overwrite } = setup();
+  const changed = vi.fn();
+  store.subscribe(changed);
+  await store.get("d", thread, "/a.png", "preview");
+  store.confirm("d", thread, "/a.png", "preview");
+  await vi.advanceTimersByTimeAsync(0);
+  expect(read).toHaveBeenCalledTimes(1);
+  changed.mockClear();
+  overwrite();
+  await vi.advanceTimersByTimeAsync(5_000);
+  store.confirm("d", thread, "/a.png", "preview");
+  store.confirm("d", thread, "/a.png", "preview");
+  await vi.waitFor(() => expect(changed).toHaveBeenCalled(), { timeout: 1_000 });
+  expect(read).toHaveBeenCalledTimes(2);
+  expect(await store.get("d", thread, "/a.png", "preview")).toMatchObject({ revision: "2" });
+});
 it("asks once while a background re-confirmation is in flight", async () => {
   const { store, read, thread } = setup();
   await store.get("d", thread, "/a.png", "preview");

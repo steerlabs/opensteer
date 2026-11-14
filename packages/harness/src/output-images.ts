@@ -11,6 +11,7 @@ import {
 import { constants } from "node:fs";
 import { open as openFile } from "node:fs/promises";
 import { isNetworkPath } from "@opensteer/shared/markdownImages";
+import { readBounded } from "@opensteer/shared/privateFiles";
 import { join } from "node:path";
 import {
   createToolOutput,
@@ -101,16 +102,7 @@ export function createToolImageStore(
         try {
           const stat = await handle.stat();
           if (!stat.isFile() || stat.size > savedImageMaxBytes) return undefined;
-          // Read at most one byte past the limit: a file still growing is refused.
-          const buffer = Buffer.alloc(stat.size + 1);
-          let length = 0;
-          for (;;) {
-            const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
-            if (bytesRead === 0) break;
-            length += bytesRead;
-            if (length > stat.size) return undefined;
-          }
-          const bytes = buffer.subarray(0, length);
+          const bytes = await readBounded(handle, savedImageMaxBytes, () => new Error("too large"));
           const type = imageType(bytes);
           return type ? save(bytes, type) : undefined;
         } finally {

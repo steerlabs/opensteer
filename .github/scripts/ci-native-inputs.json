@@ -257,6 +257,7 @@
     "apps/host/src/apps/app-routes.ts",
     "apps/host/src/apps/app-service.ts",
     "apps/host/src/apps/app-tunnel-hub.ts",
+    "apps/host/src/assets/asset-service.ts",
     "apps/host/src/attachments/attachment-service.ts",
     "apps/host/src/attachments/personal-team-ports.ts",
     "apps/host/src/browser/browser-client-streams.ts",

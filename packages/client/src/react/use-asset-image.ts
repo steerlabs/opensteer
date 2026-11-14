@@ -7,13 +7,17 @@ export const TranscriptImageContext = createContext<{
   client: HostClient;
   threadId: string;
 } | null>(null);
+/** Local images show only in a task transcript on a Host that serves them; elsewhere they stay words. */
+export function useTranscriptImages(): boolean {
+  return useContext(TranscriptImageContext)?.client.getSnapshot().agentImagesAvailable === true;
+}
 export function useAssetImage(path: string, variant: AssetVariant = "preview") {
   const context = useContext(TranscriptImageContext);
   const client = context?.client;
   const threadId = context?.threadId;
   const snapshot = client?.getSnapshot();
-  const deploymentId =
-    snapshot?.deploymentShape?.kind === "personal" ? snapshot.deploymentId : null;
+  const personal = useTranscriptImages();
+  const deploymentId = personal ? (snapshot?.deploymentId ?? null) : null;
   const store = client?.assetUrls;
   const [state, setState] = useState<{ image: AssetImage | null; failed: boolean }>({
     image: null,
@@ -41,6 +45,7 @@ export function useAssetImage(path: string, variant: AssetVariant = "preview") {
     };
     setState({ image: null, failed: false });
     load();
+    if (store && deploymentId && threadId) store.confirm(deploymentId, threadId, path, variant);
     const release = store?.subscribe(load);
     return () => {
       alive = false;

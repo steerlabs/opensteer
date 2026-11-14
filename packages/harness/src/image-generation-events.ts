@@ -75,8 +75,6 @@ export async function* withGeneratedImageReplies(
       !event.data.nodeId
     )
       running.add(event.data.callId);
-    // A failed or cancelled generation keeps the reply held until the Run's
-    // outcome: on Stop, cancellations arrive before `run.interrupted`.
     const succeeded =
       event.type === "tool.completed" && running.delete(event.data.callId) && !event.data.isError;
     if (succeeded) {
@@ -91,21 +89,20 @@ export async function* withGeneratedImageReplies(
       held = event;
       continue;
     }
+    // The reply and every image its turn generated leave together, once the
+    // turn is over: released earlier, a later image would become an
+    // image-only message, which the Host would take as the Run's reply.
     if (
       event.type === "run.interrupted" ||
       event.type === "run.failed" ||
       event.type === "run.completed" ||
-      (event.type === "run.phase" && event.data.phase === "background")
+      event.type === "run.phase"
     ) {
       const final = reply(event.type === "run.interrupted");
       if (final) yield final;
       running.clear();
     }
     yield event;
-    if (succeeded && !running.size && held) {
-      const final = reply(false);
-      if (final) yield final;
-    }
   }
   const final = reply(running.size > 0);
   if (final) yield final;

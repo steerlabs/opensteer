@@ -1071,6 +1071,7 @@ export class HttpHostClient {
 
       quietTasksAvailable: this.#capabilities?.includes("quiet-tasks-v1") === true,
       harnessUpdateAvailable: this.#capabilities?.includes("harness-update-v1") === true,
+      agentImagesAvailable: this.#capabilities?.includes("agent-images-v1") === true,
       tabReopenAvailable: this.#capabilities?.includes("tab-reopen-v1") === true,
       browserProfileManageAvailable:
         this.#capabilities?.includes("browser-profile-manage-v1") === true,
@@ -3592,6 +3593,7 @@ export class HttpHostClient {
 
       quietTasksAvailable: capabilities.includes("quiet-tasks-v1"),
       harnessUpdateAvailable: capabilities.includes("harness-update-v1"),
+      agentImagesAvailable: capabilities.includes("agent-images-v1"),
       tabReopenAvailable: capabilities.includes("tab-reopen-v1"),
       browserProfileManageAvailable: capabilities.includes("browser-profile-manage-v1"),
       searchSuggestionsAvailable: capabilities.includes("browser-search-suggestions-v1"),
@@ -5558,6 +5560,7 @@ export class HttpHostClient {
 
       quietTasksAvailable: this.#capabilities?.includes("quiet-tasks-v1") === true,
       harnessUpdateAvailable: this.#capabilities?.includes("harness-update-v1") === true,
+      agentImagesAvailable: this.#capabilities?.includes("agent-images-v1") === true,
       tabReopenAvailable: this.#capabilities?.includes("tab-reopen-v1") === true,
       browserProfileManageAvailable:
         this.#capabilities?.includes("browser-profile-manage-v1") === true,
@@ -5989,6 +5992,7 @@ function emptySnapshot(): HostSnapshot {
 
     quietTasksAvailable: false,
     harnessUpdateAvailable: false,
+    agentImagesAvailable: false,
     iphoneAppsAvailable: false,
     assignments: {},
     threadAutomations: {},

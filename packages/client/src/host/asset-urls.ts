@@ -27,6 +27,7 @@ const margin = 5 * 60_000;
  * long, while remounts and re-renders cost no round trip.
  */
 const revalidateAfter = 30_000;
+const remountAfter = 2_000;
 
 export function assetImageUrl(
   deploymentId: string,
@@ -118,6 +119,16 @@ export class AssetUrlStore {
     });
     this.#enqueue(entry);
     return entry.pending;
+  }
+  /**
+   * A newly shown image re-confirms its address in the background: an agent
+   * that overwrites a file usually shows it again, and every image of that
+   * path then updates. Repeated mounts within a moment share one call.
+   */
+  confirm(deploymentId: string, threadId: string, path: string, variant: AssetVariant) {
+    const entry = this.#entries.get(JSON.stringify([deploymentId, threadId, path, variant]));
+    if (entry?.value && !entry.asking && Date.now() - (entry.confirmedAt ?? 0) > remountAfter)
+      this.#enqueue(entry);
   }
   #enqueue(entry: Entry) {
     entry.asking = true;

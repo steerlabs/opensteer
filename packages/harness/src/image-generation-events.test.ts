@@ -100,6 +100,29 @@ it.skipIf(process.platform === "win32")(
     }
   },
 );
+it("keeps the answer and a later generation's image in one reply", async () => {
+  const events = await collect([
+    started("a"),
+    message,
+    completed("a"),
+    started("b"),
+    completed("b"),
+    terminal,
+  ]);
+  const replies = events.filter((event) => event.type === "assistant.message");
+  expect(replies).toMatchObject([
+    { data: { content: [{ text: "Done\n\n![](</tmp/a.png>)\n\n![](</tmp/b.png>)" }] } },
+  ]);
+  expect(events.at(-1)).toEqual(terminal);
+});
+it("releases a turn's reply when the next turn begins", async () => {
+  const next: HarnessEvent = { type: "run.phase", data: { phase: "turn" } };
+  const events = await collect([started("a"), message, completed("a"), next]);
+  expect(events.slice(-2)).toMatchObject([
+    { type: "assistant.message", data: { content: [{ text: "Done\n\n![](</tmp/a.png>)" }] } },
+    next,
+  ]);
+});
 it("passes through turns without generation", async () => {
   expect(await collect([message, terminal])).toEqual([message, terminal]);
 });

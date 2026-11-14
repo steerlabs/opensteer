@@ -168,6 +168,8 @@ export const HostCapabilitySchema = z.enum([
   "quiet-tasks-v1",
   /** A native-user Runner can inspect and update a person's installed engine CLI. */
   "harness-update-v1",
+  /** `asset.urls` and `/media` serve image files on the hosting computer. */
+  "agent-images-v1",
   /** A person can rename and delete their browser profiles. */
   "browser-profile-manage-v1",
   /** Clients can hold a voice call with its own agent through `voice.*`. */
