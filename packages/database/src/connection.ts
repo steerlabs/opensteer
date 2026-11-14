@@ -15,6 +15,7 @@ import {
   inDatabaseOperationTransaction,
 } from "./operation-budget.js";
 import type { DatabaseSchema } from "./schema.js";
+import { applyDatabaseOperationBudget } from "./operation-budget-executor.js";
 
 interface DatabaseConnectionOptions {
   readonly connectionString: string;
@@ -111,6 +112,7 @@ export function createDatabase(
     // it was written: `PLUGIN_ROOT` is not `PLUGINROOT`.
     plugins: [new CamelCasePlugin({ maintainNestedObjectKeys: true })],
   });
+  applyDatabaseOperationBudget(database.getExecutor());
   databasePools.set(database, pool);
   databaseHolders.set(database, () =>
     [...holders.values()]

@@ -24,6 +24,7 @@ import {
 import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import { TeamFilesStore } from "../packages/database/src/team-files-store.js";
 import { TeamFileService } from "../apps/host/src/team/file-service.js";
+import { PartnerSocket } from "../apps/host/src/team-partners/socket.js";
 
 type Fixture = Awaited<ReturnType<typeof sharedFixture>>;
 type Host = Fixture["a"];
@@ -106,15 +107,44 @@ async function agent(host: Host, owner: Fixture["aUser"]) {
   };
 }
 
-it("pipelines a bounded chunk window, coalesces first downloads, and serves verified cached bytes without partner requests", async () => {
-  const f = await sharedFixture();
+it("pipelines a bounded chunk window, coalesces first downloads, and serves verified cached bytes without partner requests", async ({
+  signal,
+  onTestFinished,
+}) => {
+  const starting = sharedFixture();
+  let closing: Promise<void> | undefined;
+  const close = () =>
+    (closing ??= withTimeout(
+      starting.then(
+        (f) => f.close(),
+        () => {},
+      ),
+      5000,
+      {
+        timeoutError: () => new Error("Chunk pipeline fixture cleanup stalled"),
+      },
+    ));
+  onTestFinished(close);
+  const f = await withTimeout(starting, 10000, {
+    timeoutError: () => new Error("Chunk pipeline fixture setup stalled"),
+  });
   const release = Promise.withResolvers<void>();
+  const controller = new AbortController();
+  const combined = AbortSignal.any([signal, controller.signal]);
   const downloads: Promise<unknown>[] = [];
   try {
     const bytes = Buffer.alloc(teamShareFileChunkBytes * 9 + 7, 42);
-    const file = await upload(f.b, f.bSession, f.bid, bytes);
-    await post(f.bSession, f.bid, [file.id]);
-    const remote = (await page(f.aSession, f.aid))[0]!.attachments[0]!;
+    const file = await withTimeout(upload(f.b, f.bSession, f.bid, bytes), 3000, {
+      timeoutError: () => new Error("Chunk pipeline upload stalled"),
+    });
+    await withTimeout(post(f.bSession, f.bid, [file.id]), 3000, {
+      timeoutError: () => new Error("Chunk pipeline attachment post stalled"),
+    });
+    const remote = (
+      await withTimeout(page(f.aSession, f.aid), 3000, {
+        timeoutError: () => new Error("Chunk pipeline attachment replication stalled"),
+      })
+    )[0]!.attachments[0]!;
     const actor = { kind: "human" as const, userId: f.aUser };
     const service = f.b.host.team.shares!.files!;
     const receive = service.receive.bind(service);
@@ -136,34 +166,135 @@ it("pipelines a bounded chunk window, coalesces first downloads, and serves veri
     });
     const request = vi.spyOn(f.a.host.team.partners!, "request");
     const allocated = vi.spyOn(Buffer, "alloc");
-    const first = f.a.host.team.files.download(actor, remote.id, "original");
-    const second = f.a.host.team.files.download(actor, remote.id, "original");
-    downloads.push(first, second);
-    const results = Promise.all([first, second]);
+    const transfers = [0, 1].map(() =>
+      f.a.host.team.files
+        .download(actor, remote.id, "original", undefined, combined)
+        .then((result) => {
+          result.body.on("error", () => {});
+          return result;
+        }),
+    );
+    downloads.push(...transfers);
+    const results = Promise.all(transfers);
     void results.catch(() => {});
     await withTimeout(entered.promise, 2000, {
       timeoutError: () => new Error("File transfer never pipelined two chunks"),
     });
     expect(allocated.mock.calls.every(([size]) => size < bytes.length)).toBe(true);
     release.resolve();
-    for (const result of await results) {
-      const chunks = [];
-      for await (const chunk of result.body) chunks.push(chunk);
-      expect(Buffer.concat(chunks)).toEqual(bytes);
+    for (const [index, result] of (
+      await withTimeout(results, 3000, {
+        timeoutError: () => new Error("Coalesced chunk pipeline results stalled"),
+      })
+    ).entries()) {
+      const received = await withTimeout(
+        (async () => {
+          const chunks: Buffer[] = [];
+          for await (const chunk of result.body) chunks.push(chunk);
+          return Buffer.concat(chunks);
+        })(),
+        2000,
+        {
+          timeoutError: () => new Error(`Coalesced download ${index + 1} body stalled`),
+        },
+      );
+      expect(received.equals(bytes), `Coalesced download ${index + 1} bytes differ`).toBe(true);
     }
     expect(peak).toBe(2);
     expect(request.mock.calls.filter(([, op]) => op.op === "file")).toHaveLength(10);
     request.mockClear();
-    expect(Buffer.from(await (await download(f.a, f.aSession, remote.id)).arrayBuffer())).toEqual(
-      bytes,
-    );
+    const cached = await withTimeout(download(f.a, f.aSession, remote.id), 3000, {
+      timeoutError: () => new Error("Cached download response stalled"),
+    });
+    const cachedBytes = await withTimeout(cached.arrayBuffer(), 2000, {
+      timeoutError: () => new Error("Cached download body stalled"),
+    });
+    expect(Buffer.from(cachedBytes).equals(bytes), "Cached download bytes differ").toBe(true);
     expect(request).not.toHaveBeenCalled();
-    expect(await readdir(join(f.a.directory, "team-files"))).toEqual([remote.id]);
+    expect(
+      await withTimeout(readdir(join(f.a.directory, "team-files")), 1000, {
+        timeoutError: () => new Error("Chunk pipeline cache inspection stalled"),
+      }),
+    ).toEqual([remote.id]);
   } finally {
     release.resolve();
-    await Promise.allSettled(downloads);
+    controller.abort();
+    try {
+      await withTimeout(Promise.allSettled(downloads), 1000, {
+        timeoutError: () => new Error("Chunk pipeline cancellation stalled"),
+      });
+    } finally {
+      vi.restoreAllMocks();
+      await close();
+    }
+  }
+});
+
+it("bounds lost chunk responses and releases the partner window and cache reservation", async () => {
+  const f = await sharedFixture();
+  try {
+    const bytes = Buffer.alloc(teamShareFileChunkBytes * 2 + 7, 42);
+    const file = await upload(f.b, f.bSession, f.bid, bytes);
+    await post(f.bSession, f.bid, [file.id]);
+    const remote = (await page(f.aSession, f.aid))[0]!.attachments[0]!;
+    const dropped = Promise.withResolvers<void>();
+    const send = PartnerSocket.prototype.send;
+    const responses = vi.spyOn(PartnerSocket.prototype, "send").mockImplementation(function (
+      this: PartnerSocket,
+      frame,
+    ) {
+      if (
+        frame &&
+        typeof frame === "object" &&
+        "type" in frame &&
+        frame.type === "share.response" &&
+        "result" in frame &&
+        frame.result &&
+        typeof frame.result === "object" &&
+        "bytes" in frame.result
+      ) {
+        dropped.resolve();
+        return Promise.resolve();
+      }
+      return send.call(this, frame);
+    });
+    const fetching = download(f.a, f.aSession, remote.id);
+    void fetching.catch(() => {});
+    await withTimeout(dropped.promise, 2000, {
+      timeoutError: () => new Error("Partner never sent the dropped chunk response"),
+    });
+    const response = await withTimeout(fetching, 6000, {
+      timeoutError: () => new Error("Lost partner chunk response never failed the download"),
+    });
+    expect(response.status).toBe(409);
+    expect(
+      await withTimeout(response.json(), 1000, {
+        timeoutError: () => new Error("Lost chunk failure response body stalled"),
+      }),
+    ).toMatchObject({
+      error: { reason: "partner-unreachable", retryable: true },
+    });
+    responses.mockRestore();
+    expect(await readdir(join(f.a.directory, "team-files"))).toEqual([]);
+    expect(
+      await f.a.database
+        .selectFrom("teamBlobs")
+        .select("cacheOriginalReserved")
+        .where("id", "=", remote.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ cacheOriginalReserved: false });
+    const recovered = await withTimeout(download(f.a, f.aSession, remote.id), 3000, {
+      timeoutError: () => new Error("Partner chunk window was not released after lost responses"),
+    });
+    const recoveredBytes = await withTimeout(recovered.arrayBuffer(), 2000, {
+      timeoutError: () => new Error("Recovered partner download body stalled"),
+    });
+    expect(Buffer.from(recoveredBytes).equals(bytes)).toBe(true);
+  } finally {
     vi.restoreAllMocks();
-    await f.close();
+    await withTimeout(f.close(), 5000, {
+      timeoutError: () => new Error("Lost chunk response fixture cleanup stalled"),
+    });
   }
 });
 
