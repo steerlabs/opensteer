@@ -370,6 +370,34 @@ function route(url, request, response, payload) {
 function runScenario(id, payload) {
   capture({ kind: "prompt", pid: process.pid, sessionID: id, payload });
   assistantMessage();
+  if (scenario.startsWith("image-")) {
+    const state = {
+      input: { prompt: "A tree" },
+      metadata: { jobID: "image-job", path: "/tmp/tree", model: "test/image" },
+      output: "Job launched",
+    };
+    toolPart("image-call", "experimental_image_generate", "running", state);
+    toolPart("image-call", "experimental_image_generate", "completed", state);
+    emit("session.idle", { sessionID: id });
+    if (scenario === "image-stop") return;
+    emit("session.inbox.enqueued", {
+      sessionID: id,
+      inboxID: "image-report",
+      item: {
+        type: "synthetic",
+        delivery: "steer",
+        payload: {
+          text: "Image outcome. Saved image: /tmp/tree.png (test/image).",
+          metadata: {
+            source: "experimental_image_generate",
+            jobID: "image-job",
+            state: scenario.slice(6),
+          },
+        },
+      },
+    });
+    return;
+  }
   switch (scenario) {
     case "subagents-detail-background-hold":
     case "subagents-detail-nested-ask":
@@ -682,6 +710,17 @@ function runScenario(id, payload) {
       step({ input: 100, output: 10, reasoning: 2, cache: { read: 4, write: 6 } }, 0.25);
       textPart("All done.");
       step({ input: 50, output: 20, reasoning: 0, cache: { read: 8, write: 0 } }, 0.5);
+      emit("session.idle", { sessionID: id });
+      return;
+    case "tool-image-output":
+      toolPart("image-1", "probe", "running", { input: {} });
+      toolPart("image-1", "probe", "completed", {
+        output: "image result",
+        attachments: [
+          { type: "file", mime: "image/png", url: "data:image/png;base64,iVBORw0KGgoA" },
+        ],
+      });
+      textPart("Done.");
       emit("session.idle", { sessionID: id });
       return;
     case "streamed-tool-arguments":

@@ -1,3 +1,8 @@
+import {
+  createToolImageStore,
+  withGeneratedImageReplies,
+  withStoredImages,
+} from "@opensteer/harness";
 import type { RunFileExecution } from "@opensteer/protocol";
 import { RunFileError, type RunFileAccess } from "../attachments/run-files.js";
 import { AppServerManager } from "../apps/app-server-manager.js";
@@ -354,6 +359,7 @@ export class RunnerRuntime {
   readonly #agentSkills: AgentSkillBundle;
   readonly #browserHarnessExecutable: string;
   readonly #dataDirectory: string;
+  readonly #imageStore: ReturnType<typeof createToolImageStore>;
   #messagingWorkRoot: Promise<string> | undefined;
   readonly #deploymentShape: RunnerConfig["deploymentShape"];
   readonly #environmentId: RunnerCommand["environmentId"];
@@ -454,6 +460,7 @@ export class RunnerRuntime {
     this.#agentSkills = options.agentSkills;
     this.#browserHarnessExecutable = resolve(options.browserHarnessExecutable);
     this.#dataDirectory = resolve(options.dataDirectory);
+    this.#imageStore = createToolImageStore(this.#dataDirectory);
     this.#deploymentShape = options.deploymentShape;
     this.#environmentId = options.environmentId;
     this.#harnesses = options.harnesses;
@@ -2805,6 +2812,7 @@ export class RunnerRuntime {
         machineAccessPlatform: launch?.machineAccessPlatform,
         machineAccessRelaySocket: launch?.machineAccessRelaySocket,
         modelSelection: context.modelSelection,
+        imageStore: this.#imageStore,
         platformGuide: [
           context.agentTools.instructions,
           appHostingGuide({ platform: hostCommandPlatform(), tools: context.agentTools.tools }),
@@ -3132,7 +3140,9 @@ export class RunnerRuntime {
     active: ActiveRun,
     session: HarnessSession,
   ): Promise<HarnessDurableEvent | undefined> {
-    for await (const event of session.events) {
+    for await (const event of withGeneratedImageReplies(
+      withStoredImages(session.events, this.#imageStore),
+    )) {
       if (isHarnessLiveEvent(event)) {
         this.#appendLive(active, event);
         continue;

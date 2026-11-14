@@ -176,6 +176,16 @@ function fixture() {
 }
 
 describe("durable team publication", () => {
+  it("strips local image embeds before validating and freezing a final team answer", async () => {
+    const f = fixture();
+    f.outcome.finalMessage =
+      "Answer" + (" ![chart](/private/" + "x".repeat(400) + ".png)").repeat(50);
+    await f.publisher.reconcileOne(f.row());
+    expect(f.row()).toMatchObject({
+      publicationState: "accepted",
+      answerPayload: { bodyMarkdown: "Answer" + " chart".repeat(50), attachmentIds: [] },
+    });
+  });
   it("publishes the final answer after a definitively rejected tool post", async () => {
     const f = fixture();
     await expect(

@@ -1,3 +1,4 @@
+import { createToolImageStore } from "@opensteer/harness";
 import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
 import { threadWaitMaxMs } from "@opensteer/agent-tools/tools";
 import { agentTools, requestToolNames } from "@opensteer/agent-tools";
@@ -76,6 +77,63 @@ afterEach(async () => {
 });
 
 describe("Codex app-server harness", () => {
+  it.each([
+    "text",
+    "only",
+    "duplicate-path",
+    "failed",
+    "usage",
+    "missing-path",
+    "blank-path",
+    "cancelled",
+    "file-id",
+    "late",
+    "stop",
+  ])("tracks native image generation: %s", async (kind) => {
+    const fixture = await setup(`image-${kind}`);
+    try {
+      const session = await fixture.adapter.startSession(fixture.context);
+      const observer = observe(session.events);
+      const execution = session.execute(fixture.turn("Draw a tree"));
+      if (kind === "stop") {
+        await observer.waitFor("assistant.message");
+        expect(observer.events.some((event) => event.type === "run.completed")).toBe(false);
+        await session.interrupt();
+      }
+      await execution;
+      await session.stop();
+      const completed = observer.events.filter((event) => event.type === "tool.completed");
+      expect(completed).toHaveLength(kind === "duplicate-path" ? 2 : 1);
+      const failure = ["failed", "usage", "stop", "cancelled"].includes(kind);
+      expect(completed[0]?.data.isError).toBe(failure);
+      expect(completed[0]?.data.output.images).toEqual(
+        failure || kind === "missing-path" || kind === "blank-path"
+          ? undefined
+          : [{ path: "/tmp/tree.webp", mediaType: "image/webp", generated: true }],
+      );
+      expect(observer.events.find((event) => event.type === "tool.started")?.data).toMatchObject({
+        tool: { namespace: "codex", name: "image_generation" },
+        arguments: { prompt: "A tree", transparentBackground: false },
+      });
+      const terminal = observer.events.findIndex(
+        (event) => event.type === (kind === "stop" ? "run.interrupted" : "run.completed"),
+      );
+      expect(terminal).toBeGreaterThan(
+        observer.events.findIndex((event) => event.type === "tool.completed"),
+      );
+      expect(
+        observer.events.some(
+          (event) => event.type === "run.phase" && event.data.phase === "background",
+        ),
+      ).toBe(false);
+      expect(JSON.stringify(observer.events)).not.toMatch(
+        /SECRET_BASE64_IMAGE_BYTES|opaque-file-id/,
+      );
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
   it("refuses a voice call whose text log Codex would keep outside the call", async () => {
     const fixture = await setup("voice-log-elsewhere");
     const lifetime = new AbortController();
@@ -4238,4 +4296,29 @@ it("delivers distinct full names for two plugins and a loose review skill", asyn
     expect(payload).toContain(skill.path);
   }
   await fixture.adapter.close();
+});
+
+it("retains tool-result image files without provider base64", async () => {
+  const fixture = await setup("tool-image-output");
+  const session = await fixture.adapter.startSession({
+    ...fixture.context,
+    imageStore: createToolImageStore(fixture.context.threadStateDirectory),
+  });
+  const observer = observe(session.events);
+  try {
+    await session.execute(fixture.turn("Show an image"));
+    await session.stop();
+    const event = observer.events.find(
+      (e) => e.type === "tool.completed" && e.data.callId === "image-1",
+    );
+    expect(event).toMatchObject({
+      data: {
+        output: { images: [{ path: expect.stringMatching(/\.png$/), mediaType: "image/png" }] },
+      },
+    });
+    expect(JSON.stringify(observer.events)).not.toContain("iVBORw0KGgoA");
+  } finally {
+    await session.stop();
+    await fixture.adapter.close();
+  }
 });

@@ -238,6 +238,7 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   const hostClient = useMemo(() => {
     if (!selected || passkeyMode === null) return null;
     return createBrowserHostClient({
+      desktopMedia: true,
       passkeys: {
         mode: passkeyMode,
         present: async (requestId) => {

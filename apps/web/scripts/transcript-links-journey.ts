@@ -479,24 +479,27 @@ try {
     return observed;
   });
 
-  await check("images an agent names are never fetched, and keep their words", async () => {
-    const before = requests.length;
-    const { reply } = await open(storageTaskPath, sourcesReplyText);
-    const fetched = requests
-      .slice(before)
-      .filter(({ url }) => /mount-sequence|grant-flow/u.test(url));
-    const observed = {
-      fetched,
-      images: await reply.locator("img").count(),
-      nestedLinks: await reply.locator("a a").count(),
-      text: await reply.innerText(),
-    };
-    expectThat(observed, fetched.length === 0, "an agent's image was fetched");
-    expectThat(observed, observed.images === 0, "an agent's image was rendered");
-    expectThat(observed, observed.nestedLinks === 0, "a linked image nests links");
-    expectThat(observed, observed.text.includes("Mount sequence"), "an image lost its words");
-    return observed;
-  });
+  await check(
+    "internet images are never fetched; an unavailable image keeps its words",
+    async () => {
+      const before = requests.length;
+      const { reply } = await open(storageTaskPath, sourcesReplyText);
+      const fetched = requests
+        .slice(before)
+        .filter(({ url }) => /mount-sequence|grant-flow/u.test(url));
+      const observed = {
+        fetched,
+        images: await reply.locator("img").count(),
+        nestedLinks: await reply.locator("a a").count(),
+        text: await reply.innerText(),
+      };
+      expectThat(observed, fetched.length === 0, "an agent's image was fetched");
+      expectThat(observed, observed.images === 0, "an agent's image was rendered");
+      expectThat(observed, observed.nestedLinks === 0, "a linked image nests links");
+      expectThat(observed, observed.text.includes("Mount sequence"), "an image lost its words");
+      return observed;
+    },
+  );
   await context.close();
 } catch (error) {
   abort(error);

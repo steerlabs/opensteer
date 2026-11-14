@@ -1,3 +1,4 @@
+import { createToolImageStore } from "@opensteer/harness";
 import { agentTools } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import { readFileSync } from "node:fs";
@@ -59,6 +60,49 @@ afterEach(async () => {
 });
 
 describe("OpenCode access modes", () => {
+  it.each(["completed", "error", "cancelled", "stop"])(
+    "settles native image jobs from their outcome: %s",
+    async (outcome) => {
+      const fixture = await setup(`image-${outcome}`);
+      try {
+        const session = await fixture.adapter.startSession(fixture.context);
+        const observer = observe(session.events);
+        const execution = session.execute(fixture.turn("Draw a tree"));
+        if (outcome === "stop") {
+          await observer.waitFor("tool.started");
+          expect(observer.events.some((event) => event.type === "run.completed")).toBe(false);
+          await session.interrupt();
+        }
+        await execution;
+        await session.stop();
+        const completed = observer.events.filter((event) => event.type === "tool.completed");
+        expect(completed).toHaveLength(1);
+        expect(completed[0]?.data.isError).toBe(outcome !== "completed");
+        expect(completed[0]?.data.output.images).toEqual(
+          outcome === "completed"
+            ? [{ path: "/tmp/tree.png", mediaType: "image/png", generated: true }]
+            : undefined,
+        );
+        expect(observer.events.find((event) => event.type === "tool.started")?.data.tool).toEqual({
+          namespace: "opencode",
+          name: "image_generation",
+        });
+        expect(observer.events.findIndex((event) => event.type === "tool.completed")).toBeLessThan(
+          observer.events.findIndex(
+            (event) => event.type === (outcome === "stop" ? "run.interrupted" : "run.completed"),
+          ),
+        );
+        expect(
+          observer.events.some(
+            (event) => event.type === "run.phase" && event.data.phase === "background",
+          ),
+        ).toBe(false);
+      } finally {
+        await fixture.adapter.close();
+      }
+    },
+  );
+
   it("translates approval-required into an ask-by-default permission table", () => {
     const permission = opencodeAccessModeConfiguration("approval-required", [
       "opensteer_thread_read",
@@ -2214,4 +2258,29 @@ it("delivers distinct full names for two plugins and a loose review skill", asyn
     expect(payload).toContain(skill.path);
   }
   await fixture.adapter.close();
+});
+
+it("retains tool-result image files without provider base64", async () => {
+  const fixture = await setup("tool-image-output");
+  const session = await fixture.adapter.startSession({
+    ...fixture.context,
+    imageStore: createToolImageStore(fixture.context.threadStateDirectory),
+  });
+  const observer = observe(session.events);
+  try {
+    await session.execute(fixture.turn("Show an image"));
+    await session.stop();
+    const event = observer.events.find(
+      (e) => e.type === "tool.completed" && e.data.callId === "image-1",
+    );
+    expect(event).toMatchObject({
+      data: {
+        output: { images: [{ path: expect.stringMatching(/\.png$/), mediaType: "image/png" }] },
+      },
+    });
+    expect(JSON.stringify(observer.events)).not.toContain("iVBORw0KGgoA");
+  } finally {
+    await session.stop();
+    await fixture.adapter.close();
+  }
 });

@@ -1,7 +1,7 @@
+import { toolOutputWithImages } from "@opensteer/harness";
 import {
   OpensteerError,
   createId,
-  normalizeToolOutput,
   type HarnessInstanceId,
   type PendingRequest,
   type RequestId,
@@ -742,7 +742,11 @@ class AcpHarnessSession implements HarnessSession {
           callId: merged.id,
           ...(nodeId ? { nodeId } : {}),
           isError: merged.status === "failed",
-          output: normalizeToolOutput(merged.rawOutput ?? merged.content),
+          output: toolOutputWithImages(
+            merged.rawOutput ?? merged.content,
+            this.#context.imageStore,
+            merged.rawOutput !== undefined ? merged.content : undefined,
+          ),
         },
         type: "tool.completed",
       });

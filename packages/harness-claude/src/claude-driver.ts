@@ -1,3 +1,4 @@
+import { toolOutputWithImages } from "@opensteer/harness";
 import { type ModelSelection, backgroundLightModels } from "@opensteer/core";
 import { type HarnessModelDescriptor, resolveLightModel } from "@opensteer/harness";
 import { ClaudeWorkflowNodes } from "./workflow-nodes.js";
@@ -3161,8 +3162,9 @@ class ClaudeHarnessSession implements HarnessSession {
         data: {
           callId,
           isError: block.is_error === true,
-          output: normalizeToolOutput(
+          output: toolOutputWithImages(
             workflowLaunch ? "Workflow launch acknowledged" : (block.content ?? null),
+            this.#context.imageStore,
           ),
         },
         type: "tool.completed",
@@ -3384,7 +3386,7 @@ class ClaudeHarnessSession implements HarnessSession {
           callId,
           isError: block.is_error === true,
           nodeId,
-          output: normalizeToolOutput(block.content ?? null),
+          output: toolOutputWithImages(block.content ?? null, this.#context.imageStore),
         },
         type: "tool.completed",
       });

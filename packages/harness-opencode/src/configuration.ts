@@ -1,4 +1,9 @@
-import { heldToolCallTimeoutMs, type ThreadAccessMode, type ToolIdentity } from "@opensteer/core";
+import {
+  imageGenerationToolName,
+  heldToolCallTimeoutMs,
+  type ThreadAccessMode,
+  type ToolIdentity,
+} from "@opensteer/core";
 import { compatibleEndpointHost, opensteerToolIdentity } from "@opensteer/harness";
 import { opencodeCompatibleProviderId, opencodeCompatibleSourceId } from "./sources.js";
 
@@ -25,7 +30,10 @@ export function opencodeToolIdentity(flatToolId: string): ToolIdentity {
       return opensteerToolIdentity(server, flatToolId.slice(prefix.length));
     }
   }
-  return { name: flatToolId, namespace: opencodeToolNamespace };
+  return {
+    name: flatToolId === "experimental_image_generate" ? imageGenerationToolName : flatToolId,
+    namespace: opencodeToolNamespace,
+  };
 }
 
 export type OpencodePermissionAction = "allow" | "ask" | "deny";

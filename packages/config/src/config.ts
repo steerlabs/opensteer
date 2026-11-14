@@ -188,6 +188,8 @@ const HostEnvironmentSchema = z.object({
   OPENSTEER_HOST_PRIVATE_KEY_PATH: optionalPath,
   OPENSTEER_HOST_PUBLIC_KEY_PATH: optionalPath,
   OPENSTEER_HOST_DATA_DIR: z.string().min(1).default(".opensteer/host"),
+  /** The hosting Runner's data directory; its `images` subtree is served, the rest denied. */
+  OPENSTEER_RUNNER_DATA_DIR: optionalPath,
   OPENSTEER_MODE: RuntimeModeSchema.default("development"),
   /**
    * How long a Run survives without word from its Runner: the grace a network
@@ -245,6 +247,7 @@ export interface HostConfig {
   readonly databaseUrl: string;
   readonly credentialKeyPath: string | undefined;
   readonly dataDirectory: string;
+  readonly runnerDataDirectory: string;
   readonly deploymentIdentity?:
     | {
         readonly deploymentId: DeploymentId;
@@ -605,6 +608,9 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     databaseUrl: parsed.OPENSTEER_DATABASE_URL,
     credentialKeyPath: parsed.OPENSTEER_CREDENTIAL_KEY_PATH,
     dataDirectory,
+    runnerDataDirectory: resolve(
+      parsed.OPENSTEER_RUNNER_DATA_DIR ?? join(dataDirectory, "..", "runner"),
+    ),
     deploymentIdentity:
       explicitPersonalIdentity ??
       (accountBundle

@@ -1,3 +1,4 @@
+import { stripLocalImageEmbeds } from "@opensteer/shared/markdownImages";
 import {
   TeamSourceSchema,
   OpensteerError,
@@ -550,6 +551,7 @@ export class PersonalTeamRequests {
     answerMessageId: MessageId | null,
   ): Promise<void> {
     const { requests } = this.options;
+    if (!request.answerPayload && finalMessage) finalMessage = stripLocalImageEmbeds(finalMessage);
     try {
       if (
         !request.answerPayload &&

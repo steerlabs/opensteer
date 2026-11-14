@@ -410,6 +410,17 @@ function ask(request) {
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function runTurn(prompt) {
+  if (scenario === "tool-image-output") {
+    send({ type: "tool_execution_start", toolCallId: "image-1", toolName: "probe", args: {} });
+    send({
+      type: "tool_execution_end",
+      toolCallId: "image-1",
+      toolName: "probe",
+      result: { content: [{ type: "image", mimeType: "image/png", data: "iVBORw0KGgoA" }] },
+      isError: false,
+    });
+  }
+
   streaming = true;
   aborted = false;
   send({ type: "agent_start" });

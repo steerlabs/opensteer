@@ -1,3 +1,6 @@
+import { useTranscriptImages } from "@opensteer/client/react";
+import { classifyMarkdownImageSource } from "@opensteer/shared/markdownImages";
+import { AssetImage } from "./asset-image.js";
 import { splitMarkdownBlocks } from "@opensteer/shared/markdown";
 import { transcriptLinkUrl } from "@opensteer/shared/transcriptLinks";
 import type { List, PhrasingContent, RootContent, Table as TableNode } from "mdast";
@@ -76,6 +79,20 @@ function Node(props: { readonly look: MarkdownLook; readonly node: RootContent }
   const { look, node } = props;
   switch (node.type) {
     case "paragraph":
+      if (node.children.some((child) => child.type === "image"))
+        return (
+          <View>
+            {node.children.map((child, index) =>
+              child.type === "image" ? (
+                <MarkdownImage key={index} src={child.url} alt={child.alt ?? ""} />
+              ) : (
+                <Prose key={index} look={look}>
+                  <Spans nodes={[child]} />
+                </Prose>
+              ),
+            )}
+          </View>
+        );
       return (
         <LinkHold look={look} nodes={node.children}>
           <Prose look={look}>
@@ -298,8 +315,7 @@ function Span(props: { readonly node: PhrasingContent }): ReactNode {
     case "html":
       return node.value;
     case "image":
-      // An agent's image is never fetched from the reader's device; its words stay.
-      return node.alt ?? node.url;
+      return <MarkdownImage src={node.url} alt={node.alt ?? ""} />;
     case "link": {
       const words = <Spans nodes={node.children} />;
       if (!transcriptLinkUrl(node.url)) return words;
@@ -478,3 +494,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
   },
 });
+
+function MarkdownImage({ src, alt }: { src: string; alt: string }) {
+  const images = useTranscriptImages();
+  const source = classifyMarkdownImageSource(src);
+  // Internet images stay words: loading one could carry a secret out.
+  if (images && source.kind === "local") return <AssetImage path={source.path} alt={alt} />;
+  return <Text>{alt || src}</Text>;
+}

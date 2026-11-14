@@ -1,3 +1,4 @@
+import { createToolImageStore } from "@opensteer/harness";
 import { agentTools } from "@opensteer/agent-tools";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
@@ -2221,4 +2222,29 @@ it("delivers distinct full names for two plugins and a loose review skill", asyn
     expect(payload).toContain(skill.path);
   }
   await fixture.adapter.close();
+});
+
+it("retains tool-result image files without provider base64", async () => {
+  const fixture = await setup({ scenario: "tool-image-output" });
+  const session = await fixture.adapter.startSession({
+    ...fixture.context,
+    imageStore: createToolImageStore(fixture.context.threadStateDirectory),
+  });
+  const observer = observe(session.events);
+  try {
+    await session.execute(fixture.turn("Show an image"));
+    await session.stop();
+    const event = observer.events.find(
+      (e) => e.type === "tool.completed" && e.data.callId === "image-1",
+    );
+    expect(event).toMatchObject({
+      data: {
+        output: { images: [{ path: expect.stringMatching(/\.png$/), mediaType: "image/png" }] },
+      },
+    });
+    expect(JSON.stringify(observer.events)).not.toContain("iVBORw0KGgoA");
+  } finally {
+    await session.stop();
+    await fixture.adapter.close();
+  }
 });

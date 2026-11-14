@@ -46,6 +46,7 @@ vi.mock("@react-navigation/native", () => ({
 vi.mock("@expo/ui/community/menu", () => ({ MenuView: () => null }));
 vi.mock("expo-clipboard", () => ({ setStringAsync: vi.fn(async () => true) }));
 vi.mock("expo-haptics", () => ({ selectionAsync: vi.fn(async () => undefined) }));
+vi.mock("expo-image", () => ({ Image: () => null }));
 vi.mock("../ui/copy-mark.js", () => ({ CopyMark: () => null }));
 vi.mock("../ui/primitives.js", () => ({ monoFontFamily: "Menlo" }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));

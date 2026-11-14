@@ -931,6 +931,8 @@ export interface HostSnapshot {
   quietTasksAvailable?: boolean;
   /** The Host accepts installed-engine update commands. */
   harnessUpdateAvailable?: boolean;
+  /** The Host serves `agent-images-v1`: transcript images load from the hosting computer. */
+  agentImagesAvailable?: boolean;
   tabReopenAvailable?: boolean;
   /** The Host serves `browser-profile-manage-v1`: a person can rename and delete profiles. */
   browserProfileManageAvailable?: boolean;
@@ -1112,6 +1114,7 @@ export interface HostClient {
   ): Promise<ComputerView>;
   readonly browserFrames: BrowserFrameStore;
   readonly browserWatchFrames: BrowserFrameStore;
+  readonly assetUrls?: import("./asset-urls.js").AssetUrlStore;
   readonly rpc: HostApiClient;
   createAttachment(input: {
     readonly name: string;

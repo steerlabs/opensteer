@@ -1,3 +1,4 @@
+import { forwardMedia } from "./app/media-protocol.js";
 import { deploymentPolicy } from "@opensteer/core";
 import { DesktopTeamLinks } from "./app/team-links.js";
 import {
@@ -320,6 +321,7 @@ async function runDesktop(
     protocol,
     path.join(import.meta.dirname, "web"),
     (request) => reportEvent("desktop.app-protocol.slow", request),
+    (request) => forwardMedia(request, (id) => hostTransport.mediaTransport(id)),
   );
   const updater = new DesktopUpdater({
     updates: loaded.config.updates,
