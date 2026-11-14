@@ -6,8 +6,8 @@ import {
   type TeamMessageId,
 } from "@opensteer/core";
 import {
-  TeamShareBatchSchema,
-  TeamShareReceiptSchema,
+  TeamShareBatchViewSchema,
+  TeamShareReceiptViewSchema,
   type TeamShareOperation,
 } from "@opensteer/protocol";
 import { TeamSharesStore, type Share } from "@opensteer/database/team-shares";
@@ -282,7 +282,7 @@ export class TeamShares implements TeamChatRelay {
           }
           const current = await this.store.get(s.id);
           if (current.state !== "active" || current.role !== "follower") return;
-          const parsed = TeamShareBatchSchema.safeParse(
+          const parsed = TeamShareBatchViewSchema.safeParse(
             await this.partners.request(current.partnerLinkId, {
               op: "pull",
               shareId: current.id,
@@ -543,7 +543,7 @@ export class TeamShares implements TeamChatRelay {
         : () => {};
     try {
       s = await this.store.recordRelay(actor, s, write, provenance);
-      receipt = TeamShareReceiptSchema.parse(
+      receipt = TeamShareReceiptViewSchema.parse(
         await this.partners.request(
           s.partnerLinkId,
           {

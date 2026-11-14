@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { OpensteerError, type TeamActor } from "@opensteer/core";
 import {
-  TeamPartnerDataFrameSchema,
+  TeamPartnerFrameViewSchema,
   TeamShareOperationSchema,
   type TeamShareOperation,
   parseTeamPartnerOffer,
@@ -9,7 +9,7 @@ import {
   TeamPartnerChallengeSchema,
   TeamPartnerProofSchema,
   TeamPartnerReadySchema,
-  TeamPartnerControlSchema,
+  readTeamFrame,
   teamPartnerProtocolVersion,
   teamPartnerSocketPath,
   type TeamPartnerOffer,
@@ -454,77 +454,9 @@ export class TeamPartners {
         }),
       );
     for (;;) {
-      const raw = await entry.peer.next();
-      const data = TeamPartnerDataFrameSchema.safeParse(raw);
-      if (data.success) {
-        if (!entry.active || !this.#data) throw partnerError();
-        const frame = data.data;
-        if (frame.type === "share.response") {
-          const pending = this.#pending.get(frame.id);
-          if (pending?.entry === entry) {
-            if (frame.ok) pending.resolve(frame.result);
-            else
-              pending.reject(
-                frame.reason === "retryable"
-                  ? new OpensteerError({
-                      code: "resource_exhausted",
-                      reason: "partner-retry-later",
-                      retryable: true,
-                      message: "Shared channel is temporarily limited",
-                      details: { retryAfterMs: frame.retryAfterMs ?? 1000 },
-                    })
-                  : partnerError(frame.reason ?? "not-found"),
-              );
-          }
-        } else if (frame.type === "share.changed") {
-          if (entry.incoming >= 32) throw partnerError();
-          entry.incoming++;
-          this.#track(
-            this.#data
-              .changed(row.id, frame.shareId, frame.generation)
-              .finally(() => entry.incoming--),
-          );
-        } else {
-          if (entry.incoming >= 32) throw partnerError();
-          const operation = TeamShareOperationSchema.safeParse(frame.operation);
-          if (!operation.success) {
-            await entry.peer.send({
-              type: "share.response",
-              id: frame.id,
-              ok: false,
-              reason: "not-found",
-            });
-            continue;
-          }
-          const handler = this.#data;
-          entry.incoming++;
-          this.#track(
-            handler
-              .receive(row.id, operation.data)
-              .then((result) =>
-                handler.reply(row.id, operation.data, () =>
-                  entry.peer.send({ type: "share.response", id: frame.id, ok: true, result }),
-                ),
-              )
-              .catch((error: unknown) =>
-                entry.peer.send({
-                  type: "share.response",
-                  id: frame.id,
-                  ok: false,
-                  reason:
-                    error instanceof OpensteerError && error.retryable ? "retryable" : "not-found",
-                  ...(error instanceof OpensteerError &&
-                  typeof error.details?.retryAfterMs === "number"
-                    ? { retryAfterMs: error.details.retryAfterMs }
-                    : {}),
-                }),
-              )
-              .finally(() => entry.incoming--),
-          );
-        }
-        continue;
-      }
-      const frame = TeamPartnerControlSchema.parse(raw);
+      // A newer partner may send frame types this server does not know yet.
+      const frame = readTeamFrame(TeamPartnerFrameViewSchema, await entry.peer.next());
+      if (!frame) continue;
       if (frame.type === "revoked") {
         await this.store.revoke(row.id);
         await this.#data?.revoked(row.id);
@@ -535,6 +467,71 @@ export class TeamPartners {
       if (frame.type === "approval") {
         await entry.peer.close();
         return;
+      }
+      if (!entry.active || !this.#data) throw partnerError();
+      if (frame.type === "share.response") {
+        const pending = this.#pending.get(frame.id);
+        if (pending?.entry === entry) {
+          if (frame.ok) pending.resolve(frame.result);
+          else
+            pending.reject(
+              frame.reason === "retryable"
+                ? new OpensteerError({
+                    code: "resource_exhausted",
+                    reason: "partner-retry-later",
+                    retryable: true,
+                    message: "Shared channel is temporarily limited",
+                    details: { retryAfterMs: frame.retryAfterMs ?? 1000 },
+                  })
+                : partnerError(frame.reason ?? "not-found"),
+            );
+        }
+      } else if (frame.type === "share.changed") {
+        if (entry.incoming >= 32) throw partnerError();
+        entry.incoming++;
+        this.#track(
+          this.#data
+            .changed(row.id, frame.shareId, frame.generation)
+            .finally(() => entry.incoming--),
+        );
+      } else {
+        if (entry.incoming >= 32) throw partnerError();
+        const operation = TeamShareOperationSchema.safeParse(frame.operation);
+        if (!operation.success) {
+          // Requests are strict, and every refusal looks alike so a partner learns nothing.
+          await entry.peer.send({
+            type: "share.response",
+            id: frame.id,
+            ok: false,
+            reason: "not-found",
+          });
+          continue;
+        }
+        const handler = this.#data;
+        entry.incoming++;
+        this.#track(
+          handler
+            .receive(row.id, operation.data)
+            .then((result) =>
+              handler.reply(row.id, operation.data, () =>
+                entry.peer.send({ type: "share.response", id: frame.id, ok: true, result }),
+              ),
+            )
+            .catch((error: unknown) =>
+              entry.peer.send({
+                type: "share.response",
+                id: frame.id,
+                ok: false,
+                reason:
+                  error instanceof OpensteerError && error.retryable ? "retryable" : "not-found",
+                ...(error instanceof OpensteerError &&
+                typeof error.details?.retryAfterMs === "number"
+                  ? { retryAfterMs: error.details.retryAfterMs }
+                  : {}),
+              }),
+            )
+            .finally(() => entry.incoming--),
+        );
       }
     }
   }

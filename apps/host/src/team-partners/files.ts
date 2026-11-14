@@ -1,6 +1,6 @@
 import { OpensteerError } from "@opensteer/core";
 import {
-  TeamShareFileChunkSchema,
+  TeamShareFileChunkViewSchema,
   teamShareFileChunkBytes,
   teamShareFileBytesPerMinute,
   teamPartnerMaxFrameBytes,
@@ -166,7 +166,7 @@ export class TeamShareFiles implements TeamRemoteFiles {
           message: "The team that owns this file is unreachable. Retry the download.",
         });
       }
-      const parsed = TeamShareFileChunkSchema.safeParse(raw);
+      const parsed = TeamShareFileChunkViewSchema.safeParse(raw);
       if (!parsed.success) shareNotFound();
       const chunk = Buffer.from(parsed.data.bytes, "base64");
       if (chunk.length !== Math.min(teamShareFileChunkBytes, size - offset)) shareNotFound();

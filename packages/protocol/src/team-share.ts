@@ -10,6 +10,7 @@ import {
 } from "@opensteer/core";
 import { TeamRequestTextSchema as TeamMarkdownSchema } from "@opensteer/core";
 import { TeamFileSchema, teamUploadMaxBytes } from "./team-chat.js";
+import { TeamPartnerControlSchema } from "./team-partner.js";
 
 export const teamSharedChannelsApiVersion = 6;
 export const teamSharedAgentsCapability = "team-shared-agents-v1";
@@ -105,6 +106,8 @@ export const TeamShareCursorSchema = z.strictObject({
   sequence: SequenceSchema,
   publicId: z.union([z.literal(""), z.uuid()]),
 });
+const withinBatchBytes = (batch: unknown) =>
+  new TextEncoder().encode(JSON.stringify(batch)).byteLength <= teamShareBatchBytes;
 export const TeamShareBatchSchema = z
   .strictObject({
     rows: z.array(TeamShareRowSchema).max(teamShareBatchRows),
@@ -114,10 +117,7 @@ export const TeamShareBatchSchema = z
     cursor: TeamShareCursorSchema,
     more: z.boolean(),
   })
-  .refine(
-    (v) => new TextEncoder().encode(JSON.stringify(v)).byteLength <= teamShareBatchBytes,
-    "Share batch exceeds byte limit",
-  );
+  .refine(withinBatchBytes, "Share batch exceeds byte limit");
 const scope = { shareId: z.uuid(), generation: z.number().int().positive() };
 export const TeamShareWriteSchema = z.discriminatedUnion("action", [
   z.strictObject({
@@ -207,4 +207,49 @@ export const TeamPartnerDataFrameSchema = z.discriminatedUnion("type", [
     retryAfterMs: z.number().int().positive().max(60_000).optional(),
   }),
   z.strictObject({ type: z.literal("share.changed"), ...scope }),
+]);
+
+/*
+ * What a team server reads from its partner. Results and frames drop unknown
+ * fields, and readTeamFrame skips unknown frame types, so a newer partner can
+ * add to them. Requests stay strict: a server sends a new request field only
+ * when its partner advertises a capability for it. Writers keep the strict schemas.
+ */
+const TeamSharePersonRefViewSchema = TeamSharePersonRefSchema.strip();
+const TeamShareFileViewSchema = z.object({
+  ...TeamShareFileSchema.shape,
+  preview: TeamShareFileSchema.shape.preview.unwrap().strip().nullable(),
+});
+const TeamShareAskViewSchema = z.object({
+  target: TeamSharePersonRefViewSchema,
+  status: TeamShareAskStatusSchema.strip().nullable(),
+});
+const TeamShareRowViewSchema = z.object({
+  ...TeamShareRowSchema.shape,
+  asks: z.array(TeamShareAskViewSchema).max(20).optional(),
+  author: TeamSharePersonRefViewSchema,
+  pinnedBy: TeamSharePersonRefViewSchema.nullable(),
+  attachments: z.array(TeamShareFileViewSchema).max(10).default([]),
+});
+export const TeamShareBatchViewSchema = z
+  .object({
+    ...TeamShareBatchSchema.shape,
+    rows: z.array(TeamShareRowViewSchema).max(teamShareBatchRows),
+    people: z.array(TeamSharePersonSchema.strip()).max(1000),
+    cursor: TeamShareCursorSchema.strip(),
+  })
+  .refine(withinBatchBytes, "Share batch exceeds byte limit");
+export const TeamShareReceiptViewSchema = z.object({
+  ...TeamShareReceiptSchema.shape,
+  batch: TeamShareBatchViewSchema,
+});
+export const TeamShareFileChunkViewSchema = TeamShareFileChunkSchema.strip();
+const [shareRequest, shareResponse, shareChanged] = TeamPartnerDataFrameSchema.options;
+const [revokedFrame, approvalFrame] = TeamPartnerControlSchema.options;
+export const TeamPartnerFrameViewSchema = z.discriminatedUnion("type", [
+  shareRequest.strip(),
+  shareResponse.strip(),
+  shareChanged.strip(),
+  revokedFrame.strip(),
+  approvalFrame.strip(),
 ]);
