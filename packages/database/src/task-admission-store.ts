@@ -1,3 +1,4 @@
+import { appendDoneState, requireThreadWriteAuthority } from "./task-done.js";
 import { executionDate } from "./personal-transaction.js";
 import { advanceThreadQueue, lockInputQueueProjection, clearInputLease } from "./waiting-inputs.js";
 import { personalTeamReturnPost } from "./personal-team-return-provenance.js";
@@ -212,7 +213,12 @@ export function admitTeamTaskRequest(
 
 export function cancelTeamTaskRequest(
   database: Kysely<DatabaseSchema>,
-  input: { readonly teamId: DeploymentId; readonly requestId: TeamAgentRequestId },
+  input: {
+    readonly teamId: DeploymentId;
+    readonly requestId: TeamAgentRequestId;
+    readonly reason?: string;
+    readonly failureReason?: string;
+  },
 ) {
   return withPersonalTransaction(database, async (transaction) => {
     const request = await transaction
@@ -221,8 +227,26 @@ export function cancelTeamTaskRequest(
       .where("teamDeploymentId", "=", input.teamId)
       .where("requestId", "=", input.requestId)
       .executeTakeFirst();
-    if (!request?.localTaskId || !request.localInputId || request.kind === "return")
+    if (!request) return { events: [], revokedGrants: [] };
+    const terminalize = async () => {
+      const failed = sql<boolean>`kind = 'ask' and released_at is null and (local_decision = 'approve' or ${input.failureReason !== undefined})`;
+      await transaction
+        .updateTable("personalTeamRequests")
+        .set({
+          terminalState: sql`coalesce(terminal_state, case when ${failed} then 'failed' else 'cancelled' end)`,
+          finishedAt: sql`coalesce(finished_at, ${executionDate(transaction)})`,
+          returnPayload: sql`case when kind = 'return' then return_payload || '{"bodyMarkdown":null,"attachments":[]}'::jsonb else return_payload end`,
+          publicationState: sql`case when ${failed} or (kind = 'ask' and released_at is null) or local_task_id is null or publication_state <> 'accepted' then 'blocked' else publication_state end`,
+          blockedReason: sql`case when (terminal_state is null and ${failed}) or ((released_at is not null or kind <> 'ask') and publication_state <> 'accepted') then ${input.failureReason ?? input.reason ?? "The team request was cancelled."} else blocked_reason end`,
+        })
+        .where("teamDeploymentId", "=", input.teamId)
+        .where("requestId", "=", input.requestId)
+        .execute();
+    };
+    if (!request.localTaskId || !request.localInputId || request.kind === "return") {
+      await terminalize();
       return { events: [], revokedGrants: [] };
+    }
     const task = await transaction
       .selectFrom("threads")
       .selectAll()
@@ -251,13 +275,7 @@ export function cancelTeamTaskRequest(
         transaction.selectFrom("messages").select("id").where("threadId", "=", task.id),
       )
       .execute();
-    await transaction
-      .updateTable("personalTeamRequests")
-      .set({ terminalState: "cancelled", finishedAt: executionDate(transaction) })
-      .where("teamDeploymentId", "=", input.teamId)
-      .where("requestId", "=", input.requestId)
-      .where("terminalState", "is", null)
-      .execute();
+    await terminalize();
     const events: AgentEvent[] = [];
     let revokedGrants: readonly RevokedRunGrant[] = [];
     if (run && ["starting", "running", "waiting"].includes(run.status)) {
@@ -337,13 +355,6 @@ export function cancelTeamTaskRequest(
         .orderBy("teamDeploymentId")
         .orderBy("requestId")
         .forNoKeyUpdate()
-        .execute();
-      await transaction
-        .updateTable("personalTeamRequests")
-        .set({ terminalState: "cancelled", finishedAt: new Date() })
-        .where("teamDeploymentId", "=", input.teamId)
-        .where("requestId", "=", input.requestId)
-        .where("terminalState", "is", null)
         .execute();
       const advanced = await advanceThreadQueue(transaction, task);
       revokedGrants = [...revokedGrants, ...advanced.revokedGrants];
@@ -566,7 +577,7 @@ export function releaseTeamAsk(
       observed.terminalState
     )
       return { events: [], revokedGrants: [] };
-    const thread = await lockInputQueueProjection(transaction, observed.localTaskId);
+    let thread = await lockInputQueueProjection(transaction, observed.localTaskId);
     const mirror = await transaction
       .selectFrom("personalTeamRequests")
       .selectAll()
@@ -606,6 +617,14 @@ export function releaseTeamAsk(
         code: "conflict",
         message: "The approved ask can no longer be released.",
       });
+    const reopened = thread.doneAt !== null;
+    if (reopened)
+      await requireThreadWriteAuthority(
+        transaction,
+        thread,
+        { requestedBy: thread.createdBy },
+        "reopen",
+      );
     const now = executionDate(transaction);
     const released = await transaction
       .updateTable("threadInputs")
@@ -618,11 +637,13 @@ export function releaseTeamAsk(
       .where("messageId", "=", inbox.messageId)
       .returningAll()
       .executeTakeFirstOrThrow();
-    await transaction
+    thread = await transaction
       .updateTable("threads")
-      .set({ nextMessageSequence: sql`next_message_sequence + 1` })
+      .set({ nextMessageSequence: sql`next_message_sequence + 1`, doneAt: null, doneReason: null })
       .where("id", "=", thread.id)
-      .execute();
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    const reopenedEvents = reopened ? [await appendDoneState(transaction, thread.id)] : [];
     await transaction
       .updateTable("personalTeamRequests")
       .set({ releasedAt: now })
@@ -639,7 +660,12 @@ export function releaseTeamAsk(
     const advanced = await advanceThreadQueue(transaction, thread);
     return {
       ...advanced,
-      events: [event, ...advanced.events, ...(await projectThreadState(transaction, thread.id))],
+      events: [
+        ...reopenedEvents,
+        event,
+        ...advanced.events,
+        ...(await projectThreadState(transaction, thread.id)),
+      ],
     };
   });
 }

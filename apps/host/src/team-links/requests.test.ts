@@ -58,6 +58,9 @@ function fixture() {
     async mirror() {
       return structuredClone(row);
     },
+    async terminalAsksPendingCleanup() {
+      return [];
+    },
     async mirrors() {
       return [structuredClone(row)];
     },
@@ -129,7 +132,18 @@ function fixture() {
     admitTeamReturn: vi.fn(),
     admitTeamRequest: vi.fn(),
     releaseTeamAsk: vi.fn(),
-    cancelTeamRequest: vi.fn(),
+    cancelTeamRequest: vi.fn(async (input: { reason?: string }) => {
+      row = {
+        ...row,
+        terminalState: row.terminalState ?? "cancelled",
+        ...(row.publicationState !== "accepted"
+          ? {
+              publicationState: "blocked",
+              blockedReason: input.reason ?? "The team request was cancelled.",
+            }
+          : {}),
+      };
+    }),
   };
   const publisher = new PersonalTeamRequests({
     links: {

@@ -242,11 +242,20 @@ export class PersonalTeamRequests {
     }
   }
   async resumeAdmissions(teamId: DeploymentId): Promise<void> {
+    await this.#recoverCancelledAsks(teamId);
     for (const local of await this.options.requests.mirrors(teamId))
       if (local.kind === "ask" && !local.terminalState && !local.taskId)
         await this.#admitAsk(local);
   }
+  async #recoverCancelledAsks(teamId?: DeploymentId): Promise<void> {
+    for (const local of await this.options.requests.terminalAsksPendingCleanup(teamId))
+      await this.options.admission.cancelTeamRequest({
+        teamId: local.teamId,
+        requestId: local.requestId,
+      });
+  }
   async expireUndecidedAsks(): Promise<void> {
+    await this.#recoverCancelledAsks();
     for (const local of await this.options.requests.expiredUndecidedAsks())
       await this.cancel(local.teamId, local.requestId, "The time to approve this ask expired.");
   }
@@ -376,18 +385,18 @@ export class PersonalTeamRequests {
         !error.retryable &&
         ["bad_request", "forbidden", "unauthorized", "not_found", "conflict"].includes(error.code)
       ) {
-        await this.options.requests.failDecision(
+        await this.options.admission.cancelTeamRequest({
           teamId,
           requestId,
-          error.code === "unauthorized"
-            ? "The team link was revoked."
-            : error.code === "not_found"
-              ? "The team or reply thread is no longer available."
-              : error.code === "forbidden"
-                ? "Team access was removed or the channel is people-only."
-                : "Your decision could not be completed. Ask the sender to send a new ask.",
-        );
-        await this.options.admission.cancelTeamRequest({ teamId, requestId });
+          failureReason:
+            error.code === "unauthorized"
+              ? "The team link was revoked."
+              : error.code === "not_found"
+                ? "The team or reply thread is no longer available."
+                : error.code === "forbidden"
+                  ? "Team access was removed or the channel is people-only."
+                  : "Your decision could not be completed. Ask the sender to send a new ask.",
+        });
         await this.options.onConsentChanged?.(teamId, requestId, false);
       }
       throw error;
@@ -696,23 +705,7 @@ export class PersonalTeamRequests {
     reason = "The team request was cancelled.",
   ): Promise<void> {
     this.#lastStatus.delete(`${teamId}:${requestId}`);
-    const request = await this.options.requests.mirror(teamId, requestId);
-    if (request) {
-      if (
-        request.kind === "ask" &&
-        request.localDecision === "approve" &&
-        !request.releasedAt &&
-        !request.terminalState
-      )
-        await this.options.requests.failDecision(teamId, requestId, reason);
-      else await this.options.requests.terminal(teamId, requestId, request.runId, "cancelled");
-      if (
-        (request.kind === "ask" ? request.releasedAt : request.taskId) &&
-        request.publicationState !== "accepted"
-      )
-        await this.options.requests.publication(teamId, requestId, "blocked", null, reason);
-    }
-    await this.options.admission.cancelTeamRequest({ teamId, requestId });
+    await this.options.admission.cancelTeamRequest({ teamId, requestId, reason });
     await this.options.onConsentChanged?.(teamId, requestId, false);
   }
 

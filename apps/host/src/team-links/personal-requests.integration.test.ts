@@ -237,6 +237,63 @@ async function consentFixture(base: StoreFixture) {
 }
 
 describeStore("personal team consent and returns", (it) => {
+  it("reopens a Done task when releasing its approved ask", async ({ storeFixture }) => {
+    const f = await consentFixture(storeFixture);
+    await f.publisher.deliver(f.origin.teamId, f.frame);
+    const mirror = (await f.store.mirror(f.origin.teamId, f.frame.request.id))!;
+    await storeFixture.store.setThreadDone({
+      threadId: mirror.taskId!,
+      requestedBy: f.userId,
+      done: true,
+      idempotencyKey: "ask-done",
+    });
+    await f.publisher.decide(f.userId, f.origin.teamId, f.frame.request.id, "approve", 0);
+    const task = await f.database
+      .selectFrom("threads")
+      .select(["doneAt", "pendingRequestCount"])
+      .where("id", "=", mirror.taskId!)
+      .executeTakeFirstOrThrow();
+    expect(task.doneAt).toBeNull();
+    const runs = await f.database
+      .selectFrom("runs")
+      .select("id")
+      .where("threadId", "=", mirror.taskId!)
+      .execute();
+    expect(runs).toHaveLength(1);
+  });
+  it("keeps cancellation nonterminal if input cleanup cannot commit", async ({ storeFixture }) => {
+    const f = await consentFixture(storeFixture);
+    await f.publisher.deliver(f.origin.teamId, f.frame);
+    await f.store.decide(f.userId, f.origin.teamId, f.frame.request.id, "approve", 0);
+    vi.spyOn(f.publisher.options.admission, "cancelTeamRequest").mockRejectedValueOnce(
+      new Error("Input cleanup unavailable"),
+    );
+    await expect(f.publisher.cancel(f.origin.teamId, f.frame.request.id)).rejects.toThrow(
+      "Input cleanup unavailable",
+    );
+    expect((await f.store.mirror(f.origin.teamId, f.frame.request.id))!.terminalState).toBeNull();
+  });
+  it("recovers terminal asks left awaiting approval by an older Host", async ({ storeFixture }) => {
+    const f = await consentFixture(storeFixture);
+    await f.publisher.deliver(f.origin.teamId, f.frame);
+    const mirror = (await f.store.mirror(f.origin.teamId, f.frame.request.id))!;
+    await f.store.decide(f.userId, f.origin.teamId, f.frame.request.id, "approve", 0);
+    await f.store.failDecision(
+      f.origin.teamId,
+      f.frame.request.id,
+      "Old Host stopped before cleanup",
+    );
+    const restarted = new PersonalTeamRequests(f.publisher.options);
+    onTestFinished(() => restarted.stop());
+    await restarted.reconnect(f.origin.teamId);
+    const inputs = await f.database
+      .selectFrom("threadInputs")
+      .select("state")
+      .where("messageId", "=", MessageIdSchema.parse(mirror.inputId))
+      .execute();
+    expect(inputs).toEqual([]);
+    expect((await f.store.mirror(f.origin.teamId, f.frame.request.id))!.taskId).toBeNull();
+  });
   for (const stage of ["accept", "release"] as const)
     it(`retries approval after a lost ${stage} without releasing the gate early`, async ({
       storeFixture,

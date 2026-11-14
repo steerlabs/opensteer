@@ -35,6 +35,8 @@ export interface TaskAdmissionPort {
   admitTeamRequest(input: TeamTaskAdmission): Promise<TeamTaskAdmissionReceipt>;
   /** Pending input is cancelled; an already-started input stops only its associated Run. */
   cancelTeamRequest(input: {
+    readonly reason?: string;
+    readonly failureReason?: string;
     readonly teamId: TeamTaskOrigin["teamId"];
     readonly requestId: TeamAgentRequestId;
   }): Promise<void>;

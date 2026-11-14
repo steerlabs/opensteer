@@ -165,6 +165,18 @@ export class PersonalTeamRequestsStore {
     return row ? personalTeamRequestMirrorFromRow(row) : null;
   }
 
+  async terminalAsksPendingCleanup(teamId?: DeploymentId) {
+    let query = this.database
+      .selectFrom("personalTeamRequests")
+      .innerJoin("threadInputs", "threadInputs.messageId", "personalTeamRequests.localInputId")
+      .selectAll("personalTeamRequests")
+      .where("personalTeamRequests.kind", "=", "ask")
+      .where("personalTeamRequests.terminalState", "is not", null)
+      .where("threadInputs.state", "=", "awaiting-approval");
+    if (teamId) query = query.where("personalTeamRequests.teamDeploymentId", "=", teamId);
+    return (await query.execute()).map(personalTeamRequestMirrorFromRow);
+  }
+
   async mirrors(teamId: DeploymentId) {
     await this.pruneReturns(teamId);
     const rows = await this.database
