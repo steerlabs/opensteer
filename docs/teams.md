@@ -160,16 +160,17 @@ window, not an exact match ([authority.ts](../packages/deployment-authority/src/
   discovery or the link's `ready` frame and enforces its own minimum. Discovery also advertises
   the team's minimum, so an app below it is told to update before it sends anything.
 - Changes are additive by default and keep the version: new commands, reads, optional fields
-  and frame types. The team Host parses commands and reads strictly, so a client uses a new
-  input only when the team advertises a capability for it. Every other reader is tolerant:
+  and frame types. The team Host parses commands and reads strictly. Every other reader is tolerant:
   replies and realtime and link frames, in both directions, drop unknown fields, and frame
-  readers skip frame types they do not know. A sender relies on a new field or frame type only
-  when the peer's version reads it. Two things stay strict: the signed discovery document, and
+  readers skip frame types they do not know. A sender uses new behavior only when the peer
+  advertises its capability. Two things stay strict: the signed discovery document, and
   the search and knowledge inputs a link frame carries, because a dropped filter or version
   guard would change the answer.
-- Bump `teamApiVersion` only for a change an older peer would misread or refuse. Whoever bumps
-  decides `minimumTeamApiVersion`: keep the old version and speak it to older peers, or raise
-  the minimum and strand them with an update message.
+- Move `teamApiVersion` only for a change an older peer would misread. Raise
+  `minimumTeamApiVersion` only for a security reason or once published Stable team servers
+  already speak that version. The [Stable compatibility guard](../.github/scripts/ci-team-api.mjs)
+  enforces the published `desktop-v*` floor; a security exception needs an explicit guard change
+  and Tim's approval. Self-hosted Stable teams must keep working as apps update.
 - A refusal names the side that is behind: the app or personal Opensteer says "Update
   Opensteer", and a team older than the peer's minimum says the team server needs an update.
 

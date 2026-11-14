@@ -11,7 +11,9 @@ export default class InventoryReporter implements Reporter {
     this.selected = specs.map((spec) => repositoryPath(spec.moduleId)).sort();
   }
   onTestModuleEnd(module: TestModule) {
-    if (module.state() !== "skipped") this.executed.push(repositoryPath(module.moduleId));
+    const meta = module.meta();
+    if (module.state() !== "skipped" || ("quarantined" in meta && meta.quarantined === true))
+      this.executed.push(repositoryPath(module.moduleId));
   }
   onTestRunEnd() {
     const path = process.env.CI_INVENTORY_PATH;

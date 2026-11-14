@@ -525,12 +525,24 @@ test("preflight refuses missing, failed, pending or non-main qualification of th
       { head_sha: "b".repeat(40) },
       { head_branch: "other" },
       { event: "pull_request" },
+      { event: "schedule" },
+      { event: "workflow_dispatch" },
     ]) {
       f.state.runs = [{ ...valid, ...mutation }];
       assert.throws(() => preflight({ root: f.root, event: "push" }, f.run));
     }
     f.state.runs = [valid, { ...valid, id: 43, run_number: 8, conclusion: "failure" }];
     assert.throws(() => preflight({ root: f.root, event: "push" }, f.run));
+    // A rerun keeps its run number/id; GitHub exposes only its latest attempt.
+    f.state.runs = [{ ...valid, run_attempt: 2, conclusion: "failure" }];
+    assert.throws(() => preflight({ root: f.root, event: "push" }, f.run), /must succeed/);
+    f.state.runs = [{ ...valid, run_attempt: 2, status: "in_progress", conclusion: null }];
+    assert.throws(() => preflight({ root: f.root, event: "push" }, f.run), /Waiting for main CI/);
+    f.state.runs = [{ ...valid, run_attempt: 2 }];
+    f.state.jobs = [{ ...job, conclusion: "failure" }];
+    assert.throws(() => preflight({ root: f.root, event: "push" }, f.run), /Check must succeed/);
+    f.state.jobs = [job];
+    assert.deepEqual(preflight({ root: f.root, event: "push" }, f.run), f.source);
     f.state.runs = [];
     assert.throws(() => preflight({ root: f.root, event: "push" }, f.run));
     f.state.runs = [valid];

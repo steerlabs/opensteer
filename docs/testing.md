@@ -76,10 +76,20 @@ failure.
 
 ## Known flaky tests
 
-Fix failures at the root, or quarantine with a reason in
-[tests/quarantine.json](../tests/quarantine.json), the current inventory with owners and
-fix-or-delete deadlines at most seven days out. It never exempts a test or authorizes a passing
-gate. Closed-flake history stays in the fixing PRs.
+Fix failures at the root, or record the exact repository-relative file and test title path in
+[tests/quarantine.json](../tests/quarantine.json). Only `quarantined` exempts execution: the shared
+Vitest runner skips that case before fixture hooks and prints its owner, evidence and deadline.
+The remaining tests still qualify merges and releases; a quarantined test is unverified, not
+passed. Unit, integration and real-browser lanes use the same mechanism, with zero retries and
+unchanged timeouts. An exemption requires a full failing SHA, nonblank reason/evidence, ownership
+and a fix-or-delete deadline no more than seven days after `firstSeen`. Expiry fails CI, including
+scheduled runs on unchanged main; a stale or ambiguous title fails when its file is collected.
+
+`investigating` and `known-failure` are informational and run normally, including historical
+records with expired deadlines. Do not renew an exemption from old rerun evidence: return it to
+investigation if current evidence is missing. Remove a resolved entry only with evidence of its
+root fix and qualification; closed-flake history stays in the fixing PRs. Procedures are in the
+[quarantine skill](../.agents/skills/testing/references/quarantine.md).
 
 ## Fixtures and evidence
 
