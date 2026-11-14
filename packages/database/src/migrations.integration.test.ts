@@ -141,6 +141,42 @@ async function legacyQueuedInput(input: {
 }
 
 describe("fresh personal/team lineage", () => {
+  it("upgrades a team server that has messages to shared channels in one migration run", async () => {
+    // A team server last migrated by an older build, holding messages, as a real upgrade finds it.
+    await migrateToLatest(database, migrationsBefore("0014_claude_idle_compaction"));
+    const { owner, channel } = await team();
+    const first = await message(channel, owner);
+    // An agent's reply references its request through a deferred foreign key.
+    const linkId = createId("teamLink"),
+      requestId = createId("teamAgentRequest");
+    await sql`insert into team_links(id,owner_user_id,state,code_hash) values(${linkId},${owner},'pending',${crypto.randomUUID()})`.execute(
+      database,
+    );
+    await sql`insert into team_agent_requests(id,owner_user_id,channel_id,thread_root_id,trigger_message_id,link_id,state,steps,change_seq)
+      values(${requestId},${owner},${channel},${first},${first},${linkId},'queued','[]',1)`.execute(
+      database,
+    );
+    const second = (
+      await sql<{
+        id: string;
+      }>`insert into team_messages(channel_id,thread_root_id,author_user_id,author_kind,agent_request_id,client_message_id,body_markdown,plain_text,change_seq)
+        values(${channel},${first},${owner},'agent',${requestId},${crypto.randomUUID()},'Done','Done',1) returning id`.execute(
+        database,
+      )
+    ).rows[0]!.id;
+    await migrateToLatest(database);
+    const rows = await database
+      .selectFrom("teamMessages")
+      .select(["id", "createdSeq", "publicId"])
+      .where("channelId", "=", channel as never)
+      .orderBy("id")
+      .execute();
+    expect(rows.map((row) => [row.id, String(row.createdSeq)])).toEqual([
+      [first, "1"],
+      [second, "2"],
+    ]);
+    expect(new Set(rows.map((row) => row.publicId)).size).toBe(2);
+  });
   it("preserves existing uploaded bytes and assigns partner-safe identities when adding shared files", async () => {
     await migrateToLatest(database, migrationsBefore("0018_team_share_files"));
     const { owner, channel, other } = await team();
