@@ -34,6 +34,7 @@ import {
   WATCH_HEALTHY_WINDOW_MS,
   TriggerOccurrenceSchema,
   TriggerProgramEventSchema,
+  StoredTriggerProgramSchema,
   TriggerProgramSchema,
   TriggerRevisionSchema,
   TriggerSchema,
@@ -122,7 +123,7 @@ export interface TriggerDispatchContext {
 
 export interface WatchActivationContext {
   readonly activation: TriggerWatchActivation;
-  readonly toolContractVersion: 4;
+  readonly toolContractVersion: number;
   readonly agentHome: import("@opensteer/core").ComputerFolder;
 }
 export interface ActiveWatchBindingInput {
@@ -919,7 +920,8 @@ export class TriggerStore {
           .executeTakeFirstOrThrow();
         activations.push({
           activation: watchActivationFromRow(updated),
-          toolContractVersion: TriggerProgramSchema.parse(revision.program).toolContractVersion,
+          toolContractVersion: StoredTriggerProgramSchema.parse(revision.program)
+            .toolContractVersion,
           agentHome: (await personalSettings(transaction)).agentHome,
         });
       }

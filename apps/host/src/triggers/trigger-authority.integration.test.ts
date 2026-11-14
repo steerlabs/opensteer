@@ -38,6 +38,7 @@ import {
 } from "@opensteer/orchestration";
 import { hostApi, type HostApiServerContext, type RunnerDescriptor } from "@opensteer/protocol";
 import {
+  TRIGGER_PROGRAM_VERSION_REFUSAL,
   TriggerControlInputSchema,
   TriggerRevisionSchema,
   TriggerSummarySchema,
@@ -1890,6 +1891,63 @@ integration.sequential("Trigger authority through real Host services and Postgre
       }
     },
   );
+  it("keeps a pre-version-4 program readable and replaceable, and refuses to run it", async () => {
+    const f = await fixture(undefined, { rootAccessMode: "full-access" });
+    const saved = await personCreate(f, f.root);
+    await database
+      .updateTable("triggerRevisions")
+      .set({ program: { ...program, toolContractVersion: 3 } })
+      .where("id", "=", saved.revision.id)
+      .execute();
+    const dispatcher = new HostCommandDispatcher({
+      store,
+      triggers: triggerStore,
+      runners: {
+        identityForEnvironment: () =>
+          ({
+            runnerId: f.runnerId,
+            bootId: "authority-boot",
+            connectionGeneration: 1,
+            capabilities: ["execution-plane-v2", "agent-tools-plan-v1"],
+          }) as unknown as RunnerIdentity,
+      } as unknown as RunnerRegistry,
+      executionLeaseMs: 90_000,
+      publicUrl: new URL("https://host.test"),
+      onDeploymentEvent: vi.fn(),
+      requestResponseVault: {} as never,
+      runToolTokens: {} as never,
+      attachmentRunTokens: {} as never,
+      attachments: { listForRun: async () => [] },
+      browser: { hasBrowserProfiles: async () => false },
+      egress: {} as never,
+      pluginVersions: async () => [],
+      pluginsTokens: {} as never,
+      triggerControlTokens: {} as never,
+      teamRequestContext: async () => {
+        throw new Error("Unexpected team request");
+      },
+    });
+    const occurrence = await triggers.run(f.ownerId, saved.trigger.id, {}, null);
+    const command = (await store.listPendingCommands()).find(
+      ({ id }) => id === occurrence.commandId,
+    );
+    if (!command) throw new Error("Expected the occurrence's command");
+    await expect(dispatcher.dispatch(command, new AbortController().signal)).rejects.toThrow(
+      TRIGGER_PROGRAM_VERSION_REFUSAL,
+    );
+    expect((await personDetail(f, saved.trigger.id)).revision.program.toolContractVersion).toBe(3);
+    const read = await agentDetail(f.rootToken, saved.trigger.id);
+    expect(read.revision?.program.toolContractVersion).toBe(3);
+    const replaced = createdSchema.parse(
+      await agentTrigger(f.rootToken, {
+        operation: "update",
+        triggerId: saved.trigger.id,
+        expectedRevisionId: saved.revision.id,
+        program,
+      }),
+    );
+    expect(replaced.revision.program).toEqual(program);
+  });
   it.each([4] as const)(
     "reconciles Watch version %s against an old stored advertisement",
     async (version) => {
@@ -2643,7 +2701,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       runnerBootId: "authority-boot",
       runnerId: f.runnerId,
       threadId: anchor.id,
-      toolContractVersion: created.revision.program.toolContractVersion,
+      toolContractVersion: 4,
     });
     return token;
   }
@@ -2670,7 +2728,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
       executionGeneration: active.executionGeneration,
       revisionId: created.revision.id,
       triggerId: created.trigger.id,
-      toolContractVersion: created.revision.program.toolContractVersion,
+      toolContractVersion: 4,
     });
     return token;
   }

@@ -45,19 +45,35 @@ export const triggerProgramContract = [
   "A program acts as its anchor Thread: its Opensteer tool calls use its access-mode ceiling, and only a full-access agent can write one.",
 ].join(" ");
 
-export const TriggerProgramSchema = z.strictObject({
+export const TRIGGER_PROGRAM_VERSION_REFUSAL =
+  "Programs require toolContractVersion 4. Use opensteer_task_send and opensteer_task_delegate; older tool names are unavailable.";
+
+/**
+ * A revision's program as stored. Programs written for an older tool contract
+ * stay readable so the owner's agent can replace them; only version 4 runs.
+ */
+export const StoredTriggerProgramSchema = z.strictObject({
   language: z.enum(["javascript", "typescript"]),
   source: z
     .string()
     .min(1)
     .max(512 * 1_024),
-  toolContractVersion: z.literal(4, {
-    error:
-      "Programs require toolContractVersion 4. Use opensteer_task_send and opensteer_task_delegate; older tool names are unavailable.",
-  }),
+  toolContractVersion: z.number().int().positive(),
 });
-const TriggerProgramViewSchema = z.object(TriggerProgramSchema.shape);
+export type StoredTriggerProgram = z.infer<typeof StoredTriggerProgramSchema>;
+const StoredTriggerProgramViewSchema = z.object(StoredTriggerProgramSchema.shape);
+
+/** A program Opensteer can write and run. */
+export const TriggerProgramSchema = StoredTriggerProgramSchema.extend({
+  toolContractVersion: z.literal(4, { error: TRIGGER_PROGRAM_VERSION_REFUSAL }),
+});
 export type TriggerProgram = z.infer<typeof TriggerProgramSchema>;
+
+export function isExecutableTriggerProgram(
+  program: StoredTriggerProgram,
+): program is TriggerProgram {
+  return program.toolContractVersion === 4;
+}
 
 export const TriggerScheduleSchema = z.discriminatedUnion("kind", [
   z.strictObject({
@@ -128,13 +144,13 @@ export const TriggerRevisionSchema = z.strictObject({
   createdByThreadId: ThreadIdSchema.nullable().default(null),
   id: TriggerRevisionIdSchema,
   ordinal: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  program: TriggerProgramSchema,
+  program: StoredTriggerProgramSchema,
   source: TriggerSourceSchema,
   triggerId: TriggerIdSchema,
 });
 export const TriggerRevisionViewSchema = z.object({
   ...TriggerRevisionSchema.shape,
-  program: TriggerProgramViewSchema,
+  program: StoredTriggerProgramViewSchema,
   source: TriggerSourceViewSchema,
 });
 export type TriggerRevision = z.infer<typeof TriggerRevisionSchema>;

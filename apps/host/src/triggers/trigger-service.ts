@@ -353,7 +353,7 @@ export class TriggerService {
   async #assertProgramCompatible(
     ownerId: UserId,
     anchorThreadId: ThreadId,
-    version: 4,
+    version: number,
   ): Promise<void> {
     const anchor = await this.#threads.getThreadForOwner(anchorThreadId, ownerId);
     if (!anchor)

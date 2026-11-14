@@ -1,5 +1,6 @@
 import { createId } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
+import { TRIGGER_PROGRAM_VERSION_REFUSAL } from "@opensteer/triggers";
 import { describe, expect, it, vi } from "vitest";
 import { triggerProgramCompatibilityReason } from "./trigger-program-compatibility.js";
 
@@ -40,15 +41,15 @@ describe("Trigger program Runner compatibility", () => {
     } as unknown as Pick<OpensteerStore, "getEnvironment" | "runnerCapabilities">;
     expect(await triggerProgramCompatibilityReason(store, createId("environment"), 4)).toBeNull();
   });
-  it.each([1, 2] as const)("does not change version %s admission", async (version) => {
+  it.each([1, 2, 3])("refuses a version %s program by naming version 4", async (version) => {
     const getEnvironment = vi.fn();
     const store = { getEnvironment } as unknown as Pick<
       OpensteerStore,
       "getEnvironment" | "runnerCapabilities"
     >;
-    expect(
-      await triggerProgramCompatibilityReason(store, createId("environment"), version),
-    ).toContain("version 4");
+    expect(await triggerProgramCompatibilityReason(store, createId("environment"), version)).toBe(
+      TRIGGER_PROGRAM_VERSION_REFUSAL,
+    );
     expect(getEnvironment).not.toHaveBeenCalled();
   });
 });

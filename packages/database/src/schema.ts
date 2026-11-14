@@ -132,7 +132,7 @@ import type {
   ShellCloseReason,
   ShellSessionId,
 } from "@opensteer/protocol";
-import type { TriggerProgram, TriggerProgramEvent, TriggerSource } from "@opensteer/triggers";
+import type { StoredTriggerProgram, TriggerProgramEvent, TriggerSource } from "@opensteer/triggers";
 import type { ColumnType, Generated, Selectable } from "kysely";
 
 export type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>;
@@ -1109,7 +1109,7 @@ interface TriggerRevisionTable {
   triggerId: TriggerId;
   ordinal: number;
   source: JsonColumn<TriggerSource>;
-  program: JsonColumn<TriggerProgram>;
+  program: JsonColumn<StoredTriggerProgram>;
   createdBy: UserId;
   createdByThreadId: ThreadId | null;
   createdAt: Timestamp;
