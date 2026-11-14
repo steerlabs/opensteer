@@ -31,7 +31,7 @@ export * from "./thread-list-model.js";
 export * from "./search.js";
 export * from "./waiting-requests.js";
 export * from "./thread-placement.js";
-export * from "./queued-messages.js";
+export * from "./waiting-inputs.js";
 export * from "./transcript.js";
 export * from "./usage-notice.js";
 export * from "./browser-presentation.js";

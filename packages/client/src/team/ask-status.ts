@@ -1,5 +1,5 @@
 import type { TeamAskOutcome, TeamAudience } from "@opensteer/core";
-import type { TeamAgentRequest } from "@opensteer/protocol";
+import type { NeedsYouPage, TeamAgentRequest } from "@opensteer/protocol";
 
 export function teamAskStatuses(
   requests: readonly TeamAgentRequest[],
@@ -79,4 +79,59 @@ export function teamAskAudienceLabel(audience: TeamAudience): string {
     ? ` · Shared with ${audience.externalTeams.map((t) => t.name).join(", ")}`
     : "";
   return `${audience.teamName} · ${kind} · ${audience.memberCount} ${audience.memberCount === 1 ? "person" : "people"}${external}`;
+}
+
+/**
+ * What an ask's owner gets in team chat in place of "Waiting for <them>".
+ * `decide`: answer from chat, approving the teammate's words as sent.
+ * `review-edited`: the owner already edited the task's copy, so chat never
+ * approves words the person isn't looking at; the control opens the task.
+ * `none`: the ordinary status line, as everyone else sees it.
+ */
+export type TeamAskOwnerControl =
+  | {
+      readonly kind: "decide";
+      readonly teamId: string;
+      readonly requestId: string;
+      /** The task the ask waits in, for the person who wants to see it first. */
+      readonly threadId: string;
+      readonly expectedRevision: number;
+    }
+  | { readonly kind: "review-edited"; readonly threadId: string; readonly messageId: string }
+  | { readonly kind: "none" };
+
+/**
+ * Decides the owner's control from the team's request, the viewer's team
+ * user id and the personal Host's Needs you, which knows the task and the
+ * version of its copy. An ask the personal Host has not admitted, already
+ * answered or could not admit has no control.
+ */
+export function teamAskOwnerControl(input: {
+  readonly request: TeamAgentRequest;
+  readonly teamId: string;
+  readonly viewerUserId: string | null;
+  readonly needsYou: NeedsYouPage | null;
+}): TeamAskOwnerControl {
+  const { request } = input;
+  if (
+    request.kind !== "ask" ||
+    request.ownerUserId !== input.viewerUserId ||
+    request.state !== "awaiting_approval" ||
+    request.pendingRemote ||
+    request.askRefusal
+  )
+    return { kind: "none" };
+  const entry = input.needsYou?.entries.find(
+    (row) => row.kind === "team-ask" && row.teamId === input.teamId && row.requestId === request.id,
+  );
+  if (entry?.kind !== "team-ask" || !entry.task || entry.failureReason) return { kind: "none" };
+  return entry.task.revision === 0
+    ? {
+        expectedRevision: 0,
+        kind: "decide",
+        requestId: request.id,
+        teamId: input.teamId,
+        threadId: entry.task.threadId,
+      }
+    : { kind: "review-edited", messageId: entry.task.messageId, threadId: entry.task.threadId };
 }
