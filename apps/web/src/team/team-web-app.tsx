@@ -91,10 +91,15 @@ export function TeamWebApp() {
   if (authorizationError)
     return (
       <OnboardingCard
-        title="Authorization couldn’t finish"
-        description="Close this browser and start sign-in again in the Opensteer app."
+        title="Sign-in didn’t finish"
+        description="If you started in the Opensteer app, start sign-in again there."
       >
         <ErrorNotice message={authorizationError.description ?? authorizationError.error} />
+        <div className="onboarding__actions">
+          <button className="btn" onClick={() => window.location.assign("/")} type="button">
+            Sign in again
+          </button>
+        </div>
       </OnboardingCard>
     );
   if (entry.kind === "ready" && nativeOAuthQuery)

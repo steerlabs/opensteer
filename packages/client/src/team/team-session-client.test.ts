@@ -40,6 +40,44 @@ function fixture() {
   return { host, persistence, client };
 }
 describe("team synchronization", () => {
+  it("adopts a draft an older app wrote after this Account's partition already existed", async () => {
+    const host = new MockTeamHost();
+    const partition = createMemoryTeamPersistence(),
+      legacy = createMemoryTeamPersistence();
+    const writer = new TeamSessionClient({
+      scope,
+      persistence: legacy,
+      rpc: host.rpc,
+      connect: host.connect,
+    });
+    await writer.setDraft(channelScope, "written on Stable");
+    writer.dispose();
+    const written = (await legacy.load(scope))!;
+    const key = Object.keys(written.drafts)[0]!;
+    await partition.save(scope, {
+      drafts: { [key]: "older Beta draft", other: "kept" },
+      pending: [],
+    });
+    const client = new TeamSessionClient({
+      scope,
+      persistence: partition,
+      legacyPersistence: legacy,
+      rpc: host.rpc,
+      connect: host.connect,
+    });
+    try {
+      await client.load(false);
+      expect(client.getSnapshot().drafts).toMatchObject({
+        [key]: "written on Stable",
+        other: "kept",
+      });
+      expect(await legacy.load(scope)).toBeNull();
+    } finally {
+      client.dispose();
+      host.dispose();
+    }
+  });
+
   it.each(["Active team membership required", "Team session generation changed"])(
     "removes the partition for an older server's bootstrap refusal: %s",
     async (message) => {

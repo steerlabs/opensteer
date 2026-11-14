@@ -180,10 +180,12 @@ export class TeamSessionClient {
           await this.remove("viewer-changed");
           return;
         }
-        if (!saved && this.#options.legacyPersistence) {
-          saved = await this.#options.legacyPersistence.load(this.#options.scope);
+        if (this.#options.legacyPersistence) {
+          // Adoption removes the legacy copy, so one present now was written later by an older app.
+          const legacy = await this.#options.legacyPersistence.load(this.#options.scope);
           if (lifetime !== this.#lifetime) return;
-          if (saved) {
+          if (legacy) {
+            saved = saved ? mergeSavedStates(saved, legacy) : legacy;
             await this.#options.persistence.save(this.#options.scope, saved);
             if (lifetime !== this.#lifetime) return;
             await this.#options.legacyPersistence.remove(this.#options.scope);
@@ -1147,4 +1149,17 @@ export class TeamSessionClient {
     this.#releaseOwner?.();
     this.#listeners.clear();
   }
+}
+
+function mergeSavedStates(held: TeamSavedState, newer: TeamSavedState): TeamSavedState {
+  const drafts = Object.entries({ ...held.drafts, ...newer.drafts });
+  const pending = [
+    ...new Map(
+      [...held.pending, ...newer.pending].map((row) => [row.command.clientMessageId, row]),
+    ).values(),
+  ];
+  return {
+    drafts: Object.fromEntries(drafts.slice(-100)),
+    pending: pending.slice(-100),
+  };
 }

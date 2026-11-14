@@ -210,8 +210,11 @@ describe("a team's own web app", () => {
     serveTeam({ signedIn: true });
     const node = await render();
     expect(node.textContent).toContain("Sign-in cancelled");
-    expect(node.textContent).toContain("start sign-in again in the Opensteer app");
+    expect(node.textContent).toContain("start sign-in again there");
     expect(node.querySelector(".sidebar")).toBeNull();
+    const assign = vi.spyOn(window.location, "assign").mockImplementation(() => undefined);
+    await act(async () => button(node, "Sign in again")?.click());
+    expect(assign).toHaveBeenCalledWith("/");
   });
 
   it("opens the team's first channel after asking who is signed in once", async () => {

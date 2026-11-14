@@ -27,6 +27,23 @@ import { NativeOAuthManager, TeamIdentityGrantUnsupportedError } from "./native-
 import type { ProtectedAuthStore } from "./protected-auth-store.js";
 
 describe("NativeOAuthManager", () => {
+  it("lets identical sign-ins queued behind background entry share one browser flow", async () => {
+    const f = await managerFixture();
+    await f.manager.initialize();
+    const background = f.manager.signInTeam(f.connection, undefined, false).catch(() => null);
+    const first = f.manager.signInTeam(f.connection);
+    const second = f.manager.signInTeam(f.connection);
+    await background;
+    await vi.waitFor(() => expect(f.opened).toHaveLength(1), { timeout: 1000 });
+    await f.manager.handleCallback(
+      callbackUrl("host", new URL(f.opened[0]!).searchParams.get("state")!, "code"),
+    );
+    await expect(first).resolves.toMatchObject({ status: "signed-in" });
+    await expect(second).resolves.toMatchObject({ status: "signed-in" });
+    expect(f.opened).toHaveLength(1);
+    f.manager.dispose();
+  });
+
   it("keeps the browser callback valid when passive recovery joins sign-in", async () => {
     const f = await managerFixture();
     await f.manager.initialize();

@@ -130,6 +130,11 @@ const entryAttempts = new WeakMap<
       invite: TeamInviteSecret | null;
       owner: ReturnType<TeamEntryOAuth["teamRuntime"]>;
       promise: Promise<TeamEntryOutcome>;
+      /** One interactive attempt queued behind this one; identical callers share it. */
+      next?: {
+        readonly invite: TeamInviteSecret | null;
+        readonly promise: Promise<TeamEntryOutcome>;
+      };
     }
   >
 >();
@@ -191,11 +196,15 @@ export class NativeTeamEntry {
             if (authorization && authorization !== input.recover.authorization) return outcome;
             return this.#enqueue(input, lease);
           });
-        const outcome = await held.promise;
-        lease.assertCurrent();
-        return outcome.status === "authorized" && !input.invite
-          ? outcome
-          : this.#enqueue(input, lease);
+        if (held.next && sameInvite(held.next.invite, input.invite)) return await held.next.promise;
+        const next = held.promise.then((outcome) => {
+          lease.assertCurrent();
+          return outcome.status === "authorized" && !input.invite
+            ? outcome
+            : this.#enqueue(input, lease);
+        });
+        held.next ??= { invite: input.invite ?? null, promise: next };
+        return await next;
       }
       const promise = this.#authorize(input).finally(() => {
         if (attempts.get(input.deploymentId)?.promise === promise)
