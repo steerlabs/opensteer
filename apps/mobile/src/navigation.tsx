@@ -61,7 +61,6 @@ import { ThreadScreen } from "./screens/thread.js";
 import { WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
 import { SidebarShell } from "./sidebar/sidebar-shell.js";
 import { DoneTasksScreen } from "./screens/done-tasks.js";
-import { TeamHomeScreen } from "./team/team-home-screen.js";
 import {
   TeamChannelScreen,
   TeamThreadScreen,
@@ -196,8 +195,6 @@ const RootStack = createNativeStackNavigator({
         title: "Moved to Done for you",
       },
     },
-    // A team's page from its drawer row: channels, then DMs; its menu is the title.
-    TeamHome: { screen: TeamHomeScreen, options: { title: "" } },
     // Every tab this person may see, from the sidebar. A tab opened from here
     // is shown alone.
     Tabs: { screen: TabsScreen, options: { headerLargeTitle: true, title: "Tabs" } },
@@ -692,7 +689,6 @@ type OpensteerRootParamList = {
   readonly ConnectOpensteer: { readonly teamId: string };
   readonly DoneTasks: { readonly deploymentId: string };
   readonly QuietlyMoved: { readonly deploymentId: string };
-  readonly TeamHome: { readonly teamId: string };
   readonly AddDeployment: undefined;
   readonly SetUpPhone: { readonly deploymentId: string };
   readonly AgentAuthorization: { readonly deploymentId: string; readonly requestId: string };
