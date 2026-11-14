@@ -79,8 +79,8 @@ export const teamEntryRefusalOutcomes = {
 
 /** At authenticated bootstrap only: older team servers refuse a removed member with a reasonless `forbidden`. */
 export function bootstrapMembershipRefused(error: {
-  readonly code?: string;
-  readonly reason?: string | null;
+  readonly code?: string | undefined;
+  readonly reason?: string | null | undefined;
 }): boolean {
   return (
     teamEntryRefusalOutcome(error.reason) === "membership" ||
