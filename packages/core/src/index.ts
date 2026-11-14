@@ -44,3 +44,5 @@ export * from "./model-candidates.js";
 export * from "./personal.js";
 export * from "./team.js";
 export * from "./team-links.js";
+
+export * from "./idle-compaction.js";

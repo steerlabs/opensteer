@@ -1,4 +1,4 @@
-import { PersonalSettingsSchema } from "@opensteer/core";
+import { IdleCompactionPolicyViewSchema, PersonalSettingsSchema } from "@opensteer/core";
 import { AuthSessionIdSchema, QuietTaskDaysSchema } from "@opensteer/core";
 import {
   AppIdSchema,
@@ -91,6 +91,7 @@ export const HostBootstrapSchema = z.object({
     .object({
       ...PersonalSettingsSchema.shape,
       agentHome: z.object(PersonalSettingsSchema.shape.agentHome.shape),
+      idleCompactionPolicy: IdleCompactionPolicyViewSchema.optional(),
     })
     .nullable(),
   can: z.object({

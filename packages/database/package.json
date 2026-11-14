@@ -34,6 +34,7 @@
     "./task-admission-store": "./src/task-admission-store.ts",
     "./test-support/personal-run": "./src/personal-run-fixture.test-support.ts",
     "./personal-settings-store": "./src/personal-settings-store.ts",
+    "./idle-compaction": "./src/idle-compaction-store.ts",
     "./command-delivery": "./src/command-delivery.ts"
   },
   "scripts": {

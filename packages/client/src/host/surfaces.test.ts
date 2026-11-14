@@ -1,3 +1,5 @@
+import { ThreadStateProjection } from "./thread-state.js";
+import { AgentEventViewSchema, SequenceSchema } from "@opensteer/core";
 import { seedBrowserSession } from "../test-support/browser-snapshot.js";
 import { browserStoreFixture, replaceBrowserTabs } from "../test-support/browser-snapshot.js";
 import type {
@@ -180,6 +182,46 @@ it("names an unviewed message page from its current keyed row, retaining the rec
 });
 
 describe("liveWork", () => {
+  it("preserves idle surface ordering after a maintenance state event", () => {
+    const projection = new ThreadStateProjection();
+    const older = {
+      ...task(1, "Older", "idle"),
+      thread: { ...task(1, "Older", "idle").thread, updatedAt: "2026-01-01T00:00:00.000Z" },
+    };
+    const newer = {
+      ...task(2, "Newer", "idle"),
+      thread: { ...task(2, "Newer", "idle").thread, updatedAt: "2026-01-02T00:00:00.000Z" },
+    };
+
+    projection.record(
+      AgentEventViewSchema.parse({
+        eventId: createId("event"),
+        type: "thread.state-changed",
+        threadId: older.thread.id,
+        environmentId: createId("environment"),
+        runId: null,
+        sequence: "2",
+        createdAt: "2026-01-03T00:00:00.000Z",
+        data: {
+          status: "idle",
+          inputQueuePaused: false,
+          pendingRequests: 0,
+          updatedAt: older.thread.updatedAt,
+          returnHint: null,
+        },
+      }),
+    );
+    const projected = projection.reconcile(older.thread, SequenceSchema.parse("1"));
+    expect(projected.updatedAt).toBe(older.thread.updatedAt);
+    expect(
+      liveWork(
+        snapshot(
+          [{ ...older, thread: projected }, newer],
+          [browser(1, "old.com", [threadId(1)]), browser(2, "new.com", [threadId(2)])],
+        ),
+      ).map((group) => group.title),
+    ).toEqual(["Newer", "Older"]);
+  });
   it("keeps a finished task's open browser, as still open, beside the work under way", () => {
     const groups = liveWork(
       snapshot(

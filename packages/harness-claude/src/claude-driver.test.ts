@@ -89,6 +89,49 @@ afterEach(async () => {
 const noComputersNotice = "No other computers are reachable from this Run.";
 
 describe("Claude Agent SDK harness", () => {
+  it("publishes main context evidence before completion", async () => {
+    const sdk = new FakeSdk((parameters) => {
+      const sessionId = providerSessionId(parameters.options);
+      return scriptedQuery([
+        initMessage(sessionId),
+        {
+          type: "stream_event",
+          session_id: sessionId,
+          parent_tool_use_id: null,
+          uuid: "context-start",
+          request_sent_wall_ms: 100,
+          event: {
+            type: "message_start",
+            message: {
+              usage: {
+                input_tokens: 10,
+                cache_read_input_tokens: 200_000,
+                output_tokens: 5,
+                cache_creation: { ephemeral_5m_input_tokens: 1 },
+              },
+            },
+          },
+        } as unknown as SDKMessage,
+        successMessage(sessionId, "Done."),
+      ]);
+    });
+    const { adapter, session } = await openSession(sdk);
+    const observer = observe(session.events);
+    await send(session, "Continue");
+    await session.stop();
+    await observer.done;
+    const measurement = observer.events.find((event) => event.type === "run.context-measured");
+    expect(measurement?.data).toMatchObject({
+      usedTokens: 200_015,
+      requestStartedAt: 100,
+      promptCacheTtlMs: 300_000,
+    });
+    expect(
+      observer.events.findIndex((event) => event.type === "run.context-measured"),
+    ).toBeLessThan(observer.events.findIndex((event) => event.type === "run.completed"));
+    await adapter.close();
+  });
+
   it("opens only the platform-appropriate Unix socket sandbox access", async () => {
     const providerState = (await context(await temporaryDirectory())).providerState;
     expect(
@@ -2841,6 +2884,107 @@ describe("Claude Agent SDK harness", () => {
       expect(observer.events.find((event) => event.type === "assistant.message")).toMatchObject({
         data: { content: [{ text: "Current continuation result.", type: "text" }] },
       });
+      await adapter.close();
+    },
+  );
+
+  it("compacts only the pinned native session without Run context or reports", async () => {
+    const reference = "123e4567-e89b-42d3-a456-426614174001";
+    const received: SDKUserMessage[] = [];
+    const sdk = new FakeSdk((parameters) => {
+      const drained = (async () => {
+        for await (const input of streamingPrompt(parameters)) received.push(input);
+      })();
+      return generatedQuery(async function* () {
+        yield initMessage(reference);
+        yield successMessage(reference, "Compacted");
+        await drained;
+      });
+    });
+    const directory = await temporaryDirectory();
+    const driver = new ClaudeHarnessDriver({ executable: fakeClaudeExecutable, sdk });
+    const adapter = await driver.create({
+      sourceId: "anthropic",
+      config: {},
+      instanceId: createId("harnessInstance"),
+    });
+    const session = await adapter.resumeSession(reference, await context(directory));
+    const observer = observe(session.events);
+    await session.execute({
+      maintenance: {
+        kind: "claude-compaction",
+        reason: "idle",
+        sourceRunId: createId("run"),
+        providerSessionId: createId("providerSession"),
+      },
+      environment: {},
+      inputs: [humanInput("This must never reach Claude")],
+      context: noThreadContext,
+      reports: { messages: [], omittedCount: 0, throughSequence: null },
+      requestedBy: createId("user"),
+      runId: createId("run"),
+      signal: new AbortController().signal,
+    });
+    await session.stop();
+    await observer.done;
+    expect(sdk.calls[0]?.options.resume).toBe(reference);
+    expect(received).toEqual([userInput("/compact")]);
+    await adapter.close();
+  });
+
+  it.each([
+    ["compact_boundary", "run.completed"],
+    ["failed", "run.failed"],
+  ] as const)(
+    "starts a compaction Run before its first progress and ends it by Claude's compaction outcome (%s)",
+    async (outcome, terminal) => {
+      const reference = "123e4567-e89b-42d3-a456-426614174002";
+      const system = (fields: Record<string, unknown>) =>
+        message({ session_id: reference, type: "system", uuid: randomProviderUuid(), ...fields });
+      const sdk = new FakeSdk((parameters) => {
+        const drained = (async () => {
+          for await (const _input of streamingPrompt(parameters));
+        })();
+        return generatedQuery(async function* () {
+          yield initMessage(reference);
+          yield system({ status: "compacting", subtype: "status" });
+          yield outcome === "failed"
+            ? system({ compact_result: "failed", status: null, subtype: "status" })
+            : system({ compact_metadata: { trigger: "manual" }, subtype: "compact_boundary" });
+          // Claude reports the local command itself as successful either way.
+          yield successMessage(reference, "");
+          await drained;
+        });
+      });
+      const directory = await temporaryDirectory();
+      const driver = new ClaudeHarnessDriver({ executable: fakeClaudeExecutable, sdk });
+      const adapter = await driver.create({
+        sourceId: "anthropic",
+        config: {},
+        instanceId: createId("harnessInstance"),
+      });
+      const session = await adapter.resumeSession(reference, await context(directory));
+      const observer = observe(session.events);
+      await session.execute({
+        maintenance: {
+          kind: "claude-compaction",
+          reason: "idle",
+          sourceRunId: createId("run"),
+          providerSessionId: createId("providerSession"),
+        },
+        environment: {},
+        inputs: [humanInput("Compact")],
+        context: noThreadContext,
+        reports: { messages: [], omittedCount: 0, throughSequence: null },
+        requestedBy: createId("user"),
+        runId: createId("run"),
+        signal: new AbortController().signal,
+      });
+      await session.stop();
+      await observer.done;
+      const types = observer.events.map((event) => event.type);
+      expect(types.indexOf("run.started")).toBeLessThan(types.indexOf("run.compaction"));
+      expect(types).toContain(terminal);
       await adapter.close();
     },
   );

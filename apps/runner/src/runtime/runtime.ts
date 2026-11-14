@@ -573,6 +573,9 @@ export class RunnerRuntime {
   }
 
   async harnessDrivers(): Promise<readonly RunnerHarnessDriver[]> {
+    for (const { kind } of this.#harnesses.listDrivers()) this.#refreshDriverInstallation(kind);
+    const claude = this.#harnesses.listDrivers().find(({ kind }) => kind === "claude");
+    if (claude) await this.#driverInstallationInspections.get(claude.kind);
     return this.#harnesses.listDrivers().map(({ kind, readiness }) => {
       this.#refreshDriverInstallation(kind);
       const installation =
@@ -2911,7 +2914,26 @@ export class RunnerRuntime {
           active.abort.abort(error);
         });
       try {
+        if (
+          context.maintenance &&
+          (!context.providerSessionReference ||
+            context.providerSessionId !== context.maintenance.providerSessionId ||
+            active.session.providerSessionReference !== context.providerSessionReference)
+        )
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Compaction requires its pinned native session",
+          });
+        if (
+          context.maintenance?.reason === "idle" &&
+          (context.maintenanceExpiresAt === undefined || Date.now() >= context.maintenanceExpiresAt)
+        )
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Compaction cache window expired before execution",
+          });
         const execution = active.session.execute({
+          ...(context.maintenance ? { maintenance: context.maintenance } : {}),
           attachments,
           context: {
             teamTurnContext: context.teamTurnContext,

@@ -834,6 +834,7 @@ export interface RunInitialContext {
 }
 
 export interface RunTable {
+  maintenance: Generated<import("@opensteer/core").RunMaintenance | null>;
   personWaited: Generated<boolean>;
   doneWhenFinished: Generated<boolean>;
   assignmentId: Generated<AssignmentId | null>;
@@ -1170,6 +1171,7 @@ export interface TriggerOccurrenceTable {
 }
 
 export interface ProviderSessionTable {
+  contextSnapshot: Generated<import("@opensteer/core").ProviderContextSnapshot | null>;
   personalContext: Generated<boolean>;
   active: boolean;
   stateLayout: "thread" | "session";
@@ -2273,6 +2275,7 @@ export type PendingCommandRow = CommandRow & {
 export type DeploymentEventRow = Selectable<DeploymentEventTable>;
 
 export interface PersonalSettingsTable {
+  idleCompactionPolicy: Generated<import("@opensteer/core").IdleCompactionPolicy>;
   singletonKey: "personal";
   ownerId: UserId;
   agentHomeComputerId: RunnerId;

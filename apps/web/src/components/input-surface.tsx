@@ -1,3 +1,5 @@
+import { browserNoticeDismissals } from "./usage-notice.js";
+import { useCompactionOffer } from "@opensteer/client/react";
 import { cardUseTitle } from "@opensteer/client/host";
 import { threadMark, type TaskMark as ResolvedTaskMark } from "@opensteer/client/host";
 import { assignmentTitle } from "@opensteer/client/host";
@@ -117,14 +119,27 @@ export function InputSurface({
   const attachmentTarget =
     deploymentId && draftKey ? { client: hostClient, scope: draftKey, deploymentId } : null;
 
+  const compactionOffer = useCompactionOffer(
+    snapshot.threads.find((t) => t.id === threadId)?.returnHint,
+    `${deploymentId}/${userId}/${threadId}`,
+    browserNoticeDismissals("opensteer.usage-notices.dismissed"),
+  );
   const sendMessage = async (
     body: string,
-    { attachments, content, places, idempotencyKey, quotedMessageId }: ComposerSubmission,
+    {
+      attachments,
+      content,
+      places,
+      idempotencyKey,
+      quotedMessageId,
+      compaction,
+    }: ComposerSubmission,
   ): Promise<void> => {
     if (!body.trim() && attachments.length === 0 && places.length === 0 && !content?.length) return;
     await hostClient.dispatch(
       sendMessageCommand(threadId, {
         attachments,
+        ...(compaction ? { compaction } : {}),
         body,
         ...(places.length > 0 ? { places } : {}),
         ...(content ? { content } : {}),
@@ -173,6 +188,7 @@ export function InputSurface({
       )}
       <div hidden={composerHidden || (docked && dock.composerHidden)}>
         <Composer
+          compactionOffer={compactionOffer}
           dictationScope={`${deploymentId}/${userId}/${threadId}`}
           draftKey={draftKey}
           hidden={composerHidden || (docked && dock.composerHidden)}

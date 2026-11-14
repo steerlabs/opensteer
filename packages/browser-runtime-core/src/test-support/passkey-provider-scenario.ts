@@ -532,12 +532,12 @@ async function rawPasskeyRequest(cdp: CdpSession): Promise<string> {
     await waitScenario(() =>
       evaluate(
         cdp,
-        `Object.getOwnPropertyNames(globalThis).some(name => name.startsWith("opensteerPasskey_") && typeof globalThis[name] === "function")`,
+        `Object.getOwnPropertyNames(globalThis).some(name => name.startsWith("b_") && typeof globalThis[name] === "function")`,
       ),
     );
     await evaluate(
       cdp,
-      `globalThis[Object.getOwnPropertyNames(globalThis).find(name => name.startsWith("opensteerPasskey_") && typeof globalThis[name] === "function")](${JSON.stringify(JSON.stringify({ op: "get", id, options: { challenge: "AQID" } }))})`,
+      `globalThis[Object.getOwnPropertyNames(globalThis).find(name => name.startsWith("b_") && typeof globalThis[name] === "function")](${JSON.stringify(JSON.stringify({ op: "get", id, options: { challenge: "AQID" } }))})`,
     );
     return await withTimeout(response, 1500, {
       timeoutError: () => new Error("Raw binding request did not settle within 1500ms."),

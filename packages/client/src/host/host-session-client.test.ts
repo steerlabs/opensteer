@@ -5754,100 +5754,146 @@ describe("HttpHostClient durable realtime", () => {
     client.dispose();
   });
 
-  it("queues a follow-up through HTTP and interrupts only the executing Run", async () => {
-    const workspace = makeDeployment();
-    const thread = makeThread(workspace.id);
-    const currentRunId = createId("run");
-    const queuedRunId = createId("run");
-    const queuedMessage = makeMessage(thread.id, "input", "Follow up next");
-    const sockets: FakeSocket[] = [];
-    const requestedTypes: string[] = [];
-    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-      const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
-      if (path === "/v1/rpc/bootstrap.get") return json(bootstrap([workspace]));
-      const type = requiredString(
-        JSON.parse(String(init?.body)) as Readonly<Record<string, unknown>>,
-        "type",
-      );
-      requestedTypes.push(type);
-      if (type === "thread.sendMessage") {
-        return json(
-          {
-            input: makeThreadInput({ ...queuedMessage, runId: queuedRunId }),
-            message: { ...queuedMessage, runId: queuedRunId },
-            run: {
-              teamRequestId: null,
-              accessMode: thread.accessMode,
-              activationInputId: queuedMessage.id,
-              assignmentId: null,
-              causalChainId: createId("causalChain"),
-              completedAt: null,
-              createdAt: now,
-              environmentId: thread.environmentId,
-              failure: null,
-              harnessInstanceId: thread.harnessInstanceId,
-              id: queuedRunId,
-              providerSessionId: createId("providerSession"),
-              modelSelection: thread.modelSelection,
-              requestedBy: ownerId,
-              replyTarget: null,
-              runOrdinal: 1,
-              startedAt: null,
-              status: "queued",
-              threadId: thread.id,
-              seedInputId: queuedMessage.id,
-            },
-            wasDuplicate: false,
-          },
-          202,
+  it.each(["ordinary", "snapshot", "event"])(
+    "queues a follow-up and interrupts the executing Run (%s)",
+    async (source) => {
+      const maintenance = source !== "ordinary";
+      const workspace = makeDeployment();
+      const thread = makeThread(workspace.id);
+      const currentRunId = createId("run");
+      const queuedRunId = createId("run");
+      const queuedMessage = makeMessage(thread.id, "input", "Follow up next");
+      const sockets: FakeSocket[] = [];
+      const requestedTypes: string[] = [];
+      const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const path = new URL(input instanceof Request ? input.url : input.toString()).pathname;
+        if (path === "/v1/rpc/bootstrap.get") return json(bootstrap([workspace]));
+        const type = requiredString(
+          JSON.parse(String(init?.body)) as Readonly<Record<string, unknown>>,
+          "type",
         );
+        requestedTypes.push(type);
+        if (type === "thread.sendMessage") {
+          return json(
+            {
+              input: makeThreadInput({ ...queuedMessage, runId: queuedRunId }),
+              message: { ...queuedMessage, runId: queuedRunId },
+              run: {
+                teamRequestId: null,
+                accessMode: thread.accessMode,
+                activationInputId: queuedMessage.id,
+                assignmentId: null,
+                causalChainId: createId("causalChain"),
+                completedAt: null,
+                createdAt: now,
+                environmentId: thread.environmentId,
+                failure: null,
+                harnessInstanceId: thread.harnessInstanceId,
+                id: queuedRunId,
+                providerSessionId: createId("providerSession"),
+                modelSelection: thread.modelSelection,
+                requestedBy: ownerId,
+                replyTarget: null,
+                runOrdinal: 1,
+                startedAt: null,
+                status: "queued",
+                threadId: thread.id,
+                seedInputId: queuedMessage.id,
+              },
+              wasDuplicate: false,
+            },
+            202,
+          );
+        }
+        return json({ wasDuplicate: false }, 202);
+      }) as unknown as typeof globalThis.fetch;
+      const client = createHttpHostClient({
+        fetch,
+        refreshIntervalMs: 0,
+        webSocketFactory: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      });
+      await client.load();
+      const socket = sockets[0]!;
+      socket.open();
+      socket.receive({
+        snapshot: {
+          ...deploymentSnapshot(workspace, "1"),
+          runQueue: [
+            {
+              createdAt: now,
+              id: currentRunId,
+              status: "running",
+              maintenance: maintenance
+                ? {
+                    kind: "claude-compaction",
+                    reason: "idle",
+                    sourceRunId: createId("run"),
+                    providerSessionId: createId("providerSession"),
+                  }
+                : undefined,
+              threadId: thread.id,
+              runOrdinal: 0,
+            },
+          ],
+          threads: [{ ...thread, status: maintenance ? "idle" : "running" }],
+        },
+        type: "host.snapshot",
+      });
+
+      if (source === "event") {
+        socket.receive({
+          type: "host.events",
+          throughSequence: sequence("3"),
+          events: [
+            agentEvent(workspace.id, thread.id, currentRunId, "2", "run.queued", {
+              run: {
+                id: currentRunId,
+                threadId: thread.id,
+                runOrdinal: 0,
+                status: "queued",
+                createdAt: now,
+                maintenance: {
+                  kind: "claude-compaction",
+                  reason: "idle",
+                  sourceRunId: createId("run"),
+                  providerSessionId: createId("providerSession"),
+                },
+              },
+            }),
+            agentEvent(workspace.id, thread.id, currentRunId, "3", "run.started", {
+              status: "running",
+            }),
+          ],
+        });
       }
-      return json({ wasDuplicate: false }, 202);
-    }) as unknown as typeof globalThis.fetch;
-    const client = createHttpHostClient({
-      fetch,
-      refreshIntervalMs: 0,
-      webSocketFactory: () => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket;
-      },
-    });
-    await client.load();
-    const socket = sockets[0]!;
-    socket.open();
-    socket.receive({
-      snapshot: {
-        ...deploymentSnapshot(workspace, "1"),
-        runQueue: [
-          {
-            createdAt: now,
-            id: currentRunId,
-            status: "running",
-            threadId: thread.id,
-            runOrdinal: 0,
-          },
-        ],
-        threads: [{ ...thread, status: "running" }],
-      },
-      type: "host.snapshot",
-    });
+      expect(
+        threadActivity({
+          thread: client.getSnapshot().threads[0]!,
+          runQueue: client.getSnapshot().runQueue,
+          entries: [],
+        }),
+      ).toBe(maintenance ? "idle" : "working");
+      await client.stopRun(thread.id);
 
-    await client.dispatch({
-      content: [{ text: "Follow up next", type: "text" }],
-      idempotencyKey: "message:test",
-      threadId: thread.id,
-      type: "thread.sendMessage",
-    });
-    await client.stopRun(thread.id);
+      await client.dispatch({
+        content: [{ text: "Follow up next", type: "text" }],
+        idempotencyKey: "message:test",
+        threadId: thread.id,
+        type: "thread.sendMessage",
+      });
 
-    expect(client.getSnapshot().runQueue.map(({ id, status }) => [id, status])).toEqual([
-      [currentRunId, "running"],
-      [queuedRunId, "queued"],
-    ]);
-    expect(requestedTypes).toEqual(["thread.sendMessage", "run.interrupt"]);
-    client.dispose();
-  });
+      expect(client.getSnapshot().runQueue.map(({ id, status }) => [id, status])).toEqual([
+        [currentRunId, "running"],
+        [queuedRunId, "queued"],
+      ]);
+      expect(requestedTypes).toEqual(["run.interrupt", "thread.sendMessage"]);
+      client.dispose();
+    },
+  );
 
   it("does not let a slower queued HTTP acknowledgement overwrite realtime starting state", async () => {
     const workspace = makeDeployment();

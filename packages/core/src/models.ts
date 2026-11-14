@@ -1,3 +1,5 @@
+import { CompactionReturnHintSchema } from "./idle-compaction.js";
+import { RunMaintenanceSchema, RunMaintenanceViewSchema } from "./idle-compaction.js";
 import {
   TeamTaskOriginSchema,
   TeamSourceSchema,
@@ -148,6 +150,7 @@ export const RunnerCapabilitySchema = z.enum([
   "voice-run-v1",
   "network-egress",
   "native-session-continuation-v1",
+  "claude-compaction-v1",
   // Carries `requesterTimeZone` in every Run's context.
   "requester-time-zone-v1",
   "agent-tools-plan-v1",
@@ -311,6 +314,7 @@ export function threadAccessModeAtMost(mode: ThreadAccessMode, ceiling: ThreadAc
 export const DEFAULT_THREAD_ACCESS_MODE: ThreadAccessMode = "full-access";
 
 export const ThreadSchema = z.object({
+  returnHint: CompactionReturnHintSchema.nullable().optional(),
   specialistId: z.string().nullable().optional(),
   accessMode: ThreadAccessModeSchema,
   askedAt: IsoDateTimeSchema.optional(),
@@ -802,6 +806,7 @@ export const RunUsageViewSchema = z.object(runUsageShape);
 export type RunUsage = z.infer<typeof RunUsageSchema>;
 
 const runShape = {
+  maintenance: RunMaintenanceSchema.nullable().optional(),
   delivery: TeamRunDeliverySchema.nullable().default(null),
   accessMode: ThreadAccessModeSchema,
   activationInputId: MessageIdSchema,
@@ -827,6 +832,7 @@ const runShape = {
 export const RunSchema = z.strictObject(runShape);
 export const RunViewSchema = z.object({
   ...runShape,
+  maintenance: RunMaintenanceViewSchema.nullable().optional(),
   delivery: TeamRunDeliveryViewSchema.nullable().default(null),
   failure: RunFailureViewSchema.nullable(),
   modelSelection: ModelSelectionViewSchema,
@@ -1101,6 +1107,7 @@ export type RunThreadState = z.infer<typeof RunThreadStateSchema>;
  * entry after every lower ordinal is terminal.
  */
 export const ThreadRunQueueEntrySchema = RunSchema.pick({
+  maintenance: true,
   createdAt: true,
   id: true,
   status: true,
@@ -1109,7 +1116,10 @@ export const ThreadRunQueueEntrySchema = RunSchema.pick({
 })
   .extend({ status: ActiveRunStatusSchema })
   .strict();
-export const ThreadRunQueueEntryViewSchema = z.object(ThreadRunQueueEntrySchema.shape);
+export const ThreadRunQueueEntryViewSchema = z.object({
+  ...ThreadRunQueueEntrySchema.shape,
+  maintenance: RunMaintenanceViewSchema.nullable().optional(),
+});
 export type ThreadRunQueueEntry = z.infer<typeof ThreadRunQueueEntrySchema>;
 
 export const ExecutionBindingStatusSchema = z.enum([

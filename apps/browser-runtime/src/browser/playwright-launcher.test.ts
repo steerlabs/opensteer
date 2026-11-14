@@ -195,6 +195,7 @@ describe("Chromium child environment", () => {
         close: vi.fn().mockResolvedValue(undefined),
         newBrowserCDPSession: vi.fn().mockResolvedValue(browserCdp),
         newContext: vi.fn().mockResolvedValue(context),
+        version: () => "151.0.7922.34",
       } as unknown as Browser;
       const browserServer = {
         kill: vi.fn().mockResolvedValue(undefined),
@@ -237,9 +238,7 @@ describe("Chromium child environment", () => {
       expect(launcher.passkeys).toBe(provider && supportsSecurity ? 1 : undefined);
       expect(context.addInitScript).toHaveBeenCalledWith({
         content:
-          provider && supportsSecurity
-            ? expect.stringContaining("opensteerPasskey_")
-            : browserPagePolicyScript,
+          provider && supportsSecurity ? expect.stringContaining("b_") : browserPagePolicyScript,
       });
       if (provider && supportsSecurity) {
         const platform = await launched.context.pages()[0]!.cdp();
@@ -260,15 +259,40 @@ describe("Chromium child environment", () => {
       expect(launchOptions?.env).not.toHaveProperty("AWS_SECRET_ACCESS_KEY");
       expect(browser.newContext).toHaveBeenCalledWith(
         expect.objectContaining({
+          userAgent: expect.stringContaining("Chrome/151.0.0.0"),
           // The Runtime's ledger alone sizes pages.
           viewport: null,
         }),
+      );
+      // Playwright derives metadata from the UA string (frozen platform
+      // version, wrong architecture); each page is overridden with metadata
+      // built from the real system.
+      const pageHandler = (context.on as ReturnType<typeof vi.fn>).mock.calls.find(
+        ([event]) => event === "page",
+      )?.[1] as ((page: unknown) => void) | undefined;
+      expect(pageHandler).toBeDefined();
+      pageHandler!({ on: vi.fn() });
+      await vi.waitFor(() =>
+        expect(tabSession.send).toHaveBeenCalledWith(
+          "Emulation.setUserAgentOverride",
+          expect.objectContaining({
+            userAgent: expect.stringContaining("Chrome/151.0.0.0"),
+            userAgentMetadata: expect.objectContaining({
+              brands: [
+                { brand: "Chromium", version: "151" },
+                { brand: "Not=A?Brand", version: "99" },
+              ],
+            }),
+          }),
+        ),
       );
 
       await expect(
         launched.cdp.send("Target.createTarget", { url: "https://example.com/" }),
       ).resolves.toEqual({ targetId: "agent-tab" });
-      expect(context.newPage).toHaveBeenCalledTimes(provider ? 3 : 2);
+      // One extra page is the throwaway context that reads the engine's own
+      // high-entropy identity before the Guest context is created.
+      expect(context.newPage).toHaveBeenCalledTimes(provider ? 4 : 3);
       await vi.waitFor(() =>
         expect(tabSession.send).toHaveBeenCalledWith("Page.navigate", {
           url: "https://example.com/",

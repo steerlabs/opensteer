@@ -1,3 +1,6 @@
+import { runnerCapabilities } from "./host-connection.js";
+import { harnessMinimumVersion } from "@opensteer/core";
+import type { RunnerHarnessDriver } from "@opensteer/protocol";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
@@ -2516,3 +2519,23 @@ function terminalEvent(ids: {
     type: "runner.event",
   };
 }
+
+it("advertises compaction only for a qualifying installed Claude CLI", () => {
+  const driver = (version?: string, readiness = "configured", kind = "claude") =>
+    ({
+      driverKind: kind,
+      readiness,
+      ...(version ? { installation: { version } } : {}),
+    }) as unknown as RunnerHarnessDriver;
+  for (const drivers of [
+    [],
+    [driver()],
+    [driver("1.0.0")],
+    [driver("99.0.0", "unavailable")],
+    [driver("99.0.0", "configured", "codex")],
+  ])
+    expect(runnerCapabilities(drivers)).not.toContain("claude-compaction-v1");
+  expect(runnerCapabilities([driver(harnessMinimumVersion("claude"))])).toContain(
+    "claude-compaction-v1",
+  );
+});

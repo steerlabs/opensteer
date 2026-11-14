@@ -23,6 +23,11 @@ Selection happens before admission and freezes the endpoint for accepted work. A
 must not silently redirect it. Naming can advance after a contained generation failure; memory and
 specialists never replay accepted or uncertain work on another account.
 
+Claude context measurements describe the latest main-thread request, separately from billed
+Run usage, which includes native child work. Cache expiry starts at the reported request send
+time, or at `message_start` minus reported time to first token. Missing timing or cache-write
+TTL remains unknown; mixed five-minute and one-hour writes use the earliest expiry.
+
 ## What a driver declares
 
 Declarations live in [harness-catalog.ts](../packages/core/src/harness-catalog.ts), contracts in

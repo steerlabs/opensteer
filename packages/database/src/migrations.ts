@@ -29,8 +29,8 @@ export const threadVisitsMigrationName = "0004_thread_visits";
 export const teamKnowledgeNotesMigrationName = "0006_team_knowledge_notes";
 export const teamAgentMigrationName = "0011_team_agent_contracts";
 export const teamAgentAsksMigrationName = "0012_team_agent_asks";
-export const teamPrincipalsMigrationName = "0014_team_principals";
-export const teamPartnerLinksMigrationName = "0015_team_partner_links";
+export const teamPrincipalsMigrationName = "0015_team_principals";
+export const teamPartnerLinksMigrationName = "0016_team_partner_links";
 export function migrationProvider(): MigrationProvider {
   return {
     async getMigrations() {
@@ -166,13 +166,25 @@ export function migrationProvider(): MigrationProvider {
             );
           },
         },
+        "0014_claude_idle_compaction": {
+          async up(database) {
+            await sql`
+              alter table personal_settings add column idle_compaction_policy jsonb not null default '{"mode":"onReturn"}'::jsonb;
+              alter table provider_sessions add column context_snapshot jsonb null;
+              alter table runs add column maintenance jsonb null;
+              create unique index runs_compaction_source_idx on runs (
+                thread_id, (maintenance->>'providerSessionId'), (maintenance->>'sourceRunId')
+              ) where maintenance is not null;
+            `.execute(database);
+          },
+        },
         [teamPrincipalsMigrationName]: { up: migrateTeamPrincipals },
         [teamPartnerLinksMigrationName]: { up: migrateTeamPartnerLinks },
-        "0016_team_channel_shares": { up: migrateTeamChannelShares },
-        "0017_team_share_files": { up: migrateTeamShareFiles },
-        "0018_team_shared_agents": { up: migrateTeamSharedAgents },
-        "0019_team_share_file_cache": { up: migrateTeamShareFileCache },
-        "0020_team_share_relay_policy": {
+        "0017_team_channel_shares": { up: migrateTeamChannelShares },
+        "0018_team_share_files": { up: migrateTeamShareFiles },
+        "0019_team_shared_agents": { up: migrateTeamSharedAgents },
+        "0020_team_share_file_cache": { up: migrateTeamShareFileCache },
+        "0021_team_share_relay_policy": {
           async up(database) {
             await sql`alter table team_shares add column policy_revision bigint not null default 0;
               alter table team_share_relays add column pending_bodies text[] not null default '{}'`.execute(

@@ -1,5 +1,6 @@
 import type { PrivateFilesystem } from "@opensteer/client/connections";
 import {
+  CompactionSendChoiceSchema,
   ContentPartSchema,
   ModelSelectionSchema,
   ThreadAccessModeSchema,
@@ -119,6 +120,7 @@ const PendingThreadStartSchema = z.strictObject({
   title: z.string().min(1).max(200),
 });
 const PendingCommandSchema = LegacyPendingCommandSchema.extend({
+  compaction: CompactionSendChoiceSchema.optional(),
   browserPage: BrowserPageSchema.optional(),
   // Every message is sent to be queued. A `steer` record is one an earlier
   // release saved, and it is replayed exactly as it was first sent.
@@ -472,6 +474,7 @@ export function createThreadDraftStore(options: {
       const claimedQuoteEdit = quoteEdits.get(entryKey);
       const claimedPageEdit = pageEdits.get(entryKey);
       const entry = PendingCommandSchema.parse({
+        compaction: command.compaction,
         attachments: command.attachments,
         browserPage: command.browserPage,
         createdAt: options.now().toISOString(),
@@ -495,6 +498,7 @@ export function createThreadDraftStore(options: {
             JSON.stringify(previous.browserPage ?? null) !==
               JSON.stringify(entry.browserPage ?? null) ||
             previous.quotedMessageId !== entry.quotedMessageId ||
+            previous.compaction !== entry.compaction ||
             JSON.stringify(previous.start ?? null) !== JSON.stringify(entry.start ?? null) ||
             previous.text !== entry.text ||
             previous.threadId !== entry.threadId ||

@@ -20,13 +20,14 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0011_team_agent_contracts",
     "0012_team_agent_asks",
     "0013_personal_team_posts",
-    "0014_team_principals",
-    "0015_team_partner_links",
-    "0016_team_channel_shares",
-    "0017_team_share_files",
-    "0018_team_shared_agents",
-    "0019_team_share_file_cache",
-    "0020_team_share_relay_policy",
+    "0014_claude_idle_compaction",
+    "0015_team_principals",
+    "0016_team_partner_links",
+    "0017_team_channel_shares",
+    "0018_team_share_files",
+    "0019_team_shared_agents",
+    "0020_team_share_file_cache",
+    "0021_team_share_relay_policy",
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());
