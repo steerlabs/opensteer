@@ -39,3 +39,35 @@ export function settleTeamAsk(
     window: { ...page.window, totalItems: Math.max(0, page.window.totalItems - removed) },
   };
 }
+
+function needsYouOrder(entry: NeedsYouEntry): string {
+  return entry.kind === "request"
+    ? `${entry.request.createdAt}:${entry.request.id}`
+    : `${entry.createdAt}:team:${entry.teamId}:${entry.requestId}`;
+}
+
+export async function refreshNeedsYou(
+  loaded: NeedsYouPage | null,
+  read: (before?: string) => Promise<NeedsYouPage>,
+): Promise<NeedsYouPage> {
+  const through = loaded?.entries.at(-1);
+  let page = await read();
+  const entries = new Map(page.entries.map((entry) => [needsYouEntryKey(entry), entry]));
+  let byteCount = page.window.byteCount;
+  while (
+    through &&
+    page.window.hasMore &&
+    page.window.nextBefore &&
+    page.entries.length &&
+    needsYouOrder(page.entries.at(-1)!) > needsYouOrder(through)
+  ) {
+    page = await read(page.window.nextBefore);
+    byteCount += page.window.byteCount;
+    for (const entry of page.entries) entries.set(needsYouEntryKey(entry), entry);
+  }
+  return {
+    ...page,
+    entries: [...entries.values()],
+    window: { ...page.window, byteCount, itemCount: entries.size },
+  };
+}

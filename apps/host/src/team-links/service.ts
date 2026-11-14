@@ -48,6 +48,7 @@ export class PersonalTeamLinks {
     this.#leaveRetries.clear();
     for (const connection of this.#connections.values()) connection.stop();
     this.#connections.clear();
+    await this.options.requests.stop();
     await Promise.allSettled(this.#operations.values());
   }
 

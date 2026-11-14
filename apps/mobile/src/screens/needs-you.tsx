@@ -69,7 +69,9 @@ function NeedsYouList({ client, deploymentId }: { client: HostClient; deployment
                 : entry.title}
             </AppText>
             {entry.kind === "team-ask" ? (
-              <AppText tone="muted">{entry.presentation.bodyMarkdown}</AppText>
+              <AppText tone={entry.failureReason ? "danger" : "muted"}>
+                {entry.failureReason ?? entry.presentation.bodyMarkdown}
+              </AppText>
             ) : null}
           </Pressable>
         ))}

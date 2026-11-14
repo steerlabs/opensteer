@@ -53,21 +53,32 @@ export function needsYouPage(
             eb.and([eb("createdAt", "=", cursor.timestamp), sql<boolean>`id < ${cursor.id}`]),
           ]),
         );
-      let asks = transaction
+      const asks = transaction
         .selectFrom("personalTeamRequests")
-        .where(
-          "teamDeploymentId",
-          "in",
-          transaction
-            .selectFrom("personalTeamLinks")
-            .select("teamDeploymentId")
-            .where("state", "in", ["active", "unreachable", "needs_update"]),
-        )
         .where("kind", "=", "ask")
-        .where("remoteState", "=", "awaiting_approval")
-        .where("localDecision", "is", null)
-        .where("terminalState", "is", null)
-        .where("consentExpiresAt", ">", new Date());
+        .where((eb) =>
+          eb.or([
+            eb.and([
+              eb(
+                "teamDeploymentId",
+                "in",
+                transaction
+                  .selectFrom("personalTeamLinks")
+                  .select("teamDeploymentId")
+                  .where("state", "in", ["active", "unreachable", "needs_update"]),
+              ),
+              eb("remoteState", "=", "awaiting_approval"),
+              eb("localDecision", "is", null),
+              eb("terminalState", "is", null),
+              eb("consentExpiresAt", ">", new Date()),
+            ]),
+            eb.and([
+              eb("terminalState", "=", "failed"),
+              eb("localTaskId", "is", null),
+              eb("blockedReason", "is not", null),
+            ]),
+          ]),
+        );
       let askQuery = asks
         .selectAll()
         .orderBy("createdAt", "desc")
@@ -144,6 +155,9 @@ export function needsYouPage(
             presentation: row.presentation!,
             createdAt: row.createdAt.toISOString(),
             consentExpiresAt: row.consentExpiresAt!.toISOString(),
+            ...(row.terminalState === "failed" && row.blockedReason
+              ? { failureReason: row.blockedReason }
+              : {}),
           },
           createdAt: row.createdAt.toISOString(),
           id: `team:${row.teamDeploymentId}:${row.requestId}`,

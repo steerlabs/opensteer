@@ -51,18 +51,22 @@ export function TeamAskReview({
               <AppText tone="danger">{error}</AppText>
             </View>
           ) : null}
-          {(["approve", "decline"] as const).map((decision) => (
-            <Pressable
-              key={decision}
-              accessibilityRole="button"
-              accessibilityState={{ disabled: pending, busy: pending }}
-              disabled={pending}
-              onPress={() => void decide(decision)}
-              style={{ padding: space[16] }}
-            >
-              <AppText>{decision === "approve" ? "Approve" : "Decline"}</AppText>
-            </Pressable>
-          ))}
+          {(entry.failureReason ? (["decline"] as const) : (["approve", "decline"] as const)).map(
+            (decision) => (
+              <Pressable
+                key={decision}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: pending, busy: pending }}
+                disabled={pending}
+                onPress={() => void decide(decision)}
+                style={{ padding: space[16] }}
+              >
+                <AppText>
+                  {entry.failureReason ? "Dismiss" : decision === "approve" ? "Approve" : "Decline"}
+                </AppText>
+              </Pressable>
+            ),
+          )}
         </View>
       }
     >
@@ -91,13 +95,21 @@ export function TeamAskReview({
             {file.filename} · {file.sizeBytes.toLocaleString()} bytes
           </AppText>
         ))}
-        <AppText role="caption" tone="muted">
-          Expires {new Date(entry.consentExpiresAt).toLocaleString()}
-        </AppText>
-        <AppText>
-          Approving lets your agent use your things and post its answer in #
-          {ask.audience.channelName}.
-        </AppText>
+        {entry.failureReason ? (
+          <View accessibilityRole="alert">
+            <AppText tone="danger">{entry.failureReason}</AppText>
+          </View>
+        ) : (
+          <>
+            <AppText role="caption" tone="muted">
+              Expires {new Date(entry.consentExpiresAt).toLocaleString()}
+            </AppText>
+            <AppText>
+              Approving lets your agent use your things and post its answer in #
+              {ask.audience.channelName}.
+            </AppText>
+          </>
+        )}
       </ScrollView>
     </Sheet>
   );

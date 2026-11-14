@@ -49,6 +49,10 @@ export class PersonalTeamRequests {
   readonly options: PersonalTeamRequestsOptions;
   readonly #work = new Map<DeploymentId, Promise<void>>();
   readonly #lastStatus = new Map<string, number>();
+  readonly #decisions = new Map<string, Promise<void>>();
+  readonly #decisionRetries = new Map<DeploymentId, ReturnType<typeof setTimeout>>();
+  readonly #decisionAttempts = new Map<DeploymentId, number>();
+  #stopped = false;
   constructor(options: PersonalTeamRequestsOptions) {
     this.options = options;
   }
@@ -209,12 +213,75 @@ export class PersonalTeamRequests {
     decision: TeamAskDecision,
   ): Promise<void> {
     const local = await this.options.requests.decide(ownerId, teamId, requestId, decision);
+    if (local.localDecision && !local.taskId && !local.terminalState) this.#retryDecisions(teamId);
     await this.options.onConsentChanged?.(teamId, requestId, false);
     await this.#decided(local);
   }
 
+  async stop(): Promise<void> {
+    this.#stopped = true;
+    for (const timer of this.#decisionRetries.values()) clearTimeout(timer);
+    this.#decisionRetries.clear();
+    this.#decisionAttempts.clear();
+    await Promise.allSettled(this.#decisions.values());
+  }
+
+  #retryDecisions(teamId: DeploymentId): void {
+    if (this.#stopped || this.#decisionRetries.has(teamId)) return;
+    const attempt = this.#decisionAttempts.get(teamId) ?? 0;
+    this.#decisionAttempts.set(teamId, attempt + 1);
+    const timer = setTimeout(
+      () => {
+        this.#decisionRetries.delete(teamId);
+        void this.#resumeDecisions(teamId).catch(() => this.#retryDecisions(teamId));
+      },
+      Math.min(30_000, 500 * 2 ** Math.min(attempt, 6)),
+    );
+    timer.unref();
+    this.#decisionRetries.set(teamId, timer);
+  }
+
+  async #resumeDecisions(teamId: DeploymentId): Promise<void> {
+    for (const local of await this.options.requests.mirrors(teamId)) {
+      if (this.#stopped) return;
+      if (
+        local.kind === "ask" &&
+        local.localDecision &&
+        !local.taskId &&
+        !local.terminalState &&
+        local.publicationState !== "blocked"
+      )
+        await this.#decided(local).catch(() => undefined);
+    }
+    if (!this.#decisionRetries.has(teamId)) this.#decisionAttempts.delete(teamId);
+  }
+
   async #decided(local: PersonalTeamRequestMirror): Promise<void> {
-    if (!local.localDecision || local.terminalState || local.publicationState === "blocked") return;
+    if (this.#stopped) return;
+    const key = `${local.teamId}:${local.requestId}`;
+    const existing = this.#decisions.get(key);
+    if (existing) return existing;
+    const work = this.#applyDecision(local.teamId, local.requestId);
+    this.#decisions.set(key, work);
+    try {
+      await work;
+    } catch (error) {
+      this.#retryDecisions(local.teamId);
+      throw error;
+    } finally {
+      if (this.#decisions.get(key) === work) this.#decisions.delete(key);
+    }
+  }
+
+  async #applyDecision(teamId: DeploymentId, requestId: TeamAgentRequestId): Promise<void> {
+    const local = await this.options.requests.mirror(teamId, requestId);
+    if (
+      !local ||
+      !local.localDecision ||
+      local.terminalState ||
+      local.publicationState === "blocked"
+    )
+      return;
     if (local.taskId) {
       const admitted = await this.options.requests.get(local.teamId, local.requestId);
       if (admitted) await this.reconcileOne(admitted);
@@ -231,13 +298,12 @@ export class PersonalTeamRequests {
       )
         throw linkError("bad_request");
       await this.options.requests.remote(local.teamId, local.requestId, ack.request.state);
-      if (
-        local.localDecision === "decline" ||
-        !["queued", "working", "needs_you"].includes(ack.request.state)
-      ) {
+      if (local.localDecision === "decline") {
         await this.cancel(local.teamId, local.requestId);
         return;
       }
+      if (!["queued", "working", "needs_you"].includes(ack.request.state))
+        throw linkError("conflict");
       const presentation = local.presentation!;
       await this.options.admission.admitTeamRequest({
         bodyMarkdown: presentation.bodyMarkdown,
@@ -250,7 +316,26 @@ export class PersonalTeamRequests {
       const admitted = await this.options.requests.get(local.teamId, local.requestId);
       if (admitted) await this.reconcileOne(admitted);
     } catch (error) {
-      await this.#failure(local, error);
+      const current = await this.options.requests.mirror(teamId, requestId);
+      if (current?.taskId) await this.#failure(current, error);
+      else if (
+        error instanceof OpensteerError &&
+        !error.retryable &&
+        ["bad_request", "forbidden", "unauthorized", "not_found", "conflict"].includes(error.code)
+      ) {
+        await this.options.requests.failDecision(
+          teamId,
+          requestId,
+          error.code === "unauthorized"
+            ? "The team link was revoked."
+            : error.code === "not_found"
+              ? "The team or reply thread is no longer available."
+              : error.code === "forbidden"
+                ? "Team access was removed or the channel is people-only."
+                : "Your decision could not be completed. Ask the sender to send a new ask.",
+        );
+        await this.options.onConsentChanged?.(teamId, requestId, false);
+      }
       throw error;
     }
   }
@@ -557,7 +642,14 @@ export class PersonalTeamRequests {
     this.#lastStatus.delete(`${teamId}:${requestId}`);
     const request = await this.options.requests.mirror(teamId, requestId);
     if (request) {
-      await this.options.requests.terminal(teamId, requestId, request.runId, "cancelled");
+      if (
+        request.kind === "ask" &&
+        request.localDecision === "approve" &&
+        !request.taskId &&
+        !request.terminalState
+      )
+        await this.options.requests.failDecision(teamId, requestId, reason);
+      else await this.options.requests.terminal(teamId, requestId, request.runId, "cancelled");
       if (request.taskId && request.publicationState !== "accepted")
         await this.options.requests.publication(teamId, requestId, "blocked", null, reason);
     }

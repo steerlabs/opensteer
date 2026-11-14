@@ -25,6 +25,7 @@ export const NeedsYouTeamAskEntrySchema = z.object({
   presentation: TeamAskPresentationViewSchema,
   createdAt: IsoDateTimeSchema,
   consentExpiresAt: IsoDateTimeSchema,
+  failureReason: z.string().min(1).max(500).optional(),
 });
 export type NeedsYouTeamAskEntry = z.infer<typeof NeedsYouTeamAskEntrySchema>;
 export const NeedsYouEntrySchema = z.discriminatedUnion("kind", [

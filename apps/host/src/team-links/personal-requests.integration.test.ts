@@ -1,4 +1,4 @@
-import { expect, vi } from "vitest";
+import { expect, onTestFinished, vi } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   createId,
@@ -218,6 +218,7 @@ async function consentFixture(base: StoreFixture) {
       },
     }),
   });
+  onTestFinished(() => publisher.stop());
   return {
     ...f,
     store,
@@ -236,6 +237,110 @@ async function consentFixture(base: StoreFixture) {
 }
 
 describeStore("personal team consent and returns", (it) => {
+  for (const stage of ["accept", "admission"] as const)
+    it(`retries a saved approval after ${stage} fails without reconnecting`, async ({
+      storeFixture,
+    }) => {
+      const f = await consentFixture(storeFixture);
+      const admit = vi.spyOn(f.publisher.options.admission, "admitTeamRequest");
+      if (stage === "admission")
+        admit.mockRejectedValueOnce(new Error("Local admission unavailable"));
+      let loseAck = stage === "accept";
+      const publisher = new PersonalTeamRequests({
+        ...f.publisher.options,
+        rpc: (teamId) => ({
+          call: async (input) => {
+            const result = await f.publisher.options.rpc(teamId).call(input);
+            if (input.type === "accept" && loseAck) {
+              loseAck = false;
+              throw new OpensteerError({
+                code: "timeout",
+                message: "Lost acceptance acknowledgement",
+              });
+            }
+            return result;
+          },
+        }),
+      });
+      onTestFinished(() => publisher.stop());
+      await publisher.deliver(f.origin.teamId, f.frame);
+      await expect(
+        publisher.decide(f.userId, f.origin.teamId, f.frame.request.id, "approve"),
+      ).rejects.toThrow();
+      expect(await f.store.mirror(f.origin.teamId, f.frame.request.id)).toMatchObject({
+        localDecision: "approve",
+        taskId: null,
+      });
+      await vi.waitFor(
+        async () => {
+          expect(
+            (await f.store.get(f.origin.teamId, f.frame.request.id))?.taskId,
+            "saved approval was never admitted",
+          ).toBeTruthy();
+        },
+        { timeout: 2000 },
+      );
+      await publisher.reconnect(f.origin.teamId);
+      const saved = (await f.store.get(f.origin.teamId, f.frame.request.id))!;
+      expect(
+        await f.database
+          .selectFrom("threadInputs")
+          .select("messageId")
+          .where("threadId", "=", saved.taskId)
+          .execute(),
+      ).toHaveLength(1);
+      expect(admit).toHaveBeenCalledTimes(stage === "accept" ? 1 : 2);
+    });
+
+  for (const terminal of ["admission", "cancelled"] as const)
+    it(`keeps a terminal ${terminal} failure visible until the owner dismisses it`, async ({
+      storeFixture,
+    }) => {
+      const f = await consentFixture(storeFixture);
+      const admission = vi
+        .spyOn(f.publisher.options.admission, "admitTeamRequest")
+        .mockRejectedValueOnce(new Error("Local admission unavailable"))
+        .mockRejectedValue(
+          new OpensteerError({ code: "bad_request", message: "Cannot admit ask" }),
+        );
+      await f.publisher.deliver(f.origin.teamId, f.frame);
+      await expect(
+        f.publisher.decide(f.userId, f.origin.teamId, f.frame.request.id, "approve"),
+      ).rejects.toThrow("Local admission unavailable");
+      if (terminal === "cancelled") await f.publisher.cancel(f.origin.teamId, f.frame.request.id);
+      await vi.waitFor(
+        async () => {
+          expect(
+            await needsYouPage(f.database, { userId: f.userId }),
+            "terminal decision failure never returned to Needs you",
+          ).toMatchObject({
+            count: 1,
+            entries: [
+              {
+                kind: "team-ask",
+                requestId: f.frame.request.id,
+                failureReason: expect.any(String),
+              },
+            ],
+          });
+        },
+        { timeout: 2000 },
+      );
+      expect(admission).toHaveBeenCalledTimes(terminal === "admission" ? 2 : 1);
+      expect(await f.store.mirror(f.origin.teamId, f.frame.request.id)).toMatchObject({
+        terminalState: "failed",
+        taskId: null,
+      });
+      await expect(
+        f.publisher.decide(createId("user"), f.origin.teamId, f.frame.request.id, "decline"),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      await f.publisher.reconnect(f.origin.teamId);
+      expect((await needsYouPage(f.database, { userId: f.userId })).count).toBe(1);
+      await f.publisher.decide(f.userId, f.origin.teamId, f.frame.request.id, "decline");
+      await f.publisher.decide(f.userId, f.origin.teamId, f.frame.request.id, "decline");
+      expect((await needsYouPage(f.database, { userId: f.userId })).count).toBe(0);
+    });
+
   it("persists consent without work, replays approval after a lost ack, and resolves device races", async ({
     storeFixture,
   }) => {
@@ -283,10 +388,13 @@ describeStore("personal team consent and returns", (it) => {
     await expect(
       f.publisher.decide(f.userId, f.origin.teamId, f.frame.request.id, "decline"),
     ).rejects.toMatchObject({ code: "conflict" });
+    await f.publisher.stop();
+    const restarted = new PersonalTeamRequests(f.publisher.options);
+    onTestFinished(() => restarted.stop());
     f.offline(false);
     await Promise.all([
-      f.publisher.reconnect(f.origin.teamId),
-      f.publisher.decide(f.userId, f.origin.teamId, f.frame.request.id, "approve"),
+      restarted.reconnect(f.origin.teamId),
+      restarted.decide(f.userId, f.origin.teamId, f.frame.request.id, "approve"),
     ]);
     const saved = (await f.store.get(f.origin.teamId, f.frame.request.id))!;
     expect(saved).toMatchObject({ localDecision: "approve", remoteState: "queued" });

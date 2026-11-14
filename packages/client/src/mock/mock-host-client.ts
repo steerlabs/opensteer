@@ -2610,6 +2610,21 @@ async function executeMockCommand(
     }
     case "teams.ask.decide": {
       const page = client.getSnapshot().needsYou;
+      const failed = page?.entries.find(
+        (entry) =>
+          entry.kind === "team-ask" &&
+          entry.teamId === command.teamId &&
+          entry.requestId === command.requestId,
+      );
+      if (command.decision === "approve" && failed?.kind === "team-ask" && failed.failureReason)
+        return {
+          ok: false,
+          error: HostApiErrorSchema.parse({
+            code: "conflict",
+            message: failed.failureReason,
+            retryable: false,
+          }),
+        };
       const next = settleTeamAsk(page, command.teamId, command.requestId);
       if (next === page)
         return {

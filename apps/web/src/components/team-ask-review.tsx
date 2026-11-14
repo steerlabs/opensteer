@@ -43,11 +43,13 @@ export function TeamAskReview({
         <>
           {error ? <p role="alert">{error}</p> : null}
           <button type="button" disabled={pending} onClick={() => void decide("decline")}>
-            Decline
+            {entry.failureReason ? "Dismiss" : "Decline"}
           </button>
-          <button type="button" disabled={pending} onClick={() => void decide("approve")}>
-            Approve
-          </button>
+          {!entry.failureReason ? (
+            <button type="button" disabled={pending} onClick={() => void decide("approve")}>
+              Approve
+            </button>
+          ) : null}
         </>
       }
     >
@@ -67,13 +69,19 @@ export function TeamAskReview({
           {file.filename} · {file.sizeBytes.toLocaleString()} bytes
         </p>
       ))}
-      <p>
-        <small>Expires {new Date(entry.consentExpiresAt).toLocaleString()}</small>
-      </p>
-      <p>
-        Approving lets your agent use your things and post its answer in #{ask.audience.channelName}
-        .
-      </p>
+      {entry.failureReason ? (
+        <p role="alert">{entry.failureReason}</p>
+      ) : (
+        <>
+          <p>
+            <small>Expires {new Date(entry.consentExpiresAt).toLocaleString()}</small>
+          </p>
+          <p>
+            Approving lets your agent use your things and post its answer in #
+            {ask.audience.channelName}.
+          </p>
+        </>
+      )}
     </Dialog>
   );
 }

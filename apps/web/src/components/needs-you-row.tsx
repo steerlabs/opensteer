@@ -19,6 +19,9 @@ export function NeedsYouRow({
         <TaskMark size={20} mark={{ icon: null, color: null }} />
         <span className="side-task__text">
           <span className="side-task__title">{title}</span>
+          {entry.kind === "team-ask" && entry.failureReason ? (
+            <span className="side-task__ask">{entry.failureReason}</span>
+          ) : null}
         </span>
         <TaskState state="needs-you" />
       </button>

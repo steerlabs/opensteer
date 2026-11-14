@@ -3451,7 +3451,9 @@ function contentToPrompt(
     });
   return claudeReadsHeader(input)
     ? harnessInputHeader(input, projected.body)
-    : escapeOpensteerPromptMarkers(projected.body);
+    : input.author.kind === "human"
+      ? projected.body
+      : escapeOpensteerPromptMarkers(projected.body);
 }
 
 /**
