@@ -61,11 +61,17 @@ export function AccountNameRow() {
   if (!profiles || !account) return null;
   const owner = snapshot.ownerProfile;
   const link = deploymentAccess?.personalAccountLink;
-  // Only this computer's own Opensteer, linked to the Account this app is signed in to.
+  const signedIn = deploymentAccess?.account;
+  // Only this computer's own Opensteer, linked to the very Account this app is signed in to: a
+  // link status kept from before an Account switch names another Account.
   const throughHost =
     owner?.accountBacked === true &&
     link?.status === "linked" &&
-    link.deploymentId === snapshot.deploymentId;
+    link.deploymentId === snapshot.deploymentId &&
+    link.account !== null &&
+    signedIn?.status === "signed-in" &&
+    link.account.issuer === signedIn.issuer &&
+    link.account.subject === signedIn.subject;
   return (
     <NameEditor
       clearable={false}

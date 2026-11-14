@@ -40,8 +40,11 @@ export class AccountProfileRelay {
     const generation = this.#generation;
     const reading = this.#account
       .profile()
-      .then((profile) => (generation === this.#generation ? this.#hold(profile) : profile))
-      .catch(() => (generation === this.#generation ? (this.#held?.profile ?? null) : null))
+      // A read overtaken by a change answers with the newer read, for every caller.
+      .then((profile) => (generation === this.#generation ? this.#hold(profile) : this.current()))
+      .catch(() =>
+        generation === this.#generation ? (this.#held?.profile ?? null) : this.current(),
+      )
       .finally(() => {
         if (this.#reading === reading) this.#reading = null;
       });

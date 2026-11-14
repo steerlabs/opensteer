@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  AuthenticatedUserSchema,
+  normalizePersonName,
+  PersonNameSchema,
+  personNameFromSignIn,
   NativeOAuthClientSetSchema,
   NativeOAuthRedirectUriSchema,
   opensteerAccountNativeOAuthClients,
@@ -109,5 +113,23 @@ describe("native OAuth client set", () => {
       ]).success,
     ).toBe(false);
     expect(NativeOAuthClientSetSchema.safeParse([]).success).toBe(false);
+  });
+});
+
+describe("person names", () => {
+  it("accepts only names every reader accepts, and bounds provider names without splitting characters", () => {
+    const emoji = "😀";
+    const fits = emoji.repeat(60);
+    expect(normalizePersonName(fits)).toBe(fits);
+    // 61 emoji are 61 code points but 122 UTF-16 units, past what sessions and teams read.
+    expect(normalizePersonName(emoji.repeat(61))).toBeNull();
+    expect(PersonNameSchema.safeParse(emoji.repeat(61)).success).toBe(false);
+    const fromProvider = personNameFromSignIn(emoji.repeat(70), "ada@example.test");
+    expect(fromProvider).toBe(fits);
+    expect(AuthenticatedUserSchema.shape.displayName.safeParse(fromProvider).success).toBe(true);
+    expect(normalizePersonName("  Ada \t Lovelace ")).toBe("Ada Lovelace");
+    expect(normalizePersonName("Ada\u0007")).toBeNull();
+    expect(personNameFromSignIn("   ", "ada.lovelace_99@example.test")).toBe("Ada Lovelace");
+    expect(personNameFromSignIn(null, "1234@example.test")).toBe("Member");
   });
 });

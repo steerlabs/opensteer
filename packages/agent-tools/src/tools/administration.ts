@@ -69,7 +69,7 @@ export const settings_read = defineAgentTool({
   name: "settings_read",
   title: "Read settings",
   description:
-    "Read non-secret engine accounts, remembered execution choices, time zone and the person's name. Use orchestrator_capabilities for live models.",
+    "Read non-secret engine accounts, remembered execution choices and time zone. Use orchestrator_capabilities for live models.",
   input: z.strictObject({}),
   output: z.object({
     harnesses: z.array(harness),

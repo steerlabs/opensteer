@@ -96,24 +96,35 @@ export type IdentityConfig = z.infer<typeof IdentityConfigSchema>;
  */
 export const localMachineOwnerEmail = "owner@personal.opensteer.invalid";
 
-const personNameMaxCodePoints = 120;
+/** In UTF-16 units, as every reader of a name (sessions, team members) bounds it. */
+const personNameMaxLength = 120;
 
 /**
  * A person's own name as others see it, in the one canonical form every store
- * and wire accepts: NFKC, single spaces, no control characters, 1–120 code
- * points. Null when nothing usable is left.
+ * and wire accepts: NFKC, single spaces, no control characters, 1–120 UTF-16
+ * units. Null when nothing usable is left.
  */
 export function normalizePersonName(value: string): string | null {
   const normalized = value.normalize("NFKC").replace(/\s+/gu, " ").trim();
   if (normalized === "" || /\p{Cc}/u.test(normalized)) return null;
-  return [...normalized].length <= personNameMaxCodePoints ? normalized : null;
+  return normalized.length <= personNameMaxLength ? normalized : null;
 }
 
 export const PersonNameSchema = z
   .string()
-  .max(personNameMaxCodePoints * 4)
+  .max(personNameMaxLength)
   .refine((value) => normalizePersonName(value) === value, "Use a name of 1 to 120 characters");
 export type PersonName = z.infer<typeof PersonNameSchema>;
+
+/** The longest whole-character prefix that fits a name, so no surrogate pair is split. */
+function boundedName(value: string): string | null {
+  let bounded = "";
+  for (const character of value.normalize("NFKC").replace(/\s+/gu, " ").trim()) {
+    if (bounded.length + character.length > personNameMaxLength) break;
+    bounded += character;
+  }
+  return normalizePersonName(bounded);
+}
 
 /**
  * Asking a new account to invent a name adds a required field that carries no
@@ -129,9 +140,7 @@ export function personNameFromEmail(email: string): string {
     .split(/\s+/u)
     .filter((word) => word !== "")
     .map((word) => word.charAt(0).toLocaleUpperCase() + word.slice(1));
-  return (
-    normalizePersonName([...words.join(" ")].slice(0, personNameMaxCodePoints).join("")) ?? "Member"
-  );
+  return boundedName(words.join(" ")) ?? "Member";
 }
 
 /** A sign-in provider's name when it gave a usable one, otherwise one derived from the email. */
@@ -139,10 +148,7 @@ export function personNameFromSignIn(
   providerName: string | null | undefined,
   email: string,
 ): string {
-  const bounded = [...(providerName ?? "").normalize("NFKC").replace(/\s+/gu, " ").trim()]
-    .slice(0, personNameMaxCodePoints)
-    .join("");
-  return normalizePersonName(bounded) ?? personNameFromEmail(email);
+  return boundedName(providerName ?? "") ?? personNameFromEmail(email);
 }
 
 export const AuthenticatedUserSchema = z.strictObject({

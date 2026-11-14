@@ -48,9 +48,10 @@ it("rereads after a change and holds the newest name, never one read before the 
   const stale = relay.current();
   // Another Account signed in, or the name changed, while that read was in flight.
   relay.changed();
-  release(profile(9, "Someone else"));
-  await stale;
   pending.push(profile(4, "Ada"));
+  release(profile(9, "Someone else"));
+  // Whoever asked before the change gets the newer answer, never the overtaken one.
+  expect(await stale).toEqual(profile(4, "Ada"));
   expect(await relay.current()).toEqual(profile(4, "Ada"));
 
   const saved = await relay.update({ name: "Ada Lovelace" as PersonName, expectedRevision: 4 });
