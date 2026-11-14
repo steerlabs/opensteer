@@ -1,3 +1,4 @@
+import type { AssetService } from "./assets/asset-service.js";
 import type { DeviceAccessService } from "./administration/device-access-service.js";
 import { consumeAnonymousRateLimit } from "./identity/anonymous-rate-limit.js";
 import {
@@ -355,6 +356,7 @@ const HarnessAuthenticationParamsSchema = z.strictObject({
 const machinePageLimit = 100;
 
 export interface HostServerDependencies {
+  readonly assets?: AssetService;
   readonly execution: Pick<PersonalExecution, "canExecute">;
   readonly teamLinks: () => Promise<PersonalTeamLinks>;
   readonly connections?: ConnectionOAuth;
@@ -446,11 +448,14 @@ export async function createHostServer(
     dependencies.publishDeploymentEvent ??
     ((event: AgentEvent) => dependencies.realtime.publish(event));
   const app = Fastify({
+    routerOptions: { maxParamLength: 8192 },
     bodyLimit: maxWebSocketFrameBytes,
     logger: options.logger ?? false,
     requestIdHeader: false,
     logController: new LogController({
-      disableRequestLogging: (request) => hasAppAuthority(request.headers),
+      disableRequestLogging: (request) =>
+        hasAppAuthority(request.headers) ||
+        (request.url ?? "").split("?", 1)[0]?.startsWith("/media/") === true,
     }),
   });
   const appGateway = new AppGateway({
@@ -461,6 +466,7 @@ export async function createHostServer(
     realOrigins: dependencies.appRealOrigins,
   });
   appGateway.installHttp(app);
+  dependencies.assets?.register(app);
   installPersonalVersionGate(app);
   installHostHttpBoundary(app);
   await registerResponseCompression(app);
@@ -1310,6 +1316,11 @@ export async function createHostServer(
         }),
       );
     },
+    "asset.urls": async (input, context) => {
+      if (!dependencies.assets)
+        throw new OpensteerError({ code: "not_found", message: "Images unavailable" });
+      return rpcSuccess(await dependencies.assets.urls(input, requireRpcSession(context).user.id));
+    },
     "tool.output.get": async (input, context) => {
       const output = await dependencies.store.toolOutputForOwner({
         ...input,
@@ -1595,6 +1606,7 @@ export async function createHostServer(
     | "tasks.list"
     | "thread.events.list"
     | "node.events.list"
+    | "asset.urls"
     | "tool.output.get"
     | "thread.messages.list"
     | "thread.inputQueue.get"

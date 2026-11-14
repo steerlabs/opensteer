@@ -69,8 +69,9 @@ export function installDesktopAppProtocol(
   protocol: DesktopProtocolRegistrar,
   webRoot: string,
   onSlowRequest?: SlowDesktopAppRequest,
+  media?: (request: Request) => Promise<Response>,
 ): () => void {
-  const handler = createDesktopAppProtocolHandler(webRoot, onSlowRequest);
+  const handler = createDesktopAppProtocolHandler(webRoot, onSlowRequest, media);
   protocol.handle(desktopAppScheme, handler);
   return () => protocol.unhandle(desktopAppScheme);
 }
@@ -78,6 +79,7 @@ export function installDesktopAppProtocol(
 export function createDesktopAppProtocolHandler(
   webRoot: string,
   onSlowRequest?: SlowDesktopAppRequest,
+  media?: (request: Request) => Promise<Response>,
 ): (request: Request) => Promise<Response> {
   const root = path.resolve(webRoot);
   const verifiedRoot = realDirectory(root);
@@ -100,6 +102,8 @@ export function createDesktopAppProtocolHandler(
     ) {
       return response(404, "Not Found");
     }
+    if (url.pathname === "/media" || url.pathname.startsWith("/media/"))
+      return media ? media(request) : response(404, "Not Found");
     const requested = safeAssetPath(url.pathname);
     if (requested === null) return response(404, "Not Found");
     try {

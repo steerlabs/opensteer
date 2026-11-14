@@ -104,3 +104,26 @@ describe("credential-aware command origin protection", () => {
     }
   });
 });
+
+it("registers neither asset.urls nor media serving on a team Host", async () => {
+  const app = Fastify();
+  registerHostApi(
+    app,
+    {} as HostAuthenticator,
+    {},
+    {
+      kind: "team",
+      dispatch: async () => {
+        throw Error("Unexpected dispatch");
+      },
+    },
+  );
+  try {
+    expect(
+      (await app.inject({ method: "POST", url: "/v1/rpc/asset.urls", payload: {} })).statusCode,
+    ).toBe(404);
+    expect((await app.inject("/media/token/image.png")).statusCode).toBe(404);
+  } finally {
+    await app.close();
+  }
+});

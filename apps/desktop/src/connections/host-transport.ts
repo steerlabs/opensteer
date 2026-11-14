@@ -364,6 +364,10 @@ export class DesktopHostTransport extends HostTransport {
   }
 
   /** Main-process app traffic keeps the attachment fence until its streamed body ends. */
+  mediaTransport(deploymentId: DeploymentId): Promise<HostTransport> {
+    return this.#transport(deploymentId, true);
+  }
+
   streamApp(input: {
     readonly method: string;
     readonly path: string;

@@ -47,6 +47,9 @@ describe("Host static Web distribution", () => {
     ]) {
       expect((await app.inject({ method: "GET", url })).body).toContain("fixture app");
     }
+    expect((await app.inject({ method: "GET", url: "/media/token/image.png" })).statusCode).toBe(
+      404,
+    );
     expect((await app.inject({ method: "GET", url: "/assets/missing.js" })).statusCode).toBe(404);
     expect((await app.inject({ method: "GET", url: "/..%2fsecret" })).statusCode).toBe(404);
     await app.close();

@@ -48,7 +48,7 @@ function safeRequestLog(request: { readonly method?: unknown; readonly url?: unk
   const rawUrl = typeof request.url === "string" ? request.url : "";
   return {
     method: typeof request.method === "string" ? request.method : undefined,
-    path: rawUrl.split("?", 1)[0],
+    path: rawUrl.replace(/(\/media\/)[^/?]+/gu, "$1[redacted]").split("?", 1)[0],
   };
 }
 

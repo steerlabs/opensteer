@@ -68,6 +68,10 @@ unknown support refuses rather than converting or switching models. Downloads re
 ownership or the Run's binding. Runner caches are disposable, hash-verified and outside private
 state and Agent home.
 
+Image files are served by path from the hosting computer; the personal Host and its hosting
+Runner must share filesystem read access. Media tokens are bearer capabilities and must never
+be logged.
+
 ## Runs across connection loss and restarts
 
 A Run belongs to a Runner boot and binding under a durable lease renewed only after commit; the
