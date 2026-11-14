@@ -387,7 +387,6 @@ function WaitingEditor(props: {
           placeholder={edit.parts.length > 0 ? "No words, just what’s attached" : "Message"}
           placeholderTextColor={color.muted}
           ref={input}
-          scrollEnabled
           selectionColor={color.ember}
           style={styles.editInput}
           value={edit.text}
@@ -533,7 +532,6 @@ const styles = StyleSheet.create({
     fontWeight: type.body.fontWeight,
     includeFontPadding: false,
     maxHeight: type.body.lineHeight * 8,
-    minHeight: type.body.lineHeight + (space[12] - 1) * 2,
     paddingHorizontal: space[16] - 1.5,
     paddingTop: space[12] - 1.5,
     paddingBottom: space[12] - 1.5,

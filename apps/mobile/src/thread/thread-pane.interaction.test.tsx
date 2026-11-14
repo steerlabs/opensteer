@@ -201,6 +201,7 @@ vi.mock("react-native", async () => {
     ),
     Keyboard: {
       addListener: () => ({ remove: () => undefined }),
+      dismiss: vi.fn(),
       isVisible: () => false,
       metrics: () => undefined,
     },

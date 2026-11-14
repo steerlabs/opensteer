@@ -8,6 +8,7 @@ import {
 import type { ContentPart } from "@opensteer/core";
 import * as Haptics from "expo-haptics";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Keyboard } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
 
 /** One waiting message open in place on this phone. */
@@ -70,15 +71,29 @@ export function useWaitingEdit(
   const editRef = useRef(edit);
   editRef.current = edit;
 
+  /**
+   * Lets the field go before it leaves: Android hands the focus of a field
+   * that disappears to the composer, which keeps the keyboard up as if a
+   * message were still being written.
+   */
+  const settle = useCallback((): void => {
+    Keyboard.dismiss();
+    setEdit(null);
+  }, []);
+
   const close = useCallback((): void => {
     const held = session.current;
     session.current = null;
-    setEdit(null);
-    if (held === null) return;
+    // Nothing open: the keyboard, if any, is another field's.
+    if (held === null) {
+      setEdit(null);
+      return;
+    }
+    settle();
     held.closed = true;
     // An editor still opening lets its lease go as soon as it arrives.
     void held.editor?.cancel();
-  }, []);
+  }, [settle]);
 
   // Leaving the task lets the message go on to the agent.
   useEffect(() => close, [close, hostClient, threadId]);
@@ -133,7 +148,7 @@ export function useWaitingEdit(
         (error: unknown) => {
           if (held.closed || session.current !== held) return;
           session.current = null;
-          setEdit(null);
+          settle();
           setRefused({
             detail: operationDetail(error, "This message can’t be edited right now."),
             messageId: item.messageId,
@@ -142,7 +157,7 @@ export function useWaitingEdit(
         },
       );
     },
-    [close, hostClient, threadId],
+    [close, hostClient, settle, threadId],
   );
 
   const change = useCallback((text: string): void => {
@@ -178,7 +193,7 @@ export function useWaitingEdit(
       const saved = await editor.save(content);
       if (session.current === held) {
         session.current = null;
-        setEdit(null);
+        settle();
       }
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
       return saved.revision;
@@ -206,7 +221,7 @@ export function useWaitingEdit(
       );
       return null;
     }
-  }, [close]);
+  }, [close, settle]);
 
   const takeBack = useCallback((): ReturnType<WaitingEditController["takeBack"]> => {
     const shown = editRef.current;

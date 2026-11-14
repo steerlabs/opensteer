@@ -1311,6 +1311,7 @@ function ThreadPaneForUser(
           scrolledUp={historical || !atTail}
           threadId={threadId}
           top={headerClearance}
+          yielding={editing.edit !== null}
         />
       )}
       {/* An older window has to be left deliberately, and the way out is to
@@ -1362,10 +1363,14 @@ function ThreadPaneForUser(
       </OverDock>
     </View>
   );
+  // While a waiting message is open in place, the dock is its edit bar alone:
+  // with the keyboard up on a small phone, anything else docked here leaves
+  // no room for the words being edited. It all returns on Save or Cancel.
+  const editingInPlace = editing.edit !== null;
   const dock = (
     <>
       {/* An older window can't say what runs now; back at the latest, it returns. */}
-      {snapshot.user === null || voiceThread || historical ? null : (
+      {snapshot.user === null || voiceThread || historical || editingInPlace ? null : (
         <RunningNowCapsule
           hostClient={hostClient}
           onOpen={openRunningNow}
@@ -1394,10 +1399,10 @@ function ThreadPaneForUser(
       ) : null}
       {snapshot.user === null ? null : (
         <>
-          {voiceThread && onCall ? null : (
+          {(voiceThread && onCall) || editingInPlace ? null : (
             <ThreadServerApprovals hostClient={hostClient} threadId={thread.id} />
           )}
-          {voiceThread && onCall ? null : (
+          {(voiceThread && onCall) || editingInPlace ? null : (
             <WaitingQuestions
               canRespond={canRespond}
               deploymentId={props.deploymentId}
@@ -1430,7 +1435,7 @@ function ThreadPaneForUser(
             </>
           ) : (
             <>
-              {editing.edit !== null ? (
+              {editingInPlace ? (
                 <WaitingEditBar
                   canRespond={queueCanRespond}
                   decisions={askDecisions}
@@ -1448,7 +1453,7 @@ function ThreadPaneForUser(
                 </Animated.View>
               )}
               {/* Kept mounted while a waiting message is edited: it owns a send in flight. */}
-              <View style={editing.edit === null ? undefined : styles.hidden}>
+              <View style={editingInPlace ? styles.hidden : undefined}>
                 <Composer
                   variant={conversational ? "conversation" : "work"}
                   voice={false}
