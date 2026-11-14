@@ -253,7 +253,7 @@ integration("personal task delegation lifecycle", () => {
     expect((await readToolRecords(store, accepted[0].result)).message!.id).toBe(
       (await readToolRecords(store, accepted[1].result)).message!.id,
     );
-    expect(accepted[0].result.assignmentId).toBe(accepted[1].result.assignmentId);
+    expect(accepted[0].result.delegationId).toBe(accepted[1].result.delegationId);
     expect(await service.handle(fixture.token, request)).toMatchObject({
       type: "thread.delegate.result",
       result: accepted[0].result,
@@ -1123,7 +1123,7 @@ integration("personal task delegation lifecycle", () => {
     const fixture = await createFixture();
     const request = {
       requestId: randomUUID(),
-      task: "Research the mattress choices and report with sources",
+      message: "Research the mattress choices and report with sources",
       title: "Mattress research",
       type: "thread.delegate" as const,
     };
@@ -1132,7 +1132,7 @@ integration("personal task delegation lifecycle", () => {
     if (first.type !== "thread.delegate.result" || replay.type !== "thread.delegate.result") {
       throw new Error("Expected a delegate result");
     }
-    expect(replay.result.assignmentId).toBe(first.result.assignmentId);
+    expect(replay.result.delegationId).toBe(first.result.delegationId);
     expect((await readToolRecords(store, replay.result)).thread.id).toBe(
       (await readToolRecords(store, first.result)).thread.id,
     );
@@ -1144,10 +1144,10 @@ integration("personal task delegation lifecycle", () => {
     ).resolves.toHaveLength(1);
     acceptanceEvidence.push({
       caseId: "H02",
-      assignmentId: first.result.assignmentId,
+      assignmentId: first.result.delegationId,
       workerThreadId: (await readToolRecords(store, first.result)).thread.id,
       initialRunId: (await readToolRecords(store, first.result)).run?.id,
-      replayAssignmentId: replay.result.assignmentId,
+      replayAssignmentId: replay.result.delegationId,
     });
   });
   it("completes with the finishing Run's own final reply and returns it exactly once", async () => {
@@ -1882,7 +1882,7 @@ integration("personal task delegation lifecycle", () => {
       type: "task.cancel",
     });
     expect(stopped).toMatchObject({
-      assignmentId: parent.assignmentId,
+      delegationId: parent.assignmentId,
       status: "cancelled",
       type: "task.cancel.result",
     });
@@ -2806,13 +2806,17 @@ integration("personal task delegation lifecycle", () => {
       readonly title?: string;
     },
   ) {
+    const { task, threadId, ...rest } = input;
     const response = await service.handle(token, {
       requestId: randomUUID(),
       type: "thread.delegate",
-      ...input,
+      message: task,
+      ...(threadId ? { taskId: threadId } : {}),
+      ...rest,
     });
     if (response.type !== "thread.delegate.result") throw new Error("Expected a delegate result");
-    return response.result;
+    // The tool's delegationId is the Host's assignment ID, which the rows below key on.
+    return { ...response.result, assignmentId: response.result.delegationId };
   }
 
   /** The parent Run hands out work through the Host path an automation also uses. */

@@ -735,7 +735,7 @@ integration("Runs that outlive their connection", () => {
       }
     })();
     if (delegated.type !== "thread.delegate.result") throw new Error("Parent did not delegate");
-    const { assignmentId } = delegated.result;
+    const { delegationId: assignmentId } = delegated.result;
     const { run: childRun, thread: childThread } = await readToolRecords(
       active.host.store,
       delegated.result,

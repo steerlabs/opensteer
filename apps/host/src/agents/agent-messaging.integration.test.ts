@@ -829,7 +829,7 @@ integration("agent-to-agent messaging round trip", () => {
     if (retried.type !== "thread.message.result") throw new Error("Expected a message result");
     expect(retried.result).toMatchObject({
       disposition: "steering",
-      assignmentId: null,
+      delegationId: null,
       messageId: steered.result.messageId,
       runId: running.runId,
     });
@@ -982,7 +982,7 @@ integration("agent-to-agent messaging round trip", () => {
             ownerId: fixture.userId,
             threadId: fixture.threadA.id,
           })
-        )?.assignments.find((assignment) => assignment.id === response.result.assignmentId);
+        )?.assignments.find((assignment) => assignment.id === response.result.delegationId);
       const row = await database
         .selectFrom("threads")
         .select(["title", "titleSource"])
@@ -1017,7 +1017,7 @@ integration("agent-to-agent messaging round trip", () => {
         icon: true,
       });
       await commands.cancelAssignment({
-        assignmentId: response.result.assignmentId,
+        assignmentId: response.result.delegationId,
         idempotencyKey: randomUUID(),
         requestedBy: fixture.userId,
       });
@@ -1066,7 +1066,7 @@ integration("agent-to-agent messaging round trip", () => {
       color: worker.color,
     });
     await commands.cancelAssignment({
-      assignmentId: response.result.assignmentId,
+      assignmentId: response.result.delegationId,
       idempotencyKey: randomUUID(),
       requestedBy: f.userId,
     });
@@ -1134,7 +1134,7 @@ integration("agent-to-agent messaging round trip", () => {
       const before = await database
         .selectFrom("delegations")
         .selectAll()
-        .where("id", "=", response.result.assignmentId)
+        .where("id", "=", response.result.delegationId)
         .executeTakeFirstOrThrow();
       expect(before.status).toBe("completed");
       const reused = await store.delegateThread({
@@ -1259,18 +1259,17 @@ integration("agent-to-agent messaging round trip", () => {
   }
   it("opensteer_task_update shares Done, freezes messages and delegation, and reopens through the same authority", async () => {
     const f = await createMessagingFixture();
-    const write = (action: string, fields = {}) =>
+    const write = (fields: { readonly title?: string; readonly done?: boolean }) =>
       service.handle(f.tokenA, {
         type: "thread.update",
         requestId: randomUUID(),
         input: {
-          threadId: f.threadB.id,
-          action,
+          taskId: f.threadB.id,
           ...fields,
         },
       });
     expect(
-      await write("rename", {
+      await write({
         title: "Shared result",
       }),
     ).toMatchObject({
@@ -1279,7 +1278,7 @@ integration("agent-to-agent messaging round trip", () => {
       title: "Shared result",
       doneAt: null,
     });
-    const done = await write("done");
+    const done = await write({ done: true });
     expect(done).toMatchObject({
       type: "thread.update.result",
       doneWhenRunEnds: false,
@@ -1314,7 +1313,7 @@ integration("agent-to-agent messaging round trip", () => {
       code: "conflict",
       message: "This task is Done. Reopen it first.",
     });
-    expect(await write("reopen")).toMatchObject({
+    expect(await write({ done: false })).toMatchObject({
       doneAt: null,
     });
     const next = await service.handle(f.tokenA, {
@@ -1429,7 +1428,7 @@ integration("agent-to-agent messaging round trip", () => {
           type: "thread.update",
           requestId: randomUUID(),
           input: {
-            action: "done",
+            done: true,
           },
         }),
       ).resolves.toMatchObject({

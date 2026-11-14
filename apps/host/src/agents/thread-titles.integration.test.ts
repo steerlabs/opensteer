@@ -720,13 +720,13 @@ integration.sequential("Thread title lifecycle", () => {
         expect(await handle(retry)).toMatchObject({
           type: "thread.delegate.result",
           result: {
-            threadId: worker.id,
-            assignmentId: response.result.assignmentId,
+            taskId: worker.id,
+            delegationId: response.result.delegationId,
           },
         });
         for (const changed of [
           {
-            task: task + " changed",
+            message: task + " changed",
           },
           {
             title: "Changed explicit name",
