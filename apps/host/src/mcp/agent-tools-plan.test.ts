@@ -30,6 +30,20 @@ it("keeps standing team inventory stable across tasks and invalidates a warm pla
   expect(agentToolsPlanForRun({ ...input, voiceCall: true }).toolsRevision).not.toBe(
     ordinary.toolsRevision,
   );
+  // A broken settings.json reaches the agent's next Run, and a warm engine must not hide it.
+  const broken = agentToolsPlanForRun({
+    ...input,
+    settingsError: {
+      path: "/home/settings.json",
+      line: 3,
+      column: 5,
+      message: "Unexpected token ','",
+    },
+  });
+  expect(broken.instructions).toContain(
+    "/home/settings.json line 3, column 5: Unexpected token ','",
+  );
+  expect(broken.toolsRevision).not.toBe(ordinary.toolsRevision);
 });
 
 vi.mock("@opensteer/shared/advertisedJsonSchema", async (importOriginal) => {

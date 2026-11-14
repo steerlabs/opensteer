@@ -57,7 +57,6 @@ const coreTypes = [
   "viewer.quietTasks.update",
   "settings.idleCompaction.set",
   "execution.preferences.remember",
-  "automaticModels.set",
   "harness.model.configure",
   "harness.rename",
   "harness.enabled.set",
@@ -116,11 +115,6 @@ export class AdministrationService {
         code: "forbidden",
         message: "Claude compaction preferences require the person",
       });
-    if (command.type.startsWith("automaticModels."))
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Automatic model preferences require the person",
-      });
     settings(caller, []);
   }
   async admitHarnessManagement(actor: AdministrationActor, environmentIdInput: string) {
@@ -172,7 +166,6 @@ export class AdministrationService {
     const result = await this.#execute(caller, actor, command, administration, afterResponse);
     if (
       command.type.startsWith("harness.") ||
-      command.type.startsWith("automaticModels.") ||
       command.type === "execution.preferences.remember" ||
       command.type === "viewer.timeZone.update" ||
       command.type === "viewer.quietTasks.update" ||
@@ -361,12 +354,6 @@ export class AdministrationService {
           type: command.type,
         };
 
-      case "automaticModels.set": {
-        return {
-          type: command.type,
-          config: await dependencies.store.setAutomaticModelConfig(userId, command.config),
-        };
-      }
       case "execution.preferences.remember": {
         // A preference is a hint the Host re-validates when a Thread actually
         // starts, so the model is deliberately not checked against a catalog

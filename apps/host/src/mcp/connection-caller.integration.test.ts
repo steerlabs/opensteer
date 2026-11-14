@@ -35,6 +35,7 @@ import { randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { afterEach, expect, vi } from "vitest";
 import { AgentCallerResolver } from "./agent-caller.js";
+import { writeAgentHomeSettings } from "@opensteer/database/test-support/personal";
 import {
   ConnectionAuthenticator,
   connectionCredentialPrefix,
@@ -554,7 +555,9 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       ]),
     });
     const exclude = (...excludedAccounts: (typeof second.id)[]) =>
-      storeFixture.store.setAutomaticModelConfig(f.userId, { roles: {}, excludedAccounts });
+      writeAgentHomeSettings(storeFixture.store.database, {
+        backgroundModels: { excludedAccounts },
+      });
     const call = (operationKey: string) =>
       agent.client.callTool({
         name: "delegate_task",

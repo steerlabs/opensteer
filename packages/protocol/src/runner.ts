@@ -3,6 +3,7 @@ export { TeamTurnContextSchema, type TeamTurnContext } from "@opensteer/core";
 import { DelegationModelChoiceSchema } from "@opensteer/core";
 import { ComputerFolderSchema } from "@opensteer/core";
 import { RunnerSkillMetadataReportSchema } from "./runner-skill-metadata.js";
+import { RunnerSettingsReportSchema } from "./runner-agent-home-settings.js";
 import { HostAppRequestSchema, RunnerAppResultSchema } from "./apps.js";
 import { HostRunFileRequestSchema, RunnerRunFileResultSchema } from "./run-files.js";
 import { ChannelRuntimeCapabilitySchema } from "@opensteer/channel-core";
@@ -1727,6 +1728,7 @@ export const RunnerBackgroundTextResultSchema = z.strictObject({
 export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
   RunnerBackgroundTextResultSchema,
   RunnerSkillMetadataReportSchema,
+  RunnerSettingsReportSchema,
   RunnerAppResultSchema,
   RunnerRunFileResultSchema,
   z.strictObject({

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import { useSearchParams } from "react-router";
 import { harnessDriverLabel } from "@opensteer/core";
 import type {
+  AutomaticModelsView,
   HarnessAuthKind,
   HarnessSourceDescriptor,
   HarnessInstallation,
@@ -16,8 +17,14 @@ import {
   accountSource,
   aiEngineAccountRow,
   aiEngineActions,
+  backgroundModelRows,
+  backgroundModelsFileError,
+  backgroundModelsNote,
+  backgroundModelsTitle,
   directSource,
   engineGroups,
+  getAutomaticModels,
+  notUsedForBackgroundWork,
   isModelServerSource,
   modelServerKey,
   mutationIdempotencyKey,
@@ -41,7 +48,8 @@ import { Popover } from "../../popover.js";
 import { engineProviderId, ProviderLogo } from "../../provider-brand.js";
 import { useToast } from "../../toast.js";
 import { UsageMeter } from "../../usage-meter.js";
-import { SectionHeader, SettingsRow } from "../primitives.js";
+import { SectionHeader, SettingsError, SettingsGroup, SettingsRow } from "../primitives.js";
+import { useSettingsRead } from "../use-settings-read.js";
 import { AddAccountDialog } from "./add-account-dialog.js";
 import { ModelSettingsDialog } from "./model-settings-dialog.js";
 import {
@@ -56,6 +64,7 @@ export function AiEnginesSection() {
   const { addHarnessAccount, hostClient, openHarnessAuthentication, placements, snapshot } =
     useShell();
   const toast = useToast();
+  const background = useSettingsRead(() => getAutomaticModels(hostClient), "automatic-models");
   return (
     <>
       <SectionHeader lead="Connect the accounts that power your agents." title="AI services" />
@@ -63,13 +72,43 @@ export function AiEnginesSection() {
         client={hostClient}
         environments={snapshot.environments}
         harnesses={snapshot.harnesses}
+        notUsedForBackground={background.data?.excludedAccounts ?? []}
         onAddAccount={addHarnessAccount}
         onAuthenticate={openHarnessAuthentication}
         onError={(message) => toast.error(message)}
         placements={placements}
         updatesAvailable={snapshot.harnessUpdateAvailable === true}
       />
+      {hostClient.automaticModelsAvailable?.() ? (
+        <BackgroundModelsGroup error={background.error !== null} view={background.data} />
+      ) : null}
     </>
+  );
+}
+
+function BackgroundModelsGroup({
+  error,
+  view,
+}: {
+  readonly error: boolean;
+  readonly view: AutomaticModelsView | null;
+}) {
+  const fileError = view ? backgroundModelsFileError(view) : null;
+  return (
+    <SettingsGroup
+      heading={backgroundModelsTitle}
+      headingId="background-models"
+      note={backgroundModelsNote}
+    >
+      {view ? (
+        backgroundModelRows(view).map((row) => (
+          <SettingsRow detail={row.detail} key={row.role} title={row.title} />
+        ))
+      ) : (
+        <SettingsRow title={error ? "Background models could not be loaded." : "Loading…"} />
+      )}
+      {fileError ? <SettingsError message={fileError} /> : null}
+    </SettingsGroup>
   );
 }
 
@@ -116,6 +155,7 @@ export function AiEngineSettings({
   onAddAccount,
   onAuthenticate,
   onError,
+  notUsedForBackground = [],
   placements,
   updatesAvailable = false,
 }: {
@@ -127,6 +167,8 @@ export function AiEngineSettings({
   readonly onError: (message: string) => void;
   readonly placements: readonly ThreadPlacementOption[];
   readonly updatesAvailable?: boolean;
+  /** Accounts settings.json keeps out of background work. */
+  readonly notUsedForBackground?: readonly string[];
 }) {
   // A link from the composer names the work location it was about, so the
   // page opens on that one rather than on whichever sorts first.
@@ -587,6 +629,7 @@ export function AiEngineSettings({
     });
     return (
       <AccountRow
+        notUsedForBackground={notUsedForBackground.includes(profile.id)}
         action={
           state?.kind === "confirm-remove" ? (
             <ConfirmActions
@@ -914,10 +957,12 @@ function AccountRow({
   engineName,
   environment,
   justAdded,
+  notUsedForBackground,
   profile,
   source,
   unavailableReason,
 }: {
+  readonly notUsedForBackground: boolean;
   readonly action: ReactNode;
   readonly catalog: HarnessCatalog | undefined;
   readonly confirming: string | null;
@@ -957,6 +1002,9 @@ function AccountRow({
         <>
           {account.name}
           {profile.isDefault ? <span className="chip chip--accent">Default</span> : null}
+          {notUsedForBackground ? (
+            <span className="chip chip--muted">{notUsedForBackgroundWork}</span>
+          ) : null}
           {account.status ? (
             <span className={`chip chip--${account.status.tone}`}>{account.status.label}</span>
           ) : null}

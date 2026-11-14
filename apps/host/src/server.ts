@@ -100,6 +100,7 @@ import {
   type HarnessInstanceId,
   type HarnessInstanceStateKind,
   type RunnerId,
+  excludedBackgroundAccounts,
 } from "@opensteer/core";
 import {
   machineIsManagedBy,
@@ -1169,7 +1170,7 @@ export async function createHostServer(
             },
         dependencies.authenticator.identity.configuration(),
         dependencies.store.getExecutionPreferences(ownerId),
-        dependencies.store.getAutomaticModelConfig(ownerId),
+        dependencies.store.getAgentHomeSettings(ownerId),
         dependencies.store.notificationState.quietTaskDaysFor(ownerId),
         machineSummaries(session),
         dependencies.store.listHarnessCatalogs(environments.map(({ id }) => id)),
@@ -1212,7 +1213,7 @@ export async function createHostServer(
             ...harnessView(harness),
             automaticEligible:
               harness.sourceId !== "openai-compatible" &&
-              !automaticModels.excludedAccounts.includes(harness.id),
+              !excludedBackgroundAccounts(automaticModels.settings).includes(harness.id),
           })),
           identityConfig,
           machines,

@@ -205,6 +205,10 @@ export interface RunnerRegistryHooks {
     identity: RunnerIdentity,
     report: import("@opensteer/protocol").RunnerSkillMetadataReport,
   ): Promise<void>;
+  onSettingsReport?(
+    identity: RunnerIdentity,
+    report: import("@opensteer/protocol").RunnerSettingsReport,
+  ): Promise<void>;
   /**
    * Fires once the connection is live and reachable, which `authorize` cannot
    * do: authorization runs before the connection is inserted, so nothing it
@@ -1990,6 +1994,9 @@ export class RunnerRegistry {
     switch (message.type) {
       case "runner.skills.report":
         await this.#runHook(() => this.#hooks.onSkillReport?.(connection.identity, message));
+        break;
+      case "runner.settings.report":
+        await this.#runHook(() => this.#hooks.onSettingsReport?.(connection.identity, message));
         break;
       case "runner.auxiliary.ticket-request":
         await this.#runHook(async () => {

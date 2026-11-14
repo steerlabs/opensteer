@@ -51,7 +51,6 @@ export {
 
 export * from "./plugin-settings-store.js";
 export * from "./administration-command.js";
-export * from "./background-model-store.js";
 export * from "./personal-desktop-update-store.js";
 
 export * from "./agent-thread-history.js";
@@ -72,6 +71,10 @@ export {
   reportAgentHomeSkills,
   agentHomeSkillInventory,
 } from "./agent-home-skill-inventory-store.js";
+export {
+  reportAgentHomeSettings,
+  type AgentHomeSettingsState,
+} from "./agent-home-settings-store.js";
 
 export * from "./team-access-store.js";
 export * from "./team-members-store.js";

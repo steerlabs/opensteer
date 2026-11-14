@@ -28,6 +28,7 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0019_team_shared_agents",
     "0020_team_share_file_cache",
     "0021_team_share_relay_policy",
+    "0022_agent_home_settings",
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());

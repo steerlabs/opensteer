@@ -1295,6 +1295,9 @@ export class AgentsWorkSession implements RunnerWorkSession {
           : { status: "failed", reason: "unreadable" },
       );
     });
+    options.agents.runtime.observeAgentHomeSettings((bindingGeneration, read) =>
+      this.#reportSettings(bindingGeneration, read),
+    );
     this.#initialSkills = Promise.resolve();
     this.#unsubscribePreparation = options.agents.runtime.subscribeHarnessPreparation(
       (harnessInstanceId) => {
@@ -1418,6 +1421,7 @@ export class AgentsWorkSession implements RunnerWorkSession {
   async close(): Promise<void> {
     this.#unsubscribePreparation();
     this.#options.agents.runtime.observeAgentHomeSkills(undefined);
+    this.#options.agents.runtime.observeAgentHomeSettings(undefined);
     this.#lifetime.abort(new Error("Host connection stopped"));
     await withTimeout(
       Promise.allSettled([
@@ -1758,6 +1762,23 @@ export class AgentsWorkSession implements RunnerWorkSession {
       type: "runner.skills.report",
       scanSequence: ++this.#skillSequence,
       scannedAt: new Date().toISOString(),
+      result,
+    });
+  }
+
+  #settingsSequence = 0;
+  async #reportSettings(
+    bindingGeneration: number,
+    result: import("@opensteer/protocol").RunnerSettingsReport["result"],
+  ): Promise<void> {
+    if (this.#signal.aborted) return;
+    await this.#options.sink.send({
+      ...this.#options.fence.fence,
+      environmentId: this.#options.environmentId(),
+      bindingGeneration,
+      type: "runner.settings.report",
+      readSequence: ++this.#settingsSequence,
+      readAt: new Date().toISOString(),
       result,
     });
   }

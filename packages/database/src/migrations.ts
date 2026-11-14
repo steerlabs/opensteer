@@ -31,6 +31,7 @@ export const teamAgentMigrationName = "0011_team_agent_contracts";
 export const teamAgentAsksMigrationName = "0012_team_agent_asks";
 export const teamPrincipalsMigrationName = "0015_team_principals";
 export const teamPartnerLinksMigrationName = "0016_team_partner_links";
+export const agentHomeSettingsMigrationName = "0022_agent_home_settings";
 export function migrationProvider(): MigrationProvider {
   return {
     async getMigrations() {
@@ -190,6 +191,29 @@ export function migrationProvider(): MigrationProvider {
               alter table team_share_relays add column pending_bodies text[] not null default '{}'`.execute(
               database,
             );
+          },
+        },
+        [agentHomeSettingsMigrationName]: {
+          /**
+           * Background model choices moved to settings.json in Agent home; nothing carries over.
+           * Only databases created before this migration have the column: the baseline no longer does.
+           */
+          async up(database) {
+            await sql`alter table personal_settings drop column if exists background_model_preferences;
+              create table agent_home_settings (
+                computer_id text not null primary key references runners(id) on delete cascade,
+                environment_id text not null references execution_environments(id) on delete cascade,
+                boot_id text not null,
+                connection_generation bigint not null,
+                connection_id text not null,
+                connection_lease_id text not null,
+                binding_generation integer not null,
+                read_sequence bigint not null,
+                read_at timestamptz not null,
+                file_status text not null check(file_status in ('valid','missing','invalid')),
+                file_error jsonb,
+                settings jsonb not null
+              )`.execute(database);
           },
         },
       };

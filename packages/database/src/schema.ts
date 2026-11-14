@@ -23,7 +23,6 @@ import type {
 } from "@opensteer/core";
 import type { TeamStatusStepSchema } from "@opensteer/core";
 import type { z } from "zod";
-import type { AutomaticModelConfig } from "@opensteer/core";
 import type { ThreadCallerAuthority } from "./thread-caller.js";
 
 import type {
@@ -1966,6 +1965,20 @@ export interface DatabaseSchema {
     scanStatus: "complete" | "failed";
     metadata: JsonColumn<readonly { fullName: string; description: string; digest: string }[]>;
   };
+  agentHomeSettings: {
+    computerId: RunnerId;
+    environmentId: EnvironmentId;
+    bootId: string;
+    connectionGeneration: number;
+    connectionId: string;
+    connectionLeaseId: string;
+    bindingGeneration: number;
+    readSequence: number;
+    readAt: Timestamp;
+    fileStatus: "valid" | "missing" | "invalid";
+    fileError: JsonColumn<import("@opensteer/protocol").AgentHomeSettingsError> | null;
+    settings: JsonColumn<import("@opensteer/core").AgentHomeSettings>;
+  };
   teamMembers: TeamMemberTable;
   teamPrincipals: TeamPrincipalTable;
   teamSharingSettings: {
@@ -2284,7 +2297,6 @@ export interface PersonalSettingsTable {
   timeZone: string | null;
   quietTaskDays: QuietTaskDays;
   executionPreferences: JsonColumn<ExecutionPreferences>;
-  backgroundModelPreferences: JsonColumn<AutomaticModelConfig>;
 }
 export interface DeploymentEventStateTable {
   deploymentId: DeploymentId;

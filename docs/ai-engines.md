@@ -19,6 +19,14 @@ Work the person did not place by hand uses the shared
 eligibility decide; cached usage exhaustion only affects ordering. The Host computes eligibility
 for the viewer, and an unbound preference never reaches an `openai-compatible` endpoint.
 
+The person's choices live in `settings.json` in Agent home
+([schema](../packages/core/src/background-models.ts)), which their agent edits with file tools;
+no Host command or agent tool writes it, and Settings only shows it. The hosting Runner reads it
+at each Run's start and end and watches it once a Run has used Agent home, and the Host keeps the
+last valid version: a broken file changes nothing, appears in Settings and reaches the agent's next
+Run. Each role's list runs before the recommended order, which is always appended, so a stale or
+mistyped choice never strands naming or memory.
+
 Selection happens before admission and freezes the endpoint for accepted work. Account changes
 must not silently redirect it. Naming can advance after a contained generation failure; memory and
 specialists never replay accepted or uncertain work on another account.

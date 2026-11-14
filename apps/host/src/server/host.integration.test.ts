@@ -19,7 +19,6 @@ import { hostInternalRoutePaths } from "./internal-routes.js";
 import { injectRpcRequest } from "./test-host-api-request.js";
 import {
   createId,
-  emptyAutomaticModelConfig,
   emptyExecutionPreferences,
   OpensteerError,
   personalRemoteAuthorizationScheme,
@@ -2773,7 +2772,7 @@ describe("durable harness catalogs", () => {
       findThreadCreationByIdempotency: async () => null,
       getEnvironment: async () => environment,
       getExecutionPreferences: async () => executionPreferences,
-      getAutomaticModelConfig: async () => emptyAutomaticModelConfig,
+      getAgentHomeSettings: async () => ({ settings: {}, file: { status: "missing" as const } }),
       hasActiveRunForHarness: async () => options.activeRun ?? false,
       getHarnessCatalog: async () => options.catalog ?? null,
       getHarnessInstance: async () => harness,

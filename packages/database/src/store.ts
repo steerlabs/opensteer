@@ -1,7 +1,7 @@
 import { bindDeviceSession, revokeDeviceSession, leaveDevice } from "./device-store.js";
 import { enqueueNodeStop } from "./node-control.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
-import * as backgroundModelStore from "./background-model-store.js";
+import { readAgentHomeSettings } from "./agent-home-settings-store.js";
 import * as voiceStore from "./voice-store.js";
 
 import {
@@ -935,15 +935,9 @@ export class OpensteerStore {
   ): Promise<HarnessInstanceCatalog | null> {
     return harnessStore.getHarnessCatalog(this.#database, environmentId, harnessInstanceId);
   }
-  async getAutomaticModelConfig(userId: UserId) {
-    return backgroundModelStore.getAutomaticModelConfig(this.#database, userId);
-  }
-  /** Person-only: agents and filesystem JSON never change automatic-model eligibility. */
-  async setAutomaticModelConfig(
-    userId: UserId,
-    config: import("@opensteer/core").AutomaticModelConfig,
-  ) {
-    return backgroundModelStore.setAutomaticModelConfig(this.#database, userId, config);
+  /** The last valid settings.json in Agent home, and the file's current status. */
+  async getAgentHomeSettings(userId: UserId) {
+    return readAgentHomeSettings(this.#database, userId);
   }
   async getExecutionPreferences(userId: UserId): Promise<ExecutionPreferences> {
     return harnessStore.getExecutionPreferences(this.#database, userId);

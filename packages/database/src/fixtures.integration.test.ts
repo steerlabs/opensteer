@@ -1,5 +1,5 @@
 import { sql } from "kysely";
-import { createId, emptyAutomaticModelConfig, emptyExecutionPreferences } from "@opensteer/core";
+import { createId, emptyExecutionPreferences } from "@opensteer/core";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
@@ -33,12 +33,9 @@ it("seeds one private owner with the hosting computer and no team membership", a
     expect(
       await database
         .selectFrom("personalSettings")
-        .select(["executionPreferences", "backgroundModelPreferences"])
+        .select(["executionPreferences"])
         .executeTakeFirstOrThrow(),
-    ).toEqual({
-      executionPreferences: emptyExecutionPreferences,
-      backgroundModelPreferences: emptyAutomaticModelConfig,
-    });
+    ).toEqual({ executionPreferences: emptyExecutionPreferences });
     expect(
       await database.selectFrom("principals").select(["kind", "userId"]).orderBy("kind").execute(),
     ).toEqual([

@@ -581,7 +581,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const requesterTimeZone = await this.#store.notificationState.timeZoneFor(
       context.run.requestedBy,
     );
+    const settingsFile = context.personalContext
+      ? (await this.#store.getAgentHomeSettings(context.run.requestedBy)).file
+      : null;
     const toolsPlan = agentToolsPlanForRun({
+      settingsError: settingsFile?.error,
       voiceCall: Boolean(context.voiceCall),
       token: toolsToken,
       url: this.#agentToolsUrl,
