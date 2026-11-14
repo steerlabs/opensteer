@@ -331,6 +331,11 @@ export async function createTwoHostLinkFixture() {
     return result;
   };
   const admission: TaskAdmissionPort = {
+    async releaseTeamAsk(input) {
+      await (
+        await import("@opensteer/database/task-admission-store")
+      ).releaseTeamAsk(database, input);
+    },
     async admitTeamReturn(input) {
       await admitTeamReturn(database, { ...input, ownerId: personal.userId });
     },

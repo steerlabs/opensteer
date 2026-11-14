@@ -35,6 +35,8 @@ export class PersonalTeamLinks {
   }
 
   async start(): Promise<void> {
+    for (const link of await this.options.links.list())
+      await this.options.requests.resumeAdmissions(link.teamDeploymentId);
     for (const link of await this.options.links.list()) {
       if (link.state === "leaving") this.#retryLeave(link.teamDeploymentId);
       else if (["active", "unreachable", "needs_update"].includes(link.state))

@@ -115,6 +115,7 @@ export function createHostApiHandlers(
     | "tool.output.get"
     | "thread.messages.list"
     | "thread.inputQueue.get"
+    | "thread.message.revisions.list"
     | "thread.live.get"
     | "thread.requests.list"
   >,

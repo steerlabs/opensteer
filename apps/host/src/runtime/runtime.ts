@@ -2457,7 +2457,10 @@ export async function createHostRuntime(
           },
         );
       },
-      publish: (events) => events.forEach(publishDeploymentEvent),
+      publish: (events) => {
+        events.forEach(publishDeploymentEvent);
+        if (events.length) wakeExecutionCoordinator();
+      },
       revokeGrants: (grants) => store.announceRevokedGrants(grants),
     });
     async function ensureLinks() {
@@ -2830,6 +2833,10 @@ export async function createHostRuntime(
       intervalMs: Math.min(10_000, Math.floor(config.executionLeaseMs / 4)),
       onError: (error) => app.log.error({ err: error }, "Execution lease sweep failed"),
       reconcile: async () => {
+        const leases = await store.expireThreadInputLeases();
+        for (const event of leases.events) publishDeploymentEvent(event);
+        if (leases.events.length) wakeExecutionCoordinator();
+        await linkServices?.requests.expireUndecidedAsks();
         const expired = await store.recoverRunsWithExpiredExecutionBindings();
         for (const event of expired.events) publishDeploymentEvent(event);
         if (expired.events.some((event) => event.type === "run.restarted"))

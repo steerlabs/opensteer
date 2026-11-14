@@ -21,6 +21,12 @@ export interface TeamTaskAdmissionReceipt {
   readonly runId: RunId | null;
 }
 export interface TaskAdmissionPort {
+  releaseTeamAsk(input: {
+    readonly teamId: TeamTaskOrigin["teamId"];
+    readonly requestId: TeamAgentRequestId;
+    readonly localLinkId: string;
+    readonly remoteLinkId: string | null;
+  }): Promise<void>;
   /** Atomically binds the task, reopens Done, records the receipt, and queues its own turn under team:<teamId>:<requestId>. */
   admitTeamReturn(input: {
     readonly teamId: TeamTaskOrigin["teamId"];

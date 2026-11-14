@@ -128,6 +128,7 @@ function fixture() {
   const admission = {
     admitTeamReturn: vi.fn(),
     admitTeamRequest: vi.fn(),
+    releaseTeamAsk: vi.fn(),
     cancelTeamRequest: vi.fn(),
   };
   const publisher = new PersonalTeamRequests({
