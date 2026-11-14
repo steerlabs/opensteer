@@ -26,6 +26,27 @@ import {
   TeamLinkWebSocketHeadersSchema,
 } from "./team-link.js";
 import {
+  TeamPartnerChallengeSchema,
+  TeamPartnerControlSchema,
+  TeamPartnerHelloSchema,
+  TeamPartnerOfferSchema,
+  TeamPartnerProofSchema,
+  TeamPartnerReadySchema,
+  teamPartnerProtocolVersion,
+} from "./team-partner.js";
+import {
+  TeamPartnerDataFrameSchema,
+  TeamPartnerFrameViewSchema,
+  TeamShareBatchSchema,
+  TeamShareBatchViewSchema,
+  TeamShareFileChunkSchema,
+  TeamShareFileChunkViewSchema,
+  TeamShareOperationSchema,
+  TeamShareReceiptSchema,
+  TeamShareReceiptViewSchema,
+} from "./team-share.js";
+import {
+  readTeamFrame,
   TeamClientFrameViewSchema,
   TeamLinkClientFrameViewSchema,
   TeamLinkServerFrameViewSchema,
@@ -49,7 +70,13 @@ interface TeamWire {
   readonly frames: Readonly<Record<string, JsonSchema>>;
 }
 
+/** Team servers talking to each other, versioned apart from the team-client API. */
+interface PartnerWire extends Pick<TeamWire, Surface> {
+  readonly teamPartnerProtocolVersion: number;
+}
+
 const snapshotPath = new URL("./team-wire.snapshot.json", import.meta.url);
+const partnerSnapshotPath = new URL("./team-partner-wire.snapshot.json", import.meta.url);
 const updateVariable = "OPENSTEER_UPDATE_TEAM_WIRE";
 
 function json(schema: z.core.$ZodType): JsonSchema {
@@ -108,12 +135,49 @@ function teamWire(): TeamWire {
   };
 }
 
+function partnerWire(): PartnerWire {
+  return {
+    teamPartnerProtocolVersion,
+    // A server sends a new request field only when its partner advertises it.
+    input: Object.fromEntries(
+      TeamShareOperationSchema.options.map((option) => [
+        `operation ${option.shape.op.value}`,
+        json(option),
+      ]),
+    ),
+    output: {
+      "pull result": json(TeamShareBatchViewSchema),
+      "write receipt": json(TeamShareReceiptViewSchema),
+      "file chunk": json(TeamShareFileChunkViewSchema),
+      // Strict: the pairing offer and handshake change only with the protocol version.
+      offer: json(TeamPartnerOfferSchema),
+      hello: json(TeamPartnerHelloSchema),
+      challenge: json(TeamPartnerChallengeSchema),
+      proof: json(TeamPartnerProofSchema),
+      ready: json(TeamPartnerReadySchema),
+    },
+    frames: { "partner frame": json(partnerFrameViews["partner frame"][1]) },
+  };
+}
+
 /** What each side writes, and the view its peer reads it with. */
 const frameViews = {
   "realtime client frame": [TeamClientFrameSchema, TeamClientFrameViewSchema],
   "realtime server frame": [TeamServerFrameSchema, TeamServerFrameViewSchema],
   "link client frame": [TeamLinkClientFrameSchema, TeamLinkClientFrameViewSchema],
   "link server frame": [TeamLinkServerFrameSchema, TeamLinkServerFrameViewSchema],
+} as const;
+const partnerFrameViews = {
+  "partner frame": [
+    z.discriminatedUnion("type", [
+      ...TeamPartnerDataFrameSchema.options,
+      ...TeamPartnerControlSchema.options,
+    ]),
+    TeamPartnerFrameViewSchema,
+  ],
+  "partner pull result": [TeamShareBatchSchema, TeamShareBatchViewSchema],
+  "partner write receipt": [TeamShareReceiptSchema, TeamShareReceiptViewSchema],
+  "partner file chunk": [TeamShareFileChunkSchema, TeamShareFileChunkViewSchema],
 } as const;
 
 const record = (value: unknown): JsonSchema =>
@@ -228,7 +292,7 @@ function surfaceBreaks(before: unknown, after: unknown, surface: Surface, path =
   return [...new Set(breaks)];
 }
 
-function wireBreaks(before: TeamWire, after: TeamWire): string[] {
+function wireBreaks(before: Pick<TeamWire, Surface>, after: Pick<TeamWire, Surface>): string[] {
   return (["input", "output", "frames"] as const).flatMap((surface) =>
     Object.entries(before[surface]).flatMap(([name, schema]) =>
       name in after[surface]
@@ -265,9 +329,40 @@ describe("team wire compatibility", () => {
       ).toBe(true);
   });
 
-  it("reads every frame with a view that accepts exactly what its writer sends", () => {
-    for (const [surface, [writer, view]] of Object.entries(frameViews))
+  it("changes the partner wire only additively unless teamPartnerProtocolVersion moves", () => {
+    const committed = JSON.parse(readFileSync(partnerSnapshotPath, "utf8")) as PartnerWire;
+    const current = partnerWire();
+    expect(teamPartnerProtocolVersion).toBeGreaterThanOrEqual(committed.teamPartnerProtocolVersion);
+    if (committed.teamPartnerProtocolVersion === teamPartnerProtocolVersion)
+      expect(
+        wireBreaks(committed, current),
+        "This breaks partner teams on the same protocol version. Make it additive, or bump teamPartnerProtocolVersion (docs/teams.md#partner-teams).",
+      ).toEqual([]);
+    if (process.env[updateVariable] === "1")
+      writeFileSync(partnerSnapshotPath, `${JSON.stringify(current, null, 2)}\n`);
+    else
+      expect(
+        same(current, committed),
+        `The partner wire changed compatibly. Record it with ${updateVariable}=1 pnpm exec vitest run packages/protocol/src/team-wire.test.ts`,
+      ).toBe(true);
+  });
+
+  it("reads every frame and partner result with a view that accepts exactly what its writer sends", () => {
+    for (const [surface, [writer, view]] of Object.entries({ ...frameViews, ...partnerFrameViews }))
       expect(ignoringStrictness(json(view)), surface).toEqual(ignoringStrictness(json(writer)));
+  });
+
+  it("skips partner frames it does not know and drops fields it does not know", () => {
+    const shareId = "00000000-0000-4000-8000-000000000001";
+    expect(readTeamFrame(TeamPartnerFrameViewSchema, { type: "share.future", shareId })).toBeNull();
+    expect(
+      readTeamFrame(TeamPartnerFrameViewSchema, {
+        type: "share.changed",
+        shareId,
+        generation: 1,
+        future: true,
+      }),
+    ).toEqual({ type: "share.changed", shareId, generation: 1 });
   });
 
   it("tells additive changes from breaking ones on each surface", () => {

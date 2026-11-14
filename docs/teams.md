@@ -201,8 +201,16 @@ Partner links are separate from person-owned agent links and grant no content ac
 The redeemer is always the dialer; the issuing team never fetches a partner-chosen address. Hosted
 teams dial public addresses only. Each side pins the other's signed team identity, origin, Host key
 and instance, then proves possession of that key against fresh challenges on every connection.
-Partner protocol compatibility is independent of the team-client API window. There is no bearer
-credential and no key rotation: changed identity requires revocation and a fresh pairing.
+There is no bearer credential and no key rotation: changed identity requires revocation and a fresh
+pairing.
+
+Partner teams update on their own schedules, so the partner protocol changes additively under the
+same rules as the team API, with its own `teamPartnerProtocolVersion`. A server parses its partner's
+requests strictly and sends a new request field or operation only when the partner advertises a
+capability for it, and an unknown one is refused like any inaccessible share. Results and frames are read
+tolerantly: unknown fields are dropped and unknown frame types skipped. The pairing offer and the
+signed handshake stay strict. The version moves only for a change an older partner would misread,
+which [the partner wire guard](../packages/protocol/src/team-wire.test.ts) enforces.
 
 Sharing defaults to administrators. An unaddressed invite still needs the issuing team's approval
 after it learns the redeemer's identity; members-propose requires local admin approval on both sides.

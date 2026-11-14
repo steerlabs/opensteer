@@ -1856,3 +1856,71 @@ it("failed edits do not permanently exhaust authorship proof capacity", async ()
     await f.close();
   }
 });
+
+it("reads a newer partner's added fields and refuses a request it cannot act on", async () => {
+  const f = await sharedFixture();
+  try {
+    const partners = f.b.host.team.partners!,
+      request = partners.request.bind(partners);
+    // Stand in for a newer owner: its results carry fields this server does not know.
+    const newer = (batch: TeamShareBatch) => ({
+      ...batch,
+      futureBatchField: true,
+      cursor: { ...batch.cursor, futureCursorField: 1 },
+      people: batch.people.map((person) => ({ ...person, futurePersonField: 1 })),
+      rows: batch.rows.map((row) => ({ ...row, futureRowField: 1 })),
+    });
+    vi.spyOn(partners, "request").mockImplementation(async (id, op, signal, handoff) => {
+      const result = await request(id, op, signal, handoff);
+      if (op.op === "pull") return newer(result as TeamShareBatch);
+      if (op.op !== "write") return result;
+      const receipt = result as { publicId: string; batch: TeamShareBatch };
+      return { ...receipt, futureReceiptField: 1, batch: newer(receipt.batch) };
+    });
+    const send = (session: typeof f.aSession, channelId: string, bodyMarkdown: string) =>
+      command(session, {
+        type: "team.message.send",
+        channelId,
+        threadRootId: null,
+        clientMessageId: randomUUID(),
+        bodyMarkdown,
+        mentions: [],
+        attachmentIds: [],
+      });
+    await send(f.aSession, f.aid, "From a newer owner");
+    await send(f.bSession, f.bid, "Through a newer receipt");
+    await vi.waitFor(
+      async () => {
+        const page = await f.bSession.rpc["team.messages.page"]({
+          channelId: f.bid,
+          page: { direction: "newest" },
+        });
+        expect(
+          page.ok && page.data.messages.map((m) => m.bodyMarkdown),
+          "The copy refused the newer owner's results",
+        ).toEqual(expect.arrayContaining(["From a newer owner", "Through a newer receipt"]));
+      },
+      { timeout: 3000 },
+    );
+    vi.restoreAllMocks();
+
+    // Requests stay strict: an unknown operation or field is refused like any other, and the link stays up.
+    const cursor = {
+      created: SequenceSchema.parse("0"),
+      sequence: SequenceSchema.parse("0"),
+      publicId: "",
+    };
+    for (const op of [
+      { op: "future", shareId: f.shareId, generation: 1 },
+      { op: "pull", shareId: f.shareId, generation: 1, cursor, futureFilter: true },
+    ])
+      await expect(
+        partners.request(f.bLink, op as unknown as TeamShareOperation),
+      ).rejects.toMatchObject({ reason: "not-found" });
+    await expect(
+      partners.request(f.bLink, { op: "pull", shareId: f.shareId, generation: 1, cursor }),
+    ).resolves.toMatchObject({ rows: expect.any(Array) });
+  } finally {
+    await f.close();
+  }
+});
