@@ -40,12 +40,14 @@ export function ChannelDetails({
   channel,
   notify,
   workingAgents,
+  sharedAgents,
 }: {
   readonly actions: ChannelDetailsActions;
   readonly channel: ChannelView;
   readonly notify: NotifyLevel;
   /** Agents mid-run in this channel, which making it people only would stop from posting. */
   readonly workingAgents: number;
+  readonly sharedAgents?: { enabled: boolean; onChange: (enabled: boolean) => void } | undefined;
 }) {
   const dm = channel.kind === "dm" || channel.kind === "group-dm";
   const manage = channel.canManage;
@@ -100,6 +102,25 @@ export function ChannelDetails({
                 type="checkbox"
               />
             </div>
+            {sharedAgents ? (
+              <div className="details-switch">
+                <span className="details-switch__text">
+                  <span className="details-switch__title">Our team’s agents</span>
+                  <span className="details-note">
+                    Allow our agents to read, receive asks and post in this shared channel.
+                  </span>
+                </span>
+                <input
+                  aria-label="Our team’s agents"
+                  checked={sharedAgents.enabled}
+                  className="switch"
+                  disabled={!manage}
+                  onChange={(event) => sharedAgents.onChange(event.currentTarget.checked)}
+                  role="switch"
+                  type="checkbox"
+                />
+              </div>
+            ) : null}
           </DetailsBlock>
         )}
         <DetailsBlock title="Notify me about">

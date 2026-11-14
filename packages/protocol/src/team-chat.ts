@@ -47,7 +47,9 @@ export const TeamFileSchema = z.strictObject({
 });
 export const TeamAgentRequestSchema = z.strictObject({
   id: TeamAgentRequestIdSchema,
-  kind: TeamAgentRequestKindSchema.default("self"),
+  kind: TeamAgentRequestKindSchema,
+  pendingRemote: z.boolean().optional(),
+  askRefusal: z.enum(["people-only", "no-access", "no-link", "rate-limited"]).nullable().optional(),
   consentExpiresAt: IsoDateTimeSchema.nullable().default(null),
   ownerUserId: UserIdSchema,
   channelId: TeamChannelIdSchema,
@@ -83,6 +85,8 @@ export const TeamRemotePeopleSchema = z.record(
   }),
 );
 export const TeamChannelShareSchema = z.object({
+  shareId: z.uuid().optional(),
+  agentsEnabled: z.boolean().optional(),
   updateRequired: z.boolean().optional(),
   state: z.enum(["shared", "disconnected"]),
   role: z.enum(["owner", "follower"]),

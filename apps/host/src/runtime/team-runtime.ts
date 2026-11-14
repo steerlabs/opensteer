@@ -4,6 +4,7 @@ import { registerTeamPartnerRoutes } from "../team-partners/routes.js";
 import {
   teamPartnerCapability,
   teamShareCapability,
+  teamSharedAgentsCapability,
   teamPartnerSocketPath,
 } from "@opensteer/protocol";
 import { rejectDuplicateCredentialHeaders } from "../identity/request-credential-headers.js";
@@ -353,6 +354,7 @@ export async function createTeamHostRuntime(input: {
         capabilities: [
           teamPartnerCapability,
           teamShareCapability,
+          teamSharedAgentsCapability,
           ...(config.identity.nativeOAuth
             ? ["native-oauth", "team-session-exchange-v1", "team-native-browser-return-v1"]
             : []),

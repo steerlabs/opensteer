@@ -141,7 +141,8 @@ session exchange both admit through `TeamInvitesStore.acceptInTransaction`
 
 ## Transport and versions
 
-Team API version 5 requires version 5 peers for asks that need approval and private returns.
+Team API version 6 requires explicit request kinds before personal work can be admitted. Version 5
+peers already send them and remain supported for asks, approval and private returns.
 A team Host checks only `teamApiVersion`, before authentication and parsing on every team
 surface, including bootstrap, subscriptions, binary routes and the personal link. Partner sockets negotiate their own protocol. Personal Hosts check
 only the personal Host epoch. Team updates use [deploy/team](../deploy/team/README.md); desktop
@@ -219,8 +220,19 @@ agent requests or unread mentions. Agent context names the external team; shared
 be treated as an internal audience for knowledge.
 
 Sharing exposes the channel's full history, including past agent answers, and requires confirmation.
-The default channel and direct messages cannot be shared. Files and agent wakes in shared channels
-are not available yet. Either side may disconnect while the other is offline. The follower keeps
+The default channel and direct messages cannot be shared. Files in shared channels are not available yet. Either side may disconnect while the other is offline. The follower keeps
 a readable archive, new writes stop, and the owner's channel continues. Disconnect cannot erase
 already received content. Re-sharing creates a fresh share and follower channel; it never merges
 archives or transfers ownership.
+
+Each team admits work only for its own agents. A follower evaluates self and sticky wakes after its
+own authenticated post commits at the owner, never from an imported row. Cross-team asks need the
+target owner's approval on their computer; that approval names the asker's team and the shared
+channel. Until the target team admits the ask, its reference shows Asking. Only bounded state and
+public reply references cross between teams. Private returns bind to the asking team's recorded
+post, target principal and share; peers cannot choose a local task or Run. Pending asks cancel on
+trigger edits/deletion, participant removal or disconnect. Each team can turn off its own agents in
+the channel's details; the owner's people-only setting binds both teams. Channel instructions stay
+local to each team's agents. The owner limits new ask references to 60 per share per minute, and
+the target team applies its normal requester and target budgets. Partner protocol version 3 is
+required for this exchange.

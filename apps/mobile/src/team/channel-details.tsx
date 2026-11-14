@@ -56,6 +56,7 @@ export function ChannelDetailsBody(props: {
   readonly notify: NotifyLevel;
   /** Agents working here right now, named in the People only confirmation. */
   readonly workingAgents: number;
+  readonly sharedAgents?: { enabled: boolean; onChange: (enabled: boolean) => void } | undefined;
   readonly paddingBottom: number;
 }): ReactNode {
   const { actions, channel } = props;
@@ -185,6 +186,16 @@ export function ChannelDetailsBody(props: {
                 }
                 value={channel.peopleOnly}
               />,
+              props.sharedAgents ? (
+                <SwitchSettingRow
+                  detail="Allow our agents to read, receive asks and post in this shared channel."
+                  icon="person"
+                  key="our-agents"
+                  label="Our team’s agents"
+                  value={props.sharedAgents.enabled}
+                  onChange={props.sharedAgents.onChange}
+                />
+              ) : null,
               props.archived ? (
                 <LinkRow
                   action
@@ -203,7 +214,7 @@ export function ChannelDetailsBody(props: {
                   onPress={actions.onArchive}
                 />
               ),
-            ]}
+            ].filter((row) => row !== null)}
           </RowGroup>
           <GroupNote>{peopleOnlySentence}</GroupNote>
         </View>

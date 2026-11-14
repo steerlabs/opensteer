@@ -44,6 +44,7 @@ export const databaseLockOrder = [
   "team_mentions",
   "team_message_pins",
   "team_agent_requests",
+  "team_share_asks",
   "team_audit",
   "team_notices",
   "team_outbox",

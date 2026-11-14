@@ -209,6 +209,10 @@ export async function startTeamServices(options: TeamServiceOptions) {
     if (command.type.startsWith("team.knowledge."))
       return options.knowledge.command(actor, command);
     switch (command.type) {
+      case "team.share.agents.set":
+        requireTeam(shares);
+        await shares.store.setAgents(actor, command.shareId, command.enabled);
+        return { type: command.type };
       case "team.share.participant.remove":
       case "team.share.participant.restore":
         requireTeam(shares);

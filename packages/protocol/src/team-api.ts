@@ -89,6 +89,11 @@ export const teamChannelNameTakenReason = "channel-name-taken";
 export const teamDmMaxParticipants = 31;
 export const TeamCommandSchema = z.discriminatedUnion("type", [
   z.strictObject({
+    type: z.literal("team.share.agents.set"),
+    shareId: z.uuid(),
+    enabled: z.boolean(),
+  }),
+  z.strictObject({
     type: z.literal("team.share.participant.restore"),
     shareId: z.uuid(),
     principalId: UserIdSchema,
@@ -375,6 +380,7 @@ export const teamReadSchemas = {
             name: name,
             ready: z.boolean(),
             localApproved: z.boolean(),
+            agentsEnabled: z.boolean().optional(),
           }),
         )
         .max(50),

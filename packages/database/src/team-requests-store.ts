@@ -1,3 +1,4 @@
+import { teamAskerCanPost, teamAskerChannels, expireSharedAsks } from "./team-shared-agents.js";
 import { randomUUID } from "node:crypto";
 import {
   TeamStatusStepSchema,
@@ -53,12 +54,15 @@ export class TeamRequestsStore implements TeamRequestStorePort {
     requireTeam(authority.read && authority.post, "Request access revoked");
     if (row.presentation) {
       const asker = row.presentation.asker;
-      const rights = await this.access.channel(
-        transaction,
-        { kind: asker.actor, userId: asker.teamUserId },
-        row.channelId,
+      requireTeam(
+        await teamAskerCanPost(
+          transaction,
+          this.access,
+          { kind: asker.actor, userId: asker.teamUserId },
+          row.channelId,
+        ),
+        "Asker access revoked",
       );
-      requireTeam(rights.read && rights.post, "Asker access revoked");
     }
     return row;
   }
@@ -142,8 +146,8 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         }
       }
       for (const { actor, channels } of actors.values()) {
-        const rights = await this.access.channels(t, actor, [...channels]);
-        requireTeam([...channels].every((id) => rights.get(id)?.read && rights.get(id)?.post));
+        const allowed = await teamAskerChannels(t, this.access, actor, [...channels]);
+        requireTeam([...channels].every((channelId) => allowed.has(channelId)));
       }
       const originIds = rows.flatMap((row) =>
         row.returnPayload ? [row.returnPayload.originAskId] : [],
@@ -155,7 +159,17 @@ export class TeamRequestsStore implements TeamRequestStorePort {
             .where("id", "in", originIds)
             .execute()
         : [];
-      const replies = new Map(origins.map((row) => [row.id, row.replyMessageId]));
+      const sharedOrigins = originIds.length
+        ? await t
+            .selectFrom("teamShareAsks")
+            .select(["id", "replyMessageId"])
+            .where("id", "in", originIds)
+            .where("localRequestId", "is", null)
+            .execute()
+        : [];
+      const replies = new Map(
+        [...origins, ...sharedOrigins].map((row) => [row.id, row.replyMessageId]),
+      );
       const messageIds = [
         ...new Set(
           rows.flatMap((row) => {
@@ -457,12 +471,32 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       .where("id", "=", linkId)
       .executeTakeFirstOrThrow();
     const actor = { kind: "agent" as const, userId: link.ownerUserId };
+    if (input.requestId) {
+      const alreadyPublished = await this.access.contentWrite(actor, input.channelId, async (t) => {
+        const request = await t
+          .selectFrom("teamAgentRequests")
+          .selectAll()
+          .where("id", "=", input.requestId!)
+          .where("linkId", "=", linkId)
+          .where("ownerUserId", "=", actor.userId)
+          .executeTakeFirstOrThrow();
+        requireTeam(
+          request.channelId === input.channelId && request.threadRootId === input.threadRootId,
+          "Reply destination does not match request",
+        );
+        if (input.publication && request.replyMessageId) return request.replyMessageId;
+        if (!request.replyMessageId) await this.#record(t, linkId, request.id);
+        return null;
+      });
+      if (alreadyPublished) return { messageId: alreadyPublished, askOutcomes: [] };
+    }
     const relayed = await this.chat.relay?.send(actor, {
       channelId: input.channelId,
       threadRootId: input.threadRootId ?? null,
       clientMessageId: input.clientMessageId,
       bodyMarkdown: input.bodyMarkdown,
       mentions: [],
+      publication: input.publication ?? false,
       attachmentIds: input.attachmentIds,
       linkId,
       ...(input.runId ? { runId: input.runId } : {}),
@@ -472,9 +506,16 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       await this.access.contentWrite(actor, input.channelId, async (t, a) => {
         requireTeam(a.post);
         await this.access.link(t, actor, linkId);
+        const request = input.requestId ? await this.#record(t, linkId, input.requestId) : null;
+        await lockTeamMessages(t, [
+          relayed.message.id,
+          ...(request ? [request.triggerMessageId, request.threadRootId] : []),
+        ]);
+        const { changeSeq } = await bumpTeamChannel(t, input.channelId);
         await t
           .updateTable("teamMessages")
           .set({
+            agentRequestId: request?.id ?? null,
             agentLinkId: linkId,
             personalDeploymentId: link.personalDeploymentId,
             callerRunId: input.runId ?? null,
@@ -483,6 +524,19 @@ export class TeamRequestsStore implements TeamRequestStorePort {
           .where("channelId", "=", input.channelId)
           .where("id", "=", relayed.message.id)
           .execute();
+        if (request && !request.replyMessageId) {
+          await t
+            .updateTable("teamMessages")
+            .set({ changeSeq })
+            .where("id", "in", [request.triggerMessageId, request.threadRootId])
+            .execute();
+          await t
+            .updateTable("teamAgentRequests")
+            .set({ replyMessageId: relayed.message.id, changeSeq })
+            .where("id", "=", request.id)
+            .execute();
+          await createTeamAskReturn(t, request, "answered", changeSeq, relayed.message.id);
+        }
         await appendTeamAudit(t, {
           actor,
           runId: input.runId,
@@ -495,6 +549,15 @@ export class TeamRequestsStore implements TeamRequestStorePort {
           channelId: input.channelId,
         });
       });
+      this.chat.changed(input.channelId);
+      if (input.requestId) {
+        const request = await this.access.database
+          .selectFrom("teamAgentRequests")
+          .select("triggerMessageId")
+          .where("id", "=", input.requestId)
+          .executeTakeFirstOrThrow();
+        await this.chat.notifyRequests(request.triggerMessageId, true);
+      }
       return { messageId: relayed.message.id, askOutcomes: relayed.askOutcomes };
     }
     const result = await this.access.contentWrite(actor, input.channelId, async (t, authority) => {
@@ -680,6 +743,8 @@ export class TeamRequestsStore implements TeamRequestStorePort {
     await this.status(linkId, id, { state: "cancelled", steps: [] });
   }
   async expire(id?: TeamAgentRequestId) {
+    if (!id)
+      for (const channelId of await expireSharedAsks(this.access)) this.chat.changed(channelId);
     let query = this.access.database
       .selectFrom("teamAgentRequests")
       .selectAll()

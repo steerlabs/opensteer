@@ -85,6 +85,7 @@ export type TeamAskOutcome = z.infer<typeof TeamAskOutcomeSchema>;
 export const TeamAskDecisionSchema = z.enum(["approve", "decline"]);
 export type TeamAskDecision = z.infer<typeof TeamAskDecisionSchema>;
 export const TeamAskerSchema = z.strictObject({
+  homeTeamName: z.string().min(1).max(160).optional(),
   teamUserId: UserIdSchema,
   displayName: z.string().trim().min(1).max(160),
   actor: z.enum(["human", "agent"]),

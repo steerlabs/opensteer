@@ -725,6 +725,16 @@ export class MockTeamHost {
         });
         return { type: command.type, shareId: id };
       }
+      if (command.type === "team.share.agents.set") {
+        const share = this.shares.get(command.shareId);
+        const channel = share?.channelId ? this.channels.get(share.channelId) : undefined;
+        if (!share || !channel?.can.manage)
+          throw new OpensteerError({ code: "forbidden", message: "Channel management required" });
+        share.agentsEnabled = command.enabled;
+        if (channel.share) channel.share.agentsEnabled = command.enabled;
+        this.publish();
+        return { type: command.type };
+      }
       if (command.type === "team.share.approve" || command.type === "team.share.end") {
         const share = this.shares.get(command.shareId);
         if (!share || (this.bootstrap.member.role === "member" && this.sharingPolicy !== "members"))

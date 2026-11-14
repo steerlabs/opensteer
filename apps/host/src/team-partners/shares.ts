@@ -28,6 +28,8 @@ export class TeamShares implements TeamChatRelay {
   readonly #jobs = new Set<Promise<unknown>>();
   readonly #rosters = new Map<string, string>();
   readonly #rosterJobs = new Map<string, Promise<unknown>>();
+  readonly #agentStates = new Map<string, string>();
+  readonly #statusJobs = new Map<string, Promise<void>>();
   readonly #rates = new Map<string, { until: number; count: number }>();
   readonly #unsubscribe: () => void;
   readonly #unsubscribeAccess: () => void;
@@ -164,6 +166,8 @@ export class TeamShares implements TeamChatRelay {
         return this.store.pull(linkId, op);
       case "write":
         return this.store.write(linkId, op);
+      case "ask.status":
+        return this.store.agentStatus(linkId, op);
       case "end":
         await this.store.end(op.shareId, undefined, { linkId, generation: op.generation });
         this.#cancelSyncRetry(op.shareId);
@@ -326,6 +330,8 @@ export class TeamShares implements TeamChatRelay {
         if (s.role === "follower" && s.state === "active") {
           await this.sendRoster(s);
           await this.sync(s);
+          await this.store.recoverRelayAdmissions(await this.store.get(s.id));
+          await this.sendAgentStates(s);
         }
       } catch (error) {
         if (
@@ -347,10 +353,41 @@ export class TeamShares implements TeamChatRelay {
       .selectFrom("teamShares")
       .selectAll()
       .where("channelId", "=", channelId)
-      .where("role", "=", "owner")
       .where("state", "=", "active")
       .execute();
-    for (const s of rows) await this.partners.hint(s.partnerLinkId, s.id, s.generation);
+    for (const s of rows) {
+      if (s.role === "owner") await this.partners.hint(s.partnerLinkId, s.id, s.generation);
+      else if (this.partners.connected(s.partnerLinkId)) await this.sendAgentStates(s);
+    }
+  }
+  async sendAgentStates(s: Share): Promise<void> {
+    const previous = this.#statusJobs.get(s.id) ?? Promise.resolve();
+    const job = previous
+      .catch(() => {})
+      .then(async () => {
+        for (const row of await this.store.agentStatuses(s)) {
+          const signature = JSON.stringify({ ...row.status, revision: undefined });
+          if (this.#agentStates.get(row.id) === signature) continue;
+          await this.partners.request(s.partnerLinkId, {
+            op: "ask.status",
+            shareId: s.id,
+            generation: s.generation,
+            triggerPublicId: row.triggerPublicId,
+            target: {
+              teamId: row.homeTeamId,
+              userId: row.homeUserId as import("@opensteer/core").UserId,
+            },
+            status: row.status!,
+          });
+          this.#agentStates.set(row.id, signature);
+        }
+      });
+    this.#statusJobs.set(s.id, job);
+    try {
+      await job;
+    } finally {
+      if (this.#statusJobs.get(s.id) === job) this.#statusJobs.delete(s.id);
+    }
   }
   async refreshRosters() {
     if (this.#closed) return;
@@ -473,7 +510,6 @@ export class TeamShares implements TeamChatRelay {
   async send(actor: TeamActor, input: Parameters<TeamChatStore["send"]>[1]) {
     const s = await this.store.local(actor, input.channelId);
     if (!s) return undefined;
-    requireTeam(!input.agentRequestId, "Agent requests in shared channels are not supported yet");
     requireTeam(input.attachmentIds.length === 0, "Files are not supported in shared channels yet");
     if (actor.kind === "agent") {
       requireTeam(input.linkId);
@@ -489,6 +525,7 @@ export class TeamShares implements TeamChatRelay {
       s,
       {
         action: "send",
+        publication: input.publication ?? false,
         author: { teamId: this.chat.identity.teamId, userId: actor.userId },
         authorKind: actor.kind,
         clientMessageId: input.clientMessageId,
@@ -497,7 +534,7 @@ export class TeamShares implements TeamChatRelay {
       },
       input,
     );
-    return { message, wake: "not-requested" as const, askOutcomes: [] };
+    return this.store.relayAdmission(actor, s, message.id);
   }
   async publicId(channelId: TeamChannelId, id: TeamMessageId) {
     return (
@@ -567,6 +604,7 @@ export class TeamShares implements TeamChatRelay {
       ...this.#jobs,
       ...this.#pulling.values(),
       ...this.#rosterJobs.values(),
+      ...this.#statusJobs.values(),
     ]);
   }
 }

@@ -1,3 +1,4 @@
+import { teamAskerCanPost, cancelUnavailableSharedAsks } from "./team-shared-agents.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
   OpensteerError,
@@ -55,13 +56,16 @@ export function teamGroupPaths(userId: UserId | RawBuilder<unknown>) {
 export function teamChannelPeopleOnly() {
   return sql<boolean>`(c.people_only or exists(select 1 from team_shares s where s.channel_id=c.id and s.role='follower' and s.people_only))`;
 }
+function teamChannelAgentsBlocked() {
+  return sql<boolean>`(${teamChannelPeopleOnly()} or exists(select 1 from team_shares s where s.channel_id=c.id and s.state='active' and not s.agents_enabled))`;
+}
 export function teamReadableChannelIds(
   userId: UserId | RawBuilder<unknown>,
   kind: TeamActor["kind"],
   localAclOnly = false,
 ) {
   return sql<TeamChannelId>`(${teamGroupPaths(userId)}
-    select c.id from team_channels c where (${kind}='human' or not ${teamChannelPeopleOnly()})
+    select c.id from team_channels c where (${kind}='human' or not ${teamChannelAgentsBlocked()})
     and exists(select 1 from team_members m where m.user_id=${userId} and m.state='active')
     and (${localAclOnly} or not exists(select 1 from team_shares s where s.channel_id=c.id and s.role='follower' and not s.ready and s.state<>'ended'))
     and (${localAclOnly} or not exists(select 1 from team_shares s join team_share_participants p on p.share_id=s.id
@@ -209,10 +213,10 @@ export class TeamAccessStore {
       Authority & { channelId: TeamChannelId }
     >`${teamGroupPaths(actor.userId)}
       select c.id as channel_id,${teamChannelPeopleOnly()} as people_only,
-      coalesce(bool_or(a.subject_id is not null),false) and (not ${teamChannelPeopleOnly()} or ${actor.kind}='human')
+      coalesce(bool_or(a.subject_id is not null),false) and (not ${teamChannelAgentsBlocked()} or ${actor.kind}='human')
         and not exists(select 1 from team_shares s where s.channel_id=c.id and s.role='follower' and not s.ready and s.state<>'ended')
         and not exists(select 1 from team_shares s join team_share_participants p on p.share_id=s.id where s.channel_id=c.id and s.role='follower' and p.principal_id=${actor.userId} and p.state='removed') as read,
-      coalesce(bool_or(a.level='post'),false) and c.archived_at is null and (not ${teamChannelPeopleOnly()} or ${actor.kind}='human')
+      coalesce(bool_or(a.level='post'),false) and c.archived_at is null and (not ${teamChannelAgentsBlocked()} or ${actor.kind}='human')
         and not exists(select 1 from team_shares s where s.channel_id=c.id and s.role='follower' and
           (s.state<>'active' or not s.ready or not exists(select 1 from team_sharing_settings where policy<>'off') or not exists(select 1 from team_partner_links l where l.id=s.partner_link_id and l.state='active') or not exists(select 1 from team_share_participants p where p.share_id=s.id and p.principal_id=${actor.userId} and p.state='active' and p.level='post'))) as post,
       (${actor.kind}='human' and (coalesce(bool_or(a.manage),false) or (c.kind in ('public','private') and m.role in ('owner','admin')))) as manage
@@ -458,13 +462,30 @@ export class TeamAccessStore {
         request.channelId,
       );
       const asker = request.presentation?.asker;
-      const askerAuthority = asker
-        ? await this.channel(
-            transaction,
-            { kind: asker.actor, userId: asker.teamUserId },
-            request.channelId,
-          )
+      const askerAllowed =
+        !asker ||
+        (await teamAskerCanPost(
+          transaction,
+          this,
+          { kind: asker.actor, userId: asker.teamUserId },
+          request.channelId,
+        ));
+      const share = request.shareId
+        ? await transaction
+            .selectFrom("teamShares")
+            .select(["state", "partnerLinkId"])
+            .where("id", "=", request.shareId)
+            .executeTakeFirst()
         : null;
+      const shareActive =
+        !request.shareId ||
+        (share?.state === "active" &&
+          !!(await transaction
+            .selectFrom("teamPartnerLinks")
+            .select("id")
+            .where("id", "=", share.partnerLinkId)
+            .where("state", "=", "active")
+            .executeTakeFirst()));
       const trigger =
         asker?.actor === "agent"
           ? await transaction
@@ -476,7 +497,8 @@ export class TeamAccessStore {
       if (
         links.has(request.linkId) ||
         (trigger?.agentLinkId && links.has(trigger.agentLinkId)) ||
-        (askerAuthority && (!askerAuthority.read || !askerAuthority.post)) ||
+        !askerAllowed ||
+        !shareActive ||
         !authority.read ||
         !authority.post ||
         requests.has(request.id)
@@ -496,9 +518,14 @@ export class TeamAccessStore {
         .forUpdate()
         .execute();
     const affectedRequests = pending.filter((r) => requests.has(r.id));
+    const sharedPending = await transaction
+      .selectFrom("teamShareAsks")
+      .select(["triggerMessageId", "threadRootId"])
+      .where("outcome", "is", null)
+      .execute();
     await lockTeamMessages(
       transaction,
-      affectedRequests.flatMap((r) => [r.threadRootId, r.triggerMessageId]),
+      [...affectedRequests, ...sharedPending].flatMap((r) => [r.threadRootId, r.triggerMessageId]),
     );
     if (affectedRequests.length)
       await transaction
@@ -512,6 +539,13 @@ export class TeamAccessStore {
         .orderBy("id")
         .forNoKeyUpdate()
         .execute();
+    await transaction
+      .selectFrom("teamShareAsks")
+      .select("id")
+      .where("outcome", "is", null)
+      .orderBy("id")
+      .forNoKeyUpdate()
+      .execute();
     for (const channelId of [...channels].sort()) {
       const affected = pending.filter((r) => r.channelId === channelId && requests.has(r.id));
       if (!affected.length) continue;
@@ -549,6 +583,8 @@ export class TeamAccessStore {
         }
       }
     }
+    for (const channelId of await cancelUnavailableSharedAsks(transaction, this))
+      channels.add(channelId);
     return { ...input, channels: [...channels], links: [...links], requests: [...requests] };
   }
   async contentWrite<Value>(

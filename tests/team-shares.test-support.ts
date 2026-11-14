@@ -1,3 +1,11 @@
+import { linkedPersonalHost } from "../apps/host/src/team-links/personal-host.test-support.js";
+import {
+  createTeamLinkEndpoint,
+  TeamLinkLifetimes,
+} from "../apps/host/src/team-link-endpoint/index.js";
+import { createTeamMachineAdapters } from "../apps/host/src/team/machine-adapters.js";
+import type { startTeamSystem } from "./team-system.test-support.js";
+import type { UserId } from "../packages/core/src/index.js";
 import { createId } from "../packages/core/src/index.js";
 import {
   pairFixture,
@@ -56,4 +64,62 @@ export async function sharedFixture() {
     await f.close();
     throw error;
   }
+}
+
+export async function sharedPersonalHost(
+  host: Awaited<ReturnType<typeof startTeamSystem>>,
+  userId: UserId,
+) {
+  const linkId = createId("teamLink");
+  await host.database
+    .insertInto("teamLinks")
+    .values({
+      id: linkId,
+      ownerUserId: userId,
+      personalDeploymentId: createId("deployment"),
+      state: "active",
+      codeHash: crypto.randomUUID(),
+      codeExpiresAt: new Date(),
+      credentialHash: crypto.randomUUID(),
+    })
+    .execute();
+  const lifetimes = new TeamLinkLifetimes();
+  const machine = createTeamLinkEndpoint({
+    database: host.database,
+    teamName: "Fixture",
+    requests: host.host.team.requests,
+    access: host.host.team.access,
+    resolver: host.host.team.access,
+    lifetimes,
+    ...createTeamMachineAdapters(host.host.team, {
+      topics: async () => {
+        throw new Error("Unexpected knowledge call");
+      },
+      readNotes: async () => {
+        throw new Error("Unexpected knowledge call");
+      },
+      write: async () => {
+        throw new Error("Unexpected knowledge call");
+      },
+    }),
+  });
+  const personal = await linkedPersonalHost(
+    {
+      database: host.database,
+      deploymentId: host.host.deployment.id,
+      hostInstanceId: host.host.deployment.activeHostInstanceId,
+      team: host.host.team,
+      machine,
+    },
+    userId,
+    linkId,
+  );
+  return {
+    ...personal,
+    linkId,
+    close: async () => {
+      lifetimes.stop();
+      await personal.close();
+    },
+  };
 }
