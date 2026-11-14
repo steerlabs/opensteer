@@ -1,4 +1,8 @@
-import { createToolImageStore, withGeneratedImageReplies } from "@opensteer/harness";
+import {
+  createToolImageStore,
+  withGeneratedImageReplies,
+  withStoredImages,
+} from "@opensteer/harness";
 import type { RunFileExecution } from "@opensteer/protocol";
 import { RunFileError, type RunFileAccess } from "../attachments/run-files.js";
 import { AppServerManager } from "../apps/app-server-manager.js";
@@ -3136,7 +3140,9 @@ export class RunnerRuntime {
     active: ActiveRun,
     session: HarnessSession,
   ): Promise<HarnessDurableEvent | undefined> {
-    for await (const event of withGeneratedImageReplies(session.events)) {
+    for await (const event of withGeneratedImageReplies(
+      withStoredImages(session.events, this.#imageStore),
+    )) {
       if (isHarnessLiveEvent(event)) {
         this.#appendLive(active, event);
         continue;

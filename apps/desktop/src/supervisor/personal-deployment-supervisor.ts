@@ -1795,6 +1795,7 @@ function hostSpec(
       OPENSTEER_DEPLOYMENT_NAME: manifest.name,
       OPENSTEER_DEPLOYMENT_KIND: "personal",
       OPENSTEER_HOST_DATA_DIR: paths.hostDataDirectory,
+      OPENSTEER_RUNNER_DATA_DIR: paths.runnerDataDirectory,
       OPENSTEER_HOST_INSTANCE_ID: manifest.hostInstanceId,
       OPENSTEER_HOST_KEY_FINGERPRINT: fingerprint,
       OPENSTEER_HOST_PRIVATE_KEY_PATH: paths.hostPrivateKeyPath,

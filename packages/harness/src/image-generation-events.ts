@@ -1,6 +1,35 @@
 import { createId, imageGenerationToolName } from "@opensteer/core";
 import { appendImageEmbeds } from "@opensteer/shared/markdownImages";
+import { dirname } from "node:path";
+import type { ToolImageStore } from "./output-images.js";
 import type { HarnessEvent } from "./types.js";
+
+/**
+ * Engine-saved image files move into the Runner's image store before they
+ * leave the Runner: an engine's own home can sit in private state the Host
+ * never serves, and an engine may clean up its copy later.
+ */
+export async function* withStoredImages(
+  events: AsyncIterable<HarnessEvent>,
+  store: ToolImageStore,
+): AsyncIterable<HarnessEvent> {
+  for await (const event of events) {
+    if (event.type !== "tool.completed" || !event.data.output.images || !store.putFile) {
+      yield event;
+      continue;
+    }
+    const images = await Promise.all(
+      event.data.output.images.map(async (image) => {
+        if (dirname(image.path) === store.directory) return image;
+        const stored = await store.putFile!(image.path);
+        return stored
+          ? { ...stored, ...(image.generated ? { generated: true as const } : {}) }
+          : image;
+      }),
+    );
+    yield { ...event, data: { ...event.data, output: { ...event.data.output, images } } };
+  }
+}
 
 /** Adapters settle generation calls before ending a turn; only this layer embeds their files. */
 export async function* withGeneratedImageReplies(

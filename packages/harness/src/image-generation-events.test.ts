@@ -1,6 +1,10 @@
 import { createId, createToolOutput, imageGenerationToolName } from "@opensteer/core";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { expect, it } from "vitest";
-import { withGeneratedImageReplies } from "./image-generation-events.js";
+import { withGeneratedImageReplies, withStoredImages } from "./image-generation-events.js";
+import { createToolImageStore } from "./output-images.js";
 import type { HarnessEvent } from "./types.js";
 const message: HarnessEvent = {
   type: "assistant.message",
@@ -74,4 +78,35 @@ it("never embeds a failed generation", async () => {
     message,
     terminal,
   ]);
+});
+
+it("moves engine-saved images into the Runner store and keeps unreadable ones as reported", async () => {
+  const root = await mkdtemp(join(tmpdir(), "stored-images-"));
+  try {
+    const store = createToolImageStore(join(root, "runner"));
+    const saved = join(root, "engine-home", "generated.png");
+    await mkdir(join(root, "engine-home"));
+    await writeFile(saved, Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0]));
+    async function* stream(): AsyncIterable<HarnessEvent> {
+      yield {
+        type: "tool.completed",
+        data: {
+          callId: "g",
+          isError: false,
+          output: createToolOutput("done", [
+            { path: saved, mediaType: "image/png", generated: true },
+            { path: join(root, "missing.png"), mediaType: "image/png" },
+          ]),
+        },
+      };
+    }
+    const result: HarnessEvent[] = [];
+    for await (const event of withStoredImages(stream(), store)) result.push(event);
+    const images = result[0]?.type === "tool.completed" ? result[0].data.output.images : [];
+    expect(images?.[0]).toMatchObject({ mediaType: "image/png", generated: true });
+    expect(images?.[0]?.path).toMatch(new RegExp(`^${store.directory}/[a-f0-9]{64}\\.png$`));
+    expect(images?.[1]).toEqual({ path: join(root, "missing.png"), mediaType: "image/png" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

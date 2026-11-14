@@ -149,6 +149,7 @@ it("resizes lazily, reuses disk previews and passes animated GIF and SVG through
   const gif = await mint(path.join(root, "animated.gif"), "preview");
   if (gif.status !== "ok") throw Error("Expected GIF");
   expect(gif.mediaType).toBe("image/gif");
+  expect(gif.url).toBe(((await mint(path.join(root, "animated.gif"))) as { url: string }).url);
   expect((await app.inject(gif.url)).rawPayload).toEqual(animated);
 });
 it("keeps media capabilities out of request and error log output", async () => {

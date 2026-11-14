@@ -71,8 +71,9 @@ export class AssetService {
   async urls(input: AssetUrlsInput, ownerId: UserId) {
     if (!(await this.options.owns(input.threadId, ownerId)))
       throw new OpensteerError({ code: "not_found", message: "Thread not found" });
-    const assets: AssetUrl[] = [];
-    for (const item of input.assets) assets.push(await this.#mint(item.path, item.variant));
+    const assets: AssetUrl[] = await Promise.all(
+      input.assets.map((item) => this.#mint(item.path, item.variant)),
+    );
     return { assets };
   }
   async #resolve(source: string): Promise<string | null> {
@@ -140,7 +141,9 @@ export class AssetService {
           ino: s.ino,
           size: s.size,
           mtimeMs: s.mtimeMs,
-          variant,
+          // A preview that would equal the original is the original's URL, so
+          // both share one cache entry and serving never inspects the image.
+          variant: preview ? "preview" : "original",
           exp,
         };
         const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
@@ -275,8 +278,7 @@ export class AssetService {
           const s = await handle.stat();
           const type = mediaType(c.path);
           if (!s.isFile() || !type || revision(s) !== revision(c)) return reply.code(404).send();
-          const metadata = await this.#metadata(c.path);
-          const preview = c.variant === "preview" && this.#resize(type, s.size, metadata);
+          const preview = c.variant === "preview";
           if (preview) {
             const cached = await this.#preview(c, handle);
             await handle.close();

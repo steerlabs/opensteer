@@ -8,6 +8,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { open as openFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   createToolOutput,
@@ -17,8 +18,13 @@ import {
 } from "@opensteer/core";
 
 export const toolImageMaxBytes = 10 * 1024 * 1024;
+/** Engine-saved files (image generation) may be larger than inline tool images. */
+export const savedImageMaxBytes = 32 * 1024 * 1024;
 export interface ToolImageStore {
   put(data: string, mediaType: string): ToolOutputImage;
+  /** Copy an engine-saved image file in; undefined when it is unreadable, too large or not an image. */
+  putFile?(path: string): Promise<ToolOutputImage | undefined>;
+  readonly directory?: string;
 }
 
 function imageType(bytes: Buffer): [ToolOutputImageMediaType, string] | undefined {
@@ -67,8 +73,39 @@ export function createToolImageStore(
     }
   };
   prune();
+  const save = (bytes: Buffer, type: [ToolOutputImageMediaType, string]): ToolOutputImage => {
+    const path = join(directory, `${createHash("sha256").update(bytes).digest("hex")}.${type[1]}`);
+    if (!existsSync(path)) {
+      const temporary = join(directory, `.${randomUUID()}.tmp`);
+      try {
+        writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" });
+        renameSync(temporary, path);
+      } finally {
+        if (existsSync(temporary)) unlinkSync(temporary);
+      }
+      if (++writes % 16 === 0) prune();
+    }
+    return { path, mediaType: type[0] };
+  };
   return {
+    directory,
     prune,
+    async putFile(path) {
+      try {
+        const handle = await openFile(path, "r");
+        try {
+          const { size } = await handle.stat();
+          if (size > savedImageMaxBytes) return undefined;
+          const bytes = await handle.readFile();
+          const type = imageType(bytes);
+          return type ? save(bytes, type) : undefined;
+        } finally {
+          await handle.close();
+        }
+      } catch {
+        return undefined;
+      }
+    },
     put(data, mediaType) {
       if (data.length > Math.ceil(toolImageMaxBytes / 3) * 4) throw new Error("too large");
       if (!data || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data))
@@ -77,21 +114,7 @@ export function createToolImageStore(
       if (bytes.length > toolImageMaxBytes) throw new Error("too large");
       const type = imageType(bytes);
       if (!type || type[0] !== mediaType) throw new Error("invalid image");
-      const path = join(
-        directory,
-        `${createHash("sha256").update(bytes).digest("hex")}.${type[1]}`,
-      );
-      if (!existsSync(path)) {
-        const temporary = join(directory, `.${randomUUID()}.tmp`);
-        try {
-          writeFileSync(temporary, bytes, { mode: 0o600, flag: "wx" });
-          renameSync(temporary, path);
-        } finally {
-          if (existsSync(temporary)) unlinkSync(temporary);
-        }
-        if (++writes % 16 === 0) prune();
-      }
-      return { path, mediaType: type[0] };
+      return save(bytes, type);
     },
   };
 }

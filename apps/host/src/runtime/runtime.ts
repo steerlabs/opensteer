@@ -2530,9 +2530,7 @@ export async function createHostRuntime(
         assets: new AssetService({
           authSecret: config.authSecret,
           dataDirectory,
-          runnerDataDirectory: resolve(
-            process.env.OPENSTEER_RUNNER_DATA_DIR ?? resolve(dataDirectory, "..", "runner"),
-          ),
+          runnerDataDirectory: config.runnerDataDirectory,
           agentHome: async () => (await personalExecution()).options.agentHome.path,
           owns: async (threadId, ownerId) =>
             Boolean(await store.getThreadForOwner(threadId, ownerId)),
