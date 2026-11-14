@@ -1,6 +1,9 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { OpensteerError, type TeamActor } from "@opensteer/core";
 import {
+  TeamPartnerDataFrameSchema,
+  TeamShareOperationSchema,
+  type TeamShareOperation,
   parseTeamPartnerOffer,
   TeamPartnerHelloSchema,
   TeamPartnerChallengeSchema,
@@ -33,14 +36,62 @@ interface Entry {
   teamId?: string;
   id?: string;
   active: boolean;
+  incoming: number;
 }
 export interface TeamPartnerNetwork {
   discover(origin: string, signal: AbortSignal): Promise<unknown>;
   connectSocket(origin: string, path: string, signal: AbortSignal): Promise<WebSocket>;
 }
 
+interface PartnerDataHandler {
+  receive(linkId: string, operation: TeamShareOperation): Promise<unknown>;
+  reply(linkId: string, operation: TeamShareOperation, send: () => Promise<void>): Promise<void>;
+  changed(linkId: string, shareId: string, generation: number): Promise<void>;
+  connected(linkId: string): Promise<void>;
+  revoked(linkId: string): Promise<void>;
+}
 export class TeamPartners {
   readonly #entries = new Set<Entry>();
+  readonly #pending = new Map<
+    string,
+    { entry: Entry; resolve: (value: unknown) => void; reject: (error: Error) => void }
+  >();
+  #data: PartnerDataHandler | undefined;
+  setDataHandler(handler: PartnerDataHandler) {
+    this.#data = handler;
+  }
+
+  async request(linkId: string, operation: TeamShareOperation): Promise<unknown> {
+    const entry = [...this.#entries].find(
+      (e) => e.id === linkId && e.active && e.peer.socket.readyState === 1,
+    );
+    if (
+      !entry ||
+      this.#pending.size >= 256 ||
+      [...this.#pending.values()].filter((p) => p.entry === entry).length >= 32
+    )
+      throw partnerError("partner-unreachable");
+    const id = randomUUID();
+    try {
+      return await withTimeout(
+        new Promise<unknown>((resolve, reject) => {
+          this.#pending.set(id, { entry, resolve, reject });
+          void entry.peer.send({ type: "share.request", id, operation }).catch(reject);
+        }),
+        5000,
+        { timeoutError: () => partnerError("partner-unreachable") },
+      );
+    } finally {
+      this.#pending.delete(id);
+    }
+  }
+  async hint(linkId: string, shareId: string, generation: number) {
+    await Promise.all(
+      [...this.#entries]
+        .filter((e) => e.id === linkId && e.active)
+        .map((e) => e.peer.send({ type: "share.changed", shareId, generation })),
+    );
+  }
   readonly #jobs = new Set<Promise<unknown>>();
   readonly #opening = new Map<string, Promise<void>>();
   readonly #retry = new Map<string, ReturnType<typeof setTimeout>>();
@@ -167,6 +218,7 @@ export class TeamPartners {
 
   async revoke(actor: TeamActor, id: string) {
     await this.store.revoke(id, actor);
+    await this.#data?.revoked(id);
     const row = await this.store.get(id);
     if (row) await this.#closeLink(id, { type: "revoked" });
     this.#cancelRetry(id);
@@ -201,9 +253,13 @@ export class TeamPartners {
   }
 
   #entry(socket: WebSocket) {
-    const entry: Entry = { peer: new PartnerSocket(socket), active: false };
+    const entry: Entry = { peer: new PartnerSocket(socket), active: false, incoming: 0 };
     this.#entries.add(entry);
-    void entry.peer.closed.then(() => this.#entries.delete(entry));
+    void entry.peer.closed.then(() => {
+      this.#entries.delete(entry);
+      for (const pending of this.#pending.values())
+        if (pending.entry === entry) pending.reject(partnerError("partner-unreachable"));
+    });
     return entry;
   }
 
@@ -355,10 +411,91 @@ export class TeamPartners {
   }
 
   async #receive(entry: Entry, row: PartnerRow) {
+    if (entry.active && this.#data)
+      this.#track(
+        this.#data.connected(row.id).catch(async (error: unknown) => {
+          this.options.onError();
+          if (!(
+            error instanceof OpensteerError && error.reason === "shared-channel-update-required"
+          ))
+            await entry.peer.close();
+        }),
+      );
     for (;;) {
-      const frame = TeamPartnerControlSchema.parse(await entry.peer.next());
+      const raw = await entry.peer.next();
+      const data = TeamPartnerDataFrameSchema.safeParse(raw);
+      if (data.success) {
+        if (!entry.active || !this.#data) throw partnerError();
+        const frame = data.data;
+        if (frame.type === "share.response") {
+          const pending = this.#pending.get(frame.id);
+          if (pending?.entry === entry) {
+            if (frame.ok) pending.resolve(frame.result);
+            else
+              pending.reject(
+                frame.reason === "retryable"
+                  ? new OpensteerError({
+                      code: "resource_exhausted",
+                      reason: "partner-retry-later",
+                      retryable: true,
+                      message: "Shared channel is temporarily limited",
+                      details: { retryAfterMs: frame.retryAfterMs ?? 1000 },
+                    })
+                  : partnerError(frame.reason ?? "not-found"),
+              );
+          }
+        } else if (frame.type === "share.changed") {
+          if (entry.incoming >= 32) throw partnerError();
+          entry.incoming++;
+          this.#track(
+            this.#data
+              .changed(row.id, frame.shareId, frame.generation)
+              .finally(() => entry.incoming--),
+          );
+        } else {
+          if (entry.incoming >= 32) throw partnerError();
+          const operation = TeamShareOperationSchema.safeParse(frame.operation);
+          if (!operation.success) {
+            await entry.peer.send({
+              type: "share.response",
+              id: frame.id,
+              ok: false,
+              reason: "not-found",
+            });
+            continue;
+          }
+          const handler = this.#data;
+          entry.incoming++;
+          this.#track(
+            handler
+              .receive(row.id, operation.data)
+              .then((result) =>
+                handler.reply(row.id, operation.data, () =>
+                  entry.peer.send({ type: "share.response", id: frame.id, ok: true, result }),
+                ),
+              )
+              .catch((error: unknown) =>
+                entry.peer.send({
+                  type: "share.response",
+                  id: frame.id,
+                  ok: false,
+                  reason:
+                    error instanceof OpensteerError && error.retryable ? "retryable" : "not-found",
+                  ...(error instanceof OpensteerError &&
+                  typeof error.details?.retryAfterMs === "number"
+                    ? { retryAfterMs: error.details.retryAfterMs }
+                    : {}),
+                }),
+              )
+              .finally(() => entry.incoming--),
+          );
+        }
+        continue;
+      }
+      const frame = TeamPartnerControlSchema.parse(raw);
       if (frame.type === "revoked") {
         await this.store.revoke(row.id);
+        await this.#data?.revoked(row.id);
         await this.#closeLink(row.id);
         return;
       }

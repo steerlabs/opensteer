@@ -14,6 +14,10 @@ import {
 export const TeamChannelKindSchema = z.enum(["public", "private", "dm", "group_dm"]);
 export type TeamChannelKind = z.infer<typeof TeamChannelKindSchema>;
 export const TeamAudienceSchema = z.strictObject({
+  externalTeams: z
+    .array(z.strictObject({ teamId: DeploymentIdSchema, name: z.string().min(1).max(160) }))
+    .max(1)
+    .optional(),
   teamName: z.string().min(1).max(160),
   channelName: z.string().min(1).max(160),
   channelKind: TeamChannelKindSchema,

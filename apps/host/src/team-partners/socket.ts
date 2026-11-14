@@ -82,8 +82,11 @@ export class PartnerSocket {
       this.socket.terminate();
       return Promise.reject(partnerError("partner-disconnected"));
     }
+    const encoded = JSON.stringify(frame);
+    if (Buffer.byteLength(encoded) > teamPartnerMaxFrameBytes)
+      return Promise.reject(partnerError("partner-frame-too-large"));
     return new Promise((resolve, reject) =>
-      this.socket.send(JSON.stringify(frame), (error) => (error ? reject(error) : resolve())),
+      this.socket.send(encoded, (error) => (error ? reject(error) : resolve())),
     );
   }
 

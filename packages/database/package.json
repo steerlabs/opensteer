@@ -20,6 +20,7 @@
     "./team-principals": "./src/team-principals-store.ts",
     "./team-groups": "./src/team-groups-store.ts",
     "./team-invites": "./src/team-invites-store.ts",
+    "./team-shares": "./src/team-shares-store.ts",
     "./team-chat": "./src/team-chat-store.ts",
     "./team-files": "./src/team-files-store.ts",
     "./team-audit": "./src/team-audit-store.ts",

@@ -1991,6 +1991,9 @@ export interface DatabaseSchema {
   teamChannels: TeamChannelTable;
   teamChannelMembers: TeamChannelMemberTable;
   teamChannelMemberState: TeamChannelMemberStateTable;
+  teamShares: TeamShareTable;
+  teamShareParticipants: TeamShareParticipantTable;
+  teamShareRelays: TeamShareRelayTable;
   teamMessages: TeamMessageTable;
   teamMentions: TeamMentionTable;
   teamMessagePins: TeamMessagePinTable;
@@ -2406,6 +2409,9 @@ export interface TeamChannelMemberStateTable {
   updatedAt: Timestamp;
 }
 export interface TeamMessageTable {
+  publicId: Generated<string>;
+  createdSeq: Generated<string>;
+  ownerChangeSeq: Generated<string | null>;
   agentLinkId: Generated<TeamLinkId | null>;
   personalDeploymentId: Generated<DeploymentId | null>;
   callerRunId: Generated<RunId | null>;
@@ -2651,4 +2657,48 @@ export interface TeamPartnerLinkTable {
   lastError: "identity-mismatch" | "unsupported-partner-version" | "unreachable" | null;
   revokedAt: NullableTimestamp;
   revokedBy: "local" | "partner" | null;
+}
+
+export interface TeamShareTable {
+  historyFromShareId: string | null;
+  syncError: Generated<"update-required" | null>;
+  storedRows: Generated<number>;
+  storedBytes: Generated<string>;
+  id: string;
+  channelId: TeamChannelId | null;
+  partnerLinkId: string;
+  role: "owner" | "follower";
+  state: "offered" | "active" | "ended";
+  generation: number;
+  name: string;
+  peopleOnly: boolean;
+  offeredBy: UserId | null;
+  acceptedBy: UserId | null;
+  localApproved: boolean;
+  cursor: Generated<string>;
+  creationCursor: Generated<string>;
+  cursorPublicId: Generated<string>;
+  ready: Generated<boolean>;
+  createdAt: Timestamp;
+  endedAt: NullableTimestamp;
+}
+export interface TeamShareParticipantTable {
+  blocked: Generated<boolean>;
+  shareId: string;
+  principalId: UserId;
+  handle: TeamHandle;
+  level: "read" | "post";
+  state: "active" | "removed";
+}
+export interface TeamShareRelayTable {
+  agentLinkId: Generated<TeamLinkId | null>;
+  personalDeploymentId: Generated<DeploymentId | null>;
+  callerRunId: Generated<RunId | null>;
+  shareId: string;
+  authorUserId: UserId;
+  authorKind: "human" | "agent";
+  clientMessageId: string;
+  bodyMarkdown: string;
+  threadRootPublicId: string | null;
+  publicId: string | null;
 }

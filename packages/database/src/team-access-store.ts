@@ -52,13 +52,20 @@ export function teamGroupPaths(userId: UserId | RawBuilder<unknown>) {
     where cardinality(p.path)<16 and not e.parent_group_id=any(p.path)
   )`;
 }
+export function teamChannelPeopleOnly() {
+  return sql<boolean>`(c.people_only or exists(select 1 from team_shares s where s.channel_id=c.id and s.role='follower' and s.people_only))`;
+}
 export function teamReadableChannelIds(
   userId: UserId | RawBuilder<unknown>,
   kind: TeamActor["kind"],
+  localAclOnly = false,
 ) {
   return sql<TeamChannelId>`(${teamGroupPaths(userId)}
-    select c.id from team_channels c where (${kind}='human' or not c.people_only)
+    select c.id from team_channels c where (${kind}='human' or not ${teamChannelPeopleOnly()})
     and exists(select 1 from team_members m where m.user_id=${userId} and m.state='active')
+    and (${localAclOnly} or not exists(select 1 from team_shares s where s.channel_id=c.id and s.role='follower' and not s.ready and s.state<>'ended'))
+    and (${localAclOnly} or not exists(select 1 from team_shares s join team_share_participants p on p.share_id=s.id
+      where s.channel_id=c.id and s.role='follower' and p.principal_id=${userId} and p.state='removed'))
     and exists(select 1 from team_channel_members a where a.channel_id=c.id and
       ((a.subject_kind='person' and a.subject_id=${userId}) or
        (a.subject_kind='group' and a.subject_id in (select id from member_groups))))
@@ -73,6 +80,9 @@ export class TeamAccessStore {
   readonly #sessions = new AsyncLocalStorage<{ sessionId: AuthSessionId; userId: UserId }>();
   #revision: Sequence = SequenceSchema.parse("0");
   readonly #closers = new Set<(effects: TeamStoreAccessEffects) => Promise<void> | void>();
+  readonly #beforeCommit = new Set<
+    (transaction: Transaction<DatabaseSchema>, effects: TeamStoreAccessEffects) => Promise<void>
+  >();
   readonly database: Kysely<DatabaseSchema>;
   constructor(database: Kysely<DatabaseSchema>) {
     this.database = database;
@@ -119,6 +129,18 @@ export class TeamAccessStore {
     this.#closers.add(close);
     return () => {
       this.#closers.delete(close);
+    };
+  }
+  /** Hooks run under the access fence and use only this transaction. */
+  beforeAccessCommit(
+    write: (
+      transaction: Transaction<DatabaseSchema>,
+      effects: TeamStoreAccessEffects,
+    ) => Promise<void>,
+  ) {
+    this.#beforeCommit.add(write);
+    return () => {
+      this.#beforeCommit.delete(write);
     };
   }
   async link(transaction: Transaction<DatabaseSchema>, actor: TeamActor, linkId: TeamLinkId) {
@@ -186,9 +208,13 @@ export class TeamAccessStore {
     const result = await sql<
       Authority & { channelId: TeamChannelId }
     >`${teamGroupPaths(actor.userId)}
-      select c.id as channel_id,c.people_only,
-      coalesce(bool_or(a.subject_id is not null),false) and (not c.people_only or ${actor.kind}='human') as read,
-      coalesce(bool_or(a.level='post'),false) and c.archived_at is null and (not c.people_only or ${actor.kind}='human') as post,
+      select c.id as channel_id,${teamChannelPeopleOnly()} as people_only,
+      coalesce(bool_or(a.subject_id is not null),false) and (not ${teamChannelPeopleOnly()} or ${actor.kind}='human')
+        and not exists(select 1 from team_shares s where s.channel_id=c.id and s.role='follower' and not s.ready and s.state<>'ended')
+        and not exists(select 1 from team_shares s join team_share_participants p on p.share_id=s.id where s.channel_id=c.id and s.role='follower' and p.principal_id=${actor.userId} and p.state='removed') as read,
+      coalesce(bool_or(a.level='post'),false) and c.archived_at is null and (not ${teamChannelPeopleOnly()} or ${actor.kind}='human')
+        and not exists(select 1 from team_shares s where s.channel_id=c.id and s.role='follower' and
+          (s.state<>'active' or not s.ready or not exists(select 1 from team_sharing_settings where policy<>'off') or not exists(select 1 from team_partner_links l where l.id=s.partner_link_id and l.state='active') or not exists(select 1 from team_share_participants p where p.share_id=s.id and p.principal_id=${actor.userId} and p.state='active' and p.level='post'))) as post,
       (${actor.kind}='human' and (coalesce(bool_or(a.manage),false) or (c.kind in ('public','private') and m.role in ('owner','admin')))) as manage
       from team_channels c join team_members m on m.user_id=${actor.userId} and m.state='active'
       left join team_channel_members a on a.channel_id=c.id and ((a.subject_kind='person' and a.subject_id=m.user_id) or (a.subject_kind='group' and a.subject_id in(select id from member_groups)))
@@ -223,9 +249,12 @@ export class TeamAccessStore {
     };
   }
   async mutate<Value>(
-    write: (
-      transaction: Transaction<DatabaseSchema>,
-    ) => Promise<{ readonly value: Value; readonly effects: TeamStoreAccessEffects }>,
+    write: (transaction: Transaction<DatabaseSchema>) => Promise<{
+      readonly value: Value;
+      readonly effects: TeamStoreAccessEffects;
+      /** Content-only replication must not invalidate unrelated buffered reads. */
+      readonly accessChanged?: boolean;
+    }>,
     afterAuthority?: (transaction: Transaction<DatabaseSchema>, value: Value) => Promise<void>,
   ): Promise<Value> {
     const committed = await this.database.transaction().execute(async (transaction) => {
@@ -247,6 +276,8 @@ export class TeamAccessStore {
         .execute();
       await this.checkSession(transaction);
       const result = await write(transaction);
+      if (result.accessChanged === false) return { ...result, revision: null };
+      for (const write of this.#beforeCommit) await write(transaction, result.effects);
       const effects = await this.#terminalize(transaction, result.effects);
       await afterAuthority?.(transaction, result.value);
       const state = await transaction
@@ -261,6 +292,7 @@ export class TeamAccessStore {
         .executeTakeFirstOrThrow();
       return { ...result, effects, revision: SequenceSchema.parse(state.revision) };
     });
+    if (committed.revision === null) return committed.value;
     if (BigInt(committed.revision) > BigInt(this.#revision)) this.#revision = committed.revision;
     const closed = await Promise.allSettled(
       [...this.#closers].map((close) =>

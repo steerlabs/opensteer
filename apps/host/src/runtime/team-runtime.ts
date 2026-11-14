@@ -1,7 +1,11 @@
 import { TeamPartners } from "../team-partners/service.js";
 import { TeamPartnerStore } from "../team-partners/store.js";
 import { registerTeamPartnerRoutes } from "../team-partners/routes.js";
-import { teamPartnerCapability, teamPartnerSocketPath } from "@opensteer/protocol";
+import {
+  teamPartnerCapability,
+  teamShareCapability,
+  teamPartnerSocketPath,
+} from "@opensteer/protocol";
 import { rejectDuplicateCredentialHeaders } from "../identity/request-credential-headers.js";
 import { teamOidcStatePrefix, teamOAuthVersionParameter } from "@opensteer/deployment-authority";
 import Fastify from "fastify";
@@ -348,6 +352,7 @@ export async function createTeamHostRuntime(input: {
         bootstrapMethods: ["oidc"],
         capabilities: [
           teamPartnerCapability,
+          teamShareCapability,
           ...(config.identity.nativeOAuth
             ? ["native-oauth", "team-session-exchange-v1", "team-native-browser-return-v1"]
             : []),

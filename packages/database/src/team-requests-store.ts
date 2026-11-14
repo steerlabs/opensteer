@@ -457,6 +457,46 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       .where("id", "=", linkId)
       .executeTakeFirstOrThrow();
     const actor = { kind: "agent" as const, userId: link.ownerUserId };
+    const relayed = await this.chat.relay?.send(actor, {
+      channelId: input.channelId,
+      threadRootId: input.threadRootId ?? null,
+      clientMessageId: input.clientMessageId,
+      bodyMarkdown: input.bodyMarkdown,
+      mentions: [],
+      attachmentIds: input.attachmentIds,
+      linkId,
+      ...(input.runId ? { runId: input.runId } : {}),
+      ...(input.requestId ? { agentRequestId: input.requestId } : {}),
+    });
+    if (relayed) {
+      await this.access.contentWrite(actor, input.channelId, async (t, a) => {
+        requireTeam(a.post);
+        await this.access.link(t, actor, linkId);
+        await t
+          .updateTable("teamMessages")
+          .set({
+            agentLinkId: linkId,
+            personalDeploymentId: link.personalDeploymentId,
+            callerRunId: input.runId ?? null,
+            operationId: input.clientMessageId,
+          })
+          .where("channelId", "=", input.channelId)
+          .where("id", "=", relayed.message.id)
+          .execute();
+        await appendTeamAudit(t, {
+          actor,
+          runId: input.runId,
+          operationId: input.clientMessageId,
+          action: "agent.post",
+          metadata: { personalDeploymentId: link.personalDeploymentId },
+          resourceKind: "message",
+          resourceId: relayed.message.id,
+          linkId,
+          channelId: input.channelId,
+        });
+      });
+      return { messageId: relayed.message.id, askOutcomes: relayed.askOutcomes };
+    }
     const result = await this.access.contentWrite(actor, input.channelId, async (t, authority) => {
       await this.access.link(t, actor, linkId);
       requireTeam(authority.post);

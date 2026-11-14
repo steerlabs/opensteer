@@ -110,7 +110,23 @@ describe("fresh personal/team lineage", () => {
     );
     const before = await database.selectFrom("teamMessages").selectAll().execute();
     await migrateToLatest(database);
-    expect(await database.selectFrom("teamMessages").selectAll().execute()).toEqual(before);
+    const after = await database.selectFrom("teamMessages").selectAll().execute();
+    expect(
+      after.map(
+        ({
+          publicId: _publicId,
+          createdSeq: _createdSeq,
+          ownerChangeSeq: _ownerChangeSeq,
+          ...original
+        }) => original,
+      ),
+    ).toEqual(before);
+    expect(
+      after.map((row) => ({ createdSeq: row.createdSeq, ownerChangeSeq: row.ownerChangeSeq })),
+    ).toEqual([{ createdSeq: "1", ownerChangeSeq: null }]);
+    expect(after[0]!.publicId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
     expect(
       (
         await database

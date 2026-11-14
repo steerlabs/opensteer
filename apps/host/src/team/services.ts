@@ -1,3 +1,4 @@
+import { TeamShares } from "../team-partners/shares.js";
 import type { TeamPartners } from "../team-partners/service.js";
 import {
   OpensteerError,
@@ -35,7 +36,12 @@ import {
 import { TeamMembersStore } from "@opensteer/database/team-members";
 import { TeamGroupsStore } from "@opensteer/database/team-groups";
 import { TeamInvitesStore, type TeamInviteVerifierVault } from "@opensteer/database/team-invites";
-import { TeamChatStore, teamMessageViews, teamRequestView } from "@opensteer/database/team-chat";
+import {
+  TeamChatStore,
+  teamContentPeople,
+  teamMessageViews,
+  teamRequestView,
+} from "@opensteer/database/team-chat";
 import { TeamFilesStore } from "@opensteer/database/team-files";
 import { TeamAuditStore } from "@opensteer/database/team-audit";
 import { TeamNoticesStore } from "@opensteer/database/team-notices";
@@ -109,6 +115,14 @@ export async function startTeamServices(options: TeamServiceOptions) {
     teamName: options.teamName,
     agentOnline: (ownerUserId) => options.machine?.isOnline?.(ownerUserId) ?? false,
   });
+  const shares = options.partners
+    ? new TeamShares(
+        options.partners,
+        chat,
+        () => options.backgroundError("team-maintenance"),
+        async () => (await options.hostedTeam?.())?.generalChannelId ?? null,
+      )
+    : undefined;
   const links = new TeamLinkService(access, {
     teamName: options.teamName,
     teamId: options.teamId,
@@ -195,6 +209,38 @@ export async function startTeamServices(options: TeamServiceOptions) {
     if (command.type.startsWith("team.knowledge."))
       return options.knowledge.command(actor, command);
     switch (command.type) {
+      case "team.share.participant.remove":
+      case "team.share.participant.restore":
+        requireTeam(shares);
+        await shares.store.setParticipant(
+          actor,
+          command.shareId,
+          command.principalId,
+          command.type === "team.share.participant.remove",
+        );
+        break;
+      case "team.share.offer":
+        requireTeam(shares);
+        return {
+          type: command.type,
+          ...(await shares.offer(
+            actor,
+            command.channelId,
+            command.linkId,
+            command.historyVisibleConfirmed,
+          )),
+        };
+      case "team.share.approve":
+        requireTeam(shares);
+        await shares.approve(actor, command.shareId);
+        break;
+      case "team.share.accept":
+        requireTeam(shares);
+        return { type: command.type, ...(await shares.accept(actor, command.shareId, command)) };
+      case "team.share.end":
+        requireTeam(shares);
+        await shares.end(command.shareId, actor);
+        break;
       case "team.partner.invite.create":
         requireTeam(options.partners);
         return { type: command.type, ...(await options.partners.store.createInvite(actor)) };
@@ -398,6 +444,12 @@ export async function startTeamServices(options: TeamServiceOptions) {
       case "team.partner.invite.preview":
         requireTeam(options.partners);
         return options.partners.preview(actor, teamReadSchemas[name].input.parse(raw).offer);
+      case "team.share.participants.get":
+        requireTeam(shares);
+        return shares.store.participants(actor, teamReadSchemas[name].input.parse(raw));
+      case "team.shares.list":
+        requireTeam(shares);
+        return shares.store.list(actor, teamReadSchemas[name].input.parse(raw).channelId);
       case "team.partners.list":
         requireTeam(options.partners);
         return options.partners.store.list(
@@ -549,8 +601,10 @@ export async function startTeamServices(options: TeamServiceOptions) {
           if (input.channelId) query = query.where("m.channelId", "=", input.channelId);
           if (input.before) query = query.where("m.id", "<", input.before);
           const rows = await query.orderBy("m.id", "desc").limit(51).execute();
+          const messages = await teamMessageViews(t, rows.slice(0, 50));
           return {
-            messages: await teamMessageViews(t, rows.slice(0, 50)),
+            people: await teamContentPeople(t, messages),
+            messages,
             hasMore: rows.length > 50,
           };
         });
@@ -565,6 +619,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
   return {
     kind: "team" as const,
     partners: options.partners,
+    shares,
     access,
     resolver: access,
     locks: access,
@@ -690,6 +745,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
       unsubscribe();
       unsubscribeRequests();
       unsubscribeMachine();
+      await shares?.close();
       realtime.close();
       fileService.close();
       await Promise.all([pushing, maintaining]);

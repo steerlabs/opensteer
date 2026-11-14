@@ -2,6 +2,39 @@
   "teamApiVersion": 5,
   "minimumTeamApiVersion": 5,
   "input": {
+    "rpc team.share.participants.get": {
+      "type": "object",
+      "properties": {
+        "channelId": {
+          "type": "string",
+          "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "after": {
+          "type": "string",
+          "maxLength": 48,
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        }
+      },
+      "required": [
+        "channelId"
+      ],
+      "additionalProperties": false
+    },
+    "rpc team.shares.list": {
+      "type": "object",
+      "properties": {
+        "channelId": {
+          "type": "string",
+          "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        }
+      },
+      "additionalProperties": false
+    },
     "rpc team.partners.list": {
       "type": "object",
       "properties": {
@@ -649,6 +682,229 @@
     "rpc sessions.list": {
       "type": "object",
       "properties": {},
+      "additionalProperties": false
+    },
+    "command team.share.participant.restore": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.share.participant.restore"
+        },
+        "shareId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        "principalId": {
+          "type": "string",
+          "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        }
+      },
+      "required": [
+        "type",
+        "shareId",
+        "principalId"
+      ],
+      "additionalProperties": false
+    },
+    "command team.share.participant.remove": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.share.participant.remove"
+        },
+        "shareId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        "principalId": {
+          "type": "string",
+          "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        }
+      },
+      "required": [
+        "type",
+        "shareId",
+        "principalId"
+      ],
+      "additionalProperties": false
+    },
+    "command team.share.offer": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.share.offer"
+        },
+        "channelId": {
+          "type": "string",
+          "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "linkId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        "historyVisibleConfirmed": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "type",
+        "channelId",
+        "linkId",
+        "historyVisibleConfirmed"
+      ],
+      "additionalProperties": false
+    },
+    "command team.share.approve": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.share.approve"
+        },
+        "shareId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        }
+      },
+      "required": [
+        "type",
+        "shareId"
+      ],
+      "additionalProperties": false
+    },
+    "command team.share.accept": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.share.accept"
+        },
+        "shareId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "public",
+            "private"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "peopleOnly": {
+          "type": "boolean"
+        },
+        "access": {
+          "maxItems": 1000,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "subject": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "person"
+                      },
+                      "userId": {
+                        "type": "string",
+                        "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "userId"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "group"
+                      },
+                      "groupId": {
+                        "type": "string",
+                        "pattern": "^tgr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "groupId"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              },
+              "level": {
+                "type": "string",
+                "enum": [
+                  "read",
+                  "post"
+                ]
+              },
+              "manage": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "subject",
+              "level",
+              "manage"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "type",
+        "shareId",
+        "id",
+        "kind",
+        "name",
+        "peopleOnly",
+        "access"
+      ],
+      "additionalProperties": false
+    },
+    "command team.share.end": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.share.end"
+        },
+        "shareId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        }
+      },
+      "required": [
+        "type",
+        "shareId"
+      ],
       "additionalProperties": false
     },
     "command team.partner.invite.create": {
@@ -2548,6 +2804,195 @@
     }
   },
   "output": {
+    "rpc team.share.participants.get": {
+      "type": "object",
+      "properties": {
+        "participants": {
+          "maxItems": 50,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "userId": {
+                "type": "string",
+                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              },
+              "handle": {
+                "type": "string",
+                "maxLength": 48,
+                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+              },
+              "level": {
+                "type": "string",
+                "enum": [
+                  "read",
+                  "post"
+                ]
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "removed"
+                ]
+              }
+            },
+            "required": [
+              "userId",
+              "handle",
+              "level",
+              "state"
+            ]
+          }
+        },
+        "people": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "handle": {
+                "type": "string",
+                "maxLength": 48,
+                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+              },
+              "homeTeamName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "external": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "name",
+              "handle",
+              "homeTeamName",
+              "external"
+            ]
+          }
+        },
+        "nextCursor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 48,
+              "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "participants",
+        "people",
+        "nextCursor"
+      ]
+    },
+    "rpc team.shares.list": {
+      "type": "object",
+      "properties": {
+        "shares": {
+          "maxItems": 50,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "historyFromShareId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "channelId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "partnerName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "owner",
+                  "follower"
+                ]
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "offered",
+                  "active",
+                  "ended"
+                ]
+              },
+              "generation": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "ready": {
+                "type": "boolean"
+              },
+              "localApproved": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "channelId",
+              "partnerName",
+              "role",
+              "state",
+              "generation",
+              "name",
+              "ready",
+              "localApproved"
+            ]
+          }
+        }
+      },
+      "required": [
+        "shares"
+      ]
+    },
     "rpc team.partners.list": {
       "type": "object",
       "properties": {
@@ -3024,6 +3469,43 @@
                   "channel": {
                     "type": "object",
                     "properties": {
+                      "share": {
+                        "type": "object",
+                        "properties": {
+                          "updateRequired": {
+                            "type": "boolean"
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "shared",
+                              "disconnected"
+                            ]
+                          },
+                          "role": {
+                            "type": "string",
+                            "enum": [
+                              "owner",
+                              "follower"
+                            ]
+                          },
+                          "teamId": {
+                            "type": "string",
+                            "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                          },
+                          "teamName": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160
+                          }
+                        },
+                        "required": [
+                          "state",
+                          "role",
+                          "teamId",
+                          "teamName"
+                        ]
+                      },
                       "id": {
                         "type": "string",
                         "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -3230,6 +3712,43 @@
               "channel": {
                 "type": "object",
                 "properties": {
+                  "share": {
+                    "type": "object",
+                    "properties": {
+                      "updateRequired": {
+                        "type": "boolean"
+                      },
+                      "state": {
+                        "type": "string",
+                        "enum": [
+                          "shared",
+                          "disconnected"
+                        ]
+                      },
+                      "role": {
+                        "type": "string",
+                        "enum": [
+                          "owner",
+                          "follower"
+                        ]
+                      },
+                      "teamId": {
+                        "type": "string",
+                        "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                      },
+                      "teamName": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 160
+                      }
+                    },
+                    "required": [
+                      "state",
+                      "role",
+                      "teamId",
+                      "teamName"
+                    ]
+                  },
                   "id": {
                     "type": "string",
                     "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -3401,6 +3920,43 @@
           "items": {
             "type": "object",
             "properties": {
+              "share": {
+                "type": "object",
+                "properties": {
+                  "updateRequired": {
+                    "type": "boolean"
+                  },
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "shared",
+                      "disconnected"
+                    ]
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "owner",
+                      "follower"
+                    ]
+                  },
+                  "teamId": {
+                    "type": "string",
+                    "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                  },
+                  "teamName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 160
+                  }
+                },
+                "required": [
+                  "state",
+                  "role",
+                  "teamId",
+                  "teamName"
+                ]
+              },
               "id": {
                 "type": "string",
                 "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -3506,6 +4062,43 @@
     "rpc team.channel.get": {
       "type": "object",
       "properties": {
+        "share": {
+          "type": "object",
+          "properties": {
+            "updateRequired": {
+              "type": "boolean"
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "shared",
+                "disconnected"
+              ]
+            },
+            "role": {
+              "type": "string",
+              "enum": [
+                "owner",
+                "follower"
+              ]
+            },
+            "teamId": {
+              "type": "string",
+              "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "teamName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            }
+          },
+          "required": [
+            "state",
+            "role",
+            "teamId",
+            "teamName"
+          ]
+        },
         "id": {
           "type": "string",
           "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -3735,6 +4328,43 @@
     "rpc team.messages.page": {
       "type": "object",
       "properties": {
+        "people": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "handle": {
+                "type": "string",
+                "maxLength": 48,
+                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+              },
+              "homeTeamName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "external": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "name",
+              "handle",
+              "homeTeamName",
+              "external"
+            ]
+          }
+        },
         "messages": {
           "maxItems": 50,
           "type": "array",
@@ -4187,6 +4817,43 @@
         "channel": {
           "type": "object",
           "properties": {
+            "share": {
+              "type": "object",
+              "properties": {
+                "updateRequired": {
+                  "type": "boolean"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "shared",
+                    "disconnected"
+                  ]
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "owner",
+                    "follower"
+                  ]
+                },
+                "teamId": {
+                  "type": "string",
+                  "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                "teamName": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160
+                }
+              },
+              "required": [
+                "state",
+                "role",
+                "teamId",
+                "teamName"
+              ]
+            },
             "id": {
               "type": "string",
               "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -4300,6 +4967,43 @@
     "rpc team.thread.page": {
       "type": "object",
       "properties": {
+        "people": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "handle": {
+                "type": "string",
+                "maxLength": 48,
+                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+              },
+              "homeTeamName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "external": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "name",
+              "handle",
+              "homeTeamName",
+              "external"
+            ]
+          }
+        },
         "messages": {
           "maxItems": 50,
           "type": "array",
@@ -4752,6 +5456,43 @@
         "channel": {
           "type": "object",
           "properties": {
+            "share": {
+              "type": "object",
+              "properties": {
+                "updateRequired": {
+                  "type": "boolean"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "shared",
+                    "disconnected"
+                  ]
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "owner",
+                    "follower"
+                  ]
+                },
+                "teamId": {
+                  "type": "string",
+                  "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                "teamName": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160
+                }
+              },
+              "required": [
+                "state",
+                "role",
+                "teamId",
+                "teamName"
+              ]
+            },
             "id": {
               "type": "string",
               "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -5277,6 +6018,43 @@
               "changeSeq"
             ]
           }
+        },
+        "people": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "handle": {
+                "type": "string",
+                "maxLength": 48,
+                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+              },
+              "homeTeamName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "external": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "name",
+              "handle",
+              "homeTeamName",
+              "external"
+            ]
+          }
         }
       },
       "required": [
@@ -5753,6 +6531,43 @@
     "rpc team.search": {
       "type": "object",
       "properties": {
+        "people": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "handle": {
+                "type": "string",
+                "maxLength": 48,
+                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+              },
+              "homeTeamName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "external": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "name",
+              "handle",
+              "homeTeamName",
+              "external"
+            ]
+          }
+        },
         "results": {
           "maxItems": 50,
           "type": "array",
@@ -6235,6 +7050,29 @@
                   "audience": {
                     "type": "object",
                     "properties": {
+                      "externalTeams": {
+                        "maxItems": 1,
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "teamId": {
+                              "type": "string",
+                              "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                            },
+                            "name": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 160
+                            }
+                          },
+                          "required": [
+                            "teamId",
+                            "name"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
                       "teamName": {
                         "type": "string",
                         "minLength": 1,
@@ -7413,6 +8251,43 @@
     "rpc team.mentions.page": {
       "type": "object",
       "properties": {
+        "people": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "handle": {
+                "type": "string",
+                "maxLength": 48,
+                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+              },
+              "homeTeamName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "external": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "name",
+              "handle",
+              "homeTeamName",
+              "external"
+            ]
+          }
+        },
         "messages": {
           "maxItems": 50,
           "type": "array",
@@ -7867,6 +8742,43 @@
     "rpc team.pins.page": {
       "type": "object",
       "properties": {
+        "people": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "handle": {
+                "type": "string",
+                "maxLength": 48,
+                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+              },
+              "homeTeamName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "external": {
+                "type": "boolean",
+                "const": true
+              }
+            },
+            "required": [
+              "name",
+              "handle",
+              "homeTeamName",
+              "external"
+            ]
+          }
+        },
         "messages": {
           "maxItems": 50,
           "type": "array",
@@ -8978,6 +9890,227 @@
         "sessions"
       ]
     },
+    "command team.share.participant.restore": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.share.participant.restore"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "command team.share.participant.remove": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.share.participant.remove"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "command team.share.offer": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.share.offer"
+        },
+        "shareId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        }
+      },
+      "required": [
+        "type",
+        "shareId"
+      ]
+    },
+    "command team.share.approve": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.share.approve"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "command team.share.accept": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.share.accept"
+        },
+        "channel": {
+          "type": "object",
+          "properties": {
+            "share": {
+              "type": "object",
+              "properties": {
+                "updateRequired": {
+                  "type": "boolean"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "shared",
+                    "disconnected"
+                  ]
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "owner",
+                    "follower"
+                  ]
+                },
+                "teamId": {
+                  "type": "string",
+                  "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                "teamName": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160
+                }
+              },
+              "required": [
+                "state",
+                "role",
+                "teamId",
+                "teamName"
+              ]
+            },
+            "id": {
+              "type": "string",
+              "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "public",
+                "private",
+                "dm",
+                "group_dm"
+              ]
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "peopleOnly": {
+              "type": "boolean"
+            },
+            "archivedAt": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "changeSeq": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "latestMessageId": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 19,
+                  "pattern": "^[1-9][0-9]*$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "can": {
+              "type": "object",
+              "properties": {
+                "read": {
+                  "type": "boolean"
+                },
+                "post": {
+                  "type": "boolean"
+                },
+                "manage": {
+                  "type": "boolean"
+                },
+                "join": {
+                  "type": "boolean"
+                },
+                "leave": {
+                  "type": "boolean"
+                },
+                "wakeOwnAgent": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "read",
+                "post",
+                "manage",
+                "join",
+                "leave",
+                "wakeOwnAgent"
+              ]
+            },
+            "instructionsMarkdown": {
+              "type": "string",
+              "maxLength": 16384
+            },
+            "instructionsRevision": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "name",
+            "peopleOnly",
+            "archivedAt",
+            "changeSeq",
+            "latestMessageId",
+            "can",
+            "instructionsMarkdown",
+            "instructionsRevision"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "channel"
+      ]
+    },
+    "command team.share.end": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.share.end"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
     "command team.partner.invite.create": {
       "type": "object",
       "properties": {
@@ -9307,6 +10440,43 @@
         "channel": {
           "type": "object",
           "properties": {
+            "share": {
+              "type": "object",
+              "properties": {
+                "updateRequired": {
+                  "type": "boolean"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "shared",
+                    "disconnected"
+                  ]
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "owner",
+                    "follower"
+                  ]
+                },
+                "teamId": {
+                  "type": "string",
+                  "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                "teamName": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160
+                }
+              },
+              "required": [
+                "state",
+                "role",
+                "teamId",
+                "teamName"
+              ]
+            },
             "id": {
               "type": "string",
               "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -9461,6 +10631,43 @@
         "channel": {
           "type": "object",
           "properties": {
+            "share": {
+              "type": "object",
+              "properties": {
+                "updateRequired": {
+                  "type": "boolean"
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "shared",
+                    "disconnected"
+                  ]
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "owner",
+                    "follower"
+                  ]
+                },
+                "teamId": {
+                  "type": "string",
+                  "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                "teamName": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160
+                }
+              },
+              "required": [
+                "state",
+                "role",
+                "teamId",
+                "teamName"
+              ]
+            },
             "id": {
               "type": "string",
               "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -11326,6 +12533,43 @@
                 {
                   "type": "object",
                   "properties": {
+                    "people": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string",
+                        "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160
+                          },
+                          "handle": {
+                            "type": "string",
+                            "maxLength": 48,
+                            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                          },
+                          "homeTeamName": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160
+                          },
+                          "external": {
+                            "type": "boolean",
+                            "const": true
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "handle",
+                          "homeTeamName",
+                          "external"
+                        ]
+                      }
+                    },
                     "agentRecipients": {
                       "maxItems": 200,
                       "type": "array",
@@ -11438,6 +12682,43 @@
                     "channel": {
                       "type": "object",
                       "properties": {
+                        "share": {
+                          "type": "object",
+                          "properties": {
+                            "updateRequired": {
+                              "type": "boolean"
+                            },
+                            "state": {
+                              "type": "string",
+                              "enum": [
+                                "shared",
+                                "disconnected"
+                              ]
+                            },
+                            "role": {
+                              "type": "string",
+                              "enum": [
+                                "owner",
+                                "follower"
+                              ]
+                            },
+                            "teamId": {
+                              "type": "string",
+                              "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                            },
+                            "teamName": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 160
+                            }
+                          },
+                          "required": [
+                            "state",
+                            "role",
+                            "teamId",
+                            "teamName"
+                          ]
+                        },
                         "id": {
                           "type": "string",
                           "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -12194,6 +13475,43 @@
                 {
                   "type": "object",
                   "properties": {
+                    "people": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string",
+                        "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160
+                          },
+                          "handle": {
+                            "type": "string",
+                            "maxLength": 48,
+                            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                          },
+                          "homeTeamName": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160
+                          },
+                          "external": {
+                            "type": "boolean",
+                            "const": true
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "handle",
+                          "homeTeamName",
+                          "external"
+                        ]
+                      }
+                    },
                     "agentRecipients": {
                       "maxItems": 200,
                       "type": "array",
@@ -12306,6 +13624,43 @@
                     "channel": {
                       "type": "object",
                       "properties": {
+                        "share": {
+                          "type": "object",
+                          "properties": {
+                            "updateRequired": {
+                              "type": "boolean"
+                            },
+                            "state": {
+                              "type": "string",
+                              "enum": [
+                                "shared",
+                                "disconnected"
+                              ]
+                            },
+                            "role": {
+                              "type": "string",
+                              "enum": [
+                                "owner",
+                                "follower"
+                              ]
+                            },
+                            "teamId": {
+                              "type": "string",
+                              "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                            },
+                            "teamName": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 160
+                            }
+                          },
+                          "required": [
+                            "state",
+                            "role",
+                            "teamId",
+                            "teamName"
+                          ]
+                        },
                         "id": {
                           "type": "string",
                           "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -13092,6 +14447,43 @@
                       "channel": {
                         "type": "object",
                         "properties": {
+                          "share": {
+                            "type": "object",
+                            "properties": {
+                              "updateRequired": {
+                                "type": "boolean"
+                              },
+                              "state": {
+                                "type": "string",
+                                "enum": [
+                                  "shared",
+                                  "disconnected"
+                                ]
+                              },
+                              "role": {
+                                "type": "string",
+                                "enum": [
+                                  "owner",
+                                  "follower"
+                                ]
+                              },
+                              "teamId": {
+                                "type": "string",
+                                "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                              },
+                              "teamName": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 160
+                              }
+                            },
+                            "required": [
+                              "state",
+                              "role",
+                              "teamId",
+                              "teamName"
+                            ]
+                          },
                           "id": {
                             "type": "string",
                             "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -14451,6 +15843,29 @@
                           "audience": {
                             "type": "object",
                             "properties": {
+                              "externalTeams": {
+                                "maxItems": 1,
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "teamId": {
+                                      "type": "string",
+                                      "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                    },
+                                    "name": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 160
+                                    }
+                                  },
+                                  "required": [
+                                    "teamId",
+                                    "name"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              },
                               "teamName": {
                                 "type": "string",
                                 "minLength": 1,
@@ -14657,6 +16072,29 @@
                       "audience": {
                         "type": "object",
                         "properties": {
+                          "externalTeams": {
+                            "maxItems": 1,
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "teamId": {
+                                  "type": "string",
+                                  "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                },
+                                "name": {
+                                  "type": "string",
+                                  "minLength": 1,
+                                  "maxLength": 160
+                                }
+                              },
+                              "required": [
+                                "teamId",
+                                "name"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
                           "teamName": {
                             "type": "string",
                             "minLength": 1,
@@ -15312,6 +16750,29 @@
                                 "audience": {
                                   "type": "object",
                                   "properties": {
+                                    "externalTeams": {
+                                      "maxItems": 1,
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "properties": {
+                                          "teamId": {
+                                            "type": "string",
+                                            "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                          },
+                                          "name": {
+                                            "type": "string",
+                                            "minLength": 1,
+                                            "maxLength": 160
+                                          }
+                                        },
+                                        "required": [
+                                          "teamId",
+                                          "name"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
                                     "teamName": {
                                       "type": "string",
                                       "minLength": 1,
@@ -15408,6 +16869,29 @@
                             "audience": {
                               "type": "object",
                               "properties": {
+                                "externalTeams": {
+                                  "maxItems": 1,
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "teamId": {
+                                        "type": "string",
+                                        "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                      },
+                                      "name": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 160
+                                      }
+                                    },
+                                    "required": [
+                                      "teamId",
+                                      "name"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
                                 "teamName": {
                                   "type": "string",
                                   "minLength": 1,
@@ -15456,6 +16940,29 @@
                         "audience": {
                           "type": "object",
                           "properties": {
+                            "externalTeams": {
+                              "maxItems": 1,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "teamId": {
+                                    "type": "string",
+                                    "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                  },
+                                  "name": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 160
+                                  }
+                                },
+                                "required": [
+                                  "teamId",
+                                  "name"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
                             "teamName": {
                               "type": "string",
                               "minLength": 1,
@@ -15586,6 +17093,43 @@
                         "page": {
                           "type": "object",
                           "properties": {
+                            "people": {
+                              "type": "object",
+                              "propertyNames": {
+                                "type": "string",
+                                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                              },
+                              "additionalProperties": {
+                                "type": "object",
+                                "properties": {
+                                  "name": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 160
+                                  },
+                                  "handle": {
+                                    "type": "string",
+                                    "maxLength": 48,
+                                    "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                                  },
+                                  "homeTeamName": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 160
+                                  },
+                                  "external": {
+                                    "type": "boolean",
+                                    "const": true
+                                  }
+                                },
+                                "required": [
+                                  "name",
+                                  "handle",
+                                  "homeTeamName",
+                                  "external"
+                                ]
+                              }
+                            },
                             "messages": {
                               "maxItems": 50,
                               "type": "array",
@@ -16038,6 +17582,43 @@
                             "channel": {
                               "type": "object",
                               "properties": {
+                                "share": {
+                                  "type": "object",
+                                  "properties": {
+                                    "updateRequired": {
+                                      "type": "boolean"
+                                    },
+                                    "state": {
+                                      "type": "string",
+                                      "enum": [
+                                        "shared",
+                                        "disconnected"
+                                      ]
+                                    },
+                                    "role": {
+                                      "type": "string",
+                                      "enum": [
+                                        "owner",
+                                        "follower"
+                                      ]
+                                    },
+                                    "teamId": {
+                                      "type": "string",
+                                      "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                    },
+                                    "teamName": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 160
+                                    }
+                                  },
+                                  "required": [
+                                    "state",
+                                    "role",
+                                    "teamId",
+                                    "teamName"
+                                  ]
+                                },
                                 "id": {
                                   "type": "string",
                                   "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -16186,6 +17767,29 @@
                             "audience": {
                               "type": "object",
                               "properties": {
+                                "externalTeams": {
+                                  "maxItems": 1,
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "teamId": {
+                                        "type": "string",
+                                        "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                      },
+                                      "name": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                        "maxLength": 160
+                                      }
+                                    },
+                                    "required": [
+                                      "teamId",
+                                      "name"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
                                 "teamName": {
                                   "type": "string",
                                   "minLength": 1,
@@ -16253,6 +17857,43 @@
                     "result": {
                       "type": "object",
                       "properties": {
+                        "people": {
+                          "type": "object",
+                          "propertyNames": {
+                            "type": "string",
+                            "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                          },
+                          "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                              "name": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 160
+                              },
+                              "handle": {
+                                "type": "string",
+                                "maxLength": 48,
+                                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                              },
+                              "homeTeamName": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 160
+                              },
+                              "external": {
+                                "type": "boolean",
+                                "const": true
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "handle",
+                              "homeTeamName",
+                              "external"
+                            ]
+                          }
+                        },
                         "results": {
                           "maxItems": 50,
                           "type": "array",
@@ -16735,6 +18376,29 @@
                                   "audience": {
                                     "type": "object",
                                     "properties": {
+                                      "externalTeams": {
+                                        "maxItems": 1,
+                                        "type": "array",
+                                        "items": {
+                                          "type": "object",
+                                          "properties": {
+                                            "teamId": {
+                                              "type": "string",
+                                              "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                            },
+                                            "name": {
+                                              "type": "string",
+                                              "minLength": 1,
+                                              "maxLength": 160
+                                            }
+                                          },
+                                          "required": [
+                                            "teamId",
+                                            "name"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      },
                                       "teamName": {
                                         "type": "string",
                                         "minLength": 1,
@@ -17345,6 +19009,29 @@
                         "audience": {
                           "type": "object",
                           "properties": {
+                            "externalTeams": {
+                              "maxItems": 1,
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "teamId": {
+                                    "type": "string",
+                                    "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                  },
+                                  "name": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 160
+                                  }
+                                },
+                                "required": [
+                                  "teamId",
+                                  "name"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
                             "teamName": {
                               "type": "string",
                               "minLength": 1,
@@ -17425,6 +19112,43 @@
                           "items": {
                             "type": "object",
                             "properties": {
+                              "share": {
+                                "type": "object",
+                                "properties": {
+                                  "updateRequired": {
+                                    "type": "boolean"
+                                  },
+                                  "state": {
+                                    "type": "string",
+                                    "enum": [
+                                      "shared",
+                                      "disconnected"
+                                    ]
+                                  },
+                                  "role": {
+                                    "type": "string",
+                                    "enum": [
+                                      "owner",
+                                      "follower"
+                                    ]
+                                  },
+                                  "teamId": {
+                                    "type": "string",
+                                    "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                                  },
+                                  "teamName": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 160
+                                  }
+                                },
+                                "required": [
+                                  "state",
+                                  "role",
+                                  "teamId",
+                                  "teamName"
+                                ]
+                              },
                               "id": {
                                 "type": "string",
                                 "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
