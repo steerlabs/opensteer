@@ -58,7 +58,11 @@ import { boundPageRestore, ElectronPageRestoreSchema, WakeSeeds } from "./page-r
 import {
   applyBrowserSessionPolicy,
   bindBrowserSessionRequestGate,
+  browserAcceptLanguages,
+  browserIdentity,
+  chromeUserAgent,
   updateBrowserPasskeyPolicy,
+  type BrowserIdentity,
   type BrowserSessionRequestGate,
 } from "./browser-session-policy.js";
 import {
@@ -155,6 +159,15 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     if (!path.isAbsolute(options.pagePolicyPreloadPath)) {
       throw new TypeError("The browser page policy preload path must be absolute.");
     }
+    // Contents that never see a session user agent (popups' first documents,
+    // passkey pages, local-profile pages before their override lands) fall
+    // back to the app default, so the default itself must not name the app
+    // or Electron. The app's own service traffic is the opposite: device
+    // lists label it "Opensteer app" from the Electron token, so the default
+    // session keeps the branded agent explicitly.
+    const brandedFallback = app.userAgentFallback;
+    app.userAgentFallback = chromeUserAgent(brandedFallback);
+    electronSession.defaultSession.setUserAgent(brandedFallback);
     this.#localProfileRoot = options.localProfileRoot;
     this.#onLocalProfileOpenTiming = options.onLocalProfileOpenTiming;
     this.#onLocalProfileDiagnostic = options.onLocalProfileDiagnostic;
@@ -315,6 +328,7 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
       return;
     }
     applyBrowserSessionPolicy(profileSession, {
+      acceptLanguages: browserAcceptLanguages(app.getPreferredSystemLanguages()),
       onMainFrameRequest: (id, method) => {
         if (this.#methods.has(id)) this.#methods.set(id, method);
       },
@@ -842,6 +856,16 @@ class ElectronBrowserContext implements BrowserContext {
       this.#providerConfig,
       timing,
       this.#options.protection,
+      browserIdentity(this.#profileSession.getUserAgent(), {
+        architecture: process.arch === "arm64" ? "arm" : process.arch === "x64" ? "x86" : "",
+        bitness: process.arch === "arm64" || process.arch === "x64" ? "64" : "",
+        platformVersion:
+          process.platform === "darwin" && typeof process.getSystemVersion === "function"
+            ? process.getSystemVersion()
+            : "",
+        fullVersion: process.versions.chrome,
+      }),
+      browserAcceptLanguages(app.getPreferredSystemLanguages()),
     );
     this.#pages.add(page);
     page.onClose(() => {
@@ -893,6 +917,7 @@ class ElectronBrowserContext implements BrowserContext {
           : []),
       ],
       allowRunningInsecureContent: false,
+      autoplayPolicy: "document-user-activation-required",
       backgroundThrottling: true,
       contextIsolation: true,
       devTools: false,
@@ -1058,6 +1083,8 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       uploading: () => false,
       downloading: () => false,
     }),
+    identity?: BrowserIdentity,
+    acceptLanguage?: string,
   ) {
     this.view = view;
     this.initialLoad = initialLoad;
@@ -1084,6 +1111,26 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     // Own dialogs before that first script, ahead of the hub's renderer-dependent
     // Runtime initialization, and keep an opening until the ledger subscribes.
     if (!authenticator && !inspector.isAttached()) inspector.attach("1.3");
+    // A fromPath (local profile) session's user agent never reaches its
+    // contents in Electron 44, so present the session identity per page. The
+    // metadata must accompany the string: without it Chromium empties
+    // navigator.userAgentData while the wire still carries client hints.
+    // Pages whose debugger the passkey bridge owns attach during bootstrap,
+    // after this point, so the identity is applied again once it resolves;
+    // until then the app fallback covers these pages.
+    let identityApplied = false;
+    const applyIdentity = () => {
+      if (identityApplied || !identity || !inspector.isAttached()) return;
+      identityApplied = true;
+      void inspector
+        .sendCommand("Emulation.setUserAgentOverride", {
+          userAgent: identity.userAgent,
+          ...(identity.userAgentMetadata ? { userAgentMetadata: identity.userAgentMetadata } : {}),
+          ...(acceptLanguage ? { acceptLanguage } : {}),
+        })
+        .catch(() => undefined);
+    };
+    applyIdentity();
     const pageEnabled = authenticator ? undefined : inspector.sendCommand("Page.enable");
     // The passkey policy has two hooks, each where its timing holds. Electron
     // has no pause-on-start and answers this registration only from a
@@ -1127,6 +1174,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     const platform = authenticator
       ? Promise.resolve(this.#hub.bootstrapPlatform(installBridge))
       : this.#hub.open("platform");
+    void platform.then(applyIdentity, () => undefined);
     if (authenticator)
       void timedPolicy()
         .catch(() => this.close())

@@ -91,7 +91,7 @@ export const browser_profile_request = defineAgentTool({
   name: "browser_profile_request",
   title: "Request a browser profile",
   description:
-    "Ask the person for a browser profile when none in browser_profile_list fits: they want a new one, or the work needs a separate identity. Never for signed-out work (open a Guest tab) or an already available profile (open it). Only the person creates or grants profiles. Suggest an existing profileId, or a new name of one or two plain words such as Brex, Work or Finance; the person may choose differently. Returns the Request outcome; open the profile it names. Pending gives no profile.",
+    "Ask the person for a browser profile when none in browser_profile_list fits: they want a new one, or the work needs a separate identity. Never for an already available profile (open it), and not merely because work is signed-out: a profile still browses signed-out sites with a normal, aged identity, while a Guest tab is a brand-new browser that sites challenge more. Only the person creates or grants profiles. Suggest an existing profileId, or a new name of one or two plain words such as Brex, Work or Finance; the person may choose differently. Returns the Request outcome; open the profile it names. Pending gives no profile.",
   input: z
     .strictObject({
       reason: z.string().trim().min(1).max(500).describe("Why this task needs the profile."),
