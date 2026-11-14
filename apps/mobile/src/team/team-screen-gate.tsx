@@ -1,6 +1,10 @@
-import { Fragment, useState, type ReactNode } from "react";
-import { useNavigation } from "@react-navigation/native";
+import { Fragment, useCallback, useState, type ReactNode } from "react";
+import { useFocusEffect, useNavigation, useRoute } from "@react-navigation/native";
 import { ActivityIndicator, Alert, StyleSheet, View } from "react-native";
+import { isRecord } from "@opensteer/shared/isRecord";
+import { TeamChannelIdSchema, TeamMessageIdSchema } from "@opensteer/core";
+import { HostClientRequestError, unwrapRpcResult } from "@opensteer/client/host";
+import { sideMemory } from "../side-memory.js";
 import { color, space } from "../theme.js";
 import { Notice, PrimaryButton } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
@@ -58,7 +62,45 @@ function AccountTeamScreen({
 }): ReactNode {
   const teams = useMobileTeams();
   const navigation = useNavigation();
-  const { team, snapshot, failure } = useTeamSession(teamId);
+  const { team, session, snapshot, failure } = useTeamSession(teamId);
+  const route = useRoute();
+  const params = isRecord(route.params) ? route.params : {};
+  const channelId = typeof params["channelId"] === "string" ? params["channelId"] : null;
+  const rootId = typeof params["rootId"] === "string" ? params["rootId"] : null;
+  useFocusEffect(
+    useCallback(() => {
+      if (session === null || channelId === null) return;
+      let current = true;
+      const read =
+        rootId === null
+          ? session.rpc["team.channel.get"]({ channelId: TeamChannelIdSchema.parse(channelId) })
+          : session.rpc["team.message.get"]({
+              channelId: TeamChannelIdSchema.parse(channelId),
+              messageId: TeamMessageIdSchema.parse(rootId),
+            });
+      void read.then(unwrapRpcResult).catch((error: unknown) => {
+        if (
+          !current ||
+          !(error instanceof HostClientRequestError) ||
+          !["forbidden", "not_found"].includes(error.code)
+        )
+          return;
+        const state = navigation.getState();
+        if (state === undefined) return;
+        const action = sideMemory.trim(
+          state,
+          (candidate) =>
+            isRecord(candidate.params) &&
+            candidate.params["teamId"] === teamId &&
+            candidate.params["channelId"] === channelId,
+        );
+        if (action !== null) navigation.dispatch(action);
+      });
+      return () => {
+        current = false;
+      };
+    }, [channelId, navigation, rootId, session, teamId, snapshot.contentGeneration]),
+  );
   const [busy, setBusy] = useState(false);
   const state = team?.state;
   if ((state === "live" || state === "offline" || state === "loading") && snapshot.bootstrap)
@@ -107,7 +149,7 @@ function AccountTeamScreen({
             ) : null}
             <PrimaryButton
               label="Remove from this phone"
-              onPress={() => void teams.forget(teamId).then(() => navigation.goBack())}
+              onPress={() => void teams.forget(teamId)}
             />
           </>
         )}

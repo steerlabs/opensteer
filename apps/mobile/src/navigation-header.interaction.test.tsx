@@ -152,9 +152,13 @@ describe("the Menu in a top-level screen's bar", () => {
     expect(leadingItems().map((item) => item.label)).toEqual(["Menu"]);
   });
 
-  it("leaves a drill-in's bar to its Back", () => {
+  it("keeps Back on a drill-in and adds Menu only while the sidebar is a drawer", () => {
     harness.routeKey = "subagent";
-    mount(false);
-    expect(harness.options).toEqual({});
+    const render = mount(false);
+    expect(harness.options["headerBackVisible"]).toBe(true);
+    expect(leadingItems().map((item) => item.label)).toEqual(["Menu"]);
+    render(true);
+    expect(harness.options["headerBackVisible"]).toBe(true);
+    expect(leadingItems()).toEqual([]);
   });
 });

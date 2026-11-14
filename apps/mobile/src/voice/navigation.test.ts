@@ -2,8 +2,16 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { paramsDestination, type SurfacesRoute } from "../browser/surface-route.js";
 import { navigationRef } from "../navigation-ref.js";
 import { show } from "./navigation.js";
+const ref = vi.hoisted(() => ({
+  isReady: vi.fn(() => true),
+  getCurrentRoute: vi.fn(),
+  getRootState: vi.fn(),
+  dispatch: vi.fn(),
+}));
 vi.mock("@react-navigation/native", () => ({
+  createNavigationContainerRef: () => ref,
   CommonActions: {
+    reset: (payload: object) => ({ type: "RESET", payload }),
     setParams: (params: object) => ({ type: "SET_PARAMS", payload: { params } }),
   },
   StackActions: {
@@ -11,16 +19,13 @@ vi.mock("@react-navigation/native", () => ({
     popTo: (name: string, params: object) => ({ type: "POP_TO", payload: { name, params } }),
   },
 }));
-vi.mock("../navigation-ref.js", () => ({
-  navigationRef: {
-    isReady: vi.fn(() => true),
-    getCurrentRoute: vi.fn(),
-    dispatch: vi.fn(),
-  },
-}));
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(navigationRef.dispatch).mockReset();
+  ref.getRootState.mockImplementation(() => ({
+    index: 1,
+    routes: [{ key: "home", name: "Home", params: { deploymentId: "d" } }, ref.getCurrentRoute()],
+  }));
 });
 it("reports failure when navigation is not ready", () => {
   vi.mocked(navigationRef.isReady).mockReturnValueOnce(false);
@@ -99,7 +104,7 @@ it("changes A to B to C in place, preserving the Thread below and clearing trans
   expect(navigationRef.dispatch).toHaveBeenCalledTimes(2);
   vi.mocked(navigationRef.dispatch).mockReset();
 });
-it("pushes the first place from a Thread or a different deployment", () => {
+it("enters the first place through its side from a Thread or a different deployment", () => {
   for (const route of [
     { key: "thread", name: "Thread" as const, params: { deploymentId: "d", threadId: "t" } },
     {
@@ -113,7 +118,7 @@ it("pushes the first place from a Thread or a different deployment", () => {
       show("d", { kind: "place", destination: { kind: "browser", sessionId: "s", tabId: "B" } }),
     ).toBe(true);
     expect(navigationRef.dispatch).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: "PUSH" }),
+      expect.objectContaining({ type: "RESET" }),
     );
   }
 });

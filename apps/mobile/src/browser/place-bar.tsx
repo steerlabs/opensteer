@@ -59,12 +59,15 @@ export function ToolbarLeave(props: { readonly ownRow?: boolean }): ReactNode {
   if (verticalBar && props.ownRow !== true) return null;
   if (topLevel) return <ToolbarMenuButton />;
   return (
-    <ToolbarButton
-      accessibilityHint="Returns to the previous screen"
-      label="Back"
-      onPress={() => navigation.goBack()}
-      symbol="chevron.left"
-    />
+    <>
+      <ToolbarButton
+        accessibilityHint="Returns to the previous screen"
+        label="Back"
+        onPress={() => navigation.goBack()}
+        symbol="chevron.left"
+      />
+      <ToolbarMenuButton />
+    </>
   );
 }
 

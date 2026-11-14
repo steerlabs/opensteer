@@ -1,22 +1,12 @@
-import { CommonActions, StackActions, type NavigationAction } from "@react-navigation/native";
+import type { NavigationAction } from "@react-navigation/native";
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
-import { isRecord } from "@opensteer/shared/isRecord";
+import { sideMemory } from "./side-memory.js";
 import { presentedFrom } from "./navigation-presentations.js";
 
 /**
- * Top-level screens and drill-ins: what a screen's leading control and its
- * edge swipe mean.
- *
- * A Deployment's stack is always `[Home, top-level?, ...drill-ins]`, with
- * sheets over any of them. Home, the New task composer, is the root and stays
- * mounted under everything. The top-level screen is Home itself or the one
- * screen directly on it: a task, a team's channel or place, Automations, Tabs,
- * a tab, Done or Search, chosen from the sidebar, a notification or a link. It has the Menu
- * where Back would be, and its edge swipe opens the sidebar. Whatever is opened
- * from inside it is a drill-in with the native Back and its swipe.
- *
- * Position decides, not the route's name: the same task is top-level from the
- * sidebar and a drill-in from the task that started it.
+ * Home stays mounted beneath one active side's route chain. Its first screen
+ * owns the sidebar edge swipe; drill-ins keep native Back and its swipe.
+ * Every non-presented screen can open Menu while the sidebar is a drawer.
  */
 
 /** Screens that may be top-level. Anything else on Home, such as phone setup, is a drill-in. */
@@ -27,6 +17,7 @@ const topLevelRoutes: ReadonlySet<string> = new Set([
   "Schedules",
   "Tabs",
   "TaskSearch",
+  "TeamHome",
   "TeamChannel",
   "TeamChannels",
   "TeamKnowledge",
@@ -96,39 +87,7 @@ export const topLevelScreenOptions: NativeStackNavigationOptions = {
   headerBackVisible: false,
 };
 
-/**
- * Params that say where in a screen to land. A screen spends its landing once
- * it is shown, so landing again needs a fresh screen.
- */
-const landingParams: ReadonlySet<string> = new Set(["messageId", "requestId"]);
-
-/**
- * The action that makes `target` top-level, or null when it already is and is in front.
- *
- * The same screen keeps its mount: drill-ins over it close. Anything else,
- * including a new landing in it, replaces it and everything over it, over the
- * same mounted Home, so moving around the sidebar never grows the stack and
- * Home keeps its draft.
- */
+/** An explicit sidebar/link destination, preserving the other sides' addresses. */
 export function openTopLevel(state: StackView, target: TopLevelTarget): NavigationAction | null {
-  const index = topLevelIndex(state);
-  const home = state.routes[0];
-  if (index === null || home === undefined) return null;
-  if (target.name === "Home") return state.index === 0 ? null : StackActions.popToTop();
-  const current = state.routes[index];
-  if (index === 1 && current !== undefined && sameScreen(current, target))
-    return state.index === 1 ? null : StackActions.pop(state.index - 1);
-  // Home's own route, key and all, so the router keeps it mounted.
-  const action = CommonActions.reset({ index: 1, routes: [home, target] });
-  return { payload: action.payload ?? {}, type: action.type };
-}
-
-function sameScreen(route: StackRoute, target: TopLevelTarget): boolean {
-  const current = isRecord(route.params) ? route.params : {};
-  return (
-    route.name === target.name &&
-    Object.entries(target.params).every(
-      ([key, value]) => !landingParams.has(key) && current[key] === value,
-    )
-  );
+  return sideMemory.enter(state, target);
 }

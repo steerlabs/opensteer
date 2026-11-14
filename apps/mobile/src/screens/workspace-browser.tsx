@@ -406,6 +406,7 @@ function Focused(props: {
    * is going.
    */
   const onClosed = useCallback(() => {
+    if (!navigation.isFocused()) return;
     const state = navigation.getState();
     const index = state?.index ?? 0;
     const current = hostClient.getSnapshot();
@@ -870,8 +871,9 @@ function BrowserTab(props: {
   const latestClosed = useRef(onClosed);
   latestClosed.current = onClosed;
   useEffect(() => {
-    if (popupEnded && props.presence.interactive) latestClosed.current();
-  }, [popupEnded, props.presence.interactive]);
+    if ((popupEnded || lookup.closed === true) && props.presence.interactive)
+      latestClosed.current();
+  }, [lookup.closed, popupEnded, props.presence.interactive]);
 
   if ((live || local) && session !== null)
     return (

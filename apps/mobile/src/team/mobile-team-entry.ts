@@ -9,11 +9,10 @@ import {
   type MockTeamHost,
 } from "@opensteer/client/team";
 import { DeploymentIdSchema, type DeploymentId } from "@opensteer/core";
-import { StackActions } from "@react-navigation/native";
 import * as Linking from "expo-linking";
 import type { MobileClient, MobileClientState } from "../client/mobile-client.js";
 import { mockTeamConnection } from "../client/mock-mode.js";
-import { navigationRef } from "../navigation-ref.js";
+import { enterSide, navigationRef } from "../navigation-ref.js";
 import type { MobileTeams } from "./mobile-teams.js";
 import type { TeamEntry } from "./team-context.js";
 import {
@@ -129,9 +128,11 @@ export async function openTeamGeneral(
       channels[0]
     )?.channel.id;
   if (!navigationRef.isReady()) return;
-  navigationRef.dispatch(StackActions.popToTop());
-  if (channelId === undefined) navigationRef.navigate("TeamChannels", { teamId: teamDeploymentId });
-  else navigationRef.navigate("TeamChannel", { teamId: teamDeploymentId, channelId });
+  enterSide(
+    channelId === undefined
+      ? { name: "TeamHome", params: { teamId: teamDeploymentId } }
+      : { name: "TeamChannel", params: { teamId: teamDeploymentId, channelId } },
+  );
 }
 
 /**

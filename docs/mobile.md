@@ -41,13 +41,17 @@ definitive identity or epoch refusal revokes the attachment and fences pending c
 
 ## Navigation
 
-One native stack serves every screen, so links, notifications and folding keep one history. A
-screen's position decides what its leading control and edge swipe do, never its route name
-([top-level.ts](../apps/mobile/src/top-level.ts)): the screen directly on Home is top-level, with
-Menu and a swipe that opens the sidebar; anything opened from it is a drill-in with Back. The same
-task is top-level from the sidebar and a drill-in from the task that started it. The sidebar swipe is
-edge-only and never takes an edge a streamed page uses, because a swipe anywhere on content fires by
-accident, and Android reserves both edges for system Back.
+One native stack keeps Home mounted beneath the active side. Tasks and each team remember their
+own route chain in memory for the current Account and Deployment; switching sides resumes that
+chain, while an explicit task, channel, link or notification replaces only its destination side.
+Sheets and their descendants are never remembered, nor are capabilities or spent landing
+instructions. Unknown or offline content does not invalidate a remembered address.
+
+The screen directly on Home is top-level ([top-level.ts](../apps/mobile/src/top-level.ts)).
+Drill-ins keep native Back and its swipe; a team's root returns to Tasks' remembered location.
+Menu remains available beside Back while the sidebar is a drawer and disappears when docked.
+The sidebar swipe is edge-only and never takes an edge a streamed page uses, because a swipe
+anywhere on content fires by accident, and Android reserves both edges for system Back.
 
 ## Drafts and decisions
 

@@ -15,6 +15,7 @@ import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Alert, ScrollView, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { enterSide } from "../navigation-ref.js";
 import type { RootParamList } from "../navigation.js";
 import { color, space } from "../theme.js";
 import type { NativeMenuOption } from "../thread/composer-menu.js";
@@ -226,7 +227,7 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
                   text: "Leave",
                   onPress: () =>
                     run({ type: "team.channel.leave", channelId: channelKey }, () =>
-                      navigation.popToTop(),
+                      enterSide({ name: "TeamHome", params: { teamId } }),
                     ),
                 },
               ],
@@ -503,7 +504,6 @@ export function TeamInstructionsScreen(props: ChannelParams): ReactNode {
 /** Every file the channel's messages carry, newest first; nothing downloads until opened. */
 export function TeamFilesScreen(props: ChannelParams): ReactNode {
   const { teamId, channelId } = props.route.params;
-  const navigation = useNavigation<Navigation>();
   const { session } = useTeamSession(teamId);
   const padding = useBottomPadding();
   const [query, setQuery] = useState("");
@@ -557,11 +557,14 @@ export function TeamFilesScreen(props: ChannelParams): ReactNode {
         filter={filter}
         onFilter={setFilter}
         onOpen={(file) =>
-          navigation.navigate("TeamChannel", { teamId, channelId, messageId: file.messageId })
+          enterSide(
+            { name: "TeamChannel", params: { teamId, channelId, messageId: file.messageId } },
+            true,
+          )
         }
         onQuery={setQuery}
         onShowMessage={(messageId) =>
-          navigation.navigate("TeamChannel", { teamId, channelId, messageId })
+          enterSide({ name: "TeamChannel", params: { teamId, channelId, messageId } }, true)
         }
         paddingBottom={padding}
         query={query}
@@ -573,7 +576,6 @@ export function TeamFilesScreen(props: ChannelParams): ReactNode {
 /** Pinned messages, newest pin first. */
 export function TeamPinnedScreen(props: ChannelParams): ReactNode {
   const { teamId, channelId } = props.route.params;
-  const navigation = useNavigation<Navigation>();
   const { session, snapshot } = useTeamSession(teamId);
   const { directory } = useTeamMembers(teamId, channelId);
   const padding = useBottomPadding();
@@ -594,7 +596,9 @@ export function TeamPinnedScreen(props: ChannelParams): ReactNode {
   return (
     <Screen edgeToEdge>
       <PinnedBody
-        onShow={(messageId) => navigation.navigate("TeamChannel", { teamId, channelId, messageId })}
+        onShow={(messageId) =>
+          enterSide({ name: "TeamChannel", params: { teamId, channelId, messageId } }, true)
+        }
         onUnpin={(messageId) =>
           void command(session, {
             type: "team.message.unpin",
@@ -636,7 +640,6 @@ export function TeamSearchScreen(
   props: StaticScreenProps<{ readonly teamId: string; readonly channelId?: string | undefined }>,
 ): ReactNode {
   const { teamId } = props.route.params;
-  const navigation = useNavigation<Navigation>();
   const { session, snapshot, team } = useTeamSession(teamId);
   const { members, directory } = useTeamMembers(teamId);
   const padding = useBottomPadding();
@@ -772,18 +775,30 @@ export function TeamSearchScreen(
           const raw = results.find((row) => row.message.id === result.message.id)?.raw;
           if (raw === undefined) return;
           if (raw.threadRootId === null)
-            navigation.navigate("TeamChannel", {
-              teamId,
-              channelId: raw.channelId,
-              messageId: raw.id,
-            });
+            enterSide(
+              {
+                name: "TeamChannel",
+                params: {
+                  teamId,
+                  channelId: raw.channelId,
+                  messageId: raw.id,
+                },
+              },
+              true,
+            );
           else
-            navigation.navigate("TeamThread", {
-              teamId,
-              channelId: raw.channelId,
-              rootId: raw.threadRootId,
-              replyId: raw.id,
-            });
+            enterSide(
+              {
+                name: "TeamThread",
+                params: {
+                  teamId,
+                  channelId: raw.channelId,
+                  rootId: raw.threadRootId,
+                  replyId: raw.id,
+                },
+              },
+              true,
+            );
         }}
         failure={query.trim() === "" ? null : failure}
         onQuery={setQuery}

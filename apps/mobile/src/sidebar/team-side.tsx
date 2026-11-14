@@ -195,13 +195,11 @@ export function useTeamMenu(
   actions: {
     readonly onOpen: (place: TeamPlace) => void;
     readonly onTeams: () => void;
-    /** The team is gone from this person: leave any of its screens in front. */
-    readonly onLeft: (teamId: string) => void;
   },
 ): readonly NativeMenuSection[] {
   const { coordinator } = useTeamEntry();
   const canInvite = useSessionValue(team, readCanInvite);
-  const { onOpen, onTeams, onLeft } = actions;
+  const { onOpen, onTeams } = actions;
   return useMemo((): readonly NativeMenuSection[] => {
     if (team === null) return [];
     const { teamId, name } = team;
@@ -215,14 +213,14 @@ export function useTeamMenu(
             style: "destructive",
             text: "Leave",
             onPress: () =>
-              void coordinator.leaveTeam(DeploymentIdSchema.parse(teamId)).then(
-                () => onLeft(teamId),
-                (error: unknown) =>
+              void coordinator
+                .leaveTeam(DeploymentIdSchema.parse(teamId))
+                .catch((error: unknown) =>
                   Alert.alert(
                     "You're still in the team",
                     error instanceof Error ? error.message : undefined,
                   ),
-              ),
+                ),
           },
         ],
       );
@@ -255,7 +253,7 @@ export function useTeamMenu(
       ],
       [{ destructive: true, id: "leave", label: `Leave ${name}`, onPress: leave }],
     ];
-  }, [canInvite, coordinator, onLeft, onOpen, onTeams, team]);
+  }, [canInvite, coordinator, onOpen, onTeams, team]);
 }
 
 const readSidebar = (snapshot: TeamSessionSnapshot | null) => snapshot?.sidebar ?? null;

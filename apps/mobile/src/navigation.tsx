@@ -1,3 +1,4 @@
+import { sideMemory } from "./side-memory.js";
 import { TeamScreenLayout } from "./team/team-screen-gate.js";
 import { screenPresentations } from "./navigation-presentations.js";
 import type { ReactNode } from "react";
@@ -8,6 +9,8 @@ import {
   createStaticNavigation,
   DarkTheme,
   useIsFocused,
+  useNavigation,
+  usePreventRemove,
   type Theme,
 } from "@react-navigation/native";
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
@@ -114,11 +117,8 @@ import { thisPhoneNoun } from "./computers/phone-noun.js";
  * tap arrive at the same screen by the same path. The header uses the platform
  * face and stays native chrome.
  *
- * Home — the New task composer — is the root of every Deployment's stack and
- * stays mounted under everything. The screen directly on it is top-level, with
- * the Menu where Back would be, and whatever is opened from it is pushed over
- * it with the native Back (`top-level.ts`). Neither is a property of a route:
- * the same task is top-level from the sidebar and a drill-in from another task.
+ * Home keeps its unsent draft mounted beneath the active Tasks or team chain.
+ * The sidebar resumes each side; explicit entries replace only that side.
  *
  * The drawer is the stack's own `layout` (`SidebarShell`): one navigator, one
  * history, with the drawer or docked column around it.
@@ -127,8 +127,21 @@ import { thisPhoneNoun } from "./computers/phone-noun.js";
  * platform's large title; a thread's title is the person's words and keeps the
  * bar-height title that truncates gracefully.
  */
-function ScreenLayout(props: { readonly children: ReactNode; readonly modal: boolean }) {
+function ScreenLayout(props: {
+  readonly children: ReactNode;
+  readonly modal: boolean;
+  readonly name: string;
+}) {
   const focused = useIsFocused();
+  const navigation = useNavigation();
+  usePreventRemove(props.name === "TeamHome", ({ data }) => {
+    if (["GO_BACK", "POP", "POP_TO_TOP"].includes(data.action.type)) {
+      const state = navigation.getState();
+      if (state === undefined) return;
+      const action = sideMemory.back(state);
+      if (action !== null) navigation.dispatch(action);
+    } else navigation.dispatch(data.action);
+  });
   return (
     <>
       {props.modal ? <Pane>{props.children}</Pane> : props.children}
@@ -148,7 +161,10 @@ const RootStack = createNativeStackNavigator({
   // where it was presented, not the stack's or the sidebar's beside it, and no
   // region the shell measured lies over it.
   screenLayout: ({ children, options, route }) => (
-    <ScreenLayout modal={options.presentation !== undefined && options.presentation !== "card"}>
+    <ScreenLayout
+      name={route.name}
+      modal={options.presentation !== undefined && options.presentation !== "card"}
+    >
       <TeamScreenLayout route={route}>{children}</TeamScreenLayout>
     </ScreenLayout>
   ),
@@ -362,6 +378,7 @@ const RootStack = createNativeStackNavigator({
     SettingsGeneral: { screen: SettingsGeneralScreen, options: { title: "General" } },
     // A team's channel or DM, and a thread under one of its messages. Each is
     // keyed by the team it belongs to, never by the personal Deployment.
+    TeamHome: { screen: TeamChannelsScreen, options: { title: "Team" } },
     TeamChannel: { screen: TeamChannelScreen, options: { title: "" } },
     TeamThread: { screen: TeamThreadScreen, options: { title: "Thread" } },
     // On a phone a channel's tabs are rows in its Details.
@@ -652,6 +669,7 @@ const RootStack = createNativeStackNavigator({
 });
 
 type OpensteerRootParamList = {
+  readonly TeamHome: { readonly teamId: string };
   readonly TeamChannel: TeamChannelRoute;
   readonly TeamThread: TeamThreadRoute;
   readonly TeamDetails: { readonly teamId: string; readonly channelId: string };

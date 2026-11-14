@@ -214,10 +214,12 @@ class MobileTeamRuntime {
   #linksFor: HostClient | null = null;
   #snapshot: MobileTeamsSnapshot = { computerId: null, teams: [], unlinked: [], selected: null };
   readonly #detachOwner: () => void;
+  readonly #onForgotten: ((teamId: string) => void) | undefined;
   #detachClient: (() => void) | null = null;
 
   constructor(options: {
     readonly client: MobileClient;
+    readonly onForgotten?: (teamId: string) => void;
     readonly transport: (connection: DeploymentConnection, scope: TeamCacheScope) => TeamTransport;
     readonly verify: (origin: string) => Promise<VerifiedHostEndpoint>;
     readonly files: PrivateFilesystem;
@@ -227,6 +229,7 @@ class MobileTeamRuntime {
     /** Mock mode's computers and the teams each is in, before any computer has said. */
     readonly seed?: Readonly<Record<string, readonly LinkedTeam[]>>;
   }) {
+    this.#onForgotten = options.onForgotten;
     this.owner = options.client.oauth.teamRuntime();
     this.#seed = options.seed ?? {};
     this.#client = options.client;
@@ -787,6 +790,7 @@ class MobileTeamRuntime {
       if (connection.source.kind === "manual" || connection.accountAccess === null)
         await owner.run(() => this.#client.remove(teamId));
     }
+    this.#onForgotten?.(teamId);
     this.#publish();
   }
 
@@ -798,6 +802,7 @@ class MobileTeamRuntime {
   #ended(teamId: string, session: TeamSessionClient): void {
     if (this.#sessions.get(teamId) !== session) return;
     const ended = session.getSnapshot().ended;
+    if (ended === "removed") this.#onForgotten?.(teamId);
     this.#drop(teamId);
     void this.#previews?.clear(DeploymentIdSchema.parse(teamId));
     if (ended === "viewer-changed") {

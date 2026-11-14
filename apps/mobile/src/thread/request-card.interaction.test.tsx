@@ -65,6 +65,8 @@ vi.mock("../client/mobile-client.js", () => ({
 vi.mock("../ui/ai-sharing.js", () => import("../../test-support/ai-sharing.js"));
 vi.mock("../navigation-ref.js", () => ({
   navigationRef: { isReady: () => true, navigate: native.navigate },
+  enterSide: (target: { name: string; params: object }) =>
+    native.navigate(target.name, target.params),
   pushSubagent: native.pushSubagent,
 }));
 vi.mock("../ui/primitives.js", () => ({

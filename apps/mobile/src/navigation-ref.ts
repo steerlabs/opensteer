@@ -1,5 +1,7 @@
 import { StackActions, createNavigationContainerRef } from "@react-navigation/native";
 import type { RootParamList } from "./navigation.js";
+import { sideMemory } from "./side-memory.js";
+import type { TopLevelTarget } from "./top-level.js";
 import { deploymentRoot, deploymentsRoot } from "./navigation-state.js";
 
 /**
@@ -20,4 +22,35 @@ export function resetToDeployment(deploymentId: string): void {
 /** Opens a subagent's own view over whatever is in front, from outside a screen's tree. */
 export function pushSubagent(params: RootParamList["Subagent"]): void {
   if (navigationRef.isReady()) navigationRef.dispatch(StackActions.push("Subagent", params));
+}
+
+/** Links, notifications, Voice and cross-side destinations share the root entry. */
+export function enterSide(target: TopLevelTarget, push = false): boolean {
+  if (!navigationRef.isReady()) return false;
+  let state = navigationRef.getRootState();
+  if (state === undefined) return false;
+  const deploymentId = "deploymentId" in target.params ? target.params.deploymentId : undefined;
+  const home = state.routes[0];
+  const currentDeployment =
+    home?.params && "deploymentId" in home.params ? home.params.deploymentId : null;
+  if (typeof deploymentId === "string" && currentDeployment !== deploymentId) {
+    sideMemory.clear();
+    state = {
+      ...state,
+      index: 0,
+      routes: [{ key: `Home:${deploymentId}`, name: "Home", params: { deploymentId } }],
+    };
+  }
+  const action = sideMemory.enter(state, target, push);
+  if (action === null) return false;
+  navigationRef.dispatch(action);
+  return true;
+}
+
+export function forgetTeamSide(teamId: string): void {
+  if (!navigationRef.isReady()) return;
+  const state = navigationRef.getRootState();
+  if (state === undefined) return;
+  const action = sideMemory.forget(state, teamId);
+  if (action !== null) navigationRef.dispatch(action);
 }
