@@ -300,11 +300,15 @@ describe("Runner data directory lease", () => {
     const path = lockPath(directory);
     // What a container leaves behind when it is killed: a lock naming a pid the
     // successor's fresh PID namespace hands right back to it.
-    await writeAbandonedLock(path, timings.staleAfterMs * 4);
+    // A long window, so a busy machine's slow first claim is never mistaken
+    // for waiting one out, while waiting one out still fails well inside the
+    // test's timeout.
+    const window = { ...timings, staleAfterMs: 2_000 };
+    await writeAbandonedLock(path, window.staleAfterMs * 4);
 
     const started = Date.now();
-    const lock = await RunnerDataDirectoryLock.acquire(directory, timings);
-    expect(Date.now() - started).toBeLessThan(timings.staleAfterMs);
+    const lock = await RunnerDataDirectoryLock.acquire(directory, window);
+    expect(Date.now() - started).toBeLessThan(window.staleAfterMs);
     const claimed = JSON.parse(await readFile(path, "utf8")) as { nonce: string };
     expect(claimed.nonce).not.toBe("abandoned");
     await lock.release();

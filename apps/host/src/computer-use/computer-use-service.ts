@@ -841,7 +841,7 @@ export class ComputerUseService {
             if (!passwords.validateLease({ ...text, deploymentId: this.#deploymentId }))
               throw new ComputerUseError(
                 "failed",
-                "This saved login ended or belongs to another personal deployment. Call sign_in again. Nothing was performed.",
+                "This saved login ended or belongs to another personal deployment. Call use_saved_login again. Nothing was performed.",
               );
         };
         check();
@@ -880,14 +880,14 @@ export class ComputerUseService {
           } catch {
             throw new ComputerUseError(
               "failed",
-              "The saved login could not be prepared. Nothing was performed. Call sign_in again.",
+              "The saved login could not be prepared. Nothing was performed. Call use_saved_login again.",
             );
           }
           check();
           if (result.status !== "sealed")
             throw new ComputerUseError(
               "failed",
-              "The saved login ended or could not be prepared. Nothing was performed. Call sign_in again.",
+              "The saved login ended or could not be prepared. Nothing was performed. Call use_saved_login again.",
             );
           const received = result.envelope.binding;
           if (

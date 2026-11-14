@@ -1,5 +1,6 @@
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 
+/** Every route presented over the stack rather than pushed onto it, by route name. */
 export const screenPresentations = {
   BrowserTabs: "formSheet",
   OpenApp: "formSheet",
@@ -91,17 +92,25 @@ export function routesAbove(state: StackState, key: string): number | null {
   return index < 0 ? null : Math.max(0, state.index - index);
 }
 
-/** Sheets leave the underlying page in charge of the surrounding layout. */
+/**
+ * Where the presented flow over the stack begins, or -1 when there is none.
+ * A card pushed after a sheet or modal is inside that presentation, as
+ * native-stack presents it, so everything from the first one up is one flow.
+ */
+export function presentedFrom(state: {
+  readonly index: number;
+  readonly routes: readonly { readonly name: string }[];
+}): number {
+  return state.routes.findIndex(
+    (route, index) => index <= state.index && modalKinds.has(presentations[route.name]),
+  );
+}
+
+/** Sheets and modals leave the screen beneath them in charge of the surrounding layout. */
 export function layoutRoute<T extends { readonly name: string }>(state: {
   readonly index: number;
   readonly routes: readonly T[];
 }): T | undefined {
-  for (let index = state.index; index >= 0; index--) {
-    const route = state.routes[index];
-    if (route === undefined) continue;
-    const presentation = presentations[route.name];
-    if (presentation === undefined || presentation === "card" || presentation === "fullScreenModal")
-      return route;
-  }
-  return undefined;
+  const from = presentedFrom(state);
+  return state.routes[from === -1 ? state.index : from - 1];
 }

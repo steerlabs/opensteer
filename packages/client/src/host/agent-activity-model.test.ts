@@ -945,9 +945,9 @@ describe("passwordsSetupOffer", () => {
       arguments: { site },
       output: { text: JSON.stringify(result) },
       runId,
-      tool: { name: "sign_in", namespace: "opensteer" },
+      tool: { name: "use_saved_login", namespace: "opensteer" },
     });
-  const notSetUp = { passwords: "not-set-up", site, status: "not-signed-in" };
+  const notSetUp = { reason: "passwords-not-set-up", site, status: "unavailable" };
   const offer = (entries: Parameters<typeof groupTranscriptEntries>[0]) =>
     passwordsSetupOffer(groupTranscriptEntries(entries))?.site ?? null;
 
@@ -982,23 +982,9 @@ describe("passwordsSetupOffer", () => {
     },
   );
 
-  it("offers Passwords once the agent stops, from any result that found it not set up", () => {
+  it("offers Passwords once the agent stops, from a saved login that found it not set up", () => {
     expect(offer([signIn(notSetUp), message(), run()])).toBe(site);
     expect(offer([signIn(notSetUp), run({ status: "running" })])).toBeNull();
-    expect(
-      offer([
-        signIn({
-          passwords: "not-set-up",
-          replayed: false,
-          requestId: createId("request"),
-          status: "pending",
-        }),
-        run(),
-      ]),
-    ).toBe(site);
-    expect(
-      offer([signIn({ reason: "passwords-not-set-up", site, status: "unavailable" }), run()]),
-    ).toBe(site);
   });
 
   it("keeps the offer through a turn the Host resumed, until the person speaks", () => {
@@ -1011,28 +997,27 @@ describe("passwordsSetupOffer", () => {
     expect(offer([...first, input({ runId: null }), ...resumed])).toBeNull();
   });
 
-  it("lets a Chrome Request's ending overrule its pending, and a repeat change nothing", () => {
-    const pending = (extra: object) =>
-      signIn({ replayed: false, requestId: createId("request"), status: "pending", ...extra });
-    const replay = signIn({ replayed: true, requestId: createId("request"), status: "pending" });
-    const ended = (extra: object) => request({ requestKind: "browser.sign-in", ...extra });
-    expect(offer([pending({ passwords: "not-set-up" }), replay, run()])).toBe(site);
-    expect(offer([pending({ passwords: "not-set-up" }), ended({}), run()])).toBeNull();
-    expect(
-      offer([pending({}), ended({ passwordsOffer: { need: "not-set-up", site } }), run()]),
-    ).toBe(site);
-  });
-
-  it("leaves it to the latest sign-in, and never offers what Passwords can't do", () => {
-    const signedIn = { profileName: null, site, sourceName: "Work", status: "applied" };
-    expect(offer([signIn(notSetUp), signIn(signedIn), run()])).toBeNull();
-    expect(offer([signIn({ site, status: "not-signed-in" }), run()])).toBeNull();
+  it("leaves it to the latest saved login, and a repeat changes nothing", () => {
+    const requestId = createId("request");
+    const ready = { status: "ready", site, loginRef: `lgn_${"0".repeat(32)}`, account: "t•••" };
+    const replay = signIn({ status: "pending", site, requestId, replayed: true });
+    expect(offer([signIn(notSetUp), replay, run()])).toBe(site);
+    expect(offer([signIn(notSetUp), signIn(ready), run()])).toBeNull();
     expect(offer([signIn({ reason: "busy", site, status: "unavailable" }), run()])).toBeNull();
   });
 
+  it("never offers Passwords from copied Chrome cookies", () => {
+    const chrome = tool({
+      arguments: { site },
+      output: {
+        text: JSON.stringify({ reason: "chrome-signed-out", site, status: "unavailable" }),
+      },
+      tool: { name: "copy_chrome_cookies", namespace: "opensteer" },
+    });
+    expect(offer([chrome, run()])).toBeNull();
+  });
+
   it.each([
-    [{ passwords: "no-login", site, status: "not-signed-in" }, "no-login"],
-    [{ passwords: "off", site, status: "not-signed-in" }, "off"],
     [{ reason: "no-saved-login", site, status: "unavailable" }, "no-login"],
     [{ reason: "passwords-off", site, status: "unavailable" }, "off"],
   ])("offers what Passwords still needs, once set up: %j", (result, need) => {
@@ -1045,18 +1030,22 @@ describe("passwordsSetupOffer", () => {
 });
 
 /*
- * How a `sign_in` step could mislead the reader:
- * - a failed, declined, unavailable or not-signed-in result reads as done
- *   (a check, tone done, or "Done");
- * - a result the client cannot read, or an error, reads as signed in;
- * - a code the agent is fetching reads as a failure, or as signed in;
- * - a pending result reads as signed in, or loses what it waits for;
+ * How a sign-in step could mislead the reader:
+ * - a declined or unavailable result reads as done (a check, tone done, or "Done");
+ * - copied cookies read as a confirmed sign-in;
+ * - a result the client cannot read, or an error, reads as done;
+ * - a pending result reads as done;
  * - its words differ from the Request card's for the same outcome.
  */
-describe.each(["sign_in", "browser_sign_in"])("a %s step", (name) => {
-  const signIn = (result: unknown, overrides: Partial<ToolEntry> = {}) =>
+describe("sign-in steps", () => {
+  const githubSite = "https://github.com";
+  const step = (
+    name: "use_saved_login" | "copy_chrome_cookies",
+    result: unknown,
+    overrides: Partial<ToolEntry> = {},
+  ) =>
     tool({
-      arguments: { reason: "Download the invoice", sessionId: "bss_1", site: "https://github.com" },
+      arguments: { reason: "Download the invoice", sessionId: "bss_1", site: githubSite },
       output: { text: JSON.stringify(result) },
       tool: { name, namespace: "opensteer" },
       ...overrides,
@@ -1066,141 +1055,122 @@ describe.each(["sign_in", "browser_sign_in"])("a %s step", (name) => {
     return { detail, icon, label, status: toolStatusLabel(entry), tone };
   };
 
-  it("says it signed in only when it did", () => {
+  it("says a saved login is ready, and copied cookies only as copied", () => {
     expect(
-      head(signIn({ method: "saved-password", site: "https://github.com", status: "signed-in" })),
+      head(
+        step("use_saved_login", {
+          status: "ready",
+          site: githubSite,
+          loginRef: `lgn_${"0".repeat(32)}`,
+          account: "t•••@github.com",
+        }),
+      ),
     ).toEqual({
-      detail: "With your saved password",
+      detail: "As t•••@github.com",
       icon: "check-circle",
-      label: "Signed in to github.com",
+      label: "Ready to sign in to github.com",
       status: "Done",
       tone: "done",
     });
     expect(
-      head(signIn({ method: "person", site: "https://github.com", status: "signed-in" })),
-    ).toMatchObject({ icon: "check-circle", label: "You signed in to github.com", tone: "done" });
-    expect(
       head(
-        signIn({
-          profileName: null,
-          site: "https://github.com",
+        step("copy_chrome_cookies", {
+          status: "copied",
+          site: githubSite,
           sourceName: "Work",
-          status: "applied",
-        }),
-      ),
-    ).toMatchObject({ detail: "From Work", label: "Signed in to github.com", tone: "done" });
-  });
-
-  it.each([
-    [
-      { reason: "wrong-password", site: "https://github.com", status: "failed" },
-      "github.com didn’t accept the saved password",
-    ],
-    [
-      { reason: "unsupported-page", site: "https://github.com", status: "failed" },
-      "Opensteer couldn’t find where to sign in on github.com",
-    ],
-    [
-      { reason: "needs-approval", site: "https://github.com", status: "unavailable" },
-      "A task or automation can’t ask you to allow a sign-in",
-    ],
-    [
-      { reason: "no-code-expected", site: "https://github.com", status: "unavailable" },
-      "No sign-in was waiting for a code",
-    ],
-    [
-      { reason: "needs-fresh-session", site: "https://github.com", status: "unavailable" },
-      "This needs a new browser session. Ask your agent to open one and try again",
-    ],
-    [
-      { reason: "session-closed", site: "https://github.com", status: "unavailable" },
-      "The agent’s browser closed",
-    ],
-    [
-      { site: "https://github.com", status: "not-signed-in" },
-      "Chrome isn’t signed in to github.com",
-    ],
-  ])("never reads %o as done", (result, detail) => {
-    expect(head(signIn(result))).toEqual({
-      detail,
-      icon: "alert-circle",
-      label: "Couldn’t sign in to github.com",
-      status: "Didn’t sign in",
-      tone: "stopped",
-    });
-  });
-
-  it("says a decline as the card does", () => {
-    expect(head(signIn({ requestId: createId("request"), status: "declined" }))).toMatchObject({
-      icon: "alert-circle",
-      label: "Not allowed",
-      status: "Didn’t sign in",
-      tone: "stopped",
-    });
-  });
-
-  it("says a code the agent is fetching, and what a pending sign-in waits for", () => {
-    expect(
-      head(
-        signIn({
-          expiresAt: "2026-10-13T12:05:00.000Z",
-          site: "https://github.com",
-          status: "needs-code",
+          profileName: null,
         }),
       ),
     ).toMatchObject({
-      icon: "browser",
-      label: "github.com sent a code; the agent is getting it",
-      status: "Done",
+      detail: "From Work",
+      label: "Copied your Chrome sign-in for github.com",
       tone: "done",
-    });
-    const requestId = createId("request");
-    expect(
-      head(signIn({ replayed: false, requestId, status: "pending", waitingFor: "approval" })),
-    ).toMatchObject({ icon: "browser", label: "Asked you to sign in to github.com" });
-    expect(
-      head(signIn({ replayed: false, requestId, status: "pending", waitingFor: "person" })),
-    ).toMatchObject({ label: "github.com needs you to finish signing in" });
-    expect(
-      head(signIn({ replayed: true, requestId, status: "pending", waitingFor: "code" })),
-    ).toMatchObject({ label: "github.com needs you to finish signing in" });
-    expect(head(signIn({ requestId, status: "resolved" }))).toMatchObject({
-      detail: "Already answered",
-      label: "Asked to sign in to github.com",
     });
   });
 
   it.each([
-    { code: "123456", site: "https://github.com", reason: "Read the invoice" },
-    '{"site":"https://github.com","code":"123456"}',
-    '{"site":"https://github.com","code":"123',
-  ])("masks a one-time code in displayed step arguments: %o", (arguments_) => {
-    const entry = signIn({ status: "needs-code" }, { arguments: arguments_ });
-    const body = toolBody(entry);
-    expect(body.argumentsText).not.toContain("123");
-    expect(body.argumentsText).toContain("[hidden]");
-    expect(entry.arguments).toEqual(arguments_);
+    [
+      "use_saved_login",
+      { reason: "needs-approval", site: githubSite, status: "unavailable" },
+      "Couldn’t use a saved login for github.com",
+      "A task or automation can’t ask you to allow a sign-in",
+    ],
+    [
+      "use_saved_login",
+      { reason: "session-closed", site: githubSite, status: "unavailable" },
+      "Couldn’t use a saved login for github.com",
+      "The agent’s browser closed",
+    ],
+    [
+      "copy_chrome_cookies",
+      { reason: "chrome-signed-out", site: githubSite, status: "unavailable" },
+      "Couldn’t copy your Chrome sign-in for github.com",
+      "Chrome isn’t signed in to github.com",
+    ],
+  ] as const)("never reads %s %o as done", (name, result, label, detail) => {
+    expect(head(step(name, result))).toEqual({
+      detail,
+      icon: "alert-circle",
+      label,
+      status: "Didn’t sign in",
+      tone: "stopped",
+    });
   });
 
-  it("never reads unreadable output, an error or a stopped call as signed in", () => {
-    expect(head(signIn({ site: "https://github.com", status: "signed-in" }))).toMatchObject({
+  it("says a decline as the card does, and a pending call as waiting", () => {
+    const requestId = createId("request");
+    for (const name of ["use_saved_login", "copy_chrome_cookies"] as const)
+      expect(head(step(name, { requestId, site: githubSite, status: "declined" }))).toMatchObject({
+        icon: "alert-circle",
+        label: "Not allowed",
+        status: "Didn’t sign in",
+        tone: "stopped",
+      });
+    expect(
+      head(
+        step("use_saved_login", {
+          replayed: false,
+          requestId,
+          site: githubSite,
+          status: "pending",
+        }),
+      ),
+    ).toMatchObject({ icon: "browser", label: "Asked to use your saved login for github.com" });
+    expect(
+      head(
+        step("copy_chrome_cookies", {
+          replayed: false,
+          requestId,
+          site: githubSite,
+          status: "pending",
+        }),
+      ),
+    ).toMatchObject({ icon: "browser", label: "Asked to copy your Chrome sign-in for github.com" });
+  });
+
+  it("never reads unreadable output, an error or a running call as done", () => {
+    expect(head(step("use_saved_login", { site: githubSite, status: "signed-in" }))).toMatchObject({
       icon: "browser",
       label: "Tried to sign in to github.com",
     });
     expect(
-      head(signIn("signed in", { output: { text: "Signed in to github.com" } })),
-    ).toMatchObject({ icon: "browser", label: "Tried to sign in to github.com" });
-    expect(
       head(
-        signIn(
-          { method: "saved-password", site: "https://github.com", status: "signed-in" },
+        step(
+          "use_saved_login",
+          { status: "ready", site: githubSite, loginRef: `lgn_${"0".repeat(32)}`, account: "t" },
           { isError: true, state: "failed" },
         ),
       ),
     ).toMatchObject({ label: "Tried to sign in to github.com", tone: "error" });
     expect(
-      head(signIn(null, { completedAt: null, output: undefined, state: "running" })),
-    ).toMatchObject({ label: "Signing in to github.com", tone: "running" });
+      head(
+        step("copy_chrome_cookies", null, {
+          completedAt: null,
+          output: undefined,
+          state: "running",
+        }),
+      ),
+    ).toMatchObject({ label: "Copying your Chrome sign-in for github.com", tone: "running" });
   });
 });
 

@@ -1,4 +1,8 @@
-import { AgentBrowserSessionSummarySchema } from "@opensteer/protocol";
+import {
+  AgentBrowserSessionSummarySchema,
+  ChromeCookiesResultSchema,
+  SavedLoginResultSchema,
+} from "@opensteer/protocol";
 import { z } from "zod";
 import {
   AppIdSchema,
@@ -293,24 +297,23 @@ export const BrowserProfileOutputSchema = z.object({
 export const BrowserProfileListOutputSchema = z.object({
   profiles: z.array(BrowserProfileOutputSchema),
 });
-export const SignInOutputSchema = z.object({
-  status: z.string(),
-  site: z.string().optional(),
-  // A login reference grants nothing by itself: each fill needs the Run's
-  // current authority over that surface, and saved-password sign-in needs it.
-  loginRef: z.string().optional(),
-  account: z.string().optional(),
-  profileName: z.string().nullable().optional(),
-  sourceName: z.string().optional(),
-  method: z.string().optional(),
-  reason: z.string().optional(),
-  passwords: z.string().optional(),
-  expiresAt: z.string().optional(),
-  requestId: RequestIdSchema.optional(),
-  replayed: z.boolean().optional(),
-  waitingFor: z.string().optional(),
-  guidance: z.string().optional(),
-});
+/** A held or pending Request's result also carries what the Host says about it. */
+const heldGuidance = { guidance: z.string().optional() };
+const [copied, chromePending, chromeDeclined, chromeUnavailable] =
+  ChromeCookiesResultSchema.options;
+export const CopyChromeCookiesOutputSchema = z.discriminatedUnion("status", [
+  copied.extend(heldGuidance),
+  chromePending.extend(heldGuidance),
+  chromeDeclined.extend(heldGuidance),
+  chromeUnavailable.extend(heldGuidance),
+]);
+const [ready, savedPending, savedDeclined, savedUnavailable] = SavedLoginResultSchema.options;
+export const UseSavedLoginOutputSchema = z.discriminatedUnion("status", [
+  ready.extend(heldGuidance),
+  savedPending.extend(heldGuidance),
+  savedDeclined.extend(heldGuidance),
+  savedUnavailable.extend(heldGuidance),
+]);
 export const BrowserSessionSchema = AgentBrowserSessionSummarySchema;
 export const BrowserSessionListOutputSchema = z.object({ sessions: z.array(BrowserSessionSchema) });
 export const BrowserSessionOpenOutputSchema = z.object({

@@ -63,7 +63,6 @@ import { tabSiteLabel } from "../browser/site-label.js";
 import { tabsRoute } from "../browser/surface-route.js";
 import { MacAppIcon } from "../computers/app-mark.js";
 import { useHereDeviceId } from "../computers/here-device.js";
-import { useSidebarMenu } from "../navigation-header.js";
 import { color, radius, space, touchTarget } from "../theme.js";
 import { NativeMenu, type NativeMenuOption } from "../thread/composer-menu.js";
 import { NeedsYouTag } from "../threads/task-row.js";
@@ -94,7 +93,6 @@ export type TabsScreenProps = StaticScreenProps<{ readonly deploymentId: string 
 export function TabsScreen(props: TabsScreenProps): ReactNode {
   const { deploymentId } = props.route.params;
   const hostClient = useAttachedHost(deploymentId);
-  useSidebarMenu(hostClient);
   if (hostClient === null) return <DeploymentGate deploymentId={deploymentId} />;
   return <AttachedTabs deploymentId={deploymentId} hostClient={hostClient} />;
 }

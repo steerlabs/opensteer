@@ -40,7 +40,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       finish = async () => {};
       await cleanup();
     });
-    it("keeps sessionful sign_in and origin-fill admission while the personal lease outlives a browser", async () => {
+    it("keeps sessionful use_saved_login and origin-fill admission while the personal lease outlives a browser", async () => {
       const evidence = new PasswordsJourneyEvidence("host/browser-reuse", command, cases, [
         passwordFixture.password,
       ]);
@@ -107,7 +107,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       await evidence.run("sessionless-before-browser", async () => {
         expect(await host.store.listBrowserSessions(host.ownerId)).toEqual([]);
         const result = await client.callTool({
-          name: "sign_in",
+          name: "use_saved_login",
           arguments: { site: passwordFixture.site, reason: "Sign in to the fixture app" },
         });
         await evidence.write("sessionless-result.json", result);
@@ -144,7 +144,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       const sessionId = await open();
       await evidence.run("sessionful-sign-in", async () => {
         const result = await client.callTool({
-          name: "sign_in",
+          name: "use_saved_login",
           arguments: { sessionId, site: passwordFixture.site, reason: "Continue in browser" },
         });
         expect(result.structuredContent).toEqual({
@@ -325,7 +325,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         expect(await connection.request(fill)).toEqual({ status: "expired" });
         await fulfillFill(second, secondSession);
         const result = await client.callTool({
-          name: "sign_in",
+          name: "use_saved_login",
           arguments: { site: passwordFixture.site, reason: "Return to the phone app" },
         });
         expect(result.structuredContent).toMatchObject({ status: "ready", loginRef });
@@ -338,7 +338,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         if (operation?.type !== "login.authorize") throw new Error("Missing authorization");
         await authority.end(operation.operationId);
         const next = await client.callTool({
-          name: "sign_in",
+          name: "use_saved_login",
           arguments: { site: passwordFixture.site, reason: "Reauthorize" },
         });
         const ready = z

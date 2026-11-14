@@ -25,13 +25,16 @@ import type {
   ToolEntry,
   TranscriptEntry,
 } from "./client.js";
-import {
-  browserSignInPasswordsNeed,
-  type BrowserSignInPasswords,
-} from "@opensteer/protocol/browser-sources";
+import { savedLoginPasswordsNeed, type PasswordsNeed } from "@opensteer/protocol";
 import { browserSiteLabel } from "./browser-sign-in.js";
 import { readCardUseResult } from "./cards.js";
-import { browserSignInStep, readBrowserSignInResult, type BrowserSignInStep } from "./passwords.js";
+import {
+  chromeCookiesStep,
+  readChromeCookiesResult,
+  readSavedLoginResult,
+  savedLoginStep,
+  type SignInStep,
+} from "./passwords.js";
 import { requestWaitingOnAssignment } from "./waiting-requests.js";
 import { isTerminalRunEntryStatus } from "./transcript.js";
 
@@ -439,12 +442,11 @@ export function turnState(turn: Turn): TurnState {
  * What to offer of Opensteer Passwords, or null. The latest word on a sign-in
  * since the person last spoke decides, and only once the agent has stopped:
  * their next message, or a sign-in that got further, ends the offer, so a
- * Thread shows it once, at its end. A Chrome Request's ending is newer than
- * the `pending` that opened it; a repeated call adds nothing.
+ * Thread shows it once, at its end. A repeated call adds nothing.
  */
 export interface PasswordsSetupOffer {
   readonly credential: "login" | "card";
-  readonly need: BrowserSignInPasswords;
+  readonly need: PasswordsNeed;
   readonly site: string;
 }
 export function passwordsSetupOffer(
@@ -479,25 +481,22 @@ export function callPasswordsOffer(
 
 /** What one step says about Passwords: an offer, a definite no, or nothing yet (`undefined`). */
 function stepPasswordsOffer(entry: TranscriptEntry): PasswordsSetupOffer | null | undefined {
-  if (entry.kind === "request" && entry.requestKind === "browser.sign-in") {
-    return entry.passwordsOffer ? { ...entry.passwordsOffer, credential: "login" } : null;
-  }
-  if (entry.kind === "tool" && entry.tool?.name === "use_card" && entry.output) {
+  if (entry.kind !== "tool" || entry.tool?.namespace !== "opensteer" || !entry.output)
+    return undefined;
+  if (entry.tool.name === "use_card") {
     const result = readCardUseResult(entry.output.text);
     if (!result || result.status === "resolved") return undefined;
     const need = result.status === "unavailable" ? cardOfferNeed(result.reason) : null;
     return need ? { credential: "card", need, site: result.site } : null;
   }
-  if (entry.kind !== "tool" || !isSignInTool(entry) || !entry.output) return undefined;
-  const result = readBrowserSignInResult(entry.output.text);
-  if (result === null || result.status === "resolved") return undefined;
-  if (result.status === "pending" && result.replayed) return undefined;
-  const need = browserSignInPasswordsNeed(result);
-  const site = "site" in result ? result.site : stringField(effectiveArguments(entry), "site");
-  return need && site ? { credential: "login", need, site } : null;
+  if (entry.tool.name !== "use_saved_login" || entry.state !== "done") return undefined;
+  const result = readSavedLoginResult(entry.output.text);
+  if (result === null || (result.status === "pending" && result.replayed)) return undefined;
+  const need = savedLoginPasswordsNeed(result);
+  return need ? { credential: "login", need, site: result.site } : null;
 }
 
-function cardOfferNeed(reason: string): BrowserSignInPasswords | null {
+function cardOfferNeed(reason: string): PasswordsNeed | null {
   switch (reason) {
     case "no-saved-card":
       return "no-login";
@@ -1744,7 +1743,7 @@ function toolTone(tool: ToolEntry): ActivityTone {
       return "stopped";
     case "done":
       // A sign-in that came back without signing in must not read as done.
-      return signInResult(tool)?.signedIn === false || cardUseFailed(tool) ? "stopped" : "done";
+      return signInStep(tool)?.succeeded === false || cardUseFailed(tool) ? "stopped" : "done";
     default:
       return tool.state;
   }
@@ -2252,7 +2251,6 @@ const opensteerSteps = new Map<string, OpensteerStep>([
         surface: "browser",
       }),
   ],
-  ["browser_sign_in", signInPresentation],
   ["browser_tab_read", said(["Looking at saved tabs", "Looked at saved tabs"], "browser")],
   ["browser_tab_write", saidByAction(tabActions, ["Arranging tabs", "Arranged tabs"], "browser")],
   ["orchestrator_capabilities", said(["Looking up engines", "Looked up engines"], "list")],
@@ -2267,7 +2265,8 @@ const opensteerSteps = new Map<string, OpensteerStep>([
   ],
   ["pending_request", said(["Checking its requests", "Checked its requests"], "list")],
   ["request_withdraw", said(["Withdrawing a request", "Withdrew a request"], "stop")],
-  ["sign_in", signInPresentation],
+  ["use_saved_login", signInPresentation("Getting your saved login for")],
+  ["copy_chrome_cookies", signInPresentation("Copying your Chrome sign-in for")],
   [
     "use_card",
     (tool, args) => {
@@ -2598,29 +2597,31 @@ function integrationPresentation(
 }
 
 /**
- * `sign_in` reads by what it came to, from the result the Host
- * returned: a check only when it signed in, an alert when it did not, and the
- * browser while it is still on its way. Output it cannot read never reads as
- * signed in.
+ * A sign-in step reads by what it came to, from the result the Host returned:
+ * a check when it did what it asked, an alert when it did not, and the browser
+ * while it is still on its way. Output it cannot read never reads as done.
  */
-function signInPresentation(tool: ToolEntry, args: unknown): ToolPresentation {
-  const site = stringField(args, "site");
-  const domain = site === null ? null : browserSiteLabel(site);
-  const result = signInResult(tool);
-  return step({
-    activeLabel: domain === null ? "Signing in" : `Signing in to ${domain}`,
-    hint: result?.hint ?? domain ?? "",
-    hintKind: "prose",
-    icon:
-      result?.signedIn === true
-        ? "check-circle"
-        : result?.signedIn === false
-          ? "alert-circle"
-          : "browser",
-    kind: "browser",
-    label:
-      result?.label ?? (domain === null ? "Tried to sign in" : `Tried to sign in to ${domain}`),
-  });
+function signInPresentation(
+  activeVerb: string,
+): (tool: ToolEntry, args: unknown) => ToolPresentation {
+  return (tool, args) => {
+    const site = stringField(args, "site");
+    const domain = site === null ? "a site" : browserSiteLabel(site);
+    const result = signInStep(tool);
+    return step({
+      activeLabel: `${activeVerb} ${domain}`,
+      hint: result?.hint ?? (site === null ? "" : domain),
+      hintKind: "prose",
+      icon:
+        result?.succeeded === true
+          ? "check-circle"
+          : result?.succeeded === false
+            ? "alert-circle"
+            : "browser",
+      kind: "browser",
+      label: result?.label ?? `Tried to sign in to ${domain}`,
+    });
+  };
 }
 
 function cardUseFailed(tool: ToolEntry): boolean {
@@ -2634,20 +2635,18 @@ function cardUseFailed(tool: ToolEntry): boolean {
   );
 }
 
-function isSignInTool(tool: ToolEntry): boolean {
-  return (
-    tool.tool?.namespace === "opensteer" &&
-    (tool.tool.name === "browser_sign_in" || tool.tool.name === "sign_in") &&
-    tool.state === "done"
-  );
-}
-
-function signInResult(tool: ToolEntry): BrowserSignInStep | null {
-  if (!isSignInTool(tool) || !tool.output) return null;
-  const result = readBrowserSignInResult(tool.output.text);
-  return result === null
-    ? null
-    : browserSignInStep(result, stringField(effectiveArguments(tool), "site"));
+/** What a finished sign-in step came to, or null for any other step or unreadable output. */
+function signInStep(tool: ToolEntry): SignInStep | null {
+  if (tool.tool?.namespace !== "opensteer" || tool.state !== "done" || !tool.output) return null;
+  if (tool.tool.name === "use_saved_login") {
+    const result = readSavedLoginResult(tool.output.text);
+    return result && savedLoginStep(result);
+  }
+  if (tool.tool.name === "copy_chrome_cookies") {
+    const result = readChromeCookiesResult(tool.output.text);
+    return result && chromeCookiesStep(result);
+  }
+  return null;
 }
 
 /** A gateway step's hint is always words about the step, never a reference. */
@@ -3049,7 +3048,7 @@ export function toolStatusLabel(tool: ToolEntry): string {
     case "done":
       return cardUseFailed(tool)
         ? "Card use unavailable"
-        : signInResult(tool)?.signedIn === false
+        : signInStep(tool)?.succeeded === false
           ? "Didn’t sign in"
           : "Done";
     case "failed":
@@ -3077,14 +3076,6 @@ export function toolArgumentsText(tool: ToolEntry): string {
  */
 function shownArguments(tool: ToolEntry): unknown {
   const args = effectiveArguments(tool);
-  if (
-    tool.tool?.namespace === "opensteer" &&
-    (tool.tool.name === "browser_sign_in" || tool.tool.name === "sign_in")
-  ) {
-    if (isRecord(args) && "code" in args) return { ...args, code: "[hidden]" };
-    if (typeof args === "string")
-      return args.replace(/("code"\s*:\s*)"(?:[^"\\]|\\.)*("|$)/gu, '$1"[hidden]"');
-  }
   if (!isIntegrationGateway(tool) || !isRecord(args)) return args;
   // `toolRef` was the address before `operation` and `account`; old transcripts still hold it.
   const { toolRef: _reference, ...unaddressed } = args;

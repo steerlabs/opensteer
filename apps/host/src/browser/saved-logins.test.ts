@@ -4,11 +4,11 @@ import type { PasswordSignInAvailability } from "@opensteer/protocol";
 import { gate } from "@opensteer/shared/test-support/observation";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BrowserSourceService } from "./browser-source-service.js";
 import { PasswordsOffers, type PasswordsOffer } from "./passwords-offers.js";
+import { SavedLoginService } from "./saved-logins.js";
 
 const site = "https://offer.test";
-type ServiceOptions = ConstructorParameters<typeof BrowserSourceService>[0];
+type ServiceOptions = ConstructorParameters<typeof SavedLoginService>[0];
 
 function deadline<T>(operation: Promise<T>, label: string): Promise<T> {
   return withTimeout(operation, 1_000, {
@@ -31,6 +31,7 @@ function scene() {
     request: vi.fn(async () => ({
       replayed: false,
       requestId: createId("request"),
+      site,
       status: "pending" as const,
     })),
   };
@@ -38,20 +39,15 @@ function scene() {
     state.woken.push(offer);
   });
   const onError = vi.fn();
-  const service = new BrowserSourceService({
-    deploymentId: createId("deployment"),
+  const service = new SavedLoginService({
     browser: {} as ServiceOptions["browser"],
     canonicalOrigin: "https://opensteer.test",
     currentRoute: async () => null,
     onError,
     onLoginSaved,
-    onRequestResolved: () => {},
-    onDeploymentEvent: () => {},
     passwords: passwords as unknown as ServiceOptions["passwords"],
     requests: requests as unknown as ServiceOptions["requests"],
-    sign: () => "unused",
     stoppedByPerson: async () => false,
-    store: {} as ServiceOptions["store"],
   });
   const input = {
     callId: randomUUID(),
@@ -61,17 +57,18 @@ function scene() {
     site,
     threadId: createId("thread"),
     deploymentId: createId("deployment"),
+    loginFill: true,
   };
   return { input, onError, onLoginSaved, passwords, requests, service, state };
 }
 
-describe("saved-login wakes racing sign_in", () => {
+describe("saved-login wakes racing use_saved_login", () => {
   let ready: ReturnType<typeof scene>;
 
   beforeEach(async () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     ready = scene();
-    expect(await deadline(ready.service.agentSignIn(ready.input), "Initial sign-in")).toEqual({
+    expect(await deadline(ready.service.useSavedLogin(ready.input), "Initial sign-in")).toEqual({
       reason: "no-saved-login",
       site,
       status: "unavailable",
@@ -92,7 +89,7 @@ describe("saved-login wakes racing sign_in", () => {
       await deadline(admission.enter(), "Release sign-in admission");
       return null;
     });
-    const signIn = ready.service.agentSignIn({ ...ready.input, callId: randomUUID() });
+    const signIn = ready.service.useSavedLogin({ ...ready.input, callId: randomUUID() });
     try {
       await admission.entered;
       await deadline(vi.advanceTimersByTimeAsync(3_000), "Offer sweep timer");
@@ -118,11 +115,11 @@ describe("saved-login wakes racing sign_in", () => {
       ready.state.woken.push(offer);
       order.push("wake delivered");
     });
-    const sweep = ready.service.sweepPasswordsOffers();
+    const sweep = ready.service.sweepOffers();
     let signIn: Promise<unknown> | undefined;
     try {
       await delivery.entered;
-      signIn = ready.service.agentSignIn({ ...ready.input, callId: randomUUID() }).then(() => {
+      signIn = ready.service.useSavedLogin({ ...ready.input, callId: randomUUID() }).then(() => {
         order.push("sign-in finished");
       });
       await deadline(vi.advanceTimersByTimeAsync(0), "Queued sign-in turn");
@@ -131,7 +128,7 @@ describe("saved-login wakes racing sign_in", () => {
       await deadline(Promise.all([sweep, signIn]), "Delivery and sign-in turns");
     }
     expect(order).toEqual(["wake delivered", "sign-in finished"]);
-    await deadline(ready.service.sweepPasswordsOffers(), "Subsequent sweep");
+    await deadline(ready.service.sweepOffers(), "Subsequent sweep");
     expect(ready.state.woken).toHaveLength(1);
   });
 });

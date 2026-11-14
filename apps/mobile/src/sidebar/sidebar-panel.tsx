@@ -99,7 +99,7 @@ export interface SidebarActions {
   readonly onHome: () => void;
   readonly onOpenNeedsYou: (deploymentId: string) => void;
   /** The Done page: every task in Done, newest Done first. */
-  readonly onOpenDone: (deploymentId: string) => void;
+  readonly onOpenDone: () => void;
   /** The sheet naming the tasks just moved to Done for the reader. */
   readonly onOpenQuietlyMoved: (deploymentId: string) => void;
   /** Shows exactly this tab, app or phone, alone. */
@@ -113,7 +113,7 @@ export interface SidebarActions {
   /** A hosted team still being set up: its progress. */
   readonly onTeamSetup: (hostedTeamId: string) => void;
   readonly onSchedules: () => void;
-  readonly onSearch: (deploymentId: string) => void;
+  readonly onSearch: () => void;
   readonly onSettings: () => void;
   readonly onTabs: () => void;
 }
@@ -404,11 +404,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
         </Text>
         {deploymentId === null ? null : (
           <>
-            <IconButton
-              icon="magnifyingglass"
-              label="Search tasks"
-              onPress={() => actions.onSearch(deploymentId)}
-            />
+            <IconButton icon="magnifyingglass" label="Search tasks" onPress={actions.onSearch} />
             <IconButton icon="square.and.pencil" label="New task" onPress={actions.onHome} />
           </>
         )}
@@ -504,7 +500,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
               <DoneLine
                 count={doneCount}
                 moved={moved.length}
-                onOpen={() => actions.onOpenDone(deploymentId)}
+                onOpen={actions.onOpenDone}
                 onOpenMoved={() => actions.onOpenQuietlyMoved(deploymentId)}
               />
             )}

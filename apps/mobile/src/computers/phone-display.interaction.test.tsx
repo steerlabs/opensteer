@@ -167,6 +167,7 @@ vi.mock("@react-navigation/native", () => ({
   }),
   useNavigationState: (select: (state: object) => unknown) =>
     select({ index: 0, routes: [{ name: "Thread" }] }),
+  useRoute: () => ({ key: "display" }),
   StackActions: { replace: (name: string, params: unknown) => ({ name, params }) },
   useIsFocused: () => true,
 }));

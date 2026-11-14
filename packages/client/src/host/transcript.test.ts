@@ -1905,15 +1905,11 @@ describe("a Chrome sign-in's receipt", () => {
       status: "fulfilled",
     } as Extract<Request, { status: "fulfilled" }>);
 
-  it("says what Passwords lacks only when it ended with Passwords able to help", () => {
-    expect(ended({ outcome: "not-signed-in", passwords: "no-login" }).passwordsOffer).toEqual({
-      need: "no-login",
-      site,
-    });
-    expect(ended({ outcome: "not-signed-in" }).passwordsOffer).toBeUndefined();
-    expect(
-      ended({ outcome: "applied", profileName: null, sourceName: "Work" }).passwordsOffer,
-    ).toBeUndefined();
+  it("says what reached the browser, never that the site accepted it", () => {
+    expect(ended({ outcome: "not-signed-in" }).outcome).toBe("Chrome not signed in");
+    expect(ended({ outcome: "applied", profileName: null, sourceName: "Work" }).outcome).toBe(
+      "Copied Chrome sign-in for brex.com",
+    );
   });
 });
 

@@ -22,7 +22,7 @@ import {
   type ReactNode,
 } from "react";
 import { ActivityIndicator, StyleSheet, View } from "react-native";
-import { headerActions, useSidebarMenu } from "../navigation-header.js";
+import { headerActions } from "../navigation-header.js";
 import { color, space } from "../theme.js";
 import { useAppForeground } from "../ui/foreground.js";
 import { Notice } from "../ui/primitives.js";
@@ -46,7 +46,6 @@ export type SchedulesScreenProps = StaticScreenProps<{ readonly deploymentId: st
 export function SchedulesScreen(props: SchedulesScreenProps): ReactNode {
   const { deploymentId } = props.route.params;
   const hostClient = useAttachedHost(deploymentId);
-  useSidebarMenu(hostClient);
   if (hostClient === null) return <DeploymentGate deploymentId={deploymentId} />;
   return <SchedulesForHost deploymentId={deploymentId} hostClient={hostClient} />;
 }

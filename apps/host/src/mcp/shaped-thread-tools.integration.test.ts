@@ -148,6 +148,7 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     harnessAccessModes: () => ThreadAccessModeSchema.options,
     onEvent: () => {},
     browserSources: {} as never,
+    savedLogins: {} as never,
     deviceAccess: {} as never,
     machineFullDiskAccess: {} as never,
     execution: personalTestExecution(store, f),
@@ -1629,7 +1630,13 @@ describeStore("shaped agent Thread tools", (it) => {
   }) => {
     const f = await storeFixture.startRunFixture("shaped-tools");
     const s = setup(storeFixture, f);
-    for (const name of ["sign_in", "use_card", "computer", "computer.type"]) {
+    for (const name of [
+      "use_saved_login",
+      "copy_chrome_cookies",
+      "use_card",
+      "computer",
+      "computer.type",
+    ]) {
       const t = await tool(storeFixture, f, name);
       for (const event of [t.started, t.completed])
         expect((await s.read({ view: "activity", itemId: event.sequence })).items[0]).toMatchObject(

@@ -1,7 +1,7 @@
 # Credentials and authority
 
 Never ask for API keys, OAuth client secrets, passwords, or authorization codes in chat; sign in
-with the person's saved logins through `sign_in`. For a saved login in a genuine app, see opensteer:computer-use, references/sign-in.md. Never
+with the person's saved logins through `use_saved_login`. For a saved login in a genuine app, see opensteer:computer-use, references/sign-in.md. Never
 read, reveal, copy or move credentials through chat, tool output, screenshots, files or the
 clipboard, and don't fetch keys from provider dashboards yourself. Prepare non-secret setup steps
 and point the person to the key field on the request card; the UI owns secrets and every Request
