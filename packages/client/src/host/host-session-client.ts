@@ -930,6 +930,7 @@ export class HttpHostClient {
   #backgroundedAt: number | null = null;
 
   #bootstrapPromise: Promise<void> | null = null;
+  #bootstrapFailed = false;
   #rereadPending: BootstrapReason | null = null;
   #waitingRead: "again" | "idle" | "reading" = "idle";
 
@@ -2223,6 +2224,17 @@ export class HttpHostClient {
 
   async load(): Promise<void> {
     if (this.#disposed) throw new Error("The Host client is closed.");
+    const channel = this.#snapshot.deploymentId
+      ? this.#channels.get(this.#snapshot.deploymentId)
+      : undefined;
+    if (
+      !this.#bootstrapPromise &&
+      !this.#bootstrapFailed &&
+      this.#snapshot.session === "authenticated" &&
+      channel?.synchronized &&
+      channel.socket?.readyState === 1
+    )
+      return;
     await this.#bootstrap("load");
   }
 
@@ -3237,10 +3249,13 @@ export class HttpHostClient {
     }
     const operation = this.#performBootstrap(reason, revalidateCapabilities);
     this.#bootstrapPromise = operation;
+    let succeeded = false;
     try {
       await operation;
+      succeeded = true;
     } finally {
       if (this.#bootstrapPromise === operation) {
+        this.#bootstrapFailed = !succeeded;
         this.#bootstrapPromise = null;
         if (this.#rereadPending) {
           const reason = this.#rereadPending;
