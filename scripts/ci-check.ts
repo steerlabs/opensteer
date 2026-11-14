@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, matchesGlob } from "node:path";
 import { darwinTask } from "../.github/scripts/ci-changes.mjs";
 import { validateResults } from "../.github/scripts/ci-check.mjs";
@@ -9,7 +9,7 @@ import {
   realBrowserTests,
   windowsTestInclude,
 } from "../.github/scripts/ci-test-files.mjs";
-import { mergeLockGraphs } from "./ci-lock-merge.js";
+import { mergeLockGraphs, writeLockGraph } from "./ci-lock-merge.js";
 const directory = process.argv[2]!;
 const read = (name: string) => JSON.parse(readFileSync(join(directory, name), "utf8"));
 const plan = read("ci-plan.json");
@@ -66,13 +66,12 @@ if (plan.lanes["native-windows"]) {
     throw new Error("Windows discovery differs from the tracked Windows-real files");
 }
 if (plan.lanes.integration) {
-  const merged = mergeLockGraphs(
-    Array.from({ length: shards.integration }, (_, i) =>
-      join(directory, `integration-${i + 1}.jsonl.graph.json`),
-    ),
-  );
-  writeFileSync(
+  writeLockGraph(
     join(directory, "combined-lock-graph.json"),
-    JSON.stringify(merged, null, 2) + "\n",
+    mergeLockGraphs(
+      Array.from({ length: shards.integration }, (_, i) =>
+        join(directory, `integration-${i + 1}.jsonl.graph.json`),
+      ),
+    ),
   );
 }
