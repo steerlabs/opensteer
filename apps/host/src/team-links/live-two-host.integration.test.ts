@@ -276,9 +276,12 @@ it("round-trips an agent ask through owner consent and one private authored retu
     });
     expect(
       await new NotificationStore(maya.database).teamAsk(team.deploymentId, ask.request.id),
-    ).toMatchObject({ kind: "request-opened", threadId: null });
+    ).toMatchObject({
+      kind: "request-opened",
+      threadId: needs.entries[0]?.kind === "team-ask" ? needs.entries[0].task?.threadId : undefined,
+    });
     expect(await maya.database.selectFrom("runs").selectAll().execute()).toHaveLength(0);
-    await maya.publisher.decide(maya.owner.userId, team.deploymentId, ask.request.id, "approve");
+    await maya.publisher.decide(maya.owner.userId, team.deploymentId, ask.request.id, "approve", 0);
     const admitted = (await maya.requests.get(team.deploymentId, ask.request.id))!;
     const context = await maya.tools.context(admitted.runId!);
     expect(context.asker).toEqual({ displayName: "Tim", actor: "agent" });
@@ -397,6 +400,7 @@ it("round-trips an agent ask through owner consent and one private authored retu
       team.deploymentId,
       humanAsk.request.id,
       "approve",
+      0,
     );
     await maya.answer(humanAsk.request.id, "Here is the human answer.");
     expect(await team.team.requests.pending(team.linkId)).toEqual([]);

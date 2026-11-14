@@ -820,6 +820,7 @@ export interface ThreadInputTable {
   threadId: ThreadId;
   /** A device's edit lease; all three are set together. Expired leases count as absent. */
   editLeaseId: Generated<string | null>;
+  editLeaseSessionId: Generated<AuthSessionId | null>;
   editLeaseDeviceLabel: Generated<string | null>;
   editLeaseExpiresAt: Generated<Date | null>;
   createdAt: Timestamp;

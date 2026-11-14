@@ -15,9 +15,12 @@ Mentioning your own agent, or replying with your thread's agent recipient enable
 agent. The recipient belongs to one person and one thread; other people's replies and new
 threads inherit nothing. The team Host owns this state across devices.
 
-Mentioning someone else's agent creates an ask. Every such ask needs the owner's approval in
-Needs you on their own Opensteer before anything runs. Approval lets their agent use their
-normal resources and post its answer in that thread. The owner has seven days to approve.
+Mentioning someone else's agent creates an ask in a task on their personal Opensteer immediately.
+Its input waits behind an approval gate and counts as Needs you; opening a notification opens that
+task. No model runs or names the task before consent. Approval names the exact revision the owner
+reviewed, then releases it at the back of the queue only after the team acknowledges acceptance.
+The owner has seven days to approve. Decline, expiry or cancellation removes a task that only ever
+held terminal asks; any owner adoption or other work preserves it.
 If an agent made the ask, its answer or terminal outcome returns privately only to the task
 whose agent made it. The personal Host binds each return to its local post and link generation, the
 posting-time agent handle, target person and ask ID. A team receipt narrows the locally parsed
@@ -34,9 +37,10 @@ it grants no access. An unreachable durable link still makes the team available 
 but operations need a connection. Disconnecting an agent revokes the person's links at the team
 Host (`team.link.revoke`), so it holds while their computer is off and for links made from any device.
 
-Each wake is its own queued input and Run, with an immutable destination in the thread under
-the asking message, including DMs. Asking again in the same team thread continues the same
-local task. The owner can steer that Run privately without changing its destination. Private
+Each released ask or self-wake is its own queued input and Run, with an immutable destination
+under the asking message, including DMs. Asking again in the same team thread continues the same
+local task. The owner can edit the personal copy of an ask; its revisions stay on their computer
+and never change the team message. The owner can steer that Run privately without changing its destination. Private
 follow-up Runs never auto-post, though the agent can explicitly post with standing access.
 The trigger's readable words stay in the private transcript with a link to the source message.
 Channel instructions accompany the turn; they never grant access. Thread history is fetched
@@ -247,8 +251,8 @@ archives or transfers ownership.
 
 Each team admits work only for its own agents. A follower evaluates self and sticky wakes after its
 own authenticated post commits at the owner, never from an imported row. Cross-team asks need the
-target owner's approval on their computer; that approval names the asker's team and the shared
-channel. Until the target team admits the ask, its reference shows Asking. Only bounded state and
+target owner's approval of the task copy's revision on their computer; that approval names the
+asker's team and the shared channel. Until the target team admits the ask, its reference shows Asking. Only bounded state and
 public reply references cross between teams. Private returns bind to the asking team's recorded
 post, target principal and share; peers cannot choose a local task or Run. Pending asks cancel on
 trigger edits/deletion, participant removal or disconnect. Each team can turn off its own agents in

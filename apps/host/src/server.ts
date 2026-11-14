@@ -1,3 +1,4 @@
+import { describeSessionDevice } from "@opensteer/shared/sessionDevice";
 import type { AssetService } from "./assets/asset-service.js";
 import type { DeviceAccessService } from "./administration/device-access-service.js";
 import { consumeAnonymousRateLimit } from "./identity/anonymous-rate-limit.js";
@@ -1461,6 +1462,13 @@ export async function createHostServer(
         runId: input.runId,
       });
     },
+    "thread.message.revisions.list": async (input, context) =>
+      rpcSuccess(
+        await dependencies.store.listMessageRevisions({
+          ...input,
+          requestedBy: requireRpcSession(context).user.id,
+        }),
+      ),
     "thread.inputQueue.get": async (input, context) => {
       const requestedBy = requireRpcSession(context).user.id;
       const thread = await dependencies.store.getThreadForOwner(input.threadId, requestedBy);
@@ -1610,6 +1618,7 @@ export async function createHostServer(
     | "tool.output.get"
     | "thread.messages.list"
     | "thread.inputQueue.get"
+    | "thread.message.revisions.list"
     | "thread.live.get"
     | "thread.requests.list"
   >;
@@ -1648,7 +1657,14 @@ export async function createHostServer(
         await requirePersonalOwner(dependencies.store.database, userId);
         await (
           await dependencies.teamLinks()
-        ).options.requests.decide(userId, command.teamId, command.requestId, command.decision);
+        ).options.requests.decide(
+          userId,
+          command.teamId,
+          command.requestId,
+          command.decision,
+          command.expectedRevision,
+          session.id,
+        );
         return { type: command.type };
       case "teams.link.leave":
         await (await dependencies.teamLinks()).leave(command.teamId);
@@ -1730,21 +1746,44 @@ export async function createHostServer(
           type: command.type,
         };
 
+      case "thread.input.lease.take":
+      case "thread.input.lease.renew":
+      case "thread.input.lease.release":
+        return threadService.lease({ kind: "person", userId }, command, {
+          id: session.id,
+          deviceLabel: describeSessionDevice(
+            typeof context.headers["user-agent"] === "string"
+              ? context.headers["user-agent"]
+              : null,
+          ).label,
+        });
+      case "thread.input.edit":
+        return {
+          type: command.type,
+          ...(await threadService.edit({ kind: "person", userId }, command, {
+            id: session.id,
+            deviceLabel: describeSessionDevice(
+              typeof context.headers["user-agent"] === "string"
+                ? context.headers["user-agent"]
+                : null,
+            ).label,
+          })),
+        };
       case "thread.input.steer":
         return {
-          ...(await threadService.steer({ kind: "person", userId }, command)),
+          ...(await threadService.steer({ kind: "person", userId }, command, session.id)),
           type: command.type,
         };
 
       case "thread.input.cancel":
         return {
-          ...(await threadService.cancel({ kind: "person", userId }, command)),
+          ...(await threadService.cancel({ kind: "person", userId }, command, session.id)),
           type: command.type,
         };
 
       case "thread.input.move":
         return {
-          ...(await threadService.move({ kind: "person", userId }, command)),
+          ...(await threadService.move({ kind: "person", userId }, command, session.id)),
           type: command.type,
         };
 

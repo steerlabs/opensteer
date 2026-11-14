@@ -1,6 +1,10 @@
 import { runDeliverySelection } from "./thread-row-mappers.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { lockDeploymentEvents, withPersonalTransaction } from "./personal-transaction.js";
+import {
+  inheritExecutionClock,
+  lockDeploymentEvents,
+  withPersonalTransaction,
+} from "./personal-transaction.js";
 import { failNodeStop } from "./node-control.js";
 import {
   assertThreadCaller,
@@ -1224,6 +1228,7 @@ export async function dispatchRequestResponse(
   try {
     // Non-retrying: the Runner send/acknowledgement gate cannot safely be replayed.
     const events = await database.transaction().execute(async (transaction) => {
+      inheritExecutionClock(database, transaction);
       await lockDeploymentEvents(transaction);
       const observed = await transaction
         .selectFrom("commands")
@@ -1362,6 +1367,7 @@ export async function dispatchChannelCommand(
   try {
     // Non-retrying: the Runner send/acknowledgement gate cannot safely be replayed.
     const events = await database.transaction().execute(async (transaction) => {
+      inheritExecutionClock(database, transaction);
       await lockDeploymentEvents(transaction);
       const observed = await transaction
         .selectFrom("commands")

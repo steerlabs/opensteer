@@ -257,7 +257,7 @@ const eventDataSchemas = {
   "message.updated": z.object({
     input: ThreadInputSchema,
     message: MessageSchema,
-    edit: MessageEditSchema,
+    edit: MessageEditSchema.optional(),
   }),
   "reasoning.completed": z.object({
     blockId: z.string().min(1).max(255),
@@ -548,7 +548,7 @@ const eventDataViewSchemas = {
   "message.updated": z.object({
     input: ThreadInputViewSchema,
     message: MessageViewSchema,
-    edit: MessageEditSchema,
+    edit: MessageEditSchema.optional(),
   }),
   "reasoning.completed": eventDataSchemas["reasoning.completed"],
   "run.queued": z.object({ run: ThreadRunQueueEntryViewSchema }),

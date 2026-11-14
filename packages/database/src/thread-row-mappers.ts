@@ -120,6 +120,21 @@ function threadValueFromRow(row: ThreadReadRow) {
     updatedAt: row.updatedAt.toISOString(),
   };
 }
+export function messageEditFromRow(row: Selectable<MessageTable>) {
+  return row.revision > 0 && row.editedAt
+    ? {
+        revision: row.revision,
+        editedAt: row.editedAt.toISOString(),
+        ...(row.author.kind === "team-member" ? { ownerEdited: true as const } : {}),
+      }
+    : undefined;
+}
+
+export function messageViewFromRow(row: Selectable<MessageTable>) {
+  const edit = messageEditFromRow(row);
+  return { ...messageFromRow(row), ...(edit ? { edit } : {}) };
+}
+
 export function messageFromRow(row: Selectable<MessageTable>): Message {
   return MessageSchema.parse(messageValueFromRow(row));
 }
@@ -132,6 +147,9 @@ function messageValueFromRow(row: Selectable<MessageTable>) {
       ? {
           quote: row.quote,
         }
+      : {}),
+    ...(row.revision > 0 && row.author.kind === "team-member"
+      ? { ownerEdited: true as const }
       : {}),
     author: row.author,
     content: row.content,

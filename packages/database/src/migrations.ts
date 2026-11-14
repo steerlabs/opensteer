@@ -46,11 +46,13 @@ create table message_revisions (
 );
 alter table thread_inputs
   add column edit_lease_id text,
+  add column edit_lease_session_id text,
   add column edit_lease_device_label text,
   add column edit_lease_expires_at timestamptz,
   add constraint thread_inputs_edit_lease check (
     (edit_lease_id is null) = (edit_lease_expires_at is null)
-    and (edit_lease_id is null) = (edit_lease_device_label is null));
+    and (edit_lease_id is null) = (edit_lease_device_label is null)
+    and (edit_lease_id is null) = (edit_lease_session_id is null));
 create index thread_inputs_edit_lease_expiry on thread_inputs(edit_lease_expires_at) where edit_lease_id is not null;
 create index thread_inputs_awaiting_approval on thread_inputs(thread_id, created_at, message_id) where state = 'awaiting-approval';
 create or replace view thread_work_inputs as select * from thread_inputs where policy in ('queue','steer');
@@ -61,8 +63,9 @@ alter table personal_team_requests
   add constraint personal_team_requests_release check (
     (approved_revision is null or (kind = 'ask' and local_decision = 'approve'))
     and (released_at is null or approved_revision is not null));
-update personal_team_requests set approved_revision = 0, released_at = decision_at
-  where kind = 'ask' and local_decision = 'approve' and local_task_id is not null;
+update personal_team_requests set approved_revision = 0,
+  released_at = case when local_task_id is not null then decision_at else null end
+  where kind = 'ask' and local_decision = 'approve';
 `;
 export const waitingInputEditsMigrationName = "0022_waiting_input_edits";
 export const personalTeamBaselineName = "0002_personal_team_baseline";
