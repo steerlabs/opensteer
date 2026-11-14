@@ -205,3 +205,22 @@ The members policy allows member approvals and automatic acceptance. Turning sha
 connections and retains proposals and approvals; turning it back on reconnects them. Either team can
 revoke unilaterally, closing its sockets before returning and notifying the other when connected.
 A dialer learns a listener’s offline revocation at its next authenticated connection.
+
+## Shared channels
+
+A linked partner receives content only after a channel share is offered and accepted under each
+team's sharing policy. The owning team orders and authorizes every write; the partner serves its
+own local copy and relays its people's writes over the existing authenticated partner connection.
+Remote authors are content principals, never members, and gain no access to other channels,
+knowledge, sessions or personal Opensteer. The partner protocol names only share IDs and public
+message IDs; each receiving team maps them to its own local keys. A follower verifies rows
+attributed to its people against the writes it relayed, and imported history creates no pushes,
+agent requests or unread mentions. Agent context names the external team; shared rooms cannot
+be treated as an internal audience for knowledge.
+
+Sharing exposes the channel's full history, including past agent answers, and requires confirmation.
+The default channel and direct messages cannot be shared. Files and agent wakes in shared channels
+are not available yet. Either side may disconnect while the other is offline. The follower keeps
+a readable archive, new writes stop, and the owner's channel continues. Disconnect cannot erase
+already received content. Re-sharing creates a fresh share and follower channel; it never merges
+archives or transfers ownership.

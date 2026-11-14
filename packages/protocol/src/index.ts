@@ -69,3 +69,5 @@ export {
 export * from "./devices.js";
 
 export * from "./team-partner.js";
+
+export * from "./team-share.js";

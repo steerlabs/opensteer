@@ -10,6 +10,7 @@ import {
   TeamBlobIdSchema,
   TeamChannelIdSchema,
   TeamGroupIdSchema,
+  TeamHandleSchema,
   TeamInviteIdSchema,
   TeamLinkIdSchema,
   TeamMessageIdSchema,
@@ -33,6 +34,7 @@ import {
   TeamTopicAccessSchema,
 } from "./team-access.js";
 import {
+  TeamRemotePeopleSchema,
   TeamAgentRequestSchema,
   TeamAgentRecipientSchema,
   TeamBootstrapSchema,
@@ -85,6 +87,33 @@ export const teamChannelNameTakenReason = "channel-name-taken";
 /** The most people a direct message can add to the one who opens it. */
 export const teamDmMaxParticipants = 31;
 export const TeamCommandSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    type: z.literal("team.share.participant.restore"),
+    shareId: z.uuid(),
+    principalId: UserIdSchema,
+  }),
+  z.strictObject({
+    type: z.literal("team.share.participant.remove"),
+    shareId: z.uuid(),
+    principalId: UserIdSchema,
+  }),
+  z.strictObject({
+    type: z.literal("team.share.offer"),
+    channelId: TeamChannelIdSchema,
+    linkId: z.uuid(),
+    historyVisibleConfirmed: z.literal(true),
+  }),
+  z.strictObject({ type: z.literal("team.share.approve"), shareId: z.uuid() }),
+  z.strictObject({
+    type: z.literal("team.share.accept"),
+    shareId: z.uuid(),
+    id: TeamChannelIdSchema,
+    kind: z.enum(["public", "private"]),
+    name: name,
+    peopleOnly: z.boolean(),
+    access: z.array(TeamChannelAccessEntrySchema).max(1000),
+  }),
+  z.strictObject({ type: z.literal("team.share.end"), shareId: z.uuid() }),
   z.strictObject({ type: z.literal("team.partner.invite.create") }),
   z.strictObject({ type: z.literal("team.partner.invite.revoke"), inviteId: z.uuid() }),
   z.strictObject({
@@ -308,6 +337,48 @@ export const teamIdentityRpcNames = [
   "sessions.list",
 ] as const;
 export const teamReadSchemas = {
+  "team.share.participants.get": {
+    input: z.strictObject({
+      channelId: TeamChannelIdSchema,
+      after: TeamHandleSchema.optional(),
+      query: z.string().trim().min(1).max(80).optional(),
+    }),
+    output: z.object({
+      participants: z
+        .array(
+          z.object({
+            userId: UserIdSchema,
+            handle: TeamHandleSchema,
+            level: z.enum(["read", "post"]),
+            state: z.enum(["active", "removed"]),
+          }),
+        )
+        .max(50),
+      people: TeamRemotePeopleSchema,
+      nextCursor: TeamHandleSchema.nullable(),
+    }),
+  },
+  "team.shares.list": {
+    input: z.strictObject({ channelId: TeamChannelIdSchema.optional() }),
+    output: z.object({
+      shares: z
+        .array(
+          z.object({
+            id: z.uuid(),
+            historyFromShareId: z.uuid().nullable().optional(),
+            channelId: TeamChannelIdSchema.nullable(),
+            partnerName: name,
+            role: z.enum(["owner", "follower"]),
+            state: z.enum(["offered", "active", "ended"]),
+            generation: z.number().int().positive(),
+            name: name,
+            ready: z.boolean(),
+            localApproved: z.boolean(),
+          }),
+        )
+        .max(50),
+    }),
+  },
   "team.partners.list": {
     input: z.strictObject({ after: z.uuid().optional() }),
     output: z.object({
@@ -373,14 +444,17 @@ export const teamReadSchemas = {
   },
   "team.message.get": {
     input: z.strictObject({ channelId: TeamChannelIdSchema, messageId: TeamMessageIdSchema }),
-    output: TeamMessageSchema,
+    output: TeamMessageSchema.extend({ people: TeamRemotePeopleSchema.optional() }),
   },
   "team.messages.check": {
     input: z.strictObject({
       channelId: TeamChannelIdSchema,
       clientMessageIds: z.array(z.uuid()).max(50),
     }),
-    output: z.strictObject({ messages: z.array(TeamMessageSchema).max(50) }),
+    output: z.strictObject({
+      people: TeamRemotePeopleSchema.optional(),
+      messages: z.array(TeamMessageSchema).max(50),
+    }),
   },
   "team.search": {
     input: z.strictObject({ input: TeamSearchInputSchema }),
@@ -466,14 +540,22 @@ export const teamReadSchemas = {
       channelId: TeamChannelIdSchema.optional(),
       before: TeamMessageIdSchema.optional(),
     }),
-    output: z.strictObject({ messages: z.array(TeamMessageSchema).max(50), hasMore: z.boolean() }),
+    output: z.strictObject({
+      people: TeamRemotePeopleSchema.optional(),
+      messages: z.array(TeamMessageSchema).max(50),
+      hasMore: z.boolean(),
+    }),
   },
   "team.pins.page": {
     input: z.strictObject({
       channelId: TeamChannelIdSchema.optional(),
       before: TeamMessageIdSchema.optional(),
     }),
-    output: z.strictObject({ messages: z.array(TeamMessageSchema).max(50), hasMore: z.boolean() }),
+    output: z.strictObject({
+      people: TeamRemotePeopleSchema.optional(),
+      messages: z.array(TeamMessageSchema).max(50),
+      hasMore: z.boolean(),
+    }),
   },
   "team.files.page": {
     input: z.strictObject({

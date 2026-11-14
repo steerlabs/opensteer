@@ -1,3 +1,9 @@
+import {
+  channelShare,
+  requireOwnerChannel,
+  authorizePartnerWrite,
+  type TeamPartnerWriteContext,
+} from "./team-share-access.js";
 import { createHash } from "node:crypto";
 import {
   createId,
@@ -43,6 +49,7 @@ import {
   teamConflict,
   teamReadableChannels,
   teamReadableChannelIds,
+  teamChannelPeopleOnly,
 } from "./team-access-store.js";
 import { appendTeamAudit, type TeamAgentOperation } from "./team-audit-store.js";
 import { bindTeamFiles, teamFileView } from "./team-files-store.js";
@@ -143,12 +150,122 @@ export async function teamMessageViews(
   });
 }
 
+function teamMessagePeopleIds(messages: readonly TeamMessage[]) {
+  return [
+    ...new Set(
+      messages.flatMap((m) => [
+        m.authorUserId,
+        ...m.mentions.map((p) => p.userId),
+        ...m.replySummary.repliers,
+      ]),
+    ),
+  ];
+}
+export async function teamContentPeople(
+  t: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
+  messages: readonly TeamMessage[],
+) {
+  const ids = teamMessagePeopleIds(messages);
+  if (!ids.length) return {};
+  const rows = await teamPrincipalProfiles(t)
+    .where("p.memberUserId", "is", null)
+    .where("p.id", "in", ids)
+    .execute();
+  if (!rows.length) return {};
+  const links = await t
+    .selectFrom("teamPartnerLinks")
+    .select(["partnerTeamId", "partnerName"])
+    .where(
+      "partnerTeamId",
+      "in",
+      rows.map((p) => p.homeTeamId),
+    )
+    .orderBy("createdAt", "desc")
+    .execute();
+  const handles = await t
+    .selectFrom("teamShareParticipants as a")
+    .innerJoin("teamShares as s", "s.id", "a.shareId")
+    .select(["a.principalId", "a.handle"])
+    .where("s.channelId", "in", [...new Set(messages.map((m) => m.channelId))])
+    .where(
+      "a.principalId",
+      "in",
+      rows.map((p) => p.id),
+    )
+    .execute();
+  return Object.fromEntries(
+    rows.map((p) => [
+      p.id,
+      {
+        name: p.displayName,
+        handle: handles.find((h) => h.principalId === p.id)?.handle ?? p.handle,
+        homeTeamName:
+          links.find((l) => l.partnerTeamId === p.homeTeamId)?.partnerName ?? "External team",
+        external: true as const,
+      },
+    ]),
+  );
+}
+export async function teamChannelShares(
+  t: Transaction<DatabaseSchema>,
+  ids: readonly TeamChannelId[],
+) {
+  if (!ids.length)
+    return new Map<TeamChannelId, import("@opensteer/protocol").TeamChannel["share"]>();
+  const rows = await t
+    .selectFrom("teamShares as s")
+    .innerJoin("teamPartnerLinks as l", "l.id", "s.partnerLinkId")
+    .select(["s.channelId", "s.state", "s.role", "s.syncError", "l.partnerTeamId", "l.partnerName"])
+    .where("s.channelId", "in", [...ids])
+    .where((eb) => eb.or([eb("s.state", "=", "active"), eb("s.role", "=", "follower")]))
+    .orderBy("s.createdAt")
+    .execute();
+  return new Map(
+    rows.map((r) => [
+      r.channelId!,
+      {
+        updateRequired: r.syncError === "update-required",
+        state: r.state === "ended" ? ("disconnected" as const) : ("shared" as const),
+        role: r.role,
+        teamId: r.partnerTeamId,
+        teamName: r.partnerName,
+      },
+    ]),
+  );
+}
+
 export interface TeamRequestChange {
   readonly kind: "queued" | "cancelled";
   readonly linkId: TeamLinkId;
   readonly requestId: TeamAgentRequestId;
 }
+export interface TeamChatRelay {
+  send(
+    actor: TeamActor,
+    input: Parameters<TeamChatStore["send"]>[1],
+  ): Promise<
+    | {
+        message: TeamMessage;
+        wake: "queued" | "no-link" | "not-requested" | "rate-limited" | "people-only";
+        askOutcomes: TeamAskOutcome[];
+      }
+    | undefined
+  >;
+  edit(
+    actor: TeamActor,
+    channelId: TeamChannelId,
+    messageId: TeamMessageId,
+    input: { bodyMarkdown: string; mentions: readonly Mention[] } | null,
+  ): Promise<boolean>;
+  pin(
+    actor: TeamActor,
+    channelId: TeamChannelId,
+    messageId: TeamMessageId,
+    pin: boolean,
+  ): Promise<boolean>;
+}
 export class TeamChatStore {
+  relay: TeamChatRelay | undefined;
   readonly #requestListeners = new Set<(event: TeamRequestChange) => Promise<void> | void>();
   readonly #listeners = new Set<(channelId: TeamChannelId) => void>();
   readonly access: TeamAccessStore;
@@ -210,17 +327,21 @@ export class TeamChatStore {
         kind: TeamSource["audience"]["channelKind"];
         peopleOnly: boolean;
         memberCount: string;
-      }>`select c.id,c.name,c.kind,c.people_only,
+      }>`select c.id,c.name,c.kind,${teamChannelPeopleOnly()} as people_only,
       (select count(*)::text from team_members m where m.state='active' and c.id in ${teamReadableChannelIds(sql.ref("m.userId"), "human")}) as member_count
       from team_channels c where c.id in (${sql.join(ids)}) and c.id in ${teamReadableChannels(actor)}`.execute(
         transaction,
       )
     ).rows;
     requireTeam(rows.length === ids.length);
+    const shares = await teamChannelShares(transaction, ids);
     return new Map(
       rows.map((channel) => [
         channel.id,
         {
+          externalTeams: shares.has(channel.id)
+            ? [{ teamId: shares.get(channel.id)!.teamId, name: shares.get(channel.id)!.teamName }]
+            : [],
           teamName: this.identity.teamName,
           channelName: channel.name ?? "Direct message",
           channelKind: channel.kind,
@@ -249,8 +370,11 @@ export class TeamChatStore {
       .where("ownerUserId", "=", actor.userId)
       .where("state", "=", "active")
       .executeTakeFirst();
+    const share = (await teamChannelShares(transaction, [id])).get(id);
     return TeamChannelSchema.strip().parse({
       ...row,
+      ...(share ? { share } : {}),
+      peopleOnly: authority.peopleOnly,
       name: row.name ?? "Direct message",
       archivedAt: row.archivedAt?.toISOString() ?? null,
       instructionsMarkdown: authority.read ? row.instructionsMarkdown : "",
@@ -260,7 +384,7 @@ export class TeamChatStore {
         manage: authority.manage,
         join: false,
         leave: authority.read && (row.kind === "public" || row.kind === "private"),
-        wakeOwnAgent: authority.post && !authority.peopleOnly && !!activeLink,
+        wakeOwnAgent: authority.post && !share && !authority.peopleOnly && !!activeLink,
       },
     });
   }
@@ -346,7 +470,7 @@ export class TeamChatStore {
           effects: emptyTeamAccessEffects,
         };
       }
-      await this.#insertChannel(transaction, actor, input);
+      await this.insertChannel(transaction, actor, input);
       return {
         value: await this.channelView(transaction, actor, input.id),
         effects: { ...emptyTeamAccessEffects, channels: [input.id] },
@@ -361,7 +485,7 @@ export class TeamChatStore {
    */
   async createGeneral(transaction: Transaction<DatabaseSchema>, ownerUserId: UserId) {
     const id = createId("teamChannel");
-    await this.#insertChannel(
+    await this.insertChannel(
       transaction,
       { kind: "human", userId: ownerUserId },
       {
@@ -392,7 +516,7 @@ export class TeamChatStore {
     if (await query.executeTakeFirst())
       teamConflict(`There’s already a channel called #${name.trim()}.`, teamChannelNameTakenReason);
   }
-  async #insertChannel(
+  async insertChannel(
     transaction: Transaction<DatabaseSchema>,
     actor: TeamActor,
     input: {
@@ -778,6 +902,17 @@ export class TeamChatStore {
     bodyMarkdown: string,
   ) {
     if (!bodyMarkdown.includes("@")) return [];
+    const share = await channelShare(transaction, channelId);
+    if (share && share.state !== "ended") {
+      const people = await transaction
+        .selectFrom("teamShareParticipants")
+        .select(["principalId as userId", "handle"])
+        .where("shareId", "=", share.id)
+        .where("state", "=", "active")
+        .where("blocked", "=", false)
+        .execute();
+      return teamMentions(bodyMarkdown, people);
+    }
     const members = await transaction
       .selectFrom("teamMembers")
       .select(["userId", "handle"])
@@ -839,8 +974,11 @@ export class TeamChatStore {
       attachmentIds: readonly import("@opensteer/core").TeamBlobId[];
       agentRequestId?: import("@opensteer/core").TeamAgentRequestId;
       linkId?: TeamLinkId;
+      runId?: import("@opensteer/core").RunId;
     },
   ) {
+    const relayed = await this.relay?.send(actor, input);
+    if (relayed) return relayed;
     const result = await this.access.contentWrite(
       actor,
       input.channelId,
@@ -891,6 +1029,7 @@ export class TeamChatStore {
       publication?: boolean;
       deferAudit?: boolean;
       statusMessageIds?: readonly TeamMessageId[];
+      partner?: TeamPartnerWriteContext;
     },
   ) {
     TeamMarkdownSchema.parse(input.bodyMarkdown);
@@ -898,9 +1037,16 @@ export class TeamChatStore {
       input.bodyMarkdown.trim() || input.attachmentIds.length,
       "A message needs text or files",
     );
-    requireTeam((await this.access.channel(transaction, actor, input.channelId)).post);
+    const shared = await requireOwnerChannel(
+      transaction,
+      input.channelId,
+      input.attachmentIds.length,
+    );
+    if (input.partner)
+      await authorizePartnerWrite(transaction, actor, input.channelId, input.partner);
+    else requireTeam((await this.access.channel(transaction, actor, input.channelId)).post);
     let link;
-    if (actor.kind === "agent") {
+    if (actor.kind === "agent" && !input.partner) {
       requireTeam(input.linkId);
       link = await this.access.link(transaction, actor, input.linkId);
     }
@@ -954,6 +1100,7 @@ export class TeamChatStore {
         editedAt: null,
         deletedAt: null,
         changeSeq,
+        createdSeq: changeSeq,
       })
       .returningAll()
       .executeTakeFirstOrThrow();
@@ -998,7 +1145,7 @@ export class TeamChatStore {
       mentions.filter((m) => m.kind === "agent" && m.userId !== actor.userId).map((m) => m.userId),
     );
     if (actor.kind === "human" && (ownMention || sticky?.enabled)) targets.add(actor.userId);
-    if (input.publication) targets.clear();
+    if (input.publication || shared) targets.clear();
     const admissions: {
       id: TeamAgentRequestId;
       targetAgentHandle: string;
@@ -1147,10 +1294,15 @@ export class TeamChatStore {
       .execute();
     if (actor.kind === "agent" && !input.deferAudit)
       await appendTeamAudit(transaction, {
-        actor,
+        actor: input.partner ? null : actor,
         ...input.agent,
         linkId: link?.id,
-        metadata: { personalDeploymentId: link?.personalDeploymentId ?? null },
+        metadata: {
+          personalDeploymentId: link?.personalDeploymentId ?? null,
+          ...(input.partner
+            ? { partnerLinkId: input.partner.partnerLinkId, principalId: actor.userId }
+            : {}),
+        },
         action: "agent.post",
         resourceKind: "message",
         resourceId: row.id,
@@ -1168,10 +1320,14 @@ export class TeamChatStore {
     channelId: TeamChannelId,
     messageId: TeamMessageId,
     input: { bodyMarkdown: string; mentions: readonly Mention[] } | null,
+    partner?: TeamPartnerWriteContext,
   ) {
+    if (!partner && (await this.relay?.edit(actor, channelId, messageId, input))) return [];
     const deletedRequests: import("@opensteer/core").TeamAgentRequestId[] = [];
     await this.access.contentWrite(actor, channelId, async (transaction, authority) => {
-      requireTeam(authority.read && actor.kind === "human");
+      await requireOwnerChannel(transaction, channelId);
+      if (partner) await authorizePartnerWrite(transaction, actor, channelId, partner);
+      else requireTeam(authority.read && actor.kind === "human");
       const row = await transaction
         .selectFrom("teamMessages")
         .selectAll()
@@ -1180,7 +1336,7 @@ export class TeamChatStore {
         .executeTakeFirstOrThrow();
       requireTeam(
         (row.authorUserId === actor.userId && row.authorKind === "human") ||
-          (input === null && authority.manage),
+          (input === null && !partner && authority.manage),
       );
       if (row.deletedAt) return;
       await lockTeamMessages(transaction, [
@@ -1229,7 +1385,9 @@ export class TeamChatStore {
       if (input) {
         TeamMarkdownSchema.parse(input.bodyMarkdown);
         requireTeam(
-          authority.post && row.authorUserId === actor.userId && row.authorKind === "human",
+          (partner || authority.post) &&
+            row.authorUserId === actor.userId &&
+            row.authorKind === "human",
         );
       }
       await transaction
@@ -1318,7 +1476,10 @@ export class TeamChatStore {
           .where("messageId", "=", messageId)
           .execute();
         await appendTeamAudit(transaction, {
-          actor,
+          actor: partner ? null : actor,
+          ...(partner
+            ? { metadata: { partnerLinkId: partner.partnerLinkId, principalId: actor.userId } }
+            : {}),
           action: "message.delete",
           resourceKind: "message",
           resourceId: messageId,
@@ -1330,9 +1491,18 @@ export class TeamChatStore {
     if (deletedRequests.length) await this.notifyRequests(messageId);
     return deletedRequests;
   }
-  async pin(actor: TeamActor, channelId: TeamChannelId, messageId: TeamMessageId, pin: boolean) {
+  async pin(
+    actor: TeamActor,
+    channelId: TeamChannelId,
+    messageId: TeamMessageId,
+    pin: boolean,
+    partner?: TeamPartnerWriteContext,
+  ) {
+    if (!partner && (await this.relay?.pin(actor, channelId, messageId, pin))) return;
     await this.access.contentWrite(actor, channelId, async (transaction, authority) => {
-      requireTeam(actor.kind === "human" && authority.read);
+      const shared = await requireOwnerChannel(transaction, channelId);
+      if (partner) await authorizePartnerWrite(transaction, actor, channelId, partner);
+      else requireTeam(actor.kind === "human" && authority.read && (!shared || authority.post));
       requireTeam(
         await transaction
           .selectFrom("teamMessages")
@@ -1387,8 +1557,10 @@ export class TeamChatStore {
       .limit(51)
       .execute();
     const selected = rows.slice(0, 50).sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
+    const messages = await teamMessageViews(transaction, selected);
     return {
-      messages: await teamMessageViews(transaction, selected),
+      people: await teamContentPeople(transaction, messages),
+      messages,
       hasMore: rows.length > 50,
       throughSeq: channel.changeSeq,
       channel,
@@ -1467,7 +1639,9 @@ export class TeamChatStore {
         .where("channelId", "=", channelId)
         .where("id", "=", messageId)
         .executeTakeFirstOrThrow();
-      return (await teamMessageViews(t, [row]))[0]!;
+      const message = (await teamMessageViews(t, [row]))[0]!;
+      const people = await teamContentPeople(t, [message]);
+      return { ...message, ...(Object.keys(people).length ? { people } : {}) };
     });
   }
   async check(actor: TeamActor, channelId: TeamChannelId, clientIds: readonly string[]) {
@@ -1564,8 +1738,9 @@ export class TeamChatStore {
             deletedIds: rows.filter((r) => r.deletedAt).map((r) => r.id),
             requests: statuses.map(teamRequestView),
           };
-          if (TeamConsistentCutSchema.safeParse(cut).success)
-            return TeamConsistentCutSchema.parse(cut);
+          const people = await teamContentPeople(t, cut.changedRows);
+          if (TeamConsistentCutSchema.safeParse({ ...cut, people }).success)
+            return TeamConsistentCutSchema.parse({ ...cut, people });
         }
       }
       const page = await this.pageIn(
@@ -1577,6 +1752,7 @@ export class TeamChatStore {
       );
       const cut = {
         ...base,
+        people: page.people,
         linkPresence: linkPresence(recentRequests),
         type: "snapshot" as const,
         messages: page.messages,
@@ -1585,6 +1761,10 @@ export class TeamChatStore {
       };
       while (!TeamConsistentCutSchema.safeParse(cut).success && cut.messages.length > 1) {
         cut.messages.shift();
+        const visible = new Set<string>(teamMessagePeopleIds(cut.messages));
+        cut.people = Object.fromEntries(
+          Object.entries(cut.people ?? {}).filter(([id]) => visible.has(id)),
+        );
         cut.hasMore = true;
       }
       return TeamConsistentCutSchema.parse(cut);
@@ -1645,6 +1825,7 @@ export class TeamChatStore {
           messages.map((message) => message.channelId),
         );
         return {
+          people: await teamContentPeople(t, messages),
           results: messages.map((message) => ({
             message,
             source: {
@@ -1811,6 +1992,7 @@ export class TeamChatStore {
         const pageRows = rows.slice(0, 50),
           ids = pageRows.map((row) => row.id);
         const authorities = await this.access.channels(t, actor, ids);
+        const shares = await teamChannelShares(t, ids);
         const states = ids.length
           ? await t
               .selectFrom("teamChannelMemberState")
@@ -1858,10 +2040,11 @@ export class TeamChatStore {
             peopleOnly: false,
           };
           const summary = {
+            ...(shares.has(row.id) ? { share: shares.get(row.id) } : {}),
             id: row.id,
             kind: row.kind,
             name: row.name ?? "Direct message",
-            peopleOnly: row.peopleOnly,
+            peopleOnly: authority.peopleOnly,
             archivedAt: row.archivedAt?.toISOString() ?? null,
             changeSeq: SequenceSchema.parse(row.changeSeq),
             latestMessageId: authority.read ? row.latestMessageId : null,
@@ -1871,7 +2054,8 @@ export class TeamChatStore {
               manage: authority.manage,
               join: !authority.read && row.kind === "public" && !row.archivedAt,
               leave: authority.read && (row.kind === "public" || row.kind === "private"),
-              wakeOwnAgent: authority.post && !authority.peopleOnly && linked,
+              wakeOwnAgent:
+                authority.post && !shares.has(row.id) && !authority.peopleOnly && linked,
             },
           };
           const state = stateByChannel.get(row.id);

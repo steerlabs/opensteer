@@ -18,6 +18,7 @@ import {
   TeamTopicCanSchema,
 } from "./team-access.js";
 import {
+  TeamRemotePeopleSchema,
   TeamAgentRequestSchema,
   TeamAgentRecipientSchema,
   TeamBootstrapSchema,
@@ -126,6 +127,12 @@ export const TeamLinkViewViewSchema = z.object({ ...TeamLinkViewSchema.shape });
 export const PersonalTeamLinkViewSchema = z.object({ ...PersonalTeamLinkSchema.shape });
 
 export const TeamCommandResultViewSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("team.share.participant.restore") }),
+  z.object({ type: z.literal("team.share.participant.remove") }),
+  z.object({ type: z.literal("team.share.offer"), shareId: z.uuid() }),
+  z.object({ type: z.literal("team.share.approve") }),
+  z.object({ type: z.literal("team.share.accept"), channel: TeamChannelViewSchema }),
+  z.object({ type: z.literal("team.share.end") }),
   z.object({ type: z.literal("team.partner.invite.create"), offer: TeamPartnerOfferTextSchema }),
   z.object({ type: z.literal("team.partner.invite.revoke") }),
   z.object({ type: z.literal("team.partner.invite.redeem"), link: TeamPartnerLinkSchema }),
@@ -320,6 +327,8 @@ const TeamKnowledgeTopicViewViewSchema = z.object({
 });
 
 export const teamReadViews = {
+  "team.share.participants.get": teamReadSchemas["team.share.participants.get"].output,
+  "team.shares.list": teamReadSchemas["team.shares.list"].output,
   "team.partners.list": teamReadSchemas["team.partners.list"].output,
   "team.partner.invites.list": teamReadSchemas["team.partner.invites.list"].output,
   "team.sharing.policy.get": teamReadSchemas["team.sharing.policy.get"].output,
@@ -338,7 +347,7 @@ export const teamReadViews = {
   }),
   "team.messages.page": TeamMessagePageViewSchema,
   "team.thread.page": TeamMessagePageViewSchema,
-  "team.message.get": TeamMessageViewSchema,
+  "team.message.get": TeamMessageViewSchema.extend({ people: TeamRemotePeopleSchema.optional() }),
   "team.messages.check": z.object({ messages: z.array(TeamMessageViewSchema).max(50) }),
   "team.search": TeamSearchPageViewSchema,
   "team.members.list": z.object({
@@ -378,10 +387,12 @@ export const teamReadViews = {
     teamReadSchemas["teams.replyTask.get"].output.options[1].strip(),
   ]),
   "team.mentions.page": z.object({
+    people: TeamRemotePeopleSchema.optional(),
     messages: z.array(TeamMessageViewSchema).max(50),
     hasMore: z.boolean(),
   }),
   "team.pins.page": z.object({
+    people: TeamRemotePeopleSchema.optional(),
     messages: z.array(TeamMessageViewSchema).max(50),
     hasMore: z.boolean(),
   }),
@@ -408,6 +419,7 @@ const TeamSubscriptionScopeViewSchema = z.discriminatedUnion("kind", [
 
 const [snapshotCut, resumedCut] = TeamConsistentCutSchema.options;
 const cutView = {
+  people: TeamRemotePeopleSchema.optional(),
   agentRecipients: z.array(TeamAgentRecipientSchema.strip()).max(200).default([]),
   linkPresence: z.array(TeamLinkPresenceSchema.strip()).max(200),
   scope: TeamSubscriptionScopeViewSchema,
@@ -419,6 +431,7 @@ export const TeamConsistentCutViewSchema = z.discriminatedUnion("type", [
   z.object({
     ...snapshotCut.shape,
     ...cutView,
+    people: TeamRemotePeopleSchema.optional(),
     messages: z.array(TeamMessageViewSchema).max(50),
   }),
   z.object({

@@ -1584,6 +1584,16 @@ export const hostApi = defineRpc({
     teamReadSchemas["team.agent.requests.get"].input,
     teamReadViews["team.agent.requests.get"],
   ),
+  "team.share.participants.get": declaration(
+    "GET",
+    teamReadSchemas["team.share.participants.get"].input,
+    teamReadViews["team.share.participants.get"],
+  ),
+  "team.shares.list": declaration(
+    "GET",
+    teamReadSchemas["team.shares.list"].input,
+    teamReadViews["team.shares.list"],
+  ),
   "team.partners.list": declaration(
     "POST",
     teamReadSchemas["team.partners.list"].input,

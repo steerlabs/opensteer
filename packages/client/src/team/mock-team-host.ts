@@ -89,6 +89,18 @@ export class MockTeamSocket implements WebSocketClient {
   }
 }
 export class MockTeamHost {
+  readonly shareParticipants = new Map<
+    TeamChannelId,
+    z.infer<(typeof hostApi)["team.share.participants.get"]["success"]>["participants"]
+  >();
+  readonly remotePeople: z.infer<
+    (typeof hostApi)["team.share.participants.get"]["success"]
+  >["people"] = {};
+  readonly removedShareParticipants = new Set<string>();
+  readonly shares = new Map<
+    string,
+    z.infer<(typeof hostApi)["team.shares.list"]["success"]>["shares"][number]
+  >();
   sharingPolicy: TeamSharingPolicy = "admins";
   readonly partners = new Map<string, z.infer<typeof TeamPartnerLinkSchema>>();
   readonly partnerInvites = new Map<string, z.infer<typeof TeamPartnerInviteSchema>>();
@@ -517,6 +529,36 @@ export class MockTeamHost {
         (current.invite.maxUses === null || current.invite.usedCount < current.invite.maxUses);
       return { invite: live ? current.invite : null };
     }
+    if (name === "team.share.participants.get") {
+      const parsed = hostApi[name].payload.parse(input);
+      const rows = (this.shareParticipants.get(parsed.channelId) ?? [])
+        .filter(
+          (p) =>
+            (!parsed.after || p.handle > parsed.after) &&
+            (!parsed.query ||
+              p.handle.includes(parsed.query) ||
+              this.remotePeople[p.userId]?.name.includes(parsed.query)),
+        )
+        .sort((a, b) => a.handle.localeCompare(b.handle));
+      const selected = rows.slice(0, 50);
+      return {
+        participants: selected,
+        people: Object.fromEntries(
+          selected.flatMap((p) =>
+            this.remotePeople[p.userId] ? [[p.userId, this.remotePeople[p.userId]]] : [],
+          ),
+        ),
+        nextCursor: rows.length > 50 ? selected.at(-1)!.handle : null,
+      };
+    }
+    if (name === "team.shares.list") {
+      const { channelId } = hostApi["team.shares.list"].payload.parse(input);
+      return {
+        shares: [...this.shares.values()]
+          .filter((s) => !channelId || s.channelId === channelId)
+          .slice(0, 50),
+      };
+    }
     if (name === "team.sharing.policy.get")
       return { policy: this.sharingPolicy, canSet: this.bootstrap.member.role !== "member" };
     if (name === "team.partners.list" || name === "team.partner.invites.list") {
@@ -592,6 +634,86 @@ export class MockTeamHost {
           registered: true,
         };
       const command = TeamCommandSchema.parse(common);
+      if (
+        command.type === "team.share.participant.remove" ||
+        command.type === "team.share.participant.restore"
+      ) {
+        const share = this.shares.get(command.shareId);
+        if (
+          !share ||
+          share.role !== "owner" ||
+          share.state !== "active" ||
+          (this.bootstrap.member.role === "member" && this.sharingPolicy !== "members")
+        )
+          throw new OpensteerError({ code: "forbidden", message: "Share administration required" });
+        const key = `${command.shareId}:${command.principalId}`;
+        if (command.type === "team.share.participant.remove")
+          this.removedShareParticipants.add(key);
+        else this.removedShareParticipants.delete(key);
+        return { type: command.type };
+      }
+      if (command.type === "team.share.offer") {
+        const channel = this.channels.get(command.channelId),
+          partner = this.partners.get(command.linkId);
+        if (
+          !channel?.can.manage ||
+          !partner ||
+          partner.state !== "active" ||
+          this.sharingPolicy === "off" ||
+          channel.name.toLowerCase() === "general" ||
+          channel.kind === "dm" ||
+          channel.kind === "group_dm"
+        )
+          throw new OpensteerError({ code: "forbidden", message: "This channel cannot be shared" });
+        const id = crypto.randomUUID();
+        this.shares.set(id, {
+          id,
+          channelId: channel.id,
+          partnerName: partner.partnerName,
+          role: "owner",
+          state: "offered",
+          generation: 1,
+          name: channel.name,
+          ready: false,
+          localApproved:
+            this.bootstrap.member.role !== "member" || this.sharingPolicy === "members",
+        });
+        return { type: command.type, shareId: id };
+      }
+      if (command.type === "team.share.approve" || command.type === "team.share.end") {
+        const share = this.shares.get(command.shareId);
+        if (!share || (this.bootstrap.member.role === "member" && this.sharingPolicy !== "members"))
+          throw new OpensteerError({ code: "forbidden", message: "Share administration required" });
+        if (command.type === "team.share.approve") share.localApproved = true;
+        else {
+          share.state = "ended";
+          share.generation++;
+          const c = share.channelId ? this.channels.get(share.channelId) : undefined;
+          if (c?.share) {
+            c.share.state = "disconnected";
+            if (share.role === "follower") c.can.post = false;
+          }
+        }
+        this.publish();
+        return { type: command.type };
+      }
+      if (command.type === "team.share.accept") {
+        const share = this.shares.get(command.shareId);
+        if (!share || share.role !== "follower" || share.state !== "offered")
+          throw new OpensteerError({ code: "not_found", message: "Shared channel not found" });
+        await this.read("commands.dispatch", {
+          type: "team.channel.create",
+          id: command.id,
+          kind: command.kind,
+          name: command.name,
+          peopleOnly: command.peopleOnly,
+          access: command.access,
+        });
+        share.channelId = command.id;
+        share.state = "active";
+        share.ready = true;
+        return { type: command.type, channel: this.channels.get(command.id) };
+      }
       if (command.type.startsWith("team.partner.") || command.type === "team.sharing.policy.set") {
         const admin = this.bootstrap.member.role !== "member";
         const fail = () => {
