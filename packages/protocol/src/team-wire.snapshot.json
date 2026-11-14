@@ -1,5 +1,5 @@
 {
-  "teamApiVersion": 7,
+  "teamApiVersion": 6,
   "minimumTeamApiVersion": 5,
   "input": {
     "rpc team.share.participants.get": {
