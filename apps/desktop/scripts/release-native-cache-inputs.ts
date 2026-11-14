@@ -11,14 +11,15 @@ await mkdir(directory, { recursive: true, mode: 0o700 });
 await generateAppleDataContracts();
 for (const kind of ["computer-use", "passwords", "dictation"] as const) {
   await mkdir(path.join(directory, kind), { recursive: true, mode: 0o700 });
-  try {
-    const proof = await nativeReleaseInputs(root, kind, ["arm64", "x86_64"]);
-    if (proof) {
+  // The cache is optional: without a proof the build compiles from source.
+  const reason = await nativeReleaseInputs(root, kind, ["arm64", "x86_64"]).then(
+    async (proof) => {
+      if (!proof) return "ambient compiler settings";
       await appendFile(output, `${kind}=${proof.digest}\n`);
-      continue;
-    }
-  } catch {
-    // Input identity is optional; the build takes the uncached path if unavailable.
-  }
-  process.stdout.write(`Native compiler cache disabled (${kind})\n`);
+      return undefined;
+    },
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  );
+  if (reason)
+    process.stdout.write(`::warning::Native compiler cache disabled (${kind}): ${reason}\n`);
 }
