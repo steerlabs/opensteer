@@ -152,10 +152,16 @@ test("observer preflight fails before signing and persists one interpreter for l
   assert.ok(probe < steps.findIndex((step) => step.name === "Sign, notarize and staple desktop"));
   assert.equal(steps[probe]["timeout-minutes"], 1);
   assert.match(steps[probe].run, /smoke-desktop-release-python.ts/);
-  assert.equal(
-    workflow.jobs.build.env.OPENSTEER_RELEASE_TIMING_FILE,
-    "${{ runner.temp }}/release-timing.jsonl",
+  // Job env cannot read the runner context (GitHub rejects the whole workflow), so a
+  // step exports the path before signing.
+  for (const [name, value] of Object.entries(workflow.jobs.build.env ?? {}))
+    assert.doesNotMatch(String(value), /\$\{\{\s*runner\./, name);
+  const locate = steps.findIndex((step) => step.name === "Locate release phase timings");
+  assert.match(
+    steps[locate].run,
+    /OPENSTEER_RELEASE_TIMING_FILE=\$RUNNER_TEMP\/release-timing\.jsonl.*GITHUB_ENV/,
   );
+  assert.ok(locate < steps.findIndex((step) => step.name === "Sign, notarize and staple desktop"));
   assert.equal(workflow.jobs.build.env.OPENSTEER_MAC_SIGN_TIMINGS, "1");
   const timing = steps.find((step) => step.name === "Release phase timings");
   assert.equal(timing.if, "always()");
