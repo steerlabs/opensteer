@@ -2,7 +2,8 @@ import { Kysely, PostgresDialect, sql } from "kysely";
 import { Migrator } from "kysely/migration";
 import { Client, Pool } from "pg";
 import * as checker from "./lock-order-checker.test-support.js";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import * as lockOrder from "./lock-order.js";
 const integration = process.env.OPENSTEER_TEST_DATABASE_URL ? describe : describe.skip;
 integration("PostgreSQL global lock order checker", () => {
   const client = new Client({
@@ -228,15 +229,30 @@ integration("PostgreSQL global lock order checker", () => {
       await client.query("rollback");
     }
   });
-  it("records one edge per statement and mode, without a row-pair cross product", async () => {
+  it("checks a large ordered batch in linear work and records one edge per statement and mode", async () => {
     const start = checker.recordedLockOrderEdges.length;
+    await client.query(
+      "insert into threads select 'bulk-' || lpad(i::text, 4, '0'), 'Bulk' from generate_series(1, 1000) i",
+    );
     await client.query("begin");
     try {
       await client.query("select * from deployment_event_state order by id for no key update");
-      await client.query("select * from threads order by id for no key update");
+      const ranks = vi.spyOn(lockOrder, "databaseLockRank");
+      const batch = await client.query("select * from threads order by id for no key update");
+      expect(batch.rowCount).toBe(1002);
+      expect(ranks.mock.calls.length).toBeLessThan(4 * batch.rowCount!);
+      ranks.mockRestore();
       expect(checker.recordedLockOrderEdges.slice(start)).toHaveLength(1);
+      await expect(
+        client.query("select * from commands where id='a' for no key update"),
+      ).resolves.toMatchObject({ rowCount: 1 });
+      await expect(client.query("select * from threads where id='a' for update")).rejects.toThrow(
+        /lock order.*commands.*threads/is,
+      );
     } finally {
+      vi.restoreAllMocks();
       await client.query("rollback");
+      await client.query("delete from threads where id like 'bulk-%'");
     }
   });
   it("retains separate acquisitions with identical SQL and different bound row IDs", async () => {
