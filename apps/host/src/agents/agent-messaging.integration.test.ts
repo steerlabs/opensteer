@@ -965,7 +965,7 @@ integration("agent-to-agent messaging round trip", () => {
       const response = await service.handle(fixture.tokenA, {
         requestId: randomUUID(),
         type: "thread.delegate",
-        task,
+        message: task,
         ...(title === undefined
           ? {}
           : {
@@ -1024,8 +1024,8 @@ integration("agent-to-agent messaging round trip", () => {
       const reused = await service.handle(fixture.tokenA, {
         requestId: randomUUID(),
         type: "thread.delegate",
-        task: "Another task",
-        threadId: worker.id,
+        message: "Another task",
+        taskId: worker.id,
       });
       if (reused.type !== "thread.delegate.result") throw new Error("Expected reuse");
       expect(
@@ -1045,7 +1045,7 @@ integration("agent-to-agent messaging round trip", () => {
     const response = await service.handle(f.tokenA, {
       type: "thread.delegate",
       requestId: randomUUID(),
-      task: "Book a flight",
+      message: "Book a flight",
     });
     if (response.type !== "thread.delegate.result") throw new Error("Expected delegation");
     const worker = (await readToolRecords(store, response.result)).thread;
@@ -1074,16 +1074,16 @@ integration("agent-to-agent messaging round trip", () => {
       service.handle(f.tokenA, {
         type: "thread.delegate",
         requestId: randomUUID(),
-        threadId: worker.id,
-        task: "New task",
+        taskId: worker.id,
+        message: "New task",
         icon: "hotel",
       }),
     ).rejects.toThrow("Unrecognized key");
     const reused = await service.handle(f.tokenA, {
       type: "thread.delegate",
       requestId: randomUUID(),
-      threadId: worker.id,
-      task: "New task",
+      taskId: worker.id,
+      message: "New task",
     });
     if (reused.type !== "thread.delegate.result") throw new Error("Expected reuse");
     expect(
@@ -1102,7 +1102,7 @@ integration("agent-to-agent messaging round trip", () => {
       const response = await service.handle(fixture.tokenA, {
         requestId: randomUUID(),
         type: "thread.delegate",
-        task: "Research the contract",
+        message: "Research the contract",
       });
       if (
         response.type !== "thread.delegate.result" ||
@@ -1257,7 +1257,7 @@ integration("agent-to-agent messaging round trip", () => {
     await writeFile(join(evidenceRoot, `${name}.json`), JSON.stringify(result, null, 2));
     console.info(`Title review receipt: ${join(evidenceRoot, `${name}.json`)}`);
   }
-  it("thread_update shares Done, freezes messages and delegation, and reopens through the same authority", async () => {
+  it("opensteer_task_update shares Done, freezes messages and delegation, and reopens through the same authority", async () => {
     const f = await createMessagingFixture();
     const write = (action: string, fields = {}) =>
       service.handle(f.tokenA, {
@@ -1307,8 +1307,8 @@ integration("agent-to-agent messaging round trip", () => {
       service.handle(f.tokenA, {
         type: "thread.delegate",
         requestId: randomUUID(),
-        threadId: f.threadB.id,
-        task: "No delegation",
+        taskId: f.threadB.id,
+        message: "No delegation",
       }),
     ).rejects.toMatchObject({
       code: "conflict",
@@ -1402,13 +1402,13 @@ integration("agent-to-agent messaging round trip", () => {
           await client.connect(clientTransport);
           const names = (await client.listTools()).tools.map(({ name }) => name);
           inventories.push(names);
-          expect(names).toContain("thread_update");
+          expect(names).toContain("opensteer_task_update");
           if (modern) {
             const result = await client.callTool({
-              name: "thread_update",
+              name: "opensteer_task_update",
               arguments: {
-                threadId: f.threadB.id,
-                action: "rename",
+                taskId: f.threadB.id,
+
                 title: "MCP write",
               },
             });

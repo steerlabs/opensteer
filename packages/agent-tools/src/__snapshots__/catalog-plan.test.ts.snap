@@ -618,7 +618,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       ],
       "type": "object",
     },
-    "name": "app_publish",
+    "name": "opensteer_app_publish",
   },
   {
     "access": "read",
@@ -633,7 +633,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "properties": {},
       "type": "object",
     },
-    "name": "app_list",
+    "name": "opensteer_app_list",
   },
   {
     "access": "write",
@@ -668,12 +668,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "pattern": "^[A-Z]{1,32}$",
           "type": "string",
         },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
         "path": {
           "default": "/",
           "maxLength": 4096,
@@ -685,14 +679,62 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       ],
       "type": "object",
     },
-    "name": "app_fetch",
+    "name": "opensteer_app_call",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+        "limit": {
+          "default": 50,
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer",
+        },
+      },
+      "type": "object",
+    },
+    "name": "opensteer_request_list",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "requestId": {
+          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "required": [
+        "requestId",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_request_read",
   },
   {
     "access": "write",
     "callers": [
       "run",
-      "program",
-      "connection",
     ],
     "input": {
       "$defs": {
@@ -731,33 +773,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "action": {
-          "default": "list",
-          "enum": [
-            "list",
-            "read",
-            "respond",
-          ],
-          "type": "string",
-        },
-        "before": {
-          "maxLength": 2048,
-          "minLength": 1,
-          "type": "string",
-        },
         "expectedRevision": {
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "limit": {
-          "default": 50,
-          "maximum": 100,
-          "minimum": 1,
-          "type": "integer",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
           "maxLength": 128,
           "minLength": 1,
           "type": "string",
@@ -846,9 +862,14 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           ],
         },
       },
+      "required": [
+        "requestId",
+        "response",
+        "expectedRevision",
+      ],
       "type": "object",
     },
-    "name": "pending_request",
+    "name": "opensteer_request_answer",
   },
   {
     "access": "write",
@@ -859,12 +880,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
         "requestId": {
           "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
@@ -875,7 +890,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       ],
       "type": "object",
     },
-    "name": "request_withdraw",
+    "name": "opensteer_request_withdraw",
   },
   {
     "access": "read",
@@ -959,141 +974,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
     "name": "plugin_install",
   },
   {
-    "access": "read",
-    "callers": [
-      "run",
-      "program",
-      "connection",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "aroundMessageId": {
-          "description": "Messages around this one; excludes query and before.",
-          "pattern": "^msg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "before": {
-          "description": "From nextBefore; keep view and query.",
-          "maxLength": 2048,
-          "minLength": 1,
-          "type": "string",
-        },
-        "itemId": {
-          "description": "Read this one item.",
-          "maxLength": 255,
-          "minLength": 1,
-          "type": "string",
-        },
-        "limit": {
-          "default": 20,
-          "description": "Max items.",
-          "maximum": 100,
-          "minimum": 1,
-          "type": "integer",
-        },
-        "maxCharsPerItem": {
-          "default": 20000,
-          "description": "Max chars per item.",
-          "maximum": 50000,
-          "minimum": 1,
-          "type": "integer",
-        },
-        "query": {
-          "description": "Search message text.",
-          "maxLength": 256,
-          "minLength": 1,
-          "type": "string",
-        },
-        "runLimit": {
-          "default": 10,
-          "description": "Max recent Runs.",
-          "maximum": 50,
-          "minimum": 1,
-          "type": "integer",
-        },
-        "subagentId": {
-          "pattern": "^nod_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "textOffset": {
-          "description": "With itemId.",
-          "maximum": 9007199254740991,
-          "minimum": 0,
-          "type": "integer",
-        },
-        "threadId": {
-          "anyOf": [
-            {
-              "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string",
-            },
-            {
-              "const": "self",
-              "type": "string",
-            },
-          ],
-        },
-        "view": {
-          "default": "messages",
-          "enum": [
-            "messages",
-            "activity",
-          ],
-          "type": "string",
-        },
-      },
-      "type": "object",
-    },
-    "name": "thread_read",
-  },
-  {
-    "access": "read",
-    "callers": [
-      "run",
-      "program",
-      "connection",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "before": {
-          "maxLength": 2048,
-          "minLength": 1,
-          "type": "string",
-        },
-        "limit": {
-          "default": 25,
-          "maximum": 50,
-          "minimum": 1,
-          "type": "integer",
-        },
-        "parentThreadId": {
-          "anyOf": [
-            {
-              "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string",
-            },
-            {
-              "const": "self",
-              "type": "string",
-            },
-          ],
-        },
-        "query": {
-          "description": "Search titles.",
-          "maxLength": 256,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "type": "object",
-    },
-    "name": "thread_list",
-  },
-  {
     "access": "write",
     "callers": [
       "run",
@@ -1104,9 +984,14 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "harnessInstanceId": {
-          "description": "New task engine account from orchestrator_capabilities.",
+        "aiAccountId": {
+          "description": "New task AI account from opensteer_ai_account_list.",
           "pattern": "^hin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "message": {
+          "maxLength": 65536,
+          "minLength": 1,
           "type": "string",
         },
         "mode": {
@@ -1119,7 +1004,358 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
         },
         "model": {
           "additionalProperties": false,
-          "description": "New task model selectors/options from orchestrator_capabilities.",
+          "description": "New task model selectors/options from opensteer_ai_account_list.",
+          "properties": {
+            "modelId": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string",
+            },
+            "options": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "maxLength": 255,
+                    "type": "string",
+                  },
+                  {
+                    "type": "number",
+                  },
+                  {
+                    "type": "boolean",
+                  },
+                ],
+              },
+              "default": {},
+              "propertyNames": {
+                "maxLength": 100,
+                "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
+                "type": "string",
+              },
+              "type": "object",
+            },
+            "providerId": {
+              "maxLength": 100,
+              "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
+              "type": "string",
+            },
+          },
+          "required": [
+            "modelId",
+            "providerId",
+          ],
+          "type": "object",
+        },
+        "observationId": {
+          "description": "Watch observation identity; reuse for the same observation.",
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "specialist": {
+          "description": "Ready specialist registration ID or plugin name.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "timeoutMs": {
+          "default": 50000,
+          "maximum": 100000,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "title": {
+          "description": "New task: 2–5 words naming the outcome; defaults to the first task line.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "message",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_task_create",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "delegationId": {
+          "pattern": "^dlg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "timeoutMs": {
+          "default": 50000,
+          "maximum": 100000,
+          "minimum": 1,
+          "type": "integer",
+        },
+      },
+      "required": [
+        "delegationId",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_delegation_wait",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+        "itemId": {
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string",
+        },
+        "limit": {
+          "default": 20,
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "maxCharsPerItem": {
+          "default": 20000,
+          "maximum": 50000,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "runLimit": {
+          "default": 10,
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "subagentId": {
+          "pattern": "^nod_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "textOffset": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer",
+        },
+        "view": {
+          "default": "messages",
+          "enum": [
+            "messages",
+            "activity",
+          ],
+          "type": "string",
+        },
+      },
+      "required": [
+        "subagentId",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_subagent_read",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "subagentId": {
+          "pattern": "^nod_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "required": [
+        "subagentId",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_subagent_stop",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "taskId": {
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "opensteer_task_resume",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "aroundMessageId": {
+          "pattern": "^msg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "cursor": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+        "itemId": {
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string",
+        },
+        "limit": {
+          "default": 20,
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "maxCharsPerItem": {
+          "default": 20000,
+          "maximum": 50000,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "query": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "runLimit": {
+          "default": 10,
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "taskId": {
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "textOffset": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer",
+        },
+        "view": {
+          "default": "messages",
+          "enum": [
+            "messages",
+            "activity",
+          ],
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "opensteer_task_read",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+        "limit": {
+          "default": 25,
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "parentTaskId": {
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "query": {
+          "description": "Search titles.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "opensteer_task_list",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "aiAccountId": {
+          "description": "New task AI account from opensteer_ai_account_list.",
+          "pattern": "^hin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "message": {
+          "maxLength": 65536,
+          "minLength": 1,
+          "type": "string",
+        },
+        "mode": {
+          "default": "async",
+          "enum": [
+            "async",
+            "wait",
+          ],
+          "type": "string",
+        },
+        "model": {
+          "additionalProperties": false,
+          "description": "New task model selectors/options from opensteer_ai_account_list.",
           "properties": {
             "modelId": {
               "maxLength": 255,
@@ -1321,17 +1557,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "minLength": 1,
           "type": "string",
         },
-        "standalone": {
-          "const": true,
-          "description": "Start a separate listed task with no parent or Assignment; nothing returns. Not with threadId or places.",
-          "type": "boolean",
-        },
-        "task": {
-          "maxLength": 65536,
-          "minLength": 1,
-          "type": "string",
-        },
-        "threadId": {
+        "taskId": {
           "description": "Finished task to continue; omit new-task selectors.",
           "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
@@ -1350,11 +1576,11 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
         },
       },
       "required": [
-        "task",
+        "message",
       ],
       "type": "object",
     },
-    "name": "delegate_task",
+    "name": "opensteer_task_delegate",
   },
   {
     "access": "read",
@@ -1367,17 +1593,17 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "assignmentId": {
+        "delegationId": {
           "pattern": "^dlg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
       },
       "required": [
-        "assignmentId",
+        "delegationId",
       ],
       "type": "object",
     },
-    "name": "task_status",
+    "name": "opensteer_delegation_status",
   },
   {
     "access": "write",
@@ -1388,24 +1614,17 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "assignmentId": {
+        "delegationId": {
           "pattern": "^dlg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "subagentId": {
-          "pattern": "^nod_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
       },
+      "required": [
+        "delegationId",
+      ],
       "type": "object",
     },
-    "name": "task_cancel",
+    "name": "opensteer_delegation_cancel",
   },
   {
     "access": "write",
@@ -1421,19 +1640,13 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "minLength": 1,
           "type": "string",
         },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
       },
       "required": [
         "message",
       ],
       "type": "object",
     },
-    "name": "person_message",
+    "name": "person_notify",
   },
   {
     "access": "write",
@@ -1444,41 +1657,8 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
         "target": {
           "anyOf": [
-            {
-              "additionalProperties": false,
-              "properties": {
-                "tabId": {
-                  "maxLength": 512,
-                  "minLength": 1,
-                  "type": "string",
-                },
-              },
-              "required": [
-                "tabId",
-              ],
-              "type": "object",
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "threadId": {
-                  "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                  "type": "string",
-                },
-              },
-              "required": [
-                "threadId",
-              ],
-              "type": "object",
-            },
             {
               "additionalProperties": false,
               "properties": {
@@ -1502,6 +1682,33 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
               },
               "required": [
                 "runId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "tabId": {
+                  "maxLength": 512,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "tabId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "taskId": {
+                  "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "taskId",
               ],
               "type": "object",
             },
@@ -1556,7 +1763,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "minLength": 1,
           "type": "string",
         },
-        "threadId": {
+        "taskId": {
           "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
@@ -1564,11 +1771,11 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "required": [
         "delivery",
         "message",
-        "threadId",
+        "taskId",
       ],
       "type": "object",
     },
-    "name": "thread_send",
+    "name": "opensteer_task_send",
   },
   {
     "access": "write",
@@ -1581,20 +1788,14 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "threadId": {
+        "taskId": {
           "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
       },
       "type": "object",
     },
-    "name": "thread_interrupt",
+    "name": "opensteer_task_interrupt",
   },
   {
     "access": "write",
@@ -1607,21 +1808,10 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "action": {
-          "enum": [
-            "rename",
-            "done",
-            "reopen",
-          ],
-          "type": "string",
+        "done": {
+          "type": "boolean",
         },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "threadId": {
+        "taskId": {
           "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
@@ -1631,12 +1821,9 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "type": "string",
         },
       },
-      "required": [
-        "action",
-      ],
       "type": "object",
     },
-    "name": "thread_update",
+    "name": "opensteer_task_update",
   },
   {
     "access": "read",
@@ -1650,29 +1837,26 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "additionalProperties": false,
       "properties": {
         "afterMessageId": {
-          "description": "Return published messages after this ID; omit to wait for Run settlement.",
           "pattern": "^msg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
-        "assignmentId": {
-          "pattern": "^dlg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "threadId": {
+        "taskId": {
           "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
         "timeoutMs": {
           "default": 50000,
-          "description": "Maximum wait in milliseconds; timeout never cancels work.",
           "maximum": 100000,
           "minimum": 1,
           "type": "integer",
         },
       },
+      "required": [
+        "taskId",
+      ],
       "type": "object",
     },
-    "name": "thread_wait",
+    "name": "opensteer_task_wait",
   },
   {
     "access": "write",
@@ -1685,6 +1869,10 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
+        "aiAccountId": {
+          "pattern": "^hin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
         "continuation": {
           "additionalProperties": false,
           "properties": {
@@ -1704,10 +1892,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
             "expectedProviderSessionId",
           ],
           "type": "object",
-        },
-        "harnessInstanceId": {
-          "pattern": "^hin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
         },
         "modelSelection": {
           "additionalProperties": false,
@@ -1757,20 +1941,14 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           ],
           "type": "object",
         },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "threadId": {
+        "taskId": {
           "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
       },
       "type": "object",
     },
-    "name": "thread_configure",
+    "name": "opensteer_task_configure",
   },
   {
     "access": "write",
@@ -1789,7 +1967,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
             "cancel",
             "move",
             "steer",
-            "resume",
           ],
           "type": "string",
         },
@@ -1812,13 +1989,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "pattern": "^msg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "threadId": {
+        "taskId": {
           "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
@@ -1828,7 +1999,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       ],
       "type": "object",
     },
-    "name": "thread_queue",
+    "name": "opensteer_task_queue",
   },
   {
     "access": "read",
@@ -2146,18 +2317,9 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "action": {
-          "enum": [
-            "list",
-            "get",
-          ],
+        "automationId": {
+          "pattern": "^trg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
-        },
-        "limit": {
-          "default": 50,
-          "maximum": 100,
-          "minimum": 1,
-          "type": "integer",
         },
         "occurrenceLimit": {
           "default": 25,
@@ -2165,24 +2327,13 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "minimum": 1,
           "type": "integer",
         },
-        "systemRole": {
-          "enum": [
-            "memory-light",
-            "memory-nightly",
-          ],
-          "type": "string",
-        },
-        "triggerId": {
-          "pattern": "^trg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
       },
       "required": [
-        "action",
+        "automationId",
       ],
       "type": "object",
     },
-    "name": "trigger_read",
+    "name": "opensteer_automation_read",
   },
   {
     "access": "write",
@@ -2195,19 +2346,8 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "action": {
-          "enum": [
-            "create",
-            "update",
-            "set_status",
-            "set_next_fire",
-            "run",
-            "cancel",
-          ],
-          "type": "string",
-        },
-        "anchorThreadId": {
-          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        "automationId": {
+          "pattern": "^trg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
         "expectedRevisionId": {
@@ -2219,26 +2359,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "minLength": 1,
           "type": "string",
         },
-        "nextFireAt": {
-          "format": "date-time",
-          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
-          "type": "string",
-        },
-        "occurrenceId": {
-          "pattern": "^toc_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "ownTask": {
-          "const": true,
-          "type": "boolean",
-        },
-        "payload": {},
         "program": {
           "additionalProperties": false,
           "properties": {
@@ -2255,7 +2375,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
               "type": "string",
             },
             "toolContractVersion": {
-              "const": 3,
+              "const": 4,
               "type": "number",
             },
           },
@@ -2300,25 +2420,189 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           ],
           "type": "object",
         },
-        "status": {
+      },
+      "required": [
+        "automationId",
+        "expectedRevisionId",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_automation_update",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
           "enum": [
-            "active",
-            "paused",
-            "archived",
+            "pause",
+            "resume",
+            "archive",
+            "reschedule",
+            "run_now",
+            "cancel_pending",
           ],
           "type": "string",
         },
-        "triggerId": {
+        "automationId": {
           "pattern": "^trg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
+        "nextFireAt": {
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+          "type": "string",
+        },
+        "occurrenceId": {
+          "pattern": "^toc_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "payload": {},
       },
       "required": [
+        "automationId",
         "action",
       ],
       "type": "object",
     },
-    "name": "trigger_write",
+    "name": "opensteer_automation_control",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "default": 50,
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "systemRole": {
+          "enum": [
+            "memory-light",
+            "memory-nightly",
+          ],
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "opensteer_automation_list",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "ownTask": {
+          "const": true,
+          "type": "boolean",
+        },
+        "program": {
+          "additionalProperties": false,
+          "properties": {
+            "language": {
+              "enum": [
+                "javascript",
+                "typescript",
+              ],
+              "type": "string",
+            },
+            "source": {
+              "maxLength": 524288,
+              "minLength": 1,
+              "type": "string",
+            },
+            "toolContractVersion": {
+              "const": 4,
+              "type": "number",
+            },
+          },
+          "required": [
+            "language",
+            "source",
+            "toolContractVersion",
+          ],
+          "type": "object",
+        },
+        "source": {
+          "additionalProperties": false,
+          "description": "Trigger source. kind "schedule" requires exactly one of at (a one-shot UTC ISO-8601 instant) or cron (a recurring expression), and cron additionally requires timezone as an IANA name; payload is the constant event payload each occurrence receives. kind "webhook" and kind "watch" accept none of at, cron, timezone, or payload.",
+          "properties": {
+            "at": {
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+              "type": "string",
+            },
+            "cron": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string",
+            },
+            "kind": {
+              "enum": [
+                "schedule",
+                "webhook",
+                "watch",
+              ],
+              "type": "string",
+            },
+            "payload": {},
+            "timezone": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string",
+            },
+          },
+          "required": [
+            "kind",
+          ],
+          "type": "object",
+        },
+        "taskId": {
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "required": [
+        "name",
+        "program",
+        "source",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_automation_create",
   },
   {
     "access": "read",
@@ -2667,28 +2951,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "after": {
-          "anyOf": [
-            {
-              "maxLength": 19,
-              "pattern": "^[1-9][0-9]*$",
-              "type": "string",
-            },
-            {
-              "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-              "type": "string",
-            },
-          ],
-        },
-        "before": {
-          "maxLength": 19,
-          "pattern": "^[1-9][0-9]*$",
-          "type": "string",
-        },
-        "channelId": {
-          "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
         "fileId": {
           "pattern": "^tbl_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
@@ -2697,7 +2959,37 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
-        "threadRootId": {
+      },
+      "required": [
+        "fileId",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_team_file_download",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "channelId": {
+          "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "cursor": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+        "teamId": {
+          "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "threadId": {
           "maxLength": 19,
           "pattern": "^[1-9][0-9]*$",
           "type": "string",
@@ -2705,7 +2997,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       },
       "type": "object",
     },
-    "name": "team_read",
+    "name": "opensteer_team_read",
   },
   {
     "access": "read",
@@ -2720,13 +3012,13 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
-        "before": {
-          "maxLength": 19,
-          "pattern": "^[1-9][0-9]*$",
-          "type": "string",
-        },
         "channelId": {
           "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "cursor": {
+          "maxLength": 2048,
+          "minLength": 1,
           "type": "string",
         },
         "hasFile": {
@@ -2755,7 +3047,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       ],
       "type": "object",
     },
-    "name": "team_search",
+    "name": "opensteer_team_search",
   },
   {
     "access": "write",
@@ -2784,11 +3076,17 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
         "teamId": {
           "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
-        "threadRootId": {
+        "threadId": {
           "maxLength": 19,
           "pattern": "^[1-9][0-9]*$",
           "type": "string",
@@ -2800,7 +3098,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       ],
       "type": "object",
     },
-    "name": "team_post",
+    "name": "opensteer_team_post",
   },
   {
     "access": "read",
@@ -2819,7 +3117,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       },
       "type": "object",
     },
-    "name": "knowledge_topics",
+    "name": "opensteer_knowledge_topic_list",
   },
   {
     "access": "read",
@@ -2830,19 +3128,9 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
-        "before": {
-          "description": "nextBefore from the previous page.",
-          "maxLength": 256,
+        "cursor": {
+          "maxLength": 2048,
           "minLength": 1,
-          "type": "string",
-        },
-        "history": {
-          "description": "With noteId: every version, newest first.",
-          "type": "boolean",
-        },
-        "noteId": {
-          "description": "Open one note.",
-          "pattern": "^knt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
           "type": "string",
         },
         "query": {
@@ -2864,7 +3152,73 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       },
       "type": "object",
     },
-    "name": "knowledge_read",
+    "name": "opensteer_knowledge_search",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "noteId": {
+          "pattern": "^knt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "team": {
+          "description": "The team's id; needed only outside a team thread when your owner is in more than one team.",
+          "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "version": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer",
+        },
+      },
+      "required": [
+        "noteId",
+        "version",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_knowledge_remove",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+        "history": {
+          "type": "boolean",
+        },
+        "noteId": {
+          "pattern": "^knt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "team": {
+          "description": "The team's id; needed only outside a team thread when your owner is in more than one team.",
+          "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "required": [
+        "noteId",
+      ],
+      "type": "object",
+    },
+    "name": "opensteer_knowledge_read",
   },
   {
     "access": "write",
@@ -2879,14 +3233,15 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "description": "Markdown, up to 64 KB.",
           "type": "string",
         },
-        "delete": {
-          "const": true,
-          "description": "Delete noteId; its versions stay in history.",
-          "type": "boolean",
-        },
         "noteId": {
           "description": "The note to change or delete.",
           "pattern": "^knt_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
           "type": "string",
         },
         "team": {
@@ -2913,7 +3268,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       },
       "type": "object",
     },
-    "name": "knowledge_write",
+    "name": "opensteer_knowledge_save",
   },
 ]
 `;

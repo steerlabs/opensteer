@@ -10,14 +10,15 @@ export type TriggerProgramRunnerStore = Pick<
 export async function triggerProgramCompatibilityReason(
   store: TriggerProgramRunnerStore,
   environmentId: EnvironmentId,
-  version: 1 | 2 | 3,
+  version: number,
 ): Promise<string | null> {
-  if (version !== 3) return null;
+  if (version !== 4)
+    return "Programs require tool contract version 4 and the opensteer_task_send and opensteer_task_delegate tools.";
   const environment = await store.getEnvironment(environmentId);
   const capabilities = environment?.runnerId
     ? await store.runnerCapabilities(environment.runnerId)
     : null;
-  return capabilities?.includes("trigger-program-v3")
+  return capabilities?.includes("trigger-program-v4")
     ? null
-    : "This computer's Runner cannot run Trigger program version 3. Use version 2 or update that computer.";
+    : "Update this computer to run automation programs with tool contract version 4.";
 }

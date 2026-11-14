@@ -16,8 +16,7 @@ describe("WatchService", () => {
   it.each([
     {
       capabilities: ["agent-tools-plan-v1"] as const,
-      reason:
-        "This computer's Runner cannot run Trigger program version 3. Use version 2 or update that computer.",
+      reason: "Update this computer to run automation programs with tool contract version 4.",
     },
     {
       capabilities: [] as const,
@@ -29,7 +28,7 @@ describe("WatchService", () => {
       const fixture = watchFixture();
       const context = {
         ...fixture.context,
-        toolContractVersion: 3 as const,
+        toolContractVersion: 4 as const,
       };
       const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
         async () => undefined,
@@ -231,7 +230,7 @@ function options(
   return {
     runnerStore: {
       getEnvironment: async () => ({ runnerId: fixture.identity.runnerId }) as never,
-      runnerCapabilities: async () => ["trigger-program-v3"],
+      runnerCapabilities: async () => ["trigger-program-v4"],
     },
     browser: {
       hasBrowserProfiles: async () => false,
@@ -313,7 +312,7 @@ function watchFixture(): {
       triggerId,
       updatedAt: new Date().toISOString(),
     }),
-    toolContractVersion: 3,
+    toolContractVersion: 4,
     agentHome: { computerId: createId("runner"), path: "/tmp/watch-home" },
   };
   const descriptor = RunnerDescriptorSchema.parse({

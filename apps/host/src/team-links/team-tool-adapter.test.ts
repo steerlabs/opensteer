@@ -1,9 +1,19 @@
 import { describe, expect, it } from "vitest";
 import { createId, TeamMessageIdSchema, TeamSourceSchema } from "@opensteer/core";
-import { team_read, team_post, team_search } from "@opensteer/agent-tools/tools";
-import { TeamMessagePageSchema, type TeamMessage } from "@opensteer/protocol";
+import { opensteer_team_post, opensteer_team_search } from "@opensteer/agent-tools/tools";
+import {
+  TeamReadResultSchema,
+  agentToolPayloadMaxSerializedBytes,
+  TeamMessagePageSchema,
+  type TeamMessage,
+} from "@opensteer/protocol";
 import { PersonalTeamToolAdapter } from "./team-tool-adapter.js";
 
+const boundedRead = TeamReadResultSchema.refine(
+  (value) =>
+    new TextEncoder().encode(JSON.stringify(value)).byteLength <=
+    agentToolPayloadMaxSerializedBytes,
+);
 function fixture() {
   const source = TeamSourceSchema.parse({
     teamId: createId("deployment"),
@@ -159,9 +169,9 @@ function fixture() {
 describe("Run-bound team tool adapter", () => {
   it("keeps empty search source-free without widening Run authority", async () => {
     const f = fixture();
-    const input = team_search.input.parse({ query: "missing" });
+    const input = opensteer_team_search.input.parse({ query: "missing" });
     const found = await f.adapter.search(f.run, input);
-    expect(team_search.output.parse(found)).toEqual({ results: [], hasMore: false });
+    expect(opensteer_team_search.output.parse(found)).toEqual({ results: [], hasMore: false });
     await expect(
       f.adapter.search(f.run, { ...input, teamId: createId("deployment") }),
     ).rejects.toThrow("not linked");
@@ -180,7 +190,7 @@ describe("Run-bound team tool adapter", () => {
     const seen: string[] = [];
     let before: ReturnType<typeof TeamMessageIdSchema.parse> | undefined;
     for (let index = 0; index < 50; index++) {
-      const result = team_read.output.parse(
+      const result = boundedRead.parse(
         await f.adapter.read(f.run, {
           channelId: f.source.channelId,
           threadRootId: f.source.threadRootId!,
@@ -206,7 +216,7 @@ describe("Run-bound team tool adapter", () => {
     const seen: string[] = [];
     let after = TeamMessageIdSchema.parse("1");
     for (let index = 0; index < 50; index++) {
-      const result = team_read.output.parse(
+      const result = boundedRead.parse(
         await f.adapter.read(f.run, {
           channelId: f.source.channelId,
           threadRootId: f.source.threadRootId!,
@@ -225,14 +235,14 @@ describe("Run-bound team tool adapter", () => {
   it("uploads only explicit admitted paths and recovers an uncertain reply before any repeated upload", async () => {
     const f = fixture();
     f.loseAck();
-    const input = team_post.input.parse({
+    const input: Parameters<PersonalTeamToolAdapter["post"]>[1] = {
       channelId: f.source.channelId,
-      threadRootId: f.source.threadRootId,
+      threadRootId: f.source.threadRootId!,
       bodyMarkdown: "The answer",
       attachmentPaths: ["/private/EXPLICIT_FILE"],
-    });
+    };
     await expect(f.adapter.post(f.run, input)).rejects.toThrow("connection lost after commit");
-    expect(team_post.output.parse(await f.adapter.post(f.run, input))).toEqual({
+    expect(opensteer_team_post.output.parse(await f.adapter.post(f.run, input))).toEqual({
       messageId: "99",
       source: f.source,
     });
@@ -263,16 +273,18 @@ describe("Run-bound team tool adapter", () => {
       hasMore: false,
     });
     expect(
-      (await f.adapter.search(f.run, team_search.input.parse({ query: "a" }))).results[0]!.source,
+      (await f.adapter.search(f.run, opensteer_team_search.input.parse({ query: "a" }))).results[0]!
+        .source,
     ).toEqual(other);
     await expect(
       f.adapter.post(
         f.run,
-        team_post.input.parse({
+        {
           channelId: f.source.channelId,
-          threadRootId: f.source.threadRootId,
+          threadRootId: f.source.threadRootId!,
           bodyMarkdown: "answer",
-        }),
+          attachmentPaths: [],
+        },
         AbortSignal.abort(),
       ),
     ).rejects.toThrow();

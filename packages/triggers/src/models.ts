@@ -25,7 +25,7 @@ export const triggerProgramContract = [
   "Trigger programs execute as Node.js ESM modules (Node 24 or newer) on the anchor Thread's Runner,",
   "with Agent home as the working directory, so relative paths and relative imports",
   "resolve from Agent home. The source must export one default function (async or not):",
-  "The program object must declare toolContractVersion: use 3 for new programs. Use environment_list for computers and orchestrator_capabilities for engines and models.",
+  "The program object must declare toolContractVersion: use 4. Use computer_list for computers, opensteer_ai_account_list for AI accounts, and opensteer_task_send or opensteer_task_delegate for tasks.",
   "`export default async function ({ event, capabilities, opensteer }) { ... }`.",
   "`event` is frozen ({ id, payload, receivedAt, source, trigger });",
   '`event.source.kind` is "schedule" (with scheduledFor), "webhook" (with method, headers, and optional deliveryId),',
@@ -36,7 +36,7 @@ export const triggerProgramContract = [
   "For a watch, every non-null capability also has expiresAt.",
   "Watch capabilities rotate while the process runs: call `opensteer.capabilities()` for the current values, and reconnect an expired CDP session with its current browserCdp value.",
   "`opensteer.callTool(name, input)` calls any Opensteer tool, including integration tools already granted to the owner.",
-  "Supply a stable observationId with each watch call to thread_send or delegate_task; when omitted, the request ID is used. Opensteer deduplicates the ID and admits up to 120 independent observations per activation per hour.",
+  "Supply a stable observationId with each watch call to opensteer_task_send or opensteer_task_delegate; when omitted, the request ID is used. Opensteer deduplicates the ID and admits up to 120 independent observations per activation per hour.",
   "Node built-ins (node:fs, node:child_process, ...), fetch, and packages installed in Agent home's node_modules are available;",
   "Deno, Bun, and DOM globals such as window and document do not exist, and nothing installs packages automatically.",
   "TypeScript runs through Node's built-in type transform: type annotations, enums, and namespaces work; tsconfig paths, decorators, and JSX do not.",
@@ -51,7 +51,10 @@ export const TriggerProgramSchema = z.strictObject({
     .string()
     .min(1)
     .max(512 * 1_024),
-  toolContractVersion: z.literal(3),
+  toolContractVersion: z.literal(4, {
+    error:
+      "Programs require toolContractVersion 4. Use opensteer_task_send and opensteer_task_delegate; older tool names are unavailable.",
+  }),
 });
 const TriggerProgramViewSchema = z.object(TriggerProgramSchema.shape);
 export type TriggerProgram = z.infer<typeof TriggerProgramSchema>;

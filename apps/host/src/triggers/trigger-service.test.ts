@@ -1,5 +1,5 @@
 import { TriggerToolHandlers } from "../mcp/handlers/triggers.js";
-import { trigger_write } from "@opensteer/agent-tools/tools";
+import { opensteer_automation_control } from "@opensteer/agent-tools/tools";
 import type { RunCaller } from "../mcp/agent-caller.js";
 import { idempotencyKey, operationId } from "../mcp/operations.js";
 import { createHash } from "node:crypto";
@@ -31,14 +31,14 @@ describe("TriggerService", () => {
       },
     } as RunCaller;
     const handlers = new TriggerToolHandlers(service);
-    const input = trigger_write.input.parse({
-      action: "run",
-      triggerId: createId("trigger"),
+    const input = opensteer_automation_control.input.parse({
+      action: "run_now",
+      automationId: createId("trigger"),
       payload: {
         task: "once",
       },
     });
-    await handlers.trigger_write({
+    await handlers.write({
       caller,
       input,
       operationKey: "manual-once",
@@ -47,7 +47,7 @@ describe("TriggerService", () => {
       expect.objectContaining({
         idempotencyKey: idempotencyKey(
           caller,
-          operationId(caller, "manual-once", "trigger_write"),
+          operationId(caller, "manual-once", "opensteer_automation_control"),
           "trigger.write",
         ),
       }),
@@ -95,14 +95,13 @@ describe("TriggerService", () => {
           program: {
             language: "javascript",
             source: "export default () => null",
-            toolContractVersion: 3,
+            toolContractVersion: 4,
           },
         },
         null,
       ),
     ).rejects.toMatchObject({
-      message:
-        "This computer's Runner cannot run Trigger program version 3. Use version 2 or update that computer.",
+      message: "Update this computer to run automation programs with tool contract version 4.",
     });
     expect(create).not.toHaveBeenCalled();
   });
@@ -144,7 +143,7 @@ describe("TriggerService", () => {
       },
       runnerStore: {
         getEnvironment: async () => ({ runnerId: createId("runner") }) as never,
-        runnerCapabilities: async () => ["trigger-program-v3"],
+        runnerCapabilities: async () => ["trigger-program-v4"],
       },
       onOccurrenceQueued: vi.fn(),
       publicUrl: new URL("https://opensteer.example/base/"),
@@ -162,7 +161,7 @@ describe("TriggerService", () => {
         name: "Build events",
         ownerId,
         program: {
-          toolContractVersion: 3,
+          toolContractVersion: 4,
           language: "typescript",
           source: "export default async () => null",
         },
@@ -207,7 +206,7 @@ describe("TriggerService", () => {
       },
       runnerStore: {
         getEnvironment: async () => ({ runnerId: createId("runner") }) as never,
-        runnerCapabilities: async () => ["trigger-program-v3"],
+        runnerCapabilities: async () => ["trigger-program-v4"],
       },
       onOccurrenceQueued,
       publicUrl: new URL("https://opensteer.example"),

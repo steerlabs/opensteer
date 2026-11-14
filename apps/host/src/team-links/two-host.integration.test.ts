@@ -149,7 +149,7 @@ describe("personal to team link", () => {
     }
   });
 
-  it("claims the request reply with team_post and suppresses the automatic final", async () => {
+  it("claims the request reply with opensteer_team_post and suppresses the automatic final", async () => {
     const f = await createTwoHostLinkFixture();
     try {
       const request = await f.ask();

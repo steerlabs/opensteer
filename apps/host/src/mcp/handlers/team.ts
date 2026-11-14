@@ -1,4 +1,7 @@
+import { TeamSearchInputSchema } from "@opensteer/protocol";
 import {
+  TeamMessageIdSchema,
+  TeamChannelIdSchema,
   OpensteerError,
   type RunId,
   type TeamAgentRequestId,
@@ -7,7 +10,11 @@ import {
 import type { AgentToolHandlers, ToolCall } from "./types.js";
 import type { TeamKnowledgePort, TeamToolPort } from "../team-tool-port.js";
 
-type TeamToolName = "team_read" | "team_search" | "team_post";
+type TeamToolName =
+  | "opensteer_team_file_download"
+  | "opensteer_team_read"
+  | "opensteer_team_search"
+  | "opensteer_team_post";
 export function teamToolHandlers(options: {
   readonly port: TeamToolPort | undefined;
   readonly personalContext: (runId: RunId) => Promise<boolean>;
@@ -29,26 +36,77 @@ export function teamToolHandlers(options: {
     await call.checkLive?.();
     const run = { operationId: call.operationKey, runId: caller.claims.runId };
     switch (name) {
-      case "team_read":
-        return options.port.read(run, call.input as ToolCall<"team_read">["input"], call.signal);
-      case "team_search":
-        return options.port.search(
+      case "opensteer_team_file_download":
+        return options.port.read(
           run,
-          call.input as ToolCall<"team_search">["input"],
+          call.input as ToolCall<"opensteer_team_file_download">["input"],
           call.signal,
         );
-      case "team_post":
-        return options.port.post(run, call.input as ToolCall<"team_post">["input"], call.signal);
+      case "opensteer_team_read": {
+        const { threadId, cursor, ...input } =
+          call.input as ToolCall<"opensteer_team_read">["input"];
+        const result = await options.port.read(
+          run,
+          {
+            ...input,
+            ...(threadId ? { threadRootId: threadId } : {}),
+            ...(cursor
+              ? input.channelId
+                ? { before: importMessageId(cursor) }
+                : { after: importChannelId(cursor) }
+              : {}),
+          },
+          call.signal,
+        );
+        if ("nextAfter" in result) {
+          const { nextAfter, ...page } = result;
+          return { ...page, nextCursor: nextAfter };
+        }
+        if ("page" in result)
+          return {
+            ...result,
+            page: {
+              ...result.page,
+              nextCursor: result.page.hasMore ? (result.page.messages[0]?.id ?? null) : null,
+            },
+          };
+        return result;
+      }
+      case "opensteer_team_search": {
+        const { cursor, ...input } = call.input as ToolCall<"opensteer_team_search">["input"];
+        return options.port.search(
+          run,
+          {
+            ...input,
+            ...(cursor ? { before: TeamSearchInputSchema.shape.before.parse(cursor) } : {}),
+          },
+          call.signal,
+        );
+      }
+      case "opensteer_team_post": {
+        const { threadId, ...input } = call.input as ToolCall<"opensteer_team_post">["input"];
+        return options.port.post(
+          run,
+          { ...input, ...(threadId ? { threadRootId: threadId } : {}) },
+          call.signal,
+        );
+      }
     }
   };
   return {
-    team_read: (call) => invoke("team_read", call),
-    team_search: (call) => invoke("team_search", call),
-    team_post: (call) => invoke("team_post", call),
+    opensteer_team_file_download: (call) => invoke("opensteer_team_file_download", call),
+    opensteer_team_read: (call) => invoke("opensteer_team_read", call),
+    opensteer_team_search: (call) => invoke("opensteer_team_search", call),
+    opensteer_team_post: (call) => invoke("opensteer_team_post", call),
   };
 }
 
-type KnowledgeToolName = "knowledge_topics" | "knowledge_read" | "knowledge_write";
+type KnowledgeToolName =
+  | "opensteer_knowledge_search"
+  | "opensteer_knowledge_remove"
+  | "opensteer_knowledge_topic_list"
+  | "opensteer_knowledge_read"
+  | "opensteer_knowledge_save";
 /** Team knowledge as the Run's owner, in any Run that may still use their personal context. */
 export function knowledgeToolHandlers(options: {
   readonly port: TeamKnowledgePort | undefined;
@@ -79,29 +137,58 @@ export function knowledgeToolHandlers(options: {
         : null,
     };
     switch (name) {
-      case "knowledge_topics":
+      case "opensteer_knowledge_topic_list":
         return options.port.topics(
           knowledgeCaller,
-          call.input as ToolCall<"knowledge_topics">["input"],
+          call.input as ToolCall<"opensteer_knowledge_topic_list">["input"],
           call.signal,
         );
-      case "knowledge_read":
-        return options.port.read(
-          knowledgeCaller,
-          call.input as ToolCall<"knowledge_read">["input"],
-          call.signal,
+      case "opensteer_knowledge_search": {
+        const { cursor, ...input } = call.input as ToolCall<"opensteer_knowledge_search">["input"];
+        return knowledgePage(
+          await options.port.read(
+            knowledgeCaller,
+            { ...input, ...(cursor ? { before: cursor } : {}) },
+            call.signal,
+          ),
         );
-      case "knowledge_write":
+      }
+      case "opensteer_knowledge_remove":
         return options.port.write(
           knowledgeCaller,
-          call.input as ToolCall<"knowledge_write">["input"],
+          { ...(call.input as ToolCall<"opensteer_knowledge_remove">["input"]), delete: true },
+          call.signal,
+        );
+      case "opensteer_knowledge_read": {
+        const { cursor, ...input } = call.input as ToolCall<"opensteer_knowledge_read">["input"];
+        return knowledgePage(
+          await options.port.read(
+            knowledgeCaller,
+            { ...input, ...(cursor ? { before: cursor } : {}) },
+            call.signal,
+          ),
+        );
+      }
+      case "opensteer_knowledge_save":
+        return options.port.write(
+          knowledgeCaller,
+          call.input as ToolCall<"opensteer_knowledge_save">["input"],
           call.signal,
         );
     }
   };
   return {
-    knowledge_topics: (call) => invoke("knowledge_topics", call),
-    knowledge_read: (call) => invoke("knowledge_read", call),
-    knowledge_write: (call) => invoke("knowledge_write", call),
+    opensteer_knowledge_search: (call) => invoke("opensteer_knowledge_search", call),
+    opensteer_knowledge_remove: (call) => invoke("opensteer_knowledge_remove", call),
+    opensteer_knowledge_topic_list: (call) => invoke("opensteer_knowledge_topic_list", call),
+    opensteer_knowledge_read: (call) => invoke("opensteer_knowledge_read", call),
+    opensteer_knowledge_save: (call) => invoke("opensteer_knowledge_save", call),
   };
+}
+
+const importMessageId = (cursor: string) => TeamMessageIdSchema.parse(cursor);
+const importChannelId = (cursor: string) => TeamChannelIdSchema.parse(cursor);
+
+function knowledgePage({ nextBefore, ...page }: Awaited<ReturnType<TeamKnowledgePort["read"]>>) {
+  return { ...page, nextCursor: nextBefore };
 }

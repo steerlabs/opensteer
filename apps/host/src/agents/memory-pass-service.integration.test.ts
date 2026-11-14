@@ -53,7 +53,7 @@ async function fixture(
   await f.database
     .updateTable("runners")
     .set({
-      capabilities: sql`'["trigger-program-v3"]'::jsonb`,
+      capabilities: sql`'["trigger-program-v4"]'::jsonb`,
     })
     .where("id", "=", base.runnerId)
     .execute();
@@ -347,6 +347,33 @@ function wakeText(admitted: Awaited<ReturnType<typeof wake>>) {
   return admitted.message.content.flatMap((part) => (part.type === "text" ? [part.text] : []));
 }
 describeStore("managed memory passes", (it) => {
+  it("regenerates changed system programs through a new revision on start", async ({
+    storeFixture: f,
+  }) => {
+    const base = await fixture(f, "regenerate");
+    const instance = service(f).instance;
+    await instance.ensureForPersonal();
+    const prior = await role(f, base.userId);
+    await f.database
+      .updateTable("triggerRevisions")
+      .set({
+        program: {
+          ...memoryPassProgram("memory-light"),
+          toolContractVersion: 3 as unknown as 4,
+          source: "export default () => {}",
+        },
+      })
+      .where("id", "=", prior.revision.id)
+      .execute();
+    await instance.reconcileMissing();
+    const current = await role(f, base.userId);
+    expect(current.revision.id).not.toBe(prior.revision.id);
+    expect(current.revision.ordinal).toBe(prior.revision.ordinal + 1);
+    expect(current.revision.program).toEqual(memoryPassProgram("memory-light"));
+    await instance.reconcileMissing();
+    expect((await role(f, base.userId)).revision.id).toBe(current.revision.id);
+  });
+
   it("creates exactly one atomic pair under concurrent provisioning in the personal agent home, and never recreates paused/Done identities", async ({
     storeFixture: f,
   }) => {

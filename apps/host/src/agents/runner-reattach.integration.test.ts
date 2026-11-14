@@ -718,9 +718,9 @@ integration("Runs that outlive their connection", () => {
           }) as Transport,
         );
         const result = await client.callTool({
-          name: "delegate_task",
+          name: "opensteer_task_delegate",
           arguments: {
-            task: "Keep the delegated task running until its Runner restarts.",
+            message: "Keep the delegated task running until its Runner restarts.",
             title: "Restart task",
           },
         });

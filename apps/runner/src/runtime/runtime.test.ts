@@ -6100,7 +6100,7 @@ function triggerCommand(
       mcp: { token: "trigger-mcp-token", url: "https://host.example/internal/v1/mcp" },
       occurrenceId,
       program: {
-        toolContractVersion: 3,
+        toolContractVersion: 4,
         language: "javascript",
         source: "export default async () => null",
       },

@@ -222,7 +222,7 @@ integration("personal task delegation lifecycle", () => {
     const request = {
       type: "thread.delegate",
       requestId: randomUUID(),
-      task: "Forward this place once",
+      message: "Forward this place once",
       places: [
         {
           type: "phone",
@@ -664,10 +664,10 @@ integration("personal task delegation lifecycle", () => {
           },
         };
         const delegated = await mcp.client.callTool({
-          name: "delegate_task",
+          name: "opensteer_task_delegate",
           arguments: {
-            task: "Have Sol review this",
-            harnessInstanceId: engine.id,
+            message: "Have Sol review this",
+            aiAccountId: engine.id,
             model: choice,
           },
         });
@@ -1580,7 +1580,7 @@ integration("personal task delegation lifecycle", () => {
       type: "thread.message",
     });
     if (correction.type !== "thread.message.result") throw new Error("Expected a message result");
-    expect(correction.result.assignmentId).toBe(first.assignmentId);
+    expect(correction.result.delegationId).toBe(first.delegationId);
     const toParent = await service.handle(firstWorker.token, {
       content: [
         {
@@ -1594,7 +1594,7 @@ integration("personal task delegation lifecycle", () => {
       type: "thread.message",
     });
     if (toParent.type !== "thread.message.result") throw new Error("Expected a message result");
-    expect(toParent.result.assignmentId).toBeNull();
+    expect(toParent.result.delegationId).toBeNull();
     await reply(firstWorker, "First result");
     await end(firstWorker, "completed");
     // The correction is still a pending report; it neither blocks nor occupies.
@@ -1670,8 +1670,8 @@ integration("personal task delegation lifecycle", () => {
       firstAssignmentId: first.assignmentId,
       secondAssignmentId: second.assignmentId,
       workerThreadId: (await readToolRecords(store, first)).thread.id,
-      correctionAssignmentId: correction.result.assignmentId,
-      unboundMessageAssignmentId: toParent.result.assignmentId,
+      correctionAssignmentId: correction.result.delegationId,
+      unboundMessageAssignmentId: toParent.result.delegationId,
     });
   });
   it("reports provider failures once and recovers a lost delegated execution before returning its result", async () => {
@@ -1887,7 +1887,7 @@ integration("personal task delegation lifecycle", () => {
     const childWorker = await activateRun(fixture, (await readToolRecords(store, child)).run!.id);
     const durable = await openDurableRequest(fixture, childWorker);
     const stopped = await service.handle(fixture.token, {
-      assignmentId: parent.assignmentId,
+      delegationId: parent.assignmentId,
       requestId: randomUUID(),
       type: "task.cancel",
     });
@@ -1997,7 +1997,12 @@ integration("personal task delegation lifecycle", () => {
         task: "A different objective",
         threadId: (await readToolRecords(store, task)).thread.id,
       }),
-    ).rejects.toThrow(new RegExp(`task ${task.assignmentId}.*thread_send.*task_cancel`, "u"));
+    ).rejects.toThrow(
+      new RegExp(
+        `task ${task.assignmentId}.*opensteer_task_send.*opensteer_delegation_cancel`,
+        "u",
+      ),
+    );
     await expect(
       database
         .selectFrom("delegations")
@@ -2120,7 +2125,7 @@ integration("personal task delegation lifecycle", () => {
     });
     const cancel = (token: string, assignmentId: typeof parent.assignmentId) =>
       service.handle(token, {
-        assignmentId,
+        delegationId: assignmentId,
         requestId: randomUUID(),
         type: "task.cancel",
       });
@@ -2236,7 +2241,7 @@ integration("personal task delegation lifecycle", () => {
       threadId: (await readToolRecords(store, task)).thread.id,
     });
     const original = await readThreadWaitSnapshot(database, {
-      threadId: task.threadId,
+      threadId: task.taskId,
       assignmentId: task.assignmentId,
       userId: fixture.userId,
     });

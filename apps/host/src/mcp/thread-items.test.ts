@@ -25,7 +25,7 @@ it.each([
   "use_saved_login",
   "copy_chrome_cookies",
   "use_card",
-  "trigger_write",
+  "opensteer_automation_create",
   "computer",
   "computer.type",
   "mcp__opensteer__computer",
@@ -35,9 +35,12 @@ it.each([
   expect(withheldTool(name)).toBe(true);
 });
 
-it.each(["shell", "integration_call", "thread_read", "computers_list"])("keeps %s", (name) => {
-  expect(withheldTool(name)).toBe(false);
-});
+it.each(["shell", "integration_call", "opensteer_task_read", "computers_list"])(
+  "keeps %s",
+  (name) => {
+    expect(withheldTool(name)).toBe(false);
+  },
+);
 
 it("names a file a message carries", () => {
   const item = messageItem(

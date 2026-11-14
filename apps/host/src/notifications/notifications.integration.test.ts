@@ -392,9 +392,8 @@ integration("Notifications", () => {
     const turn = await stack.sendMessage({
       text: [
         "Remind me in a moment to buy groceries.",
-        toolCall("trigger_write", {
-          action: "create",
-          anchorThreadId: rootTask,
+        toolCall("opensteer_automation_create", {
+          taskId: rootTask,
           name: "Reminder: buy groceries",
           program: {
             language: "javascript",
@@ -402,12 +401,12 @@ integration("Notifications", () => {
               "queue",
               rootTask,
               "Reminder: buy groceries " +
-                toolCall("person_message", {
+                toolCall("person_notify", {
                   message: "Groceries milestone ready.",
                 }) +
                 " [[reply Reminder: buy groceries]]",
             ),
-            toolContractVersion: 3,
+            toolContractVersion: 4,
           },
           source: {
             at,
@@ -543,10 +542,10 @@ integration("Notifications", () => {
       anchorThreadId: rootTask,
       name: "Morning summary",
       program: `export default async function ({ opensteer }) {
-        await opensteer.callTool("delegate_task", {
+        await opensteer.callTool("opensteer_task_delegate", {
           task: ${JSON.stringify(
             "Summarize the inbox. " +
-              toolCall("person_message", {
+              toolCall("person_notify", {
                 message: "Inbox milestone ready.",
               }) +
               " [[reply Inbox summary ready.]]",
@@ -559,7 +558,7 @@ integration("Notifications", () => {
       },
     });
     await runTrigger(stack, trigger);
-    const taskReply = await waitForReplyIn(stack, "Inbox summary", "Tool person_message failed:");
+    const taskReply = await waitForReplyIn(stack, "Inbox summary", "Tool person_notify failed:");
     const taskThread = await stack.host.store.database
       .selectFrom("messages")
       .select("threadId")
@@ -577,7 +576,7 @@ integration("Notifications", () => {
 
     // The task's result arrives in The task as a continuation; the task's reply to it
     // is the one alert, and the task's own reply alerts nobody.
-    const result = await waitForMessage(stack, rootTask, "Tool person_message failed:", 30_000);
+    const result = await waitForMessage(stack, rootTask, "Tool person_notify failed:", 30_000);
     const relayRun = await waitFor(
       async () =>
         (
@@ -762,7 +761,7 @@ function toolCall(name: string, input: unknown): string {
 }
 function programSending(delivery: "queue" | "report", threadId: string, message: string): string {
   return `export default async function ({ opensteer }) {
-    await opensteer.callTool("thread_send", ${JSON.stringify({
+    await opensteer.callTool("opensteer_task_send", ${JSON.stringify({
       delivery,
       message,
       threadId,
@@ -799,7 +798,7 @@ async function createTrigger(
       program: {
         language: "javascript",
         source: input.program,
-        toolContractVersion: 3,
+        toolContractVersion: 4,
       },
       source: input.source,
     },

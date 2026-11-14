@@ -22,7 +22,7 @@ describe("MCP access kinds", () => {
     const { caller, target } = authority();
     expect(() => toolAccess[kind](caller, [target])).toThrow("stronger access mode");
   });
-  it("permits reads of a stronger Thread and requires full access for settings", () => {
+  it("permits reads of a stronger task and requires full access for settings", () => {
     const { caller, target } = authority();
     expect(() => toolAccess.read(caller, [target])).not.toThrow();
     expect(() => toolAccess.settings(caller, [])).toThrow("requires full-access");

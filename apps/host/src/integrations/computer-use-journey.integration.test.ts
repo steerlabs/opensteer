@@ -1769,7 +1769,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const delegated = await control.handle("test-token", {
         type: "thread.delegate",
         requestId: randomUUID(),
-        task: "Read the included Notes app",
+        message: "Read the included Notes app",
         title: "Read Notes",
 
         places: [appPart],
@@ -1792,7 +1792,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const olderRead = await control.handle("test-token", {
         type: "thread.read",
         requestId: randomUUID(),
-        threadId: run.threadId,
+        taskId: run.threadId,
         limit: 100,
       });
       if (olderRead.type !== "thread.read.result") throw new Error("Missing thread read");
@@ -1811,7 +1811,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const capableRead = await control.handle("test-token", {
         type: "thread.read",
         requestId: randomUUID(),
-        threadId: run.threadId,
+        taskId: run.threadId,
         limit: 100,
       });
       if (capableRead.type !== "thread.read.result") throw new Error("Missing capable thread read");
@@ -1842,7 +1842,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         control.handle("test-token", {
           type: "thread.delegate",
           requestId: randomUUID(),
-          task: "Read unrelated Calendar",
+          message: "Read unrelated Calendar",
 
           places: [{ type: "computer-app", machineId: world.macId, app: apps.calendar, name: mac }],
         }),
@@ -1857,7 +1857,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         control.handle("test-token", {
           type: "thread.delegate",
           requestId: randomUUID(),
-          task: "Read the Calendar the person included",
+          message: "Read the Calendar the person included",
 
           places: [unapproved],
         }),
@@ -5138,7 +5138,7 @@ async function openGateway(
     runnerBootId: "boot",
     runnerId: run.agentRunnerId,
     threadId: run.threadId,
-    toolContractVersion: 3 as const,
+    toolContractVersion: 4 as const,
   };
   const service = createIntegrationMcpFixture({
     definitions,

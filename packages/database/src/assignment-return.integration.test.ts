@@ -216,7 +216,7 @@ describeStore("Assignment result delivery", (it) => {
                 kind: "watch",
               },
               program: {
-                toolContractVersion: 3,
+                toolContractVersion: 4,
                 language: "javascript",
                 source: "export default async () => null",
               },
@@ -284,7 +284,7 @@ describeStore("Assignment result delivery", (it) => {
     expect(content).toContain("Result 0");
     expect(content).toContain("Result 2");
     expect(content).toContain("Result shortened");
-    expect(content).toContain("task_status");
+    expect(content).toContain("opensteer_delegation_status");
     expect(content).toContain("thread_read");
     expect(content).not.toContain("\ufffd");
     expect((await s.read(tasks[0]!.assignment.id)).result).toBe("Result 0");

@@ -2,7 +2,7 @@ import { browserRows } from "./browser-rows.test-support.js";
 import { keyedStreamBytes } from "@opensteer/protocol/keyed-stream";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { callMcpTool } from "../mcp/call-tool.test-support.js";
-import { delegate_task } from "@opensteer/agent-tools/tools";
+import { opensteer_task_delegate } from "@opensteer/agent-tools/tools";
 
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -824,8 +824,8 @@ integration("Browser presence and conversation usage", () => {
       taskNotices: 0,
     });
     const brief = `Continue in sessionId ${sessionId}, tabId voice-page; ask me in the receiving task.`;
-    const handoff = await callMcpTool(host.origin, run.toolsToken, "thread_send", {
-      threadId: chat.thread.id,
+    const handoff = await callMcpTool(host.origin, run.toolsToken, "opensteer_task_send", {
+      taskId: chat.thread.id,
       delivery: "queue",
       message: brief,
     });
@@ -2636,17 +2636,22 @@ integration("Browser presence and conversation usage", () => {
     );
 
     // The agent forwards that structured reference through the production control route.
-    const delegatedResponse = await callMcpTool(host.origin, run.toolsToken, "delegate_task", {
-      operationKey: randomUUID(),
-      task: "Compare the included page",
-      title: "Page comparison",
+    const delegatedResponse = await callMcpTool(
+      host.origin,
+      run.toolsToken,
+      "opensteer_task_delegate",
+      {
+        operationKey: randomUUID(),
+        message: "Compare the included page",
+        title: "Page comparison",
 
-      places: [page],
-    });
+        places: [page],
+      },
+    );
     expect(delegatedResponse.isError, JSON.stringify(delegatedResponse)).not.toBe(true);
     const delegated = {
       type: "thread.delegate.result" as const,
-      result: delegate_task.output.parse(delegatedResponse.structuredContent),
+      result: opensteer_task_delegate.output.parse(delegatedResponse.structuredContent),
     };
     expect((await readToolRecords(host.store, delegated.result)).message!.content).toContainEqual(
       page,
@@ -2687,9 +2692,9 @@ integration("Browser presence and conversation usage", () => {
         ),
       );
     }
-    const unrelated = await callMcpTool(host.origin, run.toolsToken, "delegate_task", {
+    const unrelated = await callMcpTool(host.origin, run.toolsToken, "opensteer_task_delegate", {
       operationKey: randomUUID(),
-      task: "Read unrelated browser",
+      message: "Read unrelated browser",
 
       places: [{ ...page, sessionId: "bsn_00000000-0000-4000-8000-000000000001" }],
     });

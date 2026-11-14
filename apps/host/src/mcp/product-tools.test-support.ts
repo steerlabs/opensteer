@@ -1,11 +1,11 @@
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import {
-  thread_read,
-  thread_list,
-  delegate_task,
-  thread_update,
-  thread_interrupt,
-  task_cancel,
+  opensteer_task_read,
+  opensteer_task_list,
+  opensteer_task_delegate,
+  opensteer_task_update,
+  opensteer_task_interrupt,
+  opensteer_delegation_cancel,
 } from "@opensteer/agent-tools/tools";
 import {
   BrowserProfileListOutputSchema,
@@ -93,10 +93,10 @@ const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
     ...requestBase,
     type: z.literal("environment.list"),
   }),
-  thread_read.input.safeExtend({ ...requestBase, type: z.literal("thread.read") }),
-  thread_list.input.safeExtend({ ...requestBase, type: z.literal("thread.list") }),
-  delegate_task.input.safeExtend({ ...requestBase, type: z.literal("thread.delegate") }),
-  task_cancel.input.safeExtend({ ...requestBase, type: z.literal("task.cancel") }),
+  opensteer_task_read.input.safeExtend({ ...requestBase, type: z.literal("thread.read") }),
+  opensteer_task_list.input.safeExtend({ ...requestBase, type: z.literal("thread.list") }),
+  opensteer_task_delegate.input.safeExtend({ ...requestBase, type: z.literal("thread.delegate") }),
+  opensteer_delegation_cancel.input.safeExtend({ ...requestBase, type: z.literal("task.cancel") }),
   z.strictObject({
     ...requestBase,
     content: MessageContentSchema,
@@ -117,12 +117,12 @@ const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     ...requestBase,
-    input: thread_update.input,
+    input: opensteer_task_update.input,
     type: z.literal("thread.update"),
   }),
   z.strictObject({
     ...requestBase,
-    input: thread_interrupt.input,
+    input: opensteer_task_interrupt.input,
     type: z.literal("thread.interrupt"),
   }),
   z.strictObject({
@@ -451,9 +451,20 @@ export class ProductToolsTestClient {
   async handle(token: string, value: unknown): Promise<ProductToolResult> {
     const request = ProductToolRequestSchema.parse(value);
     let name: string = request.type.replaceAll(".", "_").replaceAll("-", "_");
-    if (request.type === "thread.delegate") name = "delegate_task";
-    if (request.type === "thread.message") name = "thread_send";
-    if (request.type === "request.list") name = "pending_request";
+    const taskNames: Record<string, string> = {
+      "thread.read": "opensteer_task_read",
+      "thread.list": "opensteer_task_list",
+      "thread.interrupt": "opensteer_task_interrupt",
+      "thread.update": "opensteer_task_update",
+      "task.cancel": "opensteer_delegation_cancel",
+      "person.message": "person_notify",
+      "person.show": "person_show",
+      "request.withdraw": "opensteer_request_withdraw",
+    };
+    name = taskNames[request.type] ?? name;
+    if (request.type === "thread.delegate") name = "opensteer_task_delegate";
+    if (request.type === "thread.message") name = "opensteer_task_send";
+    if (request.type === "request.list") name = "opensteer_request_list";
     if (request.type === "environment.list") name = "orchestrator_capabilities";
     const { type: _type, requestId, ...rest } = request;
     let input: Record<string, unknown> = rest;
@@ -467,7 +478,7 @@ export class ProductToolsTestClient {
         throw new OpensteerError({
           code: "bad_request",
           message:
-            "A message from an agent cannot include a place reference. Forward selected references with delegate_task places",
+            "A message from an agent cannot include a place reference. Forward selected references with opensteer_task_delegate places",
         });
       input = {
         ...rest,
@@ -476,7 +487,18 @@ export class ProductToolsTestClient {
       delete input.content;
     }
     if (request.type === "trigger.control") {
-      name = request.tool.replaceAll(".", "_");
+      name = (
+        {
+          list: "opensteer_automation_list",
+          get: "opensteer_automation_read",
+          create: "opensteer_automation_create",
+          update: "opensteer_automation_update",
+          set_status: "opensteer_automation_control",
+          set_next_fire: "opensteer_automation_control",
+          run: "opensteer_automation_control",
+          cancel: "opensteer_automation_control",
+        } as const
+      )[request.input.operation];
       const { operation, ...fields } = request.input;
       input = { ...fields, action: operation };
       delete input.idempotencyKey;
@@ -491,6 +513,32 @@ export class ProductToolsTestClient {
         };
       }
     }
+    if (request.type === "thread.message") {
+      input.taskId = input.threadId;
+      delete input.threadId;
+    }
+    if (request.type === "trigger.control") {
+      if ("triggerId" in input) {
+        input.automationId = input.triggerId;
+        delete input.triggerId;
+      }
+      if ("anchorThreadId" in input) {
+        input.taskId = input.anchorThreadId;
+        delete input.anchorThreadId;
+      }
+      if (input.action === "set_status") {
+        input.action =
+          input.status === "active" ? "resume" : input.status === "paused" ? "pause" : "archive";
+        delete input.status;
+      } else if (input.action === "set_next_fire") input.action = "reschedule";
+      else if (input.action === "run") input.action = "run_now";
+      else if (input.action === "cancel") input.action = "cancel_pending";
+      else delete input.action;
+    }
+    if (request.type === "request.list")
+      input = { limit: request.limit, ...(request.before ? { cursor: request.before } : {}) };
+    if (request.type === "person.show" && "threadId" in request.target)
+      input = { target: { taskId: request.target.threadId } };
     const result = await this.service.callTool(token, name, input, { operationKey: requestId });
     if (typeof result === "string") throw new Error(`${name} returned text, not a record`);
     let fields: Record<string, unknown> = result;
@@ -525,15 +573,15 @@ export class WatchToolsTestClient extends ProductToolsTestClient {
 export async function readToolRecords(
   store: import("@opensteer/database").OpensteerStore,
   result: {
-    readonly threadId?: import("@opensteer/core").ThreadId;
+    readonly taskId?: import("@opensteer/core").ThreadId;
     readonly runId: import("@opensteer/core").RunId | null;
     readonly messageId?: import("@opensteer/core").MessageId;
-    readonly assignmentId?: import("@opensteer/core").AssignmentId | null;
+    readonly delegationId?: import("@opensteer/core").AssignmentId | null;
   },
 ) {
   const { messageFromRow, runFromRow, threadFromRow, threadInputFromRow } =
     await import("@opensteer/database/test-support/store");
-  const assignment = result.assignmentId ? await store.getAssignment(result.assignmentId) : null;
+  const assignment = result.delegationId ? await store.getAssignment(result.delegationId) : null;
   const messageId = result.messageId ?? assignment?.initialInputMessageId;
   const messageRow = messageId
     ? await store.database
@@ -550,7 +598,7 @@ export async function readToolRecords(
           .orderBy("messages.sequence", "asc")
           .executeTakeFirst()
       : undefined;
-  const threadId = result.threadId ?? messageRow?.threadId;
+  const threadId = result.taskId ?? messageRow?.threadId;
   if (!threadId) throw new Error("Tool result has no persisted Thread");
   const threadRow = await store.database
     .selectFrom("threads")

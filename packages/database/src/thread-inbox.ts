@@ -2419,7 +2419,7 @@ export function deliverTaskQuestionNotice(
       content: [
         {
           type: "text",
-          text: `Task ${JSON.stringify(source.workerTitle)} (${source.request.originatingThreadId}) asked ${JSON.stringify(requestTitleText(source.request.presentation))}. Read it with pending_request action read, requestId ${requestId}. Answer with action respond when the answer follows from the task or the person's instructions, or leave it for the person.`,
+          text: `Task ${JSON.stringify(source.workerTitle)} (${source.request.originatingThreadId}) asked ${JSON.stringify(requestTitleText(source.request.presentation))}. Read it with opensteer_request_read, requestId ${requestId}. Answer with opensteer_request_answer when the answer follows from the task or the person's instructions, or leave it for the person.`,
         },
       ],
     };
@@ -4485,7 +4485,7 @@ function assignmentReturnContent(
   const entries = members.map((member) => ({
     header: `Task ${member.status}: ${member.title}\nTask Thread: ${member.childThreadId} · Assignment: ${member.id}`,
     result: member.status === "cancelled" ? "" : (member.resultText ?? ""),
-    pointer: `\n\n[Result shortened. Read the rest with task_status (assignmentId: ${member.id}) or thread_read (threadId: ${member.childThreadId}).]`,
+    pointer: `\n\n[Result shortened. Read the rest with opensteer_delegation_status (delegationId: ${member.id}) or opensteer_task_read (taskId: ${member.childThreadId}).]`,
   }));
   const content = (results: readonly string[]) => [
     {
@@ -5778,7 +5778,7 @@ export async function delegateThreadInTransaction(
         details: {
           assignmentId: open.id,
         },
-        message: `Thread ${threadId} is still working on task ${open.id}. Send corrections with thread_send, or cancel that task with task_cancel before giving the Thread new work.`,
+        message: `Thread ${threadId} is still working on task ${open.id}. Send corrections with opensteer_task_send, or cancel that task with opensteer_delegation_cancel before giving the Thread new work.`,
       });
     }
     if (busy || queuedInput) {

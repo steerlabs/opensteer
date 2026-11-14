@@ -614,7 +614,7 @@ function triggerContext(input: { readonly mcpUrl?: string; readonly source: stri
 
     mcp: { token: "test-token", url: input.mcpUrl ?? "http://127.0.0.1:1/mcp" },
     occurrenceId,
-    program: { toolContractVersion: 3, language: "typescript", source: input.source },
+    program: { toolContractVersion: 4, language: "typescript", source: input.source },
     revisionId,
     triggerId,
   });
