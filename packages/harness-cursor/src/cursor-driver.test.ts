@@ -650,21 +650,26 @@ describe("Cursor turns", () => {
     await fixture.adapter.close();
   });
 
-  it("assumes resumed conversations already received stable guidance", async () => {
-    const fixture = await setup({ machineAccessNotice: "Computer offline 4m" });
+  it("sends stable guidance once per conversation and again only when it changes", async () => {
+    const fixture = await setup({ machineAccessNotice: "Computer offline" });
     await seedTranscript(fixture);
-    const session = await fixture.adapter.resumeSession(fixture.reference, fixture.context);
-    try {
-      await session.execute(fixture.turn("Continue"));
-      const prompt = (await fixture.prompts())[0] ?? "";
-      expect(prompt).not.toContain("Opensteer platform guide.");
-      expect(prompt).not.toContain("Follow the workspace instructions.");
-      expect(prompt).toContain("Computer offline 4m");
-      expect(prompt).not.toContain("[Opensteer tools]");
-    } finally {
-      await session.stop();
-      await fixture.adapter.close();
-    }
+    const reopen = async (context: typeof fixture.context) => {
+      const session = await fixture.adapter.resumeSession(fixture.reference, context);
+      try {
+        await session.execute(fixture.turn("Continue"));
+      } finally {
+        await session.stop();
+      }
+    };
+    await reopen(fixture.context);
+    await reopen(fixture.context);
+    await reopen({ ...fixture.context, instructions: "Follow the edited instructions." });
+    await fixture.adapter.close();
+    const [initial, resumed, edited] = await fixture.prompts();
+    expect(initial).toContain("Opensteer platform guide.");
+    expect(resumed).not.toContain("Opensteer platform guide.");
+    expect(resumed).toContain("Computer offline");
+    expect(edited).toContain("Follow the edited instructions.");
   });
 
   it("sends the exact composed --model argument and the resumed chat id", async () => {

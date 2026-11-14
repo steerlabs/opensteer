@@ -9,6 +9,7 @@ import {
 } from "@opensteer/core";
 import {
   Deferred,
+  GuidanceDelivery,
   HarnessSessionRegistry,
   SubagentNodes,
   TurnPublisher,
@@ -29,6 +30,7 @@ import {
   type HarnessRunInput,
   type HarnessSession,
   type HarnessSessionContext,
+  type GuidanceTicket,
   type SupervisedProcess,
 } from "@opensteer/harness";
 import { isRecord } from "@opensteer/shared/isRecord";
@@ -171,9 +173,7 @@ class AcpHarnessSession implements HarnessSession {
   #replaying = false;
   readonly #stderrWaiters = new Set<() => void>();
   #stopPromise: Promise<void> | undefined;
-  #deliveredGuidance: string | undefined;
-  #compactionMarker: symbol | undefined;
-  readonly #completedCompactions = new Set<string>();
+  readonly #guidance = new GuidanceDelivery();
   #persistentApprovalGranted = false;
   #backgroundWorkRemains = false;
 
@@ -335,12 +335,8 @@ class AcpHarnessSession implements HarnessSession {
         !this.#processEnded &&
         !["cancelled", "refusal", "error"].includes(result.stopReason)
       ) {
-        if (prepared.compacts) this.#compactionMarker = Symbol();
-        else if (prepared.guidance !== undefined) {
-          this.#deliveredGuidance = prepared.guidance;
-          if (this.#compactionMarker === prepared.compactionMarker)
-            this.#compactionMarker = undefined;
-        }
+        if (prepared.compacts) this.#guidance.compacted();
+        else if (prepared.ticket) this.#guidance.acknowledge(prepared.ticket);
       }
       this.#finish(active, active.interruptRequested ? "interrupted" : "completed");
       await active.completion.promise;
@@ -545,8 +541,7 @@ class AcpHarnessSession implements HarnessSession {
 
   async #promptBlocks(run: HarnessRunInput): Promise<{
     blocks: readonly AcpPromptBlock[];
-    guidance?: string;
-    compactionMarker?: symbol;
+    ticket?: GuidanceTicket;
     compacts?: boolean;
   }> {
     const parts = run.inputs.flatMap((input) => resolvedInputSequence(input, run.attachments));
@@ -609,14 +604,8 @@ class AcpHarnessSession implements HarnessSession {
       ),
     );
     const stable = rewritten[0]!;
-    const stableText = stable.type === "text" ? stable.text : "";
-    const marker = this.#compactionMarker;
-    const send = marker !== undefined || this.#deliveredGuidance !== stableText;
-    return {
-      blocks: send ? rewritten : rewritten.slice(1),
-      ...(send ? { guidance: stableText } : {}),
-      ...(marker ? { compactionMarker: marker } : {}),
-    };
+    const ticket = this.#guidance.prepare(stable.type === "text" ? stable.text : "");
+    return { blocks: ticket.send === undefined ? rewritten.slice(1) : rewritten, ticket };
   }
 
   #handleUpdate(sessionId: string, update: unknown): void {
@@ -629,11 +618,7 @@ class AcpHarnessSession implements HarnessSession {
         sessionId !== this.#providerSessionReference
       )
         continue;
-      if (entry.compactionId !== undefined) {
-        if (this.#completedCompactions.has(entry.compactionId)) continue;
-        this.#completedCompactions.add(entry.compactionId);
-      }
-      this.#compactionMarker = Symbol();
+      this.#guidance.compacted(entry.compactionId);
     }
     const active = this.#active;
     if (!active || active.terminal) return;
@@ -950,13 +935,8 @@ class AcpHarnessSession implements HarnessSession {
     );
     const choice = choices.find((choice) => choice.optionId === answer);
     const native = request.options.find((option) => option.id === answer);
-    if (
-      choice &&
-      (choice.hint === "allow-for-run" ||
-        (choice.hint === "allow-once" &&
-          native &&
-          /always|persistent|session/iu.test(`${native.id} ${native.kind}`)))
-    )
+    // ACP names an approval that outlives the call `allow_always`; the session keeps it.
+    if (choice?.hint === "allow-for-run" || native?.kind === "allow_always")
       this.#persistentApprovalGranted = true;
     return answer;
   }

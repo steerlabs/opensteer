@@ -5,6 +5,7 @@ export * from "./deferred.js";
 export * from "./directory-links.js";
 export * from "./denial-note.js";
 export * from "./errors.js";
+export * from "./guidance-delivery.js";
 export * from "./event-stream.js";
 export * from "./input-projection.js";
 export * from "./initial-context.js";

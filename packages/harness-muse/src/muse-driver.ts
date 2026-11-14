@@ -66,6 +66,8 @@ import {
   type HarnessGenerateTextResult,
   type ResolvedAttachment,
   type SupervisedProcess,
+  GuidanceDelivery,
+  type GuidanceTicket,
 } from "@opensteer/harness";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { copyFile, mkdir, realpath, rm } from "node:fs/promises";
@@ -619,8 +621,7 @@ interface ActiveTurn {
   readonly settledNodes: Set<string>;
   readonly workflowPhases: Map<string, string[]>;
   readonly subagents: Set<string>;
-  guidance?: string;
-  guidanceGeneration?: number;
+  guidance?: GuidanceTicket;
   interruptRequested: boolean;
   rootCompleted: boolean;
   started: boolean;
@@ -652,9 +653,7 @@ class MuseHarnessSession implements HarnessSession {
   #active: ActiveTurn | undefined;
   #closed = false;
   #compacting = false;
-  #guidanceGeneration = 0;
-  #deliveredGuidance: string | undefined;
-  readonly #completedCompactions = new Set<string>();
+  #guidance = new GuidanceDelivery();
   readonly #processLifetime = new AbortController();
   readonly #abortListener = () => void this.stop();
   #skillCatalog: string | undefined;
@@ -936,9 +935,7 @@ class MuseHarnessSession implements HarnessSession {
 
   async #launch(resume: boolean): Promise<void> {
     if (this.#closed) throw new Error("Muse Code session is closed");
-    this.#deliveredGuidance = undefined;
-    this.#guidanceGeneration++;
-    this.#completedCompactions.clear();
+    this.#guidance = new GuidanceDelivery();
     this.#compacting = false;
     const environment = await museEnvironment(
       this.#context.environment,
@@ -1039,21 +1036,17 @@ class MuseHarnessSession implements HarnessSession {
     if (method === "session/compactionStarted") this.#compacting = true;
     if (method === "session/compactionCompleted") {
       this.#compacting = false;
-      this.#guidanceGeneration++;
-      this.#deliveredGuidance = undefined;
+      this.#guidance.compacted();
     }
     if (method === "item/completed") {
       const parsed = MuseItemEventSchema.safeParse(params);
       if (
         parsed.success &&
         parsed.data.item.kind === "compaction" &&
-        parsed.data.item.status === "completed" &&
-        !this.#completedCompactions.has(parsed.data.item.itemId)
+        parsed.data.item.status === "completed"
       ) {
-        this.#completedCompactions.add(parsed.data.item.itemId);
         this.#compacting = false;
-        this.#guidanceGeneration++;
-        this.#deliveredGuidance = undefined;
+        this.#guidance.compacted(parsed.data.item.itemId);
       }
     }
     if (!active || active.terminal) return;
@@ -1473,12 +1466,10 @@ class MuseHarnessSession implements HarnessSession {
     const guidance = [this.#context.platformGuide, this.#context.instructions, this.#skillCatalog]
       .filter(Boolean)
       .join("\n\n");
-    if (this.#active) {
-      this.#active.guidance = guidance;
-      this.#active.guidanceGeneration = this.#guidanceGeneration;
-    }
+    const ticket = this.#guidance.prepare(guidance);
+    if (this.#active) this.#active.guidance = ticket;
     return [
-      ...(guidance !== this.#deliveredGuidance ? [guidance] : []),
+      ...(ticket.send === undefined ? [] : [ticket.send]),
       this.#context.machineAccessNotice,
       durableHistoryWindowNotice(this.#context),
       initialContinuationContextPrompt(this.#context),
@@ -1514,8 +1505,7 @@ class MuseHarnessSession implements HarnessSession {
 
   #terminal(active: ActiveTurn, status: "completed" | "interrupted"): void {
     if (active.terminal) return;
-    if (status === "completed" && active.guidanceGeneration === this.#guidanceGeneration)
-      this.#deliveredGuidance = active.guidance;
+    if (status === "completed" && active.guidance) this.#guidance.acknowledge(active.guidance);
     if (active.usage) this.#publish({ data: active.usage, type: "run.usage" });
     active.nodes.endAll(status === "completed" ? "completed" : "interrupted");
     active.terminal = true;

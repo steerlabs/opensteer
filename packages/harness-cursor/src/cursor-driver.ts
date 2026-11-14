@@ -1,6 +1,7 @@
 import { backgroundLightModels } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
-import { stat, mkdir, copyFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { stat, mkdir, copyFile, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -503,6 +504,8 @@ interface ActiveTurn {
   readonly startedToolArguments: Map<string, unknown>;
   readonly requestedBy: UserId;
   readonly runId: HarnessRunInput["runId"];
+  /** Digest of the stable guidance this turn carried, recorded once it completes. */
+  readonly guidanceDigest: string | undefined;
   interruptRequested: boolean;
   started: boolean;
   terminal: boolean;
@@ -542,7 +545,9 @@ class CursorHarnessSession implements HarnessSession {
   #process: SupervisedProcess | undefined;
   #hookEndpoint: CursorHookEndpoint | undefined;
   #skillCatalog: string | undefined;
-  #guidanceDelivered = false;
+  /** Digest of the stable guidance the native conversation holds; undefined resends it. */
+  #deliveredGuidance: string | undefined;
+  #recordingGuidance: Promise<void> = Promise.resolve();
   #reasoningBlocks = 0;
   /** The open reasoning block's text, which Cursor's completion frame omits. */
   #reasoningText = "";
@@ -586,8 +591,12 @@ class CursorHarnessSession implements HarnessSession {
     assertNativeUserBoundary(context);
     const session = new CursorHarnessSession(config, dependencies, context, reference, onClose);
     try {
-      if (resume) await assertCursorTranscriptExists(context, reference);
-      session.#guidanceDelivered = resume;
+      if (resume) {
+        await assertCursorTranscriptExists(context, reference);
+        session.#deliveredGuidance = await readFile(deliveredGuidancePath(context), "utf8").catch(
+          () => undefined,
+        );
+      }
       await session.#materialize();
       return session;
     } catch (error) {
@@ -604,7 +613,7 @@ class CursorHarnessSession implements HarnessSession {
         message: "Cursor session already has an active turn",
       });
     }
-    const prompt = this.#turnPrompt(run.inputs, run, run.attachments);
+    const { guidanceDigest, prompt } = this.#turnPrompt(run.inputs, run, run.attachments);
     const model = cursorModelArgument(
       await this.#modelListing(run.signal),
       this.#context.modelSelection,
@@ -613,6 +622,7 @@ class CursorHarnessSession implements HarnessSession {
       completedToolCalls: new Set(),
       startedToolArguments: new Map(),
       interruptRequested: run.signal.aborted,
+      guidanceDigest,
       requestedBy: run.requestedBy,
       runId: run.runId,
       started: false,
@@ -1176,23 +1186,26 @@ class CursorHarnessSession implements HarnessSession {
     inputs: readonly HarnessInput[],
     turn: Pick<HarnessRunInput, "context" | "reports">,
     attachments?: ReadonlyMap<string, ResolvedAttachment>,
-  ): string {
+  ): { readonly guidanceDigest: string | undefined; readonly prompt: string } {
     if (inputs.length === 0) {
       throw new OpensteerError({
         code: "bad_request",
         message: "Cursor turn inputs cannot be empty",
       });
     }
-    const notices = [
-      ...(!this.#guidanceDelivered
-        ? [
-            this.#context.platformGuide,
-            this.#context.instructions,
-            this.#skillCatalog,
-            cursorToolsNotice(this.#context),
-          ]
-        : []),
+    const guidance = [
+      this.#context.platformGuide,
+      this.#context.instructions,
       durableHistoryWindowNotice(this.#context),
+      this.#skillCatalog,
+      cursorToolsNotice(this.#context),
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join("\n\n");
+    const digest = createHash("sha256").update(guidance).digest("hex");
+    const guidanceDigest = digest === this.#deliveredGuidance ? undefined : digest;
+    const notices = [
+      ...(guidanceDigest ? [guidance] : []),
       this.#context.machineAccessNotice,
     ].filter((value): value is string => Boolean(value));
     const reportPrompt = harnessTurnPreamble(turn, (input) => cursorInputBody(input, attachments));
@@ -1211,7 +1224,7 @@ class CursorHarnessSession implements HarnessSession {
         message: `Cursor turn input is ${bytes} bytes, exceeding the configured ${this.#config.maxTurnInputBytes}-byte limit`,
       });
     }
-    return prompt;
+    return { guidanceDigest, prompt };
   }
 
   #ensureRunStarted(active: ActiveTurn): void {
@@ -1224,10 +1237,26 @@ class CursorHarnessSession implements HarnessSession {
     if (!this.#publisher.claimTerminal(active)) return;
     this.#cancelPendingApprovals("run-ended");
     if (status === "completed") {
-      this.#guidanceDelivered = true;
+      this.#recordDeliveredGuidance(active.guidanceDigest);
       this.#ensureRunStarted(active);
     }
     this.#publish(runEndedEvent(status));
+  }
+
+  /**
+   * Each turn is its own CLI process, so what the conversation holds is kept
+   * beside its native session. A lost write only means the guidance is sent again.
+   */
+  #recordDeliveredGuidance(digest: string | undefined): void {
+    if (!digest) return;
+    this.#deliveredGuidance = digest;
+    const path = deliveredGuidancePath(this.#context);
+    this.#recordingGuidance = this.#recordingGuidance
+      .then(async () => {
+        await writeFile(`${path}.tmp`, digest, { mode: 0o600 });
+        await rename(`${path}.tmp`, path);
+      })
+      .catch(() => undefined);
   }
 
   #publishFailure(active: ActiveTurn, error: OpensteerError): void {
@@ -1301,6 +1330,7 @@ class CursorHarnessSession implements HarnessSession {
       await this.#process?.terminate(this.#config.shutdownGraceMs).catch(() => undefined);
       await this.#bridge?.close().catch(() => undefined);
       await this.#hookEndpoint?.remove().catch(() => undefined);
+      await this.#recordingGuidance;
     } finally {
       // A Run whose session is torn down mid-turn still reaches exactly one
       // terminal event; the stream closes only once it has been published.
@@ -1581,3 +1611,7 @@ function truncateCursorReasoning(text: string): string {
 }
 
 const cursorLightModels = backgroundLightModels("cursor");
+
+function deliveredGuidancePath(context: Pick<HarnessSessionContext, "threadStateDirectory">) {
+  return join(context.threadStateDirectory, "delivered-guidance.sha256");
+}
