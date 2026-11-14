@@ -1129,6 +1129,68 @@ a.team-row__main:hover {
   background-color: var(--fill-quiet);
 }
 
+/* The owner's answer to an ask, under it: one plate split in two, the
+   agent's orb saying whose action it is. */
+.ask-split {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: stretch;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: var(--space-6);
+  overflow: hidden;
+  border: 1px solid var(--rim-plate);
+  border-radius: var(--radius-sm);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
+}
+
+.ask-split > button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+  min-height: var(--control-height-sm);
+  padding: 0 var(--space-10);
+  color: var(--text);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
+}
+
+.ask-split > .ask-split__go {
+  padding-left: var(--space-6);
+}
+
+.ask-split > .ask-split__no {
+  border-left: 1px solid var(--rim-plate);
+  color: var(--text-soft);
+}
+
+.ask-split > button:hover:not(:disabled) {
+  background-color: var(--fill-quiet);
+  color: var(--text);
+}
+
+.ask-split > button:focus-visible {
+  outline-offset: -2px;
+}
+
+.ask-split > button:disabled {
+  color: var(--muted);
+}
+
+.team-ask-review {
+  color: var(--muted);
+  font-size: inherit;
+}
+
+.team-ask-review:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
 .tmsg__edit {
   display: flex;
   flex-direction: column;

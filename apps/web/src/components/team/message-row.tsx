@@ -10,6 +10,7 @@ import {
   authorName,
   firstName,
   plural,
+  type AskStatusView,
   type FileView,
   type MessageView,
   type ThreadSummaryView,
@@ -36,6 +37,15 @@ export interface MessageActions {
   readonly onRetrySend?: ((messageId: string) => void) | undefined;
   readonly onOpenFile?: ((file: FileView) => void) | undefined;
   readonly onOpenTask?: ((messageId: string) => void) | undefined;
+  /** The viewer's answer to an ask to their agent; rejects when it wasn't taken. */
+  readonly onDecideAsk?:
+    | ((
+        control: Extract<AskStatusView["control"], { kind: "decide" }>,
+        decision: "approve" | "decline",
+      ) => Promise<void>)
+    | undefined;
+  /** Opens the task an ask waits in, where its edited copy is answered. */
+  readonly onReviewAsk?: ((threadId: string) => void) | undefined;
 }
 
 /**
@@ -159,11 +169,29 @@ export const MessageRow = memo(function MessageRow({
             ) : null}
           </p>
         ) : null}
-        {message.askStatuses?.map((status) => (
-          <p key={status.id} className="team-ask-status">
-            {status.label}
-          </p>
-        ))}
+        {message.askStatuses?.map((status) =>
+          status.control?.kind === "decide" && actions.onDecideAsk ? (
+            <AskDecision control={status.control} key={status.id} onDecide={actions.onDecideAsk} />
+          ) : status.control?.kind === "review-edited" && actions.onReviewAsk ? (
+            <p key={status.id} className="team-ask-status">
+              <button
+                className="team-ask-review"
+                onClick={() =>
+                  status.control?.kind === "review-edited" &&
+                  actions.onReviewAsk?.(status.control.threadId)
+                }
+                title="You edited your agent’s copy of this ask · answer it in the task"
+                type="button"
+              >
+                Edited · Review
+              </button>
+            </p>
+          ) : (
+            <p key={status.id} className="team-ask-status">
+              {status.label}
+            </p>
+          ),
+        )}
         {message.work ? (
           <AgentWorkFooter
             durationMs={message.work.durationMs}
@@ -278,6 +306,46 @@ export const MessageRow = memo(function MessageRow({
     </article>
   );
 });
+
+/**
+ * An ask to the viewer's agent, answered where it was asked: the teammate's
+ * words exactly as sent, which is what approving consents to.
+ */
+function AskDecision({
+  control,
+  onDecide,
+}: {
+  readonly control: Extract<AskStatusView["control"], { kind: "decide" }>;
+  readonly onDecide: NonNullable<MessageActions["onDecideAsk"]>;
+}) {
+  const [pending, setPending] = useState<"approve" | "decline" | null>(null);
+  // Once taken, the status line replaces this; only a refusal hands it back.
+  const decide = (decision: "approve" | "decline") => {
+    setPending(decision);
+    onDecide(control, decision).catch(() => setPending(null));
+  };
+  return (
+    <div aria-label="Your agent was asked" className="ask-split" role="group">
+      <button
+        className="ask-split__go"
+        disabled={pending !== null}
+        onClick={() => decide("approve")}
+        type="button"
+      >
+        <AgentOrb size={16} />
+        {pending === "approve" ? "Approving…" : "Let my agent answer"}
+      </button>
+      <button
+        className="ask-split__no"
+        disabled={pending !== null}
+        onClick={() => decide("decline")}
+        type="button"
+      >
+        {pending === "decline" ? "Declining…" : "Decline"}
+      </button>
+    </div>
+  );
+}
 
 /** Editing in place. It never wakes an agent again: a new ask is a new message. */
 function EditField({

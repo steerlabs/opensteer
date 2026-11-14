@@ -4,6 +4,7 @@ import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
 import {
   click,
+  client,
   element,
   mount,
   settle,
@@ -13,6 +14,7 @@ import {
   teamSession,
   write,
 } from "../components/workspace/workspace.interaction.test-support.js";
+import { seedMockTeamAsk } from "./mock-team-ask.js";
 
 const field = () => element<HTMLTextAreaElement>(".team-composer__input");
 const rowsSaying = (text: string) =>
@@ -242,5 +244,48 @@ describe("sending in a channel", () => {
     });
     expect(field().value).toBe("Revised unsent message");
     expect(host.messages.size).toBe(0);
+  });
+});
+
+describe("an ask to my agent in a channel", () => {
+  it("is answered under the ask for the words as sent, and once its copy is edited, in the task", async () => {
+    await openChannel();
+    const entry = seedMockTeamAsk(teamHost!);
+    await act(async () => client.mockTeamAsk(entry));
+    await settle(50);
+    const ask = () => rowsSaying("launch checklist")[0]!;
+    expect(ask().querySelector(".ask-split")).not.toBeNull();
+
+    // Edited in its task, chat no longer approves: it sends the person to what they changed.
+    const listed = client
+      .getSnapshot()
+      .needsYou?.entries.find(
+        (row) => row.kind === "team-ask" && row.requestId === entry.requestId,
+      );
+    if (listed?.kind !== "team-ask" || !listed.task) throw new Error("The ask has no task");
+    const { messageId, threadId } = listed.task;
+    await act(async () => {
+      const editor = await client.editWaitingMessage(threadId, messageId);
+      await editor.save([{ text: "What’s still open on the launch checklist?", type: "text" }]);
+    });
+    await settle(50);
+    expect(ask().querySelector(".ask-split")).toBeNull();
+    await click(ask().querySelector<HTMLButtonElement>(".team-ask-review")!);
+    expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
+  });
+
+  it("approves the version shown when answered from chat", async () => {
+    await openChannel();
+    const entry = seedMockTeamAsk(teamHost!);
+    await act(async () => client.mockTeamAsk(entry));
+    await settle(50);
+    const decide = vi.spyOn(client, "decideTeamAsk");
+    await click(rowsSaying("launch checklist")[0]!.querySelector(".ask-split__go")!);
+    expect(decide).toHaveBeenCalledWith({
+      decision: "approve",
+      expectedRevision: 0,
+      requestId: entry.requestId,
+      teamId: entry.teamId,
+    });
   });
 });
