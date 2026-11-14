@@ -1087,16 +1087,19 @@ export class TeamSharesStore {
       const rootMap = new Map(
         rootRows.filter((r) => !r.threadRootId).map((r) => [r.publicId, r.id]),
       );
-      const ledger = localPeople.length
+      const ownClientIds = [
+        ...new Set(
+          batch.rows
+            .filter((row) => row.author.teamId === this.chat.identity.teamId)
+            .map((row) => row.clientMessageId),
+        ),
+      ];
+      const ledger = ownClientIds.length
         ? await t
             .selectFrom("teamShareRelays")
             .selectAll()
-            .where(
-              "authorUserId",
-              "in",
-              localPeople.map((p) => p.userId),
-            )
             .where("shareId", "=", s.id)
+            .where("clientMessageId", "in", ownClientIds)
             .execute()
         : [];
       const verified = batch.rows.map((row) => {

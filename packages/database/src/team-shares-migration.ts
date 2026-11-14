@@ -67,5 +67,6 @@ export async function migrateTeamChannelShares(database: Kysely<unknown>): Promi
       public_id uuid,
       primary key(share_id,author_user_id,author_kind,client_message_id)
     );
+    create index team_share_relays_client on team_share_relays(share_id,client_message_id);
   `.execute(database);
 }
