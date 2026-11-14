@@ -209,6 +209,8 @@ export interface RunnerRegistryHooks {
     identity: RunnerIdentity,
     report: import("@opensteer/protocol").RunnerSettingsReport,
   ): Promise<void>;
+  /** The Agent home this Runner hosts, which its welcome names so it reports settings.json at once. */
+  agentHome?(identity: RunnerIdentity): Promise<import("@opensteer/core").ComputerFolder | null>;
   /**
    * Fires once the connection is live and reachable, which `authorize` cannot
    * do: authorization runs before the connection is inserted, so nothing it
@@ -569,6 +571,7 @@ export class RunnerRegistry {
       });
     }
     await this.#runHook(() => this.#hooks.authorize(identity));
+    const agentHome = await this.#runHook(() => this.#hooks.agentHome?.(identity));
     this.#assertOpen();
     if (this.#revokedRunnerIds.has(identity.runnerId)) {
       throw new OpensteerError({
@@ -663,6 +666,7 @@ export class RunnerRegistry {
         // Several renewals fit in one execution lease, so one lost heartbeat
         // never costs a Run its lease.
         heartbeatIntervalMs: Math.min(15_000, Math.floor(this.#executionLeaseMs / 4)),
+        ...(agentHome ? { agentHome } : {}),
         serverTime: new Date(now).toISOString(),
         type: "host.welcome",
       });

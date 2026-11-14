@@ -1,6 +1,6 @@
-import { AgentHomeSettingsSchema, IsoDateTimeSchema } from "@opensteer/core";
+import { AgentHomeSettingsSchema, EnvironmentIdSchema, IsoDateTimeSchema } from "@opensteer/core";
 import { z } from "zod";
-import { TaskRuntimeFenceSchema } from "./runner-identity.js";
+import { RunnerConnectionFenceSchema } from "./runner-identity.js";
 
 /** Where settings.json stopped making sense: a JSON position, or the setting that is wrong. */
 export const AgentHomeSettingsErrorSchema = z.strictObject({
@@ -13,7 +13,8 @@ export const AgentHomeSettingsErrorSchema = z.strictObject({
 export type AgentHomeSettingsError = z.infer<typeof AgentHomeSettingsErrorSchema>;
 // The hosting Runner's latest read of settings.json in Agent home.
 export const RunnerSettingsReportSchema = z.strictObject({
-  ...TaskRuntimeFenceSchema.shape,
+  ...RunnerConnectionFenceSchema.shape,
+  environmentId: EnvironmentIdSchema,
   type: z.literal("runner.settings.report"),
   readSequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   readAt: IsoDateTimeSchema,

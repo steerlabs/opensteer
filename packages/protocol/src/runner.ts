@@ -1946,6 +1946,8 @@ export const HostToRunnerMessageSchema = z.discriminatedUnion("type", [
     connectionLeaseExpiresAt: IsoDateTimeSchema,
     environmentIds: z.array(EnvironmentIdSchema).max(100),
     heartbeatIntervalMs: z.number().int().min(1_000).max(300_000),
+    /** The hosting computer's Agent home, sent only to a Runner advertising `agent-home-settings-v1`. */
+    agentHome: ComputerFolderSchema.optional(),
     serverTime: IsoDateTimeSchema,
     type: z.literal("host.welcome"),
   }),

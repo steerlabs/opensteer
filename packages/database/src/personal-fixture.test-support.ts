@@ -68,8 +68,8 @@ export async function writeAgentHomeSettings(
   settings: import("@opensteer/core").AgentHomeSettings,
   file: import("@opensteer/protocol").AgentHomeSettingsFileView = { status: "valid" },
 ) {
-  await sql`insert into agent_home_settings(computer_id,environment_id,boot_id,connection_generation,connection_id,connection_lease_id,binding_generation,read_sequence,read_at,file_status,file_error,settings)
-    select p.agent_home_computer_id,e.id,'fixture',0,'fixture','fixture',1,1,now(),${file.status},${file.error ? JSON.stringify(file.error) : null}::jsonb,${JSON.stringify(settings)}::jsonb
+  await sql`insert into agent_home_settings(computer_id,environment_id,boot_id,connection_generation,connection_id,connection_lease_id,read_sequence,read_at,file_status,file_error,settings)
+    select p.agent_home_computer_id,e.id,'fixture',0,'fixture','fixture',1,now(),${file.status},${file.error ? JSON.stringify(file.error) : null}::jsonb,${JSON.stringify(settings)}::jsonb
     from personal_settings p join execution_environments e on e.runner_id=p.agent_home_computer_id
     on conflict(computer_id) do update set file_status=excluded.file_status,file_error=excluded.file_error,settings=excluded.settings`.execute(
     database,

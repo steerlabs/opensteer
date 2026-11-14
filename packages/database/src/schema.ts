@@ -1972,7 +1972,6 @@ export interface DatabaseSchema {
     connectionGeneration: number;
     connectionId: string;
     connectionLeaseId: string;
-    bindingGeneration: number;
     readSequence: number;
     readAt: Timestamp;
     fileStatus: "valid" | "missing" | "invalid";

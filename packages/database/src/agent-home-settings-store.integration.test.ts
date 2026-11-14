@@ -1,5 +1,5 @@
 import { createId } from "@opensteer/core";
-import { RunnerSettingsReportSchema, TaskRuntimeFenceSchema } from "@opensteer/protocol";
+import { RunnerConnectionFenceSchema, RunnerSettingsReportSchema } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import { expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
@@ -7,7 +7,7 @@ import { seedPersonalFixture } from "./personal-fixture.test-support.js";
 import { cloneTestDatabase } from "./test-database.test-support.js";
 import { readAgentHomeSettings, reportAgentHomeSettings } from "./agent-home-settings-store.js";
 
-it("fences settings.json reports to the hosting Runner and keeps the last valid settings", async () => {
+it("fences settings.json reports to the hosting Runner, keeps the last valid settings and names the owner only on a change", async () => {
   const clone = await cloneTestDatabase("host");
   const database = createDatabase({ connectionString: clone.url });
   try {
@@ -16,15 +16,16 @@ it("fences settings.json reports to the hosting Runner and keeps the last valid 
       settings: {},
       file: { status: "missing" },
     });
-    const fence = TaskRuntimeFenceSchema.parse({
-      runnerId: personal.runnerId,
+    const fence = {
+      ...RunnerConnectionFenceSchema.parse({
+        runnerId: personal.runnerId,
+        connectionGeneration: 1,
+        bootId: `rbt_${randomUUID()}`,
+        connectionId: `rcn_${randomUUID()}`,
+        connectionLeaseId: `rls_${randomUUID()}`,
+      }),
       environmentId: personal.environmentId,
-      bindingGeneration: 1,
-      connectionGeneration: 1,
-      bootId: `rbt_${randomUUID()}`,
-      connectionId: `rcn_${randomUUID()}`,
-      connectionLeaseId: `rls_${randomUUID()}`,
-    });
+    };
     const settings = { backgroundModels: { naming: [{ engine: "codex" }] } };
     const report = RunnerSettingsReportSchema.parse({
       ...fence,
@@ -33,8 +34,11 @@ it("fences settings.json reports to the hosting Runner and keeps the last valid 
       readAt: new Date().toISOString(),
       result: { status: "valid", settings },
     });
-    expect(await reportAgentHomeSettings(database, fence, report)).toBe(true);
-    expect(await reportAgentHomeSettings(database, fence, report)).toBe(false);
+    expect(await reportAgentHomeSettings(database, fence, report)).toBe(personal.userId);
+    expect(await reportAgentHomeSettings(database, fence, report)).toBeNull();
+    expect(
+      await reportAgentHomeSettings(database, fence, { ...report, readSequence: 2 }),
+    ).toBeNull();
     expect(await readAgentHomeSettings(database, personal.userId)).toEqual({
       settings,
       file: { status: "valid" },
@@ -44,17 +48,17 @@ it("fences settings.json reports to the hosting Runner and keeps the last valid 
       await reportAgentHomeSettings(database, otherRunner, {
         ...report,
         ...otherRunner,
-        readSequence: 2,
+        readSequence: 3,
         result: { status: "missing" },
       }),
-    ).toBe(false);
+    ).toBeNull();
     expect(
       await reportAgentHomeSettings(
         database,
-        { ...fence, bootId: TaskRuntimeFenceSchema.shape.bootId.parse(`rbt_${randomUUID()}`) },
-        { ...report, readSequence: 2, result: { status: "missing" } },
+        { ...fence, bootId: RunnerConnectionFenceSchema.shape.bootId.parse(`rbt_${randomUUID()}`) },
+        { ...report, readSequence: 3, result: { status: "missing" } },
       ),
-    ).toBe(false);
+    ).toBeNull();
     const error = {
       path: "/tmp/settings-home/settings.json",
       at: "backgroundModels.light.0.engine",
@@ -63,10 +67,17 @@ it("fences settings.json reports to the hosting Runner and keeps the last valid 
     expect(
       await reportAgentHomeSettings(database, fence, {
         ...report,
-        readSequence: 2,
+        readSequence: 3,
         result: { status: "invalid", error },
       }),
-    ).toBe(true);
+    ).toBe(personal.userId);
+    expect(
+      await reportAgentHomeSettings(database, fence, {
+        ...report,
+        readSequence: 4,
+        result: { status: "invalid", error },
+      }),
+    ).toBeNull();
     expect(await readAgentHomeSettings(database, personal.userId)).toEqual({
       settings,
       file: { status: "invalid", error },
@@ -74,10 +85,10 @@ it("fences settings.json reports to the hosting Runner and keeps the last valid 
     expect(
       await reportAgentHomeSettings(database, fence, {
         ...report,
-        readSequence: 3,
+        readSequence: 5,
         result: { status: "missing" },
       }),
-    ).toBe(true);
+    ).toBe(personal.userId);
     expect(await readAgentHomeSettings(database, personal.userId)).toEqual({
       settings: {},
       file: { status: "missing" },
@@ -87,9 +98,9 @@ it("fences settings.json reports to the hosting Runner and keeps the last valid 
       .set({ connectionGeneration: 2 })
       .where("id", "=", personal.runnerId)
       .execute();
-    expect(await reportAgentHomeSettings(database, fence, { ...report, readSequence: 4 })).toBe(
-      false,
-    );
+    expect(
+      await reportAgentHomeSettings(database, fence, { ...report, readSequence: 6 }),
+    ).toBeNull();
     expect((await readAgentHomeSettings(database, createId("user"))).file.status).toBe("missing");
   } finally {
     await database.destroy();
