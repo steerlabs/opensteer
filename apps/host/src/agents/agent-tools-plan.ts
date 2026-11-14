@@ -1,5 +1,6 @@
 import { voiceGuide } from "./voice-tools.js";
-import { z } from "zod";
+import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
+import { advertisedJsonSchema } from "@opensteer/shared/advertisedJsonSchema";
 import { createHash } from "node:crypto";
 import {
   agentToolAnnotations,
@@ -32,7 +33,7 @@ export function agentToolsPlanForRun(input: {
     name: tool.name,
     description: tool.description,
     annotations: agentToolAnnotations(tool),
-    input: tool.advertisedInputSchema ?? z.toJSONSchema(tool.input, { io: "input" }),
+    input: advertisedToolInputSchema(tool),
   }));
   const tools = runTools.map(({ name }) => name);
   const instructions =
@@ -47,4 +48,15 @@ export function agentToolsPlanForRun(input: {
     .update(JSON.stringify({ catalog: runToolsCatalog, instructions, skills }))
     .digest("hex");
   return { url: input.url, token: input.token, tools, toolsRevision, instructions, skills };
+}
+
+/** The input schema engines see for a tool; the Run plan's revision hashes exactly this. */
+export function advertisedToolInputSchema(tool: {
+  readonly input: Parameters<typeof toJsonSchemaCompat>[0];
+  readonly advertisedInputSchema?: Readonly<Record<string, unknown>>;
+}): Record<string, unknown> {
+  return advertisedJsonSchema(
+    tool.advertisedInputSchema ??
+      toJsonSchemaCompat(tool.input, { strictUnions: true, pipeStrategy: "input" }),
+  );
 }

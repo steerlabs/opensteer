@@ -296,6 +296,11 @@ export interface ClaudeQueryHandle extends AsyncIterable<SDKMessage> {
   close(): void;
   interrupt(): Promise<unknown>;
   stopTask(taskId: string): Promise<void>;
+  setModel?(model: string): Promise<void>;
+  applyFlagSettings?(settings: {
+    effortLevel?: NonNullable<Options["effort"]>;
+    fastMode: boolean | null;
+  }): Promise<unknown>;
 }
 
 export interface ClaudeAgentSdk {
@@ -403,6 +408,9 @@ interface ActiveTurn {
   queuedTurns: boolean;
   /** What the Run consumed, as of its latest turn; stated once, when it ends. */
   usage?: RunUsage;
+  usageBaseline?: SDKResultMessage | undefined;
+  usageBaselineKnown?: boolean;
+  transportError?: unknown;
   /** Arms the execution deadline of a turn, or disarms it between turns. */
   turnDeadline?: (armed: boolean) => void;
   /** Each subagent's id, as Claude names it to `canUseTool`, mapped to the call that started it. */
@@ -425,7 +433,7 @@ interface ActiveTurn {
   /** This turn's subagents, keyed by the Agent call that started each. */
   readonly nodes: SubagentNodes;
   readonly environment: Readonly<Record<string, string>>;
-  readonly input: ClaudeTurnInput;
+  input: ClaudeTurnInput;
   readonly stderr: BoundedTextCollector;
   interrupted: boolean;
   readonly requestedBy: UserId;
@@ -527,6 +535,8 @@ const claudeHarnessCapabilities: HarnessCapabilities = Object.freeze({
   steering: true,
   toolCalls: true,
   userInput: true,
+  warmReuse: true,
+  warmSelection: { model: true, options: ["effort", "fast"] },
 });
 
 export const claudeAgentSdk: ClaudeAgentSdk = {
@@ -1501,7 +1511,7 @@ class ClaudeHarnessSession implements HarnessSession {
   readonly providerSessionReference: string;
   readonly events: AsyncIterable<HarnessEvent>;
   readonly #config: ClaudeHarnessConfig;
-  readonly #context: HarnessSessionContext;
+  #context: HarnessSessionContext;
   readonly #dependencies: ClaudeHarnessDependencies;
   readonly #publisher: TurnPublisher;
   readonly #lifetimeAbortListener: () => void;
@@ -1518,6 +1528,19 @@ class ClaudeHarnessSession implements HarnessSession {
   readonly #streamToolCalls = new Map<number, string>();
   readonly #streamThinkingBlocks = new Map<number, StreamThinkingBlock>();
   readonly #completedThinkingBlocks = new Set<string>();
+  #live:
+    | {
+        query: ClaudeQueryHandle;
+        input: ClaudeTurnInput;
+        abort: AbortController;
+        selection: ModelSelection;
+      }
+    | undefined;
+  #ledger: SDKResultMessage | undefined;
+  #lastTurn: ActiveTurn | undefined;
+  #settled: Deferred<void> | undefined;
+  #reusable = true;
+  #sessionApprovalGranted = false;
   #activeTurn: ActiveTurn | undefined;
   #assistantThinkingBlocksSeen = 0;
   #thinkingBlockCounter = 0;
@@ -1655,7 +1678,7 @@ class ClaudeHarnessSession implements HarnessSession {
       interrupted: run.signal.aborted,
       requestedBy: run.requestedBy,
       runId: run.runId,
-      sawInit: false,
+      sawInit: this.#live !== undefined,
       started: false,
       stderr: new BoundedTextCollector(this.#config.maxStderrBytes),
       terminal: false,
@@ -1665,11 +1688,14 @@ class ClaudeHarnessSession implements HarnessSession {
     this.#lastAssistantError = undefined;
     // A plan refusal is this turn's fact: the next turn asks the provider again.
     this.#planRejected = false;
+    this.#startedToolCalls.clear();
+    this.#streamedArgumentToolCalls.clear();
     this.#streamToolCalls.clear();
     this.#streamThinkingBlocks.clear();
     this.#completedThinkingBlocks.clear();
     this.#assistantThinkingBlocksSeen = 0;
     this.#activeTurn = active;
+    this.#settled = new Deferred<void>();
     const abort = () => {
       active.interrupted = true;
       this.#abortActive(active, run.signal.reason ?? new Error("Claude turn interrupted"));
@@ -1684,8 +1710,122 @@ class ClaudeHarnessSession implements HarnessSession {
       await this.#runTurn(run, active);
     } finally {
       run.signal.removeEventListener("abort", abort);
+      this.#lastTurn = active;
       if (this.#activeTurn === active) this.#activeTurn = undefined;
       active.completion.resolve();
+    }
+  }
+
+  get usable(): boolean {
+    return (
+      !this.#closed &&
+      !this.#publisher.unusable &&
+      this.#reusable &&
+      (!this.#lastTurn || this.#live !== undefined)
+    );
+  }
+
+  rebind(context: HarnessSessionContext): void {
+    if (this.#activeTurn || this.#closed || context.voiceCall || this.#context.voiceCall)
+      throw new Error("Claude session cannot be rebound");
+    if (
+      context.threadId !== this.#context.threadId ||
+      context.accessMode !== this.#context.accessMode
+    )
+      throw new Error("Claude session binding changed identity or permission mode");
+    this.#context.signal.removeEventListener("abort", this.#lifetimeAbortListener);
+    this.#context = context;
+    context.signal.throwIfAborted();
+    context.signal.addEventListener("abort", this.#lifetimeAbortListener, { once: true });
+  }
+
+  async releaseForReuse(): Promise<boolean> {
+    const active = this.#lastTurn;
+    return (
+      !!this.#live &&
+      !this.#sessionApprovalGranted &&
+      this.#reusable &&
+      !this.#closed &&
+      !this.#publisher.unusable &&
+      !this.#activeTurn &&
+      this.#pendingRequests.size === 0 &&
+      !!active &&
+      !active.interrupted &&
+      !active.timedOut &&
+      active.background.size === 0 &&
+      !this.#workflowRunning(active) &&
+      active.unanswered.size === 0 &&
+      !active.queuedTurns &&
+      active.childOpenTools.size === 0
+    );
+  }
+
+  #closeQuery(): void {
+    const live = this.#live;
+    this.#live = undefined;
+    this.#ledger = undefined;
+    live?.input.end();
+    live?.query.close();
+    live?.abort.abort();
+  }
+
+  async #applySelection(): Promise<void> {
+    const live = this.#live;
+    if (!live) return;
+    const next = this.#context.modelSelection;
+    if (JSON.stringify(live.selection) === JSON.stringify(next)) return;
+    const effort = claudeEffortOptions(next.options).effort;
+    if (
+      (effort === undefined && claudeEffortOptions(live.selection.options).effort !== undefined) ||
+      !live.query.setModel ||
+      !live.query.applyFlagSettings
+    ) {
+      this.#closeQuery();
+      this.#ledger = undefined;
+      return;
+    }
+    try {
+      const model = next.nativeModelId ?? next.modelId;
+      if (model !== (live.selection.nativeModelId ?? live.selection.modelId))
+        await live.query.setModel(model);
+      await live.query.applyFlagSettings({
+        ...(effort ? { effortLevel: effort } : {}),
+        fastMode: next.options[claudeFastModeOptionId] === true ? true : null,
+      });
+      live.selection = next;
+    } catch (error) {
+      this.#closeQuery();
+      throw error;
+    }
+  }
+
+  async #readQuery(live: {
+    query: ClaudeQueryHandle;
+    input: ClaudeTurnInput;
+    abort: AbortController;
+    selection: ModelSelection;
+  }): Promise<void> {
+    try {
+      for await (const message of live.query) {
+        if (this.#live !== live) return;
+        const active = this.#activeTurn;
+        if (!active || active.terminal) {
+          this.#reusable = false;
+          continue;
+        }
+        await this.#handleMessage(message, active);
+      }
+    } catch (error) {
+      if (this.#live === live && this.#activeTurn) this.#activeTurn.transportError = error;
+    } finally {
+      if (this.#live === live) {
+        live.query.close();
+        live.abort.abort();
+        this.#live = undefined;
+        live.input.end();
+        this.#ledger = undefined;
+        this.#settled?.resolve();
+      }
     }
   }
 
@@ -1751,6 +1891,8 @@ class ClaudeHarnessSession implements HarnessSession {
       if (response.kind !== "choice") throw invalidClaudeRequestResponse();
       const result = pending.responses.get(response.optionId);
       if (!result) throw invalidClaudeRequestResponse();
+      if (result.behavior === "allow" && result.updatedPermissions?.length)
+        this.#sessionApprovalGranted = true;
       this.#pendingRequests.delete(requestId);
       pending.abort();
       const note = response.text?.trim();
@@ -1785,6 +1927,10 @@ class ClaudeHarnessSession implements HarnessSession {
     let turnTimer: NodeJS.Timeout | undefined;
     try {
       await this.#pushTurnInputs(active, run.inputs, run, run.attachments);
+      await this.#applySelection();
+      active.sawInit = this.#live !== undefined;
+      active.usageBaseline = this.#ledger;
+      active.usageBaselineKnown = !this.#live || this.#ledger !== undefined;
       const environment = await claudeProviderEnvironment(
         active.environment,
         this.#config.provider,
@@ -1799,10 +1945,20 @@ class ClaudeHarnessSession implements HarnessSession {
           await realpath(this.#context.workspacePath),
           this.providerSessionReference,
         );
-      const options = this.#queryOptions(environment, active);
-      const query = this.#dependencies.sdk.query({ options, prompt: active.input });
-      active.query = query;
-      active.abortController.signal.addEventListener("abort", () => query.close(), { once: true });
+      if (this.#live) {
+        active.input.drainTo(this.#live.input);
+        active.input = this.#live.input;
+        active.sawInit = true;
+      } else {
+        const abort = new AbortController();
+        const options = this.#queryOptions(environment, active);
+        options.abortController = abort;
+        const query = this.#dependencies.sdk.query({ options, prompt: active.input });
+        const live = { query, input: active.input, abort, selection: this.#context.modelSelection };
+        this.#live = live;
+        void this.#readQuery(live);
+      }
+      active.query = this.#live.query;
 
       startupTimer = setTimeout(() => {
         if (active.sawInit || active.terminal) return;
@@ -1825,14 +1981,8 @@ class ClaudeHarnessSession implements HarnessSession {
       };
       active.turnDeadline(true);
 
-      for await (const message of query) {
-        await this.#handleMessage(message, active);
-        if (active.sawInit && startupTimer) {
-          clearTimeout(startupTimer);
-          startupTimer = undefined;
-        }
-        if (active.terminal) active.input.end();
-      }
+      await this.#settled!.promise;
+      if (active.transportError) throw active.transportError;
 
       if (!active.terminal) {
         if (active.interrupted) this.#publishInterrupted(active);
@@ -1906,8 +2056,7 @@ class ClaudeHarnessSession implements HarnessSession {
       if (turnTimer) clearTimeout(turnTimer);
       if (active.endTimer) clearTimeout(active.endTimer);
       if (active.stopping) await active.stopping;
-      active.input.end();
-      active.query?.close();
+      if (active.interrupted || active.timedOut || !this.#reusable) this.#closeQuery();
       delete active.query;
     }
   }
@@ -2051,7 +2200,16 @@ class ClaudeHarnessSession implements HarnessSession {
       // provider-specific approval noise; the Host still reauthorizes every
       // actual call against the live Run binding.
       allowedTools: [...new Set(["ToolSearch", ...opensteerTools])],
-      canUseTool: this.#canUseTool(active),
+      canUseTool: (name, input, options) => {
+        const current = this.#activeTurn;
+        return current
+          ? this.#canUseTool(current)(name, input, options)
+          : Promise.resolve({
+              behavior: "deny",
+              interrupt: true,
+              message: "No Run holds this session",
+            });
+      },
       // Native safe-command rules can allow Bash before canUseTool is consulted.
       // SDK hooks remain active while our settings suppress ordinary ambient hooks.
       // Organization-managed policy and hooks can override these settings.
@@ -2064,7 +2222,15 @@ class ClaudeHarnessSession implements HarnessSession {
         ...this.#context.writableRoots.filter((root) => root !== this.#context.workspacePath),
         ...(this.#context.attachmentDirectory ? [this.#context.attachmentDirectory] : []),
       ],
-      env: { ...environment, ENABLE_TOOL_SEARCH: "true" },
+      env: {
+        ...environment,
+        ENABLE_TOOL_SEARCH: "true",
+        ...(this.#hasProviderTranscript && environment.MCP_CONNECTION_NONBLOCKING === undefined
+          ? { MCP_CONNECTION_NONBLOCKING: "0" }
+          : {}),
+      },
+      title: "Opensteer",
+      promptSuggestions: false,
       includePartialMessages: true,
       maxTurns: this.#config.maxTurns,
       managedSettings: managedClaudeSettings(this.#context),
@@ -2111,7 +2277,7 @@ class ClaudeHarnessSession implements HarnessSession {
         "Workflow",
         claudeTaskStopTool,
       ],
-      stderr: (chunk) => active.stderr.append(chunk),
+      stderr: (chunk) => this.#activeTurn?.stderr.append(chunk),
       // The Runner's sandbox and the process supervisor have to enclose the
       // whole harness process tree, and a custom spawn is the SDK's only seam
       // for that. The SDK reads nothing but stdin and stdout from what this
@@ -2142,7 +2308,9 @@ class ClaudeHarnessSession implements HarnessSession {
         // still be reading the file when it goes.
         void supervised.exited.then(mcpConfig.remove, mcpConfig.remove);
         supervised.child.stderr.setEncoding("utf8");
-        supervised.child.stderr.on("data", (chunk: string) => active.stderr.append(chunk));
+        supervised.child.stderr.on("data", (chunk: string) =>
+          this.#activeTurn?.stderr.append(chunk),
+        );
         return claudeSdkProcess(supervised);
       },
       ...(this.#hasProviderTranscript
@@ -2622,7 +2790,10 @@ class ClaudeHarnessSession implements HarnessSession {
       // Claude's own account of what this Run cost, before the Run ends. A
       // later result belongs to a turn this Run no longer owns, so the
       // already-claimed terminal is what excludes it.
-      const usage = active.terminal ? undefined : claudeRunUsage(message);
+      const usage = active.terminal
+        ? undefined
+        : claudeUsageDelta(active.usageBaseline, message, active.usageBaselineKnown === true);
+      this.#ledger = message;
       if (usage) active.usage = usage;
       const consumed =
         message.user_message_uuids ??
@@ -2696,11 +2867,17 @@ class ClaudeHarnessSession implements HarnessSession {
   #completeRun(active: ActiveTurn): void {
     if (active.endTimer) clearTimeout(active.endTimer);
     if (!this.#publisher.claimTerminal(active)) return;
+    if (
+      this.#pendingRequests.size > 0 ||
+      active.nodes.liveKeys().length > 0 ||
+      active.childOpenTools.size > 0
+    )
+      this.#reusable = false;
     this.#cancelPendingRequests("Claude Run ended before the user responded", "run-ended");
     active.nodes.endAll();
     this.#publishUsage(active);
     this.#publish(runEndedEvent("completed"));
-    active.input.end();
+    this.#settled?.resolve();
   }
 
   /**
@@ -3235,6 +3412,14 @@ class ClaudeHarnessSession implements HarnessSession {
 
   #publish(event: HarnessEvent, delivery: "must-deliver" | "disposable" = "must-deliver"): void {
     this.#publisher.publish(event, delivery);
+    if (
+      event.type === "run.completed" ||
+      event.type === "run.failed" ||
+      event.type === "run.interrupted"
+    ) {
+      if (event.type !== "run.completed") this.#reusable = false;
+      this.#settled?.resolve();
+    }
   }
 
   #abortActive(active: ActiveTurn, reason: unknown): void {
@@ -3253,9 +3438,23 @@ class ClaudeHarnessSession implements HarnessSession {
           clearTimeout(timer);
         }
       }
+      if (active.query) {
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          await Promise.race([
+            active.query.interrupt().catch(() => undefined),
+            new Promise<void>((resolve) => {
+              timer = setTimeout(resolve, 10_000);
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
       if (!active.abortController.signal.aborted) active.abortController.abort(reason);
       active.input.end();
-      active.query?.close();
+      this.#closeQuery();
+      this.#settled?.resolve();
       this.#cancelPendingRequests("Opensteer cancelled the pending Claude request", "run-ended");
     })();
   }
@@ -3286,6 +3485,7 @@ class ClaudeHarnessSession implements HarnessSession {
       this.#abortActive(active, new Error("Claude session stopped"));
       await active.completion.promise;
     }
+    this.#closeQuery();
     this.#cancelPendingRequests("Claude session stopped", "run-ended");
     this.#context.signal.removeEventListener("abort", this.#lifetimeAbortListener);
     this.#publisher.closeStream();
@@ -3709,21 +3909,7 @@ function isRetryableClaudeFailure(error: string | undefined): boolean {
   return error === "rate_limit" || error === "overloaded" || error === "server_error";
 }
 
-/**
- * What the `query()` call behind this Run consumed, as Claude states it.
- *
- * `modelUsage` is the SDK's stated field for token and cost accounting: it
- * covers every model call the query pipeline made — the main agent loop, Task
- * subagents, sidechains and compaction — where `usage` covers the main loop
- * alone. Its totals are cumulative across the turns of one `query()` call and
- * a resumed session starts them fresh; this driver opens exactly one call per
- * Run, so they are this Run's own totals and never a session running total.
- *
- * Claude reports no separate reasoning count — its output tokens already
- * include it — so `reasoningTokens` is left unstated rather than derived.
- * A crash or startup-error result carries no per-model entries at all, and
- * a Run then reports nothing instead of a row of zeroes.
- */
+/** Cumulative process accounting, including native subagents and compaction. */
 function claudeRunUsage(message: SDKResultMessage): RunUsage | undefined {
   const models = Object.values(message.modelUsage);
   if (models.length === 0) return undefined;
@@ -3746,6 +3932,39 @@ function claudeRunUsage(message: SDKResultMessage): RunUsage | undefined {
     outputTokens: Math.round(totals.outputTokens),
   });
   return parsed.success ? parsed.data : undefined;
+}
+
+function claudeUsageDelta(
+  baseline: SDKResultMessage | undefined,
+  current: SDKResultMessage,
+  baselineKnown: boolean,
+): RunUsage | undefined {
+  if (!baselineKnown) return undefined;
+  const totals = claudeRunUsage(current);
+  if (!totals || !baseline) return totals;
+  const previous = claudeRunUsage(baseline);
+  if (!previous) return undefined;
+  for (const [model, entry] of Object.entries(baseline.modelUsage)) {
+    const next = current.modelUsage[model];
+    if (!next) return undefined;
+    for (const key of [
+      "inputTokens",
+      "outputTokens",
+      "cacheReadInputTokens",
+      "cacheCreationInputTokens",
+    ] as const) {
+      if (next[key] < entry[key]) return undefined;
+    }
+  }
+  const result = RunUsageSchema.safeParse(
+    Object.fromEntries(
+      Object.entries(totals).map(([key, value]) => [
+        key,
+        typeof value === "number" ? value - (previous[key as keyof RunUsage] ?? 0) : value,
+      ]),
+    ),
+  );
+  return result.success ? result.data : undefined;
 }
 
 function sanitizeErrorMessage(
@@ -3808,7 +4027,7 @@ function requireNonEmptyString(value: unknown, label: string): string {
 }
 
 /**
- * The turn's input stream stays open for the whole turn so the runtime keeps a
+ * The session's input stream stays open across Runs so the runtime keeps a
  * streaming session; the turn ends on the SDK result message, never on input
  * exhaustion.
  */
@@ -3826,6 +4045,10 @@ class ClaudeTurnInput implements AsyncIterable<SDKUserMessage> {
     }
     this.#queued.push(message);
     this.#wake?.();
+  }
+
+  drainTo(target: ClaudeTurnInput): void {
+    for (const message of this.#queued.splice(0)) target.push(message);
   }
 
   end(): void {

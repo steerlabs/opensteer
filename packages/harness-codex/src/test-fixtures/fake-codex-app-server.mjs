@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  watch,
   appendFileSync,
   existsSync,
   readFileSync,
@@ -874,6 +875,20 @@ function handleClientMethod(message) {
       }
       break;
     case "thread/inject_items":
+      if (scenario === "context-compaction") {
+        send({
+          id: "context-restore-barrier",
+          method: "test/contextRestoreBarrier",
+          params: { threadId },
+        });
+        const release = process.env.FAKE_CODEX_RESTORE_RELEASE;
+        const watcher = watch(dirname(release), () => {
+          if (!existsSync(release)) return;
+          watcher.close();
+          send({ id: message.id, result: {} });
+        });
+        break;
+      }
       send({ id: message.id, result: {} });
       // Real Codex samples again for anything added to a running turn; a note draws an empty reply.
       if (current().voiceNoteTurnOpen) sendVoiceFinal(voiceNoteTurn, "");
@@ -1404,6 +1419,17 @@ function handleTurnStart(message) {
   }
   if (scenario === "conversation") {
     conversationTurn(message.params?.input ?? []);
+    return;
+  }
+  if (scenario === "context-compaction") {
+    if (!current().compacted) {
+      current().compacted = true;
+      send({
+        method: "item/completed",
+        params: { threadId, turnId, item: { id: "compact", type: "contextCompaction" } },
+      });
+    }
+    sendTurnCompleted("completed");
     return;
   }
   if (scenario === "resume-large-history") {

@@ -1173,9 +1173,9 @@ class CursorHarnessSession implements HarnessSession {
 
   /**
    * Every instruction travels on the turn, because a `--plugin-dir`'s `rules/`
-   * never reached the model in print mode and because the machine-access
-   * notice changes from Run to Run and must be in front of the model on a
-   * resumed conversation too (`HarnessAdapter`, X9).
+   * never reached the model in print mode, the machine-access notice changes
+   * from Run to Run (`HarnessAdapter`, X9), and print mode reports no
+   * compaction, so no earlier delivery can be assumed to survive.
    */
   #turnPrompt(
     inputs: readonly HarnessInput[],

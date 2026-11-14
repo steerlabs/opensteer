@@ -215,6 +215,7 @@ const piHarnessCapabilities: HarnessCapabilities = Object.freeze({
   steering: true,
   toolCalls: true,
   userInput: false,
+  warmReuse: true,
 });
 
 /** Every built-in tool this driver was written against, used to fail closed on a new one. */
@@ -626,7 +627,7 @@ interface PendingApproval {
 class PiHarnessSession implements HarnessSession {
   readonly events: AsyncIterable<HarnessEvent>;
   readonly #config: PiHarnessConfig;
-  readonly #context: HarnessSessionContext;
+  #context: HarnessSessionContext;
   readonly #dependencies: PiHarnessDependencies;
   readonly #onClose: (session: PiHarnessSession) => void;
   readonly #pendingRequests = new Map<RequestId, PendingApproval>();
@@ -718,6 +719,7 @@ class PiHarnessSession implements HarnessSession {
       });
     }
     const message = [
+      this.#context.machineAccessNotice,
       initialContinuationContextPrompt(this.#context),
       inputsToPiPrompt(run.inputs, run, run.attachments),
     ]
@@ -837,6 +839,24 @@ class PiHarnessSession implements HarnessSession {
     );
   }
 
+  rebind(context: HarnessSessionContext): void {
+    if (this.#activeTurn) throw new Error("A Pi session cannot be rebound during a Run");
+    this.#context.signal.removeEventListener("abort", this.#abortListener);
+    this.#context = context;
+    context.signal.addEventListener("abort", this.#abortListener, { once: true });
+  }
+
+  async releaseForReuse(): Promise<boolean> {
+    return (
+      !this.#closed &&
+      !this.#publisher.unusable &&
+      !this.#activeTurn &&
+      !!this.#client &&
+      !this.#client.failed &&
+      this.#pendingRequests.size === 0
+    );
+  }
+
   stop(): Promise<void> {
     this.#stopPromise ??= this.#stop(true);
     return this.#stopPromise;
@@ -901,7 +921,6 @@ class PiHarnessSession implements HarnessSession {
         gate: piAccessModeGate(context.accessMode),
         handshakeNonce: this.#handshakeNonce,
         knownTools: piKnownTools,
-        machineAccessNotice: context.machineAccessNotice,
         tools: this.#toolDefinitions,
       }),
     );
@@ -1889,14 +1908,6 @@ function piModelSelectionId(selection: ModelSelection): string {
   return selection.nativeModelId ?? selection.modelId;
 }
 
-/**
- * The per-Run text Pi renders into the system prompt on every turn, resumed or
- * not: `--append-system-prompt <file>` is re-resolved on each process start and
- * nothing of it is persisted in the session (pi-facts §7). The machine-access
- * notice is not here — it changes from Run to Run and travels through the
- * extension's `before_agent_start` hook instead, which was measured firing on
- * the first turn of a resumed conversation.
- */
 export function piInstructions(
   context: HarnessSessionContext,
   tools: readonly PiExtensionToolDefinition[],

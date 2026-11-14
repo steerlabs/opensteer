@@ -3,7 +3,6 @@ import { z } from "zod";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   isInitializeRequest,
@@ -29,7 +28,7 @@ import {
   shortRequestHoldMs,
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
-import { advertisedJsonSchema } from "@opensteer/shared/advertisedJsonSchema";
+import { advertisedToolInputSchema } from "../agents/agent-tools-plan.js";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import {
   requestPendingGuidance,
@@ -373,10 +372,7 @@ export class OpensteerMcpService {
       advertisedTools.push({
         name: tool.name,
         ...registration,
-        inputSchema: advertisedJsonSchema(
-          ("advertisedInputSchema" in tool ? tool.advertisedInputSchema : undefined) ??
-            toJsonSchemaCompat(tool.input, { strictUnions: true, pipeStrategy: "input" }),
-        ) as Tool["inputSchema"],
+        inputSchema: advertisedToolInputSchema(tool) as Tool["inputSchema"],
         execution: { taskSupport: "forbidden" },
       });
       server.registerTool(tool.name, registration, async (args, extra) => {

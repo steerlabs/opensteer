@@ -22,7 +22,6 @@ afterEach(async () => {
 });
 
 const knownTools = [...piCommandTools, ...piFileChangeTools, ...piReadOnlyTools];
-const notice = "No other computers are reachable from this Run.";
 
 const threadRead: PiExtensionToolDefinition = {
   description: "Read a Thread",
@@ -193,13 +192,6 @@ describe("the generated Opensteer extension", () => {
     });
   });
 
-  it("appends the machine-access notice to every turn's system prompt", async () => {
-    const extension = await loadExtension({ accessMode: "approval-required" });
-    expect(await extension.beforeAgentStart({ systemPrompt: "Pi's own prompt." })).toEqual({
-      systemPrompt: `Pi's own prompt.\n\n${notice}`,
-    });
-  });
-
   it("registers Opensteer's tools and runs one through the driver", async () => {
     const extension = await loadExtension({ accessMode: "approval-required" });
     expect(extension.tools.map((tool) => tool.name)).toEqual(["thread_read"]);
@@ -278,7 +270,6 @@ describe("the generated Opensteer extension", () => {
         gate: piAccessModeGate("full-access"),
         handshakeNonce: "validation",
         knownTools,
-        machineAccessNotice: notice,
         tools: [threadRead],
       }),
     );
@@ -331,7 +322,6 @@ interface LoadedExtension {
       ctx: unknown,
     ): Promise<{ readonly content: unknown; readonly details: unknown }>;
   }[];
-  beforeAgentStart(event: { readonly systemPrompt: string }): Promise<{ systemPrompt: string }>;
   sessionStart(event: unknown, ctx: unknown): Promise<void>;
   toolCall(
     event: { readonly input: unknown; readonly toolCallId: string; readonly toolName: string },
@@ -348,7 +338,6 @@ async function loadExtension(options: {
     gate: piAccessModeGate(options.accessMode),
     handshakeNonce: options.nonce ?? "nonce-test",
     knownTools,
-    machineAccessNotice: notice,
     tools: options.tools ?? [threadRead],
   };
   const directory = await mkdtemp(join(tmpdir(), "opensteer-pi-extension-"));
@@ -371,8 +360,6 @@ async function loadExtension(options: {
     return found;
   };
   return {
-    beforeAgentStart: async (event) =>
-      (await handler("before_agent_start")(event)) as { systemPrompt: string },
     sessionStart: async (event, ctx) => {
       await handler("session_start")(event, ctx);
     },

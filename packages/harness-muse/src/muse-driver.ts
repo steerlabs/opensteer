@@ -66,6 +66,8 @@ import {
   type HarnessGenerateTextResult,
   type ResolvedAttachment,
   type SupervisedProcess,
+  GuidanceDelivery,
+  type GuidanceTicket,
 } from "@opensteer/harness";
 import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { copyFile, mkdir, realpath, rm } from "node:fs/promises";
@@ -137,6 +139,7 @@ const museCapabilities: HarnessCapabilities = Object.freeze({
   steering: true,
   toolCalls: true,
   userInput: true,
+  warmReuse: true,
 });
 
 const setupMethods = [
@@ -618,6 +621,7 @@ interface ActiveTurn {
   readonly settledNodes: Set<string>;
   readonly workflowPhases: Map<string, string[]>;
   readonly subagents: Set<string>;
+  guidance?: GuidanceTicket;
   interruptRequested: boolean;
   rootCompleted: boolean;
   started: boolean;
@@ -641,7 +645,7 @@ class MuseHarnessSession implements HarnessSession {
   readonly events: AsyncIterable<HarnessEvent>;
   readonly #config: MuseHarnessConfig;
   readonly #dependencies: MuseHarnessDependencies;
-  readonly #context: HarnessSessionContext;
+  #context: HarnessSessionContext;
   readonly #onClose: (session: MuseHarnessSession) => void;
   readonly #publisher: TurnPublisher;
   readonly #pending = new Map<RequestId, MusePending>();
@@ -649,6 +653,10 @@ class MuseHarnessSession implements HarnessSession {
   #active: ActiveTurn | undefined;
   #closed = false;
   #compacting = false;
+  #guidance = new GuidanceDelivery();
+  #approvalOutlivesRun = false;
+  readonly #processLifetime = new AbortController();
+  readonly #abortListener = () => void this.stop();
   #skillCatalog: string | undefined;
   #latestUsage: SubscriptionUsage | undefined;
   #stopPromise: Promise<void> | undefined;
@@ -670,7 +678,7 @@ class MuseHarnessSession implements HarnessSession {
       maxItems: config.maxEventItems,
     });
     this.events = this.#publisher.events;
-    context.signal.addEventListener("abort", () => void this.stop(), { once: true });
+    context.signal.addEventListener("abort", this.#abortListener, { once: true });
   }
 
   static async open(
@@ -742,6 +750,7 @@ class MuseHarnessSession implements HarnessSession {
       const roots = await Promise.all(
         [workspace, ...this.#context.writableRoots].map((path) => realpath(path)),
       );
+      this.#skillCatalog = await renderHarnessSkillCatalog(this.#context.skills);
       const input = await museTurnInput(run.inputs, run.attachments, this.#turnNotices(run));
       const result = parseMuseTurnStart(
         await host.startTurn({
@@ -869,6 +878,7 @@ class MuseHarnessSession implements HarnessSession {
       const feedback = response.text
         ? boundedDenialNote(response.text, { maximumBytes: 20_000, tooLong: invalidResponse })
         : undefined;
+      this.#noteApprovalScope(choice);
       parseMuseApprovalDecide(
         await this.#requireHost().command("approval/decide", {
           approvalId: pending.request.approvalId,
@@ -902,6 +912,25 @@ class MuseHarnessSession implements HarnessSession {
     this.#pending.delete(requestId);
   }
 
+  rebind(context: HarnessSessionContext): void {
+    if (this.#active) throw new Error("A Muse session cannot be rebound during a Run");
+    this.#context.signal.removeEventListener("abort", this.#abortListener);
+    this.#context = context;
+    context.signal.addEventListener("abort", this.#abortListener, { once: true });
+  }
+
+  async releaseForReuse(): Promise<boolean> {
+    return (
+      !this.#closed &&
+      !this.#publisher.unusable &&
+      !this.#active &&
+      !this.#compacting &&
+      !this.#approvalOutlivesRun &&
+      !!this.#host &&
+      this.#pending.size === 0
+    );
+  }
+
   stop(): Promise<void> {
     this.#stopPromise ??= this.#stop(true);
     return this.#stopPromise;
@@ -909,6 +938,8 @@ class MuseHarnessSession implements HarnessSession {
 
   async #launch(resume: boolean): Promise<void> {
     if (this.#closed) throw new Error("Muse Code session is closed");
+    this.#guidance = new GuidanceDelivery();
+    this.#compacting = false;
     const environment = await museEnvironment(
       this.#context.environment,
       this.#context.providerState,
@@ -928,7 +959,7 @@ class MuseHarnessSession implements HarnessSession {
       onProtocolError: (error) =>
         this.#hostFailure(toHarnessError(error, "Muse Code protocol failed")),
       onServerRequest: (method, params) => this.#serverRequest(method, params),
-      signal: this.#context.signal,
+      signal: this.#processLifetime.signal,
       startupTimeoutMs: this.#config.startupTimeoutMs,
       wrapProcessLaunch: this.#context.wrapProcessLaunch,
     });
@@ -1005,6 +1036,22 @@ class MuseHarnessSession implements HarnessSession {
       this.#latestUsage = parsed;
       return;
     }
+    if (method === "session/compactionStarted") this.#compacting = true;
+    if (method === "session/compactionCompleted") {
+      this.#compacting = false;
+      this.#guidance.compacted();
+    }
+    if (method === "item/completed") {
+      const parsed = MuseItemEventSchema.safeParse(params);
+      if (
+        parsed.success &&
+        parsed.data.item.kind === "compaction" &&
+        parsed.data.item.status === "completed"
+      ) {
+        this.#compacting = false;
+        this.#guidance.compacted(parsed.data.item.itemId);
+      }
+    }
     if (!active || active.terminal) return;
     if (method === "turn/started") {
       const turnId = recordString(params, "turnId");
@@ -1049,8 +1096,6 @@ class MuseHarnessSession implements HarnessSession {
       }
       return;
     }
-    if (method === "session/compactionStarted") this.#compacting = true;
-    if (method === "session/compactionCompleted") this.#compacting = false;
   }
 
   /**
@@ -1316,6 +1361,7 @@ class MuseHarnessSession implements HarnessSession {
         (candidate) => candidate.decision === "approved" && candidate.scope === "once",
       ) ?? request.availableChoices.find((candidate) => candidate.decision === "approved");
     if (!choice) throw new Error("Muse Code offered no approval choice for its workflow child");
+    this.#noteApprovalScope(choice);
     parseMuseApprovalDecide(
       await this.#requireHost().command("approval/decide", {
         approvalId: request.approvalId,
@@ -1324,6 +1370,15 @@ class MuseHarnessSession implements HarnessSession {
         sessionId: this.providerSessionReference,
       }),
     );
+  }
+
+  /**
+   * Muse keeps an approval scoped beyond one call for the session, so that
+   * session serves no later Run. Marked before the decision is sent: Muse can
+   * apply it and finish the turn before it answers the command.
+   */
+  #noteApprovalScope(choice: { readonly decision: string; readonly scope?: string }): void {
+    if (choice.decision === "approved" && choice.scope !== "once") this.#approvalOutlivesRun = true;
   }
 
   #openApproval(request: ApprovalRequestParams): void {
@@ -1421,10 +1476,13 @@ class MuseHarnessSession implements HarnessSession {
   }
 
   #turnNotices(run: HarnessRunInput): readonly string[] {
+    const guidance = [this.#context.platformGuide, this.#context.instructions, this.#skillCatalog]
+      .filter(Boolean)
+      .join("\n\n");
+    const ticket = this.#guidance.prepare(guidance);
+    if (this.#active) this.#active.guidance = ticket;
     return [
-      this.#context.platformGuide,
-      this.#context.instructions,
-      this.#skillCatalog,
+      ...(ticket.send === undefined ? [] : [ticket.send]),
       this.#context.machineAccessNotice,
       durableHistoryWindowNotice(this.#context),
       initialContinuationContextPrompt(this.#context),
@@ -1460,6 +1518,7 @@ class MuseHarnessSession implements HarnessSession {
 
   #terminal(active: ActiveTurn, status: "completed" | "interrupted"): void {
     if (active.terminal) return;
+    if (status === "completed" && active.guidance) this.#guidance.acknowledge(active.guidance);
     if (active.usage) this.#publish({ data: active.usage, type: "run.usage" });
     active.nodes.endAll(status === "completed" ? "completed" : "interrupted");
     active.terminal = true;
@@ -1518,11 +1577,13 @@ class MuseHarnessSession implements HarnessSession {
   async #stop(notify: boolean): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#context.signal.removeEventListener("abort", this.#abortListener);
     await this.interrupt().catch(() => undefined);
     this.#cancelPending("source-closed");
     const active = this.#active;
     if (active && !active.terminal) this.#terminal(active, "interrupted");
     await this.#host?.close();
+    this.#processLifetime.abort();
     this.#host = undefined;
     this.#publisher.closeStream();
     if (notify) this.#onClose(this);
@@ -1669,6 +1730,7 @@ function tokenUsage(usage: {
   const cachedInputTokens = Math.max(usage.cacheReadTokens ?? usage.cachedTokens, 0);
   return {
     cachedInputTokens,
+    cacheWriteTokens: Math.max(usage.cacheWriteTokens ?? 0, 0),
     inputTokens: Math.max(usage.inputTokens - cachedInputTokens - (usage.cacheWriteTokens ?? 0), 0),
     outputTokens: usage.outputTokens,
     reasoningTokens: usage.reasoningTokens,

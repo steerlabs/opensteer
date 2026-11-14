@@ -2569,6 +2569,7 @@ export class RunnerRuntime {
       const { instructions = null, path: workspacePath } = workspace;
       const warmKeyFor = (providerSessionReference: string | null, machineAccessLaunch: string) =>
         warmEngineKey({
+          warmSelection: adapter.capabilities.warmSelection,
           attachmentRoot: attachmentRoot ?? null,
           baseEnvironment,
           context,
@@ -2796,7 +2797,6 @@ export class RunnerRuntime {
                   omittedMachines:
                     machineAccessContext.machines.length + machineAccessContext.omittedMachines,
                 },
-                Date.now(),
                 machineAccessUnavailable,
               ),
         machineAccessPlatform: launch?.machineAccessPlatform,
