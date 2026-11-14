@@ -1,4 +1,5 @@
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   ModelSelectionSchema,
   OpensteerError,
@@ -178,13 +179,9 @@ describe("ACP guidance delivery", () => {
     };
     const execution = first.execute(f.turn("first"));
     try {
-      await Promise.race([
-        started.promise,
-        new Promise<never>((_, reject) => {
-          const timer = setTimeout(() => reject(new Error("First prompt never started")), 1000);
-          started.promise.finally(() => clearTimeout(timer));
-        }),
-      ]);
+      await withTimeout(started.promise, 1_000, {
+        timeoutError: () => new Error("First prompt never started"),
+      });
       await first.stop();
       f.duringPrompt = undefined;
       const next = await f.adapter.resumeSession("new-session", {

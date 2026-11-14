@@ -11,16 +11,42 @@ import {
   ModelSelectionSchema,
   HarnessIdSchema,
   type ArtifactContentPart,
+  type UserId,
+  type TeamLinkId,
 } from "@opensteer/core";
-import { createDatabase, admitTeamTaskRequest, OpensteerStore } from "@opensteer/database";
-import { cloneTestDatabase } from "@opensteer/database/test-support/database";
+import {
+  createDatabase,
+  admitTeamTaskRequest,
+  OpensteerStore,
+  needsYouPage,
+  NotificationStore,
+} from "@opensteer/database";
+import {
+  ownTestDatabaseProducer,
+  cloneTestDatabase,
+} from "@opensteer/database/test-support/database";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
-import { teamPreviewMaxBytes } from "@opensteer/protocol";
+import {
+  teamPreviewMaxBytes,
+  TeamLinkResultSchema,
+  TeamRunRequestSchema,
+} from "@opensteer/protocol";
 import { createLiveTeamFixture } from "../team/live-team.test-support.js";
 import { TeamRunFileTransfers } from "./files.js";
 import { TeamLinkNetwork } from "./network.js";
 import { PersonalTeamVault } from "./vault.js";
+import {
+  createPersonalRunFixturePort,
+  startPersonalQueuedRunFixture,
+} from "@opensteer/database/test-support/personal-run";
+import { pendingEvent } from "@opensteer/database/test-support/store";
+import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
+import { personalTeamRunOutcome } from "@opensteer/database/personal-team-run-store";
+import { TaskAdmissionService } from "../threads/task-admission-service.js";
+import { PersonalTeamRequests } from "./requests.js";
+import { TeamRunTools } from "./tools.js";
+import type { TeamLinkCallInput } from "../team-link-endpoint/contracts.js";
 
 it("uploads a real image and bounded preview from the personal Host and binds it to the team reply", async () => {
   const team = await createLiveTeamFixture();
@@ -210,6 +236,314 @@ it("uploads a real image and bounded preview from the personal Host and binds it
   } finally {
     await database.destroy();
     await clone.drop();
+    await team.close();
+  }
+});
+
+async function linkedPersonalHost(
+  team: Awaited<ReturnType<typeof createLiveTeamFixture>>,
+  teamUserId: UserId,
+  linkId: TeamLinkId,
+) {
+  const clone = await cloneTestDatabase("host");
+  try {
+    const { database } = await ownTestDatabaseProducer(clone.url, async () => {
+      const database = createDatabase({ connectionString: clone.url });
+      return { database, close: () => database.destroy() };
+    });
+    const owner = await seedPersonalFixture(database, tmpdir());
+    await team.database
+      .updateTable("teamLinks")
+      .set({ personalDeploymentId: owner.deploymentId })
+      .where("id", "=", linkId)
+      .execute();
+    const store = new OpensteerStore(database);
+    const runs = createPersonalRunFixturePort(store);
+    const task = await runs.createTask({ ownerId: owner.userId, suffix: "asking-peer" });
+    const execution = {
+      environmentId: owner.environmentId,
+      harnessInstanceId: task.harnessInstance.id,
+      modelSelection: task.thread.modelSelection,
+    };
+    const links = new PersonalTeamLinksStore(database);
+    await database
+      .insertInto("personalTeamLinks")
+      .values({
+        id: randomUUID(),
+        teamDeploymentId: team.deploymentId,
+        teamHostInstanceId: team.hostInstanceId,
+        hostKeyFingerprint: "fixture",
+        approvedOrigin: "https://team.example.invalid",
+        authorityEnvelope: { teamName: "Acme" },
+        state: "active",
+        remoteOwnerUserId: teamUserId,
+        remoteLinkId: linkId,
+      })
+      .execute();
+    const requests = new PersonalTeamRequestsStore(database);
+    const rpc = () => ({
+      call: async (input: TeamLinkCallInput) =>
+        TeamLinkResultSchema.parse(
+          await team.machine.endpoint.call(linkId, { ...input, id: randomUUID() }),
+        ),
+    });
+    const publisher = new PersonalTeamRequests({
+      links,
+      requests,
+      rpc,
+      admission: new TaskAdmissionService({
+        database,
+        execution: async () => execution,
+        publish() {},
+        revokeGrants() {},
+      }),
+      runs: { outcome: (request) => personalTeamRunOutcome(database, request) },
+    });
+    const tools = new TeamRunTools(links, requests, rpc);
+    const deliver = async () => {
+      for (const frame of await team.team.requests.pending(linkId))
+        await publisher.deliver(team.deploymentId, TeamRunRequestSchema.parse(frame));
+    };
+    const answer = async (
+      requestId: import("@opensteer/core").TeamAgentRequestId,
+      text: string,
+    ) => {
+      const request = (await requests.get(team.deploymentId, requestId))!;
+      const started = await startPersonalQueuedRunFixture(store, request.runId!);
+      const scope = {
+        runId: started.run.id,
+        threadId: started.run.threadId,
+        environmentId: owner.environmentId,
+        bindingGeneration: started.bindingGeneration,
+      };
+      for (const event of [
+        pendingEvent({
+          ...scope,
+          type: "assistant.message",
+          ordinal: 1,
+          data: { messageId: createId("message"), content: [{ type: "text", text }] },
+        }),
+        pendingEvent({
+          ...scope,
+          type: "run.completed",
+          ordinal: 2,
+          data: { status: "completed" },
+        }),
+      ])
+        await store.commitRunnerEvent({
+          environmentId: owner.environmentId,
+          runnerId: owner.runnerId,
+          runnerBootId: started.runnerBootId,
+          event,
+        });
+      await publisher.reconcileOne(request);
+    };
+    return {
+      database,
+      owner,
+      requests,
+      publisher,
+      tools,
+      runs,
+      task,
+      deliver,
+      answer,
+      close: clone.drop,
+    };
+  } catch (error) {
+    await clone.drop();
+    throw error;
+  }
+}
+
+it("round-trips an agent ask through owner consent and one private authored return, including decline and a human ask", async () => {
+  const team = await createLiveTeamFixture();
+  const peers: Awaited<ReturnType<typeof linkedPersonalHost>>[] = [];
+  try {
+    await team.database
+      .updateTable("users")
+      .set({ displayName: "Tim" })
+      .where("id", "=", team.member.userId)
+      .execute();
+    await team.database
+      .updateTable("teamMembers")
+      .set({ handle: "tim" })
+      .where("userId", "=", team.member.userId)
+      .execute();
+    const mayaLink = await team.link(team.owner.userId);
+    const tim = await linkedPersonalHost(team, team.member.userId, team.linkId);
+    peers.push(tim);
+    const maya = await linkedPersonalHost(team, team.owner.userId, mayaLink);
+    peers.push(maya);
+    const asking = await tim.runs.startTask(tim.task.threadId, "Ask Maya about the launch.");
+    expect(asking.run.replyTarget).toBeNull();
+    const post = await tim.tools.post(
+      { runId: asking.runId, operationId: "ask-maya" },
+      team.deploymentId,
+      {
+        channelId: team.channel.id,
+        bodyMarkdown: "@maya-agent Check the launch from your notes.",
+        attachmentIds: [],
+      },
+    );
+    const ask = (await team.team.requests.pending(mayaLink))[0]!;
+    expect(post.askOutcomes).toEqual([
+      {
+        ownerUserId: team.owner.userId,
+        handle: "maya",
+        requestId: ask.request.id,
+        outcome: "queued",
+      },
+    ]);
+    expect(ask.request).toMatchObject({
+      kind: "ask",
+      state: "awaiting_approval",
+      triggerMessageId: post.messageId,
+    });
+    await maya.deliver();
+    await maya.deliver();
+    const needs = await needsYouPage(maya.database, { userId: maya.owner.userId });
+    expect(needs).toMatchObject({
+      count: 1,
+      entries: [
+        { kind: "team-ask", presentation: { asker: { displayName: "Tim", actor: "agent" } } },
+      ],
+    });
+    expect(
+      await new NotificationStore(maya.database).teamAsk(team.deploymentId, ask.request.id),
+    ).toMatchObject({ kind: "request-opened", threadId: null });
+    expect(await maya.database.selectFrom("runs").selectAll().execute()).toHaveLength(0);
+    await maya.publisher.decide(maya.owner.userId, team.deploymentId, ask.request.id, "approve");
+    const admitted = (await maya.requests.get(team.deploymentId, ask.request.id))!;
+    const context = await maya.tools.context(admitted.runId!);
+    expect(context.asker).toEqual({ displayName: "Tim", actor: "agent" });
+    expect((await needsYouPage(maya.database, { userId: maya.owner.userId })).count).toBe(0);
+    await team.database
+      .updateTable("teamMembers")
+      .set({ handle: "renamed-maya" })
+      .where("userId", "=", team.owner.userId)
+      .execute();
+    await maya.answer(ask.request.id, "@tim-agent The launch is ready.");
+    const replyPage = await team.team.chat.page(
+      team.member,
+      team.channel.id,
+      undefined,
+      ask.request.threadRootId,
+    );
+    expect(
+      replyPage.messages.filter(
+        (message) => message.authorKind === "agent" && message.id !== post.messageId,
+      ),
+    ).toMatchObject([
+      { bodyMarkdown: "@tim-agent The launch is ready.", authorUserId: team.owner.userId },
+    ]);
+    const returned = (await team.team.requests.pending(team.linkId))[0]!;
+    expect(returned.returnPayload).toMatchObject({
+      outcome: "answered",
+      resumeRunId: asking.runId,
+      author: {
+        teamUserId: team.owner.userId,
+        displayName: "Maya",
+        actor: "agent",
+        handle: "maya",
+      },
+    });
+    await tim.deliver();
+    await tim.publisher.deliver(team.deploymentId, returned);
+    await tim.publisher.reconnect(team.deploymentId);
+    const privateReturns = await tim.database
+      .selectFrom("threadInputs as i")
+      .innerJoin("messages as m", "m.id", "i.messageId")
+      .select(["i.replyTarget", "i.state", "m.author", "m.content"])
+      .where("i.idempotencyKey", "=", `team-return:${team.deploymentId}:${ask.request.id}`)
+      .execute();
+    expect(privateReturns).toHaveLength(1);
+    expect(privateReturns[0]).toMatchObject({
+      replyTarget: null,
+      state: "pending",
+      author: {
+        kind: "team-member",
+        teamId: team.deploymentId,
+        teamUserId: team.owner.userId,
+        displayName: "Maya",
+        actor: "agent",
+      },
+    });
+    expect(JSON.stringify(privateReturns[0]!.content)).toContain("The launch is ready");
+    expect(await team.team.requests.pending(team.linkId)).toEqual([]);
+    expect(await team.team.requests.pending(mayaLink)).toEqual([]);
+    expect(
+      await team.database
+        .selectFrom("teamAgentRequests")
+        .selectAll()
+        .where("kind", "=", "return")
+        .execute(),
+    ).toHaveLength(1);
+
+    await team.database
+      .updateTable("teamMembers")
+      .set({ handle: "maya" })
+      .where("userId", "=", team.owner.userId)
+      .execute();
+    await tim.tools.post({ runId: asking.runId, operationId: "ask-decline" }, team.deploymentId, {
+      channelId: team.channel.id,
+      bodyMarkdown: "@maya-agent Another question.",
+      attachmentIds: [],
+    });
+    const declined = (await team.team.requests.pending(mayaLink))[0]!;
+    await maya.deliver();
+    await maya.publisher.decide(
+      maya.owner.userId,
+      team.deploymentId,
+      declined.request.id,
+      "decline",
+    );
+    const declineReturn = (await team.team.requests.pending(team.linkId))[0]!;
+    expect(declineReturn.returnPayload).toMatchObject({
+      outcome: "declined",
+      author: { displayName: "Maya", actor: "agent" },
+    });
+    await tim.deliver();
+    const declineInput = await tim.database
+      .selectFrom("messages as m")
+      .innerJoin("threadInputs as i", "i.messageId", "m.id")
+      .select(["m.author", "m.content", "i.replyTarget"])
+      .where("i.idempotencyKey", "=", `team-return:${team.deploymentId}:${declined.request.id}`)
+      .executeTakeFirstOrThrow();
+    expect(declineInput).toMatchObject({
+      author: { displayName: "Maya", actor: "agent" },
+      replyTarget: null,
+    });
+    expect(JSON.stringify(declineInput.content)).toContain("declined");
+    expect(await maya.database.selectFrom("runs").selectAll().execute()).toHaveLength(1);
+
+    await team.team.chat.send(team.member, {
+      channelId: team.channel.id,
+      threadRootId: null,
+      clientMessageId: randomUUID(),
+      bodyMarkdown: "@maya-agent A human question.",
+      mentions: [],
+      attachmentIds: [],
+    });
+    const humanAsk = (await team.team.requests.pending(mayaLink))[0]!;
+    await maya.deliver();
+    await maya.publisher.decide(
+      maya.owner.userId,
+      team.deploymentId,
+      humanAsk.request.id,
+      "approve",
+    );
+    await maya.answer(humanAsk.request.id, "Here is the human answer.");
+    expect(await team.team.requests.pending(team.linkId)).toEqual([]);
+    expect(
+      await team.database
+        .selectFrom("teamAgentRequests")
+        .selectAll()
+        .where("kind", "=", "return")
+        .execute(),
+    ).toHaveLength(2);
+  } finally {
+    for (const peer of peers.reverse()) await peer.close();
     await team.close();
   }
 });

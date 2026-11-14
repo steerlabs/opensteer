@@ -48,7 +48,6 @@ function MentionRow(props: {
 }): ReactNode {
   const { option } = props;
   const disabled = option.kind === "my-agent" && option.disabled;
-  const inert = option.kind === "agent";
   const title =
     option.kind === "my-agent"
       ? "My agent"
@@ -60,10 +59,10 @@ function MentionRow(props: {
       ? option.detail
       : option.kind === "person"
         ? `@${option.person.handle}`
-        : `Only ${option.owner.name.split(" ")[0]} can ask this agent. Mentioning it won't wake it.`;
+        : `Ask ${option.owner.name.split(" ")[0]}`;
   return (
     <Pressable
-      accessibilityHint={inert ? detail : undefined}
+      accessibilityHint={option.kind === "agent" ? detail : undefined}
       accessibilityLabel={title}
       accessibilityRole="menuitem"
       accessibilityState={{ disabled }}
@@ -76,7 +75,7 @@ function MentionRow(props: {
         pressed && styles.pressed,
       ]}
     >
-      <View style={[styles.mark, (inert || disabled) && styles.dim]}>
+      <View style={[styles.mark, disabled && styles.dim]}>
         {option.kind === "my-agent" ? (
           <AgentOrb size={26} />
         ) : (
@@ -95,18 +94,14 @@ function MentionRow(props: {
           numberOfLines={1}
           role="secondaryMedium"
           style={
-            inert || disabled
-              ? styles.titleDim
-              : option.kind === "my-agent"
-                ? styles.titleMine
-                : undefined
+            disabled ? styles.titleDim : option.kind === "my-agent" ? styles.titleMine : undefined
           }
         >
           {title}
         </AppText>
         <AppText
           maxFontSizeMultiplier={controlFontScaleLimit}
-          numberOfLines={inert || disabled ? 2 : 1}
+          numberOfLines={disabled ? 2 : 1}
           role="caption"
           tone="muted"
         >

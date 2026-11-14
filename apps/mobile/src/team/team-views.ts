@@ -1,3 +1,4 @@
+import { teamAskStatuses } from "@opensteer/client/team";
 import type { PendingTeamSend, TeamSidebar, TeamTimeline } from "@opensteer/client/team";
 import { teamAgentHandle } from "@opensteer/core";
 import type { TeamAgentRequest, TeamMember, TeamMessage } from "@opensteer/protocol";
@@ -168,6 +169,9 @@ export function statusView(
   const mine = request.ownerUserId === input.viewerId;
   const steps = request.steps.reduce((total, step) => total + step.count, 0);
   switch (request.state) {
+    case "awaiting_approval":
+    case "declined":
+      return null;
     case "queued":
       return input.ownerOnline === false
         ? {
@@ -277,7 +281,7 @@ export function mentionView(
     return {
       handle: teamAgentHandle(handle),
       label: mine ? "@My agent" : `@${member?.displayName ?? "Someone"}'s agent`,
-      // Only its owner wakes an agent, and an agent's own words never do.
+      // Another person's agent waits for its owner's approval.
       kind:
         message.authorKind === "human" && message.authorUserId === mention.userId
           ? "agent-live"
@@ -352,6 +356,11 @@ export function messageView(
     : undefined;
   const deleted = message.deletedAt !== null;
   return {
+    askStatuses: teamAskStatuses(
+      [...input.requests, ...message.requests],
+      message.id,
+      (id) => personView(id, members).name,
+    ),
     id: message.id,
     version: Number(BigInt(message.changeSeq) % BigInt(Number.MAX_SAFE_INTEGER)),
     author: agent
@@ -505,7 +514,7 @@ export function timelineItems(input: {
     previous = message;
     if (inThread) {
       for (const request of uniqueRequests(requests)) {
-        if (request.triggerMessageId !== message.id) continue;
+        if (request.triggerMessageId !== message.id || request.kind === "ask") continue;
         const status = statusView(request, {
           viewerId,
           members,
@@ -558,7 +567,7 @@ export function cardView(
 /**
  * The @ list: My agent first (or why it can't be asked here), then people,
  * filtered by what was typed. Another person's agent is listed only when its
- * name or handle is typed, and inert.
+ * name or handle is typed.
  */
 export function mentionOptions(input: {
   readonly query: string;

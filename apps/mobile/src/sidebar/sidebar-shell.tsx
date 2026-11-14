@@ -373,6 +373,8 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
         // whom it talks to.
         go({ name: "WorkspaceBrowser", params: tabsRoute(deployment, destination) });
       },
+      onOpenNeedsYou: (targetDeploymentId) =>
+        go({ name: "NeedsYou", params: { deploymentId: targetDeploymentId } }),
       onOpenTask: (targetDeploymentId, threadId, requestId) =>
         go({
           name: "Thread",

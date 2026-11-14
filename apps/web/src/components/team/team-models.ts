@@ -32,7 +32,7 @@ export type AuthorView =
 /**
  * A structured mention, in the words this viewer reads: their own agent is
  * "My agent", someone else's is "Maya's agent". `agent` is an ask its owner
- * made; `agent-reference` names someone else's agent and wakes nothing.
+ * made; `agent-reference` names someone else's agent and asks its owner.
  */
 export interface MentionView {
   readonly handle: string;
@@ -127,6 +127,7 @@ export interface AgentRequestView {
 }
 
 export interface MessageView {
+  readonly askStatuses?: readonly { id: string; label: string }[];
   readonly id: string;
   readonly author: AuthorView;
   readonly at: string;

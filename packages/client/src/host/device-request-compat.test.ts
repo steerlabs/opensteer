@@ -93,7 +93,9 @@ it.each([
       expect(
         client
           .getSnapshot()
-          .needsYou!.entries.some(({ request }) => request.kind === "device.access"),
+          .needsYou!.entries.some(
+            (entry) => entry.kind === "request" && entry.request.kind === "device.access",
+          ),
       ).toBe(supported);
     } finally {
       client.dispose();

@@ -518,26 +518,74 @@ describe("focus never lands on the body", () => {
 });
 
 describe("the Needs you pill", () => {
-  it("counts what needs you, lines each ask, and opens the first ask without moving the middle", async () => {
-    await mount((source) => `/${tabSearch(pageTab(source))}`);
+  it("opens the Needs you list and loads older consent for review", async () => {
+    await mount((source) => {
+      const older = {
+        kind: "team-ask" as const,
+        teamId: createId("deployment"),
+        requestId: createId("teamAgentRequest"),
+        createdAt: new Date().toISOString(),
+        consentExpiresAt: new Date(Date.now() + 86400000).toISOString(),
+        presentation: {
+          asker: {
+            teamUserId: createId("user"),
+            displayName: "Older teammate",
+            actor: "agent" as const,
+          },
+          bodyMarkdown: "Review the older ask",
+          attachments: [],
+          destination: {
+            teamId: createId("deployment"),
+            channelId: createId("teamChannel"),
+            threadRootId: TeamMessageIdSchema.parse("1"),
+          },
+          audience: {
+            teamName: "Acme",
+            channelName: "review",
+            channelKind: "private" as const,
+            memberCount: 2,
+            peopleOnly: false,
+          },
+        },
+      };
+      const getSnapshot = source.getSnapshot.bind(source);
+      const page = getSnapshot().needsYou!;
+      let current: HostSnapshot = {
+        ...getSnapshot(),
+        needsYou: { ...page, count: page.count + 1, window: { ...page.window, hasMore: true } },
+      };
+      vi.spyOn(source, "getSnapshot").mockImplementation(() => current);
+      vi.spyOn(source, "loadEarlierNeedsYou").mockImplementation(async () => {
+        current = {
+          ...current,
+          needsYou: {
+            ...current.needsYou!,
+            entries: [...current.needsYou!.entries, older],
+            window: { ...current.needsYou!.window, hasMore: false },
+          },
+        };
+      });
+      return `/${tabSearch(pageTab(source))}`;
+    });
     const place = pageTab();
-    const count = client.getSnapshot().needsYou!.count;
-    const pill = element<HTMLButtonElement>(".side-needs");
-    expect(pill.textContent).toContain(String(count));
-    // The amber line is the request's own title; who proposed it stays on the request.
-    for (const line of document.querySelectorAll(".side-task__ask")) {
-      expect(line.textContent).not.toContain("Proposed by");
-      expect(line.closest(".side-task__main")?.getAttribute("aria-label")).toContain(
-        line.textContent,
-      );
-    }
     const before = history.length;
+    const pill = element<HTMLButtonElement>(".side-needs");
     await click(pill);
-    expect(history.length).toBe(before + 1);
-    const first = client.getSnapshot().needsYou!.entries[0]!;
-    expect(history.at(-1)!.path).toBe(`/tasks/${first.navigationThreadId}`);
+    expect(history.length).toBe(before);
+    expect(element('[role="dialog"]').textContent).toContain("Needs you");
+    const earlier = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent === "Earlier requests",
+    );
+    expect(earlier).toBeDefined();
+    await click(earlier!);
+    const row = [...document.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+      button.textContent?.includes("Older teammate"),
+    );
+    expect(row).toBeDefined();
+    await click(row!);
+    expect(element('[role="dialog"]').textContent).toContain("Review the older ask");
+    expect(element('[role="dialog"]').textContent).toContain("Approve");
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
-    expect(element(".place").getAttribute("data-place-key")).toBe(place.key);
   });
 });
 
@@ -775,6 +823,8 @@ describe("a channel and back", () => {
     const root = host.post({ channelId, bodyMarkdown: "Ask my agent" });
     host.setRequest({
       id: TeamAgentRequestIdSchema.parse(createId("teamAgentRequest")),
+      kind: "self",
+      consentExpiresAt: null,
       ownerUserId: host.userId,
       channelId,
       threadRootId: root.id,

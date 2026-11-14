@@ -2224,6 +2224,27 @@ describe("Codex app-server harness", () => {
     await fixture.adapter.close();
   });
 
+  it("retires the unnumbered context of a conversation resumed from before the key inventory", async () => {
+    const fixture = await setup("resume-large-history");
+    const started = await fixture.adapter.startSession(fixture.context);
+    await started.execute(fixture.turn("Start"));
+    await started.stop();
+    // A conversation from an earlier driver has no recorded inventory.
+    await rm(join(fixture.context.threadStateDirectory, "codex-context-keys.json"));
+    const resumed = await fixture.adapter.resumeSession(
+      started.providerSessionReference,
+      fixture.context,
+    );
+    await resumed.execute(fixture.turn("Continue"));
+    await resumed.stop();
+    const [fresh, continued] = (await fixture.capture())
+      .filter((message) => message.method === "turn/start")
+      .map((message) => (message.params as { additionalContext: JsonRecord }).additionalContext);
+    expect(fresh).not.toHaveProperty("opensteer_current_instructions");
+    for (const key of ["opensteer_computers", "opensteer_current_instructions", "opensteer_skills"])
+      expect(continued).toHaveProperty(key, { kind: "application", value: "" });
+  });
+
   it("tells the model this Run's computer inventory on every turn, resumed or not", async () => {
     // The compacted-history scenario completes every turn immediately and
     // serves both a fresh start and exact-thread resumes.

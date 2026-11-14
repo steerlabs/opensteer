@@ -1979,6 +1979,7 @@ export async function createHostRuntime(
         if (context.request.id !== requestId)
           throw new OpensteerError({ code: "forbidden", message: "Team request changed" });
         return {
+          asker: context.asker,
           instructionsMarkdown: context.instructionsMarkdown,
           instructionsRevision: context.instructionsRevision,
           source: context.source,
@@ -2458,6 +2459,10 @@ export async function createHostRuntime(
           admission: taskAdmission,
           runs: personalTeamRunPort(database),
           onDeliveryEvent: publishDeploymentEvent,
+          onConsentChanged: async (teamId, requestId, opened) => {
+            realtime.sendToUsers([service.options.ownerId], { type: "host.requests-changed" });
+            if (opened) notificationDispatcher?.dispatchTeamAsk(teamId, requestId);
+          },
           onPublished: async () => {
             const ownerId = service.options.ownerId;
             realtime.publishViewerTasksChanged(ownerId);

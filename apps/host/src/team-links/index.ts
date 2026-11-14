@@ -6,7 +6,11 @@ import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-req
 import type { Kysely } from "kysely";
 import type { TaskAdmissionPort } from "../threads/task-admission.js";
 import { PersonalTeamLinks } from "./service.js";
-import { PersonalTeamRequests, type PersonalTeamRunPort } from "./requests.js";
+import {
+  PersonalTeamRequests,
+  type PersonalTeamRequestsOptions,
+  type PersonalTeamRunPort,
+} from "./requests.js";
 import { PersonalTeamVault } from "./vault.js";
 import { TeamLinkNetwork } from "./network.js";
 import { TeamRunFileTransfers, type PersonalTeamAttachmentPort } from "./files.js";
@@ -25,6 +29,7 @@ export function createPersonalTeamLinkServices(options: {
   readonly attachments: PersonalTeamAttachmentPort;
   readonly onDeliveryEvent: (event: AgentEvent) => void;
   readonly onPublished: (taskId: ThreadId) => Promise<void>;
+  readonly onConsentChanged?: PersonalTeamRequestsOptions["onConsentChanged"];
 }) {
   const linksStore = new PersonalTeamLinksStore(options.database);
   const requestsStore = new PersonalTeamRequestsStore(
@@ -40,6 +45,7 @@ export function createPersonalTeamLinkServices(options: {
     admission: options.admission,
     runs: options.runs,
     rpc: (teamId) => links.rpc(teamId),
+    ...(options.onConsentChanged ? { onConsentChanged: options.onConsentChanged } : {}),
   });
   const links = new PersonalTeamLinks({
     deploymentId: options.deploymentId,
@@ -55,7 +61,12 @@ export function createPersonalTeamLinkServices(options: {
     network,
     attachments: options.attachments,
   });
-  const tools = new TeamRunTools(linksStore, requestsStore, (teamId) => links.rpc(teamId));
+  const tools = new TeamRunTools(
+    linksStore,
+    requestsStore,
+    (teamId) => links.rpc(teamId),
+    (teamId) => requests.resumeReturns(teamId),
+  );
   const teamTools = new PersonalTeamToolAdapter(tools, files);
   const knowledge = new PersonalTeamKnowledge(
     () => links.list(),

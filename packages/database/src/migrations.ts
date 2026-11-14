@@ -1,5 +1,6 @@
 import { sql, type Kysely } from "kysely";
 import { Migrator, type MigrationProvider, type MigrationResultSet } from "kysely/migration";
+import { migrateTeamAgentAsks } from "./team-agent-asks-migration.js";
 import { migrateTeamAgents } from "./team-agent-migration.js";
 import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
 import { TEAM_KNOWLEDGE_NOTES_SQL } from "./team-knowledge-schema.js";
@@ -21,6 +22,7 @@ export const personalTeamBaselineName = "0002_personal_team_baseline";
 export const threadVisitsMigrationName = "0004_thread_visits";
 export const teamKnowledgeNotesMigrationName = "0006_team_knowledge_notes";
 export const teamAgentMigrationName = "0011_team_agent_contracts";
+export const teamAgentAsksMigrationName = "0012_team_agent_asks";
 export function migrationProvider(): MigrationProvider {
   return {
     async getMigrations() {
@@ -128,7 +130,35 @@ export function migrationProvider(): MigrationProvider {
           },
         },
         [teamAgentMigrationName]: { up: migrateTeamAgents },
-        "0012_claude_idle_compaction": {
+        [teamAgentAsksMigrationName]: { up: migrateTeamAgentAsks },
+        "0013_personal_team_posts": {
+          async up(database) {
+            await sql`create table personal_team_posts (
+              team_deployment_id text not null references personal_team_links(team_deployment_id) on delete cascade,
+              client_message_id uuid not null,
+              local_link_id text not null,
+              remote_link_id text not null,
+              run_id text not null references runs(id) on delete cascade,
+              message_id bigint,
+              channel_id text not null,
+              thread_root_id bigint,
+              target_bindings jsonb not null,
+              mentioned_agent_handles text[] not null,
+              body_markdown text not null,
+              attachment_ids jsonb not null,
+              request_id text,
+              created_at timestamptz not null default now(),
+              primary key(team_deployment_id, client_message_id)
+            );
+            create index personal_team_posts_expiry on personal_team_posts(created_at);
+            create unique index personal_team_returns_post_target on personal_team_requests (
+              team_deployment_id, (return_payload->>'triggerClientMessageId'), (return_payload->'author'->>'handle')
+            ) where return_admission = 'admitted' and return_payload->>'triggerClientMessageId' is not null`.execute(
+              database,
+            );
+          },
+        },
+        "0014_claude_idle_compaction": {
           async up(database) {
             await sql`
               alter table personal_settings add column idle_compaction_policy jsonb not null default '{"mode":"onReturn"}'::jsonb;

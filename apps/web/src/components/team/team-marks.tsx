@@ -142,8 +142,8 @@ export function PeopleOnlyBadge({ compact = false }: { readonly compact?: boolea
 
 /**
  * A mention in the words this viewer reads. A live ask of an agent is ember
- * with the orb; someone else's agent named in passing is an outlined
- * reference; a mention of the reader is amber.
+ * with the orb; an ask waiting for another owner's approval is outlined;
+ * a mention of the reader is amber.
  */
 export function MentionChip({ mention }: { readonly mention: MentionView }) {
   return (

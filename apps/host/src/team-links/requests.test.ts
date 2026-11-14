@@ -45,12 +45,22 @@ function fixture() {
   let offline = false;
   const calls: TeamLinkCallInput[] = [];
   const requests = {
+    post: vi.fn(async () => undefined),
+    pendingPosts: async () => [],
+    recordPost: vi.fn(),
     async forRun() {
       return structuredClone(row);
     },
     async get() {
       return structuredClone(row);
     },
+    async mirror() {
+      return structuredClone(row);
+    },
+    async mirrors() {
+      return [structuredClone(row)];
+    },
+    async remote() {},
     async forTeam() {
       return [structuredClone(row)];
     },
@@ -92,6 +102,14 @@ function fixture() {
     calls.push(input);
     if (offline) throw new OpensteerError({ code: "runner_offline", message: "Offline" });
     if (denied) throw new OpensteerError({ code: "forbidden", message: "people-only" });
+    if (input.type === "reconcile")
+      return {
+        kind: "reconciled",
+        requests: input.requestIds.map((requestId) => ({
+          requestId,
+          request: { id: requestId, kind: "self", state: "working" },
+        })),
+      } as TeamLinkResult;
     if (input.type === "receipt") return { kind: "receipt", messageId: remote };
     if (input.type === "read") return { kind: "read", result: { source } } as TeamLinkResult;
     if (input.type === "post") {
@@ -106,9 +124,15 @@ function fixture() {
     }
     return { kind: "ok" };
   };
-  const admission = { admitTeamRequest: vi.fn(), cancelTeamRequest: vi.fn() };
+  const admission = {
+    admitTeamReturn: vi.fn(),
+    admitTeamRequest: vi.fn(),
+    cancelTeamRequest: vi.fn(),
+  };
   const publisher = new PersonalTeamRequests({
-    links: {} as PersonalTeamLinksStore,
+    links: {
+      get: async () => ({ id: "local", remoteLinkId: createId("teamLink"), state: "active" }),
+    } as unknown as PersonalTeamLinksStore,
     requests: requests as unknown as PersonalTeamRequestsStore,
     admission,
     runs: { outcome: async () => outcome },
@@ -119,7 +143,9 @@ function fixture() {
     requests,
     publisher,
     tools: new TeamRunTools(
-      {} as PersonalTeamLinksStore,
+      {
+        get: async () => ({ id: "local", remoteLinkId: createId("teamLink"), state: "active" }),
+      } as unknown as PersonalTeamLinksStore,
       requests as unknown as PersonalTeamRequestsStore,
       () => ({ call }),
     ),

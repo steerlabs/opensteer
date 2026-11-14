@@ -2352,6 +2352,7 @@ function updateSource(author: UpdateAuthor): {
     case "watch":
       return { glyph: "bolt", href: automationPath(author.triggerId), name };
     case "connection":
+    case "team-member":
     case "platform":
       return { glyph: "message", href: null, name };
   }
@@ -2482,6 +2483,7 @@ function inputSource(message: MessageEntry): {
         name,
       };
     case "connection":
+    case "team-member":
       return { glyph: null, href: null, markdown: true, name };
     case "human":
       return {

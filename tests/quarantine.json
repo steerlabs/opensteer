@@ -634,22 +634,6 @@
     ]
   },
   {
-    "file": "apps/host/src/agents/run-recovery.integration.test.ts",
-    "name": [
-      "Run recovery acceptance",
-      "19. reaps a SIGKILLed Runner's surviving marked processes before recovery executes"
-    ],
-    "area": "Runner",
-    "owner": "Runner maintainers",
-    "status": "investigating",
-    "firstSeen": "2026-11-13T18:27:21Z",
-    "deadline": "2026-11-20T18:27:21Z",
-    "sha": "3f9f01da3960f1f95a536728c2669ae4ec376b58",
-    "evidence": [
-      "Fails in CI integration shards with `SIGKILL left the engine alive before startup reaping: expected false to be true`: the engine started with --survive-parent is already gone right after the Runner is SIGKILLed, before startup reaping runs. Seen on main at 3f9f01da3 (run 43480662875, integration (2)) and on #579 at 9a7c5e5eb (run 43495378681, integration (2)); that PR changes only team UI code. Passed on other runs of the same code. Acceptance: the engine's survival of its parent's SIGKILL is established by an acknowledgement from the engine itself (not process-table timing) before the crash, and the case passes repeatably under parallel shards."
-    ]
-  },
-  {
     "area": "Browser",
     "owner": "Browser maintainers",
     "status": "investigating",

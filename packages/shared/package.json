@@ -5,6 +5,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./teamMentions": "./src/teamMentions.ts",
     "./requestGuidance": "./src/requestGuidance.ts",
     "./sessionDevice": "./src/sessionDevice.ts",
     "./plist": "./src/plist.ts",

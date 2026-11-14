@@ -9,13 +9,18 @@ import {
   personalTeamBaselineName,
   teamKnowledgeNotesMigrationName,
   teamAgentMigrationName,
+  teamAgentAsksMigrationName,
 } from "./migrations.js";
 import type { DatabaseSchema } from "./schema.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
 import { OpensteerStore } from "./store.js";
 import { createPersonalRunFixturePort } from "./personal-run-fixture.test-support.js";
-import { PersonalTeamRequestsStore } from "./personal-team-requests-store.js";
+import { teamRequestView } from "./team-chat-store.js";
+import {
+  PersonalTeamRequestsStore,
+  personalTeamRequestMirrorFromRow,
+} from "./personal-team-requests-store.js";
 import { personalTeamRunOutcome } from "./personal-team-run-store.js";
 import { AccountDirectoryStore } from "./account-directory-store.js";
 
@@ -132,6 +137,245 @@ async function legacyQueuedInput(input: {
 }
 
 describe("fresh personal/team lineage", () => {
+  it("backfills self requests and preserves their execution and publication receipts", async () => {
+    await migrateToLatest(database, migrationsBefore(teamAgentAsksMigrationName));
+    const { userId } = await seedPersonalFixture(database, "/tmp/ws0-asks-agent-home");
+    const store = new OpensteerStore(database);
+    const base = await createPersonalRunFixturePort(store).createTask({
+      ownerId: userId,
+      suffix: "ask-upgrade",
+    });
+    const input = await store.enqueueThreadInput({
+      threadId: base.thread.id,
+      requestedBy: userId,
+      source: { kind: "human" },
+      policy: "queue",
+      content: [{ type: "text", text: "Existing work" }],
+      idempotencyKey: "ask-upgrade",
+    });
+    const { owner, channel } = await team();
+    const root = await message(channel, owner);
+    const linkId = createId("teamLink"),
+      teamId = createId("deployment");
+    await sql`insert into team_links(id,owner_user_id,state,code_hash) values(${linkId},${owner},'pending',${crypto.randomUUID()})`.execute(
+      database,
+    );
+    const states = [
+      "queued",
+      "working",
+      "needs_you",
+      "done",
+      "failed",
+      "cancelled",
+      "stopped",
+    ] as const;
+    const requestIds = [];
+    for (const state of states) {
+      const trigger = await message(channel, owner),
+        id = createId("teamAgentRequest");
+      requestIds.push(id);
+      await sql`insert into team_agent_requests(id,owner_user_id,channel_id,thread_root_id,trigger_message_id,link_id,state,steps,accepted_at,expires_at,finished_at,change_seq)
+        values(${id},${owner},${channel},${root},${trigger},${linkId},${state},'[]',
+          case when ${state}='queued' then null else now() end,
+          case when ${state}='queued' then null else now()+interval '7 days' end,
+          case when ${state} in ('done','failed','cancelled','stopped') then now() else null end,1)`.execute(
+        database,
+      );
+    }
+    await sql`insert into personal_team_links(id,team_deployment_id,team_host_instance_id,host_key_fingerprint,approved_origin,authority_envelope,state)
+      values('ask-upgrade',${teamId},${createId("hostInstance")},'fixture','https://team.invalid','{}','active')`.execute(
+      database,
+    );
+    const source = {
+      teamId,
+      channelId: channel,
+      threadRootId: root,
+      messageId: root,
+      audience: {
+        teamName: "Studio",
+        channelName: "support",
+        channelKind: "public",
+        memberCount: 2,
+        peopleOnly: false,
+      },
+    };
+    await sql`insert into personal_team_requests(team_deployment_id,request_id,trigger_message_id,local_task_id,local_input_id,publication_state,terminal_state,source)
+      values(${teamId},${requestIds[0]},${root},${base.thread.id},${input.message.id},'accepted','done',${JSON.stringify(source)}::jsonb)`.execute(
+      database,
+    );
+    const before = await database
+      .selectFrom("teamAgentRequests")
+      .select(["id", "state", "acceptedAt", "expiresAt", "finishedAt"])
+      .orderBy("id")
+      .execute();
+    await migrateToLatest(database);
+    const rows = await database.selectFrom("teamAgentRequests").selectAll().orderBy("id").execute();
+    expect(
+      rows.map(({ id, state, acceptedAt, expiresAt, finishedAt }) => ({
+        id,
+        state,
+        acceptedAt,
+        expiresAt,
+        finishedAt,
+      })),
+    ).toEqual(before);
+    for (const row of rows)
+      expect(teamRequestView(row)).toMatchObject({
+        kind: "self",
+        consentExpiresAt: null,
+      });
+    expect(await new PersonalTeamRequestsStore(database).get(teamId, requestIds[0]!)).toMatchObject(
+      {
+        kind: "self",
+        remoteState: "done",
+        taskId: base.thread.id,
+        inputId: input.message.id,
+        publicationState: "accepted",
+        terminalState: "done",
+        localDecision: null,
+        returnPayload: null,
+        returnAdmission: null,
+      },
+    );
+  });
+
+  it("stores taskless consent and unique returns while keeping self trigger uniqueness", async () => {
+    await migrateToLatest(database);
+    const { owner, channel } = await team();
+    const trigger = await message(channel, owner),
+      otherTrigger = await message(channel, owner);
+    const linkId = createId("teamLink"),
+      teamId = createId("deployment"),
+      askId = createId("teamAgentRequest"),
+      otherAskId = createId("teamAgentRequest");
+    await sql`insert into team_links(id,owner_user_id,state,code_hash) values(${linkId},${owner},'pending',${crypto.randomUUID()})`.execute(
+      database,
+    );
+    const presentation = {
+      asker: { teamUserId: owner, displayName: "Maya", actor: "agent" },
+      bodyMarkdown: "Review this",
+      attachments: [],
+      destination: { teamId, channelId: channel, threadRootId: trigger },
+      audience: {
+        teamName: "Studio",
+        channelName: "support",
+        channelKind: "public",
+        memberCount: 2,
+        peopleOnly: false,
+      },
+    };
+    for (const [id, messageId] of [
+      [askId, trigger],
+      [otherAskId, otherTrigger],
+    ])
+      await sql`insert into team_agent_requests(id,kind,owner_user_id,channel_id,thread_root_id,trigger_message_id,link_id,state,steps,change_seq,presentation,consent_expires_at)
+        values(${id},'ask',${owner},${channel},${trigger},${messageId},${linkId},'awaiting_approval','[]',1,${JSON.stringify(presentation)}::jsonb,now()+interval '7 days')`.execute(
+        database,
+      );
+    await expect(
+      sql`insert into team_agent_requests(id,owner_user_id,channel_id,thread_root_id,trigger_message_id,link_id,state,steps,change_seq)
+      values(${createId("teamAgentRequest")},${owner},${channel},${trigger},${trigger},${linkId},'queued','[]',1)`.execute(
+        database,
+      ),
+    ).rejects.toMatchObject({ code: "23505" });
+    const payload = {
+      originAskId: askId,
+      resumeRunId: createId("run"),
+      outcome: "declined",
+      bodyMarkdown: null,
+      attachments: [],
+    };
+    const insertReturn = (originAskId: string) =>
+      sql`insert into team_agent_requests(id,kind,owner_user_id,channel_id,thread_root_id,trigger_message_id,link_id,state,steps,change_seq,return_payload)
+      values(${createId("teamAgentRequest")},'return',${owner},${channel},${trigger},${trigger},${linkId},'queued','[]',1,${JSON.stringify({ ...payload, originAskId })}::jsonb)`.execute(
+        database,
+      );
+    await insertReturn(askId);
+    await insertReturn(otherAskId);
+    await expect(insertReturn(askId)).rejects.toMatchObject({ code: "23505" });
+    await sql`update team_agent_requests set state='declined',finished_at=now() where id=${askId}`.execute(
+      database,
+    );
+    const returned = await database
+      .selectFrom("teamAgentRequests")
+      .selectAll()
+      .where("kind", "=", "return")
+      .executeTakeFirstOrThrow();
+    expect(teamRequestView(returned)).not.toHaveProperty("returnPayload");
+    await sql`insert into personal_team_links(id,team_deployment_id,team_host_instance_id,host_key_fingerprint,approved_origin,authority_envelope,state)
+      values('ask-consent',${teamId},${createId("hostInstance")},'fixture','https://team.invalid','{}','active')`.execute(
+      database,
+    );
+    const source = {
+      ...presentation.destination,
+      messageId: trigger,
+      audience: presentation.audience,
+    };
+    await sql`insert into personal_team_requests(team_deployment_id,request_id,kind,remote_state,trigger_message_id,local_task_id,local_input_id,publication_state,source,presentation,consent_expires_at)
+      values(${teamId},${askId},'ask','awaiting_approval',${trigger},null,null,'pending',${JSON.stringify(source)}::jsonb,${JSON.stringify(presentation)}::jsonb,now()+interval '7 days')`.execute(
+      database,
+    );
+    await expect(
+      sql`update personal_team_requests set local_decision='approve' where request_id=${askId}`.execute(
+        database,
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+    await sql`update personal_team_requests set local_decision='decline',decision_at=now() where request_id=${askId}`.execute(
+      database,
+    );
+    const consent = await database
+      .selectFrom("personalTeamRequests")
+      .selectAll()
+      .where("requestId", "=", askId)
+      .executeTakeFirstOrThrow();
+    expect(personalTeamRequestMirrorFromRow(consent)).toMatchObject({
+      kind: "ask",
+      taskId: null,
+      inputId: null,
+      localDecision: "decline",
+      presentation,
+    });
+    const rejectedId = createId("teamAgentRequest");
+    const insertReceipt = (id = createId("teamAgentRequest")) =>
+      sql`insert into personal_team_requests(team_deployment_id,request_id,kind,trigger_message_id,local_task_id,local_input_id,publication_state,source,return_payload)
+      values(${teamId},${id},'return',${trigger},null,null,'pending',${JSON.stringify(source)}::jsonb,${JSON.stringify(payload)}::jsonb)`.execute(
+        database,
+      );
+    await insertReceipt(rejectedId);
+    await expect(insertReceipt()).rejects.toMatchObject({ code: "23505" });
+    await database
+      .updateTable("personalTeamRequests")
+      .set({ returnAdmission: "undeliverable" })
+      .where("requestId", "=", rejectedId)
+      .execute();
+    await insertReceipt();
+    const receipt = await database
+      .selectFrom("personalTeamRequests")
+      .selectAll()
+      .where("requestId", "=", rejectedId)
+      .executeTakeFirstOrThrow();
+    expect(personalTeamRequestMirrorFromRow(receipt)).toMatchObject({
+      kind: "return",
+      taskId: null,
+      inputId: null,
+      returnPayload: payload,
+      returnAdmission: "undeliverable",
+    });
+    await expect(
+      sql`update personal_team_requests set return_admission='admitted' where request_id=${receipt.requestId}`.execute(
+        database,
+      ),
+    ).rejects.toMatchObject({ code: "23514" });
+    const indexes = (await catalog()).filter(({ kind }) => kind === "i").map(({ name }) => name);
+    expect(indexes).toEqual(
+      expect.arrayContaining([
+        "team_requests_return_origin",
+        "team_requests_consent_expiring",
+        "personal_team_requests_pending_consent",
+      ]),
+    );
+  });
+
   it("backfills only request-associated reply targets and repairs hydrated messages and history", async () => {
     await migrateToLatest(database, migrationsBefore(teamAgentMigrationName));
     const { userId } = await seedPersonalFixture(database, "/tmp/ws0-migration-agent-home");
