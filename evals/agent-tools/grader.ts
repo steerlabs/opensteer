@@ -6,6 +6,7 @@ import type { EvalCase } from "./cases.js";
 const exec = promisify(execFile);
 
 export interface RecordedCall {
+  readonly at?: number;
   readonly tool: string;
   readonly args: unknown;
   readonly valid: boolean;
@@ -50,11 +51,30 @@ export function grade(
   assistantText: string = finalText,
   earlierText: string = "",
 ): Check[] {
+  const timeline = calls;
+  calls = calls.filter((call) => !call.tool.startsWith("harness:"));
+  const harness = timeline.filter((call) => call.tool.startsWith("harness:"));
   const valid = calls.filter((call) => call.valid);
   const checks: Check[] = [];
   const add = (name: string, pass: boolean) => {
     checks.push({ name, pass });
   };
+  for (const [i, rule] of expect.harness.entries())
+    add(
+      `harness[${i}]:${rule.call}`,
+      harness.some(
+        (c) => toolMatches(c.tool.slice(8), rule.call) && partialMatch(c.args, rule.args),
+      ),
+    );
+  for (const [i, rule] of expect.notHarness.entries())
+    add(
+      `notHarness[${i}]`,
+      !harness.some(
+        (c) =>
+          toolMatches(c.tool.slice(8), typeof rule === "string" ? rule : rule.call) &&
+          (typeof rule === "string" || partialMatch(c.args, rule.args)),
+      ),
+    );
   for (const [i, required] of expect.calls.entries())
     add(
       `calls[${i}]:${required.tool}`,
@@ -121,16 +141,31 @@ export function grade(
     add("finalText", expect.finalText === "empty" ? !finalText.trim() : !!finalText.trim());
   if (expect.maxFinalTextBytes !== undefined)
     add("maxFinalTextBytes", Buffer.byteLength(finalText, "utf8") <= expect.maxFinalTextBytes);
+  const ordered = timeline.filter((c) => c.valid || c.tool.startsWith("harness:"));
   let previous = -1;
   for (const [i, name] of expect.order.entries()) {
-    const next = valid.findIndex((c, index) => index > previous && toolMatches(c.tool, name));
+    const next = ordered.findIndex(
+      (c, index) =>
+        index > previous &&
+        (!c.tool.startsWith("harness:") || name.startsWith("harness:")) &&
+        toolMatches(c.tool, name),
+    );
     add(`order[${i}]:${name}`, next !== -1);
-    previous = next === -1 ? valid.length : next;
+    previous = next === -1 ? ordered.length : next;
   }
   for (const [name, count] of Object.entries(expect.minCalls))
-    add(`minCalls:${name}`, valid.filter((c) => toolMatches(c.tool, name)).length >= count);
+    add(
+      `minCalls:${name}`,
+      (name.startsWith("harness:") ? harness.filter((c) => c.valid) : valid).filter((c) =>
+        toolMatches(c.tool, name),
+      ).length >= count,
+    );
   for (const [name, count] of Object.entries(expect.maxCalls))
-    add(`maxCalls:${name}`, calls.filter((c) => toolMatches(c.tool, name)).length <= count);
+    add(
+      `maxCalls:${name}`,
+      (name.startsWith("harness:") ? harness : calls).filter((c) => toolMatches(c.tool, name))
+        .length <= count,
+    );
   if (expect.noAssistantText) add("noAssistantText", assistantText.length === 0);
   for (const pattern of expect.textMust)
     add(`textMust:${pattern}`, new RegExp(pattern, "u").test(finalText));

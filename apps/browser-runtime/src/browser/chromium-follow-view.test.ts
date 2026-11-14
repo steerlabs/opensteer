@@ -2726,7 +2726,7 @@ console.log(JSON.stringify(await js("window.answers")));`);
     expect(laterRuns.answerRun.stdout).toEqual([
       expect.objectContaining({
         dialog: { id: expect.any(String), message: "Delete this listing?", type: "confirm" },
-        targetId,
+        tabId: root,
       }),
       [true, true],
     ]);

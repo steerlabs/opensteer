@@ -43,6 +43,8 @@ export async function startBrowserRuntime(
   options: {
     /** Advertise the agent CDP boundary and shared tab identity, as a current Runtime does. */
     readonly agentReady?: boolean;
+    readonly uniqueTabs?: boolean;
+    readonly tabCommands?: boolean;
     readonly browserEngine?: BrowserEngine;
     readonly device?: RunnerDescriptor["device"];
     readonly agentActions?: boolean;
@@ -400,6 +402,9 @@ export async function startBrowserRuntime(
           engine.on("error", (error) => protocolErrors.push(String(error)));
           return;
         }
+        const initialSurfaceId =
+          latestClaims.initialSurfaceId ??
+          (options.uniqueTabs ? `surface_${randomUUID()}` : "page-integration");
         send({
           capability: message.capability,
           channelId: message.channelId,
@@ -409,7 +414,7 @@ export async function startBrowserRuntime(
             ? {
                 initialPage: {
                   operationKey: latestClaims.initialNavigation.operationKey,
-                  surfaceId: "page-integration",
+                  surfaceId: initialSurfaceId,
                   navigation: latestClaims.initialNavigation.url ? "submitted" : "blank",
                 },
               }
@@ -446,7 +451,7 @@ export async function startBrowserRuntime(
               ...(options.navigation && latestClaims.navigationVersion === 1
                 ? { canGoBack: false, canGoForward: false }
                 : {}),
-              id: "page-integration",
+              id: initialSurfaceId,
               title: "Integration page",
               url: "about:blank",
             },
@@ -460,6 +465,61 @@ export async function startBrowserRuntime(
           const forward = () => engine.send(JSON.stringify(message.message));
           if (engine.readyState === WebSocket.OPEN) forward();
           else engine.once("open", forward);
+        }
+        if (options.tabCommands && message.message.type === "cdp.command") {
+          const command = message.message.command;
+          const parameters = command.parameters ?? {};
+          const stream = streams.get(message.channelId);
+          const rows = [...(stream?.rows.values() ?? [])];
+          let result: Record<string, unknown> | undefined;
+          if (command.method === "Opensteer.openTab") {
+            const tabId =
+              typeof parameters.surfaceId === "string"
+                ? parameters.surfaceId
+                : `surface_${randomUUID()}`;
+            rows.push(
+              BrowserTabRecordSchema.parse({
+                ...rows[0],
+                id: tabId,
+                state: "live",
+                title: "New tab",
+                url: parameters.url ?? "about:blank",
+                order: rows.length,
+                openerId: null,
+              }),
+            );
+            result = { tabId };
+          } else if (command.method === "Opensteer.resumeTab") {
+            const row = rows.find((row) => row.id === parameters.surfaceId);
+            if (row) {
+              row.state = "live";
+              result = { surfaceId: row.id, reloaded: true };
+            }
+          } else if (command.method === "Opensteer.closeTab") {
+            result = { outcome: "tab-closed" };
+          }
+          if (result) {
+            const sessionId = [...sessionChannels].find(([, id]) => id === message.channelId)?.[0];
+            publishTabs(
+              {
+                surfaces:
+                  command.method === "Opensteer.closeTab"
+                    ? rows.filter((row) => row.id !== parameters.surfaceId)
+                    : rows,
+                inventoryRevision: (stream?.meta.inventoryRevision ?? 1) + 1,
+                ...(command.method === "Opensteer.closeTab"
+                  ? { closed: [String(parameters.surfaceId)] }
+                  : {}),
+              },
+              sessionId,
+            );
+            send({
+              type: "browser.server-message",
+              capability: message.capability,
+              channelId: message.channelId,
+              message: { type: "cdp.result", requestId: message.message.requestId, result },
+            });
+          }
         }
         receivedCommands.push(message.message);
         const waiter = waiters.shift();

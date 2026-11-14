@@ -104,6 +104,9 @@ export async function resolveResourceAccess(
         .select("accessMode")
         .where("threadId", "=", threadId)
         .where("requestedBy", "=", input.ownerUserId)
+        .$if(Boolean(input.agentBindingId?.startsWith("run:")), (query) =>
+          query.where("id", "=", RunIdSchema.parse(input.agentBindingId!.slice(4))),
+        )
         .where("status", "in", ["queued", "starting", "running", "waiting"])
         .orderBy("createdAt", "desc")
         .executeTakeFirst()

@@ -13,11 +13,18 @@ export { HarnessRunError } from "@opensteer/browser-runtime-core/test-support/ha
 import {
   startHarnessBridge as startBridge,
   runHarnessExecutable,
+  type HarnessBridgeOptions,
 } from "@opensteer/browser-runtime-core/test-support/harness-transport";
 
 export function startHarnessBridge(
-  request: (method: string, parameters?: CdpParameters, sessionId?: string) => Promise<unknown>,
+  request: (
+    method: string,
+    parameters?: CdpParameters,
+    sessionId?: string,
+    browserSessionId?: string,
+  ) => Promise<unknown>,
   sink?: Pick<FakeSink, "sendServerImplementation">,
+  options: HarnessBridgeOptions = {},
 ) {
   return startBridge(
     request,
@@ -33,6 +40,7 @@ export function startHarnessBridge(
           };
         }
       : undefined,
+    options,
   );
 }
 

@@ -4932,7 +4932,7 @@ describe("BrowserService", () => {
       // The refusal names the candidates, because the agent's only way out of
       // it is to call again with one of these environmentIds.
       message:
-        "Choose which connected computer should run this browser session: " +
+        "Choose which connected computer should run this browser: " +
         `Computer ${first.runnerId} (environmentId ${environmentId}), ` +
         `Computer ${second.runnerId} (environmentId ${environmentId}).`,
     });
@@ -5019,8 +5019,7 @@ describe("BrowserService", () => {
       }),
     ).rejects.toMatchObject({
       code: "bad_request",
-      message:
-        "An existing Browser Session already runs on a computer, so attaching to it cannot choose one.",
+      message: "An existing tab already belongs to a computer, so selecting it cannot choose one.",
     });
   });
 
@@ -5841,7 +5840,11 @@ async function attachedSessionIds(
 
 class MemoryBrowserRepository implements BrowserSessionRepository {
   async resolveResourceAccess() {
-    return { specialistAllowed: true };
+    return {
+      specialistAllowed: true,
+      access: "read-write" as const,
+      runAccess: "read-write" as const,
+    };
   }
   mainRunnerId: RunnerId | undefined;
   rememberedPlacement: RunnerId | null = null;

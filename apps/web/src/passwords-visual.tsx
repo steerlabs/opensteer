@@ -264,7 +264,7 @@ function signInStep({ tool, result }: (typeof autonomous)[number], index: number
   return {
     arguments: {
       reason: "Download the October statement",
-      sessionId: "bss_preview",
+      tabId: "tab-preview",
       site,
     },
     callId: `preview-sign-in-${index}`,

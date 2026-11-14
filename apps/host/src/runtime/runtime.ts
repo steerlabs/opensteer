@@ -801,6 +801,8 @@ export async function createHostRuntime(
     const browser = new BrowserService({
       requireAgentAccess: (runnerId) =>
         requireDeviceAccess(database, runnerId, "browser", runners.isRunnerConnected(runnerId)),
+      requireAgentVisibility: (runnerId) =>
+        requireDeviceAccess(database, runnerId, "browser", true),
       detachRunnerAgents: async (runnerId) => {
         const sessions = await database
           .selectFrom("browserSessions")

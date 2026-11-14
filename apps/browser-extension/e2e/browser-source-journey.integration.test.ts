@@ -570,7 +570,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
     const signIn = async (sessionId: string, target: string) => {
       const response = await callMcpTool(hostOrigin, parentRun.token, "copy_chrome_cookies", {
         reason: "The account page shows the user signed out.",
-        sessionId,
+        tabId: sessionId === sessionOne ? viewerOne.surfaceId : viewerTwo.surfaceId,
         site: target,
       });
       if (response.isError)
@@ -595,7 +595,13 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
           async () => {
             const rows = await signInRequests();
             expect(rows, "copy_chrome_cookies did not open its Request").toHaveLength(1);
-            return runtime.store.requests.get(rows[0]!.id);
+            const request = await runtime.store.requests.get(rows[0]!.id);
+            expect(request?.payload).toMatchObject({
+              kind: "browser.sign-in",
+              tabId: viewerOne.surfaceId,
+              sessionId: sessionOne,
+            });
+            return request;
           },
           { timeout: 10_000 },
         );
@@ -1139,7 +1145,10 @@ class Viewer {
   readonly #closed: Promise<void>;
   #surface: BrowserViewerSurface | null = null;
 
+  readonly surfaceId: string;
+
   private constructor(socket: WebSocket, surfaceId: string) {
+    this.surfaceId = surfaceId;
     this.#socket = socket;
     this.#closed = new Promise((done) => socket.once("close", () => done()));
     socket.on("message", (data: WebSocket.RawData, isBinary: boolean) => {

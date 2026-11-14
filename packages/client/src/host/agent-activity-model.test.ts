@@ -2476,7 +2476,7 @@ it("observes an addressed message beyond the active Run's intermediate message",
 
 describe("page stops", () => {
   const browser = (text: string, overrides: Partial<ToolEntry> = {}) =>
-    command(`"$OPENSTEER_BROWSER_HARNESS" --session "$SESSION_ID" ${text}`, overrides);
+    command(`"$OPENSTEER_BROWSER_HARNESS" --tab "$TAB_ID" ${text}`, overrides);
   const stop = (id: string, tab = "A"): PlaceEntry => ({
     kind: "place",
     id,
@@ -2518,7 +2518,7 @@ describe("page stops", () => {
     const literal = (text: string) =>
       browser(text, {
         arguments: {
-          command: `"$OPENSTEER_BROWSER_HARNESS" --session bsn_00000000-0000-4000-8000-000000000001 ${text}`,
+          command: `"$OPENSTEER_BROWSER_HARNESS" --tab A ${text}`,
         },
       });
     const first = literal("one"),
@@ -2727,14 +2727,15 @@ describe("page stops", () => {
       work.map((entry) => entry.id).sort(),
     );
   });
-  it("keeps browser sessions separate and recognizes PowerShell harness commands", () => {
-    const first = command('"$OPENSTEER_BROWSER_HARNESS" --session session-a evaluate');
-    const second = command('& $env:OPENSTEER_BROWSER_HARNESS --session "session-b" evaluate');
-    expect(workRows([first, second, first])).toHaveLength(3);
-    const marker = stop("other-session");
+  it("groups consecutive harness commands across tabs and recognizes PowerShell", () => {
+    const first = command('"$OPENSTEER_BROWSER_HARNESS" --tab tab-a evaluate');
+    const second = command('& $env:OPENSTEER_BROWSER_HARNESS --tab "tab-b" evaluate');
+    expect(workRows([first, second, first])).toMatchObject([
+      { group: "browser", entries: [first, second, first] },
+    ]);
+    const marker = stop("entered-before");
     expect(workRows([marker, first])).toMatchObject([
-      { group: "browser", places: [], head: { label: "Used the browser" } },
-      { kind: "place", entry: marker },
+      { group: "browser", places: [marker], entries: [marker, first] },
     ]);
     expect(toolPresentation(second)).toMatchObject({ kind: "browser", hint: "Browser page work" });
     expect(workRows([stop("pending"), command("echo hello")])).toMatchObject([

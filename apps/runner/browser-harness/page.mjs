@@ -1021,8 +1021,8 @@ export function createPage(environment) {
             });
             if (result.errorText) throw new Error(result.errorText);
           }
-          const document = await operation.document();
-          if (!(await evaluate(operation, document, () => document.readyState === "complete")))
+          const root = await operation.document();
+          if (!(await evaluate(operation, root, () => document.readyState === "complete")))
             throw new RetryError("document.readyState is not complete");
           return null;
         });

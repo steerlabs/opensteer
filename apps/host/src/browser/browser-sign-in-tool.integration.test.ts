@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { testRpcData } from "../server/test-host-api-request.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -29,6 +31,7 @@ const cases = [
   "same-owner-task-reuse",
   "browser-close-keeps-lease",
   "revocation",
+  "exact-tab-request",
 ];
 
 describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
@@ -80,6 +83,8 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           wireVersion: 2,
           cdpBoundary: 1,
           sharedControl: 1,
+          tabRestoreVersion: 1,
+          surfaceState: 1,
           signIn: { version: 3 },
           cardFill: 1,
         },
@@ -128,26 +133,34 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         agentReady: true,
         signIn: true,
         targetedStreaming: true,
+        personalTabs: true,
+        surfaceState: true,
+        uniqueTabs: true,
+        tabCommands: true,
       });
       cleanups.push(() => runtime.close());
       await waitForValue(async () => (host.runtime.browser.available ? true : undefined));
       const open = async () => {
-        const result = await client.callTool({
-          name: "browser_session_open",
-          arguments: { fresh: true },
+        const response = await fetch(new URL("/internal/v1/browser-agent/tabs/open", host.origin), {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${run.toolsToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ identity: { kind: "guest" }, operationKey: randomUUID() }),
         });
-        expect(result.isError).not.toBe(true);
+        expect(response.ok).toBe(true);
         return z
-          .object({ session: z.object({ id: BrowserSessionIdSchema }) })
-          .parse(result.structuredContent).session.id;
+          .object({ tabId: BrowserSurfaceIdSchema, sessionId: BrowserSessionIdSchema })
+          .parse(await response.json());
       };
-      const sessionId = await open();
+      const { sessionId, tabId } = await open();
       await evidence.run("sessionful-sign-in", async () => {
         const result = await client.callTool({
           name: "use_saved_login",
-          arguments: { sessionId, site: passwordFixture.site, reason: "Continue in browser" },
+          arguments: { tabId, site: passwordFixture.site, reason: "Continue in browser" },
         });
-        expect(result.structuredContent).toEqual({
+        expect(result.structuredContent, JSON.stringify(result.structuredContent)).toEqual({
           status: "ready",
           site: passwordFixture.site,
           loginRef,
@@ -204,9 +217,10 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       await evidence.run("personal-reuse", async () => {
         await fulfillFill(connection);
       });
+      await open();
       const cardResult = client.callTool({
         name: "use_card",
-        arguments: { site: passwordFixture.site, sessionId, reason: "Fill the approved purchase" },
+        arguments: { site: passwordFixture.site, tabId, reason: "Fill the approved purchase" },
       });
       void cardResult.catch(() => undefined);
       const cardPending = await vi.waitFor(
@@ -219,6 +233,13 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           return { requestId: rows[0]!.id };
         },
         { timeout: 10_000 },
+      );
+      await vi.waitFor(
+        () =>
+          expect(
+            runtime.receivedCommands().filter((command) => command.type === "session.state"),
+          ).toContainEqual(expect.objectContaining({ type: "session.state", pinned: [tabId] })),
+        { timeout: 2000 },
       );
       const chooser = await testRpcData(
         host.origin,
@@ -253,7 +274,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       });
       const reused = await client.callTool({
         name: "use_card",
-        arguments: { site: passwordFixture.site, sessionId, reason: "Continue approved purchase" },
+        arguments: { site: passwordFixture.site, tabId, reason: "Continue approved purchase" },
       });
       const cardReady = z
         .object({
@@ -300,14 +321,11 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           key: "foreign",
           title: "Other task",
         });
-        const foreignClient = await connect(other.toolsToken);
-        const opened = await foreignClient.callTool({
-          name: "browser_session_open",
-          arguments: { fresh: true },
-        });
-        const foreignSession = z
-          .object({ session: z.object({ id: BrowserSessionIdSchema }) })
-          .parse(opened.structuredContent).session.id;
+        const opened = await host.runtime.browser.openAgentTab(
+          { ownerId: host.ownerId, agentBindingId: `run:${other.runId}`, threadId: other.threadId },
+          { identity: { kind: "guest" }, operationKey: randomUUID() },
+        );
+        const foreignSession = opened.sessionId;
         const foreign = await attach(other, foreignSession);
         await fulfillFill(foreign, foreignSession);
         expect(
@@ -315,14 +333,14 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         ).toHaveLength(1);
       });
       await evidence.run("browser-close-keeps-lease", async () => {
-        const secondSession = await open();
-        const second = await attach(run, secondSession);
         await host.runtime.browser.closeAgentSession({
           agentBindingId: `run:${run.runId}`,
           ownerId: host.ownerId,
           sessionId,
         });
         expect(await connection.request(fill)).toEqual({ status: "expired" });
+        const { sessionId: secondSession } = await open();
+        const second = await attach(run, secondSession);
         await fulfillFill(second, secondSession);
         const result = await client.callTool({
           name: "use_saved_login",
@@ -345,6 +363,64 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           .object({ status: z.literal("ready"), loginRef: z.string() })
           .parse(next.structuredContent);
         expect(ready.loginRef).not.toBe(loginRef);
+      });
+      await evidence.run("exact-tab-request", async () => {
+        const exact = await open();
+        const sibling = await open();
+        expect(sibling.sessionId).toBe(exact.sessionId);
+        authority.policy.approval = true;
+        const site = "https://pin-fixture.test";
+        const pending = client.callTool({
+          name: "use_saved_login",
+          arguments: { tabId: exact.tabId, site, reason: "Sign in in the chosen tab" },
+        });
+        void pending.catch(() => undefined);
+        const requestId = await vi.waitFor(
+          async () => {
+            const rows = await host.store.requests.listPendingPasswordSignIns({
+              after: null,
+              limit: 64,
+            });
+            expect(rows, "use_saved_login did not open its Request").toHaveLength(1);
+            return rows[0]!.id;
+          },
+          { timeout: 10_000 },
+        );
+        await vi.waitFor(
+          () =>
+            expect(runtime.receivedCommands()).toContainEqual(
+              expect.objectContaining({ type: "session.state", pinned: [exact.tabId] }),
+            ),
+          { timeout: 2000 },
+        );
+        await testRpcData(
+          host.origin,
+          "commands.dispatch",
+          {
+            type: "browser.password-sign-in.respond",
+            idempotencyKey: "decline-pin-test",
+            requestId,
+            decision: { kind: "decline" },
+          },
+          { headers: host.ownerHeaders },
+        );
+        expect((await pending).structuredContent).toMatchObject({ status: "declined", site });
+        const closed = await fetch(new URL("/internal/v1/browser-agent/tabs/close", host.origin), {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${run.toolsToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ tabIds: [exact.tabId], operationKey: "close-pin-test" }),
+        });
+        expect(closed.ok).toBe(true);
+        const starts = authority.commands.filter((c) => c.type === "login.authorize").length;
+        const stale = await client.callTool({
+          name: "use_saved_login",
+          arguments: { tabId: exact.tabId, site, reason: "Try the stale tab" },
+        });
+        expect(stale.isError).toBe(true);
+        expect(authority.commands.filter((c) => c.type === "login.authorize")).toHaveLength(starts);
       });
       expect(authority.protocolErrors).toEqual([]);
       expect(runtime.protocolErrors()).toEqual([]);

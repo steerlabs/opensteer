@@ -338,12 +338,12 @@ export async function continuationMessage(
       if (!outcome.success)
         return `Request ${request.id} was fulfilled. Browser profile access is now available; browser_profile_list shows the profiles your Opensteer can use. Continue the task.`;
       const { id: profileId, name } = outcome.data.profile;
-      return `Request ${request.id} was fulfilled. The person chose browser profile ${JSON.stringify(name)} (${profileId}); use it for this task even if you suggested another. Open it with browser_session_open and profileId ${profileId}, then continue the task.`;
+      return `Request ${request.id} was fulfilled. The person chose browser profile ${JSON.stringify(name)} (${profileId}); use it for this task even if you suggested another. Open a tab with Browser Harness newTab(url, { profile: "${profileId}" }), then continue the task.`;
     }
     case "browser.sign-in": {
       if (request.payload.kind !== "browser.sign-in")
         throw new Error("Browser sign-in Request payload is invalid");
-      const { sessionId, site } = request.payload;
+      const { site } = request.payload;
       if (request.status === "declined")
         return `Request ${request.id} to copy the user's Chrome cookies for ${site} was declined. Continue without them and do not ask again unless the user asks.`;
       const response = BrowserSignInRequestResponseSchema.parse(
@@ -351,11 +351,11 @@ export async function continuationMessage(
       );
       switch (response.outcome) {
         case "applied":
-          return `Request ${request.id} was fulfilled: copied ${response.sourceName}'s cookies for ${site} into Browser Session ${sessionId}. Reload the page and check the account; the site may still refuse copied cookies.`;
+          return `Request ${request.id} was fulfilled: copied ${response.sourceName}'s cookies for ${site} into the browser tab. Reload the page and check the account; the site may still refuse copied cookies.`;
         case "not-signed-in":
           return `Request ${request.id} ended: no connected Chrome is signed in to ${site}, so nothing was copied. The user did not decline.`;
         case "session-closed":
-          return `Request ${request.id} was allowed, but Browser Session ${sessionId} had closed. Call copy_chrome_cookies again in your current session.`;
+          return `Request ${request.id} was allowed, but the browser tab had closed. Call copy_chrome_cookies again with your current tabId.`;
       }
     }
     case "browser.password-sign-in": {
@@ -730,6 +730,6 @@ function passwordSignInContinuation(
     case "interrupted":
       return `The saved-login release for ${site} stopped on ${computerName} before anything was released. Call use_saved_login again if the task still needs it.`;
     case "session-closed":
-      return `The Browser Session closed before the saved login for ${site} was released.`;
+      return `The browser tab closed before the saved login for ${site} was released.`;
   }
 }

@@ -52,7 +52,7 @@ const reportSchema = z
     replayed: z.object({ requestId: RequestIdSchema, replayed: z.boolean() }).optional(),
     opened: z
       .object({
-        session: z.object({ id: z.string(), profileId: z.string().nullable() }).passthrough(),
+        tabId: z.string(),
       })
       .optional(),
     page: z.object({ signedIn: z.boolean(), url: z.string() }).optional(),
@@ -71,8 +71,7 @@ const reportSchema = z
           .object({
             tabId: z.string(),
             state: z.string(),
-            sessionId: z.string().nullable(),
-            profileId: z.string().nullable().optional(),
+            profile: profileSchema.nullable(),
           })
           .passthrough(),
       )
@@ -400,8 +399,14 @@ run("Browser profiles through a whole deployment", () => {
         client.getSnapshot().browserProfiles.find((row) => row.id === profile.id)?.name,
         "Brex",
       );
-    const opened = await profileTurn(stack, evidence, { open: { profileId: profile.id } });
-    const sessionId = opened.report.opened!.session.id;
+    const opened = await profileTurn(stack, evidence, { open: { profile: profile.id } });
+    const sessionId = (
+      await stack.host.store.database
+        .selectFrom("personalTabs")
+        .select("sessionId")
+        .where("id", "=", opened.report.opened!.tabId)
+        .executeTakeFirstOrThrow()
+    ).sessionId!;
     await waitFor(
       async () =>
         people[0]!
@@ -513,7 +518,7 @@ run("Browser profiles through a whole deployment", () => {
         return continuation !== undefined;
       }, 30_000);
       evidence.observations.push({ continuation, profile: result.profile });
-      const expected = `Request ${result.requestId} was fulfilled. The person chose browser profile "Brex Ops" (${result.profile.id}); use it for this task even if you suggested another. Open it with browser_session_open and profileId ${result.profile.id}, then continue the task.`;
+      const expected = `Request ${result.requestId} was fulfilled. The person chose browser profile "Brex Ops" (${result.profile.id}); use it for this task even if you suggested another. Open a tab with Browser Harness newTab(url, { profile: "${result.profile.id}" }), then continue the task.`;
       equal(
         evidence,
         "continuation identifies Host-created renamed profile",
@@ -560,19 +565,19 @@ run("Browser profiles through a whole deployment", () => {
     const profileId = await createProfile(stack);
     const origin = await fixtureAccount();
     const profiled = await profileTurn(stack, evidence, {
-      open: { profileId },
+      open: { profile: profileId },
       visit: `${origin}/account`,
     });
     const guest = await profileTurn(
       stack,
       evidence,
-      { open: { fresh: true }, visit: `${origin}/account` },
+      { open: { guest: true }, visit: `${origin}/account` },
       profiled.threadId,
     );
     const live = await profileTurn(stack, evidence, { tabs: true }, profiled.threadId);
     const expected = [
-      { sessionId: profiled.report.opened!.session.id, profileId },
-      { sessionId: guest.report.opened!.session.id, profileId: null },
+      { tabId: profiled.report.opened!.tabId, profileId },
+      { tabId: guest.report.opened!.tabId, profileId: null },
     ];
     // Observe both states before asserting identity so the base failure also
     // leaves verifiable evidence for asleep rows and the no-wake guarantee.
@@ -588,11 +593,21 @@ run("Browser profiles through a whole deployment", () => {
       live.report.tabs!.map(() => "asleep"),
     );
     for (const identity of expected) {
-      const tab = live.report.tabs!.find((tab) => tab.sessionId === identity.sessionId);
-      expect(tab, `live tab for ${identity.sessionId}`).toBeDefined();
-      equal(evidence, `open ${identity.sessionId} identity`, tab!.profileId, identity.profileId);
+      const tab = live.report.tabs!.find((tab) => tab.tabId === identity.tabId);
+      expect(tab, `live tab for ${identity.tabId}`).toBeDefined();
+      equal(
+        evidence,
+        `open ${identity.tabId} identity`,
+        tab!.profile?.id ?? null,
+        identity.profileId,
+      );
       const sleeping = asleep.report.tabs!.find((row) => row.tabId === tab!.tabId);
-      equal(evidence, `asleep ${tab!.tabId} identity`, sleeping?.profileId, identity.profileId);
+      equal(
+        evidence,
+        `asleep ${tab!.tabId} identity`,
+        sleeping?.profile?.id ?? null,
+        identity.profileId,
+      );
     }
   });
 

@@ -8,6 +8,7 @@
     ".": "./src/index.ts",
     "./browser": "./src/browser.ts",
     "./browser-actions": "./src/browser-actions.ts",
+    "./browser-agent": "./src/browser-agent.ts",
     "./browser-sources": "./src/browser-sources.ts",
     "./browser-relay": "./src/browser-relay.ts",
     "./deployment-status": "./src/deployment-status.ts",

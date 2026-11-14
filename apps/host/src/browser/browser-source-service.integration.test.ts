@@ -20,6 +20,7 @@ import {
   createDatabase,
   migrateToLatest,
   OpensteerStore,
+  PersonalTabStore,
 } from "@opensteer/database";
 
 import type { PersonalHostAccessRouteEnvelope } from "@opensteer/deployment-authority";
@@ -29,6 +30,7 @@ import {
   browserSourcePairChallengeBytes,
   browserSourceRouteChangedBytes,
 } from "@opensteer/deployment-authority";
+import { createBrowserSessionId } from "@opensteer/protocol";
 import type {
   BrowserClientMessage,
   BrowserRuntimeServerMessage,
@@ -126,10 +128,11 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
     const claims = JSON.parse(
       Buffer.from(ticket.split(".")[1] ?? "", "base64url").toString("utf8"),
     ) as import("@opensteer/protocol").BrowserAttachTicketClaims;
+    const tabId = BrowserSurfaceIdSchema.parse(`tab-${claims.sessionId.slice(4)}`);
     this.initialPage = claims.initialNavigation
       ? {
           operationKey: claims.initialNavigation.operationKey,
-          surfaceId: "page-1" as import("@opensteer/protocol").BrowserSurfaceId,
+          surfaceId: tabId,
           navigation: claims.initialNavigation.url ? "submitted" : "blank",
         }
       : undefined;
@@ -149,7 +152,7 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
           op: "rows",
           rows: [
             {
-              id: BrowserSurfaceIdSchema.parse("page-1"),
+              id: tabId,
               state: "live",
               title: "Example",
               url: "about:blank",
@@ -173,7 +176,7 @@ class FakeRuntimeConnection extends EventEmitter implements BrowserRuntimeConnec
           op: "end",
           revision: 0,
           count: 1,
-          meta: { activeId: BrowserSurfaceIdSchema.parse("page-1"), inventoryRevision: 1 },
+          meta: { activeId: tabId, inventoryRevision: 1 },
         },
       });
     });
@@ -401,6 +404,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       onDeploymentEvent: () => {},
       hostOrigin: new URL(sourceOrigin),
       repository: store,
+      personalTabs: new PersonalTabStore(database),
       signer: new BrowserAttachTicketSigner({ keyId: "host-test", privateKey: hostKey.privateKey }),
       targetResolver: {
         placements: () =>
@@ -439,6 +443,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
           },
           cdpBoundary: true,
           sharedControl: true,
+          tabRestoreVersion: true,
           computer: { name: "Test Mac", runnerId: placement.runnerId },
           placementKey: `runner:${placement.runnerId}:browser`,
           runtimeId: "browser",
@@ -855,14 +860,22 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     });
     const connection = runtime.connections.at(-1);
     if (!connection) throw new Error("Expected a runtime connection");
+    const tabId = BrowserSurfaceIdSchema.parse(`tab-${opened.session.id.slice(4)}`);
+    await vi.waitFor(
+      async () =>
+        expect(
+          await new PersonalTabStore(database).get(ownerId, tabId),
+          "The runtime tab was not persisted",
+        ).not.toBeNull(),
+      { timeout: 2000 },
+    );
     return {
       agent: {
         loginFill: true,
         ownerId,
         reason: "Open the dashboard",
         runId: run.runId,
-        sessionId: opened.session.id,
-        targetId: "target-1",
+        tabId,
         threadId: run.threadId,
         deploymentId: personal.deploymentId,
       },
@@ -1070,6 +1083,41 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       });
       expect(ready.connection.imports()).toEqual([]);
       expect(await pendingSignIns(ready.ownerId)).toEqual([]);
+    },
+  );
+
+  it.each(["login", "card"] as const)(
+    "refuses a tab rebound during the %s probe before requesting credentials",
+    async (credential) => {
+      const ready = await passwordScene();
+      const rebound = async () => {
+        await store.createBrowserSession({
+          id: createBrowserSessionId(),
+          tabGroupId: ready.sessionId,
+          runnerId: runtime.runnerId!,
+          origin: "agent",
+          ownerId: ready.ownerId,
+          placementKey: "rebound",
+          profileId: null,
+          runtimeId: "browser",
+        });
+      };
+      const input = { ...ready.agent, callId: randomUUID(), site: "https://rebound.test" };
+      if (credential === "login") {
+        vi.spyOn(passwords, "probe").mockImplementationOnce(async () => {
+          await rebound();
+          return "has-login";
+        });
+        await expect(logins.useSavedLogin(input)).rejects.toMatchObject({ code: "conflict" });
+      } else {
+        vi.spyOn(passwords, "probeCard").mockImplementationOnce(async () => {
+          await rebound();
+          return "has-card";
+        });
+        await expect(logins.useCard(input)).rejects.toMatchObject({ code: "conflict" });
+      }
+      expect(ready.connection.signInStarts()).toEqual([]);
+      expect(await passwordRequestCount(ready.agent.runId)).toBe(0);
     },
   );
 
@@ -1510,7 +1558,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       expect(wakes(ready)).toEqual([
         expect.objectContaining({
           runId: ready.agent.runId,
-          sessionId: ready.agent.sessionId,
+          tabId: ready.agent.tabId,
           site,
           threadId: ready.agent.threadId,
         }),
@@ -2406,6 +2454,35 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     await chrome.close();
   });
 
+  it("refuses a stale tab after Chrome exports without importing cookies", async () => {
+    const { agent, connection, ownerId, deploymentId } = await scene();
+    const site = "https://stale-cookie-target.test";
+    const paired = await pairChrome(ownerId, "Chrome");
+    const chrome = await connectChrome(paired);
+    try {
+      await sourceStore.upsertGrant({
+        ownerId,
+        deploymentId,
+        preferredSourceId: paired.sourceId,
+        site,
+      });
+      chrome.holdExports = true;
+      const copy = service.agentCopyChromeCookies({ ...agent, callId: randomUUID(), site });
+      void copy.catch(() => undefined);
+      await vi.waitFor(() => expect(chrome.held, "Chrome export did not start").toHaveLength(1), {
+        timeout: 2000,
+      });
+      await new PersonalTabStore(database).close(ownerId, agent.tabId);
+      chrome.releaseExports();
+      await expect(copy).rejects.toMatchObject({ code: "conflict" });
+      expect(connection.imports()).toEqual([]);
+      expect(await pendingSignIns(ownerId)).toEqual([]);
+    } finally {
+      chrome.releaseExports();
+      await chrome.close();
+    }
+  });
+
   it("completes an allowed Request by itself when Chrome reconnects as a new connection", async () => {
     const { agent, connection, ownerId, deploymentId, complete } = await scene();
     const first = await pairChrome(ownerId, "Chrome A");
@@ -2650,19 +2727,20 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       await service.agentCopyChromeCookies({
         ...agent,
         callId: randomUUID(),
-        sessionId: outdated.session.id,
+        tabId: BrowserSurfaceIdSchema.parse(`tab-${outdated.session.id.slice(4)}`),
         site: "https://third.test",
       }),
     ).toEqual({ reason: "runtime-outdated", site: "https://third.test", status: "unavailable" });
 
     await browser.stop(ownerId, sessionId);
-    expect(
-      await service.agentCopyChromeCookies({
+    await expect(
+      service.agentCopyChromeCookies({
         ...agent,
         callId: randomUUID(),
         site: "https://fourth.test",
       }),
-    ).toEqual({ reason: "session-closed", site: "https://fourth.test", status: "unavailable" });
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(connection.imports()).toEqual([]);
     expect(
       await service.sessionSignIn({
         idempotencyKey: randomUUID(),

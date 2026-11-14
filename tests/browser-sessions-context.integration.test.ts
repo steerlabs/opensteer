@@ -224,7 +224,9 @@ run("Browser Sessions through a whole deployment", () => {
         expect(answer).toContain(
           `The person included this browser page: ${JSON.stringify(candidate.title)} ${JSON.stringify(candidate.url)}`,
         );
-        expect(answer).toContain(`Browser Session ${sessionId}, page ${JSON.stringify(pageId)}`);
+        expect(answer).toContain(
+          `(tab ${JSON.stringify(pageId)}). Use it with Browser Harness --tab or switchTab`,
+        );
         outcomes.push({
           label,
           messageId: result.message.id,

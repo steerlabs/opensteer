@@ -1,3 +1,15 @@
+import {
+  browserAgentHostRoutePrefix,
+  browserAgentRoutePaths,
+  browserAgentRequestMaxBytes,
+  BrowserAgentTabListQuerySchema,
+  BrowserAgentTabUseInputSchema,
+  BrowserAgentTabOpenInputSchema,
+  BrowserAgentTabCloseInputSchema,
+  BrowserAgentTabOrganizeInputSchema,
+} from "@opensteer/protocol/browser-agent";
+import type { BrowserTabGroupService } from "./browser-tab-group-service.js";
+import { normalizeHostError } from "../server/http-errors.js";
 import { DeviceAccessRefusal } from "../administration/device-access.js";
 import type {} from "@fastify/websocket";
 import { OpensteerError } from "@opensteer/core";
@@ -78,6 +90,7 @@ export function registerAgentCdpBridge(
   app: FastifyInstance,
   browser: BrowserService,
   tokens: RunToolTokenService,
+  tabs?: BrowserTabGroupService,
 ): void {
   const route = {
     authenticate: (token: string) => tokens.authenticate(token),
@@ -91,6 +104,60 @@ export function registerAgentCdpBridge(
     // long Run outlives its first token by.
     reauthorize: (scope: RunToolScope) => tokens.reauthorize(scope),
   };
+  for (const [name, path] of Object.entries(browserAgentRoutePaths)) {
+    app.route({
+      method: name === "tabs" ? "GET" : "POST",
+      url: `${browserAgentHostRoutePrefix}/${path}`,
+      bodyLimit: browserAgentRequestMaxBytes,
+      handler: async (request, reply) => {
+        try {
+          const authenticated = await tokens.authenticate(bearerToken(request.headers));
+          const scope = await tokens.reauthorize(authenticated);
+          const agent = {
+            ...route.authority(scope),
+            threadId: scope.threadId,
+            environmentId: scope.environmentId,
+          };
+          if (name === "use")
+            return await browser.useAgentTab(
+              agent,
+              BrowserAgentTabUseInputSchema.parse(request.body).tabId,
+            );
+          if (name === "open")
+            return await browser.openAgentTab(
+              agent,
+              BrowserAgentTabOpenInputSchema.parse(request.body),
+            );
+          if (!tabs)
+            throw new OpensteerError({
+              code: "conflict",
+              message: "Browser tabs are unavailable on this Host.",
+            });
+          const actor = { ...agent, kind: "agent" as const };
+          if (name === "tabs")
+            return await tabs.read(actor, BrowserAgentTabListQuerySchema.parse(request.query));
+          if (name === "close") {
+            const input = BrowserAgentTabCloseInputSchema.parse(request.body);
+            const result = await tabs.write(
+              actor,
+              { action: "close", tabIds: input.tabIds },
+              `agent:${scope.runId}:${input.operationKey}`,
+            );
+            return { closed: result.closed ?? [], failed: result.failed ?? [] };
+          }
+          const { operationKey, ...input } = BrowserAgentTabOrganizeInputSchema.parse(request.body);
+          return await tabs.write(actor, input, `agent:${scope.runId}:${operationKey}`);
+        } catch (error) {
+          const normalized = normalizeHostError(
+            error instanceof BrowserCdpConnectionEnded
+              ? new OpensteerError({ code: "forbidden", message: error.message })
+              : error,
+          );
+          return reply.code(normalized.status).send({ error: normalized.error });
+        }
+      },
+    });
+  }
   registerCdpRoute<RunToolScope>(app, {
     ...route,
     backend: "actions",
@@ -219,7 +286,7 @@ function attachCdpSocket<Scope>(
       const parsed = BrowserSessionIdSchema.safeParse(connection.sessionId);
       if (!parsed.success) {
         throw new BrowserCdpConnectionEnded(
-          `"${connection.sessionId.slice(0, 80)}" is not a Browser Session ID. browser_session_open and browser_session_list return session IDs.`,
+          "This browser binding is invalid. Use Browser Harness listTabs() and switchTab(tabId).",
         );
       }
       sessionId = parsed.data;
@@ -231,11 +298,13 @@ function attachCdpSocket<Scope>(
     }
     if (options.backend === "actions") {
       if (!sessionId)
-        throw new BrowserCdpConnectionEnded("Actions require an exact Browser Session.");
+        throw new BrowserCdpConnectionEnded(
+          "Select a tab with Browser Harness switchTab(tabId) before using actions.",
+        );
       const attached = await options.browser.attachActionsForAgent(
         { ...authority, sessionId },
         (event) => sendJson(socket, { event }),
-        () => closeSocket(socket, new Error("The Browser Session ended."), 1000),
+        () => closeSocket(socket, new Error("The browser tab became unavailable."), 1000),
       );
       return {
         close: () => attached.close(),
@@ -251,7 +320,7 @@ function attachCdpSocket<Scope>(
           ...(event.sessionId ? { sessionId: event.sessionId } : {}),
         });
       },
-      () => closeSocket(socket, new Error("The Browser Session ended."), 1000),
+      () => closeSocket(socket, new Error("The browser tab became unavailable."), 1000),
     );
     return {
       close: () => attached.close(),
@@ -408,7 +477,11 @@ function attachCdpSocket<Scope>(
 function bearerToken(headers: IncomingHttpHeaders): string {
   const value = headers.authorization;
   const match = /^Bearer ([^\s]{20,4096})$/u.exec(value ?? "");
-  if (!match?.[1]) throw new Error("CDP authorization is missing");
+  if (!match?.[1])
+    throw new OpensteerError({
+      code: "unauthorized",
+      message: "Browser authorization is missing.",
+    });
   return match[1];
 }
 

@@ -460,7 +460,7 @@ run("Browser Sessions through a whole deployment", () => {
       inventoryRevision: current.inventoryRevision!,
       idempotencyKey: randomUUID(),
     });
-    expect(closed.ok).toBe(true);
+    expect(closed).toMatchObject({ ok: true });
     expect((await catalog()).tabs.some((tab) => tab.loading)).toBe(false);
 
     const directory =
@@ -679,7 +679,7 @@ run("Browser Sessions through a whole deployment", () => {
       const after = await stack.host.store.getBrowserSessionForOwner(sessionId, owner.id);
       expect(after?.state).toBe("closed");
       const endedMessage =
-        "This Browser Session has ended or is unavailable. Open a session with browser_session_open.";
+        "This tab has ended or is unavailable. Use Browser Harness listTabs() and switchTab(tabId).";
       await expect(
         stack.host.browser.attachCdpForAgent(
           {
@@ -758,7 +758,7 @@ run("Browser Sessions through a whole deployment", () => {
           () => undefined,
         ),
       ).rejects.toThrow(
-        "This Browser Session has ended or is unavailable. Open a session with browser_session_open.",
+        "This tab has ended or is unavailable. Use Browser Harness listTabs() and switchTab(tabId).",
       );
       await writeViewReport("closed-session-delayed-closing", { before, after, sessionId, writes });
     } finally {
@@ -837,13 +837,13 @@ run("Browser Sessions through a whole deployment", () => {
           );
         if (source === "requested")
           expect(outcome).toBe(
-            `Browser Session ${sessionId} disconnected, but Opensteer could not save its ended state. Open a new one with browser_session_open.`,
+            "The browser disconnected, but Opensteer could not save its ended state. Use Browser Harness listTabs() to select another tab.",
           );
         expect(consumerClosed).toHaveBeenCalledOnce();
         expect(attempts).toBe(1);
         expect(after?.state).toBe("closing");
         expect(refusal).toBe(
-          `Browser Session ${sessionId} lost its browser connection. Open a new one with browser_session_open.`,
+          "This tab lost its browser connection. Use Browser Harness listTabs() and switchTab(tabId) to reconnect.",
         );
         expect(reported.mock.calls.some((call) => call.includes(sessionId))).toBe(true);
         await writeViewReport(`closed-session-failed-${source}`, {

@@ -38,6 +38,18 @@ in-page state than other engines; phones and Playwright promise only a descripto
 Passwords, files and arbitrary app state are never promised. Ending a runtime loses that state,
 while the durable descriptor still permits reopening.
 
+## Agents address tabs
+
+Agents see what the person sees: profiles and one list of tabs. Browser Harness takes a tab, and
+the Host resolves, wakes or restores the browser behind it ([contract](../packages/protocol/src/browser-agent.ts));
+no session ID reaches the model, because two kinds of address made agents open duplicates instead of
+finding pages already open. Opening a tab as a profile joins that profile's running browser, as a
+person's open does; a restored lineage may still run beside it, unseen by agents. Guest belongs to the
+task its session's opener records, so tasks never share signed-out state. Every agent entry point
+(listing, opening, using, closing and organizing tabs, CDP and actions) passes one admission: live Run,
+personal owner, the browser computer's device access, and the Run's resource ceiling, where driving or
+changing tabs needs read-write.
+
 ## Agent access and input
 
 A browser device declares abilities, not a device class. The Host places a session on its profile's

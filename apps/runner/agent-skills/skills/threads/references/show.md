@@ -5,8 +5,8 @@ Outside an Assignment, show work without being asked: the moment a place they as
 Targets for `person_show`:
 
 - Your own work, or "show me what you're doing": `{current: true}`. This Run's latest tab, Mac app or Agent Phone; no native IDs.
-- A task's work: `{runId}`. Take `runId` from `recentPlaces` in `thread_read`, and read it again when the task says it moved. A place is recent, not proof it is open: if its session has ended, say so and never substitute.
-- A saved page: `{tabId}` from `browser_tab_read`, including asleep tabs.
+- A task's work: `{runId}`. Take `runId` from `recentPlaces` in `thread_read`, and read it again when the task says it moved. A place is recent, not proof it is open: if its tab has closed, say so and never substitute.
+- Any browser tab: `{tabId}` from Browser Harness `listTabs()`, including asleep tabs.
 - A Thread: `{threadId}` from `thread_list`; search and follow its cursor before saying it is missing.
 
 Switching your own browser target does not move the person's view. If a target fails, report the error instead of substituting.
