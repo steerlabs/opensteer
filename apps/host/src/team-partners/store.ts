@@ -73,7 +73,7 @@ export class TeamPartnerStore {
       const id = randomUUID(),
         verifier = randomBytes(32).toString("base64url");
       const expiresAt = new Date(Date.now() + 10 * 60_000);
-      await t
+      const invite = await t
         .insertInto("teamPartnerInvites")
         .values({
           id,
@@ -83,10 +83,17 @@ export class TeamPartnerStore {
           consumedAt: null,
           revokedAt: null,
         })
-        .execute();
+        .returningAll()
+        .executeTakeFirstOrThrow();
       await this.audit(t, actor, "invite.created", id);
       const document = this.authority.document;
       return {
+        invite: TeamPartnerInviteSchema.parse({
+          ...invite,
+          createdAt: invite.createdAt.toISOString(),
+          expiresAt: expiresAt.toISOString(),
+          canRevoke: true,
+        }),
         offer: serializeTeamPartnerOffer({
           teamId: document.deploymentId,
           origin: document.canonicalOrigin,
@@ -136,9 +143,14 @@ export class TeamPartnerStore {
   async getPolicy(actor: TeamActor) {
     return this.access.database.transaction().execute(async (t) => {
       const member = await this.access.member(t, actor.userId);
+      const policy = await this.policy(t);
       return {
-        policy: await this.policy(t),
+        policy,
         canSet: actor.kind === "human" && member.role !== "member",
+        canPropose:
+          actor.kind === "human" &&
+          policy !== "off" &&
+          (member.role !== "member" || policy !== "admins"),
       };
     });
   }
@@ -198,6 +210,7 @@ export class TeamPartnerStore {
             expiresAt: r.expiresAt.toISOString(),
             consumedAt: r.consumedAt?.toISOString() ?? null,
             revokedAt: r.revokedAt?.toISOString() ?? null,
+            canRevoke: !r.consumedAt && !r.revokedAt && r.expiresAt > new Date(),
           }),
         ),
         nextCursor: rows.length > 50 ? rows[49]!.id : null,

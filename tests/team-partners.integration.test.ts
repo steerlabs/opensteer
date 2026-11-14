@@ -10,6 +10,7 @@ import {
 import {
   hostApi,
   parseTeamPartnerOffer,
+  serializeTeamPartnerOffer,
   teamPartnerMaxFrameBytes,
   teamPartnerSocketPath,
   type HostApiCommandInput,
@@ -112,6 +113,11 @@ async function redeem(session: Session, offer: string) {
   if (result.type !== "team.partner.invite.redeem") throw new Error("No partner link");
   return result.link;
 }
+function preview(session: Session, offer: string) {
+  return withTimeout(session.rpc["team.partner.invite.preview"]({ offer }), 5000, {
+    timeoutError: () => new Error("Partner invite preview never returned"),
+  });
+}
 async function active(a: Session, b: Session) {
   await vi.waitFor(
     async () => {
@@ -134,6 +140,30 @@ it.each(["listener", "dialer"] as const)(
     const f = await pairFixture();
     try {
       const offer = await invite(f.aSession);
+      if (revoker === "listener") {
+        expect(await f.bSession.rpc["team.sharing.policy.get"]({})).toMatchObject({
+          ok: true,
+          data: { canSet: true, canPropose: true },
+        });
+        expect(await preview(f.bSession, offer)).toMatchObject({
+          ok: true,
+          data: { name: "Alpha", origin: f.a.canonicalOrigin },
+        });
+        expect(await list(f.aSession)).toEqual([]);
+        expect(await list(f.bSession)).toEqual([]);
+        expect(await f.aSession.rpc["team.partner.invites.list"]({})).toMatchObject({
+          ok: true,
+          data: { invites: [{ consumedAt: null, canRevoke: true }] },
+        });
+        const tampered = serializeTeamPartnerOffer({
+          ...parseTeamPartnerOffer(offer),
+          hostKeyFingerprint: `sha256:${"B".repeat(43)}`,
+        });
+        expect(await preview(f.bSession, tampered)).toMatchObject({
+          ok: false,
+          error: { reason: "identity-mismatch" },
+        });
+      }
       const bLink = await redeem(f.bSession, offer);
       const aLink = (await list(f.aSession))[0]!;
       expect(aLink).toMatchObject({
@@ -248,8 +278,16 @@ it("enforces members-propose independently on both teams and closes sockets when
     expect((await am.rpc["commands.dispatch"]({ type: "team.partner.invite.create" })).ok).toBe(
       false,
     );
+    expect(await am.rpc["team.sharing.policy.get"]({})).toMatchObject({
+      ok: true,
+      data: { canSet: false, canPropose: false },
+    });
     await command(f.aSession, { type: "team.sharing.policy.set", policy: "members-propose" });
     await command(f.bSession, { type: "team.sharing.policy.set", policy: "members-propose" });
+    expect(await am.rpc["team.sharing.policy.get"]({})).toMatchObject({
+      ok: true,
+      data: { canSet: false, canPropose: true },
+    });
     const bLink = await redeem(bm, await invite(am));
     const aLink = (await list(am))[0]!;
     expect(aLink).toMatchObject({ localApproved: false, partnerApproved: false });

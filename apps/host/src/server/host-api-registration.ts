@@ -56,6 +56,7 @@ export const hostApiScopes = {
   "team.agent.recipient.get": "session",
   "team.links.list": "session",
   "team.partners.list": "session",
+  "team.partner.invite.preview": "session",
   "team.partner.invites.list": "session",
   "team.sharing.policy.get": "session",
   "teams.links.list": "session",

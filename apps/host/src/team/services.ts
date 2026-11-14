@@ -395,6 +395,9 @@ export async function startTeamServices(options: TeamServiceOptions) {
     await options.database.transaction().execute((t) => access.checkSession(t));
     if (name.startsWith("team.knowledge.")) return options.knowledge.read(actor, name, raw);
     switch (name) {
+      case "team.partner.invite.preview":
+        requireTeam(options.partners);
+        return options.partners.preview(actor, teamReadSchemas[name].input.parse(raw).offer);
       case "team.partners.list":
         requireTeam(options.partners);
         return options.partners.store.list(

@@ -1589,6 +1589,11 @@ export const hostApi = defineRpc({
     teamReadSchemas["team.partners.list"].input,
     teamReadViews["team.partners.list"],
   ),
+  "team.partner.invite.preview": declaration(
+    "POST",
+    teamReadSchemas["team.partner.invite.preview"].input,
+    teamReadViews["team.partner.invite.preview"],
+  ),
   "team.partner.invites.list": declaration(
     "POST",
     teamReadSchemas["team.partner.invites.list"].input,

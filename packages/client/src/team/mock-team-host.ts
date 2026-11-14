@@ -518,13 +518,58 @@ export class MockTeamHost {
       return { invite: live ? current.invite : null };
     }
     if (name === "team.sharing.policy.get")
-      return { policy: this.sharingPolicy, canSet: this.bootstrap.member.role !== "member" };
+      return {
+        policy: this.sharingPolicy,
+        canSet: this.bootstrap.member.role !== "member",
+        canPropose:
+          this.sharingPolicy !== "off" &&
+          (this.bootstrap.member.role !== "member" || this.sharingPolicy !== "admins"),
+      };
+    if (name === "team.partner.invite.preview") {
+      if (
+        this.sharingPolicy === "off" ||
+        (this.sharingPolicy === "admins" && this.bootstrap.member.role === "member")
+      )
+        throw new OpensteerError({ code: "forbidden", message: "Team sharing action refused" });
+      const offer = parseTeamPartnerOffer((input as { offer: string }).offer);
+      if (Date.parse(offer.expiresAt) <= Date.now())
+        throw new OpensteerError({
+          code: "forbidden",
+          reason: "partner-invite-expired",
+          message: "Partner invite expired",
+        });
+      return {
+        name: new URL(offer.origin).hostname.slice(0, 160),
+        origin: offer.origin,
+        expiresAt: offer.expiresAt,
+      };
+    }
     if (name === "team.partners.list" || name === "team.partner.invites.list") {
       const after = (input as { after?: string }).after;
+      const admin = this.bootstrap.member.role !== "member";
       const values =
         name === "team.partners.list"
-          ? [...this.partners.values()]
-          : [...this.partnerInvites.values()];
+          ? [...this.partners.values()].map((row) => ({
+              ...row,
+              canApprove:
+                row.lastError !== "identity-mismatch" &&
+                !row.localApproved &&
+                row.state !== "revoked" &&
+                this.sharingPolicy !== "off" &&
+                (admin || this.sharingPolicy === "members"),
+              canRevoke:
+                row.state !== "revoked" &&
+                (admin ||
+                  this.sharingPolicy === "members" ||
+                  (row.createdBy === this.userId && !row.localApproved)),
+            }))
+          : [...this.partnerInvites.values()]
+              .filter((row) => admin || row.createdBy === this.userId)
+              .map((row) => ({
+                ...row,
+                canRevoke:
+                  !row.consumedAt && !row.revokedAt && Date.parse(row.expiresAt) > Date.now(),
+              }));
       const rows = values
         .filter((row) => !after || row.id > after)
         .sort((a, b) => a.id.localeCompare(b.id));
@@ -617,6 +662,7 @@ export class MockTeamHost {
           });
           return {
             type: command.type,
+            invite: { ...this.partnerInvites.get(id)!, canRevoke: true },
             offer: serializeTeamPartnerOffer({
               teamId: this.teamId,
               origin: this.origin,

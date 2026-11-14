@@ -14,6 +14,7 @@ import {
   TeamLinkIdSchema,
   TeamMessageIdSchema,
   TeamNoticeIdSchema,
+  TeamOriginSchema,
   ThreadIdSchema,
   UserIdSchema,
 } from "@opensteer/core";
@@ -324,7 +325,19 @@ export const teamReadSchemas = {
   },
   "team.sharing.policy.get": {
     input: z.strictObject({}),
-    output: z.object({ policy: TeamSharingPolicySchema, canSet: z.boolean() }),
+    output: z.object({
+      policy: TeamSharingPolicySchema,
+      canSet: z.boolean(),
+      canPropose: z.boolean().optional(),
+    }),
+  },
+  "team.partner.invite.preview": {
+    input: z.strictObject({ offer: TeamPartnerOfferTextSchema }),
+    output: z.object({
+      name: z.string().min(1).max(160),
+      origin: TeamOriginSchema,
+      expiresAt: IsoDateTimeSchema,
+    }),
   },
   "team.agent.recipient.get": {
     input: z.strictObject({ channelId: TeamChannelIdSchema, rootId: TeamMessageIdSchema }),
