@@ -193,6 +193,7 @@ export function seedBusyTeam(
       id: TeamAgentRequestIdSchema.parse(
         `tar_00000000-0000-4000-8${options.index}00-${String(requests.length + 1).padStart(12, "0")}`,
       ),
+      kind: "self",
       ownerUserId: owner,
       channelId: where,
       threadRootId: root.id,
