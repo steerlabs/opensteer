@@ -69,6 +69,12 @@ check](../scripts/smoke-desktop-release.ts) runs the final app from a disposable
 with fresh data, refuses any machine but an ephemeral CI runner or the test VM guest, and changes
 no shipped behavior.
 
+Native compiler caches belong to the release workflow, separately per Swift helper. Main insiders
+seed the default-branch cache that tag runs can also restore; CI's native proof does not publish
+release products. Only unsigned (or linker ad-hoc) executables and their source/toolchain proof
+are cached. Bundles, versions, provisioning profiles, entitlements and distribution signatures are
+always produced and verified afresh. Missing or invalid compiler products rebuild.
+
 Publication re-verifies the draft's assets, hashes, `SHA256SUMS`, source and signer with the
 workflow commit's publisher; no certification receipt is needed. Provenance and native bundle versions are numeric `X.Y.Z`,
 the manifest base plus first-parent commits since it changed ([release-version.cjs](../scripts/release-version.cjs)).

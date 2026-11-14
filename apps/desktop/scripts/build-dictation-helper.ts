@@ -7,6 +7,11 @@ import path from "node:path";
 import { plist } from "@opensteer/shared/plist";
 import { dictationHelperProtocolVersion } from "@opensteer/protocol/dictation-helper";
 import { signedHelperProtocolVersionKey } from "../src/signed-helpers/metadata.js";
+import {
+  nativeBuildProducts,
+  nativeReleaseInputs,
+  verifyNativeProducts,
+} from "./native-build-cache.js";
 const require = createRequire(import.meta.url);
 const { signingMode } = require("./macos-release-identity.cjs") as {
   signingMode: import("./signing-input.cjs").SigningMode;
@@ -19,13 +24,19 @@ const identity = signingMode.mode === "signed" ? signingMode.signing.identity : 
 const requested = process.argv.indexOf("--sign");
 if (requested >= 0 && process.argv[requested + 1] !== identity)
   throw new Error("--sign must match the validated signing input.");
-const bin = buildSwiftProducts(
-  directory,
-  ["DictationHelper"],
-  signed ? ["arm64", "x86_64"] : [arch() === "x64" ? "x86_64" : "arm64"],
-  signed ? "release" : "debug",
-  !signed ? ["-Xswiftc", "-DOPENSTEER_DEV_TRUST"] : [],
-);
+const architectures = signed ? ["arm64", "x86_64"] : [arch() === "x64" ? "x86_64" : "arm64"];
+const build = async () => ({
+  DictationHelper: path.join(
+    buildSwiftProducts(
+      directory,
+      ["DictationHelper"],
+      architectures,
+      signed ? "release" : "debug",
+      !signed ? ["-Xswiftc", "-DOPENSTEER_DEV_TRUST"] : [],
+    ),
+    "DictationHelper",
+  ),
+});
 const name = "Opensteer Dictation";
 const output = path.join(directory, "dist", `${name}.app`);
 const staging = `${output}.tmp-${process.pid}`;
@@ -35,67 +46,88 @@ const version = (
   ) as { version: string }
 ).version;
 const entitlements = path.join(directory, "dist", `entitlements-${process.pid}.plist`);
-try {
-  await rm(staging, { recursive: true, force: true });
-  await mkdir(path.join(staging, "Contents/MacOS"), { recursive: true });
-  await writeFile(
-    path.join(staging, "Contents/MacOS", name),
-    await readFile(path.join(bin, "DictationHelper")),
-    { mode: 0o755 },
-  );
-  await writeFile(
-    path.join(staging, "Contents/Info.plist"),
-    plist({
-      CFBundleExecutable: name,
-      CFBundleName: name,
-      CFBundleDisplayName: name,
-      CFBundleIdentifier: signed ? "com.opensteer.dictation" : "com.opensteer.dictation.dev",
-      CFBundlePackageType: "APPL",
-      CFBundleInfoDictionaryVersion: "6.0",
-      CFBundleVersion: version,
-      CFBundleShortVersionString: version,
-      LSUIElement: true,
-      LSMinimumSystemVersion: "26.0",
-      NSMicrophoneUsageDescription:
-        "Opensteer Dictation turns your speech into message text. It listens only while you dictate.",
-      [signedHelperProtocolVersionKey]: dictationHelperProtocolVersion,
-    }),
-  );
-  await writeFile(entitlements, plist({ "com.apple.security.device.audio-input": true }));
-  execFileSync(
-    "/usr/bin/codesign",
-    [
-      "--force",
-      ...signingKeychainArguments(),
-      "--sign",
-      identity,
-      "--options",
-      "runtime",
-      ...(signed ? ["--timestamp"] : []),
-      "--entitlements",
-      entitlements,
-      staging,
-    ],
-    { stdio: "inherit" },
-  );
-  execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", staging], {
-    stdio: "inherit",
-  });
-  const xml = execFileSync("/usr/bin/codesign", ["-d", "--entitlements", "-", "--xml", staging], {
-    encoding: "utf8",
-  });
-  const actual: unknown = JSON.parse(
-    execFileSync("/usr/bin/plutil", ["-convert", "json", "-o", "-", "-"], {
-      input: xml,
+const packageAndVerify = async (products: Readonly<Record<string, string>>) => {
+  try {
+    await rm(staging, { recursive: true, force: true });
+    await mkdir(path.join(staging, "Contents/MacOS"), { recursive: true });
+    await writeFile(
+      path.join(staging, "Contents/MacOS", name),
+      await readFile(products.DictationHelper!),
+      { mode: 0o755 },
+    );
+    await writeFile(
+      path.join(staging, "Contents/Info.plist"),
+      plist({
+        CFBundleExecutable: name,
+        CFBundleName: name,
+        CFBundleDisplayName: name,
+        CFBundleIdentifier: signed ? "com.opensteer.dictation" : "com.opensteer.dictation.dev",
+        CFBundlePackageType: "APPL",
+        CFBundleInfoDictionaryVersion: "6.0",
+        CFBundleVersion: version,
+        CFBundleShortVersionString: version,
+        LSUIElement: true,
+        LSMinimumSystemVersion: "26.0",
+        NSMicrophoneUsageDescription:
+          "Opensteer Dictation turns your speech into message text. It listens only while you dictate.",
+        [signedHelperProtocolVersionKey]: dictationHelperProtocolVersion,
+      }),
+    );
+    await writeFile(entitlements, plist({ "com.apple.security.device.audio-input": true }));
+    execFileSync(
+      "/usr/bin/codesign",
+      [
+        "--force",
+        ...signingKeychainArguments(),
+        "--sign",
+        identity,
+        "--options",
+        "runtime",
+        ...(signed ? ["--timestamp"] : []),
+        "--entitlements",
+        entitlements,
+        staging,
+      ],
+      { stdio: "inherit" },
+    );
+    execFileSync("/usr/bin/codesign", ["--verify", "--deep", "--strict", staging], {
+      stdio: "inherit",
+    });
+    const xml = execFileSync("/usr/bin/codesign", ["-d", "--entitlements", "-", "--xml", staging], {
       encoding: "utf8",
-    }),
-  );
-  if (JSON.stringify(actual) !== JSON.stringify({ "com.apple.security.device.audio-input": true }))
-    throw new Error("Unexpected Dictation entitlements");
-  await rm(output, { recursive: true, force: true });
-  await rename(staging, output);
-  process.stdout.write(`${output}\n`);
-} finally {
-  await rm(staging, { recursive: true, force: true });
-  await rm(entitlements, { force: true });
-}
+    });
+    const actual: unknown = JSON.parse(
+      execFileSync("/usr/bin/plutil", ["-convert", "json", "-o", "-", "-"], {
+        input: xml,
+        encoding: "utf8",
+      }),
+    );
+    if (
+      JSON.stringify(actual) !== JSON.stringify({ "com.apple.security.device.audio-input": true })
+    )
+      throw new Error("Unexpected Dictation entitlements");
+    await rm(output, { recursive: true, force: true });
+    await rename(staging, output);
+    process.stdout.write(`${output}\n`);
+  } finally {
+    await rm(staging, { recursive: true, force: true });
+    await rm(entitlements, { force: true });
+  }
+};
+if (signed)
+  await nativeBuildProducts({
+    kind: "dictation",
+    names: ["DictationHelper"],
+    sourceRevision: process.env.OPENSTEER_SOURCE_REVISION ?? "",
+    cacheDirectory: process.env.OPENSTEER_NATIVE_BUILD_CACHE_DIRECTORY,
+    inputs: () =>
+      nativeReleaseInputs(
+        path.resolve(import.meta.dirname, "../../.."),
+        "dictation",
+        architectures,
+      ),
+    build,
+    verify: (files) => verifyNativeProducts(files, architectures),
+    packageAndVerify,
+  });
+else await packageAndVerify(await build());
