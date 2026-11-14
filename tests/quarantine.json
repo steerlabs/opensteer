@@ -648,5 +648,38 @@
     "evidence": [
       "Fails in CI integration shards with `SIGKILL left the engine alive before startup reaping: expected false to be true`: the engine started with --survive-parent is already gone right after the Runner is SIGKILLed, before startup reaping runs. Seen on main at 3f9f01da3 (run 43480662875, integration (2)) and on #579 at 9a7c5e5eb (run 43495378681, integration (2)); that PR changes only team UI code. Passed on other runs of the same code. Acceptance: the engine's survival of its parent's SIGKILL is established by an acknowledgement from the engine itself (not process-table timing) before the crash, and the case passes repeatably under parallel shards."
     ]
+  },
+  {
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-11-13T23:26:00Z",
+    "deadline": "2026-11-20T23:26:00Z",
+    "sha": "cfe134868e561ff20551d0bdb70cdcd22f71c141",
+    "file": "tests/browser-sessions-viewer.integration.test.ts",
+    "name": [
+      "Browser Sessions through a whole deployment",
+      "says a tab is loading only while its own page loads, through the catalog, and Stop ends it"
+    ],
+    "evidence": [
+      "At cfe134868 with the agent-tabs E2E migration, OPENSTEER_LOCK_ORDER_MODE=enforce pnpm test:integration -- tests/browser-sessions-viewer.integration.test.ts failed 1/18: closing the still-loading tab returned ok:false. Deployment and BrowserRuntime cleanup then rejected with runtime-shutdown.queue-timeout under the unchanged shutdown budget. The original assertion did not preserve the returned error; it now matches the whole response so future failures include it.",
+      "A single focused diagnostic with -t \"says a tab is loading\" passed 1 case (17 unselected); this does not qualify the failed full-file run. Root cause remains unproved. Investigate the close/navigation/Runtime disposal interleaving under load, retain the loading and close assertions and existing timeouts, and require full-file evidence plus a deterministic regression before resolving."
+    ]
+  },
+  {
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-11-13T23:26:00Z",
+    "deadline": "2026-11-20T23:26:00Z",
+    "sha": "cfe134868e561ff20551d0bdb70cdcd22f71c141",
+    "file": "tests/browser-stream.bench.ts",
+    "name": [
+      "measures browser input through Host, shaped transport, shared Watch and real canvas presentation"
+    ],
+    "evidence": [
+      "At cfe134868 with the agent-tabs E2E migration and the benchmark viewer protocol-version correction, OPENSTEER_LOCK_ORDER_MODE=enforce OPENSTEER_BROWSER_STREAM_BENCH={\"profile\":\"all\",\"scenario\":\"all\",\"runs\":1,\"duration\":4,\"out\":\"/tmp/agent-tabs-e2e-stream.json\"} pnpm test:integration -- --config scripts/browser-stream.vitest.config.ts tests/browser-stream.bench.ts failed: all four LAN and all four 4G samples had zero unmatched inputs, but weak-cell/article-scroll presented 2868 of the expected final 2880 pixels (one unmatched wheel input, zero reported rejections).",
+      "One focused diagnostic selecting weak-cell/article-scroll passed without a production change; it does not qualify the failed full matrix. Root cause remains unproved. Determine whether the last wheel input or its final picture is lost under concurrent workload, preserve zero-unmatched/final-pixel assertions and existing deadlines, add deterministic coverage at the responsible layer, and qualify all link/scenario combinations before resolving."
+    ]
   }
 ]

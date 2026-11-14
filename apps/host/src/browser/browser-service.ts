@@ -2930,7 +2930,7 @@ export class BrowserService {
         type: "browser.tab.open",
         identity,
         ...(placement ? { placement } : {}),
-        ...(input.url ? { url: input.url } : {}),
+        ...(input.url && input.url !== "about:blank" ? { url: input.url } : {}),
         idempotencyKey: createHash("sha256")
           .update(`agent:${agent.agentBindingId}:${input.operationKey}`)
           .digest("hex"),
