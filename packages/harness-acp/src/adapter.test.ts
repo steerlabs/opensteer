@@ -1,3 +1,4 @@
+import { createToolImageStore } from "@opensteer/harness";
 import { collisionSkills } from "@opensteer/shared/test-support/agentSkills";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
@@ -1147,4 +1148,50 @@ it("delivers distinct plugin and loose skill identities through ACP for Grok and
     expect(payload).toContain(skill.path);
   }
   await fixture.adapter.close();
+});
+
+it("retains ACP tool-result image content", async () => {
+  const f = await setup("replay");
+  const session = await f.adapter.startSession({
+    ...f.context,
+    imageStore: createToolImageStore(f.context.threadStateDirectory),
+  });
+  const events: HarnessEvent[] = [];
+  const consume = (async () => {
+    for await (const event of session.events) events.push(event);
+  })();
+  f.duringPrompt = () => {
+    f.update("new-session", {
+      sessionUpdate: "tool_call",
+      toolCallId: "image-1",
+      name: "probe",
+      status: "in_progress",
+    });
+    f.update("new-session", {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "image-1",
+      status: "completed",
+      rawOutput: "Image ready",
+      content: [
+        {
+          type: "content",
+          content: { type: "image", mimeType: "image/png", data: "iVBORw0KGgoA" },
+        },
+      ],
+    });
+  };
+  try {
+    await session.execute(f.turn("Show an image"));
+    await session.stop();
+    await consume;
+    expect(events.find((e) => e.type === "tool.completed")).toMatchObject({
+      data: {
+        output: { images: [{ mediaType: "image/png", path: expect.stringMatching(/\.png$/) }] },
+      },
+    });
+    expect(JSON.stringify(events)).not.toContain("iVBORw0KGgoA");
+  } finally {
+    await session.stop();
+    await f.adapter.close();
+  }
 });

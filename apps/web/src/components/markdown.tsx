@@ -1,3 +1,6 @@
+import { useTranscriptImages } from "@opensteer/client/react";
+import { classifyMarkdownImageSource } from "@opensteer/shared/markdownImages";
+import { AssetImage } from "./asset-image.js";
 import { isValidElement, memo, useMemo, useRef, type ComponentProps, type MouseEvent } from "react";
 import ReactMarkdown, {
   defaultUrlTransform,
@@ -57,8 +60,11 @@ function TranscriptLink({ children, href }: ComponentProps<"a">) {
   );
 }
 
-/** An agent's image is never fetched from the reader's device; its words stay. */
 function TranscriptImage({ alt, src }: ComponentProps<"img">) {
+  const images = useTranscriptImages();
+  const source = classifyMarkdownImageSource(typeof src === "string" ? src : "");
+  // Internet images stay words: loading one could carry a secret out.
+  if (images && source.kind === "local") return <AssetImage path={source.path} alt={alt ?? ""} />;
   const words = alt || (typeof src === "string" ? src : "");
   return words ? <span>{words}</span> : null;
 }

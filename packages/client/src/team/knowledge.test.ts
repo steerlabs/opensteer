@@ -6,8 +6,8 @@ import {
   isNoteChangedConflict,
   isTopicAccessConflict,
   noteByline,
-  noteDraftReady,
-  noteWriteCommand,
+  noteDeleteCommand,
+  noteRestoreCommand,
 } from "./knowledge.js";
 import { MockTeamHost } from "./mock-team-host.js";
 
@@ -26,53 +26,45 @@ function team() {
   return { host, leo, dispatch };
 }
 
-it("keeps a stale draft out with the team Host's conflict, and saves it on the current version", async () => {
+it("restores a version as the newest, refuses a stale view, and undeletes a deleted note", async () => {
   const { host, leo, dispatch } = team();
   const topicId = host.knowledge.starterTopicId;
   const noteId = createId("knowledgeNote");
-  const draft = { title: "Refunds", body: "Ask Maya." };
-  expect(noteDraftReady(null, { title: "  ", body: "x" })).toBe(false);
-  expect(noteDraftReady(null, draft)).toBe(true);
-  await dispatch(noteWriteCommand({ noteId, topicId, base: null, draft }));
-  const first = await host.rpc["team.knowledge.note.get"]({ noteId }).then(unwrapRpcResult);
-  expect(noteDraftReady(first, { ...draft, title: " Refunds " })).toBe(false);
-
+  const agent = { kind: "agent" as const, userId: leo.userId, name: leo.displayName };
   host.knowledge.addVersion({
     noteId,
     topicId,
     title: "Refunds",
-    body: "Ask Maya or Dana.",
-    writer: { kind: "agent", userId: leo.userId, name: leo.displayName },
+    body: "Ask Maya.",
+    writer: agent,
   });
-  const mine = { title: "Refunds", body: "Ask Maya. Over $500 needs two." };
-  const stale = await dispatch(
-    noteWriteCommand({ noteId, topicId, base: first, draft: mine }),
-  ).then(
+  const read = () => host.rpc["team.knowledge.note.get"]({ noteId }).then(unwrapRpcResult);
+  const first = await read();
+  host.knowledge.addVersion({
+    noteId,
+    topicId,
+    title: "Refunds",
+    body: "Ask Dana.",
+    writer: agent,
+  });
+
+  const stale = await dispatch(noteRestoreCommand(first, first)).then(
     () => null,
     (error: unknown) => error,
   );
   expect(isNoteChangedConflict(stale)).toBe(true);
-  expect(stale).toMatchObject({ message: "Leo Park changed this note while you were editing it." });
 
-  const current = await host.rpc["team.knowledge.note.get"]({ noteId }).then(unwrapRpcResult);
-  const saved = await dispatch(noteWriteCommand({ noteId, topicId, base: current, draft: mine }));
-  expect(saved).toMatchObject({ version: 3 });
-  // A retried write that already landed answers with its first outcome.
-  await expect(
-    dispatch(noteWriteCommand({ noteId, topicId, base: current, draft: mine })),
-  ).resolves.toMatchObject({ version: 3 });
+  const restored = await dispatch(noteRestoreCommand(await read(), first));
+  expect(restored).toMatchObject({ version: 3 });
+  expect(await read()).toMatchObject({ version: 3, body: "Ask Maya.", deleted: false });
 
-  await dispatch({ type: "team.knowledge.note.delete", noteId, expectedVersion: 3 });
+  await dispatch(noteDeleteCommand(await read()));
   const page = await host.rpc["team.knowledge.notes.page"]({ topicId }).then(unwrapRpcResult);
   expect(page.notes).toEqual([]);
-  const history = await host.rpc["team.knowledge.note.history"]({ noteId }).then(unwrapRpcResult);
-  expect(history.versions.map((version) => [version.version, version.deleted])).toEqual([
-    [4, true],
-    [3, false],
-    [2, false],
-    [1, false],
-  ]);
-  expect(history.versions[0]).toMatchObject({ title: "Refunds", body: mine.body });
+  const deleted = await read();
+  expect(deleted).toMatchObject({ version: 4, deleted: true });
+  await dispatch(noteRestoreCommand(deleted, deleted));
+  expect(await read()).toMatchObject({ version: 5, body: "Ask Maya.", deleted: false });
 });
 
 it("decides reads, writes and management from the list, roles and archiving", async () => {
@@ -124,16 +116,16 @@ it("decides reads, writes and management from the list, roles and archiving", as
   ).toEqual({ everyone: true, people: 2 });
 
   const general = host.knowledge.starterTopicId;
+  const kept = host.knowledge.addVersion({
+    noteId: createId("knowledgeNote"),
+    topicId: general,
+    title: "Late",
+    body: "",
+    writer: { kind: "agent", userId: leo.userId, name: leo.displayName },
+  });
   await dispatch({ type: "team.knowledge.topic.archive", topicId: general });
   expect(host.knowledge.can(general)).toEqual({ read: true, write: false, manage: true });
-  const refused = await dispatch(
-    noteWriteCommand({
-      noteId: createId("knowledgeNote"),
-      topicId: general,
-      base: null,
-      draft: { title: "Late", body: "" },
-    }),
-  ).catch((error: unknown) => error);
+  const refused = await dispatch(noteDeleteCommand(kept)).catch((error: unknown) => error);
   expect(refused).toMatchObject({ code: "forbidden", reason: "knowledge-topic-read-only" });
   expect(host.knowledge.can(general, leo.userId)).toEqual({
     read: true,

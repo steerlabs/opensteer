@@ -289,6 +289,7 @@ export interface HarnessVoiceCall {
 }
 
 export interface HarnessSessionContext {
+  readonly imageStore?: import("./output-images.js").ToolImageStore;
   readonly voiceCall?: HarnessVoiceCall;
   /** Model-visible, verified per-Thread attachment directory, outside private state. */
   readonly attachmentDirectory?: string;

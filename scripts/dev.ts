@@ -362,6 +362,14 @@ export function configureDevelopmentEnvironment(
     environment.OPENSTEER_HOST_DATA_DIR = resolve(repositoryRoot, ".opensteer/team-host");
     return;
   }
+  // pnpm runs the Runner in apps/runner, so its relative data directory is
+  // absolute here for the Host, which serves that directory's `images`.
+  environment.OPENSTEER_RUNNER_DATA_DIR = resolve(
+    repositoryRoot,
+    "apps",
+    "runner",
+    environment.OPENSTEER_RUNNER_DATA_DIR?.trim() || ".opensteer/runner",
+  );
   const runnerEnvironment = environment.OPENSTEER_ENVIRONMENT_ID?.trim();
   const hostingEnvironment = environment.OPENSTEER_HOSTING_ENVIRONMENT_ID?.trim();
   if (runnerEnvironment && hostingEnvironment && runnerEnvironment !== hostingEnvironment)

@@ -1,9 +1,6 @@
 import { unwrapRpcResult } from "@opensteer/client/host";
 import {
-  isNoteChangedConflict,
   isTopicAccessConflict,
-  noteDraftReady,
-  noteWriteCommand,
   sameTopicAccess,
   topicEveryoneLevel,
   topicSubjectKey,
@@ -14,7 +11,6 @@ import {
 } from "@opensteer/client/team";
 import {
   createId,
-  KnowledgeNoteIdSchema,
   KnowledgeTopicIdSchema,
   SequenceSchema,
   type TeamGroupId,
@@ -22,7 +18,6 @@ import {
 import {
   teamKnowledgeLimits,
   type TeamMember,
-  type TeamNote,
   type TeamTopicAccessEntry,
   type TeamTopicLevel,
   type TeamTopicSubject,
@@ -31,8 +26,7 @@ import { usePreventRemove, useNavigation, type StaticScreenProps } from "@react-
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import * as Haptics from "expo-haptics";
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Alert, Pressable, ScrollView, StyleSheet, TextInput, View } from "react-native";
-import { Markdown } from "../markdown/markdown.js";
+import { Alert, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { headerActions } from "../navigation-header.js";
 import type { RootParamList } from "../navigation.js";
 import {
@@ -55,7 +49,6 @@ import {
   knowledgeStyles,
   Loading,
   teamCommand,
-  TextButton,
   useBottomPadding,
   useFocusedRead,
 } from "./knowledge-parts.js";
@@ -94,182 +87,6 @@ function useKeepDraft(dirty: boolean): void {
         onPress: () => navigation.dispatch(data.action),
       },
     ]),
-  );
-}
-
-/**
- * Writing a note: a title and Markdown text. Saving names the version it
- * started from; when someone saved in between, the draft stays here and the
- * person can read their version before saving on top of it.
- */
-export function TeamNoteEditScreen(
-  props: StaticScreenProps<{
-    readonly teamId: string;
-    readonly topicId: string;
-    readonly noteId?: string | undefined;
-  }>,
-): ReactNode {
-  const { teamId } = props.route.params;
-  const topicId = KnowledgeTopicIdSchema.parse(props.route.params.topicId);
-  const editing = props.route.params.noteId;
-  const navigation = useNavigation<Navigation>();
-  const { session } = useTeamSession(teamId);
-  const padding = useBottomPadding();
-  // A new note's id is made once, so a retried save is still the same note.
-  const [noteId] = useState(() =>
-    editing === undefined ? createId("knowledgeNote") : KnowledgeNoteIdSchema.parse(editing),
-  );
-  const [draft, setDraft] = useState<{ title: string; body: string } | null>(
-    editing === undefined ? { title: "", body: "" } : null,
-  );
-  const [base, setBase] = useState<TeamNote | null>(null);
-  const [theirs, setTheirs] = useState<{ note: TeamNote; shown: boolean } | null>(null);
-  const [conflict, setConflict] = useState<string | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const loaded = useRef(false);
-  const read = useFocusedRead(
-    session,
-    async (team) => {
-      if (editing === undefined || loaded.current) return null;
-      const note = unwrapRpcResult(await team.rpc["team.knowledge.note.get"]({ noteId }));
-      loaded.current = true;
-      setBase(note);
-      setDraft({ title: note.title, body: note.body });
-      return note;
-    },
-    noteId,
-  );
-  const savable = draft !== null && noteDraftReady(base, draft);
-  const dirty =
-    draft !== null &&
-    !saving &&
-    (base === null
-      ? draft.title.trim() !== "" || draft.body.trim() !== ""
-      : draft.title.trim() !== base.title || draft.body !== base.body);
-  useKeepDraft(dirty);
-
-  const save = (): void => {
-    if (session === null || draft === null || !savable) return;
-    setSaving(true);
-    setFailure(null);
-    void teamCommand(session, noteWriteCommand({ noteId, topicId, base, draft }))
-      .then(
-        () => {
-          void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          if (editing === undefined) navigation.replace("TeamNote", { teamId, topicId, noteId });
-          else navigation.goBack();
-        },
-        async (error: unknown) => {
-          if (!isNoteChangedConflict(error)) {
-            setFailure(failureWords(error, "It wasn't saved."));
-            return;
-          }
-          setConflict(failureWords(error, "Someone changed this note while you were editing it."));
-          // Their version becomes what the next save goes on top of.
-          const current = await session.rpc["team.knowledge.note.get"]({ noteId })
-            .then(unwrapRpcResult)
-            .catch(() => null);
-          if (current !== null) {
-            setBase(current);
-            setTheirs({ note: current, shown: false });
-          }
-        },
-      )
-      .finally(() => setSaving(false));
-  };
-
-  const saver = useRef(save);
-  saver.current = save;
-  useLayoutEffect(() => {
-    navigation.setOptions({
-      title: editing === undefined ? "New note" : "Edit note",
-      ...headerActions({
-        left: { label: "Cancel", onPress: () => navigation.goBack() },
-        right: {
-          disabled: !savable || saving,
-          label: "Save",
-          onPress: () => saver.current(),
-          variant: "done",
-        },
-      }),
-    });
-  }, [editing, navigation, savable, saving]);
-
-  if (draft === null)
-    return (
-      <Screen>
-        <Loading failure={read.failure} />
-      </Screen>
-    );
-  return (
-    <Screen edgeToEdge>
-      <ScrollView
-        automaticallyAdjustKeyboardInsets
-        contentContainerStyle={[knowledgeStyles.page, { paddingBottom: padding }]}
-        keyboardShouldPersistTaps="handled"
-      >
-        {conflict === null ? null : (
-          <View style={styles.conflict}>
-            <AppText role="secondaryMedium">{conflict}</AppText>
-            <AppText role="secondary" tone="soft">
-              Your words are still here. Save again to put them on top of theirs.
-            </AppText>
-            {theirs === null ? null : (
-              <TextButton
-                label={theirs.shown ? "Hide their version" : "Show their version"}
-                onPress={() => setTheirs({ ...theirs, shown: !theirs.shown })}
-              />
-            )}
-            {theirs?.shown === true ? (
-              <View style={styles.theirs}>
-                <AppText role="title">{theirs.note.title}</AppText>
-                {theirs.note.deleted ? (
-                  <AppText role="secondary" tone="muted">
-                    They deleted the note.
-                  </AppText>
-                ) : (
-                  <Markdown text={theirs.note.body} />
-                )}
-              </View>
-            ) : null}
-          </View>
-        )}
-        <TextInput
-          accessibilityLabel="Title"
-          autoFocus={editing === undefined}
-          cursorColor={color.ember}
-          maxFontSizeMultiplier={controlFontScaleLimit}
-          maxLength={teamKnowledgeLimits.titleChars}
-          onChangeText={(title) => setDraft({ ...draft, title })}
-          placeholder="Title"
-          placeholderTextColor={color.muted}
-          returnKeyType="next"
-          selectionColor={color.ember}
-          style={styles.title}
-          value={draft.title}
-        />
-        <TextInput
-          accessibilityHint="Markdown works here"
-          accessibilityLabel="Note"
-          cursorColor={color.ember}
-          multiline
-          onChangeText={(body) => setDraft({ ...draft, body })}
-          placeholder="Write the note. Markdown works."
-          placeholderTextColor={color.muted}
-          scrollEnabled={false}
-          selectionColor={color.ember}
-          style={styles.body}
-          textAlignVertical="top"
-          value={draft.body}
-        />
-        {failure === null ? null : (
-          <AppText role="secondary" tone="danger">
-            {failure}
-          </AppText>
-        )}
-      </ScrollView>
-    </Screen>
   );
 }
 
@@ -739,7 +556,7 @@ export function TeamTopicFormScreen(
       .then(
         () => {
           void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          if (existing === null) navigation.replace("TeamTopic", { teamId, topicId: id });
+          if (existing === null) navigation.popTo("TeamKnowledge", { teamId, topicId: id });
           else navigation.goBack();
         },
         (error: unknown) => setFailure(failureWords(error, "The topic wasn't saved.")),

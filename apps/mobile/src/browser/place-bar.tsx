@@ -1,7 +1,6 @@
 import { useNavigation } from "@react-navigation/native";
 import { createContext, useContext, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
-import { Platform, type HostInstance } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import type { HostInstance } from "react-native";
 import {
   attentionBadge,
   menuHint,
@@ -27,18 +26,6 @@ export function PlaceBarProvider(props: PlaceBar & { readonly children: ReactNod
   const { ask, children, status, verticalBar } = props;
   const value = useMemo(() => ({ ask, status, verticalBar }), [ask, status, verticalBar]);
   return <PlaceBarContext.Provider value={value}>{children}</PlaceBarContext.Provider>;
-}
-
-/**
- * Whether this screen has iOS's vertical bar, measured where the screen is: it
- * is the one thing that insets a single side, as a notch insets both. UIKit
- * moves native bar items into it, and only then is a native bar free of a row
- * over the page. Ask at a screen's root: a pane beside another has one-sided
- * insets of its own.
- */
-export function useVerticalBar(): boolean {
-  const { left, right } = useSafeAreaInsets();
-  return Platform.OS === "ios" && left !== right;
 }
 
 /**

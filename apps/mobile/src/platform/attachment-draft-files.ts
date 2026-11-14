@@ -10,6 +10,9 @@ import { Directory, File, Paths } from "expo-file-system";
 import * as ImagePicker from "expo-image-picker";
 import * as Sharing from "expo-sharing";
 import type { HostClient } from "@opensteer/client/host";
+import { discardPastedImage } from "../../modules/paste-target/files.js";
+
+export { discardPastedImage };
 
 import type {
   AttachmentDraftScope,
@@ -151,6 +154,18 @@ export async function pickChatPhoto(
     },
     scope,
   );
+}
+
+/** A pasted image arrives as a temporary file; it is moved into the draft's private storage. */
+export async function importPastedImage(
+  scope: LocalAttachmentDraftScope,
+  image: { readonly uri: string; readonly mediaType: string; readonly name: string },
+): Promise<PickedAttachmentSource> {
+  try {
+    return await copyToPrivateDraft(image.uri, image, scope);
+  } finally {
+    discardPastedImage(image.uri);
+  }
 }
 
 /** A saved draft URI is opened only within the current authenticated scope. */

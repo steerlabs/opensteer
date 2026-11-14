@@ -1,3 +1,4 @@
+import { stripLocalImageEmbeds } from "@opensteer/shared/markdownImages";
 import { placeContentLabel } from "@opensteer/core";
 import {
   ChannelConversationIdSchema,
@@ -349,7 +350,7 @@ export async function enqueueChannelReply(
   }
 }
 
-function channelReplyMarkdown(content: readonly ContentPart[], threadUrl: string): string {
+export function channelReplyMarkdown(content: readonly ContentPart[], threadUrl: string): string {
   const blocks = content.map((part) =>
     part.type === "text"
       ? part.text
@@ -359,6 +360,6 @@ function channelReplyMarkdown(content: readonly ContentPart[], threadUrl: string
           ? `${part.type === "phone" ? "📱" : "🖥️"} ${placeContentLabel(part)} — [Open in Opensteer](${threadUrl})`
           : `📎 ${part.name} — [Open in Opensteer](${threadUrl})`,
   );
-  const text = blocks.join("\n\n").trim();
+  const text = stripLocalImageEmbeds(blocks.join("\n\n")).trim();
   return text.length > 0 ? text : "(No text content)";
 }

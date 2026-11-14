@@ -33,3 +33,6 @@ export * from "./types.js";
 export { programEnvironment } from "./program-environment.js";
 
 export { resolveLightModel } from "./light-model.js";
+export * from "./generated-image.js";
+export * from "./output-images.js";
+export * from "./image-generation-events.js";

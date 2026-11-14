@@ -136,6 +136,7 @@ export const hostApiScopes = {
   "tasks.list": "session",
   "run.attempts.list": "session",
   "sessions.list": "session",
+  "asset.urls": "session",
   "tool.output.get": "session",
   "thread.events.list": "session",
   "node.events.list": "session",

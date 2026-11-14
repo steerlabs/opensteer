@@ -8,6 +8,8 @@ import { desktopBridge } from "../desktop/desktop-bridge.js";
 import { browserClientLifecycle } from "./browser-lifecycle.js";
 
 export interface BrowserHostClientOptions {
+  readonly desktopMedia?: boolean;
+  readonly assetRoute?: HttpHostClientOptions["assetRoute"];
   readonly passkeys?: HttpHostClientOptions["passkeys"];
   readonly capabilities: Exclude<HttpHostClientOptions["capabilities"], undefined>;
   /** The Desktop renderer attaches to a selected Deployment rather than to the
@@ -28,6 +30,8 @@ export interface BrowserHostClientOptions {
  */
 export function createBrowserHostClient(options: BrowserHostClientOptions): HttpHostClient {
   return new HttpHostClient({
+    ...(options.assetRoute ? { assetRoute: options.assetRoute } : {}),
+    ...(options.desktopMedia ? { desktopMedia: true } : {}),
     deviceAccessRequests: "include",
     ...(options.passkeys ? { passkeys: options.passkeys } : {}),
     capabilities: options.capabilities ?? null,

@@ -1,3 +1,4 @@
+import { TranscriptImageContext } from "@opensteer/client/react";
 import {
   canRespondToRequests,
   conversationName,
@@ -363,55 +364,57 @@ function AttachedSubagent(props: {
       </Screen>
     );
   return (
-    <AgentsLive value={live}>
-      <AgentEngine value={engine}>
-        <AgentScopeProvider value={agentScope}>
-          <Screen edgeToEdge>
-            <ComposerDockLayout
-              avoidKeyboard
-              dock={
-                <>
-                  {surface !== null && user !== null ? (
-                    <QuestionCard
-                      asker={false}
-                      canRespond={canRespond}
-                      deploymentId={deploymentId}
-                      drafts={drafts}
-                      hostClient={hostClient}
-                      surface={surface}
-                      userId={user.id}
-                    />
-                  ) : null}
-                  {card === null ? null : (
-                    <WatchFooter
-                      card={card}
-                      engine={engine}
-                      hostClient={hostClient}
-                      reportsTo={reportsTo}
-                    />
-                  )}
-                </>
-              }
-            >
-              {(clearance) => (
-                <Body
-                  agentScope={agentScope}
-                  clearance={clearance}
-                  detail={detail}
-                  live={live}
-                  onLoadEarlier={() => void watched.watch?.loadOlder()}
-                  onOpenAncestor={openAncestor}
-                  onOpenStep={openStep}
-                  onRetry={() => watched.watch?.retry()}
-                  rootTitle={threadTitle ?? detail?.parent.title ?? "Conversation"}
-                  state={state}
-                />
-              )}
-            </ComposerDockLayout>
-          </Screen>
-        </AgentScopeProvider>
-      </AgentEngine>
-    </AgentsLive>
+    <TranscriptImageContext value={{ client: hostClient, threadId }}>
+      <AgentsLive value={live}>
+        <AgentEngine value={engine}>
+          <AgentScopeProvider value={agentScope}>
+            <Screen edgeToEdge>
+              <ComposerDockLayout
+                avoidKeyboard
+                dock={
+                  <>
+                    {surface !== null && user !== null ? (
+                      <QuestionCard
+                        asker={false}
+                        canRespond={canRespond}
+                        deploymentId={deploymentId}
+                        drafts={drafts}
+                        hostClient={hostClient}
+                        surface={surface}
+                        userId={user.id}
+                      />
+                    ) : null}
+                    {card === null ? null : (
+                      <WatchFooter
+                        card={card}
+                        engine={engine}
+                        hostClient={hostClient}
+                        reportsTo={reportsTo}
+                      />
+                    )}
+                  </>
+                }
+              >
+                {(clearance) => (
+                  <Body
+                    agentScope={agentScope}
+                    clearance={clearance}
+                    detail={detail}
+                    live={live}
+                    onLoadEarlier={() => void watched.watch?.loadOlder()}
+                    onOpenAncestor={openAncestor}
+                    onOpenStep={openStep}
+                    onRetry={() => watched.watch?.retry()}
+                    rootTitle={threadTitle ?? detail?.parent.title ?? "Conversation"}
+                    state={state}
+                  />
+                )}
+              </ComposerDockLayout>
+            </Screen>
+          </AgentScopeProvider>
+        </AgentEngine>
+      </AgentsLive>
+    </TranscriptImageContext>
   );
 }
 

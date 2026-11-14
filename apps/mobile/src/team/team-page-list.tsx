@@ -22,6 +22,7 @@ import {
 import type { ChannelRowView, DmRowView, TeamDrawerSectionView } from "./team-models.js";
 
 type PageRow =
+  | { readonly kind: "knowledge" }
   | { readonly kind: "channels" }
   | { readonly kind: "browse" }
   | { readonly kind: "dms" }
@@ -30,7 +31,7 @@ type PageRow =
   | { readonly kind: "dm"; readonly dm: DmRowView };
 
 /**
- * A team's own page: its channels (alphabetical), then its direct messages
+ * A team's own page: its knowledge, its channels (alphabetical), then its direct messages
  * (newest first). Unread is bold; mentions of the reader are an ember count;
  * a DM never shows an unread total. The team's menu is the page's title menu.
  * Each heading's + makes one; Browse channels closes the channel list.
@@ -40,6 +41,7 @@ export function TeamPageList(props: {
   /** The team lets the reader make channels. */
   readonly canCreateChannel: boolean;
   readonly onOpenChannel: (channelId: string) => void;
+  readonly onKnowledge: () => void;
   readonly onBrowseChannels: () => void;
   readonly onNewChannel: () => void;
   readonly onNewMessage: () => void;
@@ -52,6 +54,7 @@ export function TeamPageList(props: {
   const { section } = props;
   const rows = useMemo(
     (): readonly PageRow[] => [
+      { kind: "knowledge" },
       { kind: "channels" },
       ...section.channels.map((channel) => ({ kind: "channel" as const, channel })),
       { kind: "browse" },
@@ -62,10 +65,19 @@ export function TeamPageList(props: {
     ],
     [section.channels, section.dms],
   );
-  const { onOpenChannel, onBrowseChannels, onNewChannel, onNewMessage, canCreateChannel } = props;
+  const {
+    onOpenChannel,
+    onKnowledge,
+    onBrowseChannels,
+    onNewChannel,
+    onNewMessage,
+    canCreateChannel,
+  } = props;
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<PageRow>) => {
       switch (item.kind) {
+        case "knowledge":
+          return <QuietRow icon="lightbulb" label="Knowledge" onPress={onKnowledge} strong />;
         case "channels":
           return (
             <Subhead label="Channels">
@@ -113,7 +125,7 @@ export function TeamPageList(props: {
           return <DmRow current={false} dm={item.dm} onOpen={onOpenChannel} />;
       }
     },
-    [canCreateChannel, onBrowseChannels, onNewChannel, onNewMessage, onOpenChannel],
+    [canCreateChannel, onBrowseChannels, onKnowledge, onNewChannel, onNewMessage, onOpenChannel],
   );
   if (section.state === "removed") {
     return (
@@ -166,9 +178,11 @@ function rowKey(row: PageRow): string {
 
 /** A way in under a list, quieter than the rows it sits under. */
 const QuietRow = memo(function QuietRow(props: {
-  readonly icon: "magnifyingglass" | "plus";
+  readonly icon: "magnifyingglass" | "plus" | "lightbulb";
   readonly label: string;
   readonly onPress: () => void;
+  /** A place in the team rather than a way to find or make one. */
+  readonly strong?: boolean;
 }): ReactNode {
   return (
     <Pressable
@@ -178,13 +192,18 @@ const QuietRow = memo(function QuietRow(props: {
       style={({ pressed }) => [styles.row, pressed && styles.pressed]}
     >
       <View style={styles.mark}>
-        <Symbol name={props.icon} size={15} tint={color.muted} weight="medium" />
+        <Symbol
+          name={props.icon}
+          size={15}
+          tint={props.strong ? color.textSoft : color.muted}
+          weight="medium"
+        />
       </View>
       <AppText
         maxFontSizeMultiplier={controlFontScaleLimit}
         numberOfLines={1}
         role="secondary"
-        style={[styles.label, styles.muted]}
+        style={[styles.label, !props.strong && styles.muted]}
       >
         {props.label}
       </AppText>

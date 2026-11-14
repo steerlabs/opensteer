@@ -1,5 +1,6 @@
 import { VoiceDock, VoiceMic } from "../voice/controls.js";
 import { useVoiceAvailable } from "../voice/use-voice-value.js";
+import { PasteTarget } from "../../modules/paste-target/index.js";
 import {
   accountGettingReady,
   accessModeConflict,
@@ -14,7 +15,11 @@ import {
   type HostSnapshot,
   type ThreadPlacementOption,
 } from "@opensteer/client/host";
-import type { BrowserPageContentPart, ThreadAccessMode } from "@opensteer/core";
+import {
+  attachmentMaxBytes,
+  type BrowserPageContentPart,
+  type ThreadAccessMode,
+} from "@opensteer/core";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useIsFocused } from "@react-navigation/native";
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
@@ -643,21 +648,26 @@ export function FirstMessageComposer(props: {
                 onPress={() => props.inputRef.current?.focus()}
                 style={styles.lane}
               >
-                <TextInput
-                  accessibilityLabel="Message"
-                  autoFocus={props.autoFocus}
-                  cursorColor={color.ember}
-                  editable={!held}
-                  maxFontSizeMultiplier={controlFontScaleLimit}
-                  multiline
-                  onChangeText={changeText}
-                  placeholder={page === null ? props.placeholder : "Ask about this page…"}
-                  placeholderTextColor={color.muted}
-                  ref={props.inputRef}
-                  selectionColor={color.ember}
-                  style={[styles.input, { maxHeight: fieldMaxHeight }]}
-                  value={props.text}
-                />
+                <PasteTarget
+                  maxBytes={attachmentMaxBytes}
+                  onPasteImages={(event) => void staged.paste(event.nativeEvent)}
+                >
+                  <TextInput
+                    accessibilityLabel="Message"
+                    autoFocus={props.autoFocus}
+                    cursorColor={color.ember}
+                    editable={!held}
+                    maxFontSizeMultiplier={controlFontScaleLimit}
+                    multiline
+                    onChangeText={changeText}
+                    placeholder={page === null ? props.placeholder : "Ask about this page…"}
+                    placeholderTextColor={color.muted}
+                    ref={props.inputRef}
+                    selectionColor={color.ember}
+                    style={[styles.input, { maxHeight: fieldMaxHeight }]}
+                    value={props.text}
+                  />
+                </PasteTarget>
               </Pressable>
             }
             leading={

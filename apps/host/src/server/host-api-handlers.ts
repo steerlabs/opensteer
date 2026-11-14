@@ -111,6 +111,7 @@ export function createHostApiHandlers(
     | "tasks.list"
     | "thread.events.list"
     | "node.events.list"
+    | "asset.urls"
     | "tool.output.get"
     | "thread.messages.list"
     | "thread.inputQueue.get"

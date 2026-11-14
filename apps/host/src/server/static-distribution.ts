@@ -106,6 +106,7 @@ export class HostStaticDistribution {
     const files = new Map<string, Buffer>();
     let totalBytes = 0;
     for (const file of manifest.files) {
+      if (reservedApiPath(file.path)) throw new Error("Host Web distribution uses a reserved path");
       if (declared.has(file.path)) throw new Error("Host Web distribution repeats a file");
       declared.add(file.path);
       const candidate = path.resolve(directory, ...file.path.split("/"));
@@ -218,5 +219,11 @@ function boundedStaticPath(rawUrl: string): string | null {
 
 function reservedApiPath(filePath: string): boolean {
   const first = filePath.split("/", 1)[0];
-  return first === "v1" || first === "internal" || first === ".well-known" || first === "healthz";
+  return (
+    first === "media" ||
+    first === "v1" ||
+    first === "internal" ||
+    first === ".well-known" ||
+    first === "healthz"
+  );
 }

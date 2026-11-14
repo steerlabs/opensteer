@@ -128,6 +128,9 @@ vi.mock("@react-navigation/native", () => ({
   useFocusEffect: () => undefined,
   useIsFocused: () => true,
 }));
+vi.mock("../../modules/paste-target/index.js", () => ({
+  PasteTarget: ({ children }: { children?: ReactNode }) => <>{children}</>,
+}));
 vi.mock("expo-clipboard", () => ({ setStringAsync: async () => true }));
 vi.mock("expo-haptics", () => ({ selectionAsync: async () => undefined }));
 vi.mock("@expo/ui/community/menu", () => ({ MenuView: () => null }));

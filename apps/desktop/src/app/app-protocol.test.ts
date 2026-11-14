@@ -123,3 +123,20 @@ async function temporaryDirectory(prefix: string): Promise<string> {
   temporaryDirectories.push(directory);
   return directory;
 }
+
+it("dispatches media before static lookup and excludes its capability from slow-request diagnostics", async () => {
+  const root = await temporaryDirectory("opensteer-media-protocol-");
+  await writeFile(path.join(root, "index.html"), "SPA");
+  const slow = vi.fn();
+  const media = vi.fn(async () => new Response("forwarded"));
+  const clock = vi.spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValue(2000);
+  try {
+    const handle = createDesktopAppProtocolHandler(root, slow, media);
+    const request = new Request("app://opensteer/media/dep_test/capability/image.png");
+    expect(await (await handle(request)).text()).toBe("forwarded");
+    expect(media).toHaveBeenCalledWith(request);
+    expect(slow).not.toHaveBeenCalled();
+  } finally {
+    clock.mockRestore();
+  }
+});

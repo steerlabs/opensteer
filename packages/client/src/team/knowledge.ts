@@ -1,13 +1,11 @@
-import type { KnowledgeNoteId, KnowledgeTopicId } from "@opensteer/core";
-import {
-  TeamNoteBodySchema,
-  TeamNoteTitleSchema,
-  type TeamNote,
-  type TeamNoteWriter,
-  type TeamTopicAccessEntry,
-  type TeamTopicAudience,
-  type TeamTopicLevel,
-  type TeamTopicSubject,
+import type { TeamChannelKind } from "@opensteer/core";
+import type {
+  TeamNote,
+  TeamNoteWriter,
+  TeamTopicAccessEntry,
+  TeamTopicAudience,
+  TeamTopicLevel,
+  TeamTopicSubject,
 } from "@opensteer/protocol";
 
 /** Who can read a topic, in a few words: "Everyone", "4 people". */
@@ -34,37 +32,41 @@ export function noteByline(
   return `${verb} ${version.writer.userId === viewerUserId ? name.toLowerCase() : name}`;
 }
 
-export interface NoteDraft {
-  readonly title: string;
-  readonly body: string;
-}
-
-/** A draft is saved when it has a title, fits, and differs from the version it was written on. */
-export function noteDraftReady(base: NoteDraft | null, draft: NoteDraft): boolean {
-  if (!TeamNoteTitleSchema.safeParse(draft.title).success) return false;
-  if (!TeamNoteBodySchema.safeParse(draft.body).success) return false;
-  return base === null || base.title !== draft.title.trim() || base.body !== draft.body;
-}
-
 /**
- * The write for a draft on top of `base`, the version the person last saw (null for a new
- * note). A stale `base` is refused with {@link isNoteChangedConflict}; read the note again,
- * keep the draft and write on top of what is there now.
+ * Writes `from` (an older version, or the deleted note itself) again as the newest version.
+ * People don't author notes, agents do; restoring is the one write people make. A `current`
+ * that is no longer the newest is refused with {@link isNoteChangedConflict}.
  */
-export function noteWriteCommand(input: {
-  readonly noteId: KnowledgeNoteId;
-  readonly topicId: KnowledgeTopicId;
-  readonly base: Pick<TeamNote, "version"> | null;
-  readonly draft: NoteDraft;
-}) {
+export function noteRestoreCommand(
+  current: Pick<TeamNote, "id" | "topicId" | "version">,
+  from: Pick<TeamNote, "title" | "body">,
+) {
   return {
     type: "team.knowledge.note.write",
-    noteId: input.noteId,
-    topicId: input.topicId,
-    expectedVersion: input.base?.version ?? null,
-    title: input.draft.title.trim(),
-    body: input.draft.body,
+    noteId: current.id,
+    topicId: current.topicId,
+    expectedVersion: current.version,
+    title: from.title,
+    body: from.body,
   } as const;
+}
+
+export function noteDeleteCommand(current: Pick<TeamNote, "id" | "version">) {
+  return {
+    type: "team.knowledge.note.delete",
+    noteId: current.id,
+    expectedVersion: current.version,
+  } as const;
+}
+
+/** Where an agent was asked to save a note: "#support", "a direct message". */
+export function noteSourceWords(
+  channel: { readonly kind: TeamChannelKind; readonly name: string } | undefined,
+): string {
+  if (!channel) return "a team message";
+  return channel.kind === "dm" || channel.kind === "group_dm"
+    ? "a direct message"
+    : `#${channel.name}`;
 }
 
 /** Someone else wrote the note after the version this write was based on. */

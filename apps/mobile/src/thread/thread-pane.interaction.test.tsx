@@ -135,6 +135,9 @@ const selectionCalls: { text: string | undefined; start: number; end: number }[]
 let dictation = new DictationController({ port: null, createId: () => crypto.randomUUID() });
 vi.mock("./settings/engine-mark.js", () => ({ EngineMark: () => null }));
 vi.mock("../voice/cursor-mark.js", () => ({ PillMic: () => null, VoiceCursor: () => null }));
+vi.mock("../../modules/paste-target/index.js", () => ({
+  PasteTarget: ({ children }: { children?: ReactNode }) => <>{children}</>,
+}));
 vi.mock("react-native-webview", () => ({ WebView: () => null }));
 vi.mock("react-native-keyboard-controller", () => ({
   KeyboardChatScrollView: () => null,

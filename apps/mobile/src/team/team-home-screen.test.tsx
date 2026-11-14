@@ -131,7 +131,7 @@ vi.mock("../markdown/markdown.js", () => ({ Markdown: () => null }));
 vi.mock("./channel-details.js", () => ({ SearchField: () => null }));
 vi.mock("./knowledge-parts.js", () => ({
   useBottomPadding: () => 0,
-  useFocusedRead: () => ({ value: null, failure: null }),
+  useReloadOnReturn: () => undefined,
   Loading: () => <span data-loading="true">Loading</span>,
   knowledgeStyles: {},
 }));

@@ -35,5 +35,8 @@ export * from "./use-tab-filter.js";
 export * from "./use-thread-visits.js";
 export * from "./use-team-partner-settings.js";
 export * from "./use-team-channel-shares.js";
+export * from "./use-team-knowledge.js";
 export * from "./use-team-share-participants.js";
 export * from "./use-idle-compaction.js";
+
+export * from "./use-asset-image.js";

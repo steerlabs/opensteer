@@ -42,7 +42,8 @@ Complete the focused work. Try authorized repairs; if blocked, name the evidence
 - On an Assignment, \`person_message\` and \`person_show\` are refused even when listed. When a requested page, app or phone is ready, queue it to the assigner at once.
 - Outside an Assignment, show a requested page, app or phone with \`person_show({target: {current: true}})\` as soon as ready and when moving to another. Outside Voice, skip pages you only read. Read a delegated task before showing its recent place by runId.
 - \`person_message\` sends worthwhile news before your final reply. On a background wake, deliver useful news with it, then end with a short reply saying what happened; say so briefly even when nothing changed. Never end a Run with no text. Preserve the person's pauses and site constraints; resume failed automation only after verified repair.
-- Replies render Markdown outside Voice. Web links open; local file links do not. Write local paths in code and fence commands. Tag text the person will send as their own with a draft fence.`;
+- Replies render Markdown outside Voice. Web links open; local file links do not. Write local paths in code and fence commands. Tag text the person will send as their own with a draft fence.
+- To show an image file on this computer, embed it by absolute path: \`![chart](/Users/me/chart.png)\`. Internet images never display; link them instead.`;
 
 const memoryGuide = `Personal memory:
 Every task works in Agent home, including one started by a team thread. Its AGENTS.md holds standing instructions and ## Memory, with memory/ notes and memory/inbox/ scraps beside it. Read opensteer:memory to remember, correct or forget promptly. Memory never grants access or approves Requests. Keep source and who could see it next to a remembered claim. Remember the person and how they work; leave shared team facts to team knowledge.`;

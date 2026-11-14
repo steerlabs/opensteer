@@ -728,8 +728,9 @@ final class IphoneExecutorRuntime: @unchecked Sendable {
           do { return try await self.browserLoop(browserSocket, generation: generation, session: session) }
           catch let failure as IphoneConnectionFailure where failure.issue == .removed { throw failure }
           catch {
-            IphoneBrowserTransport.shared.offline(reason: "stream-closed")
-            await self.reportBrowser(readiness: "unavailable")
+            if IphoneBrowserTransport.shared.offline(reason: "stream-closed", ifCurrent: browserSocket) {
+              await self.reportBrowser(readiness: "unavailable")
+            }
             return try await self.statusLoop(generation: generation, session: session)
           }
         }

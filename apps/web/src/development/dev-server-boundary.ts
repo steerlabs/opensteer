@@ -31,6 +31,7 @@ export const localHostProxyRoutes = {
   "/internal/v1/mcp": { target: localHostProxyTarget },
   "/internal/v1/runners": { target: localHostProxyTarget, ws: true },
   "/internal/v1/trigger-cdp": { target: localHostProxyTarget, ws: true },
+  "/media": { target: localHostProxyTarget },
   "/v1": { target: localHostProxyTarget, ws: true },
 } as const;
 

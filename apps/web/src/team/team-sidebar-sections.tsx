@@ -125,7 +125,6 @@ export function TeamSwitch({
       </>
     );
   const menu = (team: TeamAttachment, invites: boolean): TeamMenuActions => ({
-    onKnowledge: team.client ? () => go(teamPath(team.teamId, "knowledge")) : undefined,
     onInvite:
       invites && team.client
         ? () => {
@@ -259,6 +258,7 @@ export function TeamSideFor({
   };
   const actions = useStableActions({
     onOpenChannel: (channelId: string) => go(channelPath(teamId, channelId)),
+    onKnowledge: () => go(teamPath(teamId, "knowledge")),
     onBrowseChannels: () => go(teamPath(teamId, "browse")),
     onNewChannel: canCreate
       ? () => {
@@ -357,6 +357,7 @@ export function TeamSideFor({
           .finally(() => setLoadingMore(false));
       }}
       hrefFor={hrefFor}
+      knowledgeOpen={pathname.startsWith(`/teams/${team.teamId}/knowledge`)}
       openChannelId={open}
       team={sidebarView({
         teamId: team.teamId,

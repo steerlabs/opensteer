@@ -1,9 +1,6 @@
 import { attentionCount, type HostSnapshot } from "@opensteer/client/host";
 import { useNavigation, useNavigationState, useRoute } from "@react-navigation/native";
-import type {
-  NativeStackHeaderItem,
-  NativeStackNavigationOptions,
-} from "@react-navigation/native-stack";
+import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { Platform, Pressable, StyleSheet, Text, View, type HostInstance } from "react-native";
 import { isTopLevel } from "./top-level.js";
@@ -12,6 +9,7 @@ import { color, headerFontScaleLimit, radius, space, touchTarget } from "./theme
 import { useHostValue, useSelectedHostClient } from "./ui/mobile-client-context.js";
 import { AppText } from "./ui/primitives.js";
 import { Symbol } from "./ui/symbol.js";
+import { nativeHeaderItem, type HeaderActionSpec } from "./ui/header-item.js";
 
 /**
  * The controls a screen puts in its navigation bar.
@@ -19,25 +17,6 @@ import { Symbol } from "./ui/symbol.js";
  * They live apart from the route table so a screen can set its own bar
  * without importing the table that imports it.
  */
-
-export type HeaderActionSpec = {
-  readonly accessibilityHint?: string;
-  readonly accessibilityLabel?: string;
-  /** A count drawn on the item; the accessibility label must say it too. */
-  readonly badge?: string;
-  readonly disabled?: boolean;
-  readonly icon?:
-    | "gearshape"
-    | "line.3.horizontal"
-    | "plus"
-    | "rectangle.on.rectangle"
-    | "square.and.pencil"
-    | "xmark";
-  readonly label: string;
-  readonly onPress: () => void;
-  readonly tintColor?: string;
-  readonly variant?: "done" | "plain" | "prominent";
-};
 
 /**
  * What every screen in the stack starts from. The bar has one ground,
@@ -82,39 +61,6 @@ export function headerActions(props: {
           headerRight: () => right,
           unstable_headerRightItems: () => [nativeHeaderItem(props.right!)],
         }),
-  };
-}
-
-function nativeHeaderItem(action: HeaderActionSpec): NativeStackHeaderItem {
-  return {
-    ...(action.accessibilityHint === undefined
-      ? {}
-      : { accessibilityHint: action.accessibilityHint }),
-    accessibilityLabel: action.accessibilityLabel ?? action.label,
-    ...(action.badge === undefined
-      ? {}
-      : {
-          badge: {
-            style: {
-              backgroundColor: action.tintColor ?? color.amber,
-              color:
-                action.tintColor === undefined || action.tintColor === color.amber
-                  ? color.inkOnAmber
-                  : color.surfaceElevated,
-              fontWeight: "700",
-            },
-            value: action.badge,
-          },
-        }),
-    ...(action.disabled === undefined ? {} : { disabled: action.disabled }),
-    ...(action.icon === undefined
-      ? {}
-      : { icon: { name: action.icon, type: "sfSymbol" as const } }),
-    label: action.label,
-    onPress: action.onPress,
-    ...(action.tintColor === undefined ? {} : { tintColor: action.tintColor }),
-    type: "button",
-    variant: action.variant ?? "plain",
   };
 }
 
