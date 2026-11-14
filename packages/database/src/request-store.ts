@@ -371,7 +371,10 @@ export class RequestStore {
         .where("id", "=", input.requestId)
         .executeTakeFirst();
       if (!row || row.kind !== "device.access" || row.payload.kind !== "device.access")
-        throw new OpensteerError({ code: "not_found", message: "Computer access Request not found" });
+        throw new OpensteerError({
+          code: "not_found",
+          message: "Computer access Request not found",
+        });
       const ownership = await machineOwnershipIn(transaction, row.payload.machineId);
       if (!ownership || !machineIsManagedBy(ownership, input.resolvedBy))
         throw new OpensteerError({
