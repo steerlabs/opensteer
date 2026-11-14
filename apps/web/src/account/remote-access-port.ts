@@ -34,18 +34,63 @@ function refuseUnfinished(outcome: PersonalAccountLinkOutcome): void {
     throw new RemoteAccessPortError(outcome.message);
 }
 
+type DesktopSignInBridge = Pick<
+  OpensteerDesktopBridge,
+  "getDeploymentAccessSnapshot" | "onDeploymentAccessSnapshotChanged" | "signIn"
+>;
+
 /**
- * The computer's own app: its journaled link signs in through the browser
- * when it has to, and finishes an activating link itself.
+ * The computer's own app: it signs in through the browser first, because
+ * linking needs an Account session, and finishes an activating link itself.
  */
-export function desktopRemoteAccessPort(link: PersonalAccountLinkController): RemoteAccessPort {
+export function desktopRemoteAccessPort(
+  link: PersonalAccountLinkController,
+  bridge: DesktopSignInBridge,
+): RemoteAccessPort {
   return {
+    signIn: (signal) => signInThroughBrowser(bridge, signal),
     link: async () => refuseUnfinished(await link.link()),
     repair: async () => {
       const outcome = await link.repair();
       if (!outcome.succeeded) throw new RemoteAccessPortError(outcome.message);
     },
   };
+}
+
+/**
+ * Opens the Account sign-in in the browser, unless it is already open, and
+ * settles when it ends: signed in, or given up in the browser.
+ */
+export async function signInThroughBrowser(
+  bridge: DesktopSignInBridge,
+  signal: AbortSignal,
+): Promise<void> {
+  const { account } = await bridge.getDeploymentAccessSnapshot();
+  signal.throwIfAborted();
+  if (account.status === "signed-in") return;
+  if (account.status !== "authorizing") await bridge.signIn();
+  signal.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    let unsubscribe: (() => void) | null = null;
+    let settled = false;
+    const finish = (settle: () => void) => {
+      if (settled) return;
+      settled = true;
+      unsubscribe?.();
+      signal.removeEventListener("abort", aborted);
+      settle();
+    };
+    const aborted = () => finish(() => reject(signal.reason));
+    const evaluate = ({ account: next }: DeploymentAccessSnapshot) => {
+      if (next.status === "signed-in") finish(resolve);
+      else if (next.status !== "authorizing")
+        finish(() => reject(new RemoteAccessPortError("Sign-in didn’t finish. Try again.")));
+    };
+    signal.addEventListener("abort", aborted, { once: true });
+    unsubscribe = bridge.onDeploymentAccessSnapshotChanged(evaluate);
+    if (settled) unsubscribe();
+    void bridge.getDeploymentAccessSnapshot().then(evaluate, () => undefined);
+  });
 }
 
 /** A plain browser: the Account portal signs in and links in a popup. */
@@ -168,7 +213,7 @@ export function useWebRemoteAccess(
   const name = deploymentNameFrom(desktopDeployment, snapshot);
   const portalOrigin = snapshot.identityConfig?.portalOrigin ?? null;
   const port = useMemo(() => {
-    if (route.kind === "desktop") return desktopRemoteAccessPort(link);
+    if (route.kind === "desktop") return desktopRemoteAccessPort(link, route.bridge);
     const common = { hostClient, name: name ?? "Opensteer", status: remote.status };
     return route.kind === "courier"
       ? courierRemoteAccessPort({ ...common, bridge: route.bridge })

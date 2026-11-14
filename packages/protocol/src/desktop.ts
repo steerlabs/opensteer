@@ -262,11 +262,24 @@ export const DesktopPersonalDeploymentStatusSchema = z.strictObject({
   deploymentId: DeploymentIdSchema.nullable(),
   environmentId: EnvironmentIdSchema.nullable(),
   issue: DesktopPersonalDeploymentIssueSchema.nullable(),
+  /**
+   * What this computer's Opensteer is called, or will be called when set up:
+   * the name the person chose, else the Mac's own. Absent until it is read.
+   */
+  name: z.string().trim().min(1).max(120).optional(),
   schemaVersion: z.literal(1),
   state: DesktopPersonalDeploymentStateSchema,
   step: DesktopPersonalDeploymentStepSchema.nullable(),
 });
 export type DesktopPersonalDeploymentStatus = z.infer<typeof DesktopPersonalDeploymentStatusSchema>;
+
+/** Setting up this computer: the name it is created with, fixed from then on. */
+export const DesktopCreatePersonalDeploymentInputSchema = z.strictObject({
+  name: z.string().trim().min(1).max(120).optional(),
+});
+export type DesktopCreatePersonalDeploymentInput = z.infer<
+  typeof DesktopCreatePersonalDeploymentInputSchema
+>;
 
 /** One app the helper serves, set up on this Mac at the access its connection allows. */
 export const DesktopOpenComputerAppSetupInputSchema = z.strictObject({
@@ -1961,7 +1974,7 @@ export interface OpensteerDesktopBridge {
   cancel(): Promise<void>;
   closeHostWebSocket(input: DesktopCloseHostWebSocketInput): Promise<void>;
   connectPrivate(input: DesktopConnectPrivateDeploymentInput): Promise<void>;
-  createPersonalDeployment(): Promise<void>;
+  createPersonalDeployment(input?: DesktopCreatePersonalDeploymentInput): Promise<void>;
   getDeploymentAccessSnapshot(): Promise<DeploymentAccessSnapshot>;
   getLocalExecutionStatus(input: DesktopLocalExecutionInput): Promise<DesktopLocalExecutionStatus>;
   hostRequest(input: DesktopHostHttpRequest): Promise<DesktopHostResult<DesktopHostHttpResponse>>;

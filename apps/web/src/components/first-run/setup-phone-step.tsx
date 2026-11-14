@@ -26,8 +26,9 @@ const tailscaleDownloadUrl = "https://tailscale.com/download";
  * Step three: the person chooses how their phone reaches this computer —
  * Opensteer Connect, their own Tailscale network, or an HTTPS address they
  * run — and scans one code. Choosing changes nothing until they press the
- * panel's button, and replacing a way that is already on asks first, because
- * it disconnects the devices using it.
+ * footer's one action, which is always the next thing the chosen way needs;
+ * replacing a way that is already on asks first, because it disconnects the
+ * devices using it.
  */
 export function SetupPhoneStep({
   bridge,
@@ -51,12 +52,14 @@ export function SetupPhoneStep({
     snapshot.deploymentId !== null &&
     connect.view.state !== "unreadable" &&
     connect.view.state !== "connect-unavailable";
+  const signedIn = deploymentAccess?.account.status === "signed-in";
   const { refresh: refreshTailscale, status: tailscale } = useTailscaleStatus(bridge);
   const share = useCallback(
     () => bridge.tailscaleShare().finally(refreshTailscale),
     [bridge, refreshTailscale],
   );
   const [mode, setMode] = useState<PhoneConnectionMode | null>(null);
+  const [editingAddress, setEditingAddress] = useState(false);
   const ready = remote.status !== null && tailscale !== null;
   const chosen: PhoneConnectionMode =
     mode ??
@@ -77,6 +80,7 @@ export function SetupPhoneStep({
     (tailscale?.state === "ready" ? sameOrigin(tailscale.sharedOrigin ?? "") : null);
   const tailscaleActive =
     privately.activeOrigin !== null && privately.activeOrigin === tailnetOrigin;
+  const addressActive = privately.activeOrigin !== null && !tailscaleActive;
 
   /** Replacing a way that is on disconnects whoever uses it, so it asks. */
   const confirmReplacing = (next: PhoneConnectionMode, origin?: string): boolean => {
@@ -96,33 +100,51 @@ export function SetupPhoneStep({
 
   const scanning =
     (chosen === "connect" && connectUrl !== null) ||
-    (chosen !== "connect" && privately.link !== null && isActive(chosen));
+    (chosen === "tailscale" && tailscaleActive && privately.link !== null) ||
+    (chosen === "address" && addressActive && privately.link !== null && !editingAddress);
   const arrived = useNewPhoneSignIn(hostClient, scanning);
-
-  function isActive(choice: PhoneConnectionMode): boolean {
-    if (choice === "connect") return connectUrl !== null;
-    if (choice === "tailscale") return tailscaleActive;
-    return privately.activeOrigin !== null && !tailscaleActive;
-  }
 
   const choose = (next: PhoneConnectionMode) => {
     setMode(next);
+    setEditingAddress(false);
     privately.reset();
     connect.stop();
   };
+  const startTailscale = () => {
+    if (confirmReplacing("tailscale")) privately.turnOnTailscale();
+  };
+
+  const finish: PhoneAction = { done: true, label: "Finish", run: onFinish };
+  // A status that can't be read is said under the choices; it must never
+  // leave the step with no way forward but Skip.
+  const action: PhoneAction = !ready
+    ? remote.error
+      ? finish
+      : { busy: true, label: "Checking…" }
+    : arrived || scanning
+      ? finish
+      : chosen === "connect"
+        ? connectAction(connect, signedIn, () => {
+            if (confirmReplacing("connect")) connect.act("turn-on");
+          })
+        : chosen === "tailscale"
+          ? tailscaleAction({
+              active: tailscaleActive,
+              bridge,
+              privately,
+              start: startTailscale,
+              status: tailscale,
+            })
+          : addressAction({ active: addressActive, editing: editingAddress, privately });
 
   return (
     <SetupFrame
       description="Check in on your agents and answer them from anywhere."
       footer={
         <SetupFooter
-          action={
-            <button className="btn btn--primary" onClick={onFinish} type="button">
-              Finish
-            </button>
-          }
+          action={<PhoneActionButton action={action} />}
           onBack={onBack}
-          onSkip={onFinish}
+          onSkip={action.done ? undefined : onFinish}
           skipLabel="Skip for now"
         />
       }
@@ -164,43 +186,29 @@ export function SetupPhoneStep({
           title="Your own address"
         />
       </SetupList>
-      {!ready ? (
-        <Panel>
-          <p className="setup-panel__status" role="status">
-            <span aria-hidden className="spinner" /> Checking…
-          </p>
-        </Panel>
-      ) : arrived ? (
+      {!ready ? null : arrived ? (
         <SetupList label="Your phone">
           <ArrivedRow phone={arrived} />
         </SetupList>
       ) : chosen === "connect" ? (
-        <ConnectPanel
-          connect={connect}
-          onTurnOn={() => {
-            if (confirmReplacing("connect")) connect.act("turn-on");
-          }}
-          url={connectUrl}
-        />
+        <ConnectPanel connect={connect} url={connectUrl} />
       ) : chosen === "tailscale" ? (
         <TailscalePanel
           active={tailscaleActive}
-          bridge={bridge}
           link={privately.link}
-          onStart={() => {
-            if (confirmReplacing("tailscale")) privately.turnOnTailscale();
-          }}
           privately={privately}
           status={tailscale}
         />
       ) : (
         <AddressPanel
-          active={privately.activeOrigin !== null && !tailscaleActive}
+          active={addressActive}
+          editing={editingAddress}
           link={privately.link}
+          onEditing={setEditingAddress}
           onStart={(origin) => {
             if (confirmReplacing("address", origin)) privately.turnOnAddress(origin);
           }}
-          origin={tailscaleActive ? null : privately.activeOrigin}
+          origin={addressActive ? privately.activeOrigin : null}
           privately={privately}
         />
       )}
@@ -212,6 +220,93 @@ export function SetupPhoneStep({
     </SetupFrame>
   );
 }
+
+/** The footer's one action: what the chosen way needs next, or Finish once a phone can connect. */
+interface PhoneAction {
+  readonly label: string;
+  /** Working on it: shown, but not pressable. */
+  readonly busy?: boolean;
+  /** Ends setup, so Skip has nothing left to skip. */
+  readonly done?: boolean;
+  /** The form this action submits, for a way that needs typing first. */
+  readonly form?: string;
+  readonly run?: () => void;
+}
+
+function PhoneActionButton({ action }: { readonly action: PhoneAction }) {
+  const pressable = !action.busy && (action.run !== undefined || action.form !== undefined);
+  return (
+    <button
+      aria-busy={action.busy || undefined}
+      className="btn btn--primary setup-action"
+      disabled={!pressable}
+      form={action.form}
+      onClick={action.run}
+      type={action.form ? "submit" : "button"}
+    >
+      {action.busy ? <span aria-hidden className="spinner" /> : null}
+      {action.label}
+    </button>
+  );
+}
+
+function connectAction(
+  connect: RemoteAccessController,
+  signedIn: boolean,
+  turnOn: () => void,
+): PhoneAction {
+  const { view } = connect;
+  if (view.state === "on-connect") return { done: true, label: "Finish" };
+  if (view.state === "loading") return { busy: true, label: "Checking…" };
+  if (view.tone === "busy")
+    return { busy: true, label: view.state === "turning-on" ? "Connecting…" : view.title };
+  // A private network in use is replaced only because the person chose
+  // Connect and confirmed it; this action is that choice.
+  if (view.state === "off" || view.state === "off-signed-out" || view.state === "on-private")
+    return { label: signedIn ? "Turn on Connect" : "Sign in and connect", run: turnOn };
+  const primary = view.primary;
+  if (!primary) return { busy: true, label: view.title };
+  return {
+    label: primary.label,
+    run: () => {
+      if (!primary.confirm || window.confirm(primary.confirm)) connect.act(primary.id);
+    },
+  };
+}
+
+function tailscaleAction(input: {
+  readonly active: boolean;
+  readonly bridge: OpensteerDesktopBridge;
+  readonly privately: ReturnType<typeof usePrivatePhoneSetup>;
+  readonly start: () => void;
+  readonly status: DesktopTailscaleStatus | null;
+}): PhoneAction {
+  const { active, bridge, privately, start, status } = input;
+  if (active && privately.pairingError) return { label: "Try again", run: privately.renew };
+  if (privately.phase.kind === "failed") return { label: "Try again", run: start };
+  if (privately.phase.kind !== "idle" || active) return { busy: true, label: "Turning on…" };
+  if (status?.state === "not-installed")
+    return {
+      label: "Get Tailscale",
+      run: () => void bridge.openExternalUrl({ url: tailscaleDownloadUrl }).catch(() => undefined),
+    };
+  if (status?.state === "not-running") return { busy: true, label: "Waiting for Tailscale" };
+  return { label: "Turn on", run: start };
+}
+
+function addressAction(input: {
+  readonly active: boolean;
+  readonly editing: boolean;
+  readonly privately: ReturnType<typeof usePrivatePhoneSetup>;
+}): PhoneAction {
+  const { active, editing, privately } = input;
+  if (active && !editing && privately.pairingError)
+    return { label: "Try again", run: privately.renew };
+  if (privately.phase.kind === "turning-on") return { busy: true, label: "Turning on…" };
+  return { form: addressFormId, label: "Turn on" };
+}
+
+const addressFormId = "setup-phone-address";
 
 function ModeRow({
   checked,
@@ -358,11 +453,9 @@ function ActionPanel({
 
 function ConnectPanel({
   connect,
-  onTurnOn,
   url,
 }: {
   readonly connect: RemoteAccessController;
-  readonly onTurnOn: () => void;
   readonly url: string | null;
 }) {
   const { view } = connect;
@@ -378,54 +471,55 @@ function ConnectPanel({
       />
     );
   }
-  if (view.tone === "busy" || view.state === "loading") {
+  if (view.tone === "busy" && view.state !== "loading") {
+    const cancel = view.secondary.find((candidate) => candidate.id === "cancel");
     return (
-      <ActionPanel action={<span aria-hidden className="spinner" />}>{view.sentence}</ActionPanel>
-    );
-  }
-  // A private network in use is replaced only because the person chose
-  // Connect and confirmed it; Turn on here is that choice.
-  const primary =
-    view.state === "on-private" || view.state === "off" || view.state === "off-signed-out"
-      ? { confirm: null, id: "turn-on" as const, label: "Turn on" }
-      : view.primary;
-  return (
-    <ActionPanel
-      action={
-        primary ? (
+      <Panel>
+        {view.steps ? (
+          <ol aria-label="Turning on Connect" className="setup-checks">
+            {view.steps.map((step) => (
+              <li
+                className={`setup-checks__item setup-checks__item--${step.state}`}
+                key={step.label}
+              >
+                <span aria-hidden className="setup-checks__mark" />
+                <span>{step.label}</span>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="setup-panel__status" role="status">
+            <span aria-hidden className="spinner" /> {view.sentence}
+          </p>
+        )}
+        {cancel ? (
           <button
-            className={view.tone === "attention" ? "btn btn--small" : "btn btn--small btn--primary"}
-            onClick={() => {
-              if (primary.id === "turn-on") onTurnOn();
-              else if (!primary.confirm || window.confirm(primary.confirm)) connect.act(primary.id);
-            }}
+            className="btn btn--small btn--ghost setup-panel__cancel"
+            onClick={() => connect.act(cancel.id)}
             type="button"
           >
-            {primary.label}
+            {cancel.label}
           </button>
-        ) : undefined
-      }
-      tone={view.tone === "attention" ? "attention" : "idle"}
-    >
-      {view.state === "on-private"
-        ? "Turn on Opensteer Connect to open this computer from anywhere."
-        : view.sentence}
-    </ActionPanel>
-  );
+        ) : null}
+      </Panel>
+    );
+  }
+  if (view.tone === "attention") return <ActionPanel tone="attention">{view.sentence}</ActionPanel>;
+  if (view.state === "off-signed-out")
+    return (
+      <p className="setup-frame__note">You’ll sign in to your Opensteer account in your browser.</p>
+    );
+  return null;
 }
 
 function TailscalePanel({
   active,
-  bridge,
   link,
-  onStart,
   privately,
   status,
 }: {
   readonly active: boolean;
-  readonly bridge: OpensteerDesktopBridge;
   readonly link: string | null;
-  readonly onStart: () => void;
   readonly privately: ReturnType<typeof usePrivatePhoneSetup>;
   readonly status: DesktopTailscaleStatus | null;
 }) {
@@ -445,46 +539,19 @@ function TailscalePanel({
       />
     );
   }
-  if (active && privately.pairingError) {
-    return <PairingFailed message={privately.pairingError} onRetry={privately.renew} />;
-  }
+  if (active && privately.pairingError) return <PairingFailed message={privately.pairingError} />;
   const { phase } = privately;
-  if (phase.kind === "failed") {
-    return (
-      <ActionPanel
-        action={
-          <button className="btn btn--small" onClick={onStart} type="button">
-            Try again
-          </button>
-        }
-        tone="attention"
-      >
-        {phase.message}
-      </ActionPanel>
-    );
-  }
+  if (phase.kind === "failed") return <ActionPanel tone="attention">{phase.message}</ActionPanel>;
   if (phase.kind !== "idle" || active) {
     return (
-      <ActionPanel action={<span aria-hidden className="spinner" />}>
+      <ActionPanel>
         {phase.kind === "sharing" ? "Sharing this computer on your tailnet…" : "Turning on…"}
       </ActionPanel>
     );
   }
   if (status?.state === "not-installed") {
     return (
-      <ActionPanel
-        action={
-          <button
-            className="btn btn--small"
-            onClick={() =>
-              void bridge.openExternalUrl({ url: tailscaleDownloadUrl }).catch(() => undefined)
-            }
-            type="button"
-          >
-            Get Tailscale
-          </button>
-        }
-      >
+      <ActionPanel>
         Install Tailscale on this computer and your phone, and sign in to both.
       </ActionPanel>
     );
@@ -497,14 +564,8 @@ function TailscalePanel({
     );
   }
   return (
-    <ActionPanel
-      action={
-        <button className="btn btn--small btn--primary" onClick={onStart} type="button">
-          Turn on
-        </button>
-      }
-    >
-      Share Opensteer on your tailnet as{" "}
+    <ActionPanel>
+      Shares Opensteer on your tailnet as{" "}
       <span className="setup-mono">
         {status?.state === "ready" ? status.dnsName : "this computer"}
       </span>
@@ -515,19 +576,22 @@ function TailscalePanel({
 
 function AddressPanel({
   active,
+  editing,
   link,
+  onEditing,
   onStart,
   origin,
   privately,
 }: {
   readonly active: boolean;
+  readonly editing: boolean;
   readonly link: string | null;
+  readonly onEditing: (editing: boolean) => void;
   readonly onStart: (origin: string) => void;
   readonly origin: string | null;
   readonly privately: ReturnType<typeof usePrivatePhoneSetup>;
 }) {
   const [draft, setDraft] = useState("");
-  const [editing, setEditing] = useState(false);
   // The address asked for: the editor stays open, with its progress and any
   // failure, until the Host answers there, rather than falling back to the
   // old address's code while the change is still undecided.
@@ -535,9 +599,9 @@ function AddressPanel({
   useEffect(() => {
     if (submitted !== null && origin !== null && sameOrigin(submitted) === origin) {
       setSubmitted(null);
-      setEditing(false);
+      onEditing(false);
     }
-  }, [origin, submitted]);
+  }, [onEditing, origin, submitted]);
   const expired = useExpired(active && !editing ? privately.expiresAt : null);
   if (active && link && !editing) {
     return (
@@ -554,7 +618,7 @@ function AddressPanel({
           Phones connect at <span className="setup-mono">{origin}</span>.{" "}
           <button
             className="btn btn--small btn--ghost"
-            onClick={() => setEditing(true)}
+            onClick={() => onEditing(true)}
             type="button"
           >
             Change
@@ -564,43 +628,39 @@ function AddressPanel({
     );
   }
   if (active && !editing && privately.pairingError) {
-    return <PairingFailed message={privately.pairingError} onRetry={privately.renew} />;
+    return <PairingFailed message={privately.pairingError} />;
   }
   const { phase } = privately;
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const wanted = draft.trim();
+    if (!wanted) return;
     setSubmitted(wanted);
     onStart(wanted);
   };
   const busy = phase.kind === "turning-on";
   return (
     <Panel>
-      <form className="setup-address" onSubmit={submit}>
+      <form className="setup-address" id={addressFormId} onSubmit={submit}>
         <input
           aria-label="Your HTTPS address"
           autoComplete="url"
+          autoFocus
           className="text-input"
           disabled={busy}
           inputMode="url"
           onChange={(event) => setDraft(event.target.value)}
           placeholder="https://mac.example.com"
+          required
           spellCheck={false}
           type="url"
           value={draft}
         />
-        <button
-          className="btn btn--small btn--primary"
-          disabled={busy || draft.trim().length === 0}
-          type="submit"
-        >
-          {busy ? "Turning on…" : "Turn on"}
-        </button>
         {active && editing && !busy ? (
           <button
             className="btn btn--small btn--ghost"
             onClick={() => {
-              setEditing(false);
+              onEditing(false);
               setSubmitted(null);
             }}
             type="button"
@@ -633,24 +693,9 @@ function manualEntry(
     : null;
 }
 
-function PairingFailed({
-  message,
-  onRetry,
-}: {
-  readonly message: string;
-  readonly onRetry: () => void;
-}) {
+function PairingFailed({ message }: { readonly message: string }) {
   return (
-    <ActionPanel
-      action={
-        <button className="btn btn--small" onClick={onRetry} type="button">
-          Try again
-        </button>
-      }
-      tone="attention"
-    >
-      A code for your phone couldn’t be made: {message}
-    </ActionPanel>
+    <ActionPanel tone="attention">A code for your phone couldn’t be made: {message}</ActionPanel>
   );
 }
 

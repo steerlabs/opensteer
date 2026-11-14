@@ -34,6 +34,8 @@ type Scenario =
       readonly kind: "setup";
       readonly link: "linked" | "unlinked";
       readonly phones?: readonly AuthSessionSummary[];
+      /** Not signed in to the Opensteer account on this Mac, as on a fresh install. */
+      readonly signedOut?: boolean;
       readonly pick: (placements: readonly ThreadPlacementOption[]) => ThreadPlacementOption[];
       readonly step?: "ai" | "permissions" | "phone";
     };
@@ -86,6 +88,13 @@ const scenarios: Readonly<Record<string, Scenario>> = {
     pick: (all) => firstOf("claude", all),
     step: "phone",
   },
+  "phone-signed-out": {
+    kind: "setup",
+    link: "unlinked",
+    pick: (all) => firstOf("claude", all),
+    signedOut: true,
+    step: "phone",
+  },
   "phone-signed-in": {
     kind: "setup",
     link: "linked",
@@ -131,6 +140,7 @@ if (scenario.kind !== "setup") {
       <DesktopPersonalSetup
         actionError={null}
         computerName="Studio Mac"
+        firstRun
         onBack={noOp}
         onRetry={noOp}
         status={personal({})}
@@ -175,7 +185,7 @@ if (scenario.kind !== "setup") {
       accountLink: linked ? { state: "active" } : null,
       generation: 1,
       mode: linked ? "connect" : "off",
-      route: linked ? {} : null,
+      route: linked ? { document: { route: { origin: "https://studio.connect.test" } } } : null,
       schemaVersion: 2,
     },
     accountIssuer: "https://accounts.opensteer.com",
@@ -187,10 +197,13 @@ if (scenario.kind !== "setup") {
   Object.assign(client.rpc, {
     "personal.remoteAccess.get": async () => ({ data: remote, ok: true }),
   });
-  const access = {
-    account: { available: true, status: "signed-in" },
+  // This Mac's own Opensteer, so Connect signs in and links the way the app does.
+  let access = {
+    account: { available: true, status: scenario.signedOut ? "signed-out" : "signed-in" },
     personalAccountLink: { status: scenario.link },
+    personalSetup: { deploymentId: base.deploymentId },
   } as unknown as DeploymentAccessSnapshot;
+  const accessListeners = new Set<(next: DeploymentAccessSnapshot) => void>();
   const bridge = {
     computerUsePermissionsGet: async () => ({
       accessibility: "granted",
@@ -198,7 +211,15 @@ if (scenario.kind !== "setup") {
     }),
     getDeploymentAccessSnapshot: async () => access,
     linkPersonal: async () => undefined,
-    onDeploymentAccessSnapshotChanged: () => noOp,
+    onDeploymentAccessSnapshotChanged: (listener: (next: DeploymentAccessSnapshot) => void) => {
+      accessListeners.add(listener);
+      return () => accessListeners.delete(listener);
+    },
+    // The browser's sign-in stays open, so the step it waits on can be looked at.
+    signIn: async () => {
+      access = { ...access, account: { ...access.account, status: "authorizing" } };
+      for (const listener of accessListeners) listener(access);
+    },
     onPasswordsStatusChanged: () => noOp,
     openComputerUsePermissionsPanel: async () => ({ opened: true }),
     openExternalUrl: async () => ({ opened: true }),

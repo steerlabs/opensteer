@@ -22,7 +22,6 @@ import type {
   PersonalDeploymentPreparedPaths,
 } from "../secrets/personal-deployment-store.js";
 import {
-  defaultPersonalDeploymentName,
   NativePersonalDeploymentFilesystem,
   PersonalRuntimeTransitionError,
 } from "../secrets/personal-deployment-store.js";
@@ -216,6 +215,40 @@ describe("PersonalDeploymentSupervisor", () => {
     await fixture.supervisor.stop();
   });
 
+  it("offers this Mac's own name, creates the Deployment with the one chosen, and keeps it", async () => {
+    const fixture = supervisorFixture(null);
+    await expect(fixture.supervisor.resumeIfConfigured()).resolves.toMatchObject({
+      state: "stopped",
+    });
+    // The name a setup offer shows is the Mac's own, not its DNS-safe hostname.
+    expect(fixture.supervisor.status.name).toBe("Studio Mac");
+    const named: (string | undefined)[] = [];
+    fixture.supervisor.subscribe((status) => {
+      if (status.deploymentId) named.push(status.name);
+    });
+
+    await expect(fixture.supervisor.start({ name: "  Workshop  " })).resolves.toMatchObject({
+      name: "Workshop",
+      state: "ready",
+    });
+    expect(named.every((name) => name === "Workshop")).toBe(true);
+    expect(fixture.files.manifest?.name).toBe("Workshop");
+    const host = fixture.processes.specs.find(({ component }) => component === "host")!;
+    expect(host.environment.OPENSTEER_DEPLOYMENT_NAME).toBe("Workshop");
+
+    await fixture.supervisor.stop();
+
+    // A start opens the Deployment that exists; a name only names a new one.
+    const existing = supervisorFixture(
+      deploymentManifest({ databaseInitialized: true, name: "Workshop", ownerInitialized: true }),
+    );
+    await expect(existing.supervisor.start({ name: "Other" })).resolves.toMatchObject({
+      name: "Workshop",
+      state: "ready",
+    });
+    await existing.supervisor.stop();
+  });
+
   it("starts native dependencies in order, keeps one owner Environment, and selects only when ready", async () => {
     const fixture = supervisorFixture(null);
     await expect(fixture.supervisor.start()).resolves.toMatchObject({
@@ -241,7 +274,7 @@ describe("PersonalDeploymentSupervisor", () => {
       nativeFsHelperPath: fixture.releaseValue.entrypoints.nativeFsHelper,
     });
     expect(host.environment).toMatchObject({
-      OPENSTEER_DEPLOYMENT_NAME: defaultPersonalDeploymentName(),
+      OPENSTEER_DEPLOYMENT_NAME: "Studio Mac",
       OPENSTEER_DEPLOYMENT_KIND: "personal",
       OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
     });
@@ -259,7 +292,7 @@ describe("PersonalDeploymentSupervisor", () => {
       OPENSTEER_CODEX_EXECUTABLE: fixture.releaseValue.harnesses.codex,
       OPENSTEER_NATIVE_FS_HELPER: fixture.releaseValue.entrypoints.nativeFsHelper,
       OPENSTEER_NODE_EXECUTABLE: fixture.releaseValue.entrypoints.node,
-      OPENSTEER_RUNNER_NAME: defaultPersonalDeploymentName(),
+      OPENSTEER_RUNNER_NAME: "Studio Mac",
     });
     expect(fixture.processes.specs.some(({ executable }) => /docker/iu.test(executable))).toBe(
       false,
@@ -1513,6 +1546,7 @@ function supervisorFixture(
     log: (event, fields) => logs.push({ event, ...fields }),
     baseEnvironment: { HOME: "/Users/test", PATH: "/usr/bin" },
     catalog,
+    computerName: async () => "Studio Mac",
     computerUse,
     credentials,
     files: restarts.files ?? files,

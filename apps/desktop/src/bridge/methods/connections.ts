@@ -2,6 +2,7 @@ import {
   DeploymentAccessSnapshotSchema,
   DesktopAddDirectRouteInputSchema,
   DesktopConnectPrivateDeploymentInputSchema,
+  DesktopCreatePersonalDeploymentInputSchema,
   DesktopRemoveAccountDeploymentInputSchema,
   DesktopSelectDeploymentInputSchema,
 } from "@opensteer/protocol/desktop";
@@ -48,7 +49,11 @@ export const handleSignOut = (context: DesktopBridgeContext): DesktopBridgeHandl
 export const handleCreatePersonalDeployment = (
   context: DesktopBridgeContext,
 ): DesktopBridgeHandler =>
-  accessOperation(context, () => context.options.access.createPersonalDeployment());
+  accessOperation(context, (input) =>
+    context.options.access.createPersonalDeployment(
+      DesktopCreatePersonalDeploymentInputSchema.parse(input ?? {}),
+    ),
+  );
 
 export const handleLinkPersonal = (context: DesktopBridgeContext): DesktopBridgeHandler =>
   accessOperation(context, () => context.options.access.linkPersonal());
