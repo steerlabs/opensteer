@@ -158,6 +158,10 @@ export function migrationProvider(): MigrationProvider {
             );
           },
         },
+        "0015_team_partner_links": {
+          up: async (database) =>
+            (await import("./team-partner-links-migration.js")).migrateTeamPartnerLinks(database),
+        },
       };
     },
   };

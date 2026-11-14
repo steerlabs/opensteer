@@ -67,6 +67,13 @@ import {
   TeamLinkViewSchema,
 } from "./team-link.js";
 
+import {
+  TeamPartnerLinkSchema,
+  TeamPartnerInviteSchema,
+  TeamPartnerOfferTextSchema,
+  TeamSharingPolicySchema,
+} from "./team-partner.js";
+
 const name = z.string().trim().min(1).max(160);
 
 /** The key a team keeps live channel names unique by, so `General` and `general` are one name. */
@@ -78,6 +85,15 @@ export const teamChannelNameTakenReason = "channel-name-taken";
 /** The most people a direct message can add to the one who opens it. */
 export const teamDmMaxParticipants = 31;
 export const TeamCommandSchema = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.literal("team.partner.invite.create") }),
+  z.strictObject({ type: z.literal("team.partner.invite.revoke"), inviteId: z.uuid() }),
+  z.strictObject({
+    type: z.literal("team.partner.invite.redeem"),
+    offer: TeamPartnerOfferTextSchema,
+  }),
+  z.strictObject({ type: z.literal("team.partner.approve"), linkId: z.uuid() }),
+  z.strictObject({ type: z.literal("team.partner.revoke"), linkId: z.uuid() }),
+  z.strictObject({ type: z.literal("team.sharing.policy.set"), policy: TeamSharingPolicySchema }),
   z.strictObject({
     type: z.literal("team.agent.recipient.set"),
     channelId: TeamChannelIdSchema,
@@ -292,6 +308,24 @@ export const teamIdentityRpcNames = [
   "sessions.list",
 ] as const;
 export const teamReadSchemas = {
+  "team.partners.list": {
+    input: z.strictObject({ after: z.uuid().optional() }),
+    output: z.object({
+      links: z.array(TeamPartnerLinkSchema).max(50),
+      nextCursor: z.uuid().nullable(),
+    }),
+  },
+  "team.partner.invites.list": {
+    input: z.strictObject({ after: z.uuid().optional() }),
+    output: z.object({
+      invites: z.array(TeamPartnerInviteSchema).max(50),
+      nextCursor: z.uuid().nullable(),
+    }),
+  },
+  "team.sharing.policy.get": {
+    input: z.strictObject({}),
+    output: z.object({ policy: TeamSharingPolicySchema, canSet: z.boolean() }),
+  },
   "team.agent.recipient.get": {
     input: z.strictObject({ channelId: TeamChannelIdSchema, rootId: TeamMessageIdSchema }),
     output: TeamAgentRecipientSchema,

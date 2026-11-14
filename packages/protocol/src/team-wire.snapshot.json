@@ -2,6 +2,33 @@
   "teamApiVersion": 5,
   "minimumTeamApiVersion": 5,
   "input": {
+    "rpc team.partners.list": {
+      "type": "object",
+      "properties": {
+        "after": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "rpc team.partner.invites.list": {
+      "type": "object",
+      "properties": {
+        "after": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "rpc team.sharing.policy.get": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
     "rpc team.agent.recipient.get": {
       "type": "object",
       "properties": {
@@ -608,6 +635,118 @@
     "rpc sessions.list": {
       "type": "object",
       "properties": {},
+      "additionalProperties": false
+    },
+    "command team.partner.invite.create": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.partner.invite.create"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "command team.partner.invite.revoke": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.partner.invite.revoke"
+        },
+        "inviteId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        }
+      },
+      "required": [
+        "type",
+        "inviteId"
+      ],
+      "additionalProperties": false
+    },
+    "command team.partner.invite.redeem": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.partner.invite.redeem"
+        },
+        "offer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "type",
+        "offer"
+      ],
+      "additionalProperties": false
+    },
+    "command team.partner.approve": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.partner.approve"
+        },
+        "linkId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        }
+      },
+      "required": [
+        "type",
+        "linkId"
+      ],
+      "additionalProperties": false
+    },
+    "command team.partner.revoke": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.partner.revoke"
+        },
+        "linkId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        }
+      },
+      "required": [
+        "type",
+        "linkId"
+      ],
+      "additionalProperties": false
+    },
+    "command team.sharing.policy.set": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.sharing.policy.set"
+        },
+        "policy": {
+          "type": "string",
+          "enum": [
+            "off",
+            "admins",
+            "members-propose",
+            "members"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "policy"
+      ],
       "additionalProperties": false
     },
     "command team.agent.recipient.set": {
@@ -2395,6 +2534,302 @@
     }
   },
   "output": {
+    "rpc team.partners.list": {
+      "type": "object",
+      "properties": {
+        "links": {
+          "maxItems": 50,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "partnerTeamId": {
+                "type": "string",
+                "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              },
+              "partnerOrigin": {
+                "type": "string",
+                "format": "uri"
+              },
+              "partnerHostKeyFingerprint": {
+                "type": "string",
+                "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+              },
+              "partnerHostInstanceId": {
+                "type": "string",
+                "pattern": "^hst_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              },
+              "partnerName": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "dialer",
+                  "listener"
+                ]
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "active",
+                  "revoked"
+                ]
+              },
+              "localApproved": {
+                "type": "boolean"
+              },
+              "partnerApproved": {
+                "type": "boolean"
+              },
+              "createdBy": {
+                "type": "string",
+                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              },
+              "approvedBy": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                "format": "date-time"
+              },
+              "approvedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                    "format": "date-time"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lastSeenAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                    "format": "date-time"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "revokedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                    "format": "date-time"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "revokedBy": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "local",
+                      "partner"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lastError": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "identity-mismatch",
+                      "unsupported-partner-version",
+                      "unreachable"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "connected": {
+                "type": "boolean"
+              },
+              "canApprove": {
+                "type": "boolean"
+              },
+              "canRevoke": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "partnerTeamId",
+              "partnerOrigin",
+              "partnerHostKeyFingerprint",
+              "partnerHostInstanceId",
+              "partnerName",
+              "role",
+              "state",
+              "localApproved",
+              "partnerApproved",
+              "createdBy",
+              "approvedBy",
+              "createdAt",
+              "approvedAt",
+              "lastSeenAt",
+              "revokedAt",
+              "revokedBy",
+              "lastError",
+              "connected",
+              "canApprove",
+              "canRevoke"
+            ]
+          }
+        },
+        "nextCursor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "links",
+        "nextCursor"
+      ]
+    },
+    "rpc team.partner.invites.list": {
+      "type": "object",
+      "properties": {
+        "invites": {
+          "maxItems": 50,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+              },
+              "createdBy": {
+                "type": "string",
+                "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              },
+              "createdAt": {
+                "type": "string",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                "format": "date-time"
+              },
+              "expiresAt": {
+                "type": "string",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                "format": "date-time"
+              },
+              "consumedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                    "format": "date-time"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "revokedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                    "format": "date-time"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "createdBy",
+              "createdAt",
+              "expiresAt",
+              "consumedAt",
+              "revokedAt"
+            ]
+          }
+        },
+        "nextCursor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "invites",
+        "nextCursor"
+      ]
+    },
+    "rpc team.sharing.policy.get": {
+      "type": "object",
+      "properties": {
+        "policy": {
+          "type": "string",
+          "enum": [
+            "off",
+            "admins",
+            "members-propose",
+            "members"
+          ]
+        },
+        "canSet": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "policy",
+        "canSet"
+      ]
+    },
     "rpc team.agent.recipient.get": {
       "type": "object",
       "properties": {
@@ -8497,6 +8932,254 @@
       },
       "required": [
         "sessions"
+      ]
+    },
+    "command team.partner.invite.create": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.partner.invite.create"
+        },
+        "offer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      },
+      "required": [
+        "type",
+        "offer"
+      ]
+    },
+    "command team.partner.invite.revoke": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.partner.invite.revoke"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "command team.partner.invite.redeem": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.partner.invite.redeem"
+        },
+        "link": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "partnerTeamId": {
+              "type": "string",
+              "pattern": "^dep_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "partnerOrigin": {
+              "type": "string",
+              "format": "uri"
+            },
+            "partnerHostKeyFingerprint": {
+              "type": "string",
+              "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+            },
+            "partnerHostInstanceId": {
+              "type": "string",
+              "pattern": "^hst_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "partnerName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160
+            },
+            "role": {
+              "type": "string",
+              "enum": [
+                "dialer",
+                "listener"
+              ]
+            },
+            "state": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "active",
+                "revoked"
+              ]
+            },
+            "localApproved": {
+              "type": "boolean"
+            },
+            "partnerApproved": {
+              "type": "boolean"
+            },
+            "createdBy": {
+              "type": "string",
+              "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            },
+            "approvedBy": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "createdAt": {
+              "type": "string",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+              "format": "date-time"
+            },
+            "approvedAt": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "lastSeenAt": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "revokedAt": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "revokedBy": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "local",
+                    "partner"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "lastError": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "identity-mismatch",
+                    "unsupported-partner-version",
+                    "unreachable"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "connected": {
+              "type": "boolean"
+            },
+            "canApprove": {
+              "type": "boolean"
+            },
+            "canRevoke": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "id",
+            "partnerTeamId",
+            "partnerOrigin",
+            "partnerHostKeyFingerprint",
+            "partnerHostInstanceId",
+            "partnerName",
+            "role",
+            "state",
+            "localApproved",
+            "partnerApproved",
+            "createdBy",
+            "approvedBy",
+            "createdAt",
+            "approvedAt",
+            "lastSeenAt",
+            "revokedAt",
+            "revokedBy",
+            "lastError",
+            "connected",
+            "canApprove",
+            "canRevoke"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "link"
+      ]
+    },
+    "command team.partner.approve": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.partner.approve"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "command team.partner.revoke": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.partner.revoke"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "command team.sharing.policy.set": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.sharing.policy.set"
+        }
+      },
+      "required": [
+        "type"
       ]
     },
     "command team.agent.recipient.set": {
