@@ -138,7 +138,6 @@ it("gives a removed team-web reader invite guidance instead of a bare sign-in", 
               origin: host.origin,
               client: session,
               link: null,
-              failure: null,
             },
           }}
         >
