@@ -1,9 +1,7 @@
-import { TeamAskReview } from "../team/team-ask-review.js";
 import Animated from "react-native-reanimated";
 import { move } from "../ui/motion.js";
 import { SavedTasks } from "./saved-tasks.js";
 import {
-  needsYouEntryKey,
   doneTaskList,
   listedRowThreadId,
   quietlyMoved,
@@ -345,13 +343,10 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
       )
       .finally(() => setLoadingEarlier(false));
   }, [hostClient, loadingEarlier]);
-  const [reviewAskKey, setReviewAskKey] = useState<string | null>(null);
   const needsPage = useSyncExternalStore(
     useCallback((notify) => hostClient?.subscribe(notify) ?? (() => {}), [hostClient]),
     useCallback(() => hostClient?.getSnapshot().needsYou ?? null, [hostClient]),
   );
-  const teamAsks = needsPage?.entries.filter((entry) => entry.kind === "team-ask") ?? [];
-  const reviewAsk = teamAsks.find((entry) => needsYouEntryKey(entry) === reviewAskKey);
   const openNeedsYou = useCallback(() => {
     if (hostClient === null || deploymentId === null) return;
     actions.onOpenNeedsYou(deploymentId);
@@ -385,14 +380,6 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
         },
       ]}
     >
-      {reviewAsk && hostClient ? (
-        <TeamAskReview
-          key={needsYouEntryKey(reviewAsk)}
-          entry={reviewAsk}
-          client={hostClient}
-          onClose={() => setReviewAskKey(null)}
-        />
-      ) : null}
       <View style={styles.head}>
         <Text
           accessibilityRole="header"
@@ -434,20 +421,6 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
         ) : (
           <>
             <TasksHead needsYou={needsYou} onNeedsYou={openNeedsYou} />
-            {teamAsks.map((entry) => (
-              <Pressable
-                key={entry.requestId}
-                accessibilityRole="button"
-                onPress={() => setReviewAskKey(needsYouEntryKey(entry))}
-                style={{ padding: space[16] }}
-              >
-                <AppText>
-                  {entry.presentation.asker.displayName}
-                  {entry.presentation.asker.actor === "agent" ? "'s agent" : ""} · #
-                  {entry.presentation.audience.channelName}
-                </AppText>
-              </Pressable>
-            ))}
             {shown.length === 0 ? (
               <AppText role="caption" style={styles.empty} tone="muted">
                 {doneCount === 0 && !list.hasMore
