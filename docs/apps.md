@@ -16,7 +16,7 @@ Agent home on the hosting computer, and that folder holds source and data. Publi
 copies or rolls back files, so editing the folder can affect a running server. App versions record
 their owning computer and never move to the viewer's.
 
-Starting a server and `app_fetch` need a full-access Run, because calling an app can run code with
+Starting a server and `opensteer_app_call` need a full-access Run, because calling an app can run code with
 the computer user's full authority, and a Personal macOS Runner has no outer sandbox. Connected
 agents and programs publish or call apps through a managed Run; approving a connection grants no
 direct app-server authority. Servers use the program launch and containment paths, get the program

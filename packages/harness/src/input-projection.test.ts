@@ -270,7 +270,7 @@ describe("place input projection shared by every engine", () => {
     expect(projected.body).toContain("Studio Mac");
     expect(projected.body).toContain('display "main"');
     expect(projected.body).toContain("integration_search");
-    expect(projected.body).toContain("app() or phone() in the computer tool");
+    expect(projected.body).toContain("app() or phone() in computer_use");
     expect(projected.body).not.toContain("integration_call");
     expect(projected.body).toContain("only if your profile permits it");
     expect(projected.body).toContain("grants no access or session");

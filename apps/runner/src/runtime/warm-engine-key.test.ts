@@ -21,7 +21,7 @@ it("invalidates warm reuse for tool inventory, instructions, roots and discovere
     plugins: { versions: [] },
     agentTools: {
       toolsRevision: "v1",
-      tools: ["thread_read"],
+      tools: ["opensteer_task_read"],
       instructions: "Task guide",
       skills: ["opensteer:memory"],
       url: "http://127.0.0.1/mcp",
@@ -145,7 +145,10 @@ it("invalidates warm reuse for tool inventory, instructions, roots and discovere
       ...input,
       context: {
         ...context,
-        agentTools: { ...context.agentTools, tools: [...context.agentTools.tools, "team_read"] },
+        agentTools: {
+          ...context.agentTools,
+          tools: [...context.agentTools.tools, "opensteer_team_read"],
+        },
       },
     },
   ])

@@ -393,7 +393,12 @@ describe("Codex app-server harness", () => {
   it.each([
     ["host_only_tool"],
     ["opensteer_task_read", "integration_call", "computer_use"],
-    ["opensteer_task_read", "opensteer_task_wait", "opensteer_delegation_wait", ...requestToolNames],
+    [
+      "opensteer_task_read",
+      "opensteer_task_wait",
+      "opensteer_delegation_wait",
+      ...requestToolNames,
+    ],
     ["opensteer_delegation_wait"],
     [...requestToolNames],
   ])("enables exactly the Host plan %j", async (...tools) => {
@@ -1753,7 +1758,10 @@ describe("Codex app-server harness", () => {
       await session.execute(fixture.turn("Sign in"));
       expect(observer.events.filter((event) => event.type === "tool.started")).toMatchObject([
         {
-          data: { callId: "direct-1", tool: { name: "saved_login_request", namespace: "opensteer" } },
+          data: {
+            callId: "direct-1",
+            tool: { name: "saved_login_request", namespace: "opensteer" },
+          },
         },
       ]);
       expect(observer.events.filter((event) => event.type === "tool.completed")).toMatchObject([
@@ -2589,7 +2597,7 @@ describe("Codex app-server harness", () => {
     await fixture.adapter.close();
   });
 
-  it("refuses startup when the required computer tool is missing", async () => {
+  it("refuses startup when the required computer_use tool is missing", async () => {
     const fixture = await setup("previous-host");
     try {
       await expect(fixture.adapter.startSession(fixture.context)).rejects.toThrow(

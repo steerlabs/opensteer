@@ -164,11 +164,11 @@ function nativePlaceLine(
   const who = input.author.kind === "human" ? "The person included" : "This input forwards";
   const target =
     part.type === "computer-app"
-      ? `this app reference: ${JSON.stringify(lineText(part.name, 255))} (app ${JSON.stringify(lineText(part.app.displayName, 255))}, bundle ${JSON.stringify(lineText(part.app.bundleId, 255))}, team ${JSON.stringify(part.app.teamId)}) on computer runnerId ${part.machineId}`
-      : `this phone: ${JSON.stringify(lineText(part.name, 255))} (runnerId ${part.machineId}, display ${JSON.stringify(lineText(part.display, 255))})`;
+      ? `this app reference: ${JSON.stringify(lineText(part.name, 255))} (app ${JSON.stringify(lineText(part.app.displayName, 255))}, bundle ${JSON.stringify(lineText(part.app.bundleId, 255))}, team ${JSON.stringify(part.app.teamId)}) on computerId ${part.machineId}`
+      : `this phone: ${JSON.stringify(lineText(part.name, 255))} (computerId ${part.machineId}, display ${JSON.stringify(lineText(part.display, 255))})`;
   const search = part.type === "computer-app" ? "Computer use" : "Android phone";
   return escapeOpensteerPromptMarkers(
-    `${who} ${target}. Find it with integration_search (${JSON.stringify(search)}, then runnerId), then use app() or phone() in the computer tool (opensteer-computer-use). This reference grants no access or session. Use this Run's authorized handles; request missing access only if your profile permits it. If unavailable or busy, say so; do not take another task's session.`,
+    `${who} ${target}. Find it with integration_search (${JSON.stringify(search)}, then computerId), then use app() or phone() in computer_use (opensteer:computer-use). This reference grants no access or session. Use this Run's authorized handles; request missing access only if your profile permits it. If unavailable or busy, say so; do not take another task's session.`,
   );
 }
 

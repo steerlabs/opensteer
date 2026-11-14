@@ -285,7 +285,7 @@ describeStore("Assignment result delivery", (it) => {
     expect(content).toContain("Result 2");
     expect(content).toContain("Result shortened");
     expect(content).toContain("opensteer_delegation_status");
-    expect(content).toContain("thread_read");
+    expect(content).toContain("opensteer_task_read");
     expect(content).not.toContain("\ufffd");
     expect((await s.read(tasks[0]!.assignment.id)).result).toBe("Result 0");
     const sealedContent = (await s.returns())[0]!.content;

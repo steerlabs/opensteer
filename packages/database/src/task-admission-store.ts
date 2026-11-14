@@ -146,7 +146,7 @@ export function admitTeamTaskRequest(
         ...(input.bodyMarkdown.trim() ? [{ type: "text" as const, text: input.bodyMarkdown }] : []),
         ...(input.attachments ?? []).map((file) => ({
           type: "text" as const,
-          text: `Attached team file: ${JSON.stringify(file.filename)} (fileId: ${file.id}; use team_read to download).`,
+          text: `Attached team file: ${JSON.stringify(file.filename)} (fileId: ${file.id}; use opensteer_team_file_download to download).`,
         })),
       ],
       idempotencyKey: `team:${input.origin.teamId}:${input.requestId}`,
@@ -407,7 +407,7 @@ export async function admitTeamReturn(
           ...(payload.bodyMarkdown ? [{ type: "text" as const, text: payload.bodyMarkdown }] : []),
           ...payload.attachments.map((file) => ({
             type: "text" as const,
-            text: `Attached team file: ${JSON.stringify(file.filename)} (fileId: ${file.id}; use team_read to download).`,
+            text: `Attached team file: ${JSON.stringify(file.filename)} (fileId: ${file.id}; use opensteer_team_file_download to download).`,
           })),
         ],
       });
