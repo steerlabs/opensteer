@@ -45,7 +45,7 @@ const harness = vi.hoisted(() => ({
     docked: boolean;
     selectedThreadId: string | null;
     openThreadId: string | null;
-    side: string;
+    sides: { side: string; recent: string | null };
     onSide: (side: string) => void;
     visible: boolean;
     actions: {
@@ -313,21 +313,21 @@ describe("the sidebar's side", () => {
   it("follows the screen in front each time it changes, back to one shown before", async () => {
     const acme = { key: "acme-general", name: "TeamChannel", params: { teamId: "dep_acme" } };
     const { render } = await mount([home]);
-    expect(lastPanel().side).toBe("tasks");
+    expect(lastPanel().sides.side).toBe("tasks");
     // The person looks at a team over Home: their choice holds while Home stays.
     act(() => lastPanel().onSide("dep_acme"));
     await render([home]);
-    expect(lastPanel().side).toBe("dep_acme");
+    expect(lastPanel().sides.side).toBe("dep_acme");
     // Its channel opens on its side; Back to the same Home comes with Tasks.
     act(() => lastPanel().onSide("tasks"));
     await render([home, acme]);
-    expect(lastPanel().side).toBe("dep_acme");
+    expect(lastPanel().sides.side).toBe("dep_acme");
     await render([home]);
-    expect(lastPanel().side).toBe("tasks");
+    expect(lastPanel().sides).toEqual({ side: "tasks", recent: "dep_acme" });
     // A screen of neither side, such as Teams, keeps the side shown.
     act(() => lastPanel().onSide("dep_acme"));
     await render([home, { key: "teams", name: "Teams", params: {} }]);
-    expect(lastPanel().side).toBe("dep_acme");
+    expect(lastPanel().sides.side).toBe("dep_acme");
   });
 });
 

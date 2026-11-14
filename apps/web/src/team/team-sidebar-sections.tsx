@@ -1,9 +1,14 @@
 import { teamEntryRefusalOutcome } from "@opensteer/protocol";
-import { useCallback, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useLocation, useNavigate } from "react-router";
-import type { TeamSessionClient, TeamSessionSnapshot } from "@opensteer/client/team";
+import {
+  recentTeam,
+  type SidebarSide,
+  type SidebarSides,
+  type TeamSessionClient,
+  type TeamSessionSnapshot,
+} from "@opensteer/client/team";
 import { Dialog } from "../components/dialog.js";
-import { Icon } from "../components/icon.js";
 import { SetupEntries, useTeamDialogs } from "./hosted-teams.js";
 import { TeamTile } from "../components/team/team-marks.js";
 import type { TeamConnection } from "../components/team/team-models.js";
@@ -11,7 +16,7 @@ import {
   SidebarSwitch,
   TeamSide,
   type SegmentBadge,
-  type TeamMenuActions,
+  type SwitchTeam,
 } from "../components/team/team-sidebar.js";
 import { useToast } from "../components/toast.js";
 import { actionErrorMessage } from "../ui-utils.js";
@@ -38,13 +43,12 @@ export function teamConnection(
 interface SegmentFacts {
   readonly name: string | null;
   readonly mentions: number;
-  readonly invites: boolean;
 }
 
 /**
- * Each team's name, mention total and invite right, read together. Only a
- * change in those redraws the switch; a new message, typing or presence
- * does not, and the lists below never redraw for a badge.
+ * Each team's name and mention total, read together. Only a change in those
+ * redraws the switch; a new message, typing or presence does not, and the
+ * lists below never redraw for a badge.
  */
 function useSegmentFacts(clients: readonly (TeamSessionClient | null)[]): readonly SegmentFacts[] {
   const cache = useRef<readonly SegmentFacts[]>([]);
@@ -63,7 +67,6 @@ function useSegmentFacts(clients: readonly (TeamSessionClient | null)[]): readon
       return {
         name: snapshot?.bootstrap?.teamName ?? null,
         mentions: snapshot?.sidebar?.totalMentionCount ?? 0,
-        invites: snapshot?.bootstrap?.can.manageInvites ?? false,
       };
     });
     const held = cache.current;
@@ -71,9 +74,7 @@ function useSegmentFacts(clients: readonly (TeamSessionClient | null)[]): readon
       held.length === next.length &&
       held.every(
         (value, index) =>
-          value.name === next[index]!.name &&
-          value.mentions === next[index]!.mentions &&
-          value.invites === next[index]!.invites,
+          value.name === next[index]!.name && value.mentions === next[index]!.mentions,
       )
     )
       return held;
@@ -84,95 +85,53 @@ function useSegmentFacts(clients: readonly (TeamSessionClient | null)[]): readon
 }
 
 /**
- * The `Tasks | Acme` switch, once this computer has joined a team. Its own
- * component, so a badge changing never redraws the task or channel lists.
+ * The `Tasks | Acme` switch, once this computer has joined a team, and any
+ * team still being set up. Its own component, so a badge changing never
+ * redraws the task or channel lists. Making or joining a team, and each
+ * team's settings, live in Settings and the sidebar's own menu, not here.
  */
 export function TeamSwitch({
-  onNavigate,
   onSide,
-  side,
+  sides,
   tasksBadge,
 }: {
-  readonly onNavigate: () => void;
-  readonly onSide: (side: string) => void;
-  readonly side: string;
+  readonly onSide: (side: SidebarSide) => void;
+  readonly sides: SidebarSides;
   readonly tasksBadge: SegmentBadge;
 }) {
-  const { coordination, surface, teams } = useTeams();
-  const { openCreate, openInvite } = useTeamDialogs();
+  const { teams } = useTeams();
   const clients = useStableClients(teams);
   const facts = useSegmentFacts(clients);
-  const navigate = useNavigate();
-  const { pathname } = useLocation();
-  const [leaving, setLeaving] = useState<TeamAttachment | null>(null);
-  const go = (path: string) => {
-    onNavigate();
-    void navigate(path);
-  };
-  if (teams.length === 0)
-    return surface === "team-web" ? null : (
-      <>
-        <button
-          aria-current={pathname === "/teams" ? "page" : undefined}
-          className="teams-nav"
-          onClick={() => go("/teams")}
-          type="button"
-        >
-          <Icon name="users" />
-          Teams
-        </button>
-        <SetupEntries />
-      </>
-    );
-  const menu = (team: TeamAttachment, invites: boolean): TeamMenuActions => ({
-    onInvite:
-      invites && team.client
-        ? () => {
-            onNavigate();
-            openInvite(team.teamId);
-          }
-        : undefined,
-    onSettings: team.client ? () => go(`/settings/teams/${team.teamId}/profile`) : undefined,
-    onLeave: team.client ? () => setLeaving(team) : undefined,
-    onCreateTeam: coordination
-      ? () => {
-          onNavigate();
-          openCreate();
-        }
-      : () => go("/teams"),
-    onJoinTeam: () => go("/teams"),
-  });
+  const switchTeams = useMemo(
+    () =>
+      teams.map((team, index): SwitchTeam => {
+        const fact = facts[index];
+        const name = fact?.name ?? team.name;
+        return {
+          id: team.teamId,
+          name,
+          tile: teamTile(team.teamId, name),
+          mentions: fact?.mentions ?? 0,
+        };
+      }),
+    [facts, teams],
+  );
+  const recent = recentTeam(
+    sides,
+    teams.map((team) => team.teamId),
+  );
   return (
     <>
-      <SidebarSwitch
-        active={side}
-        onSelect={onSide}
-        segments={[
-          { id: "tasks", label: "Tasks", badge: tasksBadge },
-          ...teams.map((team, index) => {
-            const fact = facts[index];
-            const name = fact?.name ?? team.name;
-            return {
-              id: team.teamId,
-              label: name,
-              tile: teamTile(team.teamId, name),
-              badge: { kind: "mentions" as const, count: fact?.mentions ?? 0 },
-              menu: menu(team, fact?.invites ?? false),
-            };
-          }),
-        ]}
-      />
-      <SetupEntries />
-      {leaving ? (
-        <LeaveTeamDialog
-          onClose={() => setLeaving(null)}
-          onLeft={() => {
-            onSide("tasks");
-            go("/");
-          }}
-          team={leaving}
+      {recent === null ? null : (
+        <SidebarSwitch
+          active={sides.side}
+          onSelect={onSide}
+          recent={recent}
+          tasksBadge={tasksBadge}
+          teams={switchTeams}
         />
-      ) : null}
+      )}
+      <SetupEntries />
     </>
   );
 }
