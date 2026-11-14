@@ -44,8 +44,7 @@ export interface SwitchSegment {
 /**
  * Tasks and each team the computer joined, as one segmented control. A
  * segment holds its badge and, once chosen, its team's ⌄, so the chosen plate
- * carries all three. Both sides always keep their badge, and only the person
- * ever changes the side.
+ * carries all three. Both sides always keep their badge.
  */
 export function SidebarSwitch({
   active,

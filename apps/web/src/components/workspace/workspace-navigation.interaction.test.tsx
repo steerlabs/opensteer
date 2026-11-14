@@ -1,15 +1,16 @@
 import { seedBrowserSession } from "@opensteer/client/test-support";
 import { seedBrowserSnapshot } from "@opensteer/client/test-support";
-import type { PersonalTabLineage } from "@opensteer/client/host";
+import type { PersonalTabLineage, HostClient } from "@opensteer/client/host";
 // @vitest-environment happy-dom
 import { act } from "react";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { mockTeamId, mockTeamChannelId } from "@opensteer/client/team";
+import { mockTeamId, mockTeamChannelId, mockTeamUserId } from "@opensteer/client/team";
 import { doneTaskList, placeList, taskList, type HostSnapshot } from "@opensteer/client/host";
 import {
   BrowserSurfaceIdSchema,
+  BrowserSessionIdSchema,
   createId,
   TeamAgentRequestIdSchema,
   ThreadIdSchema,
@@ -23,6 +24,10 @@ import {
   root,
   client,
   teamHost,
+  teamSession,
+  historyState,
+  historyKey,
+  deferred,
   history,
   goTo,
   resize,
@@ -115,8 +120,6 @@ describe("Settings returns to the workspace exactly as it was", () => {
   it("returns to a conversation-only address without reopening the remembered browser", async () => {
     let threadId = "";
     await mount((source) => {
-      // A Host that restores workspace tabs, as current Hosts do: the remembered
-      // place reopens once at launch, and must not reopen on return from Settings.
       const read = source.getSnapshot.bind(source);
       let base: HostSnapshot | undefined;
       let restoring: HostSnapshot | undefined;
@@ -177,108 +180,98 @@ describe("Settings returns to the workspace exactly as it was", () => {
 });
 
 describe("selection actions own exactly their axis, one history entry each", () => {
-  it.each([false, true])(
-    "recovers a selected browser outside the bounded catalog (remembered: %s)",
-    async (remembered) => {
-      let destination: { kind: "browser"; sessionId: string; tabId: string };
-      const read = vi.fn();
-      await mount((source) => {
-        const original = source.getSnapshot();
-        const selected = pageTab(source);
-        if (selected.destination.kind !== "browser" || !selected.destination.tabId)
-          throw new Error("Expected browser tab");
-        destination = {
-          kind: "browser",
-          sessionId: selected.destination.sessionId,
-          tabId: selected.destination.tabId,
-        };
-        const group: PersonalTabLineage = {
-          id: createBrowserSessionId(),
-          revision: 1,
+  it("recovers a directly selected browser outside the bounded catalog", async () => {
+    let destination: { kind: "browser"; sessionId: string; tabId: string };
+    const read = vi.fn();
+    await mount((source) => {
+      const original = source.getSnapshot();
+      const selected = pageTab(source);
+      if (selected.destination.kind !== "browser" || !selected.destination.tabId)
+        throw new Error("Expected browser tab");
+      destination = {
+        kind: "browser",
+        sessionId: selected.destination.sessionId,
+        tabId: selected.destination.tabId,
+      };
+      const group: PersonalTabLineage = {
+        id: createBrowserSessionId(),
+        revision: 1,
+        createdAt: "2026-10-19T12:00:00.000Z",
+        session: {
+          id: destination.sessionId as PersonalTabLineage["session"]["id"],
+          access: "read-write",
           createdAt: "2026-10-19T12:00:00.000Z",
-          session: {
-            id: destination.sessionId as PersonalTabLineage["session"]["id"],
-            access: "read-write",
-            createdAt: "2026-10-19T12:00:00.000Z",
-            updatedAt: "2026-10-19T12:00:00.000Z",
-            origin: "person",
-            placement: {
-              kind: "runner",
-              runnerId: selected.device!
-                .machineId as PersonalTabLineage["session"]["placement"]["runnerId"],
-            },
-            profileId: null,
-            runtimeId: "test",
-            state: "failed",
+          updatedAt: "2026-10-19T12:00:00.000Z",
+          origin: "person",
+          placement: {
+            kind: "runner",
+            runnerId: selected.device!
+              .machineId as PersonalTabLineage["session"]["placement"]["runnerId"],
           },
-          tabs: [
-            {
-              kind: "browser",
-              id: BrowserSurfaceIdSchema.parse(destination.tabId),
-              sessionId: destination.sessionId as PersonalTabLineage["session"]["id"],
-              title: selected.title,
-              site: selected.site ?? "",
-              order: 0,
-              openerId: null,
-              state: "suspended",
-            },
-          ],
-        };
-        let snapshot: HostSnapshot = seedBrowserSnapshot(
+          profileId: null,
+          runtimeId: "test",
+          state: "failed",
+        },
+        tabs: [
           {
-            ...original,
-            browserSessions: original.browserSessions
-              .filter((session) => session.id === destination.sessionId)
-              .map((session) =>
-                seedBrowserSession(
-                  { ...session, state: "failed" as const },
-                  { generation: 0, revision: 0, rows: [] },
-                ),
+            kind: "browser",
+            id: BrowserSurfaceIdSchema.parse(destination.tabId),
+            sessionId: destination.sessionId as PersonalTabLineage["session"]["id"],
+            title: selected.title,
+            site: selected.site ?? "",
+            order: 0,
+            openerId: null,
+            state: "suspended",
+          },
+        ],
+      };
+      let snapshot: HostSnapshot = seedBrowserSnapshot(
+        {
+          ...original,
+          browserSessions: original.browserSessions
+            .filter((session) => session.id === destination.sessionId)
+            .map((session) =>
+              seedBrowserSession(
+                { ...session, state: "failed" as const },
+                { generation: 0, revision: 0, rows: [] },
               ),
-            tabRestoreVersion: 1,
-          } as HostSnapshot,
-          [],
-        );
-        vi.spyOn(source, "getSnapshot").mockImplementation(() => snapshot);
-        Object.defineProperty(source, "browserTabs", { get: () => snapshot.browserTabs });
-        // Outside the bounded catalog, the client holds none of this browser's rows.
-        source.browserTabs.clear();
-        const listeners = new Set<() => void>();
-        vi.spyOn(source, "subscribe").mockImplementation((listener) => {
-          listeners.add(listener);
-          return () => {
-            listeners.delete(listener);
-          };
-        });
-        read.mockImplementation(async () => {
-          snapshot = seedBrowserSnapshot(
-            seedBrowserSnapshot({ ...snapshot } as HostSnapshot, [group]),
-          );
-          for (const listener of listeners) listener();
-          return group;
-        });
-        Object.assign(source, { readPersonalTabs: read });
-        if (remembered) {
-          rememberPlace(
-            { deploymentId: original.deploymentId, userId: original.user!.id },
-            destination,
-          );
-          return "/";
-        }
-        return `/?panel=browser&browser=${destination.sessionId}&browserTab=${destination.tabId}`;
+            ),
+          tabRestoreVersion: 1,
+        } as HostSnapshot,
+        [],
+      );
+      vi.spyOn(source, "getSnapshot").mockImplementation(() => snapshot);
+      Object.defineProperty(source, "browserTabs", { get: () => snapshot.browserTabs });
+      // Outside the bounded catalog, the client holds none of this browser's rows.
+      source.browserTabs.clear();
+      const listeners = new Set<() => void>();
+      vi.spyOn(source, "subscribe").mockImplementation((listener) => {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
       });
-      await settle(60);
-      expect(read).toHaveBeenCalledWith(destination!.sessionId);
-      const params = new URLSearchParams(history.at(-1)!.search);
-      expect(params.get("browserTab")).toBe(destination!.tabId);
-      expect(
-        placeList(client.getSnapshot()).some(
-          (place) =>
-            place.destination.kind === "browser" && place.destination.tabId === destination!.tabId,
-        ),
-      ).toBe(true);
-    },
-  );
+      read.mockImplementation(async () => {
+        snapshot = seedBrowserSnapshot(
+          seedBrowserSnapshot({ ...snapshot } as HostSnapshot, [group]),
+        );
+        for (const listener of listeners) listener();
+        return group;
+      });
+      Object.assign(source, { readPersonalTabs: read });
+      return `/?panel=browser&browser=${destination.sessionId}&browserTab=${destination.tabId}`;
+    });
+    await settle(60);
+    expect(read).toHaveBeenCalledWith(destination!.sessionId);
+    const params = new URLSearchParams(history.at(-1)!.search);
+    expect(params.get("browserTab")).toBe(destination!.tabId);
+    expect(
+      placeList(client.getSnapshot()).some(
+        (place) =>
+          place.destination.kind === "browser" && place.destination.tabId === destination!.tabId,
+      ),
+    ).toBe(true);
+  });
   it("task row: the conversation changes, the place stays, the middle is not remounted", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     const place = pageTab();
@@ -703,32 +696,333 @@ describe("a channel and back", () => {
     expect(history.at(-1)).toMatchObject(scoped);
   });
 
-  it("Back after jumping into a channel restores the conversation and the page beside it", async () => {
+  it("switches to each side's exact address and follows Back and Forward", async () => {
     await mount((source) => `/tasks/${delegating(source)}${tabSearch(pageTab(source))}`, {
       team: true,
     });
-    const place = pageTab();
-    const before = history.at(-1)!;
+    const task = history.at(-1)!;
+    const team = () => element('.side-switch__option:not([data-value="tasks"])');
+    const tasks = () => element('.side-switch__option[data-value="tasks"]');
     const entries = history.length;
-    // Switching sides is the sidebar's own business: nothing navigates.
-    await click(element('.side-switch__option:not([data-value="tasks"])'));
-    expect(history.length).toBe(entries);
-    await click(element(".team-row[data-channel-id] .team-row__main"));
-    expect(history.length).toBe(entries + 1);
+    await click(team());
+    expect(history.slice(entries).filter((step) => step.type === "PUSH")).toHaveLength(1);
     expect(history.at(-1)!.path).toMatch(/^\/teams\/[^/]+\/c\/[^/]+$/u);
-    // The channel fills the window; the page leaves the middle, and its tab stays in Tabs.
-    expect(document.querySelector(".place")).toBeNull();
-    expect(element(`.side-tab[data-place-key="${place.key}"]`)).toBeTruthy();
-
+    expect(team().getAttribute("aria-checked")).toBe("true");
+    const channel = history.at(-1)!;
+    await click(tasks());
+    expect(history.at(-1)).toEqual({ ...task, type: "PUSH" });
+    expect(tasks().getAttribute("aria-checked")).toBe("true");
+    const reselected = history.length;
+    const selectedKey = historyKey;
+    await click(tasks());
+    expect(history.length).toBe(reselected);
+    expect(historyKey).toBe(selectedKey);
+    await click(team());
+    expect(history.at(-1)).toEqual({ ...channel, type: "PUSH" });
     await act(async () => goTo!(-1));
-    await settle();
-    expect(history.at(-1)).toMatchObject({
-      path: before.path,
-      search: before.search,
-      type: "POP",
+    expect(history.at(-1)).toEqual({ ...task, type: "POP" });
+    expect(tasks().getAttribute("aria-checked")).toBe("true");
+    await act(async () => goTo!(1));
+    expect(history.at(-1)).toEqual({ ...channel, type: "POP" });
+    expect(team().getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("remembers a team's thread, knowledge query and hash while settings leave both bookmarks alone", async () => {
+    await mount((source) => `/tasks/${delegating(source)}${tabSearch(pageTab(source))}`, {
+      team: true,
     });
-    expect(element(".place").getAttribute("data-place-key")).toBe(place.key);
-    expect(element(".thread")).toBeTruthy();
+    const task = history.at(-1)!;
+    const host = teamHost!;
+    const message = host.post({ channelId: mockTeamChannelId, bodyMarkdown: "Thread bookmark" });
+    const thread = `/teams/${mockTeamId}/c/${mockTeamChannelId}/t/${message.id}`;
+    await act(async () => goTo!(thread));
+    expect(element('.side-switch__option[aria-checked="true"]').getAttribute("data-value")).toBe(
+      mockTeamId,
+    );
+    await click(element('.side-switch__option[data-value="tasks"]'));
+    expect(history.at(-1)).toEqual({ ...task, type: "PUSH" });
+    await click(element(`.side-switch__option[data-value="${mockTeamId}"]`));
+    expect(history.at(-1)).toMatchObject({ path: thread, search: "", type: "PUSH" });
+    const knowledge = `/teams/${mockTeamId}/knowledge?q=bookmark#topic`;
+    await act(async () => goTo!(knowledge));
+    await act(async () => goTo!("/settings/general"));
+    await click(element(".settings-navigation__back"));
+    await click(element('.side-switch__option[data-value="tasks"]'));
+    expect(history.at(-1)).toEqual({ ...task, type: "PUSH" });
+    await click(element(`.side-switch__option[data-value="${mockTeamId}"]`));
+    expect(history.at(-1)).toMatchObject({
+      path: `/teams/${mockTeamId}/knowledge`,
+      search: "?q=bookmark",
+      hash: "#topic",
+      type: "PUSH",
+    });
+    await act(async () => goTo!("/teams"));
+    expect(element('.side-switch__option[aria-checked="true"]').getAttribute("data-value")).toBe(
+      mockTeamId,
+    );
+    await click(element(`.side-switch__option[data-value="${mockTeamId}"]`));
+    expect(history.at(-1)).toMatchObject({
+      path: `/teams/${mockTeamId}/knowledge`,
+      search: "?q=bookmark",
+      hash: "#topic",
+    });
+  });
+
+  it("restores this window's bookmarks after reload without redirecting an incoming team link", async () => {
+    await mount((source) => `/tasks/${delegating(source)}${tabSearch(pageTab(source))}`, {
+      team: true,
+    });
+    const task = history.at(-1)!;
+    await act(async () => goTo!(`/teams/${mockTeamId}/knowledge?q=saved`));
+    await act(async () => root!.unmount());
+    setRoot(null);
+    resetHistory();
+    const incoming = `/teams/${mockTeamId}/c/${mockTeamChannelId}`;
+    await mount(incoming, { sameHost: true, team: true });
+    expect(history).toEqual([{ path: incoming, search: "", type: "POP" }]);
+    await click(element('.side-switch__option[data-value="tasks"]'));
+    expect(history.at(-1)).toEqual({ ...task, type: "PUSH" });
+    await click(element(`.side-switch__option[data-value="${mockTeamId}"]`));
+    expect(history.at(-1)).toEqual({ path: incoming, search: "", type: "PUSH" });
+  });
+
+  it("keeps only passive launcher return state when restoring a side", async () => {
+    let from = "";
+    await mount(
+      (source) => {
+        from = tabSearch(pageTab(source)).slice(1);
+        return {
+          pathname: `/tasks/${delegating(source)}`,
+          search: "?panel=browser",
+          state: {
+            startFrom: from,
+            startId: "consumed",
+            startAddress: "https://example.com",
+            startOpen: false,
+            focusRequest: "consumed",
+          },
+        };
+      },
+      { team: true },
+    );
+    await click(element(`.side-switch__option[data-value="${mockTeamId}"]`));
+    await click(element('.side-switch__option[data-value="tasks"]'));
+    expect(historyState).toEqual({ startFrom: from });
+    const entries = history.length;
+    const selectedKey = historyKey;
+    await click(element('.side-switch__option[data-value="tasks"]'));
+    expect(history.length).toBe(entries);
+    expect(historyKey).toBe(selectedKey);
+    await act(async () =>
+      element(".start-page").dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      ),
+    );
+    expect(placeParams(history.at(-1)!.search)).toBe(placeParams(`?${from}`));
+  });
+
+  it("does not graft a remembered place onto a direct team address at startup", async () => {
+    await mount(
+      (source) => {
+        const snapshot = source.getSnapshot();
+        rememberPlace(
+          { deploymentId: snapshot.deploymentId, userId: snapshot.user!.id },
+          pageTab(source).destination,
+        );
+        const read = source.getSnapshot.bind(source);
+        let held: HostSnapshot | null = null;
+        let published: HostSnapshot | null = null;
+        vi.spyOn(source, "getSnapshot").mockImplementation(() => {
+          const next = read();
+          if (next !== held) {
+            held = next;
+            published = { ...next, tabRestoreVersion: 1 };
+          }
+          return published!;
+        });
+        return `/teams/${mockTeamId}/c/${mockTeamChannelId}`;
+      },
+      { team: true },
+    );
+    expect(history).toEqual([
+      { path: `/teams/${mockTeamId}/c/${mockTeamChannelId}`, search: "", type: "POP" },
+    ]);
+    expect(document.querySelector(".place")).toBeNull();
+  });
+
+  it.each(["team", "settings", "task"])(
+    "fences a deferred place result when navigating to %s, preserving same-side task changes",
+    async (target) => {
+      const gate = deferred<Awaited<ReturnType<NonNullable<HostClient["reopenPersonalTab"]>>>>();
+      const reopen = vi.fn(() => gate.promise);
+      vi.stubGlobal("opensteerDesktop", {
+        getLocalVisibility: async () => true,
+        onLocalVisibilityChanged: () => () => undefined,
+        setBadgeCount: vi.fn(async () => undefined),
+      });
+      await mount((source) => `/tasks/${delegating(source)}`, {
+        team: true,
+        hostClient: (source) => {
+          const read = source.getSnapshot.bind(source);
+          let held: HostSnapshot | null = null;
+          let published: HostSnapshot | null = null;
+          vi.spyOn(source, "getSnapshot").mockImplementation(() => {
+            const next = read();
+            if (next !== held) {
+              held = next;
+              published = { ...next, tabReopenAvailable: true };
+            }
+            return published!;
+          });
+          Object.assign(source, { reopenPersonalTab: reopen });
+          return source;
+        },
+      });
+      await act(async () =>
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "t", metaKey: true, shiftKey: true, bubbles: true }),
+        ),
+      );
+      expect(reopen).toHaveBeenCalledOnce();
+      const pathname =
+        target === "team"
+          ? `/teams/${mockTeamId}/c/${mockTeamChannelId}`
+          : target === "settings"
+            ? "/settings/general"
+            : `/tasks/${client.getSnapshot().threads.find((thread) => thread.purpose === "task" && thread.id !== delegating(client))!.id}`;
+      await act(async () => goTo!(pathname));
+      const channel = history.at(-1)!;
+      const entries = history.length;
+      const place = pageTab();
+      const destination = place.destination;
+      if (destination.kind !== "browser") throw new Error("Expected browser place");
+      await act(async () =>
+        gate.resolve({
+          type: "tab.reopen",
+          sessionId: BrowserSessionIdSchema.parse(destination.sessionId),
+          tabId: BrowserSurfaceIdSchema.parse(destination.tabId),
+          layout: { revision: 0, groups: [] },
+        }),
+      );
+      if (target === "task") {
+        expect(history).toHaveLength(entries + 1);
+        expect(history.at(-1)!.path).toBe(pathname);
+        expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
+      } else {
+        expect(history).toHaveLength(entries);
+        expect(history.at(-1)).toEqual(channel);
+        expect(document.querySelector(".place")).toBeNull();
+      }
+    },
+  );
+
+  it.each(["removed", "viewer-changed"] as const)(
+    "clears a confirmed %s team's bookmark, preserving it while offline",
+    async (ended) => {
+      await mount(`/teams/${mockTeamId}/knowledge?q=keep`, { team: true });
+      await click(element('.side-switch__option[data-value="tasks"]'));
+      await act(async () => teamSession!.disconnect());
+      await click(element(`.side-switch__option[data-value="${mockTeamId}"]`));
+      expect(history.at(-1)).toMatchObject({
+        path: `/teams/${mockTeamId}/knowledge`,
+        search: "?q=keep",
+      });
+      await click(element('.side-switch__option[data-value="tasks"]'));
+      await act(async () => teamSession!.remove(ended));
+      const key = Object.keys(sessionStorage).find((key) =>
+        key.startsWith("opensteer.workspace.sides.v1:"),
+      )!;
+      expect(JSON.parse(sessionStorage.getItem(key)!).bookmarks[mockTeamId]).toBeUndefined();
+      await click(element(`.side-switch__option[data-value="${mockTeamId}"]`));
+      expect(history.at(-1)!.path).toBe(`/teams/${mockTeamId}/`);
+      expect(history.at(-1)!.search).toBe("");
+    },
+  );
+
+  it.each(["deployment", "personal-user", "team-viewer"])(
+    "scopes stored bookmarks to the %s",
+    async (changed) => {
+      await mount(
+        (source) => {
+          const snapshot = source.getSnapshot();
+          const key = `opensteer.workspace.sides.v1:${encodeURIComponent(changed === "deployment" ? "other" : snapshot.deploymentId!)}:${encodeURIComponent(changed === "personal-user" ? "other" : snapshot.user!.id)}`;
+          sessionStorage.setItem(
+            key,
+            JSON.stringify({
+              side: "tasks",
+              bookmarks: {
+                tasks: {
+                  pathname: `/tasks/${delegating(source)}`,
+                  search: tabSearch(pageTab(source)),
+                  hash: "",
+                  startFrom: null,
+                  viewer: null,
+                },
+                [mockTeamId]: {
+                  pathname: `/teams/${mockTeamId}/knowledge`,
+                  search: "?q=private",
+                  hash: "",
+                  startFrom: null,
+                  viewer: changed === "team-viewer" ? "other" : mockTeamUserId,
+                },
+              },
+            }),
+          );
+          return changed === "team-viewer"
+            ? `/tasks/${delegating(source)}`
+            : `/teams/${mockTeamId}/c/${mockTeamChannelId}`;
+        },
+        { team: true },
+      );
+      await click(
+        element(
+          `.side-switch__option[data-value="${changed === "team-viewer" ? mockTeamId : "tasks"}"]`,
+        ),
+      );
+      expect(history.at(-1)!.search).not.toContain("browserTab");
+      expect(history.at(-1)!.search).not.toContain("private");
+      expect(history.at(-1)!.path).toBe(
+        changed === "team-viewer" ? `/teams/${mockTeamId}/c/${mockTeamChannelId}` : "/",
+      );
+    },
+  );
+
+  it("remembers in memory when session storage is refused", async () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation((key) => {
+      if (key.startsWith("opensteer.workspace.sides.v1:")) throw new Error("Storage refused");
+      return null;
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("Storage refused");
+    });
+    await mount((source) => `/tasks/${delegating(source)}${tabSearch(pageTab(source))}`, {
+      team: true,
+    });
+    const task = history.at(-1)!;
+    await click(element(`.side-switch__option[data-value="${mockTeamId}"]`));
+    await click(element('.side-switch__option[data-value="tasks"]'));
+    expect(history.at(-1)).toEqual({ ...task, type: "PUSH" });
+  });
+
+  it("a missing task redirects home with its place intact", async () => {
+    await mount((source) => {
+      const missingId = createId("thread");
+      const read = source.getSnapshot.bind(source);
+      let held: HostSnapshot | null = null;
+      let published: HostSnapshot | null = null;
+      vi.spyOn(source, "getSnapshot").mockImplementation(() => {
+        const next = read();
+        if (next !== held) {
+          held = next;
+          published = { ...next, threadLookups: { ...next.threadLookups, [missingId]: "missing" } };
+        }
+        return published!;
+      });
+      return `/tasks/${missingId}${tabSearch(pageTab(source))}`;
+    });
+    expect(history.at(-1)!.path).toBe("/");
+    expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(pageTab())));
+    expect(element(".place").getAttribute("data-place-key")).toBe(pageTab().key);
   });
 
   it("a tab opened from a channel docks the channel beside its page, and Back fills the window again", async () => {
