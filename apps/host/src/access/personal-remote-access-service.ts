@@ -990,7 +990,11 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     if (!linked || linked.state !== "active" || linked.accountOperation?.kind === "unlink")
       return null;
     return {
-      account: { issuer: linked.issuer, subject: linked.subject },
+      account: {
+        issuer: linked.issuer,
+        subject: linked.subject,
+        linkGeneration: linked.linkGeneration,
+      },
       client: this.#accountClient(linked),
     };
   }

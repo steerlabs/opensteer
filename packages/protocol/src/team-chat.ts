@@ -219,6 +219,8 @@ export const TeamSidebarSchema = z.strictObject({
   totalMentionCount: z.number().int().nonnegative(),
   nextCursor: TeamChannelIdSchema.nullable(),
   accessRevision: SequenceSchema,
+  /** Moves with every member rename; absent from teams before names could change. */
+  namesRevision: SequenceSchema.optional(),
 });
 export const TeamBootstrapSchema = z.strictObject({
   teamId: DeploymentIdSchema,

@@ -3,14 +3,14 @@ import type {
   UpdateAccountProfileRequest,
 } from "@opensteer/control-plane-protocol";
 import { OpensteerError, type PersonName, type UserId } from "@opensteer/core";
-import type { OwnerNameAccount, OwnerProfile, OwnerProfileStore } from "@opensteer/database";
+import type { OwnerNameLink, OwnerProfile, OwnerProfileStore } from "@opensteer/database";
 import type { OwnerProfileView } from "@opensteer/protocol";
 
 /** The linked Account as this Host reaches it; null while no link is active. */
 export interface OwnerProfileAccount {
-  readOwnerProfile(): Promise<{ account: OwnerNameAccount; profile: AccountProfile } | null>;
+  readOwnerProfile(): Promise<{ account: OwnerNameLink; profile: AccountProfile } | null>;
   updateOwnerProfile(request: UpdateAccountProfileRequest): Promise<{
-    account: OwnerNameAccount;
+    account: OwnerNameLink;
     applied: boolean;
     profile: AccountProfile;
   } | null>;
@@ -30,6 +30,8 @@ export class OwnerProfileService {
   readonly #changed: () => void;
   readonly #report: (error: unknown) => void;
   #refreshing: Promise<void> | undefined;
+  /** A link changed while a refresh was reading: read again once it ends. */
+  #again = false;
   #refreshedAt = Number.NEGATIVE_INFINITY;
 
   constructor(options: {
@@ -51,17 +53,19 @@ export class OwnerProfileService {
   }
 
   /**
-   * `applied` is false only when the Account already holds a newer name saved elsewhere; the
-   * view is then that name, so the person sees it before choosing again.
+   * `expectedRevision` is the Account revision the person was looking at when they began editing,
+   * so an edit begun before a rename elsewhere never overwrites it. `applied` is false then, and
+   * the view is the newer name, so the person sees it before choosing again.
    */
   async update(
     userId: UserId,
     name: PersonName | null,
+    expectedRevision: number | null,
   ): Promise<{ readonly applied: boolean; readonly profile: OwnerProfileView }> {
     const current = await this.#store.read();
     if (!current || current.ownerId !== userId)
       throw new OpensteerError({ code: "forbidden", message: "The personal owner is required." });
-    const linked = await this.#saveToAccount(current, name);
+    const linked = await this.#saveToAccount(current, name, expectedRevision);
     if (linked) return linked;
     const profile = await this.#store.setLocal({ userId, name });
     this.#changed();
@@ -70,7 +74,17 @@ export class OwnerProfileService {
 
   /** Catches up with the linked Account, or detaches from one that is gone. */
   refresh(): Promise<void> {
-    this.#refreshing ??= this.#refresh().finally(() => {
+    if (this.#refreshing) {
+      this.#again = true;
+      return this.#refreshing;
+    }
+    const run = async (): Promise<void> => {
+      do {
+        this.#again = false;
+        await this.#refresh();
+      } while (this.#again);
+    };
+    this.#refreshing = run().finally(() => {
       this.#refreshing = undefined;
     });
     return this.#refreshing;
@@ -87,10 +101,12 @@ export class OwnerProfileService {
     if (await this.#store.seed(name)) this.#changed();
   }
 
-  async #saveToAccount(current: OwnerProfile, name: PersonName | null) {
+  async #saveToAccount(current: OwnerProfile, name: PersonName | null, edited: number | null) {
     if (!this.#account) return null;
-    let expectedRevision = current.account?.revision;
+    let expectedRevision = edited ?? current.account?.revision;
     if (expectedRevision === undefined) {
+      // The person edited a name of their own, and the Host has linked since: start from the
+      // Account's current one.
       const fetched = await this.#account.readOwnerProfile();
       if (!fetched) return this.#detached();
       await this.#apply(fetched.account, fetched.profile);
@@ -103,8 +119,13 @@ export class OwnerProfileService {
       });
     const saved = await this.#account.updateOwnerProfile({ name, expectedRevision });
     if (!saved) return this.#detached();
-    const profile = await this.#apply(saved.account, saved.profile);
-    return { applied: saved.applied, profile: ownerProfileView(profile) };
+    const applied = await this.#apply(saved.account, saved.profile);
+    if (applied.stale)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Your Opensteer Account changed while saving. Check your name, then try again.",
+      });
+    return { applied: saved.applied, profile: ownerProfileView(applied.profile) };
   }
 
   /** The link ended since the name was last read: the name is the owner's own again. */
@@ -113,14 +134,14 @@ export class OwnerProfileService {
     return null;
   }
 
-  async #apply(account: OwnerNameAccount, profile: AccountProfile): Promise<OwnerProfile> {
+  async #apply(account: OwnerNameLink, profile: AccountProfile) {
     const applied = await this.#store.applyAccount({
       account,
       name: profile.name,
       revision: profile.revision,
     });
     if (applied.changed) this.#changed();
-    return applied.profile;
+    return applied;
   }
 
   async #refresh(): Promise<void> {
@@ -136,5 +157,9 @@ export class OwnerProfileService {
 }
 
 export function ownerProfileView(profile: OwnerProfile): OwnerProfileView {
-  return { name: profile.name, accountBacked: profile.account !== null };
+  return {
+    name: profile.name,
+    accountBacked: profile.account !== null,
+    revision: profile.account?.revision ?? null,
+  };
 }

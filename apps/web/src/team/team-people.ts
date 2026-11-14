@@ -63,10 +63,8 @@ class TeamPeople {
     if (updates === this.#updates) return;
     this.#updates = updates;
     if (!updates || this.#state.members.size === 0) return;
-    const members = new Map(this.#state.members);
-    for (const member of Object.values(updates))
-      if (members.has(member.userId)) members.set(member.userId, member);
-    this.#set({ members });
+    const members = withNewerNames(this.#state.members, updates);
+    if (members !== this.#state.members) this.#set({ members });
   }
 
   getState = (): PeopleState => this.#state;
@@ -93,10 +91,10 @@ class TeamPeople {
         after = page.hasMore ? page.members.at(-1)?.userId : undefined;
       } while (after && members.size < memberBound);
       // A rename that arrived while this read was in flight may be newer than the page.
-      for (const member of Object.values(this.#client.getSnapshot().memberUpdates ?? {}))
-        if ((members.get(member.userId)?.nameRevision ?? 0) < (member.nameRevision ?? 0))
-          members.set(member.userId, member);
-      this.#set({ members, status: "read" });
+      this.#set({
+        members: withNewerNames(members, this.#client.getSnapshot().memberUpdates ?? {}),
+        status: "read",
+      });
     })().catch(() => {
       if (load === this.#load && this.#state.status !== "read") this.#set({ status: "failed" });
     });
@@ -106,6 +104,28 @@ class TeamPeople {
     this.#state = { ...this.#state, ...patch };
     for (const listener of this.#listeners) listener();
   }
+}
+
+/**
+ * Lays announced renames over a directory: only the name moves, and only forward. Role, state
+ * and the rest stay as last read, which may be newer than the announcement.
+ */
+function withNewerNames(
+  members: ReadonlyMap<string, TeamMember>,
+  updates: Readonly<Record<string, TeamMember>>,
+): ReadonlyMap<string, TeamMember> {
+  let next: Map<string, TeamMember> | null = null;
+  for (const update of Object.values(updates)) {
+    const held = members.get(update.userId);
+    if (!held || (update.nameRevision ?? 0) <= (held.nameRevision ?? 0)) continue;
+    next ??= new Map(members);
+    next.set(update.userId, {
+      ...held,
+      displayName: update.displayName,
+      nameRevision: update.nameRevision,
+    });
+  }
+  return next ?? members;
 }
 
 const directories = new WeakMap<TeamSessionClient, TeamPeople>();

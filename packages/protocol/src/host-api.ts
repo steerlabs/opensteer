@@ -521,6 +521,8 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("viewer.name.update"),
     idempotencyKey: idempotencyKeySchema,
     name: PersonNameSchema.nullable(),
+    /** `ownerProfile.revision` when the person began editing. */
+    expectedRevision: OwnerProfileViewSchema.shape.revision,
   }),
   z.strictObject({
     continuation: z

@@ -15,6 +15,11 @@ export interface OwnerNameAccount {
   readonly subject: string;
 }
 
+/** The exact link an Account answer was read through; it applies only while that link is live. */
+export interface OwnerNameLink extends OwnerNameAccount {
+  readonly linkGeneration: string;
+}
+
 export interface OwnerProfile {
   readonly ownerId: UserId;
   /** Null until the person, their computer or their Account gives one; shown as "You". */
@@ -69,18 +74,31 @@ export class OwnerProfileStore {
    * new link); the same Account only moves forward, so a late answer never restores an old name.
    */
   async applyAccount(input: {
-    readonly account: OwnerNameAccount;
+    readonly account: OwnerNameLink;
     readonly name: PersonName;
     readonly revision: number;
-  }): Promise<{ readonly changed: boolean; readonly profile: OwnerProfile }> {
+  }): Promise<{
+    readonly changed: boolean;
+    /** The link changed after the answer was read: nothing was applied. */
+    readonly stale: boolean;
+    readonly profile: OwnerProfile;
+  }> {
     const name = PersonNameSchema.parse(input.name);
     return withPersonalTransaction(this.#database, async (transaction) => {
       const current = await lockedProfile(transaction);
+      const link = await activeLink(transaction);
+      if (
+        !link ||
+        link.issuer !== input.account.issuer ||
+        link.subject !== input.account.subject ||
+        link.linkGeneration !== input.account.linkGeneration
+      )
+        return { changed: false, stale: true, profile: current };
       const sameAccount =
         current.account?.issuer === input.account.issuer &&
         current.account.subject === input.account.subject;
       if (sameAccount && current.account!.revision >= input.revision)
-        return { changed: false, profile: current };
+        return { changed: false, stale: false, profile: current };
       const account = {
         issuer: input.account.issuer,
         subject: input.account.subject,
@@ -93,20 +111,28 @@ export class OwnerProfileStore {
       });
       return {
         changed: current.name !== name || !sameAccount,
+        stale: false,
         profile: { ...current, name, account },
       };
     });
   }
 
-  /** Unlinking keeps the last name as the owner's own; only the Account binding goes. */
+  /**
+   * Unlinking keeps the last name as the owner's own; only the Account binding goes. Refused
+   * while a link is active, so a late answer from before a relink cannot unbind the new one.
+   */
   async detachAccount(): Promise<boolean> {
-    const updated = await this.#database
-      .updateTable("personalSettings")
-      .set({ ownerNameAccount: null, ownerNameRevision: null })
-      .where("singletonKey", "=", "personal")
-      .where("ownerNameAccount", "is not", null)
-      .executeTakeFirst();
-    return updated.numUpdatedRows > 0n;
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      await lockedProfile(transaction);
+      if (await activeLink(transaction)) return false;
+      const updated = await transaction
+        .updateTable("personalSettings")
+        .set({ ownerNameAccount: null, ownerNameRevision: null })
+        .where("singletonKey", "=", "personal")
+        .where("ownerNameAccount", "is not", null)
+        .executeTakeFirst();
+      return updated.numUpdatedRows > 0n;
+    });
   }
 
   /**
@@ -159,6 +185,16 @@ async function ownerProfile(
           }
         : null,
   };
+}
+
+/** The Account link this Host may speak for its owner through: active, and not being unlinked. */
+async function activeLink(transaction: Transaction<DatabaseSchema>) {
+  const link = await transaction
+    .selectFrom("personalRemoteAccountLink")
+    .select(["accountOperation", "issuer", "linkGeneration", "state", "subject"])
+    .where("singletonKey", "=", "opensteer-account")
+    .executeTakeFirst();
+  return link && link.state === "active" && link.accountOperation?.kind !== "unlink" ? link : null;
 }
 
 async function lockedProfile(transaction: Transaction<DatabaseSchema>): Promise<OwnerProfile> {

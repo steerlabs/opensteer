@@ -21,6 +21,13 @@ import { ControlPlaneError } from "../server/errors.js";
 
 type Database = Kysely<ControlPlaneDatabaseSchema> | Transaction<ControlPlaneDatabaseSchema>;
 
+type ProfileRow = {
+  readonly displayName: string;
+  readonly email: string;
+  readonly nameRevision: string;
+};
+type Written = { readonly applied: boolean; readonly row: ProfileRow };
+
 /** Signs a JWT with Account's Better Auth key; bound after the auth instance exists. */
 export type AccountJwtSigner = (payload: Record<string, unknown>) => Promise<string>;
 
@@ -51,11 +58,42 @@ export class AccountProfiles {
 
   async update(
     accountIdInput: ControlPlaneAccountId,
-    requestInput: UpdateAccountProfileRequest,
+    request: UpdateAccountProfileRequest,
   ): Promise<UpdateAccountProfileResponse> {
     const accountId = ControlPlaneAccountIdSchema.parse(accountIdInput);
+    return this.#answer(accountId, await this.#write(this.#database, accountId, request));
+  }
+
+  /** The owner of the personal Host holding `authority`, while its Account link is active. */
+  async readHostOwner(authority: HostAuthority): Promise<AccountProfile> {
+    const { accountId, row } = await this.#database.transaction().execute(async (transaction) => {
+      const accountId = await this.#hostOwner(transaction, authority);
+      return { accountId, row: await this.#row(transaction, accountId) };
+    });
+    return this.#profile(accountId, row);
+  }
+
+  /** The authority fence holds through the write, so a Host unlinked meanwhile renames no one. */
+  async updateHostOwner(
+    authority: HostAuthority,
+    request: UpdateAccountProfileRequest,
+  ): Promise<UpdateAccountProfileResponse> {
+    const { accountId, written } = await this.#database
+      .transaction()
+      .execute(async (transaction) => {
+        const accountId = await this.#hostOwner(transaction, authority);
+        return { accountId, written: await this.#write(transaction, accountId, request) };
+      });
+    return this.#answer(accountId, written);
+  }
+
+  async #write(
+    database: Database,
+    accountId: ControlPlaneAccountId,
+    requestInput: UpdateAccountProfileRequest,
+  ): Promise<Written> {
     const request = UpdateAccountProfileRequestSchema.parse(requestInput);
-    const written = await this.#database
+    const written = await database
       .updateTable("users")
       .set({
         displayName: request.name,
@@ -67,46 +105,42 @@ export class AccountProfiles {
       .where("displayName", "!=", request.name)
       .returning(["displayName", "email", "nameRevision"])
       .executeTakeFirst();
-    const row = written ?? (await this.#row(this.#database, accountId));
+    const row = written ?? (await this.#row(database, accountId));
     // Asking for the name that is already current is done, whoever saved it.
-    return UpdateAccountProfileResponseSchema.parse({
-      applied: written !== undefined || row.displayName === request.name,
-      profile: await this.#profile(accountId, row),
-    });
+    return { applied: written !== undefined || row.displayName === request.name, row };
   }
 
-  /** The owner of the personal Host holding `authority`, while its Account link is active. */
-  async readHostOwner(authority: HostAuthority): Promise<AccountProfile> {
-    return this.read(await this.#hostOwner(authority));
-  }
-
-  async updateHostOwner(
-    authority: HostAuthority,
-    request: UpdateAccountProfileRequest,
+  async #answer(
+    accountId: ControlPlaneAccountId,
+    written: Written,
   ): Promise<UpdateAccountProfileResponse> {
-    return this.update(await this.#hostOwner(authority), request);
+    return UpdateAccountProfileResponseSchema.parse({
+      applied: written.applied,
+      profile: await this.#profile(accountId, written.row),
+    });
   }
 
-  async #hostOwner(authority: HostAuthority): Promise<ControlPlaneAccountId> {
-    return this.#database.transaction().execute(async (transaction) => {
-      await requireCurrentAuthority(transaction, authority);
-      const deployment = await transaction
-        .selectFrom("deployments")
-        .select(["accountLink", "lifecycle", "ownerAccountId", "reachability"])
-        .where("id", "=", authority.deploymentId)
-        .executeTakeFirstOrThrow();
-      const link = AccountDeploymentAccountLinkSchema.safeParse(deployment.accountLink);
-      // Only a personal Host linked to its owner speaks for that person; a team never does.
-      if (
-        deployment.reachability !== "routed" ||
-        deployment.lifecycle !== "active" ||
-        !link.success ||
-        link.data.issuer !== this.#issuer ||
-        link.data.subject !== deployment.ownerAccountId
-      )
-        throw new ControlPlaneError("forbidden", "Only a linked personal Host has an owner");
-      return deployment.ownerAccountId;
-    });
+  async #hostOwner(
+    transaction: Transaction<ControlPlaneDatabaseSchema>,
+    authority: HostAuthority,
+  ): Promise<ControlPlaneAccountId> {
+    await requireCurrentAuthority(transaction, authority);
+    const deployment = await transaction
+      .selectFrom("deployments")
+      .select(["accountLink", "lifecycle", "ownerAccountId", "reachability"])
+      .where("id", "=", authority.deploymentId)
+      .executeTakeFirstOrThrow();
+    const link = AccountDeploymentAccountLinkSchema.safeParse(deployment.accountLink);
+    // Only a personal Host linked to its owner speaks for that person; a team never does.
+    if (
+      deployment.reachability !== "routed" ||
+      deployment.lifecycle !== "active" ||
+      !link.success ||
+      link.data.issuer !== this.#issuer ||
+      link.data.subject !== deployment.ownerAccountId
+    )
+      throw new ControlPlaneError("forbidden", "Only a linked personal Host has an owner");
+    return deployment.ownerAccountId;
   }
 
   async #row(database: Database, accountId: ControlPlaneAccountId) {

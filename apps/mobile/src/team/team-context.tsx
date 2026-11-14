@@ -15,6 +15,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
@@ -194,7 +195,21 @@ export function useTeamMembers(
     [session, channelId],
   );
   const handles = useSyncExternalStore(subscribePeople, readHandles, readHandles);
-  // Renames the team announced since the list was read, laid over it in place.
+  // A changed access or name revision means the list read earlier is out of date, including
+  // after a reconnect that missed the announcement.
+  const readDirectoryKey = useCallback(() => {
+    const sidebar = session?.getSnapshot().sidebar;
+    return sidebar ? `${sidebar.accessRevision}:${sidebar.namesRevision ?? ""}` : null;
+  }, [session]);
+  const directoryKey = useSyncExternalStore(subscribePeople, readDirectoryKey, readDirectoryKey);
+  const readKey = useRef(directoryKey);
+  useEffect(() => {
+    if (directoryKey === null || directoryKey === readKey.current) return;
+    const first = readKey.current === null;
+    readKey.current = directoryKey;
+    if (!first) reload();
+  }, [directoryKey, reload]);
+  // Renames announced since the list was read: only the name moves, and only forward.
   const readUpdates = useCallback(() => session?.getSnapshot().memberUpdates, [session]);
   const updates = useSyncExternalStore(subscribePeople, readUpdates, readUpdates);
   const members = useMemo(
@@ -202,8 +217,8 @@ export function useTeamMembers(
       updates
         ? read.members.map((member) => {
             const renamed = updates[member.userId];
-            return renamed && (renamed.nameRevision ?? 0) >= (member.nameRevision ?? 0)
-              ? renamed
+            return renamed && (renamed.nameRevision ?? 0) > (member.nameRevision ?? 0)
+              ? { ...member, displayName: renamed.displayName, nameRevision: renamed.nameRevision }
               : member;
           })
         : read.members,

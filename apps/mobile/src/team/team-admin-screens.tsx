@@ -151,7 +151,7 @@ export function TeamSettingsScreen(props: TeamParams): ReactNode {
     <Screen edgeToEdge>
       <TeamSettingsBody
         actions={{
-          onProfile: () => navigation.navigate("YourName"),
+          onProfile: () => navigation.navigate("YourName", { target: "account" }),
           onNotifications: () =>
             Alert.alert(
               "Notifications",

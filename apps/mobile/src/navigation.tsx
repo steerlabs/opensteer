@@ -36,7 +36,7 @@ import { NotificationsIntroScreen } from "./screens/notifications-intro.js";
 import { OpenAppScreen } from "./screens/open-app.js";
 import { ScheduleScreen, type ScheduleDestination } from "./screens/schedule.js";
 import { SchedulesScreen } from "./screens/schedules.js";
-import { YourNameScreen } from "./screens/your-name.js";
+import { YourNameScreen, type YourNameParams } from "./screens/your-name.js";
 import {
   SettingsAccountScreen,
   SettingsSessionDetailScreen,
@@ -728,7 +728,7 @@ type OpensteerRootParamList = {
   readonly SettingsAiSharing: undefined;
   readonly SettingsGeneral: { readonly deploymentId: string };
   readonly SettingsAccount: { readonly deploymentId: string };
-  readonly YourName: undefined;
+  readonly YourName: YourNameParams;
   readonly SettingsSessionDetail: { readonly deploymentId: string; readonly sessionId: string };
   readonly SettingsDevices: { readonly deploymentId: string };
   readonly SettingsMessaging: { readonly deploymentId: string };

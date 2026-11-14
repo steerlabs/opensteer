@@ -3401,10 +3401,14 @@ export class HttpHostClient {
         },
       });
   }
-  async setOwnerName(name: PersonName | null): Promise<{ readonly applied: boolean }> {
+  async setOwnerName(
+    name: PersonName | null,
+    expectedRevision: number | null,
+  ): Promise<{ readonly applied: boolean }> {
     const result = await this.#dispatch({
       idempotencyKey: mutationIdempotencyKey("owner-name"),
       name,
+      expectedRevision,
       type: "viewer.name.update",
     });
     if (result.type !== "viewer.name.update") return { applied: false };

@@ -3752,6 +3752,10 @@
             "accessRevision": {
               "type": "string",
               "pattern": "^(0|[1-9][0-9]*)$"
+            },
+            "namesRevision": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$"
             }
           },
           "required": [
@@ -4006,6 +4010,10 @@
           ]
         },
         "accessRevision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)$"
+        },
+        "namesRevision": {
           "type": "string",
           "pattern": "^(0|[1-9][0-9]*)$"
         }
@@ -15155,6 +15163,10 @@
                   ]
                 },
                 "accessRevision": {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)$"
+                },
+                "namesRevision": {
                   "type": "string",
                   "pattern": "^(0|[1-9][0-9]*)$"
                 }

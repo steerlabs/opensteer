@@ -1191,7 +1191,11 @@ export interface HostClient {
   setIdleCompactionPolicy(policy: import("@opensteer/core").IdleCompactionPolicy): Promise<void>;
   setQuietTaskDays(days: QuietTaskDays): Promise<void>;
   /** False when the Account already had a newer name, which the snapshot then shows. */
-  setOwnerName(name: PersonName | null): Promise<{ readonly applied: boolean }>;
+  setOwnerName(
+    name: PersonName | null,
+    /** `ownerProfile.revision` when the person began editing. */
+    expectedRevision: number | null,
+  ): Promise<{ readonly applied: boolean }>;
 
   dispatch(command: HostApiCommandInput): Promise<HostApiCommandOutput>;
   dispose(): void;

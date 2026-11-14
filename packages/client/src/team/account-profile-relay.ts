@@ -60,8 +60,10 @@ export class AccountProfileRelay {
 
   /** Saves a name for someone with no personal Opensteer; every team session relays it. */
   async update(request: UpdateAccountProfileRequest): Promise<UpdateAccountProfileResponse> {
+    const generation = this.#generation;
     const result = await this.#account.updateProfile(request);
-    this.changed(result.profile);
+    // Another Account signed in meanwhile: this answer is not its name.
+    if (generation === this.#generation) this.changed(result.profile);
     return result;
   }
 

@@ -5,6 +5,7 @@ import {
   PersonalSettingsSchema,
   emptyAutomaticModelConfig,
   emptyExecutionPreferences,
+  localMachineOwnerEmail,
   type ComputerFolder,
   type UserId,
 } from "@opensteer/core";
@@ -20,9 +21,11 @@ export async function initializePersonalSettings(
 ) {
   const owner = await transaction
     .selectFrom("users")
-    .select("displayName")
+    .select(["displayName", "email"])
     .where("id", "=", ownerId)
     .executeTakeFirstOrThrow();
+  // A desktop's implicit owner has only a placeholder; anyone who signed up gave a name.
+  const named = owner.email !== localMachineOwnerEmail;
   await transaction
     .insertInto("principals")
     .values({ id: systemPrincipalId, kind: "system", userId: null, displayName: "Opensteer" })
@@ -50,6 +53,7 @@ export async function initializePersonalSettings(
       quietTaskDays: 0,
       executionPreferences: emptyExecutionPreferences,
       backgroundModelPreferences: emptyAutomaticModelConfig,
+      ...(named ? { ownerName: owner.displayName, ownerNameSetAt: new Date() } : {}),
     })
     .onConflict((c) => c.column("singletonKey").doNothing())
     .executeTakeFirstOrThrow();

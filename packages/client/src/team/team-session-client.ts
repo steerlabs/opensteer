@@ -177,6 +177,20 @@ export class TeamSessionClient {
     this.#releaseProfiles = options.profiles?.subscribe(() => void this.#relayProfile());
   }
   readonly #releaseProfiles: (() => void) | undefined;
+  /** A bootstrap read before a rename frame arrived never puts the viewer's old name back. */
+  #withNewerOwnName(bootstrap: TeamBootstrap): TeamBootstrap {
+    const update = this.#snapshot.memberUpdates?.[bootstrap.member.userId];
+    if (!update || (update.nameRevision ?? 0) <= (bootstrap.member.nameRevision ?? 0))
+      return bootstrap;
+    return {
+      ...bootstrap,
+      member: {
+        ...bootstrap.member,
+        displayName: update.displayName,
+        nameRevision: update.nameRevision,
+      },
+    };
+  }
   /** Best effort: a team that misses it gets the name at the next attach or sign-in. */
   async #relayProfile(): Promise<void> {
     const member = this.#snapshot.bootstrap?.member;
@@ -248,7 +262,7 @@ export class TeamSessionClient {
                 ).values(),
               ];
         this.#update({
-          bootstrap,
+          bootstrap: this.#withNewerOwnName(bootstrap),
           sidebar: monotonicTeamSidebar(this.#snapshot.sidebar, bootstrap.sidebar),
           drafts:
             revision === this.#stateRevision
@@ -417,11 +431,14 @@ export class TeamSessionClient {
           }
         }
       }
-      if (lifetime === this.#lifetime)
+      if (lifetime === this.#lifetime) {
         this.#update({
-          bootstrap,
+          bootstrap: this.#withNewerOwnName(bootstrap),
           sidebar: monotonicTeamSidebar(this.#snapshot.sidebar, bootstrap.sidebar),
         });
+        // A relay that failed or was missed while away is tried again.
+        void this.#relayProfile();
+      }
       return true;
     } catch (error) {
       if (lifetime === this.#lifetime) await this.#authorizationFailure(error);
@@ -687,11 +704,27 @@ export class TeamSessionClient {
         this.#applyRecipients([frame.recipient]);
         break;
       case "team.member.updated": {
+        // Renames commit and publish independently, so an older one can arrive last.
+        const { member } = frame;
+        const held = this.#snapshot.memberUpdates?.[member.userId];
+        if ((member.nameRevision ?? 0) <= (held?.nameRevision ?? 0)) break;
         const bootstrap = this.#snapshot.bootstrap;
+        const self =
+          bootstrap?.member.userId === member.userId &&
+          (member.nameRevision ?? 0) > (bootstrap.member.nameRevision ?? 0);
         this.#update({
-          memberUpdates: { ...this.#snapshot.memberUpdates, [frame.member.userId]: frame.member },
-          ...(bootstrap && bootstrap.member.userId === frame.member.userId
-            ? { bootstrap: { ...bootstrap, member: frame.member } }
+          memberUpdates: { ...this.#snapshot.memberUpdates, [member.userId]: member },
+          ...(self
+            ? {
+                bootstrap: {
+                  ...bootstrap,
+                  member: {
+                    ...bootstrap.member,
+                    displayName: member.displayName,
+                    nameRevision: member.nameRevision,
+                  },
+                },
+              }
             : {}),
         });
         break;

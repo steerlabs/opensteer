@@ -22,7 +22,15 @@ async function personal() {
     return { database, close: () => database.destroy() };
   });
   const fixture = await seedPersonalFixture(database, "/opensteer-names-test");
-  return { database, store: new OwnerProfileStore(database), userId: fixture.userId };
+  const store = new OwnerProfileStore(database);
+  // An owner who signed up starts with the name they gave.
+  expect((await store.read())?.name).toBe("Alex");
+  // The desktop's implicit owner has none until anyone sets one.
+  await database
+    .updateTable("personalSettings")
+    .set({ ownerName: null, ownerNameSetAt: null })
+    .execute();
+  return { database, store, userId: fixture.userId };
 }
 
 async function shownNames(
@@ -44,8 +52,24 @@ async function shownNames(
 }
 
 const name = (value: string) => value as PersonName;
-const accountA = { issuer: "https://accounts.example.invalid", subject: "acct_a" };
-const accountB = { issuer: "https://accounts.example.invalid", subject: "acct_b" };
+const accountA = {
+  issuer: "https://accounts.example.invalid",
+  subject: "acct_a",
+  linkGeneration: "generation-a",
+};
+const accountB = { ...accountA, subject: "acct_b", linkGeneration: "generation-b" };
+
+/** The Host's Account link as remote access keeps it; null unlinks. */
+async function link(
+  database: Awaited<ReturnType<typeof personal>>["database"],
+  account: typeof accountA | null,
+) {
+  await database.deleteFrom("personalRemoteAccountLink").execute();
+  if (account)
+    await sql`insert into personal_remote_account_link(singleton_key,challenge_id,grant_id,issuer,host_credential,link_generation,state,subject) values('opensteer-account','challenge','grant',${account.issuer},'credential',${account.linkGeneration},'active',${account.subject})`.execute(
+      database,
+    );
+}
 
 it("takes the computer's name once and never renames someone who chose or cleared theirs", async () => {
   const { database, store, userId } = await personal();
@@ -64,29 +88,41 @@ it("takes the computer's name once and never renames someone who chose or cleare
   );
 });
 
-it("follows a linked Account forward only, and keeps the last name when the link ends", async () => {
+it("follows the live link's Account forward only, and keeps the last name when it ends", async () => {
   const { database, store, userId } = await personal();
-  expect(
-    await store.applyAccount({ account: accountA, name: name("Ada"), revision: 3 }),
-  ).toMatchObject({
+  const apply = (account: typeof accountA, value: string, revision: number) =>
+    store.applyAccount({ account, name: name(value), revision });
+  // An answer read through a link that is not live applies nothing.
+  expect(await apply(accountA, "Ada", 3)).toMatchObject({ stale: true, profile: { name: null } });
+  await link(database, accountA);
+  expect(await apply(accountA, "Ada", 3)).toMatchObject({
     changed: true,
-    profile: { name: "Ada", account: { ...accountA, revision: 3 } },
+    profile: { name: "Ada", account: { subject: "acct_a", revision: 3 } },
   });
   // A late or repeated answer never moves the name backwards.
-  expect(
-    await store.applyAccount({ account: accountA, name: name("Old Ada"), revision: 2 }),
-  ).toMatchObject({ changed: false, profile: { name: "Ada" } });
+  expect(await apply(accountA, "Old Ada", 2)).toMatchObject({
+    changed: false,
+    stale: false,
+    profile: { name: "Ada" },
+  });
   // While an Account owns the name, only the Account can change it.
   await expect(store.setLocal({ userId, name: name("Local") })).rejects.toThrow(/Account/);
-  // A different Account is a new link: its name wins whatever its revision.
-  expect(
-    await store.applyAccount({ account: accountB, name: name("Bea"), revision: 1 }),
-  ).toMatchObject({
+  // Relinked to another Account: the old link's late answers no longer apply, and the new
+  // Account's name wins whatever its revision.
+  await link(database, accountB);
+  expect(await apply(accountA, "Ada late", 9)).toMatchObject({
+    stale: true,
+    profile: { name: "Ada" },
+  });
+  expect(await apply(accountB, "Bea", 1)).toMatchObject({
     changed: true,
-    profile: { name: "Bea", account: { ...accountB, revision: 1 } },
+    profile: { name: "Bea", account: { subject: "acct_b", revision: 1 } },
   });
   expect(await shownNames(database, userId)).toEqual(["Bea", "Bea"]);
 
+  // Detaching waits for the link to end, so a late "unlinked" answer cannot unbind a relink.
+  expect(await store.detachAccount()).toBe(false);
+  await link(database, null);
   expect(await store.detachAccount()).toBe(true);
   expect(await store.read()).toMatchObject({ name: "Bea", account: null });
   expect(await store.detachAccount()).toBe(false);

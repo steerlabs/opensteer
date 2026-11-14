@@ -4794,11 +4794,15 @@ export class MockHostClient implements HostClient {
     this.#state.moveQuietly(threadId);
   }
 
-  async setOwnerName(name: PersonName | null): Promise<{ readonly applied: boolean }> {
+  async setOwnerName(
+    name: PersonName | null,
+    expectedRevision: number | null,
+  ): Promise<{ readonly applied: boolean }> {
     const result = unwrapRpcResult(
       await this.rpc["commands.dispatch"]({
         idempotencyKey: crypto.randomUUID(),
         name,
+        expectedRevision,
         type: "viewer.name.update",
       }),
     );
@@ -11947,7 +11951,7 @@ class MockHostState {
     this.update({ ...this.snapshot, quietTaskDays: days });
   }
   setOwnerProfileName(name: PersonName | null): OwnerProfileView {
-    const ownerProfile = { name, accountBacked: false };
+    const ownerProfile = { name, accountBacked: false, revision: null };
     this.update({ ...this.snapshot, ownerProfile });
     return ownerProfile;
   }
@@ -13127,7 +13131,7 @@ function createInitialSnapshot(): HostSnapshot {
       signupPolicy: "closed",
     },
     machines: mockMachines.map((machine) => ({ ...machine })),
-    ownerProfile: { name: "Alex", accountBacked: false },
+    ownerProfile: { name: "Alex", accountBacked: false, revision: null },
     session: "authenticated",
     sessionSurface: "canonical",
     machineRevision: 0,

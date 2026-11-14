@@ -57,6 +57,12 @@ it("rereads after a change and holds the newest name, never one read before the 
   expect(saved.profile.revision).toBe(5);
   expect(await relay.current()).toEqual(profile(5, "Ada Lovelace"));
   expect(notified).toBe(2);
+
+  // A save that finishes after another Account signed in never becomes that Account's name.
+  const late = relay.update({ name: "Old Account" as PersonName, expectedRevision: 5 });
+  relay.changed(profile(1, "New Account"));
+  await late;
+  expect(await relay.current()).toEqual(profile(1, "New Account"));
 });
 
 it("keeps relaying the last name it read while the Account is unreachable, and never throws", async () => {

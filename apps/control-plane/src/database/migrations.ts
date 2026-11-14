@@ -1,3 +1,4 @@
+import { personNameFromEmail } from "@opensteer/core";
 import { type Kysely, sql } from "kysely";
 import { Migrator, type Migration, type MigrationResultSet } from "kysely/migration";
 import { CONTROL_PLANE_BASELINE_SCHEMA_SQL } from "./baseline-schema.js";
@@ -615,14 +616,21 @@ export const hostedTeamsMigration: Migration = {
 
 /**
  * Numbers each change to an Account's name so every copy keeps the newest. Add-only: a previous
- * release never reads it, and its rows take revision 1.
+ * release never reads it, and its rows take revision 1. Accounts whose provider gave no name were
+ * named with their whole email; they get the name new Accounts get, so no email is shown as one.
  */
-const accountNameRevisionMigration: Migration = {
+export const accountNameRevisionMigration: Migration = {
   async up(database) {
     await sql`
       alter table public.users
         add column name_revision bigint not null default 1 check (name_revision >= 1)
     `.execute(database);
+    const fallbacks = await sql<{ id: string; email: string }>`
+      select id, email from public.users where display_name = left(email, 120)
+    `.execute(database);
+    for (const { id, email } of fallbacks.rows)
+      await sql`update public.users set display_name = ${personNameFromEmail(email)}
+        where id = ${id}`.execute(database);
   },
 };
 

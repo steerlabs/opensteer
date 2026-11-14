@@ -363,7 +363,11 @@ export class AdministrationService {
             message: "This Opensteer has no owner name",
           });
         return {
-          ...(await dependencies.ownerProfile.update(userId, command.name)),
+          ...(await dependencies.ownerProfile.update(
+            userId,
+            command.name,
+            command.expectedRevision,
+          )),
           type: command.type,
         };
       }

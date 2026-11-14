@@ -257,7 +257,7 @@ function AccountSettingsContent(props: {
             ? "Your name · teammates see it"
             : "Your name · stays on your computer",
           opens: true,
-          onPress: () => navigation.navigate("YourName"),
+          onPress: () => navigation.navigate("YourName", { target: "owner" }),
         },
       ],
     });
