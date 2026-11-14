@@ -73,7 +73,6 @@ export interface TeamSessionOptions {
   readonly rpc: HostApiClient;
   readonly persistence: TeamPersistence;
   /** Upgrade-only state, adopted after authenticated bootstrap confirms this viewer. */
-  readonly legacyPersistence?: TeamPersistence;
   readonly connect: () => WebSocketClient;
   readonly readFile?: (
     file: z.infer<typeof TeamFileSchema>,
@@ -172,7 +171,7 @@ export class TeamSessionClient {
       const lifetime = this.#lifetime,
         revision = this.#stateRevision;
       this.#loading = (async () => {
-        let [saved, bootstrap] = await Promise.all([
+        const [saved, bootstrap] = await Promise.all([
           this.#options.persistence.load(this.#options.scope),
           this.#bootstrap(),
         ]);
@@ -184,18 +183,6 @@ export class TeamSessionClient {
           await this.remove("viewer-changed");
           return;
         }
-        if (this.#options.legacyPersistence) {
-          // Adoption removes the legacy copy, so one present now was written later by an older app.
-          const legacy = await this.#options.legacyPersistence.load(this.#options.scope);
-          if (lifetime !== this.#lifetime) return;
-          if (legacy) {
-            saved = saved ? mergeSavedStates(saved, legacy) : legacy;
-            await this.#options.persistence.save(this.#options.scope, saved);
-            if (lifetime !== this.#lifetime) return;
-            await this.#options.legacyPersistence.remove(this.#options.scope);
-          }
-        }
-        if (lifetime !== this.#lifetime) return;
         const state = saved ? TeamSavedStateSchema.parse(saved) : { drafts: {}, pending: [] };
         const pending =
           revision === this.#stateRevision
@@ -1153,17 +1140,4 @@ export class TeamSessionClient {
     this.#releaseOwner?.();
     this.#listeners.clear();
   }
-}
-
-function mergeSavedStates(held: TeamSavedState, newer: TeamSavedState): TeamSavedState {
-  const drafts = Object.entries({ ...held.drafts, ...newer.drafts });
-  const pending = [
-    ...new Map(
-      [...held.pending, ...newer.pending].map((row) => [row.command.clientMessageId, row]),
-    ).values(),
-  ];
-  return {
-    drafts: Object.fromEntries(drafts.slice(-100)),
-    pending: pending.slice(-100),
-  };
 }

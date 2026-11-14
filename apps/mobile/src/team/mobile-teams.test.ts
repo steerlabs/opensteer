@@ -607,7 +607,7 @@ it("keeps draft persistence through same-Account reauthorization and entry super
 });
 
 it.each([true, false])(
-  "adopts legacy drafts and pending sends only for the authenticated viewer (same: %s)",
+  "keeps drafts and pending sends from before the upgrade for their own viewer only (same: %s)",
   async (sameViewer) => {
     const { teamFilePersistence } = await import("./mobile-teams.js");
     const files = new MemoryPrivateFilesystem();
@@ -640,13 +640,7 @@ it.each([true, false])(
       const session = await f.teams.session(mockFamilyTeamId);
       await session.load(false);
       expect(session.getSnapshot()).toMatchObject(sameViewer ? saved : { drafts: {}, pending: [] });
-      expect(await legacy.load(scope)).toEqual(sameViewer ? null : saved);
-      if (sameViewer)
-        expect(
-          files.text(
-            `/private/teams-test/teams/${f.teams.owner.partition}/${scope.teamDeploymentId}.${scope.userId}.json`,
-          ),
-        ).not.toBeNull();
+      expect(await legacy.load(scope)).toEqual(saved);
     } finally {
       f.teams.dispose();
     }

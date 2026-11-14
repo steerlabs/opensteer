@@ -1366,6 +1366,8 @@ export class NativeOAuthManager implements HostCredentialProvider {
     this.#emitHost(connection);
     await this.#beforeHostChange(connection);
     await this.#mutateCredentials(async () => {
+      // A sign-in that finished after this sign-out began owns the stored credential now.
+      if (signal.aborted) return;
       await this.#store.setTeamSignOutSuppression?.(deploymentId, true);
       this.#adoptHostCredentials((await this.#store.clearHost(deploymentId)).hosts);
     });

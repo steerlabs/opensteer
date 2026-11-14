@@ -6,7 +6,7 @@ import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { desktopTeamSession, localTeamPersistence } from "./team-transports.js";
 
 it.each(["same", "different", "stale-scope"])(
-  "migrates desktop legacy state only after matching authenticated bootstrap (%s)",
+  "keeps desktop state from before the upgrade for its authenticated viewer only (%s)",
   async (viewer) => {
     const host = new MockTeamHost();
     const legacyScope = { teamDeploymentId: host.teamId, userId: host.userId };
@@ -64,8 +64,9 @@ it.each(["same", "different", "stale-scope"])(
       expect(session.getSnapshot()).toMatchObject(
         viewer === "same" ? saved : { drafts: {}, pending: [] },
       );
+      // A team naming someone else ends the session and clears what it held, as before.
       expect(await localTeamPersistence.load(legacyScope)).toEqual(
-        viewer === "same" ? null : saved,
+        viewer === "stale-scope" ? null : saved,
       );
     } finally {
       session.dispose();

@@ -256,11 +256,8 @@ class MobileTeamRuntime {
         scope,
         owner: this.owner,
         rpc: transport.rpc,
-        persistence: teamFilePersistence(
-          this.#files,
-          `${options.directory}/teams/${this.owner.partition}`,
-        ),
-        legacyPersistence: teamFilePersistence(this.#files, `${options.directory}/teams`),
+        // Keyed by team and team user, so each viewer's drafts are already their own.
+        persistence: teamFilePersistence(this.#files, `${options.directory}/teams`),
         connect: transport.connect,
         readFile: transport.readFile,
         uploadFile: transport.uploadFile,

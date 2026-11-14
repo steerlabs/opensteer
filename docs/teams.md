@@ -64,7 +64,7 @@ Native OAuth creates it during hydration or identity establishment on desktop ma
 the desktop renderer's team provider owns the corresponding UI runtime. An identity change
 retires the outgoing owner synchronously, before asynchronous credential cleanup: its signal
 aborts, transports and sockets close, viewer clients dispose, and read caches drop. It owns
-Account-partitioned persistence handles and in-flight team file transfers, uploads, exports,
+the viewer's persistence handles and in-flight team file transfers, uploads, exports,
 notifications and previews. Storage commits, IPC and response delivery, and OS handoffs check
 that owner; aborted or completed exports erase their staged files. Team UI subtrees are keyed
 by the owner id, including nested knowledge and settings screens, so no hook carries an old
@@ -75,7 +75,7 @@ supersession affects only entry work. Hydration preserves credentials for the sa
 Personal Host connections and maintenance requests are outside the team owner. Explicit team
 sign-out suppresses silent entry until an explicit sign-in. Account or JWKS outages remain
 retryable; membership refusals ask for an invite without a browser loop. Among entry refusals, only membership
-refusals (not-a-member or removed) erase the viewer partition. For older servers, a reasonless
+refusals (not-a-member or removed) erase the viewer's saved state. For older servers, a reasonless
 forbidden at authenticated bootstrap also removes it; channel permission failures
 do not. Assertion, authority and invite
 refusals preserve drafts and pending sends. An expired assertion is renewed once; another
@@ -91,9 +91,9 @@ storage); neither it nor the tokens reach a renderer. A team just joined shows f
 discovery until Account's directory lists it, and is restored from the device's connection intent
 if the app restarts before then; the intent is kept even when no agent connects from that device.
 
-Within the Account partition, the device scopes cached team state to the viewer returned by
-authenticated team bootstrap. Upgrade adopts legacy drafts and pending sends only after that
-bootstrap confirms the same team user, then removes the legacy copy. An agent link's owner can
+Drafts and pending sends are stored per team and team user, a key every Account already maps to
+distinctly, so they stay in the location older apps read and survive Stable↔Beta moves. The device
+uses them only after authenticated team bootstrap names that same user. An agent link's owner can
 be a different person and never supplies the device's team identity.
 
 ## Access and removal

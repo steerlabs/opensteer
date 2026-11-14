@@ -219,7 +219,6 @@ export function desktopTeamSession(input: {
     scope: input.scope,
     ...(owner ? { owner } : {}),
     persistence: owner ? ownedLocalTeamPersistence(owner) : localTeamPersistence,
-    ...(owner ? { legacyPersistence: localTeamPersistence } : {}),
     rpc: createHttpHostApiClient({
       baseUrl: new URL(input.origin),
       bufferedResponses: true,
@@ -267,19 +266,16 @@ export function desktopTeamSession(input: {
 }
 
 function ownedLocalTeamPersistence(owner: TeamRuntimeOwner): TeamPersistence {
-  const key = (scope: TeamCacheScope) => savedPrefix + owner.partition + ":" + teamCacheKey(scope);
+  // The key already names the team user, so a retired Account only needs to stop reading and writing.
   return {
     async load(scope) {
       owner.assertCurrent();
-      const stored = localStorage.getItem(key(scope));
-      return stored ? TeamSavedStateSchema.parse(JSON.parse(stored)) : null;
+      return localTeamPersistence.load(scope);
     },
     async save(scope, state) {
       owner.assertCurrent();
-      localStorage.setItem(key(scope), JSON.stringify(state));
+      await localTeamPersistence.save(scope, state);
     },
-    async remove(scope) {
-      localStorage.removeItem(key(scope));
-    },
+    remove: (scope) => localTeamPersistence.remove(scope),
   };
 }

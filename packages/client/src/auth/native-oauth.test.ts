@@ -27,6 +27,27 @@ import { NativeOAuthManager, TeamIdentityGrantUnsupportedError } from "./native-
 import type { ProtectedAuthStore } from "./protected-auth-store.js";
 
 describe("NativeOAuthManager", () => {
+  it("keeps a sign-in that finished while an older sign-out was still cleaning up", async () => {
+    let hold: Promise<void> | undefined;
+    const f = await managerFixture({ beforeHostChange: async () => hold });
+    await f.manager.initialize();
+    const cleanup = Promise.withResolvers<void>();
+    hold = cleanup.promise;
+    const signingOut = f.manager.signOutHost(f.connection);
+    hold = undefined;
+    const signingIn = f.manager.signInTeam(f.connection);
+    await vi.waitFor(() => expect(f.opened).toHaveLength(1), { timeout: 1000 });
+    await f.manager.handleCallback(
+      callbackUrl("host", new URL(f.opened[0]!).searchParams.get("state")!, "code"),
+    );
+    await expect(signingIn).resolves.toMatchObject({ status: "signed-in" });
+    cleanup.resolve();
+    await signingOut;
+    expect(f.manager.hostCredentialState(f.connection).status).toBe("signed-in");
+    expect(f.manager.isTeamSignInSuppressed(f.connection)).toBe(false);
+    f.manager.dispose();
+  });
+
   it("lets identical sign-ins queued behind background entry share one browser flow", async () => {
     const f = await managerFixture();
     await f.manager.initialize();
@@ -1973,6 +1994,7 @@ async function managerFixture(
       next: AccountDeploymentConnectionSource | null,
     ) => Promise<void>;
     readonly accountOrigin?: string | null;
+    readonly beforeHostChange?: () => Promise<void>;
     readonly capabilities?: readonly string[];
     readonly exchangeGate?: Promise<void>;
     readonly fetch?: typeof globalThis.fetch;
@@ -2106,6 +2128,7 @@ async function managerFixture(
     ...(options.beforeAccountIdentityChange
       ? { beforeAccountIdentityChange: options.beforeAccountIdentityChange }
       : {}),
+    ...(options.beforeHostChange ? { beforeHostChange: options.beforeHostChange } : {}),
     accountOrigin:
       options.accountOrigin === undefined
         ? "https://accounts.opensteer.test"
