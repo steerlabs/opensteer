@@ -5,7 +5,8 @@ import type { AgentConnection } from "@opensteer/protocol";
 import { randomUUID } from "node:crypto";
 import type { Kysely, Selectable } from "kysely";
 import type { AgentConnectionTable, DatabaseSchema } from "./schema.js";
-import "./connection.js";
+import { withDatabaseTransaction } from "./connection.js";
+import { databaseOperation } from "./operation-budget.js";
 export class AgentConnectionStore {
   readonly database: Kysely<DatabaseSchema>;
   readonly now: () => Date;
@@ -58,6 +59,10 @@ export class AgentConnectionStore {
     return result !== undefined;
   }
   async authenticate(tokenHash: string, resource?: string): Promise<AgentConnection | null> {
+    if (databaseOperation() && !this.database.isTransaction)
+      return withDatabaseTransaction(this.database, (tx) =>
+        new AgentConnectionStore(tx, this.now).authenticate(tokenHash, resource),
+      );
     const now = this.now();
     let query = this.database
       .updateTable("agentConnections")
