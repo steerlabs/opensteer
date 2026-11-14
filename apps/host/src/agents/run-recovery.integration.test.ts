@@ -568,7 +568,7 @@ integration.sequential("Run recovery acceptance", () => {
       !(await readToolRecords(current.active.host.store, delegated.result)).run!
     )
       throw new Error("No delegated Run");
-    const { assignmentId } = delegated.result;
+    const { delegationId: assignmentId } = delegated.result;
     const { run: child, thread } = await readToolRecords(
       current.active.host.store,
       delegated.result,

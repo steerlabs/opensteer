@@ -4483,7 +4483,7 @@ function assignmentReturnContent(
   maxBytes = assignmentReturnMaxBytes,
 ) {
   const entries = members.map((member) => ({
-    header: `Task ${member.status}: ${member.title}\nTask Thread: ${member.childThreadId} · Assignment: ${member.id}`,
+    header: `Task ${member.status}: ${member.title}\nTask: ${member.childThreadId} · Delegation: ${member.id}`,
     result: member.status === "cancelled" ? "" : (member.resultText ?? ""),
     pointer: `\n\n[Result shortened. Read the rest with opensteer_delegation_status (delegationId: ${member.id}) or opensteer_task_read (taskId: ${member.childThreadId}).]`,
   }));

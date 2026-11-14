@@ -168,7 +168,7 @@ const ProductToolResultUnionSchema = z.discriminatedUnion("type", [
   ThreadReadOutputSchema.safeExtend({ ...responseBase, type: z.literal("thread.read.result") }),
   z.strictObject({
     ...responseBase,
-    result: TaskSchema.extend({ assignmentId: AssignmentIdSchema, runId: RunIdSchema }),
+    result: TaskSchema.extend({ delegationId: AssignmentIdSchema, runId: RunIdSchema }),
     type: z.literal("thread.delegate.result"),
   }),
   TaskSchema.safeExtend({ ...responseBase, type: z.literal("task.cancel.result") }),

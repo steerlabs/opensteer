@@ -253,7 +253,7 @@ integration("personal task delegation lifecycle", () => {
     expect((await readToolRecords(store, accepted[0].result)).message!.id).toBe(
       (await readToolRecords(store, accepted[1].result)).message!.id,
     );
-    expect(accepted[0].result.assignmentId).toBe(accepted[1].result.assignmentId);
+    expect(accepted[0].result.delegationId).toBe(accepted[1].result.delegationId);
     expect(await service.handle(fixture.token, request)).toMatchObject({
       type: "thread.delegate.result",
       result: accepted[0].result,
@@ -1098,7 +1098,7 @@ integration("personal task delegation lifecycle", () => {
           await discoveryClient.callTool({
             arguments: {
               modelPage: {
-                harnessInstanceId: targetId,
+                aiAccountId: targetId,
                 cursor: staleCursor,
               },
             },
@@ -1123,7 +1123,7 @@ integration("personal task delegation lifecycle", () => {
     const fixture = await createFixture();
     const request = {
       requestId: randomUUID(),
-      task: "Research the mattress choices and report with sources",
+      message: "Research the mattress choices and report with sources",
       title: "Mattress research",
       type: "thread.delegate" as const,
     };
@@ -1132,7 +1132,7 @@ integration("personal task delegation lifecycle", () => {
     if (first.type !== "thread.delegate.result" || replay.type !== "thread.delegate.result") {
       throw new Error("Expected a delegate result");
     }
-    expect(replay.result.assignmentId).toBe(first.result.assignmentId);
+    expect(replay.result.delegationId).toBe(first.result.delegationId);
     expect((await readToolRecords(store, replay.result)).thread.id).toBe(
       (await readToolRecords(store, first.result)).thread.id,
     );
@@ -1144,16 +1144,16 @@ integration("personal task delegation lifecycle", () => {
     ).resolves.toHaveLength(1);
     acceptanceEvidence.push({
       caseId: "H02",
-      assignmentId: first.result.assignmentId,
+      assignmentId: first.result.delegationId,
       workerThreadId: (await readToolRecords(store, first.result)).thread.id,
       initialRunId: (await readToolRecords(store, first.result)).run?.id,
-      replayAssignmentId: replay.result.assignmentId,
+      replayAssignmentId: replay.result.delegationId,
     });
   });
   it("completes with the finishing Run's own final reply and returns it exactly once", async () => {
     const fixture = await createFixture();
     const task = await delegate(fixture.token, {
-      task: "Compare mattresses using cited sources",
+      message: "Compare mattresses using cited sources",
       title: "Mattress comparison",
     });
     const worker = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
@@ -1167,7 +1167,7 @@ integration("personal task delegation lifecycle", () => {
       compensatingEvents: [],
       wasDuplicate: true,
     });
-    expect(await assignmentRow(task.assignmentId)).toMatchObject({
+    expect(await assignmentRow(task.delegationId)).toMatchObject({
       resultRunId: worker.runId,
       resultStatus: "pending",
       resultText: finalReply,
@@ -1175,9 +1175,9 @@ integration("personal task delegation lifecycle", () => {
     });
     // The immediate delivery and the periodic reconcile race; one return lands.
     const deliveries = await Promise.all([
-      store.drainAssignmentReturn(task.assignmentId),
+      store.drainAssignmentReturn(task.delegationId),
       store.drainPendingAssignmentReturns(),
-      store.drainAssignmentReturn(task.assignmentId),
+      store.drainAssignmentReturn(task.delegationId),
     ]);
     expect(deliveries[1].failures).toEqual([]);
     await expect(store.drainPendingAssignmentReturns()).resolves.toEqual({
@@ -1190,12 +1190,12 @@ integration("personal task delegation lifecycle", () => {
       author: {
         cause: "assignment-result",
         kind: "platform",
-        referenceId: task.assignmentId,
+        referenceId: task.delegationId,
       },
       kind: "continuation",
     });
     expect(messageText(returned[0]!.content)).toBe(
-      `Task completed: Mattress comparison\nTask Thread: ${(await readToolRecords(store, task)).thread.id} · Assignment: ${task.assignmentId}\n\n${finalReply}`,
+      `Task completed: Mattress comparison\nTask: ${(await readToolRecords(store, task)).thread.id} · Delegation: ${task.delegationId}\n\n${finalReply}`,
     );
     // The parent is still mid-turn, so the result waits as its next work item.
     const returnInput = await database
@@ -1230,13 +1230,13 @@ integration("personal task delegation lifecycle", () => {
     const laterWorker = await activateRun(fixture, later.run!.id);
     await reply(laterWorker, "A later reply that belongs to no task");
     await end(laterWorker, "completed");
-    expect(await assignmentRow(task.assignmentId)).toMatchObject({
+    expect(await assignmentRow(task.delegationId)).toMatchObject({
       resultRunId: worker.runId,
       resultText: finalReply,
     });
     acceptanceEvidence.push({
       caseId: "L01+L11+L23",
-      assignmentId: task.assignmentId,
+      assignmentId: task.delegationId,
       resultRunId: worker.runId,
       resultText: finalReply,
       returnMessageCount: returned.length,
@@ -1247,7 +1247,7 @@ integration("personal task delegation lifecycle", () => {
   it("silently completes an empty top-level task and bounds long replies", async () => {
     const fixture = await createFixture();
     const silent = await delegate(fixture.token, {
-      task: "Tidy the notes quietly",
+      message: "Tidy the notes quietly",
     });
     const before = await Promise.all(
       ["messages", "threadInputs", "runs"].map(async (table) => {
@@ -1273,7 +1273,7 @@ integration("personal task delegation lifecycle", () => {
     const silentWorker = await activateRun(fixture, (await readToolRecords(store, silent)).run!.id);
     await end(silentWorker, "completed");
     await drainReturns();
-    expect(await assignmentRow(silent.assignmentId)).toMatchObject({
+    expect(await assignmentRow(silent.delegationId)).toMatchObject({
       status: "completed",
       resultText: "",
       resultStatus: "delivered",
@@ -1282,7 +1282,7 @@ integration("personal task delegation lifecycle", () => {
       await database
         .selectFrom("delegations")
         .select("resultMessageId")
-        .where("id", "=", silent.assignmentId)
+        .where("id", "=", silent.delegationId)
         .executeTakeFirstOrThrow(),
     ).toEqual({
       resultMessageId: null,
@@ -1305,7 +1305,7 @@ integration("personal task delegation lifecycle", () => {
           }
         ).assignment;
         return (
-          assignment?.id === silent.assignmentId &&
+          assignment?.id === silent.delegationId &&
           assignment.status === "completed" &&
           assignment.parentThreadId === fixture.parentThreadId
         );
@@ -1330,7 +1330,7 @@ integration("personal task delegation lifecycle", () => {
     ]);
     expect(after).toEqual(before);
     const verbose = await delegate(fixture.token, {
-      task: "Write everything down",
+      message: "Write everything down",
     });
     const verboseWorker = await activateRun(
       fixture,
@@ -1341,20 +1341,20 @@ integration("personal task delegation lifecycle", () => {
     // The cut falls inside a four-byte character, which must not be split.
     await reply(verboseWorker, `${"x".repeat(budget - 1)}🙂${"y".repeat(4_096)}`);
     await end(verboseWorker, "completed");
-    const truncated = (await assignmentRow(verbose.assignmentId)).resultText ?? "";
+    const truncated = (await assignmentRow(verbose.delegationId)).resultText ?? "";
     expect(truncated).toBe(`${"x".repeat(budget - 1)}${note}`);
     expect(Buffer.byteLength(truncated, "utf8")).toBeLessThanOrEqual(assignmentResultMaxBytes);
     acceptanceEvidence.push({
       caseId: "L02+L03",
-      silentAssignmentId: silent.assignmentId,
-      truncatedAssignmentId: verbose.assignmentId,
+      silentAssignmentId: silent.delegationId,
+      truncatedAssignmentId: verbose.delegationId,
       truncatedResultBytes: Buffer.byteLength(truncated, "utf8"),
     });
   });
   it("returns the existing nonempty fallback for a substantive reply without text", async () => {
     const fixture = await createFixture();
     const task = await delegate(fixture.token, {
-      task: "Return the report file",
+      message: "Return the report file",
     });
     const worker = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
     await commit(worker, (scope) => ({
@@ -1373,7 +1373,7 @@ integration("personal task delegation lifecycle", () => {
       type: "assistant.message",
     }));
     await end(worker, "completed");
-    expect(await assignmentRow(task.assignmentId)).toMatchObject({
+    expect(await assignmentRow(task.delegationId)).toMatchObject({
       status: "completed",
       resultText: "The task ended without a written reply.",
       resultStatus: "pending",
@@ -1382,7 +1382,7 @@ integration("personal task delegation lifecycle", () => {
     const returned = await returnMessages(fixture.parentThreadId);
     expect(returned).toHaveLength(1);
     expect(messageText(returned[0]!.content)).toContain("The task ended without a written reply.");
-    expect(await assignmentRow(task.assignmentId)).toMatchObject({
+    expect(await assignmentRow(task.delegationId)).toMatchObject({
       resultStatus: "delivered",
     });
     expect(
@@ -1399,7 +1399,7 @@ integration("personal task delegation lifecycle", () => {
   it("stays open across durable Requests and completes with the continuation Run's reply", async () => {
     const fixture = await createFixture();
     const task = await delegate(fixture.token, {
-      task: "Verify the retailer's return policy",
+      message: "Verify the retailer's return policy",
     });
     const first = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
     const firstRequest = await openDurableRequest(fixture, first);
@@ -1407,7 +1407,7 @@ integration("personal task delegation lifecycle", () => {
       expect.objectContaining({
         data: {
           assignment: expect.objectContaining({
-            id: task.assignmentId,
+            id: task.delegationId,
             workerThread: expect.objectContaining({
               pendingRequests: 1,
             }),
@@ -1419,7 +1419,7 @@ integration("personal task delegation lifecycle", () => {
     );
     await reply(first, "I asked for file access and will continue once it is answered.");
     await end(first, "completed");
-    expect(await assignmentRow(task.assignmentId)).toMatchObject({
+    expect(await assignmentRow(task.delegationId)).toMatchObject({
       resultStatus: "pending",
       resultText: null,
       status: "open",
@@ -1444,14 +1444,14 @@ integration("personal task delegation lifecycle", () => {
       fixture,
       (await queuedRun((await readToolRecords(store, task)).thread.id)).id,
     );
-    expect(await runAssignment(second.runId)).toBe(task.assignmentId);
+    expect(await runAssignment(second.runId)).toBe(task.delegationId);
     // Answered while this Run still works; its continuation is not queued yet
     // when the Run ends, so the task must not finish with this interim reply.
     const secondRequest = await openDurableRequest(fixture, second);
     await declineRequest(fixture, secondRequest.request.id);
     await reply(second, "Interim: still waiting for the second answer.");
     await end(second, "completed");
-    expect((await assignmentRow(task.assignmentId)).status).toBe("open");
+    expect((await assignmentRow(task.delegationId)).status).toBe("open");
     await expect(
       database
         .selectFrom("requestContinuations")
@@ -1469,14 +1469,14 @@ integration("personal task delegation lifecycle", () => {
     const finalReply = "Final: returns are free within 100 days; no file access was needed.";
     await reply(third, finalReply);
     await end(third, "completed");
-    expect(await assignmentRow(task.assignmentId)).toMatchObject({
+    expect(await assignmentRow(task.delegationId)).toMatchObject({
       resultRunId: third.runId,
       resultText: finalReply,
       status: "completed",
     });
     acceptanceEvidence.push({
       caseId: "L04+L05",
-      assignmentId: task.assignmentId,
+      assignmentId: task.delegationId,
       runs: [first.runId, second.runId, third.runId],
       requests: [firstRequest.request.id, secondRequest.request.id],
       resultRunId: third.runId,
@@ -1485,19 +1485,19 @@ integration("personal task delegation lifecycle", () => {
   it("waits for its own children's results and never takes a child's reply as its own", async () => {
     const fixture = await createFixture();
     const parent = await delegate(fixture.token, {
-      task: "Coordinate a mattress comparison with helpers",
+      message: "Coordinate a mattress comparison with helpers",
       title: "Coordinated comparison",
     });
     const parentFirst = await activateRun(fixture, (await readToolRecords(store, parent)).run!.id);
     const trial = await delegate(parentFirst.token, {
-      task: "Check the manufacturer trial terms",
+      message: "Check the manufacturer trial terms",
     });
     await reply(parentFirst, "Asked a helper to check the trial terms.");
     await end(parentFirst, "completed");
-    expect((await assignmentRow(parent.assignmentId)).status).toBe("open");
+    expect((await assignmentRow(parent.delegationId)).status).toBe("open");
     const trialWorker = await activateRun(fixture, (await readToolRecords(store, trial)).run!.id);
     await end(trialWorker, "completed");
-    expect(await assignmentRow(trial.assignmentId)).toMatchObject({
+    expect(await assignmentRow(trial.delegationId)).toMatchObject({
       resultText: "",
       resultStatus: "pending",
     });
@@ -1511,9 +1511,9 @@ integration("personal task delegation lifecycle", () => {
       fixture,
       (await queuedRun((await readToolRecords(store, parent)).thread.id)).id,
     );
-    expect(await runAssignment(parentSecond.runId)).toBe(parent.assignmentId);
+    expect(await runAssignment(parentSecond.runId)).toBe(parent.delegationId);
     const warranty = await delegate(parentSecond.token, {
-      task: "Check the warranty",
+      message: "Check the warranty",
     });
     const warrantyWorker = await activateRun(
       fixture,
@@ -1524,7 +1524,7 @@ integration("personal task delegation lifecycle", () => {
     // The warranty result has not reached the parent Thread yet.
     await reply(parentSecond, "Interim: 100-night trial; the warranty check is still out.");
     await end(parentSecond, "completed");
-    expect((await assignmentRow(parent.assignmentId)).status).toBe("open");
+    expect((await assignmentRow(parent.delegationId)).status).toBe("open");
     await drainReturns();
     const parentThird = await activateRun(
       fixture,
@@ -1533,7 +1533,7 @@ integration("personal task delegation lifecycle", () => {
     const finalReply = "Final: 100-night trial and a 10-year warranty.";
     await reply(parentThird, finalReply);
     await end(parentThird, "completed");
-    expect(await assignmentRow(parent.assignmentId)).toMatchObject({
+    expect(await assignmentRow(parent.delegationId)).toMatchObject({
       resultRunId: parentThird.runId,
       resultText: finalReply,
       status: "completed",
@@ -1541,12 +1541,12 @@ integration("personal task delegation lifecycle", () => {
     await drainReturns();
     const returned = await returnMessages(fixture.parentThreadId);
     expect(returned.map(({ content }) => messageText(content))).toEqual([
-      `Task completed: Coordinated comparison\nTask Thread: ${(await readToolRecords(store, parent)).thread.id} · Assignment: ${parent.assignmentId}\n\n${finalReply}`,
+      `Task completed: Coordinated comparison\nTask: ${(await readToolRecords(store, parent)).thread.id} · Delegation: ${parent.delegationId}\n\n${finalReply}`,
     ]);
     acceptanceEvidence.push({
       caseId: "L06+L07",
-      parentAssignmentId: parent.assignmentId,
-      childAssignmentIds: [trial.assignmentId, warranty.assignmentId],
+      parentAssignmentId: parent.delegationId,
+      childAssignmentIds: [trial.delegationId, warranty.delegationId],
       parentRuns: [parentFirst.runId, parentSecond.runId, parentThird.runId],
       resultRunId: parentThird.runId,
     });
@@ -1554,7 +1554,7 @@ integration("personal task delegation lifecycle", () => {
   it("lets reports ride along without blocking completion or reuse, and reuse starts fresh", async () => {
     const fixture = await createFixture();
     const first = await delegate(fixture.token, {
-      task: "First comparison",
+      message: "First comparison",
     });
     const firstWorker = await activateRun(fixture, (await readToolRecords(store, first)).run!.id);
     const correction = await service.handle(fixture.token, {
@@ -1598,17 +1598,17 @@ integration("personal task delegation lifecycle", () => {
       policy: "report",
       state: "pending",
     });
-    expect((await assignmentRow(first.assignmentId)).status).toBe("completed");
+    expect((await assignmentRow(first.delegationId)).status).toBe("completed");
     await drainReturns();
     const second = await delegate(fixture.token, {
-      task: "Update the comparison with new sources",
-      threadId: (await readToolRecords(store, first)).thread.id,
+      message: "Update the comparison with new sources",
+      taskId: (await readToolRecords(store, first)).thread.id,
     });
     expect((await readToolRecords(store, second)).thread.id).toBe(
       (await readToolRecords(store, first)).thread.id,
     );
-    expect(second.assignmentId).not.toBe(first.assignmentId);
-    expect(await assignmentRow(second.assignmentId)).toMatchObject({
+    expect(second.delegationId).not.toBe(first.delegationId);
+    expect(await assignmentRow(second.delegationId)).toMatchObject({
       resultText: null,
       status: "open",
     });
@@ -1643,13 +1643,13 @@ integration("personal task delegation lifecycle", () => {
       .execute();
     expect(rows).toEqual([
       {
-        id: first.assignmentId,
+        id: first.delegationId,
         resultRunId: firstWorker.runId,
         resultText: "First result",
         status: "completed",
       },
       {
-        id: second.assignmentId,
+        id: second.delegationId,
         resultRunId: secondWorker.runId,
         resultText: "Second result",
         status: "completed",
@@ -1657,8 +1657,8 @@ integration("personal task delegation lifecycle", () => {
     ]);
     acceptanceEvidence.push({
       caseId: "L08+L17+L18",
-      firstAssignmentId: first.assignmentId,
-      secondAssignmentId: second.assignmentId,
+      firstAssignmentId: first.delegationId,
+      secondAssignmentId: second.delegationId,
       workerThreadId: (await readToolRecords(store, first)).thread.id,
       correctionAssignmentId: correction.result.delegationId,
       unboundMessageAssignmentId: toParent.result.delegationId,
@@ -1667,7 +1667,7 @@ integration("personal task delegation lifecycle", () => {
   it("reports provider failures once and recovers a lost delegated execution before returning its result", async () => {
     const fixture = await createFixture();
     const runnerFailure = await delegate(fixture.token, {
-      task: "Investigate mattress trial terms",
+      message: "Investigate mattress trial terms",
       title: "Trial terms",
     });
     const runnerWorker = await activateRun(
@@ -1676,14 +1676,14 @@ integration("personal task delegation lifecycle", () => {
     );
     await reply(runnerWorker, "Checked two of the three sources.");
     await end(runnerWorker, "failed", "The provider rejected the request");
-    expect(await assignmentRow(runnerFailure.assignmentId)).toMatchObject({
+    expect(await assignmentRow(runnerFailure.delegationId)).toMatchObject({
       resultRunId: runnerWorker.runId,
       resultText:
         "The task stopped because of an error: The provider rejected the request.\n\nLast reply before the error:\nChecked two of the three sources.",
       status: "failed",
     });
     const hostRecovery = await delegate(fixture.token, {
-      task: "Compare delivery windows",
+      message: "Compare delivery windows",
       title: "Delivery windows",
     });
     const hostWorker = await activateRun(
@@ -1708,7 +1708,7 @@ integration("personal task delegation lifecycle", () => {
         }),
       }),
     );
-    expect(await assignmentRow(hostRecovery.assignmentId)).toMatchObject({
+    expect(await assignmentRow(hostRecovery.delegationId)).toMatchObject({
       status: "open",
       resultRunId: null,
     });
@@ -1717,7 +1717,7 @@ integration("personal task delegation lifecycle", () => {
     expect(resumedWorker.bindingGeneration).toBeGreaterThan(hostWorker.bindingGeneration);
     await reply(resumedWorker, "Delivery windows compared after recovery.");
     await end(resumedWorker, "completed");
-    const hostRow = await assignmentRow(hostRecovery.assignmentId);
+    const hostRow = await assignmentRow(hostRecovery.delegationId);
     expect(hostRow).toMatchObject({
       resultRunId: hostWorker.runId,
       status: "completed",
@@ -1750,20 +1750,20 @@ integration("personal task delegation lifecycle", () => {
     ]);
     acceptanceEvidence.push({
       caseId: "L09",
-      runnerFailureAssignmentId: runnerFailure.assignmentId,
-      hostRecoveryAssignmentId: hostRecovery.assignmentId,
+      runnerFailureAssignmentId: runnerFailure.delegationId,
+      hostRecoveryAssignmentId: hostRecovery.delegationId,
       returnMessageCount: returned.length,
     });
   });
   it("stays open when a person stops its Run and finishes after the person's next message", async () => {
     const fixture = await createFixture();
     const task = await delegate(fixture.token, {
-      task: "Summarize the reviews",
+      message: "Summarize the reviews",
     });
     const interrupted = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
     await reply(interrupted, "Halfway through the reviews.");
     await end(interrupted, "interrupted");
-    expect(await assignmentRow(task.assignmentId)).toMatchObject({
+    expect(await assignmentRow(task.delegationId)).toMatchObject({
       resultText: null,
       status: "open",
     });
@@ -1786,18 +1786,18 @@ integration("personal task delegation lifecycle", () => {
       },
       threadId: (await readToolRecords(store, task)).thread.id,
     });
-    expect(nudge.input.assignmentId).toBe(task.assignmentId);
+    expect(nudge.input.assignmentId).toBe(task.delegationId);
     const resumed = await activateRun(fixture, nudge.run!.id);
-    expect(await runAssignment(resumed.runId)).toBe(task.assignmentId);
+    expect(await runAssignment(resumed.runId)).toBe(task.delegationId);
     await reply(resumed, "Summary: reviewers favour the medium-firm model.");
     await end(resumed, "completed");
-    expect(await assignmentRow(task.assignmentId)).toMatchObject({
+    expect(await assignmentRow(task.delegationId)).toMatchObject({
       resultRunId: resumed.runId,
       status: "completed",
     });
     acceptanceEvidence.push({
       caseId: "L10+L23",
-      assignmentId: task.assignmentId,
+      assignmentId: task.delegationId,
       interruptedRunId: interrupted.runId,
       resultRunId: resumed.runId,
     });
@@ -1805,18 +1805,18 @@ integration("personal task delegation lifecycle", () => {
   it("stops a queued task so nothing starts, and tells the parent without starting its turn", async () => {
     const fixture = await createFixture();
     const task = await delegate(fixture.token, {
-      task: "Do research when the lent computer becomes available",
+      message: "Do research when the lent computer becomes available",
       title: "Deferred research",
     });
     await end(fixture.parent, "completed");
     const idempotencyKey = `stop-${randomUUID()}`;
     const stopped = await commands.cancelAssignment({
-      assignmentId: task.assignmentId,
+      assignmentId: task.delegationId,
       idempotencyKey,
       requestedBy: fixture.userId,
     });
     const again = await commands.cancelAssignment({
-      assignmentId: task.assignmentId,
+      assignmentId: task.delegationId,
       idempotencyKey,
       requestedBy: fixture.userId,
     });
@@ -1838,7 +1838,7 @@ integration("personal task delegation lifecycle", () => {
     await drainReturns();
     const returned = await returnMessages(fixture.parentThreadId);
     expect(returned.map(({ content }) => messageText(content))).toEqual([
-      `Task cancelled: Deferred research\nTask Thread: ${(await readToolRecords(store, task)).thread.id} · Assignment: ${task.assignmentId}`,
+      `Task cancelled: Deferred research\nTask: ${(await readToolRecords(store, task)).thread.id} · Delegation: ${task.delegationId}`,
     ]);
     await expect(
       database
@@ -1859,7 +1859,7 @@ integration("personal task delegation lifecycle", () => {
     expect(parent.inputQueuePaused).toBe(false);
     acceptanceEvidence.push({
       caseId: "L13-queued",
-      assignmentId: task.assignmentId,
+      assignmentId: task.delegationId,
       interruptedRunId: (await readToolRecords(store, task)).run!.id,
       parentRunsStarted: 0,
     });
@@ -1867,26 +1867,26 @@ integration("personal task delegation lifecycle", () => {
   it("stops a running task tree with its Requests, fences late work and never restarts it", async () => {
     const fixture = await createFixture();
     const parent = await delegate(fixture.token, {
-      task: "Coordinate a mattress shortlist",
+      message: "Coordinate a mattress shortlist",
       title: "Shortlist",
     });
     const parentWorker = await activateRun(fixture, (await readToolRecords(store, parent)).run!.id);
     const child = await delegate(parentWorker.token, {
-      task: "Verify return terms",
+      message: "Verify return terms",
     });
     const childWorker = await activateRun(fixture, (await readToolRecords(store, child)).run!.id);
     const durable = await openDurableRequest(fixture, childWorker);
     const stopped = await service.handle(fixture.token, {
-      delegationId: parent.assignmentId,
+      delegationId: parent.delegationId,
       requestId: randomUUID(),
       type: "task.cancel",
     });
     expect(stopped).toMatchObject({
-      assignmentId: parent.assignmentId,
+      delegationId: parent.delegationId,
       status: "cancelled",
       type: "task.cancel.result",
     });
-    expect((await assignmentRow(child.assignmentId)).status).toBe("cancelled");
+    expect((await assignmentRow(child.delegationId)).status).toBe("cancelled");
     await expect(store.requests.get(durable.request.id)).resolves.toMatchObject({
       cancellationReason: "source-closed",
       status: "cancelled",
@@ -1916,7 +1916,7 @@ integration("personal task delegation lifecycle", () => {
     await reply(childWorker, "A stale result after the stop");
     await end(childWorker, "completed");
     await end(parentWorker, "interrupted");
-    expect(await assignmentRow(child.assignmentId)).toMatchObject({
+    expect(await assignmentRow(child.delegationId)).toMatchObject({
       resultRunId: null,
       resultText: null,
       status: "cancelled",
@@ -1932,7 +1932,7 @@ integration("personal task delegation lifecycle", () => {
     expect(returned.map(({ content }) => messageText(content).split("\n")[0])).toEqual([
       "Task cancelled: Shortlist",
     ]);
-    expect(await assignmentRow(child.assignmentId)).toMatchObject({
+    expect(await assignmentRow(child.delegationId)).toMatchObject({
       resultReason: "parent-assignment-terminal",
       resultStatus: "undeliverable",
     });
@@ -1941,8 +1941,8 @@ integration("personal task delegation lifecycle", () => {
     );
     acceptanceEvidence.push({
       caseId: "L13-running+L14+L15",
-      parentAssignmentId: parent.assignmentId,
-      childAssignmentId: child.assignmentId,
+      parentAssignmentId: parent.delegationId,
+      childAssignmentId: child.delegationId,
       cancelledRequestIds: [durable.request.id, liveRequestId],
       interruptedRunIds: interrupts.map(({ runId }) => runId),
     });
@@ -1950,14 +1950,14 @@ integration("personal task delegation lifecycle", () => {
   it("stops a task that is waiting on a durable Request", async () => {
     const fixture = await createFixture();
     const task = await delegate(fixture.token, {
-      task: "Check the account settings",
+      message: "Check the account settings",
     });
     const worker = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
     const durable = await openDurableRequest(fixture, worker);
     await reply(worker, "Waiting for file access.");
     await end(worker, "completed");
     const stopped = await commands.cancelAssignment({
-      assignmentId: task.assignmentId,
+      assignmentId: task.delegationId,
       idempotencyKey: `stop-waiting-${randomUUID()}`,
       requestedBy: fixture.userId,
     });
@@ -1973,23 +1973,23 @@ integration("personal task delegation lifecycle", () => {
     );
     acceptanceEvidence.push({
       caseId: "L13-waiting",
-      assignmentId: task.assignmentId,
+      assignmentId: task.delegationId,
       cancelledRequestId: durable.request.id,
     });
   });
   it("refuses new work for a Thread whose task is still open and names that task", async () => {
     const fixture = await createFixture();
     const task = await delegate(fixture.token, {
-      task: "Long mattress research",
+      message: "Long mattress research",
     });
     await expect(
       delegate(fixture.token, {
-        task: "A different objective",
-        threadId: (await readToolRecords(store, task)).thread.id,
+        message: "A different objective",
+        taskId: (await readToolRecords(store, task)).thread.id,
       }),
     ).rejects.toThrow(
       new RegExp(
-        `task ${task.assignmentId}.*opensteer_task_send.*opensteer_delegation_cancel`,
+        `task ${task.delegationId}.*opensteer_task_send.*opensteer_delegation_cancel`,
         "u",
       ),
     );
@@ -2001,12 +2001,12 @@ integration("personal task delegation lifecycle", () => {
         .execute(),
     ).resolves.toEqual([
       {
-        id: task.assignmentId,
+        id: task.delegationId,
       },
     ]);
     acceptanceEvidence.push({
       caseId: "L16",
-      assignmentId: task.assignmentId,
+      assignmentId: task.delegationId,
     });
   });
 
@@ -2104,16 +2104,16 @@ integration("personal task delegation lifecycle", () => {
   it("applies one stop rule to people and agents", async () => {
     const fixture = await createFixture();
     const parent = await delegate(fixture.token, {
-      task: "Coordinate research",
+      message: "Coordinate research",
     });
     const sibling = await delegate(fixture.token, {
-      task: "Unrelated research",
+      message: "Unrelated research",
     });
     const parentWorker = await activateRun(fixture, (await readToolRecords(store, parent)).run!.id);
     const child = await delegate(parentWorker.token, {
-      task: "A helper step",
+      message: "A helper step",
     });
-    const cancel = (token: string, assignmentId: typeof parent.assignmentId) =>
+    const cancel = (token: string, assignmentId: typeof parent.delegationId) =>
       service.handle(token, {
         delegationId: assignmentId,
         requestId: randomUUID(),
@@ -2121,23 +2121,23 @@ integration("personal task delegation lifecycle", () => {
       });
     // A task's own Run cannot stop itself, but stops work within its reach,
     // including work it did not start.
-    await expect(cancel(parentWorker.token, parent.assignmentId)).rejects.toMatchObject({
+    await expect(cancel(parentWorker.token, parent.delegationId)).rejects.toMatchObject({
       code: "forbidden",
     });
-    await expect(cancel(parentWorker.token, child.assignmentId)).resolves.toMatchObject({
+    await expect(cancel(parentWorker.token, child.delegationId)).resolves.toMatchObject({
       status: "cancelled",
     });
     const unrelated = await delegate(fixture.token, {
-      task: "Unrelated follow-up",
+      message: "Unrelated follow-up",
     });
-    await expect(cancel(parentWorker.token, unrelated.assignmentId)).resolves.toMatchObject({
+    await expect(cancel(parentWorker.token, unrelated.delegationId)).resolves.toMatchObject({
       status: "cancelled",
     });
     // A different person cannot stop the owner’s work.
     const collaboratorId = await store.createUser("Collaborator");
     await expect(
       commands.cancelAssignment({
-        assignmentId: sibling.assignmentId,
+        assignmentId: sibling.delegationId,
         idempotencyKey: `collaborator-stop-${randomUUID()}`,
         requestedBy: collaboratorId,
       }),
@@ -2146,7 +2146,7 @@ integration("personal task delegation lifecycle", () => {
     });
     await expect(
       commands.cancelAssignment({
-        assignmentId: sibling.assignmentId,
+        assignmentId: sibling.delegationId,
         idempotencyKey: `owner-stop-${randomUUID()}`,
         requestedBy: fixture.userId,
       }),
@@ -2156,14 +2156,14 @@ integration("personal task delegation lifecycle", () => {
       },
     });
     // The owner can stop the assigning task.
-    await expect(cancel(fixture.token, parent.assignmentId)).resolves.toMatchObject({
+    await expect(cancel(fixture.token, parent.delegationId)).resolves.toMatchObject({
       status: "cancelled",
     });
     acceptanceEvidence.push({
       caseId: "L20",
-      parentAssignmentId: parent.assignmentId,
-      siblingAssignmentId: sibling.assignmentId,
-      childAssignmentId: child.assignmentId,
+      parentAssignmentId: parent.delegationId,
+      siblingAssignmentId: sibling.delegationId,
+      childAssignmentId: child.delegationId,
     });
   });
 
@@ -2178,7 +2178,7 @@ integration("personal task delegation lifecycle", () => {
     });
     const task = await delegate(fixture.token, {
       model: alternateModel,
-      task: "Research the project",
+      message: "Research the project",
     });
     const list = async (open?: boolean) => {
       const page = await store.listThreadAssignmentsForOwner({
@@ -2210,29 +2210,29 @@ integration("personal task delegation lifecycle", () => {
         threadId,
       });
     };
-    expect((await list()).find(({ id }) => id === task.assignmentId)?.modelLabel).toBe(
+    expect((await list()).find(({ id }) => id === task.delegationId)?.modelLabel).toBe(
       alternateModel.modelId,
     );
-    expect((await list(true)).map(({ id }) => id)).toEqual([task.assignmentId]);
+    expect((await list(true)).map(({ id }) => id)).toEqual([task.delegationId]);
     const worker = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
     await reply(worker, "Research complete.");
     await end(worker, "completed");
     await drainReturns();
     // Finished work leaves the open set and stays in the history.
     expect(await list(true)).toEqual([]);
-    expect((await list()).map(({ id }) => id)).toContain(task.assignmentId);
+    expect((await list()).map(({ id }) => id)).toContain(task.delegationId);
     await selectModel(
       (await readToolRecords(store, task)).thread.id,
       fixture.lentHarnessInstanceId,
       testModelSelection,
     );
     const followUp = await delegate(fixture.token, {
-      task: "Check return shipping",
-      threadId: (await readToolRecords(store, task)).thread.id,
+      message: "Check return shipping",
+      taskId: (await readToolRecords(store, task)).thread.id,
     });
     const original = await readThreadWaitSnapshot(database, {
       threadId: task.taskId,
-      assignmentId: task.assignmentId,
+      assignmentId: task.delegationId,
       userId: fixture.userId,
     });
     expect(original.run).toEqual({
@@ -2263,11 +2263,11 @@ integration("personal task delegation lifecycle", () => {
     await end(parentContinuation, "completed");
     await selectModel(fixture.parentThreadId, fixture.mainHarnessInstanceId, alternateModel);
     const summaries = await list();
-    expect(summaries.find(({ id }) => id === task.assignmentId)?.modelLabel).toBe(
+    expect(summaries.find(({ id }) => id === task.delegationId)?.modelLabel).toBe(
       alternateModel.modelId,
     );
-    expect(summaries.find(({ id }) => id === followUp.assignmentId)?.modelLabel).toBeNull();
-    const originalSummary = summaries.find(({ id }) => id === task.assignmentId);
+    expect(summaries.find(({ id }) => id === followUp.delegationId)?.modelLabel).toBeNull();
+    const originalSummary = summaries.find(({ id }) => id === task.delegationId);
     if (!originalSummary) throw new Error("Expected original task summary");
     expect(
       assignmentPresentation(originalSummary, {
@@ -2307,14 +2307,14 @@ integration("personal task delegation lifecycle", () => {
       },
       threadId: (await readToolRecords(store, task)).thread.id,
     });
-    expect(nudge.input.assignmentId).toBe(followUp.assignmentId);
+    expect(nudge.input.assignmentId).toBe(followUp.delegationId);
     const finalFollowUpRun = await activateRun(fixture, nudge.run!.id);
-    expect((await list()).find(({ id }) => id === followUp.assignmentId)?.modelLabel).toBe(
+    expect((await list()).find(({ id }) => id === followUp.delegationId)?.modelLabel).toBe(
       alternateModel.modelId,
     );
     await reply(finalFollowUpRun, "Return shipping is free.");
     await end(finalFollowUpRun, "completed");
-    expect((await list()).find(({ id }) => id === followUp.assignmentId)?.modelLabel).toBe(
+    expect((await list()).find(({ id }) => id === followUp.delegationId)?.modelLabel).toBe(
       alternateModel.modelId,
     );
     const committed = await database
@@ -2332,7 +2332,7 @@ integration("personal task delegation lifecycle", () => {
                 modelLabel?: string | null;
               };
             }
-          ).assignment?.id === task.assignmentId &&
+          ).assignment?.id === task.delegationId &&
           (
             data as {
               assignment?: {
@@ -2344,8 +2344,8 @@ integration("personal task delegation lifecycle", () => {
     ).toBe(true);
     acceptanceEvidence.push({
       caseId: "assignment-model-reload",
-      firstAssignmentId: task.assignmentId,
-      followUpAssignmentId: followUp.assignmentId,
+      firstAssignmentId: task.delegationId,
+      followUpAssignmentId: followUp.delegationId,
       firstModelLabel: alternateModel.modelId,
       followUpInitialModelLabel: null,
       followUpFinalModelLabel: alternateModel.modelId,
@@ -2801,8 +2801,8 @@ integration("personal task delegation lifecycle", () => {
     token: string,
     input: {
       readonly model?: ReturnType<typeof ModelSelectionSchema.parse>;
-      readonly task: string;
-      readonly threadId?: ThreadId;
+      readonly message: string;
+      readonly taskId?: ThreadId;
       readonly title?: string;
     },
   ) {
