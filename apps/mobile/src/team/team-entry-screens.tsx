@@ -590,7 +590,8 @@ export function useAgentConnection(teamId: string): {
   return {
     intent,
     linked,
-    computerName: personal === null ? null : (personal.getSnapshot().ownerName ?? null),
+    computerName:
+      personal === null ? null : (personal.getSnapshot().identityConfig?.deployment.name ?? null),
   };
 }
 

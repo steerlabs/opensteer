@@ -7,6 +7,7 @@ import {
   HarnessInstanceIdSchema,
   RunnerIdSchema,
   TimeZoneSchema,
+  PersonNameSchema,
   ThreadAccessModeSchema,
 } from "@opensteer/core";
 import {
@@ -74,6 +75,8 @@ export const settings_read = defineAgentTool({
     harnesses: z.array(harness),
     preferences: ExecutionPreferencesViewSchema,
     timeZone: TimeZoneSchema.nullable(),
+    /** Null until the person sets one in Settings → Account. */
+    ownerName: PersonNameSchema.nullable(),
   }),
   access: "read",
   callers,

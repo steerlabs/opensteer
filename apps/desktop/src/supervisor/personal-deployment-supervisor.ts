@@ -1,5 +1,6 @@
 import type { ResolvedConnection, VerifiedHostEndpoint } from "@opensteer/client/connections";
 import { computerName } from "./computer-name.js";
+import { personFullName } from "./person-name.js";
 import {
   deploymentConnectionFromVerifiedEndpoints,
   type DeploymentCatalogStore,
@@ -113,6 +114,8 @@ interface PersonalDeploymentSupervisorOptions {
   readonly catalog: Pick<DeploymentCatalogStore, "upsertAndSelect">;
   /** The name the person gave this Mac, which a new Personal Deployment is called by default. */
   readonly computerName?: () => Promise<string>;
+  /** This computer account's full name, the owner's name until they choose one. */
+  readonly personFullName?: () => Promise<string | null>;
   /**
    * The computer-use bridge for this Deployment's hosting Runner, or null where
    * computer use does not exist. The hosting Runner is this Mac's own Runner, so
@@ -222,6 +225,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   readonly #baseEnvironment: Readonly<Record<string, string>>;
   readonly #catalog: Pick<DeploymentCatalogStore, "upsertAndSelect">;
   readonly #computerName: () => Promise<string>;
+  readonly #personFullName: () => Promise<string | null>;
   readonly #computerUse: PersonalDeploymentSupervisorOptions["computerUse"];
   readonly #credentials: PersonalDeploymentCredentialPort;
   readonly #files: PersonalDeploymentFilesystemPort;
@@ -285,6 +289,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         : new NativePersonalUserEnvironment());
     this.#catalog = options.catalog;
     this.#computerName = options.computerName ?? computerName;
+    this.#personFullName = options.personFullName ?? personFullName;
     this.#computerUse = options.computerUse;
     this.#credentials = options.credentials;
     this.#files = options.files;
@@ -868,6 +873,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         this.#portalOrigin,
         this.#passkeys,
         extensionDirectory,
+        await this.#personFullName(),
       ),
     );
     const origin = `http://127.0.0.1:${manifest.hostPort}`;
@@ -1779,6 +1785,7 @@ function hostSpec(
   portalOrigin: string | null,
   passkeys: boolean,
   extensionDirectory: string | null,
+  ownerNameSeed: string | null,
 ): PersonalProcessSpec {
   const fingerprint = HostKeyFingerprintSchema.parse(manifest.hostKeyFingerprint);
   const origin = `http://127.0.0.1:${manifest.hostPort}`;
@@ -1809,6 +1816,9 @@ function hostSpec(
       OPENSTEER_NATIVE_FS_HELPER: release.entrypoints.nativeFsHelper,
       OPENSTEER_PORT: String(manifest.hostPort),
       ...(extensionDirectory ? { OPENSTEER_BROWSER_EXTENSION_DIRECTORY: extensionDirectory } : {}),
+      // Not a secret: secret values are redacted wherever they appear in logs, and a short name
+      // would be redacted out of unrelated words.
+      ...(ownerNameSeed ? { OPENSTEER_OWNER_NAME_SEED: ownerNameSeed } : {}),
       ...(accountIssuer ? { OPENSTEER_PERSONAL_ACCOUNT_ISSUER: accountIssuer } : {}),
       ...(portalOrigin ? { OPENSTEER_PORTAL_ORIGIN: portalOrigin } : {}),
       OPENSTEER_RUNTIME_ORIGIN: origin,

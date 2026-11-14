@@ -2251,6 +2251,15 @@ export class TeamChatStore {
           totalMentionCount: Number(mentions.rows[0]!.total),
           nextCursor: rows.length > 50 ? rows[49]!.id : null,
           accessRevision: revision,
+          // Moves with every rename, as revisions only grow: a session that missed one rereads.
+          namesRevision: SequenceSchema.parse(
+            (
+              await t
+                .selectFrom("users")
+                .select(sql<string>`coalesce(sum(name_revision), 0)::text`.as("total"))
+                .executeTakeFirstOrThrow()
+            ).total,
+          ),
         };
       });
       if (revision === this.access.revision) return result;

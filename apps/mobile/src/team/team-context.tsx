@@ -159,9 +159,21 @@ export function useTeamMembers(
     readonly failure: string | null;
   }>({ members: [], status: "reading", failure: null });
   const [generation, setGeneration] = useState(0);
+  const session = useTeam(teamId)?.session ?? null;
+  const subscribePeople = useCallback(
+    (listener: () => void) => session?.subscribe(listener) ?? (() => undefined),
+    [session],
+  );
+  // The list is read again once the team's access or names have moved since it was read, even
+  // when that happened while this screen was away.
+  const readDirectoryKey = useCallback(() => {
+    const sidebar = session?.getSnapshot().sidebar;
+    return sidebar ? `${sidebar.accessRevision}:${sidebar.namesRevision ?? ""}` : null;
+  }, [session]);
+  const directoryKey = useSyncExternalStore(subscribePeople, readDirectoryKey, readDirectoryKey);
   useEffect(() => {
     let current = true;
-    void teams.members(teamId).then(
+    void teams.members(teamId, directoryKey).then(
       (people) => current && setRead({ members: people, status: "read", failure: null }),
       (error: unknown) =>
         current &&
@@ -174,16 +186,11 @@ export function useTeamMembers(
     return () => {
       current = false;
     };
-  }, [generation, teamId, teams]);
+  }, [directoryKey, generation, teamId, teams]);
   const reload = useCallback(() => {
     teams.forgetMembers(teamId);
     setGeneration((next) => next + 1);
   }, [teamId, teams]);
-  const session = useTeam(teamId)?.session ?? null;
-  const subscribePeople = useCallback(
-    (listener: () => void) => session?.subscribe(listener) ?? (() => undefined),
-    [session],
-  );
   const readPeople = useCallback(() => {
     const snapshot = session?.getSnapshot();
     return channelId ? snapshot?.peopleByChannel?.[channelId] : snapshot?.people;
@@ -194,12 +201,27 @@ export function useTeamMembers(
     [session, channelId],
   );
   const handles = useSyncExternalStore(subscribePeople, readHandles, readHandles);
+  // Renames announced since the list was read: only the name moves, and only forward.
+  const readUpdates = useCallback(() => session?.getSnapshot().memberUpdates, [session]);
+  const updates = useSyncExternalStore(subscribePeople, readUpdates, readUpdates);
+  const members = useMemo(
+    () =>
+      updates
+        ? read.members.map((member) => {
+            const renamed = updates[member.userId];
+            return renamed && (renamed.nameRevision ?? 0) > (member.nameRevision ?? 0)
+              ? { ...member, displayName: renamed.displayName, nameRevision: renamed.nameRevision }
+              : member;
+          })
+        : read.members,
+    [read.members, updates],
+  );
   const directory = useMemo(
-    () => teamPeopleDirectory(read.members, remotePeople, handles),
-    [read.members, remotePeople, handles],
+    () => teamPeopleDirectory(members, remotePeople, handles),
+    [members, remotePeople, handles],
   );
   return {
-    members: read.members,
+    members,
     directory,
     status: read.status,
     failure: read.failure,

@@ -63,6 +63,7 @@ import {
 } from "../access/account-adoption-grant-verifier.js";
 import { RemoteTeamIdentityAssertionVerifier } from "../access/team-identity-assertion-verifier.js";
 import { AccountDirectoryClient } from "../access/account-directory-client.js";
+import { RemotePersonProfileReceiptVerifier } from "../access/person-profile-receipt-verifier.js";
 import { AccountDirectoryPublisher } from "../access/account-directory-publisher.js";
 import { HostAuthorityPublisher } from "../access/host-authority-publisher.js";
 import { NotificationPreviewService } from "../notifications/notification-preview-service.js";
@@ -166,6 +167,10 @@ export async function createTeamHostRuntime(input: {
       onError: () => report("team-partners"),
     });
     services = await startTeamServices({
+      profileReceipts: new RemotePersonProfileReceiptVerifier({
+        issuer,
+        ...(options.accountControlFetch ? { fetch: options.accountControlFetch } : {}),
+      }),
       partners,
       kind: "team",
       database,
@@ -232,6 +237,7 @@ export async function createTeamHostRuntime(input: {
     const admission = new TeamIdentityAdmission({
       access,
       invites: team.invites,
+      applyProfile: (userId, receipt) => team.applyProfile(userId, receipt),
       authority: {
         canonicalOrigin: deployment.canonicalOrigin,
         deploymentId: deployment.id,

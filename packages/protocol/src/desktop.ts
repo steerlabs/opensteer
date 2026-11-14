@@ -39,7 +39,10 @@ import {
   TeamOriginSchema,
 } from "@opensteer/core";
 import { z } from "zod";
-import { HostAccountAdoptionAuthoritySchema } from "@opensteer/control-plane-protocol";
+import {
+  HostAccountAdoptionAuthoritySchema,
+  UpdateAccountProfileRequestSchema,
+} from "@opensteer/control-plane-protocol";
 import {
   CreateHostedTeamRequestSchema,
   HostedTeamIdSchema,
@@ -1480,6 +1483,8 @@ export const DesktopAccountTeamsCallSchema = z.discriminatedUnion("call", [
     id: HostedTeamIdSchema,
     to: TransferHostedTeamRequestSchema.shape.to,
   }),
+  z.strictObject({ call: z.literal("profile") }),
+  z.strictObject({ call: z.literal("profile.update"), request: UpdateAccountProfileRequestSchema }),
 ]);
 export type DesktopAccountTeamsCall = z.infer<typeof DesktopAccountTeamsCallSchema>;
 export const DesktopAccountTeamsResultSchema = z.discriminatedUnion("ok", [

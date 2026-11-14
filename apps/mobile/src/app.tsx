@@ -39,7 +39,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import { mockIphoneRunnerId, type MockHostClient } from "@opensteer/client/mock";
-import type { MockTeamHost } from "@opensteer/client/team";
+import { AccountProfileRelay, type MockTeamHost } from "@opensteer/client/team";
 import { verifyAccessEndpoint } from "@opensteer/client/connections";
 import { MobileTeams } from "./team/mobile-teams.js";
 import { MobileTeamsProvider, type TeamEntry } from "./team/team-context.js";
@@ -176,6 +176,7 @@ interface MobileRoot {
   readonly entry: TeamEntry;
   readonly iphone: IphoneAppsController;
   readonly notifications: MobileNotifications;
+  readonly profiles: AccountProfileRelay;
   readonly teams: MobileTeams;
 }
 
@@ -375,8 +376,15 @@ function mobileClient(): MobileRoot {
   // The person's teams, each its own Host reached directly, so team chat keeps
   // working when their computer is off.
   const mockTeams = new Map<string, MockTeamHost>();
+  // The person's Account name, relayed to each team whose copy is older. Calls reach Account only
+  // once the entry below exists, which is before any team session loads.
+  const profiles = new AccountProfileRelay({
+    profile: (signal) => entry.account.profile(signal),
+    updateProfile: (request) => entry.account.updateProfile(request),
+  });
   const teams = new MobileTeams({
     client,
+    profiles,
     directory: `${root}${storeName}`,
     files: privateFiles,
     previews,
@@ -418,7 +426,7 @@ function mobileClient(): MobileRoot {
     mockHosts: configuration.mock ? mockTeams : null,
     teams,
   });
-  singleton = { broker, client, entry, iphone, notifications, teams };
+  singleton = { broker, client, entry, iphone, notifications, profiles, teams };
   return singleton;
 }
 
