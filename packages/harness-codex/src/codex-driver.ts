@@ -1340,7 +1340,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     // The one request both measured for image budgeting and sent.
     const turnStart = (input: readonly JsonObject[]): JsonObject => ({
       ...overrides,
-      additionalContext,
+      ...(additionalContext ? { additionalContext } : {}),
       input: initialContext
         ? [{ text: initialContext, text_elements: [], type: "text" }, ...input]
         : [...input],
@@ -1411,7 +1411,9 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     }
   }
 
-  async #buildAdditionalContext(): Promise<JsonObject> {
+  /** Voice calls carry their instructions in startup developer instructions instead. */
+  async #buildAdditionalContext(): Promise<JsonObject | undefined> {
+    if (this.#context.voiceCall) return undefined;
     const families: Record<string, string> = {
       opensteer_computers: this.#context.machineAccessNotice,
       opensteer_current_instructions: [
@@ -1634,7 +1636,7 @@ class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
     const threadId = this.#requireCodexThreadId();
     const turnStart = (steered: readonly JsonObject[]): JsonObject => ({
       ...turnOverrides(this.#context),
-      additionalContext,
+      ...(additionalContext ? { additionalContext } : {}),
       input: [...steered],
       threadId,
     });
