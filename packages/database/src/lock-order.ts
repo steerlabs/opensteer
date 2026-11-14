@@ -16,6 +16,7 @@ export const databaseLockOrder = [
   "team_access_state",
   "team_channels",
   "team_members",
+  "team_principals",
   "team_groups",
   "team_invites",
   "team_invite_uses",

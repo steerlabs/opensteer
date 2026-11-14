@@ -2,6 +2,7 @@ import { createId, type TeamAgentReturnOutcome, type TeamMessageId } from "@open
 import { sql, type Selectable, type Transaction } from "kysely";
 import type { DatabaseSchema, TeamAgentRequestTable } from "./schema.js";
 import { appendTeamAudit } from "./team-audit-store.js";
+import { teamPrincipalProfiles } from "./team-principals-store.js";
 
 export async function teamAttachmentRefs(
   transaction: Transaction<DatabaseSchema>,
@@ -57,11 +58,8 @@ export async function createTeamAskReturn(
         .where("id", "=", replyMessageId)
         .executeTakeFirstOrThrow()
     : null;
-  const owner = await transaction
-    .selectFrom("users")
-    .innerJoin("teamMembers", "teamMembers.userId", "users.id")
-    .select(["users.displayName", "teamMembers.handle"])
-    .where("users.id", "=", ask.ownerUserId)
+  const owner = await teamPrincipalProfiles(transaction)
+    .where("p.id", "=", ask.ownerUserId)
     .executeTakeFirstOrThrow();
   const payload = {
     author: {

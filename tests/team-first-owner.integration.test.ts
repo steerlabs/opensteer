@@ -38,6 +38,7 @@ let fixture: Awaited<ReturnType<typeof createTeamFixture>>;
 let control: Awaited<ReturnType<typeof cloneTestDatabase>>;
 beforeEach(async () => {
   fixture = await createTeamFixture();
+  await fixture.database.deleteFrom("teamPrincipals").execute();
   await fixture.database.deleteFrom("teamMembers").execute();
   await fixture.database.deleteFrom("users").execute();
   control = await cloneTestDatabase("controlPlane");

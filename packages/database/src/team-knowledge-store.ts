@@ -11,6 +11,7 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
+import { teamPrincipalProfiles } from "./team-principals-store.js";
 
 type Executor = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
 
@@ -426,7 +427,7 @@ function versionRows(executor: Executor) {
   return executor
     .selectFrom("teamNoteVersions as v")
     .innerJoin("teamNotes as n", "n.id", "v.noteId")
-    .innerJoin("users as u", "u.id", "v.writerUserId")
+    .innerJoin(teamPrincipalProfiles(executor).as("writer"), "writer.id", "v.writerUserId")
     .leftJoin("teamAgentRequests as r", "r.id", "v.requestId")
     .select([
       "v.noteId",
@@ -438,7 +439,7 @@ function versionRows(executor: Executor) {
       "v.writtenAt",
       "v.writerKind",
       "v.writerUserId",
-      "u.displayName",
+      "writer.displayName",
       "r.channelId",
       "r.triggerMessageId",
     ]);

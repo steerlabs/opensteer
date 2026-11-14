@@ -26,6 +26,8 @@ import { TeamAccessStore } from "@opensteer/database/team-access";
 import { TeamChatStore } from "@opensteer/database/team-chat";
 import { TeamGroupsStore } from "@opensteer/database/team-groups";
 import { TeamMembersStore } from "@opensteer/database/team-members";
+import { teamPrincipalProfiles } from "@opensteer/database/team-principals";
+import { seedRemoteTeamContent } from "@opensteer/database/test-support/team-principals";
 import { TeamInvitesStore } from "@opensteer/database/team-invites";
 import { TeamRequestsStore } from "@opensteer/database/team-requests";
 import { TeamOutboxStore, type TeamPushDelivery } from "@opensteer/database/team-outbox";
@@ -156,6 +158,103 @@ describe("team transaction authority", () => {
       },
     );
   }
+  it("keeps remote attribution through content reads without admitting remote people", async () => {
+    const c = await channel();
+    const seeded = await seedRemoteTeamContent(fixture, c.id);
+    const { remote, root, reply, local, blobId } = seeded;
+    const expected = { id: root.id, authorUserId: remote.id, pinned: true };
+    expect((await chat.page(owner, c.id)).messages).toContainEqual(
+      expect.objectContaining(expected),
+    );
+    const thread = (await chat.page(owner, c.id, { direction: "newest" }, root.id)).messages;
+    expect(thread).toHaveLength(2);
+    expect(thread[0]).toMatchObject({ ...expected, replySummary: { repliers: [remote.id] } });
+    expect(thread[1]).toMatchObject({ id: reply.id, authorUserId: remote.id });
+    expect(await chat.message(owner, c.id, root.id)).toMatchObject(expected);
+    const checked = await chat.check(owner, c.id, [root.clientMessageId, local.clientMessageId]);
+    expect(checked.messages).toHaveLength(1);
+    expect(checked.messages[0]).toMatchObject({
+      id: local.id,
+      mentions: [{ userId: remote.id, kind: "person" }],
+    });
+    expect(
+      (await chat.search(owner, { query: "Principal", authorUserId: remote.id })).results,
+    ).toHaveLength(2);
+    const sidebar = await chat.directory(owner, undefined, true);
+    expect(sidebar.channels[0]).toMatchObject({
+      channel: { latestMessageId: reply.id },
+      mentionCount: 1,
+    });
+    const scope = { kind: "channel" as const, channelId: c.id };
+    const snapshot = await chat.resume(owner, {
+      subscriptionId: "principals",
+      generation: 1,
+      scope,
+      sinceSeq: null,
+    });
+    expect(snapshot.type === "snapshot" && snapshot.messages).toContainEqual(
+      expect.objectContaining(expected),
+    );
+    const resumed = await chat.resume(owner, {
+      subscriptionId: "principals",
+      generation: 1,
+      scope,
+      sinceSeq: "1" as import("@opensteer/core").Sequence,
+    });
+    expect(resumed.type === "resumed" && resumed.changedRows).toContainEqual(
+      expect.objectContaining(expected),
+    );
+    const profiles = await teamPrincipalProfiles(fixture.database)
+      .where("p.id", "in", [remote.id, owner.userId])
+      .execute();
+    expect(profiles).toContainEqual(
+      expect.objectContaining({
+        id: remote.id,
+        displayName: "Remote Alex",
+        handle: "alex",
+        memberUserId: null,
+        image: null,
+      }),
+    );
+    expect((await new TeamMembersStore(access).page(owner)).members.map((m) => m.userId)).toEqual([
+      owner.userId,
+    ]);
+    expect(
+      await fixture.database.transaction().execute((t) => chat.source(t, owner, c.id, root.id)),
+    ).toMatchObject({ audience: { memberCount: 1 } });
+    await expect(chat.page({ kind: "human", userId: remote.id }, c.id)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+
+    const service = await services();
+    try {
+      expect(await service.read(owner, "team.mentions.page", { channelId: c.id })).toMatchObject({
+        messages: [expected],
+      });
+      expect(await service.read(owner, "team.pins.page", { channelId: c.id })).toMatchObject({
+        messages: [expected],
+      });
+      expect(await service.read(owner, "team.files.page", { channelId: c.id })).toMatchObject({
+        files: [{ messageId: root.id, file: { id: blobId } }],
+      });
+    } finally {
+      await service.close();
+    }
+    await sql`insert into account_directory_provider(singleton_key,provider_id,issuer) values('opensteer-account','principal-test','https://account.invalid')`.execute(
+      fixture.database,
+    );
+    await sql`insert into auth_accounts(id,user_id,provider_id,account_id) values(${createId("authAccount")},${owner.userId},'principal-test','local-account')`.execute(
+      fixture.database,
+    );
+    await sql`insert into team_outbox(kind,channel_id,message_id) values('message',${c.id},${root.id})`.execute(
+      fixture.database,
+    );
+    const deliveries: TeamPushDelivery[] = [];
+    await new TeamOutboxStore(access).drain(async (delivery) => {
+      deliveries.push(delivery);
+    });
+    expect(deliveries.map((delivery) => delivery.userId)).toEqual([owner.userId]);
+  });
   it("counts all authorized unread mentions independently of sidebar pages and changed channel filters", async () => {
     const reader = await person("MentionReader");
     const channels = await Promise.all(
@@ -860,8 +959,10 @@ describe("team transaction authority", () => {
     }
   });
   it("consumes a one-use invite atomically and never revives an old membership generation", async () => {
-    const member = await person("Invitee");
-    await fixture.database.deleteFrom("teamMembers").where("userId", "=", member.userId).execute();
+    const member = { userId: createId("user") };
+    await sql`insert into users(id,display_name,email,email_verified) values(${member.userId},'Invitee','invitee@example.invalid',true)`.execute(
+      fixture.database,
+    );
     const invites = new TeamInvitesStore(access, "https://team.example.invalid");
     const created = await invites.create(owner, createId("teamInvite"));
     const url = new URL(created.url);

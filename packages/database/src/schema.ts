@@ -1965,6 +1965,7 @@ export interface DatabaseSchema {
     metadata: JsonColumn<readonly { fullName: string; description: string; digest: string }[]>;
   };
   teamMembers: TeamMemberTable;
+  teamPrincipals: TeamPrincipalTable;
   teamAccessState: TeamAccessStateTable;
   teamGroups: TeamGroupTable;
   teamGroupPeople: TeamGroupPersonTable;
@@ -2274,6 +2275,16 @@ export interface TeamMemberTable {
   changedAt: Timestamp;
   changedBy: UserId | null;
 }
+export interface TeamPrincipalTable {
+  id: UserId;
+  homeTeamId: DeploymentId;
+  homeUserId: string;
+  memberUserId: UserId | null;
+  displayName: string | null;
+  handle: TeamHandle | null;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
 export interface TeamAccessStateTable {
   singletonKey: "team";
   revision: Generated<string>;
@@ -2364,6 +2375,7 @@ export interface TeamChannelTable {
   dmKey: string | null;
 }
 export interface TeamChannelMemberTable {
+  memberUserId: ColumnType<UserId | null, never, never>;
   channelId: TeamChannelId;
   subjectKind: "person" | "group";
   subjectId: string;
@@ -2457,6 +2469,7 @@ export interface TeamTopicTable {
   accessRevision: Generated<string>;
 }
 export interface TeamTopicGrantTable {
+  memberUserId: ColumnType<UserId | null, never, never>;
   topicId: KnowledgeTopicId;
   subjectKind: "person" | "group" | "everyone";
   /** A user or group id; "team" for everyone. */

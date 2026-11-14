@@ -46,6 +46,7 @@ import {
 } from "./team-access-store.js";
 import { appendTeamAudit, type TeamAgentOperation } from "./team-audit-store.js";
 import { bindTeamFiles, teamFileView } from "./team-files-store.js";
+import { teamPrincipalProfiles } from "./team-principals-store.js";
 
 type Mention = z.infer<typeof TeamMentionSchema>;
 type ChannelAccess = z.infer<typeof import("@opensteer/protocol").TeamChannelAccessEntrySchema>;
@@ -1077,10 +1078,8 @@ export class TeamChatStore {
         .execute();
     await bindTeamFiles(transaction, actor, row, input.attachmentIds);
     const asker = admissions.some((a) => a.kind === "ask")
-      ? await transaction
-          .selectFrom("users")
-          .select("displayName")
-          .where("id", "=", actor.userId)
+      ? await teamPrincipalProfiles(transaction)
+          .where("p.id", "=", actor.userId)
           .executeTakeFirstOrThrow()
       : null;
     const source = admissions.some((a) => a.kind === "ask")
