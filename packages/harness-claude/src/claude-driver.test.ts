@@ -1377,6 +1377,7 @@ describe("Claude Agent SDK harness", () => {
       const observer = observe(session.events);
       const running = send(session, "Run tests");
       const requested = await observer.waitFor("request.opened");
+      expect(await session.releaseForReuse!()).toBe(false);
       expect(sdk.calls[0]?.options.permissionMode).toBe(
         claudeAccessModeConfiguration(accessMode).permissionMode,
       );
@@ -1707,6 +1708,7 @@ describe("Claude Agent SDK harness", () => {
     await session.stop();
     await observer.done;
 
+    expect(await session.releaseForReuse?.()).toBe(false);
     expect(normalizedTypes(observer.events)).toEqual(["run.interrupted"]);
     await adapter.close();
   });
@@ -1959,6 +1961,7 @@ describe("Claude Agent SDK harness", () => {
     const observer = observe(session.events);
     const running = send(session, "Start the long job");
     await background.reached;
+    expect(await session.releaseForReuse!()).toBe(false);
     await steering(session)({ input: humanInput("Also mention Friday") });
     await running;
     await session.stop();
@@ -2141,6 +2144,180 @@ describe("Claude Agent SDK harness", () => {
     await adapter.close();
   });
 
+  it("waits for native interrupt acknowledgement before closing and refuses reuse", async () => {
+    const acknowledged = new Gate();
+    let requested = false;
+    let closed = false;
+    const sdk = new FakeSdk((parameters) => {
+      const query = generatedQuery(async function* () {
+        yield initMessage(providerSessionId(parameters.options));
+        for await (const input of streamingPrompt(parameters)) {
+          if (!input) throw new Error("Missing input");
+        }
+      });
+      return {
+        ...query,
+        interrupt: async () => {
+          requested = true;
+          await acknowledged.reached;
+        },
+        close: () => {
+          closed = true;
+          query.close();
+        },
+      };
+    });
+    const { adapter, session } = await openSession(sdk);
+    const observer = observe(session.events);
+    const running = send(session, "Work");
+    await waitForSdkCall(sdk);
+    const interrupt = session.interrupt();
+    await vi.waitFor(() => expect(requested).toBe(true));
+    expect(closed).toBe(false);
+    acknowledged.open();
+    await interrupt;
+    await running;
+    expect(closed).toBe(true);
+    expect(await session.releaseForReuse!()).toBe(false);
+    await session.stop();
+    await observer.done;
+    await adapter.close();
+  });
+
+  it.each(["compatible", "clear-effort", "failed-update"])(
+    "updates a warm selection: %s",
+    async (mode) => {
+      const setModel = vi.fn(async (_model: string) => {});
+      const applyFlagSettings = vi.fn(async (_settings: unknown) => {
+        if (mode === "failed-update") throw new Error("update failed");
+      });
+      const sdk = new FakeSdk((parameters) => ({
+        ...generatedQuery(async function* () {
+          const id = providerSessionId(parameters.options);
+          yield initMessage(id);
+          for await (const input of streamingPrompt(parameters)) {
+            if (input.shouldQuery !== false) yield successMessage(id, "Done");
+          }
+        }),
+        setModel,
+        applyFlagSettings,
+      }));
+      const { adapter, session, context: binding } = await openSession(sdk);
+      const observer = observe(session.events);
+      await send(session, "First");
+      session.rebind!({
+        ...binding,
+        modelSelection: ModelSelectionSchema.parse({
+          ...binding.modelSelection,
+          modelId: "opus",
+          options: { effort: mode === "clear-effort" ? "default" : "low", fast: true },
+        }),
+      });
+      await send(session, "Second");
+      if (mode === "failed-update") {
+        expect(sdk.calls).toHaveLength(1);
+        expect(await session.releaseForReuse!()).toBe(false);
+        await send(session, "Recover");
+      }
+      expect(sdk.calls).toHaveLength(mode === "compatible" ? 1 : 2);
+      if (mode !== "clear-effort") {
+        expect(setModel).toHaveBeenCalledWith("opus");
+        expect(applyFlagSettings).toHaveBeenCalledWith({ effortLevel: "low", fastMode: true });
+      }
+      if (mode !== "compatible")
+        expect(sdk.calls[1]?.options.resume).toBe(session.providerSessionReference);
+      await session.stop();
+      await observer.done;
+      await adapter.close();
+    },
+  );
+
+  it("refuses reuse when a terminal result leaves a native subagent running", async () => {
+    const sdk = new FakeSdk((parameters) =>
+      generatedQuery(async function* () {
+        const id = providerSessionId(parameters.options);
+        yield initMessage(id);
+        for await (const input of streamingPrompt(parameters)) {
+          if (input.shouldQuery === false) continue;
+          yield assistantMessage(id, [
+            {
+              type: "tool_use",
+              id: "unfinished-agent",
+              name: "Agent",
+              input: { description: "Still working" },
+            },
+          ]);
+          yield successMessage(id, "Root done");
+        }
+      }),
+    );
+    const { adapter, session } = await openSession(sdk);
+    const observer = observe(session.events);
+    await send(session, "Start work");
+    expect(await session.releaseForReuse!()).toBe(false);
+    await session.stop();
+    await observer.done;
+    await adapter.close();
+  });
+
+  it("keeps one live query across rebound Runs and subtracts cumulative usage", async () => {
+    const received: SDKUserMessage[] = [];
+    const permissions: (PermissionResult | null)[] = [];
+    const sdk = new FakeSdk((parameters) =>
+      generatedQuery(async function* () {
+        const id = providerSessionId(parameters.options);
+        yield initMessage(id);
+        let turn = 0;
+        for await (const input of streamingPrompt(parameters)) {
+          received.push(input);
+          if (input.shouldQuery === false) continue;
+          turn += 1;
+          permissions.push(
+            await parameters.options.canUseTool!("Agent", {}, permissionOptions(`run-${turn}`)),
+          );
+          yield usageSuccessMessage(id, "Done.", turn * 0.01, {
+            sonnet: modelUsage({
+              input: turn * 100,
+              output: turn * 10,
+              cacheRead: turn * 20,
+              cacheWrite: turn * 5,
+            }),
+          });
+        }
+      }),
+    );
+    const { adapter, session, context: binding } = await openSession(sdk);
+    const observer = observe(session.events);
+    await send(session, "First");
+    expect(await session.releaseForReuse?.()).toBe(true);
+    session.rebind?.({ ...binding, machineAccessNotice: "Run two context" });
+    await send(session, "Second");
+    expect(sdk.calls).toHaveLength(1);
+    expect(permissions.map((result) => result?.behavior)).toEqual(["allow", "allow"]);
+    expect(received.some((input) => JSON.stringify(input).includes("Run two context"))).toBe(true);
+    expect(
+      observer.events.filter((event) => event.type === "run.usage").map(({ data }) => data),
+    ).toEqual([
+      {
+        inputTokens: 100,
+        outputTokens: 10,
+        cachedInputTokens: 20,
+        cacheWriteTokens: 5,
+        costUsd: 0.01,
+      },
+      {
+        inputTokens: 100,
+        outputTokens: 10,
+        cachedInputTokens: 20,
+        cacheWriteTokens: 5,
+        costUsd: 0.01,
+      },
+    ]);
+    await session.stop();
+    await observer.done;
+    await adapter.close();
+  });
+
   it("states what each Run consumed once, before the Run ends", async () => {
     const sdk = new FakeSdk((parameters) => {
       const sessionId = providerSessionId(parameters.options);
@@ -2185,7 +2362,7 @@ describe("Claude Agent SDK harness", () => {
     await adapter.close();
   });
 
-  it("gives each Run of one session its own totals rather than a running total", async () => {
+  it("starts a fresh usage ledger when the provider process exits between Runs", async () => {
     const totals = [
       { cacheRead: 0, cacheWrite: 0, input: 1_000, output: 100 },
       { cacheRead: 0, cacheWrite: 0, input: 9_000, output: 900 },
@@ -2209,9 +2386,7 @@ describe("Claude Agent SDK harness", () => {
     await session.stop();
     await observer.done;
 
-    // The second Run is its own `query()` call against the resumed provider
-    // session, so Claude's totals start again there and are not a running
-    // total this driver would have to subtract from.
+    // This fake process exits after each result, so resume starts a fresh ledger.
     expect(sdk.calls[1]?.options.resume).toBe(session.providerSessionReference);
     expect(
       observer.events.filter((candidate) => candidate.type === "run.usage").map(({ data }) => data),

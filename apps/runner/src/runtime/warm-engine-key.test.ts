@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { createId } from "@opensteer/core";
+import { ModelSelectionSchema, createId } from "@opensteer/core";
 import { warmEngineKey } from "./warm-engine-pool.js";
 it("invalidates warm reuse for tool inventory, instructions, roots and discovered skills while preserving per-Run credential rebinding", () => {
   const context = {
@@ -37,6 +37,39 @@ it("invalidates warm reuse for tool inventory, instructions, roots and discovere
     writableRoots: ["/task", "/agent-home"],
   };
   const before = warmEngineKey(input);
+  const selectionChanged = {
+    ...input,
+    context: {
+      ...context,
+      modelSelection: ModelSelectionSchema.parse({
+        ...context.modelSelection,
+        modelId: "another",
+        options: { effort: "low" },
+      }),
+    },
+  };
+  expect(warmEngineKey(selectionChanged)).not.toBe(before);
+  expect(
+    warmEngineKey({
+      ...selectionChanged,
+      warmSelection: { model: true, options: ["effort", "fast"] },
+    }),
+  ).toBe(warmEngineKey({ ...input, warmSelection: { model: true, options: ["effort", "fast"] } }));
+  expect(
+    warmEngineKey({
+      ...selectionChanged,
+      warmSelection: { model: true, options: ["effort", "fast"] },
+      context: {
+        ...selectionChanged.context,
+        modelSelection: ModelSelectionSchema.parse({
+          ...selectionChanged.context.modelSelection,
+          options: { effort: "low", thinking: false },
+        }),
+      },
+    }),
+  ).not.toBe(
+    warmEngineKey({ ...input, warmSelection: { model: true, options: ["effort", "fast"] } }),
+  );
   context.agentTools.token = "rotated";
   expect(warmEngineKey(input)).toBe(before);
   for (const change of [

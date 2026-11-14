@@ -84,6 +84,11 @@ export interface HarnessCapabilities {
    * stream closed, so the Runner waits for that event instead of stopping it.
    */
   readonly warmReuse?: boolean;
+  /** The adapter applies model selection changes itself when reusing an engine. */
+  readonly warmSelection?: {
+    readonly model?: boolean;
+    readonly options: readonly string[];
+  };
 }
 
 /**
