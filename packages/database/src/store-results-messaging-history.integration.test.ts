@@ -3330,7 +3330,8 @@ describeStore("PostgreSQL store", (it) => {
     storeFixture,
   }) => {
     const { createRunFixture, enqueueHumanTrigger, store, database } = storeFixture;
-    const { environmentId, runnerId, thread, userId } = await createRunFixture("pending_request");
+    const { environmentId, runnerId, thread, userId } =
+      await createRunFixture("opensteer_request_list");
     const turn = await enqueueHumanTrigger({
       content: [
         {

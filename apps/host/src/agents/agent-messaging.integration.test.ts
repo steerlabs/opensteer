@@ -1259,18 +1259,17 @@ integration("agent-to-agent messaging round trip", () => {
   }
   it("opensteer_task_update shares Done, freezes messages and delegation, and reopens through the same authority", async () => {
     const f = await createMessagingFixture();
-    const write = (action: string, fields = {}) =>
+    const write = (fields: { readonly title?: string; readonly done?: boolean }) =>
       service.handle(f.tokenA, {
         type: "thread.update",
         requestId: randomUUID(),
         input: {
           taskId: f.threadB.id,
-          ...(action === "rename" ? {} : { done: action === "done" }),
           ...fields,
         },
       });
     expect(
-      await write("rename", {
+      await write({
         title: "Shared result",
       }),
     ).toMatchObject({
@@ -1279,7 +1278,7 @@ integration("agent-to-agent messaging round trip", () => {
       title: "Shared result",
       doneAt: null,
     });
-    const done = await write("done");
+    const done = await write({ done: true });
     expect(done).toMatchObject({
       type: "thread.update.result",
       doneWhenRunEnds: false,
@@ -1314,7 +1313,7 @@ integration("agent-to-agent messaging round trip", () => {
       code: "conflict",
       message: "This task is Done. Reopen it first.",
     });
-    expect(await write("reopen")).toMatchObject({
+    expect(await write({ done: false })).toMatchObject({
       doneAt: null,
     });
     const next = await service.handle(f.tokenA, {

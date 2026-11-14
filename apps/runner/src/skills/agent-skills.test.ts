@@ -23,7 +23,7 @@ afterEach(async () => {
 describe("Runner Agent Skills", () => {
   it("loads exactly the bundled skills named by the Host", async () => {
     const bundle = await loadAgentSkillBundle(bundleDirectory);
-    const names = ["opensteer:triggers", "opensteer:browser"];
+    const names = ["opensteer:automations", "opensteer:browser"];
     expect(skillNames(bundle, names)).toEqual(names);
     expect(skillNames(bundle, [])).toEqual([]);
     expect(() => planAgentSkills(bundle, ["opensteer:missing"])).toThrow();
@@ -49,21 +49,21 @@ describe("Runner Agent Skills", () => {
     const runTools = new Set<string>(
       agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
     );
-    const references = [...skill.matchAll(/`((?:browser|request|pending)_[a-z_]+)`/gu)].map(
+    const references = [...skill.matchAll(/`((?:browser|opensteer)_[a-z_]+)`/gu)].map(
       (match) => match[1],
     );
     expect(references).toEqual(
       expect.arrayContaining([
         "browser_profile_list",
         "browser_profile_request",
-        "pending_request",
-        "request_withdraw",
+        "opensteer_request_list",
+        "opensteer_request_withdraw",
       ]),
     );
     for (const name of references) expect(runTools.has(name!)).toBe(true);
   });
 
-  it("routes app UI work to the computer tool in the skill catalog and bodies", async () => {
+  it("routes app UI work to computer_use in the skill catalog and bodies", async () => {
     const bundle = await loadAgentSkillBundle(bundleDirectory);
     const read = (name: OpensteerAgentSkillName) =>
       readFile(join(bundle.paths[name], "SKILL.md"), "utf8");
@@ -77,7 +77,7 @@ describe("Runner Agent Skills", () => {
       "Use Opensteer SSH access for another computer’s files, commands or forwarded ports.",
     );
     expect(computerUseMetadata.description).toBe(
-      "Operate Mac apps and Agent Phones through the computer tool when the task needs their interfaces.",
+      "Operate Mac apps and Agent Phones through computer_use when the task needs their interfaces.",
     );
     for (const metadata of [computerMetadata, computerUseMetadata, integrationMetadata]) {
       expect(Array.from(metadata.description).length).toBeLessThanOrEqual(1_024);
@@ -99,41 +99,41 @@ describe("Runner Agent Skills", () => {
       join(bundle.paths["opensteer:computer-use"], "references", "api.md"),
       "utf8",
     );
-    expect(api).toContain("`globalThis` persists between computer calls in this Run.");
+    expect(api).toContain("`globalThis` persists between `computer_use` calls in this Run.");
     expect(api).toContain(
       "including a resumed task, reopen `app()`, `window()` or `phone()` handles and observe before acting.",
     );
-    expect(api).toContain("Outside an Assignment, if `person_show` is listed");
+    expect(api).toContain("Outside a delegation, if `person_show` is listed");
     const signIn = await readFile(
       join(bundle.paths["opensteer:computer-use"], "references", "sign-in.md"),
       "utf8",
     );
     expect(signIn).toContain("never reveal, read back or screenshot a typed saved field");
     expect(signIn).toContain(
-      "Delegated tasks can use `use_saved_login` for already-authorized sites.",
+      "Delegated tasks can use `saved_login_request` for already-authorized sites.",
     );
   });
 
   it("teaches that a reply, never a report, is what reaches the person", async () => {
     const bundle = await loadAgentSkillBundle(bundleDirectory);
-    const threads = await readFile(
-      join(bundle.paths["opensteer:threads"], "references", "coordination.md"),
+    const tasks = await readFile(
+      join(bundle.paths["opensteer:tasks"], "references", "coordination.md"),
       "utf8",
     );
-    const triggers = await readFile(
-      join(bundle.paths["opensteer:triggers"], "references", "reminders.md"),
+    const automations = await readFile(
+      join(bundle.paths["opensteer:automations"], "references", "reminders.md"),
       "utf8",
     );
 
-    expect(threads).toContain("Starts nothing and never alerts the person");
-    expect(threads).not.toMatch(/publish an\s+update there/u);
-    expect(triggers).toContain("# Reminders and updates for the person");
-    // A reminder wakes its actual anchor task, whose reply is the notification.
-    expect(triggers).toMatch(
-      /opensteer\.callTool\("thread_send", \{\s+delivery: "queue",\s+message: "Reminder: /u,
+    expect(tasks).toContain("Starts nothing and never alerts the person");
+    expect(tasks).not.toMatch(/publish an\s+update there/u);
+    expect(automations).toContain("# Reminders and updates for the person");
+    // A reminder wakes its automation's actual task, whose reply is the notification.
+    expect(automations).toMatch(
+      /opensteer\.callTool\("opensteer_task_send", \{\s+delivery: "queue",\s+message: "Reminder: /u,
     );
-    expect(triggers).toContain("threadId: event.trigger.anchorThreadId");
-    expect(triggers).toContain("toolContractVersion: 3");
+    expect(automations).toContain("taskId: event.trigger.anchorThreadId");
+    expect(automations).toContain("toolContractVersion: 4");
   });
 
   it("ships the machine access refusal sentences verbatim", async () => {
@@ -165,9 +165,9 @@ describe("Runner Agent Skills", () => {
     expect(skill).toContain("the common refusals are:");
     expect(skill).not.toContain("and the only ones");
     expect(skill).not.toContain("is the alias you used");
-    expect(skill).toContain("If `machine_full_disk_access_request` is listed for this Run");
+    expect(skill).toContain("If `computer_access_request` is listed for this Run");
     expect(skill).toContain(
-      "Otherwise return the exact Mac alias and access needed to your assigner.",
+      "Otherwise return the exact Mac alias and access needed to the delegating task.",
     );
   });
 
@@ -290,7 +290,7 @@ it("ships role-based memory controls without an agent setup recipe", async () =>
   );
   expect(memory).toContain("references/controls.md");
   expect(memory).not.toContain("references/setup.md");
-  for (const field of ["systemRole", "memory-light", "memory-nightly", "anchorThreadId"])
+  for (const field of ["systemRole", "memory-light", "memory-nightly", "taskId"])
     expect(controls).toContain(`\`${field}\``);
   await expect(
     readFile(join(bundleDirectory, "skills/memory/references/setup.md"), "utf8"),

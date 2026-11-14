@@ -1,8 +1,8 @@
 # Computer API
 
-`computer` runs JavaScript on Opensteer with a small library in scope. Each call is the body of an
+`computer_use` runs JavaScript on Opensteer with a small library in scope. Each call is the body of an
 async function: use `await`, `return` a value to see it as JSON, and `print(...)` anything else.
-`globalThis` persists between computer calls in this Run. In a later Run, including a resumed task, reopen `app()`, `window()` or `phone()` handles and observe before acting. State can also be discarded on cancellation, resource failure or worker loss. A call has a 100,000 ms wall limit; split longer work across calls.
+`globalThis` persists between `computer_use` calls in this Run. In a later Run, including a resumed task, reopen `app()`, `window()` or `phone()` handles and observe before acting. State can also be discarded on cancellation, resource failure or worker loss. A call has a 100,000 ms wall limit; split longer work across calls.
 
 ```js
 const notes = await app("Notes"); // name, bundle id, or the id from apps()
@@ -37,7 +37,7 @@ unknown without looking first.
 
 ## Working well
 
-Outside an Assignment, if `person_show` is listed, show your work without being asked: call `person_show({target: {current: true}})` after a successful observation or action, as soon as an app or phone they asked you to open, or must act on, is ready, and again when you move to another they need. Also call it when they ask to see what you are doing. The Host resolves this Run's latest app, phone or tab; do not construct native IDs. `sent-unconfirmed` reports delivery to connected devices, not navigation or viewing. On `no-device-connected`, describe where you are working; if there is no current place or access has ended, report the error. Do not repeat Show to force focus. On an Assignment, `queue` your assigner a note the moment an app or phone is ready for the person; it shows it from `thread_read`.
+Outside a delegation, if `person_show` is listed, show your work without being asked: call `person_show({target: {current: true}})` after a successful observation or action, as soon as an app or phone they asked you to open, or must act on, is ready, and again when you move to another they need. Also call it when they ask to see what you are doing. The Host resolves this Run's latest app, phone or tab; do not construct native IDs. `sent-unconfirmed` reports delivery to connected devices, not navigation or viewing. On `no-device-connected`, describe where you are working; if there is no current place or access has ended, report the error. Do not repeat Show to force focus. On a delegation, `queue` the delegating task a note the moment an app or phone is ready for the person; it shows it from `opensteer_task_read`.
 
 - Look, act, look. Indices come from the window's latest `observe()` and stay valid until you
   observe that window again; after something on screen changes, observe before targeting it.
@@ -60,4 +60,4 @@ ran); `outcome-unknown` (look before repeating anything); the window closed (pic
 person can fix it; tell them); stopped by the person (do not use that Mac or phone again in this
 task unless they ask).
 
-On an Assignment, or if Show is unavailable, give your assigner the exact app, window or phone context to show.
+On a delegation, or if Show is unavailable, give the delegating task the exact app, window or phone context to show.

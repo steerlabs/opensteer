@@ -40,7 +40,7 @@ it("serializes and coalesces Run changes while retaining only safe step kinds an
   });
   publisher.observe(
     event(runId, "tool.started", {
-      tool: { namespace: "opensteer", name: "team_search" },
+      tool: { namespace: "opensteer", name: "opensteer_team_search" },
       arguments: { query: "private query sentinel" },
     }),
   );

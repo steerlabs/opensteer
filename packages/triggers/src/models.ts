@@ -18,11 +18,11 @@ export const TriggerStatusSchema = z.enum(["active", "paused", "archived"]);
 
 /**
  * The runtime contract for Trigger programs. Agents read it in the
- * opensteer:triggers skill, which must contain it verbatim; the automation
+ * opensteer:automations skill, which must contain it verbatim; the automation
  * editor shows it to people. Tool metadata does not repeat it.
  */
 export const triggerProgramContract = [
-  "Trigger programs execute as Node.js ESM modules (Node 24 or newer) on the anchor Thread's Runner,",
+  "Automation programs execute as Node.js ESM modules (Node 24 or newer) on the hosting computer,",
   "with Agent home as the working directory, so relative paths and relative imports",
   "resolve from Agent home. The source must export one default function (async or not):",
   "The program object must declare toolContractVersion: use 4. Use computer_list for computers, opensteer_ai_account_list for AI accounts, and opensteer_task_send or opensteer_task_delegate for tasks.",
@@ -30,7 +30,7 @@ export const triggerProgramContract = [
   "`event` is frozen ({ id, payload, receivedAt, source, trigger });",
   '`event.source.kind` is "schedule" (with scheduledFor), "webhook" (with method, headers, and optional deliveryId),',
   '"manual" (a manual run carries only the payload), or "watch" (the single startup event for a continuous watch).',
-  "A watch program runs continuously on the anchor Thread's machine and must not resolve; Opensteer restarts unexpected exits with exponential backoff and pauses the Trigger after three consecutive unexpected exits.",
+  "A watch program runs continuously and must not resolve; Opensteer restarts unexpected exits with exponential backoff and pauses the automation after three consecutive unexpected exits.",
   "`capabilities.mcp` is the short-lived Opensteer MCP endpoint ({ url, token });",
   "`capabilities.browserCdp` is a short-lived CDP WebSocket endpoint ({ url, token }) or null when no browser access is available.",
   "For a watch, every non-null capability also has expiresAt.",
@@ -42,7 +42,7 @@ export const triggerProgramContract = [
   "TypeScript runs through Node's built-in type transform: type annotations, enums, and namespaces work; tsconfig paths, decorators, and JSX do not.",
   "For schedule, webhook, and manual runs, the awaited return value serialized as JSON (at most 512 KiB) becomes the occurrence result, and a thrown error fails the occurrence with its message and stack.",
   "Their console output is captured as stdout and stderr (512 KiB each); watch stdout and stderr retain only their latest 16 KiB tails.",
-  "A program acts as its anchor Thread: its Opensteer tool calls use its access-mode ceiling, and only a full-access agent can write one.",
+  "A program acts as its task: its Opensteer tool calls use that task's access-mode ceiling, and only a full-access agent can write one.",
 ].join(" ");
 
 export const TRIGGER_PROGRAM_VERSION_REFUSAL =

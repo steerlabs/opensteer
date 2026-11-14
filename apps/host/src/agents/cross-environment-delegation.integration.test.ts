@@ -2806,13 +2806,17 @@ integration("personal task delegation lifecycle", () => {
       readonly title?: string;
     },
   ) {
+    const { task, threadId, ...rest } = input;
     const response = await service.handle(token, {
       requestId: randomUUID(),
       type: "thread.delegate",
-      ...input,
+      message: task,
+      ...(threadId ? { taskId: threadId } : {}),
+      ...rest,
     });
     if (response.type !== "thread.delegate.result") throw new Error("Expected a delegate result");
-    return response.result;
+    // The tool's delegationId is the Host's assignment ID, which the rows below key on.
+    return { ...response.result, assignmentId: response.result.delegationId };
   }
 
   /** The parent Run hands out work through the Host path an automation also uses. */

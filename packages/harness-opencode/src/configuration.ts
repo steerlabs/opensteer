@@ -16,8 +16,8 @@ const opencodeToolNamespace = "opencode";
 
 /**
  * OpenCode flattens an MCP tool to `<server>_<tool>` — verified live:
- * a server named `opensteer` offering `thread_read` reached the model as
- * `opensteer_thread_read`. Splitting on the first `_` would read
+ * a server named `opensteer` offering `opensteer_task_read` reaches the model as
+ * `opensteer_opensteer_task_read`. Splitting on the first `_` would read
  * `opensteer_integrations_integration_call` as server `opensteer`, so the two
  * server names are matched longest first. That is unambiguous for exactly these
  * two names, because no agent tool name begins with `integrations_`; the test
@@ -45,7 +45,7 @@ export type OpencodePermissionAction = "allow" | "ask" | "deny";
  * agent's built-in ruleset and evaluates the **last** matching rule, so the
  * broad `"*"` entry comes first and every narrower key after it wins. Verified
  * on 1.18.31 by reading `GET /agent` back and by watching an unlisted tool
- * (`webfetch`) ask while a listed one (`opensteer_thread_read`) did not.
+ * (`webfetch`) ask while a listed one (`opensteer_opensteer_task_read`) did not.
  */
 export type OpencodePermissionConfiguration = Readonly<
   Record<string, OpencodePermissionAction | Readonly<Record<string, OpencodePermissionAction>>>

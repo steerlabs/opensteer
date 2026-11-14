@@ -527,11 +527,11 @@ export type StartBrowserSessionInput = {
   readonly agentBindingId?: string;
   readonly threadId?: ThreadId;
   /**
-   * A machine the caller named. Unlike `environmentId`, which only expresses
+   * A computer the caller named. Unlike `environmentId`, which only expresses
    * where the work already is, this one is a decision: the session lands on
-   * that machine's browser or the call is refused.
+   * that computer's browser or the call is refused.
    */
-  readonly chosenEnvironmentId?: EnvironmentId;
+  readonly chosenRunnerId?: RunnerId;
   readonly environmentId?: EnvironmentId;
   readonly initialUrl?: string;
   readonly origin?: "agent" | "trigger" | "person";
@@ -2936,7 +2936,7 @@ export class BrowserService {
       placement = this.#defaultPlacement(
         {
           origin: "agent",
-          ...(input.identity.computer ? { chosenEnvironmentId: input.identity.computer } : {}),
+          ...(input.identity.computer ? { chosenRunnerId: input.identity.computer } : {}),
           ...(agent.environmentId ? { environmentId: agent.environmentId } : {}),
         },
         this.#eligiblePlacements(homes),
@@ -3057,7 +3057,7 @@ export class BrowserService {
 
   async openAgentSession(input: {
     readonly agentBindingId: string;
-    readonly chosenEnvironmentId?: EnvironmentId;
+    readonly chosenRunnerId?: RunnerId;
     readonly environmentId?: EnvironmentId;
     readonly fresh?: true;
     readonly ownerId: UserId;
@@ -3072,8 +3072,8 @@ export class BrowserService {
         message: "Choose an existing tab, a browser profile, or Guest.",
       });
     }
-    const chosenEnvironmentId = input.chosenEnvironmentId;
-    if (chosenEnvironmentId && input.sessionId) {
+    const chosenRunnerId = input.chosenRunnerId;
+    if (chosenRunnerId && input.sessionId) {
       throw new OpensteerError({
         code: "bad_request",
         message:
@@ -3116,7 +3116,7 @@ export class BrowserService {
       });
     const opening = {
       agentBindingId: input.agentBindingId,
-      ...(chosenEnvironmentId ? { chosenEnvironmentId } : {}),
+      ...(chosenRunnerId ? { chosenRunnerId } : {}),
       ...(input.environmentId ? { environmentId: input.environmentId } : {}),
       origin: input.agentBindingId.startsWith("trigger:")
         ? ("trigger" as const)
@@ -4872,7 +4872,7 @@ export class BrowserService {
 
   #defaultPlacement(
     input: {
-      readonly chosenEnvironmentId?: EnvironmentId;
+      readonly chosenRunnerId?: RunnerId;
       readonly environmentId?: EnvironmentId;
       readonly origin?: "agent" | "trigger" | "person";
     },
@@ -4885,16 +4885,13 @@ export class BrowserService {
       if (main) return { kind: "runner", runnerId: main.id };
       throw unavailable("The main computer's browser is unavailable.");
     }
-    const { chosenEnvironmentId, environmentId } = input;
-    if (chosenEnvironmentId) {
-      const chosen = connected.filter((placement) =>
-        placement.environmentIds.includes(chosenEnvironmentId),
-      );
+    const { chosenRunnerId, environmentId } = input;
+    if (chosenRunnerId) {
+      const chosen = connected.filter((placement) => placement.runnerId === chosenRunnerId);
       if (chosen.length === 1 && chosen[0]) return placementSelector(chosen[0]);
       if (chosen.length > 1) throw runnerPlacementConflict(chosen);
       const incompatible = placements.find(
-        (placement) =>
-          !placement.available && placement.environmentIds.includes(chosenEnvironmentId),
+        (placement) => !placement.available && placement.runnerId === chosenRunnerId,
       );
       if (incompatible?.unavailableReason) throw unavailable(incompatible.unavailableReason);
       if (connected.length === 0) throw unavailable("No Browser Runtime is connected.");
@@ -7701,15 +7698,11 @@ function placementSelector(placement: BrowserPlacement): BrowserPlacementSelecto
 
 /**
  * Names the candidates so the refusal is actionable: the agent retries the
- * same call with one of these `environmentId`s instead of guessing.
+ * same call with one of these computers instead of guessing.
  */
 function browserMachineChoices(placements: readonly BrowserPlacement[]): string {
   return placements
-    .map((placement) =>
-      placement.environmentIds.length > 0
-        ? `${placement.label} (environmentId ${placement.environmentIds.join(" or ")})`
-        : `${placement.label} (no work location, so it cannot be named)`,
-    )
+    .map((placement) => `${placement.label} (computerId ${placement.runnerId})`)
     .join(", ");
 }
 

@@ -3,8 +3,8 @@ import { z } from "zod";
 export const OpensteerAgentSkillNameSchema = z.enum([
   "opensteer:integrations",
   "opensteer:computer-use",
-  "opensteer:threads",
-  "opensteer:triggers",
+  "opensteer:tasks",
+  "opensteer:automations",
   "opensteer:browser",
   "opensteer:computers",
   "opensteer:devices",

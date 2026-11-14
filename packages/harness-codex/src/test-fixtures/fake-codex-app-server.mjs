@@ -721,12 +721,12 @@ function handleClientMethod(message) {
                   ).filter(
                     (tool) =>
                       (name !== "opensteer" ||
-                        ((scenario !== "previous-host" || tool !== "computer") &&
+                        ((scenario !== "previous-host" || tool !== "computer_use") &&
                           (scenario !== "mcp-missing-required-tool" ||
                             tool !== "integration_search"))) &&
                       (scenario !== "mcp-direct-missing-required-tool" ||
                         name !== "opensteer-direct" ||
-                        tool !== "use_saved_login"),
+                        tool !== "saved_login_request"),
                   ),
                   ...((scenario === "mcp-extra-tool" && name === "opensteer") ||
                   (scenario === "mcp-direct-extra-tool" && name === "opensteer-direct")
@@ -1479,7 +1479,7 @@ function handleTurnStart(message) {
       arguments: { site: "https://example.test" },
       id: "direct-1",
       server: "opensteer-direct",
-      tool: "use_saved_login",
+      tool: "saved_login_request",
       type: "mcpToolCall",
     };
     send({
@@ -2568,11 +2568,11 @@ function handleServerResponse(message) {
       method: "item/started",
       params: {
         item: {
-          arguments: { threadId: "thread_00000000-0000-4000-8000-000000000001" },
+          arguments: { taskId: "thread_00000000-0000-4000-8000-000000000001" },
           id: "mcp-core-1",
           server: "opensteer",
           status: "inProgress",
-          tool: "thread_read",
+          tool: "opensteer_task_read",
           type: "mcpToolCall",
         },
         threadId,
@@ -2583,12 +2583,12 @@ function handleServerResponse(message) {
       method: "item/completed",
       params: {
         item: {
-          arguments: { threadId: "thread_00000000-0000-4000-8000-000000000001" },
+          arguments: { taskId: "thread_00000000-0000-4000-8000-000000000001" },
           id: "mcp-core-1",
           result: { content: [{ text: '{"messages":[]}', type: "text" }] },
           server: "opensteer",
           status: "completed",
-          tool: "thread_read",
+          tool: "opensteer_task_read",
           type: "mcpToolCall",
         },
         threadId,

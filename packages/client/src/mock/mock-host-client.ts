@@ -12190,7 +12190,7 @@ function mockComputerUseThreadTranscript(
     runId,
     createdAt: "2026-08-06T23:28:10.500Z",
     completedAt: state === "settled" ? "2026-08-06T23:29:32.200Z" : null,
-    tool: { name: "computer", namespace: "opensteer.integrations" },
+    tool: { name: "computer_use", namespace: "opensteer" },
     arguments: { code: "const slack = await app('Slack'); await slack.window().observe();" },
     integration: null,
     isError: false,

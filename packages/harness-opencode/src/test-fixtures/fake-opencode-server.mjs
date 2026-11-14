@@ -702,8 +702,10 @@ function runScenario(id, payload) {
       for (const stream of streams.splice(0)) stream.destroy();
       return;
     case "two-steps":
-      toolPart("call_fake_1", "opensteer_thread_read", "running", { input: { threadId: "t1" } });
-      toolPart("call_fake_1", "opensteer_thread_read", "completed", {
+      toolPart("call_fake_1", "opensteer_opensteer_task_read", "running", {
+        input: { taskId: "t1" },
+      });
+      toolPart("call_fake_1", "opensteer_opensteer_task_read", "completed", {
         input: { threadId: "t1" },
         output: "OPENSTEER_TOOL_OK",
       });

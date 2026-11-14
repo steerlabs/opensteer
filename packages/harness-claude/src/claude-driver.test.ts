@@ -4458,7 +4458,7 @@ async function context(
       ],
       toolsRevision: "test-tools-v1",
       instructions: "Host Opensteer instructions",
-      skills: ["opensteer:threads"],
+      skills: ["opensteer:tasks"],
       token: "test-agent-tools-token",
       url: "https://host.example/internal/v1/mcp",
     },

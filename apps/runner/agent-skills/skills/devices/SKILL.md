@@ -10,7 +10,7 @@ through an Agent Plugin whose local MCP server talks to it. Settings › Devices
 its plugin declares it. Set it up in this task yourself rather than delegating, so the person's
 approvals and its link to the device land here.
 
-First list plugins with `plugin_manage`. If one already covers this device, use or fix it instead of
+First list plugins with `opensteer_plugin_list`. If one already covers this device, use or fix it instead of
 building another.
 
 1. **Find it** from a computer on the device's network. The hosting computer runs your commands; the other-computers
@@ -27,7 +27,7 @@ building another.
    a specific name, a skill that records the device's address, model and quirks, a server with one
    tool per action, and the device declared in `plugin.json`. One plugin covers what the person would
    remove together, such as a stereo pair. Keep state such as pairing credentials in `PLUGIN_DATA`.
-5. **Install** with `plugin_install`, find its installation with `integration_search`, then ask for
+5. **Install** with `opensteer_plugin_install`, find its installation with `integration_search`, then ask for
    access with `integration_request` naming that installation. The computer's owner approves the
    server's launch from this task; its tools stay unavailable until then.
 6. **Codes the device shows,** such as a TV's pairing code, never go through chat. A server tool asks
@@ -36,8 +36,8 @@ building another.
    you connected, which computer runs it, and that removing it in Settings › Devices deletes its
    pairing from that computer.
 
-To fix a device, read its plugin's folder and skill, repair it there and call `plugin_install` on the
-same folder. To remove one, use `plugin_manage`. Shell access can still reach a device after its
+To fix a device, read its plugin's folder and skill, repair it there and call `opensteer_plugin_install` on
+the same folder. To remove one, use `opensteer_plugin_remove`. Shell access can still reach a device after its
 plugin is removed or its launch is refused; never use it to work around either.
 
 - Read [device notes](references/device-notes.md) before connecting an Apple TV, HomePod or WiZ light.
