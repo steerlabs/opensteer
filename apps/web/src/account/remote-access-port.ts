@@ -60,8 +60,8 @@ export function desktopRemoteAccessPort(
 /**
  * Opens the Account sign-in in the browser and settles when it ends: signed
  * in, or given up. A browser tab closed mid sign-in sends nothing back, so a
- * sign-in still open from before is replaced by a fresh one, and stopping
- * the wait ends the one it opened.
+ * sign-in still open from before is replaced by a fresh one, and stopping at
+ * any point after the browser was asked to open ends the one it opened.
  */
 export async function signInThroughBrowser(
   bridge: DesktopSignInBridge,
@@ -71,9 +71,28 @@ export async function signInThroughBrowser(
   signal.throwIfAborted();
   if (account.status === "signed-in") return;
   if (account.status === "authorizing") await bridge.cancel();
-  await bridge.signIn();
   signal.throwIfAborted();
-  await new Promise<void>((resolve, reject) => {
+  try {
+    await bridge.signIn();
+    signal.throwIfAborted();
+    await signedInOrGivenUp(bridge, signal);
+  } catch (error) {
+    if (signal.aborted) void endOpenSignIn(bridge);
+    throw error;
+  }
+}
+
+async function endOpenSignIn(bridge: DesktopSignInBridge): Promise<void> {
+  try {
+    const { account } = await bridge.getDeploymentAccessSnapshot();
+    if (account.status === "authorizing") await bridge.cancel();
+  } catch {
+    // Nothing left to end, or nothing this window can end.
+  }
+}
+
+function signedInOrGivenUp(bridge: DesktopSignInBridge, signal: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
     let unsubscribe: (() => void) | null = null;
     let settled = false;
     const finish = (settle: () => void) => {
@@ -83,13 +102,7 @@ export async function signInThroughBrowser(
       signal.removeEventListener("abort", aborted);
       settle();
     };
-    const aborted = () => {
-      finish(() => reject(signal.reason));
-      void bridge
-        .getDeploymentAccessSnapshot()
-        .then(({ account: now }) => (now.status === "authorizing" ? bridge.cancel() : undefined))
-        .catch(() => undefined);
-    };
+    const aborted = () => finish(() => reject(signal.reason));
     const evaluate = ({ account: next }: DeploymentAccessSnapshot) => {
       if (next.status === "signed-in") finish(resolve);
       else if (next.status !== "authorizing")

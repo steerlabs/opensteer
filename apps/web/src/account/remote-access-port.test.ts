@@ -138,4 +138,34 @@ describe("signInThroughBrowser", () => {
     expect(stopped.listening()).toBe(false);
     await vi.waitFor(() => expect(stopped.desktop.cancel).toHaveBeenCalledOnce());
   });
+
+  it("never leaves a sign-in open when stopped while one is being replaced or opened", async () => {
+    // Stopped while the old one is cancelled: no new one opens.
+    const replacing = accountBridge("authorizing");
+    const cancelled = Promise.withResolvers<void>();
+    replacing.desktop.cancel.mockImplementationOnce(() => cancelled.promise);
+    const first = new AbortController();
+    const replaced = signInThroughBrowser(replacing.desktop, first.signal);
+    await vi.waitFor(() => expect(replacing.desktop.cancel).toHaveBeenCalledOnce());
+    first.abort(new Error("Cancelled."));
+    cancelled.resolve();
+    await expect(replaced).rejects.toThrow("Cancelled.");
+    expect(replacing.desktop.signIn).not.toHaveBeenCalled();
+
+    // Stopped while the browser is still opening: the sign-in it opened is ended.
+    const opening = accountBridge("signed-out");
+    const opened = Promise.withResolvers<void>();
+    opening.desktop.signIn.mockImplementationOnce(async () => {
+      await opened.promise;
+      opening.publish("authorizing");
+    });
+    const second = new AbortController();
+    const pending = signInThroughBrowser(opening.desktop, second.signal);
+    await vi.waitFor(() => expect(opening.desktop.signIn).toHaveBeenCalledOnce());
+    second.abort(new Error("Cancelled."));
+    opened.resolve();
+    await expect(pending).rejects.toThrow("Cancelled.");
+    await vi.waitFor(() => expect(opening.desktop.cancel).toHaveBeenCalledOnce());
+    expect(opening.listening()).toBe(false);
+  });
 });
