@@ -221,6 +221,8 @@ export type ThreadInputSource =
       readonly principalId: string;
     };
 export interface EnqueueThreadInputRequest {
+  readonly maintenance?: import("@opensteer/core").RunMaintenance;
+  readonly maintenanceNowMs?: number;
   readonly freshContext?: boolean;
   readonly teamRequest?: {
     readonly id: import("@opensteer/core").TeamAgentRequestId;

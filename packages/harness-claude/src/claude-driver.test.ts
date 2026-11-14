@@ -2831,6 +2831,50 @@ describe("Claude Agent SDK harness", () => {
     },
   );
 
+  it("compacts only the pinned native session without Run context or reports", async () => {
+    const reference = "123e4567-e89b-42d3-a456-426614174001";
+    const received: SDKUserMessage[] = [];
+    const sdk = new FakeSdk((parameters) => {
+      const drained = (async () => {
+        for await (const input of streamingPrompt(parameters)) received.push(input);
+      })();
+      return generatedQuery(async function* () {
+        yield initMessage(reference);
+        yield successMessage(reference, "Compacted");
+        await drained;
+      });
+    });
+    const directory = await temporaryDirectory();
+    const driver = new ClaudeHarnessDriver({ executable: fakeClaudeExecutable, sdk });
+    const adapter = await driver.create({
+      sourceId: "anthropic",
+      config: {},
+      instanceId: createId("harnessInstance"),
+    });
+    const session = await adapter.resumeSession(reference, await context(directory));
+    const observer = observe(session.events);
+    await session.execute({
+      maintenance: {
+        kind: "claude-compaction",
+        reason: "idle",
+        sourceRunId: createId("run"),
+        providerSessionId: createId("providerSession"),
+      },
+      environment: {},
+      inputs: [humanInput("This must never reach Claude")],
+      context: noThreadContext,
+      reports: { messages: [], omittedCount: 0, throughSequence: null },
+      requestedBy: createId("user"),
+      runId: createId("run"),
+      signal: new AbortController().signal,
+    });
+    await session.stop();
+    await observer.done;
+    expect(sdk.calls[0]?.options.resume).toBe(reference);
+    expect(received).toEqual([userInput("/compact")]);
+    await adapter.close();
+  });
+
   it("tells the model this Run's computer inventory on every turn, resumed or not", async () => {
     const received: SDKUserMessage[][] = [];
     const sdk = new FakeSdk((parameters) => {

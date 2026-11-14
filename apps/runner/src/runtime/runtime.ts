@@ -2911,7 +2911,26 @@ export class RunnerRuntime {
           active.abort.abort(error);
         });
       try {
+        if (
+          context.maintenance &&
+          (!context.providerSessionReference ||
+            context.providerSessionId !== context.maintenance.providerSessionId ||
+            active.session.providerSessionReference !== context.providerSessionReference)
+        )
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Compaction requires its pinned native session",
+          });
+        if (
+          context.maintenance?.reason === "idle" &&
+          (context.maintenanceExpiresAt === undefined || Date.now() >= context.maintenanceExpiresAt)
+        )
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Compaction cache window expired before execution",
+          });
         const execution = active.session.execute({
+          ...(context.maintenance ? { maintenance: context.maintenance } : {}),
           attachments,
           context: {
             teamTurnContext: context.teamTurnContext,

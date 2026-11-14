@@ -330,6 +330,7 @@ export function runUsageFromRow(row: {
   };
 }
 type ThreadRunQueueReadRow = {
+  readonly maintenance?: import("@opensteer/core").RunMaintenance | null;
   readonly createdAt: Date;
   readonly id: RunId;
   readonly status: string;
@@ -346,6 +347,7 @@ export function threadRunQueueEntriesFromRows(
 }
 function threadRunQueueValueFromRow(row: ThreadRunQueueReadRow) {
   return {
+    ...(row.maintenance ? { maintenance: row.maintenance } : {}),
     createdAt: row.createdAt.toISOString(),
     id: row.id,
     status: row.status,

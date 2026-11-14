@@ -1,10 +1,14 @@
+import { jsonValue } from "./store-primitives.js";
+import { admitIdleCompaction } from "./idle-compaction-store.js";
 import { findPersonalSettings } from "./personal-settings-store.js";
-import { createId } from "@opensteer/core";
+import { createId, HarnessIdSchema } from "@opensteer/core";
 import { expect } from "vitest";
 import {
   describeStore,
   pendingEvent,
   testContinuationIdentity,
+  testReadyHarnessCatalog,
+  testModelSelection,
 } from "./store.integration.test-support.js";
 
 describeStore("Claude compaction persistence", (it) => {
@@ -54,6 +58,17 @@ describeStore("Claude compaction persistence", (it) => {
       runId: turn.run.id,
       threadId: thread.id,
     };
+    await store.commitRunnerEvent({
+      environmentId,
+      runnerId,
+      runnerBootId: "context-boot",
+      event: pendingEvent({
+        ...base,
+        type: "run.started",
+        ordinal: 0,
+        data: { status: "running" },
+      }),
+    });
     const data = {
       usedTokens: 200_000,
       measuredAt: 1_000,
@@ -64,7 +79,7 @@ describeStore("Claude compaction persistence", (it) => {
       environmentId,
       runnerId,
       runnerBootId: "context-boot",
-      event: pendingEvent({ ...base, type: "run.context-measured", ordinal: 0, data }),
+      event: pendingEvent({ ...base, type: "run.context-measured", ordinal: 1, data }),
     });
     const read = () =>
       database
@@ -76,7 +91,7 @@ describeStore("Claude compaction persistence", (it) => {
       ...data,
       sourceRunId: turn.run.id,
       bindingGeneration: binding.bindingGeneration,
-      ordinal: 0,
+      ordinal: 1,
     });
     await store.commitRunnerEvent({
       environmentId,
@@ -85,11 +100,161 @@ describeStore("Claude compaction persistence", (it) => {
       event: pendingEvent({
         ...base,
         type: "run.compaction",
-        ordinal: 1,
+        ordinal: 2,
         data: { status: "created", reason: "automatic" },
       }),
     });
     expect((await read()).contextSnapshot).toBeNull();
+  });
+  it("admits one maintenance Run across concurrent wakes and reasons", async ({ storeFixture }) => {
+    const { store, database, createRunFixture, enqueueHumanTrigger } = storeFixture;
+    const { userId, environmentId, runnerId } = await createRunFixture("compaction-admission");
+    const runner = await database
+      .selectFrom("runners")
+      .select("capabilities")
+      .where("id", "=", runnerId)
+      .executeTakeFirstOrThrow();
+    await database
+      .updateTable("runners")
+      .set({ capabilities: jsonValue([...runner.capabilities, "claude-compaction-v1"]) })
+      .where("id", "=", runnerId)
+      .execute();
+    const harness = await store.createHarnessInstance({
+      config: {},
+      driverKind: HarnessIdSchema.parse("claude"),
+      environmentId,
+      name: "Claude",
+      stateKind: "isolated",
+    });
+    await store.recordHarnessCatalogs({
+      environmentId,
+      catalogs: [testReadyHarnessCatalog(harness.id)],
+      expectedRevisions: new Map([[harness.id, harness.runtimeRevision]]),
+    });
+    const { thread } = await store.createThread({
+      createdBy: userId,
+      environmentId,
+      harnessInstanceId: harness.id,
+      modelSelection: testModelSelection,
+      idempotencyKey: "claude-task",
+      title: "Claude task",
+    });
+    const source = await enqueueHumanTrigger({
+      threadId: thread.id,
+      requestedBy: userId,
+      content: [{ type: "text", text: "Long conversation" }],
+      idempotencyKey: "source",
+    });
+    const sessionId = source.run.providerSessionId!;
+    const now = Date.now();
+    await database
+      .updateTable("runs")
+      .set({ status: "completed", completedAt: new Date() })
+      .where("id", "=", source.run.id)
+      .execute();
+    await database
+      .updateTable("threadInputs")
+      .set({ state: "delivered", runId: source.run.id })
+      .where("messageId", "=", source.message.id)
+      .execute();
+    await database
+      .updateTable("providerSessions")
+      .set({
+        providerSessionReference: "native-reference",
+        contextSnapshot: {
+          usedTokens: 200_000,
+          measuredAt: now,
+          requestStartedAt: now - 200_000,
+          promptCacheTtlMs: 300_000,
+          sourceRunId: source.run.id,
+          bindingGeneration: 1,
+          ordinal: 0,
+        },
+      })
+      .where("id", "=", sessionId)
+      .execute();
+    await database
+      .updateTable("personalSettings")
+      .set({ idleCompactionPolicy: { mode: "beforeCacheExpires" } })
+      .execute();
+    const maintenance = {
+      kind: "claude-compaction",
+      reason: "idle",
+      sourceRunId: source.run.id,
+      providerSessionId: sessionId,
+    } as const;
+    const results = await Promise.all([
+      admitIdleCompaction(database, {
+        threadId: thread.id,
+        requestedBy: userId,
+        maintenance,
+        nowMs: now,
+      }),
+      admitIdleCompaction(database, {
+        threadId: thread.id,
+        requestedBy: userId,
+        maintenance,
+        nowMs: now,
+      }),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(
+      await admitIdleCompaction(database, {
+        threadId: thread.id,
+        requestedBy: userId,
+        maintenance: { ...maintenance, reason: "before-send" },
+        nowMs: now + 100_000,
+      }),
+    ).toBeNull();
+
+    const runs = await database
+      .selectFrom("runs")
+      .selectAll()
+      .where("threadId", "=", thread.id)
+      .where("maintenance", "is not", null)
+      .execute();
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.maintenance).toEqual(maintenance);
+    expect(
+      await database.selectFrom("commands").select("id").where("runId", "=", runs[0]!.id).execute(),
+    ).toHaveLength(1);
+    const report = await store.enqueueThreadInput({
+      threadId: thread.id,
+      requestedBy: userId,
+      source: { kind: "human" },
+      policy: "report",
+      content: [{ type: "text", text: "Pending report" }],
+      idempotencyKey: "report-after-admission",
+    });
+    const admitted = results.find(Boolean)!;
+    await store.claimCommand(admitted.command!.id, "maintenance-claim");
+    const claimed = await database
+      .selectFrom("threadInputs")
+      .select(["state", "runId"])
+      .where("messageId", "=", report.message.id)
+      .executeTakeFirstOrThrow();
+    expect(claimed).toMatchObject({ state: "pending", runId: null });
+    const run = await database
+      .selectFrom("runs")
+      .select("reportContext")
+      .where("id", "=", runs[0]!.id)
+      .executeTakeFirstOrThrow();
+    expect(run.reportContext?.messageIds).toEqual([]);
+    await expect(
+      store.acquireExecutionBinding({
+        bindingLeaseExpiresAt: new Date(now + 60_000),
+        continuationIdentity: {
+          ...testContinuationIdentity,
+          driverKind: HarnessIdSchema.parse("claude"),
+        },
+        harnessInstanceId: thread.harnessInstanceId,
+        leaseTokenHash: "compaction-binding",
+        runnerBootId: "compaction-boot",
+        runnerId,
+        runId: runs[0]!.id,
+        threadId: thread.id,
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
   });
   it("terminalizes lost maintenance without creating a recovery attempt", async ({
     storeFixture,

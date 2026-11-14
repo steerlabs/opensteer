@@ -2219,6 +2219,7 @@ function runnerCapabilities(): RunnerCapability[] {
     "model-server-discovery-v1",
     "network-egress",
     "native-session-continuation-v1",
+    "claude-compaction-v1",
     "requester-time-zone-v1",
     "agent-tools-plan-v1",
     "steer-answer-v1",

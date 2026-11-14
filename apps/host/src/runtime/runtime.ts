@@ -1,3 +1,5 @@
+import { IdleCompactionService } from "../agents/idle-compaction-service.js";
+import { admitIdleCompaction, idleCompactionCandidates } from "@opensteer/database/idle-compaction";
 import { DeviceAccessService } from "../administration/device-access-service.js";
 import { requireDeviceAccess } from "../administration/device-access.js";
 import { digestSecret } from "@opensteer/shared/secretDigest";
@@ -1270,6 +1272,7 @@ export async function createHostRuntime(
     // its Runner reports an end, so what the grant admitted ends here instead.
     // Shell audit keeps its existing `run-ended` reason; computer-use cleanup
     // closes the exact session without adding a wire reason.
+    let idleCompactionService: IdleCompactionService | undefined;
     store.onRunGrantsRevoked((grants) => {
       browser.endRevokedRunActors(grants);
       computerUse?.endGrantSessions(grants);
@@ -1607,6 +1610,8 @@ export async function createHostRuntime(
           }
           if (!committed.wasDuplicate) {
             publishDeploymentEvent(committed.event);
+            if (committed.event.type === "run.completed" && committed.event.threadId)
+              void idleCompactionService?.arm(committed.event.threadId);
             if (
               ["run.completed", "run.failed", "run.interrupted"].includes(committed.event.type) ||
               (committed.event.type === "run.phase" && committed.event.data.phase === "background")
@@ -2692,6 +2697,30 @@ export async function createHostRuntime(
         if (!closed) directoryPublisher.start();
       });
     }
+    idleCompactionService = new IdleCompactionService({
+      list: (threadId) => idleCompactionCandidates(store.database, threadId),
+      admit: async (candidate) => {
+        const identity = runners.identityForEnvironment(candidate.environmentId);
+        if (!identity?.capabilities.includes("claude-compaction-v1") || !candidate.contextSnapshot)
+          return;
+        const result = await admitIdleCompaction(store.database, {
+          threadId: candidate.threadId,
+          requestedBy: candidate.requestedBy,
+          maintenance: {
+            kind: "claude-compaction",
+            reason: "idle",
+            sourceRunId: candidate.contextSnapshot.sourceRunId,
+            providerSessionId: candidate.providerSessionId,
+          },
+        });
+        if (result) {
+          for (const event of result.events) publishDeploymentEvent(event);
+          coordinator.wake();
+        }
+      },
+      onError: (error) => app.log.error({ err: error }, "Idle compaction failed"),
+    });
+    await idleCompactionService.start();
     const triggerScheduleLoop = new TriggerScheduleLoop({
       onChanged: () => realtime.publishTriggersChanged(),
       onError: (error) => app.log.error({ err: error }, "Trigger scheduling failed"),
@@ -2821,6 +2850,9 @@ export async function createHostRuntime(
         });
         await step("personal reconcile loop", () => personalReconcileLoop.close());
         await step("execution lease loop", () => executionLeaseLoop.close());
+        await step("idle compaction", async () => {
+          await idleCompactionService?.close();
+        });
         await step("trigger schedule loop", () => triggerScheduleLoop.close());
         await step("watch service", () => watchService?.close());
         await step("continuations", () => continuations.close());

@@ -101,9 +101,17 @@ function runnerReportedData(row: DeploymentEventRow): unknown {
   );
 }
 function assertRunnerEventTransition(
-  run: Pick<RunRow, "harnessInstanceId" | "nextRunnerOrdinal" | "requestedBy" | "status">,
+  run: Pick<
+    RunRow,
+    "harnessInstanceId" | "nextRunnerOrdinal" | "requestedBy" | "status" | "maintenance"
+  >,
   event: PendingAgentEvent,
 ): void {
+  if (run.maintenance && (event.type.startsWith("request.") || event.type.startsWith("tool.")))
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Compaction cannot request interaction or use tools",
+    });
   if (event.ordinal !== run.nextRunnerOrdinal) {
     throw new OpensteerError({
       code: "conflict",

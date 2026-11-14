@@ -149,6 +149,7 @@ export const RunnerCapabilitySchema = z.enum([
   "voice-run-v1",
   "network-egress",
   "native-session-continuation-v1",
+  "claude-compaction-v1",
   // Carries `requesterTimeZone` in every Run's context.
   "requester-time-zone-v1",
   "agent-tools-plan-v1",
@@ -1097,6 +1098,7 @@ export type RunThreadState = z.infer<typeof RunThreadStateSchema>;
  * entry after every lower ordinal is terminal.
  */
 export const ThreadRunQueueEntrySchema = RunSchema.pick({
+  maintenance: true,
   createdAt: true,
   id: true,
   status: true,

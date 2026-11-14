@@ -81,6 +81,56 @@ function migrationsBefore(name: string) {
   };
 }
 
+async function legacyQueuedInput(input: {
+  readonly threadId: string;
+  readonly requestedBy: string;
+  readonly idempotencyKey: string;
+  readonly content: readonly unknown[];
+}) {
+  const messageId = createId("message");
+  const chainId = createId("causalChain");
+  const thread = await database
+    .selectFrom("threads")
+    .selectAll()
+    .where("id", "=", input.threadId as import("@opensteer/core").ThreadId)
+    .executeTakeFirstOrThrow();
+  const sequence = thread.nextMessageSequence;
+  const author = {
+    kind: "human",
+    displayName: "Alex",
+    principalId: thread.createdByPrincipalId,
+    userId: input.requestedBy,
+  };
+  await sql`insert into causal_chains(id,max_delegations,max_autonomous_runs,used_delegations,used_autonomous_runs) values(${chainId},100,100,0,0)`.execute(
+    database,
+  );
+  await sql`insert into messages(id,thread_id,sequence,kind,actor_principal_id,author,content) values(${messageId},${thread.id},${sequence},'input',${thread.createdByPrincipalId},${JSON.stringify(author)}::jsonb,${JSON.stringify(input.content)}::jsonb)`.execute(
+    database,
+  );
+  await sql`insert into thread_inputs(message_id,thread_id,actor_principal_id,authority_source,causal_chain_id,idempotency_key,policy,queue_rank,request_fingerprint,requested_by,state) values(${messageId},${thread.id},${thread.createdByPrincipalId},'{}',${chainId},${input.idempotencyKey},'queue',${sequence},'fixture',${input.requestedBy},'pending')`.execute(
+    database,
+  );
+  const existing = await database
+    .selectFrom("runs")
+    .select("id")
+    .where("threadId", "=", thread.id)
+    .executeTakeFirst();
+  const runId = existing ? null : createId("run");
+  if (runId)
+    await sql`insert into runs(id,thread_id,environment_id,harness_instance_id,model_selection,access_mode,activation_input_id,seed_input_id,causal_chain_id,requested_by,actor_principal_id,authority_source,run_ordinal,status) values(${runId},${thread.id},${thread.environmentId},${thread.harnessInstanceId},${JSON.stringify(thread.modelSelection)}::jsonb,${thread.accessMode},${messageId},${messageId},${chainId},${input.requestedBy},${thread.createdByPrincipalId},'{}',0,'queued')`.execute(
+      database,
+    );
+  await sql`update threads set next_message_sequence=next_message_sequence+1 where id=${thread.id}`.execute(
+    database,
+  );
+  await sql`insert into deployment_events(deployment_id,sequence,event_id,thread_id,type,data)
+    select deployment_id,sequence+1,${createId("event")},${thread.id},'message.created',${JSON.stringify({ message: { id: messageId, content: input.content }, input: { messageId, replyTarget: null } })}::jsonb from deployment_event_state`.execute(
+    database,
+  );
+  await sql`update deployment_event_state set sequence=sequence+1`.execute(database);
+  return { message: { id: messageId }, run: runId ? { id: runId } : null };
+}
+
 describe("fresh personal/team lineage", () => {
   it("backfills only request-associated reply targets and repairs hydrated messages and history", async () => {
     await migrateToLatest(database, migrationsBefore(teamAgentMigrationName));
@@ -117,11 +167,9 @@ describe("fresh personal/team lineage", () => {
     const inputs = [];
     for (const key of ["run", "queued", "ledger", "private"])
       inputs.push(
-        await store.enqueueThreadInput({
+        await legacyQueuedInput({
           threadId: thread.id,
           requestedBy: userId,
-          source: { kind: "human" },
-          policy: "queue",
           content: [
             { type: "text", text: key === "private" ? "Private follow-up" : "Legacy input" },
           ],
@@ -260,12 +308,10 @@ describe("fresh personal/team lineage", () => {
       ownerId: userId,
       suffix: "before-fresh-context",
     });
-    const input = await store.enqueueThreadInput({
+    const input = await legacyQueuedInput({
       content: [{ type: "text", text: "Already queued" }],
       idempotencyKey: "before-upgrade",
-      policy: "queue",
       requestedBy: userId,
-      source: { kind: "human" },
       threadId: thread.id,
     });
     await migrateToLatest(database);

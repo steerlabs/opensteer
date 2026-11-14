@@ -433,6 +433,7 @@ async function personAnswered(
       and input.author->>'kind' = 'human')`.as("personInput"),
     )
     .where("runs.id", "=", event.runId)
+    .where("runs.maintenance", "is", null)
     .where("runs.threadId", "=", event.threadId)
     .where("users.disabledAt", "is", null)
     .executeTakeFirst();

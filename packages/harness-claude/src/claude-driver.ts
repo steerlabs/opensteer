@@ -408,7 +408,8 @@ interface ActiveTurn {
   queuedTurns: boolean;
   /** What the Run consumed, as of its latest turn; stated once, when it ends. */
   readonly contextMeasurement: ClaudeContextMeasurement;
-  readonly compactionReason: "manual" | "automatic";
+  readonly compactionReason: "manual" | "automatic" | "idle" | "before-send";
+  readonly maintenance: boolean;
   usage?: RunUsage;
   usageBaseline?: SDKResultMessage | undefined;
   usageBaselineKnown?: boolean;
@@ -1622,6 +1623,11 @@ class ClaudeHarnessSession implements HarnessSession {
         message: "Claude session already has an active turn",
       });
     }
+    if (run.maintenance && !this.#hasProviderTranscript && !this.#live)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Compaction requires an existing native session",
+      });
     const environment = mergeEnvironments(this.#context.environment, run.environment);
     const nodes = new SubagentNodes((event) => {
       if (event.type === "node.completed") {
@@ -1653,13 +1659,16 @@ class ClaudeHarnessSession implements HarnessSession {
     );
     const active: ActiveTurn = {
       contextMeasurement: new ClaudeContextMeasurement(),
-      compactionReason: run.inputs.some((input) =>
-        input.content.some(
-          (part) => part.type === "text" && part.text.trim().toLowerCase() === "/compact",
-        ),
-      )
-        ? "manual"
-        : "automatic",
+      maintenance: run.maintenance !== undefined,
+      compactionReason:
+        run.maintenance?.reason ??
+        (run.inputs.some((input) =>
+          input.content.some(
+            (part) => part.type === "text" && part.text.trim().toLowerCase() === "/compact",
+          ),
+        )
+          ? "manual"
+          : "automatic"),
       abortController: new AbortController(),
       agentCalls: new Map(),
       knownNodes: new Set(),
@@ -1936,7 +1945,12 @@ class ClaudeHarnessSession implements HarnessSession {
     let startupTimer: NodeJS.Timeout | undefined;
     let turnTimer: NodeJS.Timeout | undefined;
     try {
-      await this.#pushTurnInputs(active, run.inputs, run, run.attachments);
+      if (run.maintenance) {
+        const seed = run.inputs[0];
+        if (!seed)
+          throw new OpensteerError({ code: "bad_request", message: "Compaction seed is missing" });
+        await this.#pushInput(active, seed, { prompt: "/compact", shouldQuery: true });
+      } else await this.#pushTurnInputs(active, run.inputs, run, run.attachments);
       await this.#applySelection();
       active.sawInit = this.#live !== undefined;
       active.usageBaseline = this.#ledger;
@@ -2338,6 +2352,11 @@ class ClaudeHarnessSession implements HarnessSession {
 
   #canUseTool(active: ActiveTurn): CanUseTool {
     return async (toolName, input, options) => {
+      if (active.maintenance) {
+        active.transportError = new Error("Unexpected tool use during compaction");
+        this.#abortActive(active, active.transportError);
+        return { behavior: "deny", interrupt: true, message: "Compaction cannot use tools" };
+      }
       if (
         active.terminal ||
         active.interrupted ||
@@ -2592,6 +2611,19 @@ class ClaudeHarnessSession implements HarnessSession {
   }
 
   async #handleMessage(message: SDKMessage, active: ActiveTurn): Promise<void> {
+    if (
+      active.maintenance &&
+      ((message.type === "assistant" &&
+        message.message.content.some((block) => block.type === "tool_use")) ||
+        (message.type === "stream_event" &&
+          message.event.type === "content_block_start" &&
+          message.event.content_block.type === "tool_use"))
+    ) {
+      active.transportError = new Error("Unexpected tool use during compaction");
+      this.#abortActive(active, active.transportError);
+      return;
+    }
+
     if (active.terminal || active.interrupted) return;
     this.#assertMessageSession(message);
     // Claude reports where each uuid-stamped message is in its queue in a frame
@@ -3440,6 +3472,11 @@ class ClaudeHarnessSession implements HarnessSession {
   }
 
   #publish(event: HarnessEvent, delivery: "must-deliver" | "disposable" = "must-deliver"): void {
+    if (
+      this.#activeTurn?.maintenance &&
+      (event.type === "assistant.message" || event.type === "assistant.delta")
+    )
+      return;
     this.#publisher.publish(event, delivery);
     if (
       event.type === "run.completed" ||

@@ -1,3 +1,4 @@
+import { RunMaintenanceSchema } from "@opensteer/core";
 export { TeamTurnContextSchema, type TeamTurnContext } from "@opensteer/core";
 import { DelegationModelChoiceSchema } from "@opensteer/core";
 import { ComputerFolderSchema } from "@opensteer/core";
@@ -139,6 +140,8 @@ export const executionLeaseMsSchema = z.number().int().min(10_000).max(3_600_000
 const capabilityTokenSchema = z.string().min(1).max(4_096);
 
 export const RunExecutionContextSchema = z.strictObject({
+  maintenance: RunMaintenanceSchema.optional(),
+  maintenanceExpiresAt: z.number().int().nonnegative().optional(),
   teamTurnContext: TeamTurnContextSchema.nullable().default(null),
   personalContext: z.boolean(),
   accessMode: ThreadAccessModeSchema,

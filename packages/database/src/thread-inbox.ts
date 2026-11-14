@@ -1,3 +1,4 @@
+import { compactionIsEligible } from "./compaction-eligibility.js";
 import { freshContextBoundary } from "./fresh-context.js";
 import { threadAllowsPersonalContext } from "./run-personal-context.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
@@ -284,6 +285,12 @@ async function steerRoute(
   transaction: Transaction<DatabaseSchema>,
   runId: RunId,
 ): Promise<SteeringMode | null> {
+  const run = await transaction
+    .selectFrom("runs")
+    .select("maintenance")
+    .where("id", "=", runId)
+    .executeTakeFirst();
+  if (run?.maintenance) return null;
   const replacement = await pendingReplacementAttempt(transaction, runId);
   if (replacement?.reason === "recovery") return null;
   if (replacement) {
@@ -1341,6 +1348,41 @@ export async function claimRunInputBatch(
     });
 
   const events: AgentEvent[] = [];
+  if (run.maintenance) {
+    if (run.providerSessionId !== run.maintenance.providerSessionId || seed.freshContext)
+      throw new OpensteerError({ code: "conflict", message: "Compaction session changed" });
+    const session = await transaction
+      .selectFrom("providerSessions")
+      .select(["active", "providerSessionReference"])
+      .where("id", "=", run.maintenance.providerSessionId)
+      .executeTakeFirst();
+    if (!session?.active || !session.providerSessionReference)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Compaction requires its existing native session",
+      });
+    const claimed = await transaction
+      .updateTable("threadInputs")
+      .set({ runId, state: "claimed", updatedAt: new Date() })
+      .where("messageId", "=", seed.messageId)
+      .where("state", "=", "pending")
+      .returningAll()
+      .executeTakeFirstOrThrow();
+    await transaction
+      .updateTable("messages")
+      .set({ runId })
+      .where("id", "=", seed.messageId)
+      .execute();
+    await transaction
+      .updateTable("runs")
+      .set({
+        initialContext: null,
+        reportContext: jsonValue({ messageIds: [], omittedCount: 0, throughSequence: null }),
+      })
+      .where("id", "=", runId)
+      .execute();
+    return [await inputUpdatedEvent(transaction, thread, claimed)];
+  }
   if (seed.freshContext) {
     const providerSessionId = await ensureSelectedProviderSession(transaction, thread, {
       freshRunId: run.id,
@@ -1585,7 +1627,11 @@ export async function claimConversationBatch(
     .selectAll()
     .where("id", "=", run.threadId)
     .executeTakeFirstOrThrow();
-  if (capacity <= 0 || !(await conversationalReply(transaction, thread, run.replyTarget)))
+  if (
+    run.maintenance ||
+    capacity <= 0 ||
+    !(await conversationalReply(transaction, thread, run.replyTarget))
+  )
     return [];
   return (
     await claimFollowUps(transaction, run, thread, {
@@ -2090,7 +2136,7 @@ async function lockThreadInputPreconditions(
     .selectFrom("runs")
     .select("id")
     .where("threadId", "=", input.threadId)
-    .where("status", "=", "running")
+    .where("status", "in", nonTerminalRunStatuses)
     .executeTakeFirst();
   const sourceRunId =
     input.source.kind === "agent"
@@ -2490,6 +2536,16 @@ export async function enqueueThreadInputInTransaction(
   const preconditions = await lockThreadInputPreconditions(transaction, request);
   const { executionValid, prelockedActiveRunId } = preconditions;
   let thread = preconditions.thread;
+  if (
+    request.maintenance &&
+    !(await compactionIsEligible(
+      transaction,
+      thread.id,
+      request.maintenance,
+      request.maintenanceNowMs ?? Date.now(),
+    ))
+  )
+    throw new OpensteerError({ code: "conflict", message: "Compaction is no longer eligible" });
   const messageId = createId("message");
   const facts = await resolveThreadInputFacts(transaction, {
     messageId,
@@ -2498,6 +2554,25 @@ export async function enqueueThreadInputInTransaction(
     targetThread: thread,
   });
   const passEvents: AgentEvent[] = [];
+  if (request.source.kind === "human" && policy !== "report" && prelockedActiveRunId) {
+    const prior = await transaction
+      .selectFrom("runs")
+      .select(["id", "status", "maintenance"])
+      .where("id", "=", prelockedActiveRunId)
+      .executeTakeFirst();
+    if (prior?.status === "queued" && prior.maintenance?.reason === "idle")
+      passEvents.push(
+        ...(await finalizeRunTransaction(transaction, {
+          runId: prior.id,
+          status: "interrupted",
+          source: "host",
+          links: threadPathLinks,
+          queuedInputCancellation: "seed-input",
+          completedAt: new Date(),
+        })),
+      );
+  }
+
   if (thread.doneAt && request.policy !== "report") {
     // Writing to a Done task reopens it for whoever could reopen it by hand.
     const reopens =
@@ -2661,6 +2736,7 @@ export async function enqueueThreadInputInTransaction(
   // way: the message is accepted like any other, then handed over by the one
   // operation every moment of readiness shares.
   const conversational =
+    !activeRun?.maintenance &&
     !request.freshContext &&
     (await conversationalReply(transaction, thread, facts.replyTarget)) &&
     policy === "queue" &&
@@ -2671,6 +2747,7 @@ export async function enqueueThreadInputInTransaction(
   // message from its own requester, on the same engine and model, as a new
   // turn; anything else waits behind it.
   const joinsBackground =
+    !activeRun?.maintenance &&
     !request.freshContext &&
     request.source.kind !== "channel" &&
     !request.teamRequest &&
@@ -2851,7 +2928,7 @@ export async function enqueueThreadInputInTransaction(
     .updateTable("threads")
     .set({
       nextMessageSequence: sql`next_message_sequence + 1`,
-      updatedAt: admittedAt,
+      ...(request.maintenance ? {} : { updatedAt: admittedAt }),
       ...(facts.author.kind === "human" && policy !== "report" && executionValid
         ? {
             askedAt: admittedAt,
@@ -2942,7 +3019,13 @@ export async function enqueueThreadInputInTransaction(
     }
   }
   const queued =
-    executionValid && policy === "queue" ? await ensureQueuedRun(transaction, thread) : null;
+    executionValid && policy === "queue"
+      ? await ensureQueuedRun(
+          transaction,
+          thread,
+          request.maintenance ? { maintenance: request.maintenance } : {},
+        )
+      : null;
   // Only a live Run stops the account's endpoint moving, so a waiting input can't keep this fence.
   if (request.expectedHarnessRevision !== undefined && !queued?.run)
     throw new OpensteerError({
@@ -3544,6 +3627,7 @@ export async function ensureQueuedRun(
   thread: ThreadRow,
   options: {
     readonly onInvalidSelection?: "throw" | "defer";
+    readonly maintenance?: import("@opensteer/core").RunMaintenance;
   } = {},
 ): Promise<{
   readonly command: CommandRow | null;
@@ -3835,14 +3919,21 @@ export async function ensureQueuedRun(
       events,
       run: null,
     };
-  const selectedSession = await ensureSelectedProviderSession(transaction, thread, {
-    personalContext: await threadAllowsPersonalContext(transaction, thread.id, thread.createdBy),
-  });
+  const selectedSession = options.maintenance
+    ? options.maintenance.providerSessionId
+    : await ensureSelectedProviderSession(transaction, thread, {
+        personalContext: await threadAllowsPersonalContext(
+          transaction,
+          thread.id,
+          thread.createdBy,
+        ),
+      });
   const runId = createId("run");
   const runRow = await transaction
     .insertInto("runs")
     .values({
       accessMode: thread.accessMode,
+      maintenance: options.maintenance ?? null,
       activationInputId: seed.messageId,
       assignmentId: seed.assignmentId,
       actorPrincipalId: seed.actorPrincipalId,
@@ -3894,7 +3985,7 @@ export async function ensureQueuedRun(
     .updateTable("threads")
     .set((expression) => ({
       nextRunOrdinal: expression("nextRunOrdinal", "+", 1),
-      updatedAt: new Date(),
+      ...(options.maintenance ? {} : { updatedAt: new Date() }),
     }))
     .where("id", "=", thread.id)
     .executeTakeFirstOrThrow();

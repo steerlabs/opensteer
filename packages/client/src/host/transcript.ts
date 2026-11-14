@@ -104,7 +104,18 @@ function foldTranscriptOwnEvent(
         kind: "place",
         runId: event.runId,
       });
-    case "run.queued":
+    case "run.queued": {
+      const maintenance = event.data.run.maintenance;
+      if (!maintenance) return [...entries];
+      const updated = upsertRunEntry(entries, event, "queued");
+      const prior = findEntry(updated, `run:${event.runId}`, "run");
+      return prior
+        ? upsertEntry(updated, {
+            ...prior,
+            compaction: { status: "running", reason: maintenance.reason },
+          })
+        : updated;
+    }
     case "thread.input-queue-updated":
     case "thread.state-changed":
       return [...entries];
@@ -735,6 +746,9 @@ function mergeLifecycle(previous: TranscriptEntry, next: TranscriptEntry): Trans
     ];
     return {
       ...next,
+      ...((next.compaction ?? previous.compaction)
+        ? { compaction: next.compaction ?? previous.compaction }
+        : {}),
       createdAt: next.startedAt ?? previous.startedAt ?? previous.createdAt,
       ...((next.startedAt ?? previous.startedAt)
         ? { startedAt: next.startedAt ?? previous.startedAt }
@@ -1086,6 +1100,8 @@ export function toMessageEntry(
   policy: ThreadInputPolicy | undefined = message.policy,
   input?: (Pick<ThreadInput, "policy" | "state"> & Partial<Pick<ThreadInput, "teamSource">>) | null,
 ): MessageEntry | null {
+  if (message.author.kind === "platform" && message.author.cause === "claude-compaction")
+    return null;
   const recovery =
     message.kind === "continuation" &&
     message.author.kind === "platform" &&
@@ -1150,7 +1166,24 @@ function upsertRunEntry(
     // A Stop already asked for holds until the Run ends, whatever it reports meanwhile.
     ...(prior?.stopping === true && !isTerminalRunEntryStatus(status) ? { stopping: true } : {}),
     ...(delivery ? { delivery } : {}),
-    ...(prior?.compaction ? { compaction: prior.compaction } : {}),
+    ...(prior?.compaction
+      ? {
+          compaction: {
+            ...prior.compaction,
+            ...((prior.compaction.reason === "idle" || prior.compaction.reason === "before-send") &&
+            isTerminalRunEntryStatus(status)
+              ? {
+                  status:
+                    status === "completed"
+                      ? ("created" as const)
+                      : status === "interrupted"
+                        ? ("stopped" as const)
+                        : ("failed" as const),
+                }
+              : {}),
+          },
+        }
+      : {}),
     ...(prior?.usage ? { usage: prior.usage } : {}),
     ...(prior?.attempt ? { attempt: prior.attempt } : {}),
     ...(startedBy ? { startedBy } : {}),

@@ -2020,3 +2020,42 @@ it("folds native compaction activity into the Run and preserves it through compl
     compaction: { status: "created", reason: "automatic" },
   });
 });
+
+it.each(["completed", "failed", "interrupted"] as const)(
+  "folds maintenance into one %s marker",
+  (status) => {
+    const maintenance = {
+      kind: "claude-compaction",
+      reason: "idle",
+      sourceRunId: createId("run"),
+      providerSessionId: createId("providerSession"),
+    } as const;
+    const entries = fold([
+      event("run.queued", {
+        run: { id: runId, threadId, createdAt: now, runOrdinal: 1, status: "queued", maintenance },
+      }),
+      event("run.status", { status: "running" }),
+      ...(status === "completed"
+        ? [event("run.completed", { status: "completed", replyMessageId: null })]
+        : status === "interrupted"
+          ? [event("run.interrupted", { status: "interrupted" })]
+          : [
+              event("run.failed", {
+                status: "failed",
+                code: "test",
+                message: "Failed",
+                retryable: false,
+              }),
+            ]),
+    ]);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: "run",
+      compaction: {
+        reason: "idle",
+        status:
+          status === "completed" ? "created" : status === "interrupted" ? "stopped" : "failed",
+      },
+    });
+  },
+);
