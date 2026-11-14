@@ -266,7 +266,10 @@ describe("an ask to my agent in a channel", () => {
     const { messageId, threadId } = listed.task;
     await act(async () => {
       const editor = await client.editWaitingMessage(threadId, messageId);
-      await editor.save([{ text: "What’s still open on the launch checklist?", type: "text" }]);
+      await editor.save(
+        [{ text: "What’s still open on the launch checklist?", type: "text" }],
+        editor.revision,
+      );
     });
     await settle(50);
     expect(ask().querySelector(".ask-split")).toBeNull();

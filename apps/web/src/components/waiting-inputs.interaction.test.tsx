@@ -15,6 +15,7 @@ import {
 import type { ContentPart, ThreadInputQueue } from "@opensteer/core";
 import { TranscriptHostClientContext } from "./attachments/message-attachments.js";
 import { TranscriptMessage } from "./agent-activity.js";
+import type { PendingSends, PendingSubmission } from "./composer.js";
 import { WaitingInputs } from "./waiting-inputs.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -121,10 +122,47 @@ function fakeEditor(overrides: Partial<WaitingMessageEditor> = {}): WaitingMessa
   };
 }
 
+/** The item as the Host reports it once another device saved `text` as `revision`. */
+function edited(at: Item, text: string, revision: number): Item {
+  return {
+    ...at,
+    message: {
+      ...at.message,
+      content: [{ text, type: "text" }],
+      edit: { editedAt: "2026-10-31T12:01:00.000Z", revision },
+    },
+  } as Item;
+}
+
+/** The browser's kept-send record for this Thread, in memory. */
+function memorySends(): PendingSends & { readonly kept: () => PendingSubmission | null } {
+  let kept: PendingSubmission | null = null;
+  return {
+    claim: (submission) => {
+      if (kept && kept.idempotencyKey !== submission.idempotencyKey)
+        throw new Error("This thread already has a message awaiting acknowledgement.");
+      kept = submission;
+    },
+    clear: (key) => {
+      if (kept?.idempotencyKey === key) kept = null;
+    },
+    discard: () => {
+      kept = null;
+    },
+    kept: () => kept,
+    read: () => kept,
+  };
+}
+
 function render(
   client: HostClient,
   inputs: WaitingInput[],
-  options: { disabled?: boolean; paused?: boolean; onError?: (error: unknown) => void } = {},
+  options: {
+    disabled?: boolean;
+    paused?: boolean;
+    onError?: (error: unknown) => void;
+    sends?: PendingSends;
+  } = {},
 ) {
   return (
     <MemoryRouter>
@@ -134,6 +172,8 @@ function render(
         inputs={inputs}
         onError={options.onError ?? vi.fn()}
         paused={options.paused ?? false}
+        pendingSends={{ sends: options.sends ?? memorySends() }}
+        resumable
         threadId="thread"
         viewerUserId="me"
       />
@@ -374,10 +414,10 @@ describe("WaitingInputs", () => {
     await act(async () => button(container, "Don’t include photo.png").click());
     await press(field(container)!, "Enter");
 
-    expect(editor.save).toHaveBeenCalledWith([
-      { text: "Check the integration shard", type: "text" },
-      notes,
-    ]);
+    expect(editor.save).toHaveBeenCalledWith(
+      [{ text: "Check the integration shard", type: "text" }, notes],
+      0,
+    );
     expect(field(container)).toBeNull();
     expect(editor.cancel).not.toHaveBeenCalled();
   });
@@ -491,12 +531,140 @@ describe("WaitingInputs", () => {
     await act(async () => button(container, "Save and answer").click());
 
     expect(calls).toEqual(["save", "decide"]);
-    expect(editor.save).toHaveBeenCalledWith([{ text: "Is CI green on main?", type: "text" }]);
+    expect(editor.save).toHaveBeenCalledWith([{ text: "Is CI green on main?", type: "text" }], 0);
     expect(decideTeamAsk).toHaveBeenCalledWith({
       decision: "approve",
       expectedRevision: 3,
       requestId: "tar_ask",
       teamId: "dep_00000000-0000-4000-8000-000000000001",
     });
+  });
+
+  it("binds an open edit to the version it shows: untouched words follow a save made elsewhere", async () => {
+    let opened!: (editor: WaitingMessageEditor) => void;
+    const opening = new Promise<WaitingMessageEditor>((resolve) => {
+      opened = resolve;
+    });
+    const decideTeamAsk = vi.fn(async () => undefined);
+    const client = {
+      decideTeamAsk,
+      editWaitingMessage: vi.fn(() => opening),
+    } as unknown as HostClient;
+    const old = ask("asked", "Old words");
+    const container = mount(render(client, inputsOf([old])));
+    await clickWords(container, "asked");
+    // Another device saved before this one held the ask.
+    await act(async () => {
+      root?.render(render(client, inputsOf([edited(old, "New words on iPad", 1)])));
+      opened(fakeEditor({ revision: 1 }));
+    });
+    expect(field(container)?.value).toBe("New words on iPad");
+    await act(async () => button(container, "Answer").click());
+    expect(decideTeamAsk).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 1 }));
+  });
+
+  it("keeps words typed over a newer version: nothing saves or approves them until reloaded", async () => {
+    const editor = fakeEditor({
+      save: vi.fn(async () => ({ editedAt: "2026-10-31T12:02:00.000Z", revision: 2 })),
+    });
+    const decideTeamAsk = vi.fn(async () => undefined);
+    const client = {
+      decideTeamAsk,
+      editWaitingMessage: vi.fn(async () => editor),
+    } as unknown as HostClient;
+    const old = ask("asked", "Old words");
+    const container = mount(render(client, inputsOf([old])));
+    await clickWords(container, "asked");
+    await write(field(container)!, "My words");
+    act(() => root?.render(render(client, inputsOf([edited(old, "New words on iPad", 1)]))));
+
+    expect(field(container)?.value).toBe("My words");
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("changed elsewhere");
+    expect(button(container, "Save and answer").disabled).toBe(true);
+    await press(field(container)!, "Enter");
+    expect(editor.save).not.toHaveBeenCalled();
+
+    await act(async () => button(container, "Reload").click());
+    expect(field(container)?.value).toBe("New words on iPad");
+    await write(field(container)!, "New words, then mine");
+    await act(async () => button(container, "Save and answer").click());
+    expect(editor.save).toHaveBeenCalledWith([{ text: "New words, then mine", type: "text" }], 1);
+    expect(decideTeamAsk).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 2 }));
+  });
+
+  it("sends kept words as a new message once: an unconfirmed send is retried under its key", async () => {
+    const editor = fakeEditor({
+      save: vi.fn(async () => {
+        throw new HostClientRequestError({ code: "conflict", message: "taken", status: 409 });
+      }),
+    });
+    const dispatch = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("The connection was lost."))
+      .mockResolvedValue({});
+    const client = {
+      dispatch,
+      editWaitingMessage: vi.fn(async () => editor),
+    } as unknown as HostClient;
+    const sends = memorySends();
+    const container = mount(
+      render(client, inputsOf([item("mine", "Old", { canEdit: true })]), { sends }),
+    );
+    await clickWords(container, "mine");
+    await write(field(container)!, "Keep my edit");
+    await press(field(container)!, "Enter");
+    await act(async () => button(container, "Send as new message").click());
+
+    // Kept before it left, and still kept: the Host may have it.
+    expect(sends.kept()?.idempotencyKey).toBe(dispatch.mock.calls[0]![0].idempotencyKey);
+    expect(field(container)?.value).toBe("Keep my edit");
+    await act(async () => button(container, "Send again").click());
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(dispatch.mock.calls[1]![0]).toEqual(dispatch.mock.calls[0]![0]);
+    expect(sends.kept()).toBeNull();
+    expect(field(container)).toBeNull();
+  });
+
+  it("a save under way holds its editor: Escape waits, and only that save closes it", async () => {
+    let saved!: (edit: { revision: number; editedAt: string }) => void;
+    const first = fakeEditor({
+      save: vi.fn(
+        () =>
+          new Promise<{ revision: number; editedAt: string }>((resolve) => {
+            saved = resolve;
+          }),
+      ),
+    });
+    const second = fakeEditor({ leaseId: "second" });
+    const editWaitingMessage = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    const client = { editWaitingMessage } as unknown as HostClient;
+    const container = mount(render(client, inputsOf([item("mine", "Old", { canEdit: true })])));
+    await clickWords(container, "mine");
+    await write(field(container)!, "First save");
+    await press(field(container)!, "Enter");
+    await press(field(container)!, "Escape");
+    expect(field(container)?.value).toBe("First save");
+    expect(first.cancel).not.toHaveBeenCalled();
+
+    await act(async () => saved({ editedAt: "2026-10-31T12:01:00.000Z", revision: 1 }));
+    expect(field(container)).toBeNull();
+    await clickWords(container, "mine");
+    await write(field(container)!, "Replacement draft");
+    expect(field(container)?.value).toBe("Replacement draft");
+    expect(first.cancel).not.toHaveBeenCalled();
+  });
+
+  it("opens an ask's editor from its labelled Edit button and hands focus back on the way out", async () => {
+    const editor = fakeEditor();
+    const client = { editWaitingMessage: vi.fn(async () => editor) } as unknown as HostClient;
+    const container = mount(render(client, inputsOf([ask("asked", "Is CI green?")])));
+    const trigger = () => button(container, "Edit Maya Chen’s ask");
+    trigger().focus();
+    await act(async () => trigger().click());
+    expect(document.activeElement).toBe(field(container));
+
+    await press(field(container)!, "Escape");
+    expect(field(container)).toBeNull();
+    expect(document.activeElement).toBe(trigger());
   });
 });

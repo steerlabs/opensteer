@@ -1068,17 +1068,19 @@ export type MachineAccessUpdateOutcome =
   { readonly outcome: "conflict" } | { readonly outcome: "updated"; readonly revision: number };
 
 /**
- * One device editing one waiting message. `revision` is the version it
- * started from. `touch` on every keystroke; renewals go out at most every
- * half minute. `save` replaces the message in place and ends the edit; it
- * rejects with code `conflict` when the message was already taken or changed
- * elsewhere, leaving the person's text with them.
+ * One device editing one waiting message. `revision` is the version the
+ * lease was taken at. `touch` on every keystroke; renewals go out at most
+ * every half minute. `save` replaces the message in place and ends the edit,
+ * if the message is still at `expectedRevision`: the version the person's
+ * words were written against (`WaitingDraft.baseRevision`). It rejects with
+ * code `conflict` when the message was already taken or changed elsewhere,
+ * leaving the person's text with them.
  */
 export interface WaitingMessageEditor {
   readonly leaseId: string;
   readonly revision: number;
   touch(): void;
-  save(content: readonly ContentPart[]): Promise<MessageEdit>;
+  save(content: readonly ContentPart[], expectedRevision: number): Promise<MessageEdit>;
   cancel(): Promise<void>;
 }
 

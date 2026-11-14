@@ -79,6 +79,7 @@ import type { ComposerQuote, ComposerRestore } from "./composer.js";
 import { InputSurface, RequestStack, focusOpenRequest, useRequestDock } from "./input-surface.js";
 import { useVoiceOn } from "@opensteer/client/react";
 import { VoiceStart } from "./voice.js";
+import { usePendingSends } from "./pending-sends.js";
 import { WaitingInputs } from "./waiting-inputs.js";
 import { setThreadReading } from "./thread-reading.js";
 import { ThreadFind } from "./thread-find.js";
@@ -269,6 +270,12 @@ function ThreadView({
   }, [composerKey]);
   const inputQueue = useThreadInputQueue(hostClient, thread.id);
   const waiting = useWaitingInputs(hostClient, thread.id);
+  // The composer's own record: words sent as new from an open edit are kept the same way.
+  const pendingSends = usePendingSends(
+    snapshot.deploymentId && snapshot.user?.id
+      ? { deploymentId: snapshot.deploymentId, threadId: thread.id, userId: snapshot.user.id }
+      : null,
+  );
   // The Tasks count opens a task at its exact request; one already answered stays answered.
   const location = useLocation();
   const focusRequest =
@@ -1070,10 +1077,12 @@ function ThreadView({
                       inputQueue && waiting && !conversational ? (
                         <WaitingInputs
                           client={hostClient}
-                          disabled={!canRespond || thread.status === "archived"}
+                          disabled={!canRespond}
                           inputs={waiting}
                           onError={reportActionError}
                           paused={inputQueue.paused}
+                          pendingSends={pendingSends}
+                          resumable={thread.status !== "archived"}
                           threadId={thread.id}
                           viewerUserId={snapshot.user?.id ?? null}
                         />

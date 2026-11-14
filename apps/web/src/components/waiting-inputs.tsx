@@ -1,6 +1,5 @@
 import {
   memo,
-  useCallback,
   useEffect,
   useId,
   useMemo,
@@ -8,23 +7,36 @@ import {
   useState,
   type KeyboardEvent,
   type MouseEvent,
+  type RefObject,
 } from "react";
-import type { ContentPart, MessageRevisionView, TeamSource } from "@opensteer/core";
+import type { ContentPart, TeamSource } from "@opensteer/core";
 import {
-  formatClockTime,
+  followWaitingDraft,
   HostClientRequestError,
   messageAuthorName,
-  messageDraftParts,
-  messageRevisionRows,
+  mutationIdempotencyKey,
+  openWaitingDraft,
+  reloadWaitingDraft,
+  removeWaitingDraftPart,
+  setWaitingDraftText,
+  waitingDraftContent,
+  waitingDraftSave,
   type HostClient,
   type WaitingAsk,
+  type WaitingDraft,
   type WaitingInput,
   type WaitingMessageEditor,
 } from "@opensteer/client/host";
 import { TranscriptMessage } from "./agent-activity.js";
+import type { PendingSubmission } from "./composer.js";
 import { Icon, type IconName } from "./icon.js";
-import { sendMessageCommand } from "./pending-sends.js";
-import { Popover } from "./popover.js";
+import { EditedMark } from "./message-revisions.js";
+import {
+  forgetPending,
+  sendMessageCommand,
+  unanswered,
+  type PendingSendsState,
+} from "./pending-sends.js";
 import { TeamInputSource } from "../team/task-source-chip.js";
 
 /** A longer list shows what is next in line and folds the rest. */
@@ -43,14 +55,21 @@ export const WaitingInputs = memo(function WaitingInputs({
   inputs,
   onError,
   paused,
+  pendingSends,
+  resumable,
   threadId,
   viewerUserId,
 }: {
   readonly client: HostClient;
+  /** The reader can't act here at all. Each action is otherwise the Host's to offer. */
   readonly disabled: boolean;
   readonly inputs: readonly WaitingInput[];
   readonly onError: (error: unknown) => void;
   readonly paused: boolean;
+  /** Where words sent as a new message are kept until the Host answers them, as the composer's are. */
+  readonly pendingSends: PendingSendsState;
+  /** The Host runs this task's queue again on Resume: not while it is archived. */
+  readonly resumable: boolean;
   readonly threadId: string;
   readonly viewerUserId: string | null;
 }) {
@@ -103,7 +122,7 @@ export const WaitingInputs = memo(function WaitingInputs({
           Paused
           <button
             className="queued__action"
-            disabled={disabled || resuming}
+            disabled={disabled || resuming || !resumable}
             onClick={() => {
               setResuming(true);
               void client
@@ -130,6 +149,7 @@ export const WaitingInputs = memo(function WaitingInputs({
               input={input}
               key={input.messageId}
               onOpenChange={(open) => setOpen(input.messageId, open)}
+              pendingSends={pendingSends}
               position={`${index + 1} of ${rows.length}`}
               viewerUserId={viewerUserId}
             />
@@ -151,123 +171,207 @@ export const WaitingInputs = memo(function WaitingInputs({
   );
 });
 
-interface Draft {
-  readonly text: string;
-  /** The files and places it keeps; an edit can drop them but never add one. */
-  readonly parts: readonly ContentPart[];
+/**
+ * Why an open edit can't simply be saved, said in its place: the message was
+ * taken, it changed elsewhere, the save failed, or words sent as a new
+ * message went unanswered.
+ */
+type EditNotice = "taken" | "changed" | "failed" | "unconfirmed";
+
+/** One opening of the editor on this device: its lease, and what it has under way. */
+interface EditSession {
+  readonly opening: Promise<WaitingMessageEditor>;
+  /** Left: unmounted, or closed by the person. */
+  closed: boolean;
+  /** A save is out; it ends the lease, and nothing closes the editor before it answers. */
+  saving: boolean;
+  /** The words sent as a new message, kept under one key until the Host answers them. */
+  sending: PendingSubmission | null;
 }
 
-/** Why an open edit can't simply be saved, said in its place. */
-type EditNotice = "taken" | "changed" | "failed";
-
-function draftContent(draft: Draft): ContentPart[] {
-  const text = draft.text.trim();
-  return [...(text ? [{ text, type: "text" as const }] : []), ...draft.parts];
+/** The lease goes as soon as the editor holds it; one that never opened has nothing to end. */
+function release(session: EditSession): void {
+  void session.opening.then(
+    (editor) => editor.cancel(),
+    () => undefined,
+  );
 }
 
 /**
  * One waiting message edited in place on this device. Opening takes its edit
  * lease, so no Run takes it meanwhile; every keystroke renews it; saving or
- * cancelling ends it, and so does leaving the task with it open.
+ * cancelling ends it, and so does leaving the task with it open. The draft is
+ * bound to the version it was written against (`WaitingDraft`): untouched, it
+ * follows a save made elsewhere; touched, that save is a conflict to settle.
  */
 function useInPlaceEdit(
   client: HostClient,
   input: WaitingInput,
+  gone: boolean,
+  pendingSends: PendingSendsState,
   onOpenChange: (open: boolean) => void,
+  trigger: RefObject<HTMLButtonElement | null>,
 ) {
-  const [draft, setDraft] = useState<Draft | null>(null);
+  const [kept, setKept] = useState<WaitingDraft | null>(null);
   const [saving, setSaving] = useState(false);
-  const [notice, setNotice] = useState<EditNotice | null>(null);
-  const editor = useRef<Promise<WaitingMessageEditor> | null>(null);
-  const base = useRef<Draft | null>(null);
+  const [notice, setNotice] = useState<Exclude<EditNotice, "taken"> | null>(null);
+  const session = useRef<EditSession | null>(null);
+  const returnFocus = useRef(false);
+  const row = useRef<HTMLLIElement | null>(null);
+  const draft =
+    kept && !gone && !saving
+      ? followWaitingDraft(kept, { content: input.item.message.content, revision: input.revision })
+      : kept;
+
   useEffect(
     () => () => {
-      const held = editor.current;
-      editor.current = null;
-      void held?.then(
-        (opened) => opened.cancel(),
-        () => undefined,
-      );
+      const held = session.current;
+      session.current = null;
+      if (!held) return;
+      held.closed = true;
+      if (!held.saving) release(held);
     },
     [],
   );
+  useEffect(() => {
+    if (draft || !returnFocus.current) return;
+    returnFocus.current = false;
+    trigger.current?.focus();
+  }, [draft, trigger]);
 
   const open = () => {
-    if (draft) return;
-    const content = input.item.message.content;
-    const start = {
-      parts: content.filter((part) => part.type !== "text"),
-      text: messageDraftParts(content).body,
+    if (session.current) return;
+    const held: EditSession = {
+      closed: false,
+      opening: client.editWaitingMessage(input.threadId, input.messageId),
+      saving: false,
+      sending: null,
     };
-    base.current = start;
-    setDraft(start);
+    session.current = held;
+    setKept(openWaitingDraft({ content: input.item.message.content, revision: input.revision }));
     setNotice(null);
     onOpenChange(true);
-    const opening = client.editWaitingMessage(input.threadId, input.messageId);
-    editor.current = opening;
-    opening.catch((error: unknown) => {
-      if (editor.current === opening) setNotice(isConflict(error) ? "changed" : "failed");
+    held.opening.catch((error: unknown) => {
+      if (session.current === held) setNotice(isConflict(error) ? "changed" : "failed");
     });
   };
 
-  const close = () => {
-    const held = editor.current;
-    editor.current = null;
-    void held?.then(
-      (opened) => opened.cancel(),
-      () => undefined,
-    );
-    setDraft(null);
+  /** Ends `held` if it is still the edit open here; a save under way ends it itself. */
+  const finish = (held: EditSession | null, keepLease = false) => {
+    if (!held || held.saving || session.current !== held) return;
+    session.current = null;
+    held.closed = true;
+    if (!keepLease) release(held);
+    // Focus left inside the editor goes back to what opened it.
+    returnFocus.current = row.current?.contains(document.activeElement) ?? false;
+    setKept(null);
     setNotice(null);
     setSaving(false);
     onOpenChange(false);
   };
-
-  const dirty =
-    draft !== null &&
-    base.current !== null &&
-    (draft.text.trim() !== base.current.text.trim() ||
-      draft.parts.length !== base.current.parts.length);
+  const close = () => finish(session.current);
 
   /** Saves the edit in place; an unchanged one just ends. Resolves to the version now waiting. */
   const save = async (): Promise<number | null> => {
-    const opening = editor.current;
-    if (!draft || !opening || saving) return null;
-    if (!dirty) {
-      close();
-      return input.revision;
+    const held = session.current;
+    if (!held || !draft || held.saving) return null;
+    const plan = waitingDraftSave(draft);
+    if (plan === null) return null;
+    if (plan.kind === "unchanged") {
+      finish(held);
+      return plan.revision;
     }
-    const content = draftContent(draft);
-    if (content.length === 0) return null;
+    held.saving = true;
     setSaving(true);
     setNotice(null);
+    // The words as sent, kept through the save, so a refusal hands them back unchanged.
+    setKept(draft);
     try {
-      const edit = await (await opening).save(content);
+      const edit = await (await held.opening).save(plan.content, plan.expectedRevision);
+      held.saving = false;
       // Saving ended the lease; there is nothing left to cancel.
-      editor.current = null;
-      close();
+      finish(held, true);
       return edit.revision;
     } catch (error) {
-      setSaving(false);
-      setNotice(isConflict(error) ? "changed" : "failed");
+      held.saving = false;
+      if (held.closed) release(held);
+      else if (session.current === held) {
+        setSaving(false);
+        setNotice(isConflict(error) ? "changed" : "failed");
+      }
       return null;
     }
   };
 
+  /**
+   * Sends the words as a new message, kept first the way the composer keeps
+   * one: an answer that went missing is sent again under the same key, never
+   * as a second message, and a reload sends it from the composer.
+   */
+  const sendAsNew = async (): Promise<void> => {
+    const held = session.current;
+    if (!held || !draft) return;
+    if ("unavailable" in pendingSends) throw new Error(pendingSends.unavailable);
+    const { sends } = pendingSends;
+    let submission = held.sending;
+    if (!submission) {
+      const content = waitingDraftContent(draft);
+      if (content.length === 0) return;
+      submission = {
+        attachments: [],
+        body: draft.text.trim(),
+        content,
+        idempotencyKey: mutationIdempotencyKey("message"),
+      };
+      sends.claim(submission);
+      held.sending = submission;
+    }
+    try {
+      await client.dispatch(sendMessageCommand(input.threadId, submission));
+    } catch (error) {
+      if (unanswered(error)) {
+        if (session.current === held) setNotice("unconfirmed");
+        return;
+      }
+      held.sending = null;
+      forgetPending(sends, submission.idempotencyKey);
+      throw error;
+    }
+    held.sending = null;
+    forgetPending(sends, submission.idempotencyKey);
+    finish(held);
+  };
+
+  const shownNotice: EditNotice | null =
+    notice === "unconfirmed" ? notice : gone ? "taken" : draft?.conflict ? "changed" : notice;
+
   return {
     close,
-    dirty,
     draft,
-    notice,
+    notice: shownNotice,
     open,
-    removePart: (index: number) =>
-      draft && setDraft({ ...draft, parts: draft.parts.filter((_, at) => at !== index) }),
+    reload: () => {
+      if (draft?.conflict) {
+        setKept(reloadWaitingDraft(draft));
+        setNotice(null);
+      }
+    },
+    removePart: (index: number) => {
+      if (!draft) return;
+      setKept(removeWaitingDraftPart(draft, index));
+      void session.current?.opening.then(
+        (opened) => opened.touch(),
+        () => undefined,
+      );
+    },
+    row,
     save,
     saving,
+    sendAsNew,
     setText: (text: string) => {
       if (!draft) return;
-      setDraft({ ...draft, text });
-      void editor.current?.then(
+      setKept(setWaitingDraftText(draft, text));
+      void session.current?.opening.then(
         (opened) => opened.touch(),
         () => undefined,
       );
@@ -288,6 +392,7 @@ function WaitingRow({
   gone,
   input,
   onOpenChange,
+  pendingSends,
   position,
   viewerUserId,
 }: {
@@ -300,10 +405,12 @@ function WaitingRow({
   readonly gone: boolean;
   readonly input: WaitingInput;
   readonly onOpenChange: (open: boolean) => void;
+  readonly pendingSends: PendingSendsState;
   readonly position: string;
   readonly viewerUserId: string | null;
 }) {
-  const edit = useInPlaceEdit(client, input, onOpenChange);
+  const trigger = useRef<HTMLButtonElement | null>(null);
+  const edit = useInPlaceEdit(client, input, gone, pendingSends, onOpenChange, trigger);
   const [deciding, setDeciding] = useState<"approve" | "decline" | null>(null);
   const id = input.messageId;
   const otherDevice = input.lease.kind === "other" ? input.lease.deviceLabel : null;
@@ -327,11 +434,11 @@ function WaitingRow({
       setDeciding(decision);
       try {
         if (decision === "decline") {
-          if (edit.draft) edit.close();
+          edit.close();
           await client.decideTeamAsk({ decision, requestId: ask.requestId, teamId: ask.teamId });
           return;
         }
-        // Consent names the words the person is looking at: save them first.
+        // Consent names the version on screen: the editor's, saved first when changed.
         const revision = edit.draft ? await edit.save() : ask.revision;
         if (revision === null) return;
         await client.decideTeamAsk({
@@ -345,22 +452,6 @@ function WaitingRow({
       }
     });
 
-  const sendAsNew = () =>
-    act(id, async () => {
-      if (!edit.draft) return;
-      const content = draftContent(edit.draft);
-      if (content.length === 0) return;
-      await client.dispatch(
-        sendMessageCommand(input.threadId, {
-          attachments: [],
-          body: edit.draft.text,
-          content,
-          idempotencyKey: globalThis.crypto.randomUUID(),
-        }),
-      );
-      edit.close();
-    });
-
   const files = input.entry.attachments?.length ?? 0;
   const label =
     input.kind === "ask"
@@ -369,6 +460,19 @@ function WaitingRow({
           files === 0 ? "" : `, ${files} ${files === 1 ? "attachment" : "attachments"}`
         }`;
   const approving = ask !== null && (ask.approving || deciding === "approve");
+  const editButton = (name: string) => (
+    <button
+      aria-label={name}
+      className="queued__action queued__action--icon"
+      disabled={blocked}
+      onClick={startEditing}
+      ref={trigger}
+      title="Edit"
+      type="button"
+    >
+      <Icon name="pencil" />
+    </button>
+  );
 
   return (
     <li
@@ -381,6 +485,7 @@ function WaitingRow({
         .filter(Boolean)
         .join(" ")}
       onClick={clickWords}
+      ref={edit.row}
     >
       {edit.draft ? (
         <InPlaceEditor
@@ -391,12 +496,12 @@ function WaitingRow({
               : messageAuthorName(input.entry.author))
           }
           draft={edit.draft}
+          locked={edit.saving || edit.notice === "unconfirmed"}
           source={input.entry.teamSource ?? null}
           onCancel={edit.close}
           onRemovePart={edit.removePart}
           onSave={() => void edit.save()}
           onText={edit.setText}
-          saving={edit.saving}
         />
       ) : (
         <TranscriptMessage message={input.entry} queued reveal={null} viewerUserId={viewerUserId} />
@@ -404,12 +509,14 @@ function WaitingRow({
       {edit.draft ? (
         <EditStatus
           ask={ask !== null}
-          canSendAsNew={!ask && draftContent(edit.draft).length > 0}
+          canReload={edit.draft.conflict !== null}
+          canSendAsNew={!ask && waitingDraftContent(edit.draft).length > 0}
           disabled={blocked}
-          notice={gone ? "taken" : edit.notice}
+          notice={edit.notice}
           onCancel={edit.close}
+          onReload={edit.reload}
           onSave={() => void edit.save()}
-          onSendAsNew={sendAsNew}
+          onSendAsNew={() => act(id, edit.sendAsNew)}
           saving={edit.saving}
         />
       ) : null}
@@ -444,12 +551,21 @@ function WaitingRow({
                     <span aria-hidden className="waiting__sep">
                       ·
                     </span>
-                    <EditedMark client={client} input={ask} viewerUserId={viewerUserId} />
+                    <EditedMark
+                      client={client}
+                      edit={ask.edit}
+                      messageId={id}
+                      threadId={ask.threadId}
+                      viewerUserId={viewerUserId}
+                    />
                   </>
                 ) : null}
+                {ask.canEdit && !otherDevice && !edit.draft
+                  ? editButton(`Edit ${ask.asker}’s ask`)
+                  : null}
                 <button
                   className="queued__action waiting-ask__decline"
-                  disabled={blocked || gone}
+                  disabled={blocked || gone || edit.saving}
                   onClick={() => decide("decline", ask)}
                   type="button"
                 >
@@ -457,7 +573,13 @@ function WaitingRow({
                 </button>
                 <button
                   className="btn btn--small btn--primary waiting-ask__answer"
-                  disabled={blocked || gone || otherDevice !== null || edit.saving}
+                  disabled={
+                    blocked ||
+                    gone ||
+                    otherDevice !== null ||
+                    edit.saving ||
+                    edit.draft?.conflict != null
+                  }
                   onClick={() => decide("approve", ask)}
                   title={
                     otherDevice
@@ -466,7 +588,7 @@ function WaitingRow({
                   }
                   type="button"
                 >
-                  {edit.dirty ? "Save and answer" : "Answer"}
+                  {edit.draft?.dirty ? "Save and answer" : "Answer"}
                 </button>
               </span>
             </>
@@ -497,18 +619,7 @@ function WaitingRow({
                   Steer
                 </button>
               ) : null}
-              {input.canEdit ? (
-                <button
-                  aria-label="Edit this message"
-                  className="queued__action queued__action--icon"
-                  disabled={blocked}
-                  onClick={startEditing}
-                  title="Edit"
-                  type="button"
-                >
-                  <Icon name="pencil" />
-                </button>
-              ) : null}
+              {input.canEdit ? editButton("Edit this message") : null}
               {input.canCancel ? (
                 <button
                   aria-label="Remove this message from the queue"
@@ -527,7 +638,13 @@ function WaitingRow({
                   <span aria-hidden className="waiting__sep">
                     ·
                   </span>
-                  <EditedMark client={client} input={input} viewerUserId={viewerUserId} />
+                  <EditedMark
+                    client={client}
+                    edit={input.edit}
+                    messageId={id}
+                    threadId={input.threadId}
+                    viewerUserId={viewerUserId}
+                  />
                 </>
               ) : null}
             </>
@@ -567,23 +684,24 @@ function ReleaseAction({
 function InPlaceEditor({
   asker,
   draft,
+  locked,
   onCancel,
   onRemovePart,
   onSave,
   onText,
-  saving,
   source,
 }: {
   /** Someone else's words, a teammate's ask, are edited inside their card, under their name. */
   readonly asker: string | null;
-  readonly draft: Draft;
+  readonly draft: WaitingDraft;
+  /** The words are on their way, as an edit or a new message, and stay as sent. */
+  readonly locked: boolean;
   /** Where a teammate's ask came from, kept under its card while it is edited. */
   readonly source: TeamSource | null;
   readonly onCancel: () => void;
   readonly onRemovePart: (index: number) => void;
   readonly onSave: () => void;
   readonly onText: (text: string) => void;
-  readonly saving: boolean;
 }) {
   const field = useRef<HTMLTextAreaElement | null>(null);
   const hint = useId();
@@ -601,7 +719,7 @@ function InPlaceEditor({
       onCancel();
     } else if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
-      onSave();
+      if (!locked) onSave();
     }
   };
   const body = (
@@ -617,7 +735,7 @@ function InPlaceEditor({
                 <button
                   aria-label={`Don’t include ${name}`}
                   className="waiting-edit__part-remove"
-                  disabled={saving}
+                  disabled={locked}
                   onClick={() => onRemovePart(index)}
                   title="Don’t include"
                   type="button"
@@ -636,7 +754,7 @@ function InPlaceEditor({
           aria-label={asker ? `Edit ${asker}’s ask` : "Edit message"}
           onChange={(event) => onText(event.target.value)}
           onKeyDown={onKeyDown}
-          readOnly={saving}
+          readOnly={locked}
           ref={field}
           rows={1}
           value={draft.text}
@@ -701,19 +819,24 @@ function partName(part: ContentPart): string {
  */
 function EditStatus({
   ask,
+  canReload,
   canSendAsNew,
   disabled,
   notice,
   onCancel,
+  onReload,
   onSave,
   onSendAsNew,
   saving,
 }: {
   readonly ask: boolean;
+  /** A newer version came in under the words; it can replace them. */
+  readonly canReload: boolean;
   readonly canSendAsNew: boolean;
   readonly disabled: boolean;
   readonly notice: EditNotice | null;
   readonly onCancel: () => void;
+  readonly onReload: () => void;
   readonly onSave: () => void;
   readonly onSendAsNew: () => void;
   readonly saving: boolean;
@@ -726,24 +849,44 @@ function EditStatus({
             ? "Your agent took this message before you saved."
             : notice === "changed"
               ? `This ${ask ? "ask" : "message"} changed elsewhere before you saved.`
-              : "Couldn’t save your edit."}
+              : notice === "unconfirmed"
+                ? "Opensteer couldn’t confirm your message was sent."
+                : "Couldn’t save your edit."}
         </span>
         {notice === "failed" ? (
           <button className="queued__action" disabled={saving} onClick={onSave} type="button">
             Try again
           </button>
-        ) : canSendAsNew ? (
+        ) : notice === "unconfirmed" ? (
           <button
             className="queued__action"
             disabled={disabled}
             onClick={onSendAsNew}
             type="button"
           >
-            Send as new message
+            Send again
           </button>
-        ) : null}
-        <button className="queued__action" onClick={onCancel} type="button">
-          Discard
+        ) : (
+          <>
+            {canReload ? (
+              <button className="queued__action" onClick={onReload} type="button">
+                Reload
+              </button>
+            ) : null}
+            {canSendAsNew ? (
+              <button
+                className="queued__action"
+                disabled={disabled}
+                onClick={onSendAsNew}
+                type="button"
+              >
+                Send as new message
+              </button>
+            ) : null}
+          </>
+        )}
+        <button className="queued__action" disabled={saving} onClick={onCancel} type="button">
+          {notice === "unconfirmed" ? "Close" : "Discard"}
         </button>
       </div>
     );
@@ -757,7 +900,7 @@ function EditStatus({
         <kbd className="kbd">↵</kbd>
       </span>
       <span className="waiting-edit__touch">
-        <button className="queued__action" onClick={onCancel} type="button">
+        <button className="queued__action" disabled={saving} onClick={onCancel} type="button">
           Cancel
         </button>
         <button className="queued__action" disabled={saving} onClick={onSave} type="button">
@@ -765,137 +908,5 @@ function EditStatus({
         </button>
       </span>
     </div>
-  );
-}
-
-/** "Edited", which opens the message's versions, newest first. */
-function EditedMark({
-  client,
-  input,
-  viewerUserId,
-}: {
-  readonly client: HostClient;
-  readonly input: WaitingInput;
-  readonly viewerUserId: string | null;
-}) {
-  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
-  return (
-    <>
-      <button
-        aria-expanded={anchor !== null}
-        aria-haspopup="dialog"
-        className="waiting__edited"
-        onClick={(event) => setAnchor(anchor ? null : event.currentTarget)}
-        title={input.edit ? `Edited ${new Date(input.edit.editedAt).toLocaleString()}` : undefined}
-        type="button"
-      >
-        Edited
-      </button>
-      {anchor ? (
-        <RevisionHistory
-          anchor={anchor}
-          client={client}
-          input={input}
-          onClose={() => setAnchor(null)}
-          viewerUserId={viewerUserId}
-        />
-      ) : null}
-    </>
-  );
-}
-
-function RevisionHistory({
-  anchor,
-  client,
-  input,
-  onClose,
-  viewerUserId,
-}: {
-  readonly anchor: HTMLElement;
-  readonly client: HostClient;
-  readonly input: WaitingInput;
-  readonly onClose: () => void;
-  readonly viewerUserId: string | null;
-}) {
-  const [revisions, setRevisions] = useState<readonly MessageRevisionView[]>([]);
-  const [hasMore, setHasMore] = useState(false);
-  const [state, setState] = useState<"loading" | "ready" | "failed">("loading");
-  const { messageId, threadId } = input;
-  const load = useCallback(
-    (before?: number) => {
-      setState("loading");
-      client.listMessageRevisions(threadId, messageId, before).then(
-        (page) => {
-          setRevisions((held) => (before === undefined ? [] : held).concat(page.revisions));
-          setHasMore(page.hasMore);
-          setState("ready");
-        },
-        () => setState("failed"),
-      );
-    },
-    [client, messageId, threadId],
-  );
-  useEffect(() => load(), [load]);
-  const rows = useMemo(
-    () => messageRevisionRows(revisions, viewerUserId),
-    [revisions, viewerUserId],
-  );
-  return (
-    <Popover
-      align="end"
-      anchor={anchor}
-      className="revisions"
-      label="Edit history"
-      onClose={onClose}
-      role="dialog"
-    >
-      <p className="revisions__title">Edit history</p>
-      {rows.length > 0 ? (
-        <ol className="revisions__list">
-          {rows.map((row) => (
-            <li
-              className="revisions__row"
-              data-current={row.current || undefined}
-              key={row.revision}
-            >
-              <p className="revisions__meta">
-                <span className="revisions__who">{row.original ? "Original" : row.by}</span>
-                {[row.original && row.by !== "You" ? row.by : null, row.device]
-                  .filter((part) => part !== null)
-                  .map((part) => ` · ${part}`)
-                  .join("")}
-                {" · "}
-                <time dateTime={row.at} title={new Date(row.at).toLocaleString()}>
-                  {formatClockTime(row.at)}
-                </time>
-              </p>
-              <p className="revisions__text">{row.text}</p>
-            </li>
-          ))}
-        </ol>
-      ) : null}
-      {state === "failed" ? (
-        <p className="revisions__note" role="alert">
-          Couldn’t load the history.{" "}
-          <button
-            className="revisions__more"
-            onClick={() => load(revisions.at(-1)?.revision)}
-            type="button"
-          >
-            Try again
-          </button>
-        </p>
-      ) : state === "loading" ? (
-        <p className="revisions__note">Loading…</p>
-      ) : hasMore ? (
-        <button
-          className="revisions__more"
-          onClick={() => load(revisions.at(-1)?.revision)}
-          type="button"
-        >
-          Earlier versions
-        </button>
-      ) : null}
-    </Popover>
   );
 }

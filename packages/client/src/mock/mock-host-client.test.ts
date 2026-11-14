@@ -377,7 +377,7 @@ describe("MockHostClient", () => {
       lease: { leaseId: editor.leaseId },
     });
     const content = [{ text: "Draft a shorter reply", type: "text" as const }];
-    await expect(editor.save(content)).resolves.toEqual({
+    await expect(editor.save(content, 0)).resolves.toEqual({
       editedAt: fixedNow.toISOString(),
       revision: 1,
     });

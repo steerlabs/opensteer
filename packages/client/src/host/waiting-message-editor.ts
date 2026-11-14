@@ -79,8 +79,8 @@ export async function openWaitingMessageEditor(
   let ended = false;
   let renewing = false;
   let renewedAt = port.now();
-  // One key per attempted content until the Host answers it: a lost answer is
-  // retried as the same edit, and changed words are a new edit.
+  // One key per attempted edit until the Host answers it: a lost answer is
+  // retried as the same edit, and changed words or base are a new edit.
   let attempt: { readonly content: string; readonly key: string } | null = null;
 
   return {
@@ -99,15 +99,15 @@ export async function openWaitingMessageEditor(
           renewing = false;
         });
     },
-    async save(content: readonly ContentPart[]): Promise<MessageEdit> {
+    async save(content: readonly ContentPart[], expectedRevision: number): Promise<MessageEdit> {
       if (ended) throw new Error("This edit has already ended.");
-      const fingerprint = JSON.stringify(content);
+      const fingerprint = JSON.stringify([expectedRevision, content]);
       if (attempt?.content !== fingerprint)
         attempt = { content: fingerprint, key: `input-edit:${globalThis.crypto.randomUUID()}` };
       try {
         const result = await port.dispatch({
           content: [...content],
-          expectedRevision: revision,
+          expectedRevision,
           idempotencyKey: attempt.key,
           leaseId,
           messageId,

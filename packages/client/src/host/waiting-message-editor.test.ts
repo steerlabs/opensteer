@@ -100,7 +100,10 @@ it("edits a waiting message in place under this device's lease, renewing it only
     timeout: 1000,
   });
 
-  const edit = await editor.save([{ text: "Can you check Saturday's ferry times?", type: "text" }]);
+  const edit = await editor.save(
+    [{ text: "Can you check Saturday's ferry times?", type: "text" }],
+    editor.revision,
+  );
   expect(edit).toMatchObject({ ownerEdited: true, revision: 1 });
   expect(waiting()).toMatchObject({
     edit: { revision: 1 },
@@ -139,8 +142,8 @@ it("lets go of a take whose answer was lost, and retries a lost save as the same
   const editor = await client.editWaitingMessage(threadId, messageId);
   const words = [{ text: "Check the 9am ferry", type: "text" as const }];
   lost.add("thread.input.edit");
-  await expect(editor.save(words)).rejects.toThrow("could not be reached");
-  await expect(editor.save(words)).resolves.toMatchObject({ revision: 1 });
+  await expect(editor.save(words, 0)).rejects.toThrow("could not be reached");
+  await expect(editor.save(words, 0)).resolves.toMatchObject({ revision: 1 });
   const history = await client.listMessageRevisions(threadId, messageId);
   expect(history.revisions.map(({ revision }) => revision)).toEqual([1, 0]);
 });
@@ -163,7 +166,9 @@ it("holds a message another device is editing until this one takes it over, and 
   expect(waiting()!.lease).toEqual({ kind: "mine", leaseId: editor.leaseId });
 
   mock.mockOtherDeviceEdit(threadId, messageId, "Alex's iPad");
-  await expect(editor.save([{ text: "Mine", type: "text" }])).rejects.toMatchObject({
+  await expect(
+    editor.save([{ text: "Mine", type: "text" }], editor.revision),
+  ).rejects.toMatchObject({
     code: "conflict",
   });
   await client.releaseWaitingMessage(threadId, messageId);

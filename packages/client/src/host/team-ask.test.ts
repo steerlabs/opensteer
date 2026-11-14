@@ -214,7 +214,7 @@ it("approves only the version of the ask the person saw", async () => {
     const threadId = listed(mock.getSnapshot().needsYou, ask.requestId)!.task!.threadId;
     const messageId = listed(mock.getSnapshot().needsYou, ask.requestId)!.task!.messageId;
     const editor = await mock.editWaitingMessage(threadId, messageId);
-    await editor.save([{ type: "text", text: "Please review the pricing section only" }]);
+    await editor.save([{ type: "text", text: "Please review the pricing section only" }], 0);
     expect(listed(mock.getSnapshot().needsYou, ask.requestId)?.task?.revision).toBe(1);
     await expect(
       mock.decideTeamAsk({
