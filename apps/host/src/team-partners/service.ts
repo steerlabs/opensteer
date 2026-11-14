@@ -61,7 +61,12 @@ export class TeamPartners {
     this.#data = handler;
   }
 
-  async request(linkId: string, operation: TeamShareOperation): Promise<unknown> {
+  async request(
+    linkId: string,
+    operation: TeamShareOperation,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    signal?.throwIfAborted();
     const entry = [...this.#entries].find(
       (e) => e.id === linkId && e.active && e.peer.socket.readyState === 1,
     );
@@ -79,7 +84,7 @@ export class TeamPartners {
           void entry.peer.send({ type: "share.request", id, operation }).catch(reject);
         }),
         5000,
-        { timeoutError: () => partnerError("partner-unreachable") },
+        { ...(signal ? { signal } : {}), timeoutError: () => partnerError("partner-unreachable") },
       );
     } finally {
       this.#pending.delete(id);

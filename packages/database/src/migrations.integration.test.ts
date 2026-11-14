@@ -91,6 +91,40 @@ function migrationsBefore(name: string) {
 }
 
 describe("fresh personal/team lineage", () => {
+  it("preserves existing uploaded bytes and assigns partner-safe identities when adding shared files", async () => {
+    await migrateToLatest(database, migrationsBefore("0017_team_share_files"));
+    const { owner, channel, other } = await team();
+    const id = createId("teamBlob");
+    await sql`insert into team_blobs(id,channel_id,uploader_user_id,uploader_kind,client_upload_id,storage_key,filename,declared_type,verified_type,size_bytes,sha256,state,received_bytes)
+      values(${id},${channel},${owner},'human',${crypto.randomUUID()},${id},'notes.txt','text/plain','text/plain',3,${"a".repeat(64)},'ready',3)`.execute(
+      database,
+    );
+    await migrateToLatest(database);
+    const row = await database
+      .selectFrom("teamBlobs")
+      .selectAll()
+      .where("id", "=", id)
+      .executeTakeFirstOrThrow();
+    expect(row).toMatchObject({
+      storageKey: id,
+      channelId: channel,
+      remoteShareId: null,
+      previewSha256: null,
+      sizeBytes: "3",
+    });
+    expect(row.publicId).toMatch(/^[a-f0-9-]{36}$/);
+    await database
+      .insertInto("teamBlobs")
+      .values({ ...row, id: createId("teamBlob"), channelId: other })
+      .execute();
+    expect(
+      await database
+        .selectFrom("teamBlobs")
+        .select("storageKey")
+        .where("storageKey", "=", id)
+        .execute(),
+    ).toHaveLength(2);
+  });
   it("backfills principals for active and removed members without changing content ids", async () => {
     await migrateToLatest(database, migrationsBefore(teamPrincipalsMigrationName));
     const { owner, channel } = await team();

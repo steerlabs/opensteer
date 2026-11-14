@@ -219,8 +219,12 @@ agent requests or unread mentions. Agent context names the external team; shared
 be treated as an internal audience for knowledge.
 
 Sharing exposes the channel's full history, including past agent answers, and requires confirmation.
-The default channel and direct messages cannot be shared. Files and agent wakes in shared channels
-are not available yet. Either side may disconnect while the other is offline. The follower keeps
+The default channel and direct messages cannot be shared. File bytes stay on the uploader's team;
+the other team fetches originals and previews over the partner link and checks their size and digest
+before handing them to its own authenticated clients and agents. Remote files have no persistent
+cache, and stop working when the share ends; the uploader retains its own files. Transfers have
+per-share byte and concurrency limits. Agent wakes in shared channels are not available yet.
+Either side may disconnect while the other is offline. The follower keeps
 a readable archive, new writes stop, and the owner's channel continues. Disconnect cannot erase
 already received content. Re-sharing creates a fresh share and follower channel; it never merges
 archives or transfers ownership.

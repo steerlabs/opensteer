@@ -49,6 +49,7 @@ import { TeamOutboxStore, type TeamPushDelivery } from "@opensteer/database/team
 import { TeamRequestsStore } from "@opensteer/database/team-requests";
 import { TeamLinkService } from "./link-service.js";
 import { TeamFileService } from "./file-service.js";
+import { TeamShareFiles } from "../team-partners/files.js";
 import { TeamRealtimeHub } from "./realtime.js";
 
 export function assertTeamApiVersion(headers: Headers) {
@@ -132,6 +133,10 @@ export async function startTeamServices(options: TeamServiceOptions) {
   const requests = new TeamRequestsStore(access, chat);
   const files = new TeamFilesStore(access, { storageLimitBytes: options.storageLimitBytes });
   const fileService = new TeamFileService(files, access, options.dataDirectory);
+  if (shares) {
+    shares.files = new TeamShareFiles(shares, fileService);
+    fileService.remote = shares.files;
+  }
   const realtime = new TeamRealtimeHub(access, chat);
   const outbox = new TeamOutboxStore(access, (userId, channelId) =>
     realtime.visible(userId, channelId),

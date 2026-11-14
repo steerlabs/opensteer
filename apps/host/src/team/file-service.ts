@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { link, mkdir, open, readdir, rm, stat } from "node:fs/promises";
+import { link, mkdir, open, readFile, readdir, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { TeamActor, TeamAgentRequestId, TeamBlobId, TeamChannelId } from "@opensteer/core";
@@ -18,7 +18,33 @@ interface ActiveFileTransfer {
   readonly controller: AbortController;
   readonly authorize: () => Promise<boolean>;
 }
+type FileRow = Awaited<ReturnType<TeamFilesStore["authorized"]>>;
+export interface TeamRemoteFiles {
+  download(
+    row: FileRow,
+    part: "original" | "preview",
+    signal: AbortSignal,
+    authorize: () => Promise<boolean>,
+  ): Promise<Uint8Array>;
+}
+async function verifiedTeamPreview(input: string | Buffer) {
+  const info = await sharp(input, { limitInputPixels: 1024 * 1024 })
+    .metadata()
+    .catch(() => {
+      requireTeam(false, "Invalid image preview");
+    });
+  requireTeam(
+    info.width &&
+      info.height &&
+      info.width <= 1024 &&
+      info.height <= 1024 &&
+      ["jpeg", "png", "webp"].includes(info.format ?? ""),
+    "Invalid image preview",
+  );
+  return info.format === "jpeg" ? "image/jpeg" : info.format === "png" ? "image/png" : "image/webp";
+}
 export class TeamFileService {
+  remote: TeamRemoteFiles | undefined;
   readonly #directory: string;
   readonly #active = new Set<ActiveFileTransfer>();
   readonly #uploads = new Set<TeamBlobId>();
@@ -89,33 +115,21 @@ export class TeamFileService {
         combined,
       );
       let previewMediaType: "image/jpeg" | "image/png" | "image/webp" | null = null;
+      let previewSha256: string | null = null;
       if (metadata.previewSizeBytes) {
         requireTeam(
           parts.preview && metadata.mediaType.startsWith("image/"),
           "Image preview required",
         );
-        await this.#write(
+        const preview = await this.#write(
           pendingPreview,
           parts.preview,
           metadata.previewSizeBytes,
           teamPreviewMaxBytes,
           combined,
         );
-        const info = await sharp(pendingPreview, { limitInputPixels: 1024 * 1024 }).metadata();
-        requireTeam(
-          info.width &&
-            info.height &&
-            info.width <= 1024 &&
-            info.height <= 1024 &&
-            ["jpeg", "png", "webp"].includes(info.format ?? ""),
-          "Invalid image preview",
-        );
-        previewMediaType =
-          info.format === "jpeg"
-            ? "image/jpeg"
-            : info.format === "png"
-              ? "image/png"
-              : "image/webp";
+        previewSha256 = preview.sha256;
+        previewMediaType = await verifiedTeamPreview(pendingPreview);
       } else requireTeam(!parts.preview, "Unexpected preview");
       combined.throwIfAborted();
       requireTeam(await authorize());
@@ -137,6 +151,7 @@ export class TeamFileService {
         verifiedType: metadata.mediaType,
         previewSizeBytes: metadata.previewSizeBytes,
         previewMediaType,
+        previewSha256,
         previewStorageKey: metadata.previewSizeBytes ? `${row.storageKey}-preview` : null,
       });
     } catch (error) {
@@ -220,16 +235,39 @@ export class TeamFileService {
     };
     this.#active.add(transfer);
     try {
-      return await this.access.handoff(revision, transfer.authorize, () => {
-        requireTeam(!controller.signal.aborted);
-        stream = createReadStream(
-          join(this.#directory, part === "original" ? row.storageKey : row.previewStorageKey!),
-          {
-            highWaterMark: 64 * 1024,
-            signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
-          },
+      const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+      const bytes = row.remoteShareId
+        ? await this.remote?.download(row, part, combined, transfer.authorize)
+        : undefined;
+      if (row.remoteShareId) requireTeam(bytes, "Partner file transfer unavailable");
+      if (bytes && part === "preview")
+        requireTeam(
+          (await verifiedTeamPreview(Buffer.from(bytes))) === row.previewMediaType,
+          "Invalid image preview",
         );
-        stream.once("close", () => this.#active.delete(transfer));
+      // A message deletion during the partner fetch need not change the access revision.
+      if (row.remoteShareId) await transfer.authorize();
+      return await this.access.handoff(revision, transfer.authorize, () => {
+        combined.throwIfAborted();
+        stream = bytes
+          ? Readable.from(
+              (function* () {
+                for (let offset = 0; offset < bytes.length; offset += 64 * 1024)
+                  yield bytes.subarray(offset, offset + 64 * 1024);
+              })(),
+              { signal: combined },
+            )
+          : createReadStream(
+              join(this.#directory, part === "original" ? row.storageKey : row.previewStorageKey!),
+              {
+                highWaterMark: 64 * 1024,
+                signal: combined,
+              },
+            );
+        stream.once("close", () => {
+          controller.abort();
+          this.#active.delete(transfer);
+        });
         return {
           body: stream,
           sizeBytes: part === "original" ? Number(row.sizeBytes) : Number(row.previewSizeBytes),
@@ -244,9 +282,52 @@ export class TeamFileService {
         };
       });
     } catch (error) {
+      controller.abort();
       stream?.destroy();
       this.#active.delete(transfer);
       throw error;
+    }
+  }
+  async prepareShare(channelId: TeamChannelId) {
+    const rows = await this.access.database
+      .selectFrom("teamBlobs")
+      .selectAll()
+      .where("channelId", "=", channelId)
+      .where("remoteShareId", "is", null)
+      .where("state", "=", "ready")
+      .where("previewStorageKey", "is not", null)
+      .where("previewSha256", "is", null)
+      .execute();
+    for (const row of rows) {
+      const bytes = await readFile(join(this.#directory, row.previewStorageKey!));
+      requireTeam(
+        bytes.length === Number(row.previewSizeBytes) && bytes.length <= teamPreviewMaxBytes,
+      );
+      await this.access.database
+        .updateTable("teamBlobs")
+        .set({ previewSha256: createHash("sha256").update(bytes).digest("hex") })
+        .where("id", "=", row.id)
+        .execute();
+    }
+  }
+  async readPartnerChunk(
+    row: FileRow | Awaited<ReturnType<TeamFilesStore["begin"]>>,
+    part: "original" | "preview",
+    offset: number,
+    maximum: number,
+  ) {
+    const key = part === "original" ? row.storageKey : row.previewStorageKey;
+    requireTeam(key);
+    const file = await open(join(this.#directory, key), "r");
+    try {
+      const size = Number(part === "original" ? row.sizeBytes : row.previewSizeBytes);
+      requireTeam(offset <= size);
+      const bytes = Buffer.alloc(Math.min(maximum, size - offset));
+      const { bytesRead } = await file.read(bytes, 0, bytes.length, offset);
+      requireTeam(bytesRead === bytes.length, "File size mismatch");
+      return bytes.toString("base64");
+    } finally {
+      await file.close();
     }
   }
   /** Removes every file no message can reach, so freed space counts again once this returns. */
@@ -261,10 +342,19 @@ export class TeamFileService {
         .limit(100)
         .execute();
       for (const row of rows) {
-        // The row keeps the bytes reserved until they are gone, and lets a crash retry.
-        await rm(join(this.#directory, row.storageKey), { force: true });
-        if (row.previewStorageKey)
-          await rm(join(this.#directory, row.previewStorageKey), { force: true });
+        // Re-shared local files keep their bytes until the last channel releases them.
+        const retained = await this.access.database
+          .selectFrom("teamBlobs")
+          .select("id")
+          .where("storageKey", "=", row.storageKey)
+          .where("id", "!=", row.id)
+          .where("state", "!=", "deleting")
+          .executeTakeFirst();
+        if (!retained) {
+          await rm(join(this.#directory, row.storageKey), { force: true });
+          if (row.previewStorageKey)
+            await rm(join(this.#directory, row.previewStorageKey), { force: true });
+        }
         await this.access.database
           .deleteFrom("teamBlobs")
           .where("id", "=", row.id)

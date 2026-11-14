@@ -18,8 +18,11 @@ import {
   type TeamChatStore,
 } from "@opensteer/database/team-chat";
 import type { TeamPartners } from "./service.js";
+import { teamShareFileView } from "@opensteer/database/team-files";
+import type { TeamShareFiles } from "./files.js";
 
 export class TeamShares implements TeamChatRelay {
+  files: TeamShareFiles | undefined;
   readonly store: TeamSharesStore;
   readonly #connecting = new Map<string, Promise<void>>();
   readonly #pulling = new Map<string, Promise<void>>();
@@ -60,10 +63,12 @@ export class TeamShares implements TeamChatRelay {
         if (op.op === "end" || op.op === "offer") return send();
         const revision = this.chat.access.revision;
         const authorize = () =>
-          this.store.db.transaction().execute(async (t) => {
-            await this.store.scoped(t, id, op.shareId, op.generation);
-            return true;
-          });
+          op.op === "file" && this.files
+            ? this.files.authorized(id, op).then(() => true)
+            : this.store.db.transaction().execute(async (t) => {
+                await this.store.scoped(t, id, op.shareId, op.generation);
+                return true;
+              });
         await authorize();
         await this.chat.access.handoff(revision, authorize, send);
       },
@@ -104,7 +109,8 @@ export class TeamShares implements TeamChatRelay {
   async approve(actor: TeamActor, id: string) {
     await this.deliverOffer(await this.store.approve(actor, id));
   }
-  deliverOffer(s: Share) {
+  async deliverOffer(s: Share) {
+    if (s.channelId) await this.files?.files.prepareShare(s.channelId);
     return this.partners.request(s.partnerLinkId, {
       op: "offer",
       historyFromShareId: s.historyFromShareId,
@@ -150,8 +156,11 @@ export class TeamShares implements TeamChatRelay {
       });
   }
   async receive(linkId: string, op: TeamShareOperation): Promise<unknown> {
-    this.admit(linkId, op.shareId);
+    if (op.op !== "file") this.admit(linkId, op.shareId);
     switch (op.op) {
+      case "file":
+        requireTeam(this.files);
+        return this.files.receive(linkId, op);
       case "offer":
         return this.store.incomingOffer(linkId, op);
       case "accept":
@@ -474,7 +483,6 @@ export class TeamShares implements TeamChatRelay {
     const s = await this.store.local(actor, input.channelId);
     if (!s) return undefined;
     requireTeam(!input.agentRequestId, "Agent requests in shared channels are not supported yet");
-    requireTeam(input.attachmentIds.length === 0, "Files are not supported in shared channels yet");
     if (actor.kind === "agent") {
       requireTeam(input.linkId);
       await this.store.db
@@ -484,6 +492,22 @@ export class TeamShares implements TeamChatRelay {
     const root = input.threadRootId
       ? await this.publicId(input.channelId, input.threadRootId)
       : null;
+    if (input.attachmentIds.length) await this.files?.files.prepareShare(input.channelId);
+    const rows = input.attachmentIds.length
+      ? await this.store.db
+          .selectFrom("teamBlobs")
+          .selectAll()
+          .where("channelId", "=", input.channelId)
+          .where("id", "in", [...input.attachmentIds])
+          .execute()
+      : [];
+    requireTeam(rows.length === input.attachmentIds.length);
+    const attachments = input.attachmentIds.map((id) =>
+      teamShareFileView(
+        rows.find((r) => r.id === id)!,
+        this.chat.identity.teamId,
+      ),
+    );
     const message = await this.write(
       actor,
       s,
@@ -494,6 +518,7 @@ export class TeamShares implements TeamChatRelay {
         clientMessageId: input.clientMessageId,
         bodyMarkdown: input.bodyMarkdown,
         threadRootPublicId: root,
+        attachments,
       },
       input,
     );

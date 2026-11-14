@@ -3,6 +3,7 @@ import { Migrator, type MigrationProvider, type MigrationResultSet } from "kysel
 import { migrateTeamAgentAsks } from "./team-agent-asks-migration.js";
 import { migrateTeamAgents } from "./team-agent-migration.js";
 import { migrateTeamChannelShares } from "./team-shares-migration.js";
+import { migrateTeamShareFiles } from "./team-share-files-migration.js";
 import { migrateTeamPartnerLinks } from "./team-partner-links-migration.js";
 import { migrateTeamPrincipals } from "./team-principals-migration.js";
 import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
@@ -166,6 +167,7 @@ export function migrationProvider(): MigrationProvider {
         [teamPrincipalsMigrationName]: { up: migrateTeamPrincipals },
         [teamPartnerLinksMigrationName]: { up: migrateTeamPartnerLinks },
         "0016_team_channel_shares": { up: migrateTeamChannelShares },
+        "0017_team_share_files": { up: migrateTeamShareFiles },
       };
     },
   };

@@ -2445,6 +2445,9 @@ export interface TeamMessagePinTable {
   pinnedAt: Timestamp;
 }
 export interface TeamBlobTable {
+  publicId: Generated<string>;
+  remoteShareId: Generated<string | null>;
+  previewSha256: Generated<string | null>;
   agentLinkId: Generated<TeamLinkId | null>;
   personalDeploymentId: Generated<DeploymentId | null>;
   callerRunId: Generated<RunId | null>;
@@ -2691,6 +2694,7 @@ export interface TeamShareParticipantTable {
   state: "active" | "removed";
 }
 export interface TeamShareRelayTable {
+  attachmentPublicIds: Generated<string[]>;
   agentLinkId: Generated<TeamLinkId | null>;
   personalDeploymentId: Generated<DeploymentId | null>;
   callerRunId: Generated<RunId | null>;

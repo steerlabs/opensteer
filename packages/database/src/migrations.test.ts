@@ -23,6 +23,7 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     "0014_team_principals",
     "0015_team_partner_links",
     "0016_team_channel_shares",
+    "0017_team_share_files",
   ]);
   // Kysely runs migrations in name order, so a later one must also sort later.
   expect(names).toEqual(names.toSorted());

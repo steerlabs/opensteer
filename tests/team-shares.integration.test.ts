@@ -390,6 +390,7 @@ it("fences every partner operation to the authenticated share and rejects forged
           clientMessageId: randomUUID(),
           bodyMarkdown: "Impersonation",
           threadRootPublicId: null,
+          attachments: [],
         },
       }),
     ).rejects.toMatchObject({ reason: "not-found" });
@@ -436,6 +437,7 @@ it("fences every partner operation to the authenticated share and rejects forged
           editedAt: null,
           deletedAt: null,
           pinnedBy: null,
+          attachments: [],
         },
       ],
     };
@@ -482,6 +484,7 @@ it("fences every partner operation to the authenticated share and rejects forged
           clientMessageId: randomUUID(),
           bodyMarkdown: "Removed",
           threadRootPublicId: null,
+          attachments: [],
         },
       }),
     ).rejects.toMatchObject({ reason: "not-found" });

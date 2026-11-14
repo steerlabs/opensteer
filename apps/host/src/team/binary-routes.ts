@@ -77,7 +77,15 @@ export function registerTeamBinaryRoutes(
         const { blobId, part } = schema
           .strictObject({ blobId: TeamBlobIdSchema, part: schema.enum(["original", "preview"]) })
           .parse(request.params);
-        const file = await options.files.download(actor, blobId, part);
+        const controller = new AbortController();
+        reply.raw.once("close", () => controller.abort());
+        const file = await options.files.download(
+          actor,
+          blobId,
+          part,
+          undefined,
+          controller.signal,
+        );
         for (const [name, value] of Object.entries(file.headers)) void reply.header(name, value);
         void reply.header("content-length", file.sizeBytes);
         return reply.send(file.body);
