@@ -1253,11 +1253,37 @@ describe("real Chromium pages follow the person's view", () => {
   }, 60_000);
 
   it("ignores a size the view sends for a tab that just closed", async () => {
-    const step = <T>(name: string, operation: Promise<T>) =>
-      withTimeout(operation, 5_000, {
-        timeoutError: () => new Error(`Closing-tab size scenario stalled at ${name}`),
-      });
+    const trace: Record<string, unknown>[] = [];
+    followReport.closingTabTrace = trace;
+    let failureState: (() => unknown) | undefined;
+    const record = (step: string, facts: Record<string, unknown> = {}) =>
+      trace.push({ at: performance.now(), step, ...facts });
+    const step = async <T>(name: string, operation: Promise<T>) => {
+      record(`${name}:started`);
+      try {
+        const result = await withTimeout(operation, 5_000, {
+          timeoutError: () => new Error(`Closing-tab size scenario stalled at ${name}`),
+        });
+        record(`${name}:finished`);
+        return result;
+      } catch (error) {
+        record(`${name}:failed`, { error: String(error), state: failureState?.() });
+        throw error;
+      }
+    };
     const session = await step("session startup", startFollowSession());
+    failureState = () => ({ surfaces: session.ledger.snapshot() });
+    const closeSurface = session.ledger.closeSurface.bind(session.ledger);
+    vi.spyOn(session.ledger, "closeSurface").mockImplementation(async (id) => {
+      record("ledger close:started", { surfaceId: id });
+      try {
+        await closeSurface(id);
+        record("ledger close:finished", { surfaceId: id });
+      } catch (error) {
+        record("ledger close:failed", { surfaceId: id, error: String(error) });
+        throw error;
+      }
+    });
     const root = session.rootSurfaceId;
     await step("stream subscription", session.controller.handle({ type: "stream.subscribe" }));
 
@@ -1297,6 +1323,32 @@ describe("real Chromium pages follow the person's view", () => {
     );
     const agentClosedSurface = session.ledger.surfaceIdForTarget(String(agentClosed.targetId));
     if (!agentClosedSurface) throw new Error("Missing the agent's tab");
+    const binding = session.ledger.binding(agentClosedSurface);
+    if (!binding) throw new Error("Missing the agent's page binding");
+    failureState = () => ({
+      surfaces: session.ledger.snapshot(),
+      agentPageClosed: binding.page.isClosed(),
+    });
+    const closePage = binding.page.close.bind(binding.page);
+    vi.spyOn(binding.page, "close").mockImplementation(async () => {
+      record("agent page close:started", { closed: binding.page.isClosed() });
+      try {
+        await closePage();
+        record("agent page close:finished", { closed: binding.page.isClosed() });
+      } catch (error) {
+        record("agent page close:failed", { error: String(error) });
+        throw error;
+      }
+    });
+    const pageClosed = () => record("agent page closed event");
+    binding.page.onClose(pageClosed);
+    cleanup.push(async () => binding.page.offClose(pageClosed));
+    const detach = binding.cdp.detach.bind(binding.cdp);
+    vi.spyOn(binding.cdp, "detach").mockImplementation(async () => {
+      record("agent page detach:started");
+      await detach();
+      record("agent page detach:finished");
+    });
     await step(
       "agent tab close",
       session.agent("Target.closeTarget", {

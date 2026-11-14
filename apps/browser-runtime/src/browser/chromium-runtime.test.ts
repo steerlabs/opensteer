@@ -1,4 +1,5 @@
 import type { Page, Request } from "playwright-core";
+import { loadPage } from "./page-load.test-support.js";
 import { nativeRuntimeProfile } from "./native-profile.test-support.js";
 import { browserCookieFromCdp, browserCookieToCdp } from "@opensteer/browser-profile/cookies";
 import { once } from "node:events";
@@ -392,21 +393,13 @@ describe("real Chromium runtime", () => {
     cleanup.push(() => ledger.close());
     const binding = ledger.binding(ledger.snapshot()[0]!.id)!;
     const fragmentUrl = `${site.origin}/plain#/document/42`;
-    await binding.cdp.send("Page.navigate", { url: fragmentUrl });
+    await loadPage(binding.cdp, "Page.navigate", { url: fragmentUrl }, browserTestSignal());
     await waitForLedgerState(
       ledger,
       () => ledger.toRecord(binding.surface.id)?.url === fragmentUrl,
     );
     expect(ledger.toRecord(binding.surface.id)?.url).toBe(fragmentUrl);
-    const reloaded = new Promise<void>((resolve) => {
-      const loaded = () => {
-        binding.cdp.off("Page.loadEventFired", loaded);
-        resolve();
-      };
-      binding.cdp.on("Page.loadEventFired", loaded);
-    });
-    await binding.cdp.send("Page.reload");
-    await withBrowserTestSignal(reloaded);
+    await loadPage(binding.cdp, "Page.reload", {}, browserTestSignal());
     expect(ledger.toRecord(binding.surface.id)?.url).toBe(fragmentUrl);
     const longUrl = `${site.origin}/plain?q=${"x".repeat(9000)}#/document/43`;
     await binding.cdp.send("Page.navigate", { url: longUrl });
