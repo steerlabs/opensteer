@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
 import { relative } from "node:path";
 import { BaseSequencer, type TestSpecification } from "vitest/node";
-import { assignShards, unknownDuration } from "../.github/scripts/ci-sharding.mjs";
+import {
+  assignShards,
+  integrationContention,
+  unknownDuration,
+} from "../.github/scripts/ci-sharding.mjs";
 
 const durations = JSON.parse(
   readFileSync(new URL("../.github/scripts/ci-durations.json", import.meta.url), "utf8"),
@@ -23,7 +27,13 @@ export default class CiSequencer extends BaseSequencer {
     if (!shard) throw new Error("Missing shard configuration");
     const paths = files.map((file) => relative(this.ctx.config.root, file.moduleId));
     const selected = new Set<string>(
-      assignShards(paths, durations[lane], shard.count, unknownDuration[lane])[shard.index - 1],
+      assignShards(
+        paths,
+        durations[lane],
+        shard.count,
+        unknownDuration[lane],
+        lane === "integration" ? integrationContention : undefined,
+      )[shard.index - 1],
     );
     return files.filter((file) => selected.has(relative(this.ctx.config.root, file.moduleId)));
   }

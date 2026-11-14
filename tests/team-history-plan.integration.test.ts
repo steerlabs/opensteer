@@ -21,16 +21,18 @@ it("hydrates a page of reply summaries without scanning unrelated history", asyn
         instructionsMarkdown: "",
       })
       .execute();
-    await sql`insert into team_messages(channel_id,author_user_id,author_kind,client_message_id,body_markdown,plain_text,change_seq)
-      select ${channel},${owner},'human',gen_random_uuid(),'root','root',n from generate_series(1,100000) n`.execute(
+    // The seed already knows the channel ordinals; avoid 120,000 trigger lookups.
+    await sql`insert into team_messages(channel_id,author_user_id,author_kind,client_message_id,body_markdown,plain_text,change_seq,created_seq)
+      select ${channel},${owner},'human',gen_random_uuid(),'root','root',n,n from generate_series(1,100000) n`.execute(
       team.database,
     );
     const root = await team.database
       .selectFrom("teamMessages")
       .select("id")
       .orderBy("id")
+      .limit(1)
       .executeTakeFirstOrThrow();
-    await sql`insert into team_messages(channel_id,thread_root_id,author_user_id,author_kind,client_message_id,body_markdown,plain_text,change_seq) select ${channel},${root.id},${owner},'human',gen_random_uuid(),'reply','reply',100000+n from generate_series(1,20000) n`.execute(
+    await sql`insert into team_messages(channel_id,thread_root_id,author_user_id,author_kind,client_message_id,body_markdown,plain_text,change_seq,created_seq) select ${channel},${root.id},${owner},'human',gen_random_uuid(),'reply','reply',100000+n,100000+n from generate_series(1,20000) n`.execute(
       team.database,
     );
     expect(
