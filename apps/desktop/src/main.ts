@@ -1,6 +1,10 @@
 import { deploymentPolicy } from "@opensteer/core";
 import { DesktopTeamLinks } from "./app/team-links.js";
-import { HttpAccountTeamsClient, NativeTeamEntry } from "@opensteer/client/team";
+import {
+  HttpAccountTeamsClient,
+  NativeTeamEntry,
+  verifyTeamEndpoint,
+} from "@opensteer/client/team";
 import { DesktopTeamSessions } from "./app/team-sessions.js";
 import { PersonalDataReset } from "./supervisor/personal-data-reset.js";
 import { desktopPersonalDataReset } from "./app/personal-data-reset.js";
@@ -544,6 +548,9 @@ async function runDesktop(
     clearDeploymentSession: (deploymentId) => hostNetwork.clearDeploymentSession(deploymentId),
   });
   const nativeAuth = new NativeOAuthManager({
+    beforeHostChange: async (connection) => {
+      hostTransport.closeDeploymentConnections(connection.authority.document.deploymentId);
+    },
     beforeAccountIdentityChange: async (next) => {
       if (!deviceLifecycle) throw new Error("Device membership is still loading.");
       await deviceLifecycle.leaveAccountMemberships(next ?? undefined);
@@ -615,6 +622,19 @@ async function runDesktop(
         await deviceLifecycle?.sessionLost(attachment.resolved.deploymentId);
     },
   };
+  const sessionsForAttachment = (attachment: import("@opensteer/client/auth").HostAttachment) => {
+    const sessions: HostSession = new HostSession({
+      ...deviceSessionOptions,
+      attachment,
+      onDispose: () => sessionOwners.delete(sessions),
+      clearDeploymentSession: (id) => hostNetwork.clearDeploymentSession(id),
+      exchange: hostSessionExchange,
+      localOwner: personal,
+      oauth: nativeAuth,
+    });
+    sessionOwners.add(sessions);
+    return sessions;
+  };
   const hostSessions = new HostSession({
     ...deviceSessionOptions,
     accountCredentialRejected: () =>
@@ -648,6 +668,7 @@ async function runDesktop(
     network: hostNetwork,
     projection: accessProjection,
     sessions: hostSessions,
+    pinnedSessions: sessionsForAttachment,
   });
   hostTransport.onAttachmentInvalidated(() => appOriginPolicy.setAttachedHost(null));
   const deploymentUpdates = new Map<DeploymentId, DesktopUpdatesService>();
@@ -661,15 +682,7 @@ async function runDesktop(
       localRuntime: { current: async () => desktopLocalHostRuntime(await personal.current()) },
       network: hostNetwork,
       sessions: (attachment) => {
-        const sessions = new HostSession({
-          ...deviceSessionOptions,
-          attachment,
-          clearDeploymentSession: (id) => hostNetwork.clearDeploymentSession(id),
-          exchange: hostSessionExchange,
-          localOwner: personal,
-          oauth: nativeAuth,
-        });
-        sessionOwners.add(sessions);
+        const sessions = sessionsForAttachment(attachment);
         return {
           assertSessionAllowed: (deploymentId) => sessions.assertSessionAllowed(deploymentId),
           sessionEnded: (selected) => sessions.sessionEnded(selected),
@@ -1053,7 +1066,7 @@ async function runDesktop(
     hostSession: {
       abandonAuthorization: (deploymentId) => hostSessions.abandonAuthorization(deploymentId),
       closeCurrent: async () => hostTransport.closeAllConnections(),
-      establish: (deploymentId) => hostSessions.establish(deploymentId),
+      establish: (deploymentId, interactive) => hostSessions.establish(deploymentId, interactive),
       subscribe: (listener) => hostSessions.subscribe(listener),
     },
     personal: {
@@ -1142,7 +1155,14 @@ async function runDesktop(
       : null,
     teamSessions: loaded.config.accountUrl
       ? new DesktopTeamSessions({
-          entry: new NativeTeamEntry({ oauth: nativeAuth, catalog: deploymentCatalog }),
+          entry: new NativeTeamEntry({
+            oauth: nativeAuth,
+            verify: (origin) =>
+              verifyTeamEndpoint(origin, { fetch: serviceNetwork.fetch.bind(serviceNetwork) }),
+            catalog: deploymentCatalog,
+            bootstrap: (connection) =>
+              hostTransport.bootstrapTeam(connection.authority.document.deploymentId),
+          }),
           fetch: serviceNetwork.fetch.bind(serviceNetwork),
         })
       : null,

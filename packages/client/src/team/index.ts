@@ -18,3 +18,4 @@ export * from "../mock/mock-team-world.js";
 export * from "./team-memberships.js";
 
 export * from "./ask-status.js";
+export * from "./team-runtime-owner.js";

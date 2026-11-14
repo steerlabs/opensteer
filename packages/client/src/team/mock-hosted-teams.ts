@@ -198,6 +198,7 @@ export class MockTeamWorld {
       },
       capabilities: [
         "team-session-exchange-v1",
+        "team-native-browser-return-v1",
         "team-reusable-invites-v1",
         "team-invite-native-continuation-v1",
       ],

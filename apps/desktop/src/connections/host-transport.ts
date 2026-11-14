@@ -1,3 +1,4 @@
+import { unwrapRpcResult } from "@opensteer/client/host";
 import { BootstrapNoticeDiagnostics } from "@opensteer/shared/bootstrapDiagnostics";
 import { forEachBoundedResponseChunk, readBoundedText } from "@opensteer/shared/boundedJson";
 import { streamBoundedResponse } from "@opensteer/shared/responseStream";
@@ -10,12 +11,13 @@ import { join } from "node:path";
 import type { DeploymentId } from "@opensteer/core";
 import {
   hostApi,
+  HostApiErrorSchema,
   type HostApiCommandInput,
   type HostApiCommandOutput,
   teamPreviewMaxBytes,
   teamUploadMaxBytes,
 } from "@opensteer/protocol";
-import type { HostSessionRecovery } from "@opensteer/client/auth";
+import type { HostAttachment, HostSessionRecovery } from "@opensteer/client/auth";
 import {
   HostTransport,
   HostTransportError,
@@ -99,6 +101,7 @@ interface BinaryTransfer {
   readonly transport: HostTransport;
   readonly ownerId: number;
   readonly attachmentKey: string;
+  readonly assertCurrent: () => void;
   readonly directory: string;
   readonly path: string;
   readonly input: DesktopHostBinaryOpenInput;
@@ -179,6 +182,7 @@ export class DesktopHostTransport extends HostTransport {
     readonly log?: (event: string, fields: Record<string, string | number | boolean>) => void;
     readonly projection: Pick<DesktopAccessProjection, "read">;
     readonly sessions?: HostSessionRecovery;
+    readonly pinnedSessions?: (attachment: HostAttachment) => HostSessionRecovery;
     readonly withPreparedEnrollment?: <T>(
       deploymentId: DeploymentId,
       command: HostApiCommandInput,
@@ -208,7 +212,7 @@ export class DesktopHostTransport extends HostTransport {
         current: async () => desktopLocalHostRuntime(await options.localRuntime.current()),
       },
       network: options.network,
-      ...(options.sessions === undefined ? {} : { sessions: options.sessions }),
+      ...(options.pinnedSessions === undefined ? {} : { sessions: options.pinnedSessions }),
       expectedKind: "team",
     };
     this.#unsubscribeCatalog = options.catalog.subscribe(() => {
@@ -259,6 +263,24 @@ export class DesktopHostTransport extends HostTransport {
     const parsed = DesktopSetDeploymentRouteInputSchema.parse(input);
     await this.#catalog.setPreferredEndpoint(parsed);
     return this.selection();
+  }
+
+  async bootstrapTeam(deploymentId: DeploymentId) {
+    const response = await this.request({
+      expectedDeploymentId: deploymentId,
+      path: "/v1/rpc/team.bootstrap.get",
+      method: "POST",
+      body: "{}",
+      headers: { contentType: "application/json" },
+    });
+    return unwrapRpcResult(
+      z
+        .discriminatedUnion("ok", [
+          z.object({ ok: z.literal(true), data: hostApi["team.bootstrap.get"].success }),
+          z.object({ ok: z.literal(false), error: HostApiErrorSchema }),
+        ])
+        .parse(JSON.parse(response.body)),
+    ).member;
   }
 
   /**
@@ -397,17 +419,20 @@ export class DesktopHostTransport extends HostTransport {
         throw new HostTransportError("deployment-changed");
       const attachmentKey = transport.currentKey();
       if (!attachmentKey) throw new Error("No deployment is attached.");
+      const assertCurrent = transport.retainAuthorization(selected);
       directory = await fs.mkdtemp(join(tmpdir(), "opensteer-attachment-"));
       await ensurePrivateDirectory(directory);
       const filePath = join(directory, "bytes");
       await fs.writeFile(filePath, new Uint8Array(), { mode: 0o600 });
       await setPrivateFileMode(filePath);
+      assertCurrent();
       const transferId = globalThis.crypto.randomUUID();
       const controller = new AbortController();
       const result = DesktopHostBinaryOpenResultSchema.parse({ transferId });
       const transfer: BinaryTransfer = {
         transport,
         attachmentKey,
+        assertCurrent,
         controller,
         directory,
         input: parsed,
@@ -421,6 +446,9 @@ export class DesktopHostTransport extends HostTransport {
         size: 0,
       };
       this.#binary.set(transferId, transfer);
+      selected.resolved.teamRuntime?.own(() => {
+        void this.closeBinary(ownerId, { transferId }).catch(() => undefined);
+      });
       this.#touchBinary(transferId, transfer);
       if (transfer.outcome) void transfer.outcome.catch(() => undefined);
       directory = null;
@@ -441,6 +469,7 @@ export class DesktopHostTransport extends HostTransport {
     }
     this.#assertBinaryAttachment(transfer);
     await fs.appendFile(transfer.path, parsed.bytes);
+    this.#assertBinaryAttachment(transfer);
     transfer.size += parsed.bytes.byteLength;
   }
 
@@ -450,9 +479,11 @@ export class DesktopHostTransport extends HostTransport {
     this.#touchBinary(parsed.transferId, transfer);
     if (transfer.input.method !== "POST") throw new Error("This transfer cannot be finished.");
     this.#assertBinaryAttachment(transfer);
+    let result: DesktopHostHttpResponse;
     try {
       const body = await openAsBlob(transfer.path);
-      return await transfer.transport.exchange(
+      this.#assertBinaryAttachment(transfer);
+      result = await transfer.transport.exchange(
         {
           body,
           expectedAttachmentKey: transfer.attachmentKey,
@@ -477,9 +508,12 @@ export class DesktopHostTransport extends HostTransport {
             status: response.status,
           }),
       );
+      this.#assertBinaryAttachment(transfer);
     } finally {
-      await this.closeBinary(ownerId, parsed);
+      if (this.#binary.has(parsed.transferId)) await this.closeBinary(ownerId, parsed);
     }
+    transfer.assertCurrent();
+    return result;
   }
 
   async readBinary(
@@ -494,11 +528,14 @@ export class DesktopHostTransport extends HostTransport {
     transfer.size = outcome.sizeBytes;
     this.#assertBinaryAttachment(transfer);
     const handle = await fs.open(transfer.path, "r");
+    let result: import("@opensteer/protocol/desktop").DesktopHostBinaryReadResult;
     try {
+      this.#assertBinaryAttachment(transfer);
       const bytes = new Uint8Array(Math.min(binaryChunkBytes, transfer.size - transfer.offset));
       const { bytesRead } = await handle.read(bytes, 0, bytes.length, transfer.offset);
+      this.#assertBinaryAttachment(transfer);
       transfer.offset += bytesRead;
-      return DesktopHostBinaryReadResultSchema.parse({
+      result = DesktopHostBinaryReadResultSchema.parse({
         bytes: bytes.subarray(0, bytesRead),
         contentType: outcome.contentType,
         done: transfer.offset >= transfer.size,
@@ -512,6 +549,8 @@ export class DesktopHostTransport extends HostTransport {
     } finally {
       await handle.close();
     }
+    this.#assertBinaryAttachment(transfer);
+    return result;
   }
 
   async closeBinary(ownerId: number, input: unknown): Promise<void> {
@@ -609,6 +648,8 @@ export class DesktopHostTransport extends HostTransport {
   }
 
   #assertBinaryAttachment(transfer: BinaryTransfer): void {
+    transfer.assertCurrent();
+    transfer.controller.signal.throwIfAborted();
     if (transfer.transport.currentKey() !== transfer.attachmentKey)
       throw new HostTransportError("deployment-changed");
   }
@@ -955,6 +996,7 @@ export class DesktopHostTransport extends HostTransport {
     this.#disposed = true;
     this.#unsubscribeCatalog();
     this.closeAllConnections();
+    for (const team of this.#teams.values()) team.retire();
     this.#teams.clear();
     this.#summaries.clear();
   }
@@ -962,6 +1004,7 @@ export class DesktopHostTransport extends HostTransport {
   async #transport(deploymentId?: DeploymentId, summary = false): Promise<HostTransport> {
     if (this.#disposed) throw new HostTransportError("cancelled");
     if (deploymentId === undefined) return this;
+    const owner = this.#teamOptions.credentials?.teamRuntime?.();
     const catalog = await this.#catalog.load();
     if (this.#disposed) throw new HostTransportError("cancelled");
     const connection = catalog.deployments.find(
@@ -981,11 +1024,17 @@ export class DesktopHostTransport extends HostTransport {
       }
       return transport;
     }
+    if (owner?.signal.aborted) throw new HostTransportError("deployment-changed");
     const existing = this.#teams.get(deploymentId);
     if (existing) return existing;
     const team = new HostTransport({ ...this.#teamOptions, deploymentId });
     team.onAttachmentInvalidated(() => this.#closeTransportSockets(team));
     this.#teams.set(deploymentId, team);
+    owner?.own(() => {
+      this.#closeTransportSockets(team);
+      team.retire();
+      this.#teams.delete(deploymentId);
+    });
     return team;
   }
 

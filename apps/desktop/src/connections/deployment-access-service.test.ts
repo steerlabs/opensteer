@@ -339,7 +339,7 @@ describe("DeploymentAccessService", () => {
     await settle();
 
     expect(fixture.establish).toHaveBeenCalledOnce();
-    expect(fixture.establish).toHaveBeenLastCalledWith(remote.id);
+    expect(fixture.establish).toHaveBeenLastCalledWith(remote.id, false);
 
     fixture.emitPersonal({ ...readyPersonalStatus, deploymentId: local.id });
     await settle();
@@ -388,7 +388,7 @@ describe("DeploymentAccessService", () => {
     finishClose?.();
     await selecting;
     expect(fixture.establish).toHaveBeenCalledOnce();
-    expect(fixture.establish).toHaveBeenCalledWith(remote.id);
+    expect(fixture.establish).toHaveBeenCalledWith(remote.id, true);
     service.dispose();
   });
 
@@ -694,6 +694,7 @@ describe("DeploymentAccessService", () => {
 
     expect(fixture.ports.hostSession.closeCurrent).toHaveBeenCalled();
     expect(fixture.establish).toHaveBeenCalledTimes(2);
+    expect(fixture.establish).toHaveBeenLastCalledWith(target.id, false);
     expect(service.snapshot().deployments[0]?.status).toBe("connected");
     service.dispose();
   });
@@ -1362,7 +1363,7 @@ describe("DeploymentAccessService", () => {
         expect(service.snapshot().deployments[0]?.availableActions).toEqual(["select"]);
         await service.select(lab.id);
         expect(fixture.select).toHaveBeenCalledWith(lab.id);
-        expect(fixture.establish).toHaveBeenCalledWith(lab.id);
+        expect(fixture.establish).toHaveBeenCalledWith(lab.id, true);
         service.dispose();
       },
     );

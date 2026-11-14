@@ -1,3 +1,4 @@
+import { TeamPaneGate } from "./team-pane-gate.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams, useSearchParams } from "react-router";
 import { TeamChannelIdSchema, UserIdSchema } from "@opensteer/core";
@@ -29,9 +30,17 @@ const noPreviews: ReadonlyMap<string, string> = new Map();
 export function TeamRoutes() {
   const { teamId = "", "*": splat = "" } = useParams();
   const [section, ...rest] = splat.split("/").filter(Boolean);
-  if (section === "c") return <ChannelRoute rest={rest} teamId={teamId} />;
-  if (!section) return <TeamLanding teamId={teamId} />;
-  return <TeamPage rest={rest} section={section ?? ""} teamId={teamId} />;
+  return (
+    <TeamPaneGate teamId={teamId}>
+      {section === "c" ? (
+        <ChannelRoute rest={rest} teamId={teamId} />
+      ) : !section ? (
+        <TeamLanding teamId={teamId} />
+      ) : (
+        <TeamPage rest={rest} section={section} teamId={teamId} />
+      )}
+    </TeamPaneGate>
+  );
 }
 
 /** A team's own address lands in #general once its sidebar has loaded. */
@@ -39,7 +48,7 @@ function TeamLanding({ teamId }: { readonly teamId: string }) {
   const team = useTeamAttachment(teamId);
   const snapshot = useTeamSession(team?.client ?? null);
   const channels = snapshot?.sidebar?.channels ?? null;
-  if (!team) return <TeamUnavailable teamId={teamId} />;
+  if (!team?.client) return <TeamUnavailable teamId={teamId} />;
   if (!channels) return null;
   const general =
     channels.find((row) => row.channel.id === snapshot?.bootstrap?.generalChannelId) ??

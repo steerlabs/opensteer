@@ -1,3 +1,7 @@
+import { HostVersionMismatchError } from "./deployment-catalog.js";
+import { TeamEntryOutcomeError } from "../team/native-team-entry.js";
+import { teamEntryRefusalOutcome } from "@opensteer/protocol";
+import { TeamEntryRefusedError } from "../auth/native-oauth.js";
 import {
   apiNegotiation,
   apiVersionHeader,
@@ -12,7 +16,11 @@ import {
   type HostCredentialProvider,
   type LocalHostRuntimeSource,
 } from "./host-attachment-fence.js";
-import type { HostSessionRecovery, SelectedAttachment } from "../auth/host-session.js";
+import type {
+  HostAttachment,
+  HostSessionRecovery,
+  SelectedAttachment,
+} from "../auth/host-session.js";
 import {
   HostResponseDeadline,
   hostResponseHeadersTimeoutMs,
@@ -102,21 +110,44 @@ export class HostTransport {
   readonly #network: HostNetwork;
   readonly #expectedKind: "personal" | "team" | undefined;
   readonly #sessions: HostSessionRecovery | null;
+  /** Sessions this transport made from a factory are its own to dispose; shared ones are not. */
+  readonly #ownsSessions: boolean;
   readonly #requestControllers = new Set<AbortController>();
   readonly #sockets = new Set<HostNetworkSocket>();
+  #sessionGeneration = 0;
   #activeRequests = 0;
   #activeAppStreams = 0;
 
   constructor(options: HostTransportOptions) {
+    const owner =
+      options.expectedKind === "team" ? options.credentials?.teamRuntime?.() : undefined;
+    owner?.own(() => this.invalidateSession());
     this.#fence = new HostAttachmentFence({
       catalog: options.catalog,
-      ...(options.credentials === undefined ? {} : { credentials: options.credentials }),
+      ...(options.credentials === undefined
+        ? {}
+        : {
+            credentials: owner
+              ? {
+                  authorizationHeader: (connection) =>
+                    options.credentials!.authorizationHeader(connection),
+                  teamRuntime: () => owner,
+                }
+              : options.credentials,
+          }),
       ...(options.deploymentId === undefined ? {} : { deploymentId: options.deploymentId }),
       localRuntime: options.localRuntime,
     });
     this.#network = options.network;
     this.#expectedKind = options.expectedKind;
-    this.#sessions = options.sessions ?? null;
+    this.#ownsSessions = typeof options.sessions === "function";
+    this.#sessions =
+      typeof options.sessions === "function"
+        ? options.sessions({
+            current: () => this.#fence.current(),
+            currentKey: () => this.#fence.currentKey(),
+          })
+        : (options.sessions ?? null);
     this.#fence.onInvalidated((reason) => {
       for (const controller of this.#requestControllers)
         controller.abort(new HostTransportError("deployment-changed", { cause: reason }));
@@ -149,6 +180,16 @@ export class HostTransport {
     return this.#fence.subscribe(listener);
   }
 
+  retainAuthorization(selected: SelectedAttachment): () => void {
+    const generation = this.#sessionGeneration;
+    return () => {
+      if (generation !== this.#sessionGeneration || selected.resolved.key !== this.currentKey())
+        throw new HostTransportError("deployment-changed");
+      if (selected.resolved.teamRuntime?.signal.aborted)
+        throw new HostTransportError("deployment-changed");
+    };
+  }
+
   /** Only a real attachment change; `subscribe` also hears ordinary catalog notices. */
   onAttachmentInvalidated(release: (reason: string) => void): () => void {
     return this.#fence.onInvalidated(release);
@@ -169,6 +210,7 @@ export class HostTransport {
     ) => Promise<Result>,
     kind: "request" | "app-stream" = "request",
   ): Promise<Result> {
+    const sessionGeneration = this.#sessionGeneration;
     const appStream = kind === "app-stream";
     if (
       appStream
@@ -183,6 +225,9 @@ export class HostTransport {
     else this.#activeRequests += 1;
     try {
       const selected = await this.current();
+      if (sessionGeneration !== this.#sessionGeneration)
+        throw new HostTransportError("deployment-changed");
+      const assertCurrent = this.retainAuthorization(selected);
       const { resolved, connection } = selected;
       const deploymentKind = connection.authority.document.deploymentShape.kind;
       const negotiatesVersion =
@@ -226,7 +271,12 @@ export class HostTransport {
       )
         throw new HostTransportError("deployment-changed");
       const selectionGeneration = this.#fence.generation;
-      const deadline = new HostResponseDeadline(request.signal);
+      const owner = resolved.teamRuntime;
+      const deadline = new HostResponseDeadline(
+        owner
+          ? AbortSignal.any([owner.signal, ...(request.signal ? [request.signal] : [])])
+          : request.signal,
+      );
       const controller = deadline.controller;
       this.#requestControllers.add(controller);
       if (selectionGeneration !== this.#fence.generation) {
@@ -255,8 +305,15 @@ export class HostTransport {
             deadline,
           );
         }
-        return await deadline.wait(read(response, { signal: controller.signal, onProgress }));
+        assertCurrent();
+        const result = await deadline.wait(
+          read(response, { signal: controller.signal, onProgress }),
+        );
+        assertCurrent();
+        return result;
       } catch (error) {
+        if (owner?.signal.aborted)
+          throw new HostTransportError("deployment-changed", { cause: error });
         if (request.signal?.aborted) throw request.signal.reason ?? error;
         if (controller.signal.aborted) {
           throw controller.signal.reason instanceof Error
@@ -291,18 +348,25 @@ export class HostTransport {
     if (this.#sockets.size >= maximumOpenSockets) {
       throw new Error("The Host WebSocket limit is full.");
     }
-    const { connection, resolved } = await this.current();
+    const sessionGeneration = this.#sessionGeneration;
+    const selected = await this.current();
+    const { connection, resolved } = selected;
+    const assertCurrent = this.retainAuthorization(selected);
+    if (sessionGeneration !== this.#sessionGeneration)
+      throw new HostTransportError("deployment-changed");
     const selectionGeneration = this.#fence.generation;
     let network: HostNetworkSocket | null = null;
     let released = false;
     const pending: { close: { readonly code?: number; readonly reason?: string } | null } = {
       close: null,
     };
+    let releaseOwner: (() => void) | undefined;
     const socket: HostNetworkSocket = {
       close: (code, reason) => {
         if (released) return;
         released = true;
         this.#sockets.delete(socket);
+        releaseOwner?.();
         if (network) network.close(code, reason);
         else {
           pending.close = {
@@ -323,6 +387,11 @@ export class HostTransport {
       apiVersionQueryParameter,
       String(apiNegotiation(connection.authority.document.deploymentShape.kind).apiVersion),
     );
+    assertCurrent();
+    this.#sockets.add(socket);
+    releaseOwner = resolved.teamRuntime?.own(() =>
+      socket.close(deploymentChangedCloseCode, "Deployment changed"),
+    );
     network = this.#network.openWebSocket(
       {
         authorization: resolved.authorization,
@@ -338,15 +407,26 @@ export class HostTransport {
       },
       {
         close: (code, reason) => {
-          if (!released && code === 4003 && reason === "Session ended")
+          const current = !released && sessionGeneration === this.#sessionGeneration;
+          if (current && !released && code === 4003 && reason === "Session ended")
             this.#sessions?.sessionEnded?.({ connection, resolved });
           released = true;
+          releaseOwner?.();
           this.#sockets.delete(socket);
-          bound.close(code, reason);
+          bound.close(
+            current ? code : deploymentChangedCloseCode,
+            current ? reason : "Deployment changed",
+          );
         },
-        error: (message) => bound.error(message),
-        message: (data) => bound.message(data),
-        open: () => bound.open(),
+        error: (message) => {
+          if (!released && sessionGeneration === this.#sessionGeneration) bound.error(message);
+        },
+        message: (data) => {
+          if (!released && sessionGeneration === this.#sessionGeneration) bound.message(data);
+        },
+        open: () => {
+          if (!released && sessionGeneration === this.#sessionGeneration) bound.open();
+        },
       },
     );
     if (selectionGeneration !== this.#fence.generation && !released) {
@@ -357,14 +437,20 @@ export class HostTransport {
     const pendingClose = pending.close;
     if (pendingClose) network.close(pendingClose.code, pendingClose.reason);
     if (released) return socket;
-    this.#sockets.add(socket);
     return socket;
   }
 
   invalidateSession(): void {
+    this.#sessionGeneration += 1;
     for (const controller of this.#requestControllers)
       controller.abort(new HostTransportError("deployment-changed"));
     this.closeAllSockets();
+  }
+
+  /** Ends this transport for good: its requests, sockets and any session it made. */
+  retire(): void {
+    this.invalidateSession();
+    if (this.#ownsSessions) this.#sessions?.dispose?.();
   }
 
   closeAllSockets(): void {
@@ -381,6 +467,7 @@ export class HostTransport {
     signal: AbortSignal,
   ): Promise<Response> {
     signal.throwIfAborted();
+    resolved.teamRuntime?.assertCurrent();
     let response: Response;
     try {
       response = await this.#network.request({
@@ -442,6 +529,36 @@ export class HostTransport {
       });
       const outcome = await Promise.race([sessions.recoverUnauthorized(selected), abandoned]);
       signal.throwIfAborted();
+      if (outcome instanceof TeamEntryOutcomeError && outcome.outcome.status === "update-required")
+        return Response.json(
+          {
+            ok: false,
+            error: {
+              code: "conflict",
+              message: outcome.message,
+              retryable: false,
+              reason:
+                outcome.outcome.error instanceof HostVersionMismatchError
+                  ? outcome.outcome.error.code
+                  : "host-too-old",
+            },
+          },
+          { status: 426 },
+        );
+      if (outcome instanceof TeamEntryRefusedError)
+        return Response.json(
+          {
+            ok: false,
+            error: {
+              code: "forbidden",
+              message: outcome.message,
+              reason: outcome.reason,
+              retryable: teamEntryRefusalOutcome(outcome.reason) !== "membership",
+            },
+          },
+          { status: 403 },
+        );
+      if (outcome === "unavailable") throw new HostTransportError("unreachable");
       if (outcome !== "recovered") return refusal;
     } finally {
       if (abortRecovery) signal.removeEventListener("abort", abortRecovery);
@@ -461,6 +578,7 @@ export class HostTransport {
    * requests, sockets, and the local Runner target exactly once.
    */
   async current(): Promise<SelectedAttachment> {
+    const generation = this.#sessionGeneration;
     const selected = await this.#fence.current();
     await this.#sessions?.assertSessionAllowed?.(selected.resolved.deploymentId);
     if (
@@ -468,6 +586,7 @@ export class HostTransport {
       selected.connection.authority.document.deploymentShape.kind !== this.#expectedKind
     )
       throw new HostTransportError("deployment-changed");
+    if (generation !== this.#sessionGeneration) throw new HostTransportError("deployment-changed");
     return selected;
   }
 
@@ -488,7 +607,7 @@ export interface HostTransportOptions {
   readonly localRuntime: LocalHostRuntimeSource;
   readonly network: HostNetwork;
   readonly expectedKind?: "personal" | "team";
-  readonly sessions?: HostSessionRecovery;
+  readonly sessions?: HostSessionRecovery | ((attachment: HostAttachment) => HostSessionRecovery);
 }
 
 /**

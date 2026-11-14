@@ -156,3 +156,6 @@ renews or silently reopens, and ending it leaves task grants, holds and observat
 owner authority ends on Host restart and is never restored. Lease and retention rules are in
 [Computer use](computer-use.md). Computer app approvals use authenticated owner sessions on every
 device, and only the Host admits local MCP launches against current owner consent.
+
+[Team entry](teams.md#entering-a-team) defines Account-bound credentials, runtime retirement,
+entry supersession and the limits of membership refusals. These grant no personal Host access.

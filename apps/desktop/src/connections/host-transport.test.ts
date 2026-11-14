@@ -1,3 +1,7 @@
+import { TeamRuntimeOwner } from "@opensteer/client/team";
+import * as privateFiles from "@opensteer/shared/privateFiles";
+import { promises as fs } from "node:fs";
+import { HostTransport as SharedHostTransport } from "@opensteer/client/connections";
 import { createDesktopHostFetch } from "../../../web/src/desktop/desktop-host-transport.js";
 import { readComputerFacts } from "../../../web/src/desktop/computer-facts.js";
 import type { DeploymentAccessDeployment } from "@opensteer/protocol/desktop";
@@ -32,6 +36,233 @@ import { testPersonalHostRuntime } from "../supervisor/personal-host-runtime-tes
 import { DesktopLocalRunnerTargetResolver } from "../supervisor/local-runner-authority.js";
 
 describe("DesktopHostTransport", () => {
+  it.each(["open", "read", "close", "cancel-close", "write", "finish-close"] as const)(
+    "withholds binary IPC delivery after Account invalidation during %s",
+    async (stage) => {
+      const team = deployment("Team", "https://team.example");
+      const catalog = catalogStore([team], team.authority.document.deploymentId);
+      const owner = new TeamRuntimeOwner(null);
+      const transport = desktopHostTransport({
+        catalog,
+        credentials: {
+          teamRuntime: () => owner,
+          authorizationHeader: async () => "Bearer team",
+        },
+        network: {
+          request: async () => new Response("private bytes"),
+          openWebSocket: () => socket(),
+        },
+      });
+      const upload = stage === "write" || stage === "finish-close";
+      if (stage === "open") {
+        const mode = privateFiles.setPrivateFileMode;
+        const spy = vi
+          .spyOn(privateFiles, "setPrivateFileMode")
+          .mockImplementation(async (...args) => {
+            await mode(...args);
+            owner.retire();
+          });
+        try {
+          await expect(
+            transport.openBinary(1, {
+              expectedDeploymentId: team.authority.document.deploymentId,
+              method: "GET",
+              path: "/v1/team/files/test/original",
+              headers: {},
+            }),
+          ).rejects.toMatchObject({ code: "deployment-changed" });
+        } finally {
+          spy.mockRestore();
+          transport.dispose();
+        }
+        return;
+      }
+      const transfer = await transport.openBinary(1, {
+        expectedDeploymentId: team.authority.document.deploymentId,
+        method: upload ? "POST" : "GET",
+        path: upload ? "/v1/team/files/upload/tch_test" : "/v1/team/files/test/original",
+        headers: upload ? { contentType: "application/octet-stream" } : {},
+      });
+      try {
+        if (stage === "write") {
+          const append = fs.appendFile.bind(fs);
+          vi.spyOn(fs, "appendFile").mockImplementation(async (...args) => {
+            await append(...args);
+            owner.retire();
+          });
+        } else if (stage === "finish-close") {
+          const rm = fs.rm.bind(fs);
+          vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+            await rm(...args);
+            owner.retire();
+          });
+        } else {
+          const open = fs.open.bind(fs);
+          vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+            const handle = await open(...args);
+            if (stage === "read") {
+              const read = handle.read.bind(handle);
+              vi.spyOn(handle, "read").mockImplementation(
+                async (...input: Parameters<typeof read>) => {
+                  const result = await read(...input);
+                  owner.retire();
+                  return result;
+                },
+              );
+            } else {
+              const close = handle.close.bind(handle);
+              vi.spyOn(handle, "close").mockImplementation(async () => {
+                await close();
+                if (stage === "cancel-close") await transport.closeBinary(1, transfer);
+                else owner.retire();
+              });
+            }
+            return handle;
+          });
+        }
+        const pending =
+          stage === "write"
+            ? transport.writeBinary(1, { ...transfer, bytes: new Uint8Array([1]) })
+            : upload
+              ? transport.finishBinary(1, transfer)
+              : transport.readBinary(1, transfer);
+        await expect(pending).rejects.toMatchObject({
+          code: stage === "cancel-close" ? "cancelled" : "deployment-changed",
+        });
+      } finally {
+        vi.restoreAllMocks();
+        await transport.closeBinaryForOwner(1);
+        transport.dispose();
+      }
+    },
+  );
+
+  it.each([
+    ["desktop", "credential"],
+    ["shared", "credential"],
+    ["desktop", "response"],
+    ["shared", "response"],
+  ])("fences initial %s resolution at %s", async (surface, stage) => {
+    const team = deployment("Team", "https://team.example");
+    const catalog = catalogStore([team], team.authority.document.deploymentId);
+    const gate = Promise.withResolvers<void>();
+    const read = vi.fn();
+    const owner = new TeamRuntimeOwner(null);
+    const credentials = {
+      teamRuntime: () => owner,
+      authorizationHeader: async () => {
+        read();
+        if (stage === "credential") await gate.promise;
+        return "Bearer outgoing";
+      },
+    };
+    const request = vi.fn(async () => {
+      if (stage === "response") await gate.promise;
+      return Response.json({});
+    });
+    const network = { request, openWebSocket: () => socket() };
+    const transport =
+      surface === "desktop"
+        ? desktopHostTransport({ catalog, credentials, network })
+        : new SharedHostTransport({
+            catalog,
+            credentials,
+            network,
+            localRuntime: { current: async () => null },
+          });
+    try {
+      const pending = transport.exchange(
+        { headers: {}, method: "GET", path: "/v1/bootstrap" },
+        async (r) => r.text(),
+      );
+      const rejected = expect(pending).rejects.toMatchObject({ code: "deployment-changed" });
+      await vi.waitFor(
+        () => expect(stage === "credential" ? read : request).toHaveBeenCalledOnce(),
+        { timeout: 1000 },
+      );
+      owner.retire();
+      gate.resolve();
+      await rejected;
+      expect(request).toHaveBeenCalledTimes(stage === "credential" ? 0 : 1);
+    } finally {
+      gate.resolve();
+      transport.closeAllSockets();
+      if (transport instanceof DesktopHostTransport) transport.dispose();
+    }
+  });
+
+  it.each([false, true])(
+    "isolates personal transports during team invalidation (team: %s)",
+    async (withTeam) => {
+      const personal = deployment("Home", "https://home.example", "personal");
+      const manual = deployment("Work", "https://work.example", "personal");
+      const team = deployment("Team", "https://team.example");
+      const catalog = catalogStore(
+        [personal, manual, ...(withTeam ? [team] : [])],
+        personal.authority.document.deploymentId,
+      );
+      const gate = Promise.withResolvers<Response>();
+      const started: HostNetworkRequest[] = [];
+      const closes = new Map<DeploymentId, ReturnType<typeof vi.fn>>();
+      const owner = new TeamRuntimeOwner(null);
+      const transport = desktopHostTransport({
+        catalog,
+        credentials: { teamRuntime: () => owner, authorizationHeader: async () => null },
+        network: {
+          request: async (input) => {
+            started.push(input);
+            return gate.promise.then((response) => response.clone());
+          },
+          openWebSocket: (input) => {
+            const close = vi.fn();
+            closes.set(input.deploymentId, close);
+            return { ...socket(), close };
+          },
+        },
+      });
+      try {
+        await transport.openWebSocket(1, { path: "/v1/realtime" }, () => {});
+        if (withTeam)
+          await transport.openWebSocket(
+            2,
+            { expectedDeploymentId: team.authority.document.deploymentId, path: "/v1/realtime" },
+            () => {},
+          );
+        const request = { headers: {}, method: "POST", path: "/v1/rpc/attention.get", body: "{}" };
+        const selected = expect(transport.request(request)).resolves.toBeDefined();
+        const summary = expect(
+          transport.request({
+            ...request,
+            expectedDeploymentId: manual.authority.document.deploymentId,
+          }),
+        ).resolves.toBeDefined();
+        void selected.catch(() => {});
+        void summary.catch(() => {});
+        const teamRequest = withTeam
+          ? transport.request({
+              ...request,
+              expectedDeploymentId: team.authority.document.deploymentId,
+            })
+          : null;
+        const rejected = teamRequest
+          ? expect(teamRequest).rejects.toMatchObject({ code: "deployment-changed" })
+          : null;
+        await vi.waitFor(() => expect(started).toHaveLength(withTeam ? 3 : 2), { timeout: 1000 });
+        owner.retire();
+        expect(closes.get(personal.authority.document.deploymentId)).not.toHaveBeenCalled();
+        if (withTeam)
+          expect(closes.get(team.authority.document.deploymentId)).toHaveBeenCalledOnce();
+        gate.resolve(Response.json({ ok: true, data: {} }));
+        await selected;
+        await summary;
+        await rejected;
+      } finally {
+        gate.resolve(Response.json({}));
+        transport.dispose();
+      }
+    },
+  );
+
   it("observes binding only after a successful Host command, using the request's exact Deployment", async () => {
     const selected = deployment("Home", "https://home.connect.opensteer.test");
     const observeCommand = vi.fn(async () => undefined);

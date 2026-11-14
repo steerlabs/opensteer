@@ -1,3 +1,5 @@
+import type { TeamRuntimeOwner } from "./team-runtime-owner.js";
+import { bootstrapMembershipRefused, teamEntryRefusalOutcome } from "@opensteer/protocol";
 import type { TeamFileUpload } from "./files.js";
 import {
   OpensteerError,
@@ -63,13 +65,16 @@ export interface TeamSessionSnapshot {
   readonly search: SearchPage | null;
   readonly sendNotices: Readonly<Record<string, readonly TeamAskOutcome[]>>;
   readonly error: string | null;
+  readonly refusalReason?: string | undefined;
   readonly ended: "removed" | "sign-in" | "viewer-changed" | null;
   readonly contentGeneration: number;
 }
 export interface TeamSessionOptions {
+  readonly owner?: TeamRuntimeOwner;
   readonly scope: TeamCacheScope;
   readonly rpc: HostApiClient;
   readonly persistence: TeamPersistence;
+  /** Upgrade-only state, adopted after authenticated bootstrap confirms this viewer. */
   readonly connect: () => WebSocketClient;
   readonly readFile?: (
     file: z.infer<typeof TeamFileSchema>,
@@ -77,7 +82,7 @@ export interface TeamSessionOptions {
     signal?: AbortSignal,
   ) => Promise<Blob>;
   readonly uploadFile?: (input: TeamFileUpload) => Promise<z.infer<typeof TeamFileSchema>>;
-  readonly notify?: (entry: TeamSidebar["channels"][number]) => void;
+  readonly notify?: (entry: TeamSidebar["channels"][number], current: () => boolean) => void;
   /** Spreads reconnects; tests pin it. */
   readonly random?: () => number;
 }
@@ -93,7 +98,15 @@ const healthyConnectionMs = 30_000;
 
 export class TeamSessionClient {
   readonly rpc: HostApiClient;
+  readonly owner: TeamRuntimeOwner | undefined;
+  readonly #controller = new AbortController();
+  readonly signal: AbortSignal;
+  readonly #releaseOwner: (() => void) | undefined;
   readonly #options: TeamSessionOptions;
+  /** Who this session reads as; unlike the bootstrap, it survives the session ending. */
+  get scope(): TeamCacheScope {
+    return this.#options.scope;
+  }
   readonly #listeners = new Set<() => void>();
   #snapshot: TeamSessionSnapshot = {
     agentRecipients: [],
@@ -138,8 +151,13 @@ export class TeamSessionClient {
   #searchInput: SearchInput | null = null;
   #searchMore: Promise<void> | null = null;
   constructor(options: TeamSessionOptions) {
+    this.owner = options.owner;
+    this.signal = options.owner
+      ? AbortSignal.any([options.owner.signal, this.#controller.signal])
+      : this.#controller.signal;
     this.#options = options;
-    this.rpc = options.rpc;
+    this.rpc = options.owner ? options.owner.rpc(options.rpc) : options.rpc;
+    this.#releaseOwner = options.owner?.own(() => this.dispose());
   }
   readonly getSnapshot = (): TeamSessionSnapshot => this.#snapshot;
   readonly subscribe = (listener: () => void): (() => void) => {
@@ -158,7 +176,7 @@ export class TeamSessionClient {
       this.#loading = (async () => {
         const [saved, bootstrap] = await Promise.all([
           this.#options.persistence.load(this.#options.scope),
-          this.rpc["team.bootstrap.get"]({}).then(unwrapRpcResult),
+          this.#bootstrap(),
         ]);
         if (lifetime !== this.#lifetime) return;
         if (
@@ -281,16 +299,29 @@ export class TeamSessionClient {
       (ceiling * (1 + (this.#options.random ?? Math.random)())) / 2,
     );
   }
+  async #bootstrap() {
+    try {
+      return await this.rpc["team.bootstrap.get"]({}).then(unwrapRpcResult);
+    } catch (error) {
+      if (error instanceof OpensteerError && !error.reason && bootstrapMembershipRefused(error))
+        await this.remove("removed");
+      throw error;
+    }
+  }
   async #authorizationFailure(error: unknown): Promise<void> {
     if (!(error instanceof OpensteerError)) return;
-    if (error.code === "unauthorized") await this.remove("sign-in");
-    else if (error.code === "forbidden" || error.code === "not_found") await this.remove("removed");
+    const refusal = teamEntryRefusalOutcome(error.reason);
+    if (refusal === "retryable") return;
+    if (refusal === "membership") {
+      this.#update({ refusalReason: error.reason });
+      await this.remove("removed");
+    } else if (error.code === "unauthorized") await this.remove("sign-in");
   }
   /** Whether the viewer still belongs here; a failed check settles false. */
   async #revalidate(): Promise<boolean> {
     const lifetime = this.#lifetime;
     try {
-      const bootstrap = await this.rpc["team.bootstrap.get"]({}).then(unwrapRpcResult);
+      const bootstrap = await this.#bootstrap();
       if (lifetime !== this.#lifetime) return false;
       if (
         bootstrap.teamId !== this.#options.scope.teamDeploymentId ||
@@ -659,6 +690,7 @@ export class TeamSessionClient {
     if (notify && previous) this.#notifySidebar(previous, next);
   }
   #notifySidebar(previous: TeamSidebar, next: TeamSidebar): void {
+    const lifetime = this.#lifetime;
     for (const entry of next.channels) {
       const held = previous.channels.find((row) => row.channel.id === entry.channel.id);
       const notify =
@@ -673,7 +705,10 @@ export class TeamSessionClient {
             ? 1
             : -1) > 0)
       )
-        this.#options.notify?.(entry);
+        this.#options.notify?.(
+          entry,
+          () => !this.#disposed && !this.#removed && lifetime === this.#lifetime,
+        );
     }
   }
   async #refreshSidebarRows(channelIds: readonly TeamChannelId[]): Promise<void> {
@@ -1025,13 +1060,18 @@ export class TeamSessionClient {
     if (!this.#options.readFile) throw new Error("The platform has no team file transport.");
     const lifetime = this.#lifetime,
       contentGeneration = this.#contentGeneration;
-    const blob = await this.#options.readFile(file, part, signal);
+    const blob = await this.#options.readFile(
+      file,
+      part,
+      signal ? AbortSignal.any([signal, this.signal]) : this.signal,
+    );
     if (blob.size > (open ? teamUploadMaxBytes : teamPreviewMaxBytes))
       throw new Error("Team file exceeds its byte bound.");
     if (
       lifetime !== this.#lifetime ||
       contentGeneration !== this.#contentGeneration ||
-      this.#removed
+      this.#removed ||
+      this.#disposed
     )
       return null;
     if (blob.size <= 32 * 1024 * 1024) {
@@ -1051,7 +1091,10 @@ export class TeamSessionClient {
     if (!this.#options.uploadFile) throw new Error("The platform has no team upload transport.");
     const lifetime = this.#lifetime,
       generation = this.#contentGeneration;
-    const file = await this.#options.uploadFile(input);
+    const file = await this.#options.uploadFile({
+      ...input,
+      signal: input.signal ? AbortSignal.any([input.signal, this.signal]) : this.signal,
+    });
     if (lifetime !== this.#lifetime || generation !== this.#contentGeneration)
       throw new Error("Team access changed during the upload.");
     return file;
@@ -1090,8 +1133,11 @@ export class TeamSessionClient {
     if (this.#removal) return this.#removal;
     this.#removal = this.#persist
       .catch(() => undefined)
-      .then(() => this.#options.persistence.remove(this.#options.scope));
+      .then(() =>
+        ended === "sign-in" ? undefined : this.#options.persistence.remove(this.#options.scope),
+      );
     this.#removed = true;
+    this.#controller.abort(new Error("Team session ended."));
     this.#lifetime++;
     this.disconnect();
     this.#files.clear();
@@ -1115,9 +1161,10 @@ export class TeamSessionClient {
     return this.#removal;
   }
   dispose(): void {
+    if (this.#disposed) return;
+    void this.remove("sign-in");
     this.#disposed = true;
-    this.#lifetime++;
-    this.disconnect();
+    this.#releaseOwner?.();
     this.#listeners.clear();
   }
 }

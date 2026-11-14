@@ -1,3 +1,4 @@
+import { TeamPaneGate } from "./team-pane-gate.js";
 import { useLayoutEffect, useRef, useState } from "react";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router";
 import {
@@ -51,6 +52,15 @@ const adminPages = ["people", "groups", "invites", "channels", "audit"] as const
 
 /** Settings → a team: everyone's profile and notifications; admins' people, groups, invites, channels and audit log. */
 export function TeamSettingsRoute() {
+  const { teamId = "" } = useParams();
+  return (
+    <TeamPaneGate teamId={teamId}>
+      <TeamSettingsContent />
+    </TeamPaneGate>
+  );
+}
+
+function TeamSettingsContent() {
   const { teamId = "", page = "profile" } = useParams();
   const view = useTeamView(teamId, noPreviews);
   const can = view?.snapshot.bootstrap?.can;

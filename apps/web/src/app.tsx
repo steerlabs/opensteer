@@ -34,7 +34,6 @@ import type {
   DeploymentAccessSnapshot,
   DesktopDeploymentSummary,
   DesktopNotificationTarget,
-  DesktopSelectDeploymentInput,
   OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
 import {
@@ -46,8 +45,9 @@ import {
 } from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";
 import { consumeOAuthErrorQuery } from "./account/auth-error-query.js";
-import { consumeNativeOAuthQuery, withoutNativeOAuthQuery } from "./account/native-oauth-query.js";
-import { Icon } from "./components/icon.js";
+import { NativeOAuthConsent, useNativeOAuthQuery } from "./account/native-oauth-consent.js";
+import { startHostOidcSignIn } from "./account/host-oidc.js";
+export { startHostOidcSignIn } from "./account/host-oidc.js";
 import { SetupOpening } from "./components/first-run/setup-opening.js";
 import { setupPath } from "./components/workspace/navigation.js";
 import { SetupPage } from "./components/first-run/setup-page.js";
@@ -122,7 +122,6 @@ export function App({
   const [onboardingPending, setOnboardingPending] = useState(false);
   const autoOidcStarted = useRef(false);
   const [autoOidcSuppressed, setAutoOidcSuppressed] = useState(hasRecentAutoOidcAttempt);
-  const [nativeAuthorizationPending, setNativeAuthorizationPending] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   // Captured once, during the first render, so the code leaves the URL before
   // anything can paint it or persist it in history.
@@ -145,13 +144,7 @@ export function App({
     onSetupOpened?.();
   }, [continuingSetup, onSetupOpened, shellReady]);
   const [recoveryToken] = useState(takeRecoveryToken);
-  const [nativeOAuthQuery] = useState(() =>
-    consumeNativeOAuthQuery(
-      window.location,
-      (url, state) => window.history.replaceState(state, "", url),
-      window.history.state,
-    ),
-  );
+  const nativeOAuthQuery = useNativeOAuthQuery();
   const [authorizationError, setAuthorizationError] = useState(() =>
     consumeOAuthErrorQuery(window.location, (url) => window.history.replaceState(null, "", url)),
   );
@@ -282,24 +275,6 @@ export function App({
     }
   }
 
-  async function completeNativeAuthorization(accept: boolean) {
-    if (!nativeOAuthQuery || nativeAuthorizationPending) return;
-    setOnboardingError(null);
-    setNativeAuthorizationPending(true);
-    try {
-      const { url } = unwrapRpcResult(
-        await hostClient.rpc["auth.native.complete"]({ accept, oauthQuery: nativeOAuthQuery }),
-      );
-      window.history.replaceState(withoutNativeOAuthQuery(window.history.state), "");
-      window.location.assign(url);
-    } catch (error) {
-      setOnboardingError(
-        `${actionErrorMessage(error)} Close this browser and start sign-in again in the Opensteer app.`,
-      );
-      setNativeAuthorizationPending(false);
-    }
-  }
-
   async function refreshHost() {
     setRefreshing(true);
     try {
@@ -425,48 +400,8 @@ export function App({
     );
   }
 
-  if (nativeOAuthQuery) {
-    return (
-      // The two registered native clients are a desktop and a phone, and this
-      // page cannot tell which one opened it, so the sentence says what is true
-      // of both rather than naming a computer a phone does not have.
-      <OnboardingCard
-        description="Allow the Opensteer app that sent you here to access this deployment as you?"
-        eyebrow="Authorization"
-        footnote={
-          <>
-            <Icon name="shield" />
-            <span>
-              Approving grants the app your access to this deployment. You can end it any time from
-              Settings.
-            </span>
-          </>
-        }
-        title="Connect Opensteer"
-        titleId="native-authorization-heading"
-      >
-        <ErrorNotice message={onboardingError} />
-        <div className="onboarding__form">
-          <button
-            className="btn btn--primary"
-            disabled={nativeAuthorizationPending}
-            onClick={() => void completeNativeAuthorization(true)}
-            type="button"
-          >
-            {nativeAuthorizationPending ? "Authorizing…" : "Allow"}
-          </button>
-          <button
-            className="btn btn--ghost"
-            disabled={nativeAuthorizationPending}
-            onClick={() => void completeNativeAuthorization(false)}
-            type="button"
-          >
-            Deny
-          </button>
-        </div>
-      </OnboardingCard>
-    );
-  }
+  if (nativeOAuthQuery)
+    return <NativeOAuthConsent oauthQuery={nativeOAuthQuery} rpc={hostClient.rpc} />;
 
   // This tab is opened before an attempt exists so the browser sees the open
   // as part of the person's click. The provider return reloads the same route
@@ -518,8 +453,11 @@ export function App({
         account={
           preview
             ? { subject: mockAccountSubject, email: mockAccountEmail }
-            : deploymentAccess?.account.status === "signed-in" && deploymentAccess.account.subject
+            : deploymentAccess?.account.subject
               ? {
+                  ...(deploymentAccess.account.issuer
+                    ? { issuer: deploymentAccess.account.issuer }
+                    : {}),
                   subject: deploymentAccess.account.subject,
                   email: deploymentAccess.account.email ?? null,
                 }
@@ -641,41 +579,6 @@ export function App({
       </TeamsProvider>
     </ToastProvider>
   );
-}
-
-/**
- * Starts a Host OIDC sign-in on whichever surface can actually finish it.
- *
- * Desktop forbids renderer navigation to a Host origin, so the redirect the
- * Host hands back would dead-end there; the native authorization flow completes
- * the same sign-in in the system browser. Browsers keep the redirect. Resolves
- * true when the caller's page is navigating away.
- */
-export async function startHostOidcSignIn(input: {
-  readonly deploymentId: DesktopSelectDeploymentInput["deploymentId"] | null;
-  readonly desktopBridge: Pick<OpensteerDesktopBridge, "select"> | null;
-  readonly hostClient: Pick<HostClient, "rpc">;
-  readonly navigate: (url: string) => void;
-  readonly oauthQuery: string | null;
-  readonly providerId: string;
-}): Promise<boolean> {
-  if (input.desktopBridge) {
-    if (input.deploymentId === null) {
-      throw new Error("This app has no selected deployment to authorize.");
-    }
-    await input.desktopBridge.select({ deploymentId: input.deploymentId });
-    return false;
-  }
-  input.navigate(
-    unwrapRpcResult(
-      await input.hostClient.rpc["auth.oidc.begin"]({
-        ...(input.oauthQuery ? { oauthQuery: input.oauthQuery } : {}),
-        providerId: input.providerId,
-        returnPath: "/",
-      }),
-    ).redirectUrl,
-  );
-  return true;
 }
 
 /**

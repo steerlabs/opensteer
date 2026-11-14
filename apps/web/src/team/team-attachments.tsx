@@ -1,3 +1,4 @@
+import { bootstrapMembershipRefused } from "@opensteer/protocol";
 import {
   createContext,
   useCallback,
@@ -8,16 +9,23 @@ import {
   useState,
   useSyncExternalStore,
   type ReactNode,
+  type SetStateAction,
 } from "react";
 import type { TeamTaskOrigin } from "@opensteer/core";
 import type { PersonalTeamLink, TeamBootstrapSchema } from "@opensteer/protocol";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
-import { PersonalTeamLinks, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
+import {
+  HostClientRequestError,
+  PersonalTeamLinks,
+  unwrapRpcResult,
+  type HostClient,
+} from "@opensteer/client/host";
 import {
   createMemoryTeamPersistence,
   listedTeams,
   TeamSessionClient,
   TeamTransportRegistry,
+  TeamRuntimeOwner,
   type MockTeamHost,
   type MockTeamWorld,
   type TeamCacheScope,
@@ -35,6 +43,7 @@ import { channelKind } from "./team-view-models.js";
 import { teamTile } from "./team-people.js";
 import { browserTeamSession, desktopTeamSession } from "./team-transports.js";
 import {
+  desktopTeamSessions,
   desktopTeamCoordination,
   previewTeamCoordination,
   type WebTeamCoordination,
@@ -49,6 +58,15 @@ export interface TeamAttachment {
   readonly origin: string;
   /** Its live session; null where this surface only links to it (the personal web app). */
   readonly client: TeamSessionClient | null;
+  readonly failure?:
+    | "sign-in"
+    | "join"
+    | "unavailable"
+    | "pending"
+    | "update-app"
+    | "update-server"
+    | "suppressed"
+    | undefined;
   /** The personal Host's link to it, where there is a personal Host. */
   readonly link: PersonalTeamLink | null;
 }
@@ -75,11 +93,13 @@ export type TeamSurface =
 
 /** Who is signed in to Opensteer Account on this surface, where it knows. */
 export interface TeamAccount {
+  readonly issuer?: string;
   readonly subject: string;
   readonly email: string | null;
 }
 
 interface TeamsValue {
+  readonly owner: TeamRuntimeOwner | null;
   readonly surface: TeamSurface["kind"] | null;
   readonly teams: readonly TeamAttachment[];
   /** The personal Host's team commands; null on a team's own web app. */
@@ -101,6 +121,7 @@ interface TeamsValue {
 }
 
 const TeamsContext = createContext<TeamsValue>({
+  owner: null,
   surface: null,
   teams: [],
   links: null,
@@ -122,16 +143,17 @@ export function useTeamAttachment(teamId: string | undefined): TeamAttachment | 
   return teams.find((team) => team.teamId === teamId) ?? null;
 }
 
-const activeLink = new Set<PersonalTeamLink["state"]>(["active", "unreachable", "needs_update"]);
-
 /** A desktop notification for a team message, from the team's own sidebar socket. */
-function notifyTeam(
+export function notifyTeam(
   name: string,
   entry: TeamSidebar["channels"][number],
   open: (channelId: string) => void,
+  current: () => boolean,
+  owner?: TeamRuntimeOwner,
 ): void {
   if (typeof Notification === "undefined" || Notification.permission === "denied") return;
   const show = () => {
+    if (!current()) return;
     const notification = new Notification(name, {
       body:
         entry.mentionCount > 0
@@ -139,7 +161,13 @@ function notifyTeam(
           : `New messages in ${entry.channel.kind === "dm" || entry.channel.kind === "group_dm" ? entry.channel.name : `#${entry.channel.name}`}`,
       tag: `${name}:${entry.channel.id}`,
     });
+    const release = owner?.own(() => notification.close());
+    notification.onclose = () => release?.();
     notification.onclick = () => {
+      if (!current()) {
+        notification.close();
+        return;
+      }
       window.focus();
       open(entry.channel.id);
       notification.close();
@@ -150,6 +178,31 @@ function notifyTeam(
   if (Notification.permission === "granted") show();
   else
     void Notification.requestPermission().then((permission) => permission === "granted" && show());
+}
+
+function useOwnedState<Value>(
+  owner: TeamRuntimeOwner,
+  create: () => Value,
+): readonly [Value, (update: SetStateAction<Value>) => void] {
+  const [state, setState] = useState(() => ({ owner, value: create() }));
+  if (state.owner !== owner) setState({ owner, value: create() });
+  return [
+    state.owner === owner ? state.value : create(),
+    (update) => {
+      if (owner.signal.aborted) return;
+      setState((held) =>
+        held.owner !== owner
+          ? held
+          : {
+              owner,
+              value:
+                typeof update === "function"
+                  ? (update as (value: Value) => Value)(held.value)
+                  : update,
+            },
+      );
+    },
+  ];
 }
 
 export function TeamsProvider({
@@ -164,6 +217,13 @@ export function TeamsProvider({
   readonly children: ReactNode;
   readonly surface: TeamSurface;
 }) {
+  const identity = account ? { issuer: account.issuer ?? "", subject: account.subject } : null;
+  const ownerRef = useRef<TeamRuntimeOwner | null>(null);
+  if (!ownerRef.current || !ownerRef.current.matches(identity)) {
+    ownerRef.current?.retire();
+    ownerRef.current = new TeamRuntimeOwner(identity);
+  }
+  const owner = ownerRef.current;
   const hostClient =
     surface.kind === "personal-web" || surface.kind === "desktop" || surface.kind === "preview"
       ? surface.hostClient
@@ -173,16 +233,27 @@ export function TeamsProvider({
     () => (hostClient ? new PersonalTeamLinks(hostClient.rpc) : null),
     [hostClient],
   );
-  const [linked, setLinked] = useState<readonly PersonalTeamLink[]>([]);
-  const [clients, setClients] = useState<ReadonlyMap<string, TeamSessionClient>>(new Map());
+  const [linked, setLinked] = useOwnedState<readonly PersonalTeamLink[]>(owner, () => []);
+  const [failures, setFailures] = useOwnedState<
+    ReadonlyMap<
+      string,
+      "sign-in" | "join" | "unavailable" | "pending" | "update-app" | "update-server" | "suppressed"
+    >
+  >(owner, () => owner.cache());
+  const [clients, setClients] = useOwnedState<ReadonlyMap<string, TeamSessionClient>>(owner, () =>
+    owner.cache(),
+  );
   const navigator = useRef<((path: string) => void) | null>(null);
-  const [forgotten, setForgotten] = useState<ReadonlySet<string>>(new Set());
+  const [forgotten, setForgotten] = useOwnedState<ReadonlySet<string>>(owner, () => new Set());
   /** Bumped by each sign-in here, so the sidebar sockets are joined again. */
-  const [entered, setEntered] = useState(0);
+  const [entered, setEntered] = useOwnedState(owner, () => 0);
   const world = surface.kind === "preview" ? (surface.world ?? null) : null;
   const accountSubject = account?.subject ?? null;
   // Made in the effect so React's double effects never resume a disposed coordinator.
-  const [coordination, setCoordination] = useState<WebTeamCoordination | null>(null);
+  const [coordination, setCoordination] = useOwnedState<WebTeamCoordination | null>(
+    owner,
+    () => null,
+  );
   useEffect(() => {
     const open = (teamId: string) => navigator.current?.(teamPath(teamId, ""));
     const made =
@@ -191,6 +262,7 @@ export function TeamsProvider({
         : bridge && hostClient
           ? desktopTeamCoordination({
               bridge,
+              owner,
               hostClient,
               accountSubject: () => {
                 const parsed = ControlPlaneAccountIdSchema.safeParse(accountSubject);
@@ -200,10 +272,11 @@ export function TeamsProvider({
               originOf: (teamId) => memberRef.current.get(teamId)?.origin ?? null,
             })
           : null;
+    if (made) owner.own(() => made.coordinator.dispose());
     setCoordination(made);
     void made?.coordinator.resume().catch(() => undefined);
     return () => made?.coordinator.dispose();
-  }, [world, bridge, hostClient, accountSubject]);
+  }, [world, bridge, hostClient, accountSubject, owner]);
   const intents = useSyncExternalStore(
     coordination?.coordinator.subscribe ?? noSubscribe,
     () => coordination?.coordinator.getSnapshot().intents ?? noIntents,
@@ -235,16 +308,29 @@ export function TeamsProvider({
               bridge,
               origin: team.origin,
               scope,
-              notify: (entry) =>
-                notifyTeam(team.name, entry, (channelId) =>
-                  navigator.current?.(channelPath(scope.teamDeploymentId, channelId)),
+              owner,
+              notify: (entry, current) =>
+                notifyTeam(
+                  team.name,
+                  entry,
+                  (channelId) =>
+                    navigator.current?.(channelPath(scope.teamDeploymentId, channelId)),
+                  () => current() && !owner.signal.aborted,
+                  owner,
                 ),
             });
           })
         : null,
-    [bridge],
+    [bridge, owner],
   );
-  useEffect(() => () => registry?.dispose(), [registry]);
+  useEffect(() => {
+    setClients(new Map());
+    const release = registry ? owner.own(() => registry.dispose()) : undefined;
+    return () => {
+      release?.();
+      registry?.dispose();
+    };
+  }, [registry, owner]);
   // A team's own web app and the mock build hold their sessions directly.
   const heldTeam = surface.kind === "team-web" ? surface.attachment : null;
   const heldTeams = surface.kind === "preview" ? surface.teams : null;
@@ -256,8 +342,9 @@ export function TeamsProvider({
 
   const reload = useCallback(async () => {
     if (!links) return;
-    setLinked(await links.list());
-  }, [links]);
+    const read = await owner.run(() => links.list());
+    setLinked(read);
+  }, [links, owner]);
   useEffect(() => {
     void reload().catch(() => undefined);
   }, [reload]);
@@ -271,32 +358,56 @@ export function TeamsProvider({
   useEffect(() => {
     if (!registry || !bridge) return;
     let live = true;
-    const next = new Map<string, TeamSessionClient>();
-    const owners = new Map<string, string>(
-      linked
-        .filter((link) => activeLink.has(link.state) && link.ownerUserId !== null)
-        .map((link) => [link.teamId, link.ownerUserId!]),
-    );
-    void Promise.all(
-      [...members].map(async ([teamId, team]) => {
+    setFailures(new Map([...members.keys()].map((id) => [id, "pending" as const])));
+    setClients((previous) => new Map([...previous].filter(([id]) => members.has(id))));
+    for (const [teamId, team] of members) {
+      void (async () => {
         try {
-          const userId =
-            owners.get(teamId) ??
-            (await readTeamUser(
-              desktopTeamSession({
-                bridge,
-                origin: team.origin,
-                scope: { teamDeploymentId: teamId, userId: "pending" },
-              }),
-            ));
-          next.set(teamId, await registry.join({ teamDeploymentId: teamId, userId }));
-        } catch {
-          // Not signed in to that team on this computer yet: it shows as a link.
+          const userId = await readTeamUser(
+            desktopTeamSession({
+              bridge,
+              origin: team.origin,
+              scope: { teamDeploymentId: teamId, userId: "pending" },
+              owner,
+            }),
+          );
+          if (!live || owner.signal.aborted) return;
+          const client = await registry.join({ teamDeploymentId: teamId, userId });
+          if (!live || owner.signal.aborted) return;
+          setClients((previous) => new Map(previous).set(teamId, client));
+          setFailures((previous) => {
+            const updated = new Map(previous);
+            updated.delete(teamId);
+            return updated;
+          });
+        } catch (error) {
+          if (!live || owner.signal.aborted) return;
+          const failure =
+            error instanceof HostClientRequestError && bootstrapMembershipRefused(error)
+              ? "join"
+              : error instanceof HostClientRequestError &&
+                  [
+                    "host-too-old",
+                    "client-too-old",
+                    "unsupported-version",
+                    "api-version-mismatch",
+                  ].includes(error.reason ?? "")
+                ? error.reason === "host-too-old"
+                  ? "update-server"
+                  : "update-app"
+                : error instanceof HostClientRequestError && error.code === "unauthorized"
+                  ? "sign-in"
+                  : "unavailable";
+          setFailures((previous) => new Map(previous).set(teamId, failure));
+          if (failure !== "unavailable")
+            setClients((previous) => {
+              const updated = new Map(previous);
+              updated.delete(teamId);
+              return updated;
+            });
         }
-      }),
-    ).then(() => {
-      if (live) setClients(next);
-    });
+      })();
+    }
     return () => {
       live = false;
     };
@@ -315,7 +426,7 @@ export function TeamsProvider({
 
   const leave = useCallback(
     async (teamId: string) => {
-      const owner = linked.find((row) => row.teamId === teamId)?.ownerUserId;
+      const scope = sessionOf(teamId)?.scope;
       const coordinated =
         coordination !== null &&
         (world === null || worldTeams.some((team) => team.teamId === teamId));
@@ -325,7 +436,7 @@ export function TeamsProvider({
         if (!session) throw new Error("Sign in to the team before leaving it.");
         await session.leave();
       }
-      if (registry && owner) await registry.remove({ teamDeploymentId: teamId, userId: owner });
+      if (registry && scope) await registry.remove(scope);
       await reload();
     },
     [linked, coordination, world, worldTeams, sessionOf, registry, reload],
@@ -333,9 +444,9 @@ export function TeamsProvider({
 
   const forget = useCallback(
     async (teamId: string) => {
+      const scope = sessionOf(teamId)?.scope;
       await sessionOf(teamId)?.remove();
-      const owner = linked.find((row) => row.teamId === teamId)?.ownerUserId;
-      if (registry && owner) await registry.remove({ teamDeploymentId: teamId, userId: owner });
+      if (registry && scope) await registry.remove(scope);
       setForgotten((held) => new Set([...held, teamId]));
     },
     [sessionOf, linked, registry],
@@ -347,11 +458,23 @@ export function TeamsProvider({
         ? async (teamId: string) => {
             const team = memberRef.current.get(teamId);
             if (!team) throw new Error("This team is not on this computer.");
-            await coordination.coordinator.enterTeam(team.origin);
+            if (bridge?.teamSessions) {
+              const sessions = desktopTeamSessions(
+                {
+                  ...bridge,
+                  teamSessions: bridge.teamSessions,
+                },
+                undefined,
+                owner,
+              );
+              const verified = await owner.run(() => sessions.verify(team.origin));
+              owner.assertCurrent();
+              await owner.run(() => sessions.signIn(verified, null));
+            } else await coordination.coordinator.enterTeam(team.origin);
             setEntered((count) => count + 1);
           }
         : null,
-    [bridge, world, coordination],
+    [bridge, world, coordination, owner],
   );
 
   const value = useMemo<TeamsValue>(() => {
@@ -364,10 +487,13 @@ export function TeamsProvider({
               teamId,
               name: team.name,
               origin: team.origin,
-              client: clients.get(teamId) ?? null,
+              client: clients.get(teamId)?.owner === owner ? clients.get(teamId)! : null,
+              failure:
+                failures.get(teamId) ?? (bridge && !clients.has(teamId) ? "pending" : undefined),
               link: linked.find((link) => link.teamId === teamId) ?? null,
             }));
     return {
+      owner,
       surface: surface.kind,
       teams: teams.filter((team) => !forgotten.has(team.teamId)),
       links,
@@ -381,7 +507,9 @@ export function TeamsProvider({
     };
   }, [
     account,
+    owner,
     clients,
+    failures,
     coordination,
     leave,
     forget,

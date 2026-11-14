@@ -227,3 +227,15 @@ describe("createDocumentPrivateFilesystem", () => {
     await expect(files.writeFileExclusive(catalog, "third")).rejects.toThrow(/already exists/u);
   });
 });
+
+it("persists Account team partitions through the phone's decoded-path boundary", async () => {
+  const { TeamRuntimeOwner } = await import("@opensteer/client/team");
+  const owner = new TeamRuntimeOwner({ issuer: "https://accounts.test", subject: "A" });
+  const { files, platform } = open();
+  const storage = owner.files(files);
+  const path = `${root}teams/${owner.partition}/draft.json`;
+  await storage.writeFileAtomic(path, "private draft");
+  expect(text(await storage.readFile(path, 1024))).toBe("private draft");
+  expect([...platform.files.keys()]).toEqual([path]);
+  owner.retire();
+});

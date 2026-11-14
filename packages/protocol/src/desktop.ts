@@ -1495,6 +1495,7 @@ export const DesktopTeamSessionsCallSchema = z.discriminatedUnion("call", [
   }),
   z.strictObject({
     call: z.literal("enter"),
+    deploymentId: DeploymentIdSchema,
     origin: TeamOriginSchema,
     invite: TeamInviteSecretSchema.nullable(),
   }),
@@ -1504,6 +1505,7 @@ export const DesktopTeamSessionsCallSchema = z.discriminatedUnion("call", [
    */
   z.strictObject({
     call: z.literal("sign-in"),
+    deploymentId: DeploymentIdSchema,
     origin: TeamOriginSchema,
     invite: TeamInviteSecretSchema.nullable(),
   }),

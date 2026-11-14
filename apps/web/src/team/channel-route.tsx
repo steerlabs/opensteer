@@ -79,7 +79,7 @@ function placeOf(rest: readonly string[]): ChannelPlace {
 }
 
 function usePreviews(key: string, session: TeamView["client"] | null) {
-  const store = useMemo(() => new TeamPreviewUrls(), [key, session]);
+  const store = useMemo(() => new TeamPreviewUrls(session?.owner), [key, session]);
   const previews = useSyncExternalStore(store.subscribe, store.getSnapshot);
   useEffect(() => () => store.clear(), [store]);
   const want = useCallback(
@@ -435,12 +435,18 @@ function ChannelScreenFor({
       .file(held, true)
       .then((blob) => {
         if (!blob) return;
+        client.owner?.assertCurrent();
         const url = URL.createObjectURL(new Blob([blob], { type: held.mediaType }));
         const link = document.createElement("a");
         link.href = url;
         link.download = held.filename;
         link.click();
-        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        const revoke = () => URL.revokeObjectURL(url);
+        const release = client.owner?.own(revoke);
+        setTimeout(() => {
+          release?.();
+          revoke();
+        }, 60_000);
       })
       .catch(report);
   };

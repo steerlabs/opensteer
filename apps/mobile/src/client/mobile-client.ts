@@ -200,7 +200,7 @@ export interface MobileClientOptions {
   readonly iphoneApps?: IphoneAppsOwner;
   readonly now?: () => Date;
   readonly oauthIdentity: NativeOAuthIdentity;
-  readonly openAuthorization: (url: string) => Promise<void>;
+  readonly openAuthorization: (url: string, callback?: string) => Promise<void>;
   readonly openIntegrationAuthorization: (url: string, signal?: AbortSignal) => Promise<string>;
   readonly privateFiles: PrivateFilesystem;
   readonly randomBytes: (size: number) => Uint8Array;
@@ -451,6 +451,18 @@ export class MobileClient {
       },
     });
     this.oauth = new NativeOAuthManager({
+      onAccountIdentityChange: () => {
+        const teams = this.#state.catalog.deployments.filter(({ kind }) => kind === "team");
+        for (const { authority } of teams)
+          void this.#invalidateSavedView(authority.document.deploymentId);
+        if (
+          teams.some(
+            ({ authority }) =>
+              authority.document.deploymentId === this.#state.selection.deploymentId,
+          )
+        )
+          this.#releaseAttachment();
+      },
       // Previews end with the login itself (sign-out, removal, a replaced session),
       // not when a sign-in flow starts: a cancelled flow keeps the live login.
       beforeAccountIdentityChange: () => this.#leaveAccountIphoneApps(),
@@ -778,17 +790,19 @@ export class MobileClient {
     invite: TeamInviteSecret | null = null,
   ): Promise<void> {
     const id = DeploymentIdSchema.parse(deploymentId);
+    const team = this.#state.catalog.deployments.find(
+      (connection) =>
+        connection.authority.document.deploymentId === id && connection.kind === "team",
+    );
+    if (team) {
+      await this.oauth.signInTeam(team, invite ?? undefined);
+      return;
+    }
     const connection = this.#requireConnection(id, await this.catalog.load());
     const verification = this.#verification.get(id);
     if (verification !== undefined) throw new Error(verificationFailureDetail(verification));
     await this.#clearSignOutSuppression(id);
     this.#sessionFailures.delete(id);
-    if (connection.kind === "team") {
-      // The credential subscription publishes the team credential state, whether the Account
-      // vouched for this phone or the browser adapter waited for the callback.
-      await this.oauth.signInTeam(connection, invite ?? undefined);
-      return;
-    }
     const resolved = resolveConnection(connection, null, { authorization: null });
     if (resolved.access !== "connect" || !this.sessionExchange.supports(resolved)) {
       throw new Error("This deployment has no address this phone can sign in to.");
@@ -1396,6 +1410,7 @@ export class MobileClient {
 
   /** What a pinned team transport presents: the team Host's own credential, nothing else. */
   readonly teamCredentials: HostCredentialProvider = {
+    teamRuntime: () => this.oauth.teamRuntime(),
     authorizationHeader: (connection) => this.#host.credentials.authorization(connection),
   };
 

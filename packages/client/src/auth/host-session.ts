@@ -1,3 +1,5 @@
+import { TeamEntryOutcomeError } from "../team/native-team-entry.js";
+import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import { DeploymentIdSchema } from "@opensteer/core";
 import type { HostBootstrapMethod } from "@opensteer/deployment-authority";
 import { AccountRequestError } from "../connections/account-deployment-directory.js";
@@ -107,12 +109,20 @@ export interface HostSessionObservation {
 }
 
 export type HostSessionRecoveryOutcome =
-  "account-required" | "blocked" | "pairing-required" | "recovered" | "unavailable" | "unsupported";
+  | "account-required"
+  | "blocked"
+  | "pairing-required"
+  | "recovered"
+  | "unavailable"
+  | "unsupported"
+  | TeamEntryRefusedError
+  | TeamEntryOutcomeError;
 
 export interface HostSessionRecovery {
   assertSessionAllowed?(deploymentId: string): Promise<void>;
   sessionEnded?(attachment: SelectedAttachment): void;
   recoverUnauthorized(attachment: SelectedAttachment): Promise<HostSessionRecoveryOutcome>;
+  dispose?(): void;
 }
 
 /**
@@ -170,6 +180,7 @@ export class HostSession implements HostSessionRecovery {
   readonly #endedSessions = new Map<string, Promise<void>>();
   readonly #abandonEpochs = new Map<string, number>();
   readonly #accountCredentialRejected: () => void | Promise<void>;
+  readonly #onDispose: (() => void) | undefined;
   readonly #attachment: HostAttachment;
   readonly #attemptDeployments = new Map<string, string>();
   readonly #clearDeploymentSession: (deploymentId: string) => Promise<void>;
@@ -194,6 +205,7 @@ export class HostSession implements HostSessionRecovery {
     readonly onUnauthorized?: (attachment: SelectedAttachment) => Promise<void>;
     readonly onSessionEnded?: (attachment: SelectedAttachment) => Promise<void>;
     readonly accountCredentialRejected?: () => void | Promise<void>;
+    readonly onDispose?: () => void;
     readonly attachment: HostAttachment;
     readonly clearDeploymentSession: (deploymentId: string) => Promise<void>;
     readonly exchange: Pick<HostSessionExchange, "establish" | "probe" | "supports">;
@@ -206,6 +218,7 @@ export class HostSession implements HostSessionRecovery {
     this.#onUnauthorized = options.onUnauthorized ?? (async () => undefined);
     this.#onSessionEnded = options.onSessionEnded ?? (async () => undefined);
     this.#accountCredentialRejected = options.accountCredentialRejected ?? (() => undefined);
+    this.#onDispose = options.onDispose;
     this.#attachment = options.attachment;
     this.#clearDeploymentSession = options.clearDeploymentSession;
     this.#exchange = options.exchange;
@@ -307,7 +320,7 @@ export class HostSession implements HostSessionRecovery {
     return controller.signal;
   }
 
-  async establish(deploymentId: string): Promise<HostSessionObservation> {
+  async establish(deploymentId: string, interactive = true): Promise<HostSessionObservation> {
     this.#assertActive();
     const epoch = this.#abandonEpoch(deploymentId);
     await this.#assertAuthorization(deploymentId, epoch);
@@ -323,7 +336,7 @@ export class HostSession implements HostSessionRecovery {
     const establishment = (
       activeRecovery
         ? activeRecovery.then((outcome) => observationFromRecovery(attachment.resolved, outcome))
-        : this.#establishExact(attachment, epoch)
+        : this.#establishExact(attachment, epoch, interactive)
     ).then(async (observation) => {
       await this.#assertAuthorization(deploymentId, epoch);
       this.#assertCurrent(key);
@@ -412,6 +425,7 @@ export class HostSession implements HostSessionRecovery {
     this.#recoveries.clear();
     this.#recoveryFailures.clear();
     this.#attemptDeployments.clear();
+    this.#onDispose?.();
   }
 
   #abandonEpoch(deploymentId: string): number {
@@ -432,6 +446,7 @@ export class HostSession implements HostSessionRecovery {
   async #establishExact(
     attachment: SelectedAttachment,
     epoch: number,
+    interactive: boolean,
   ): Promise<HostSessionObservation> {
     const { connection, resolved } = attachment;
     if (resolved.access === "owner") {
@@ -471,7 +486,6 @@ export class HostSession implements HostSessionRecovery {
 
     if (supportsHostNativeSignIn(resolved.bootstrapMethods)) {
       const before = this.#oauth.hostCredentialState(connection);
-      if (before.status === "signed-in") return observation(resolved, "ready");
       if (before.status === "authorizing") {
         return observation(resolved, "authorizing", before.detail ?? undefined);
       }
@@ -482,10 +496,19 @@ export class HostSession implements HostSessionRecovery {
         );
       }
       try {
-        return oauthObservation(await this.#oauth.signInTeam(connection));
+        return oauthObservation(await this.#oauth.signInTeam(connection, undefined, interactive));
       } catch (error) {
-        if (error instanceof TeamEntryRefusedError)
-          return observation(resolved, "blocked", error.message);
+        if (error instanceof TeamEntryOutcomeError) {
+          if (error.outcome.status === "sign-in-required" || error.outcome.status === "suppressed")
+            return observation(resolved, "needs-sign-in", error.message);
+          if (error.outcome.status === "update-required")
+            return observation(resolved, "blocked", error.message);
+        }
+        if (error instanceof TeamEntryRefusedError) {
+          if (teamEntryRefusalOutcome(error.reason) === "membership")
+            return observation(resolved, "blocked", error.message);
+          throw new HostSessionError("unavailable", error.message, { cause: error });
+        }
         throw error;
       }
     }
@@ -513,7 +536,7 @@ export class HostSession implements HostSessionRecovery {
         return "recovered";
       }
       if (supportsHostNativeSignIn(resolved.bootstrapMethods)) {
-        return (await this.#oauth.recoverHostAuthorization(connection))
+        return (await this.#oauth.recoverHostAuthorization(connection, resolved.authorization))
           ? "recovered"
           : "account-required";
       }
@@ -632,6 +655,13 @@ function observationFromRecovery(
   resolved: ResolvedConnection,
   outcome: HostSessionRecoveryOutcome,
 ): HostSessionObservation {
+  if (outcome instanceof TeamEntryOutcomeError)
+    return observation(resolved, "blocked", outcome.message);
+  if (outcome instanceof TeamEntryRefusedError) {
+    if (teamEntryRefusalOutcome(outcome.reason) === "membership")
+      return observation(resolved, "blocked", outcome.message);
+    throw new HostSessionError("unavailable", outcome.message, { cause: outcome });
+  }
   if (outcome === "recovered") return observation(resolved, "ready");
   if (outcome === "blocked") {
     return observation(resolved, "blocked", "This connection was refused.");
@@ -691,6 +721,9 @@ function recoveryFromObservation(
 }
 
 function recoveryFailure(error: unknown): HostSessionRecoveryOutcome {
+  if (error instanceof TeamEntryOutcomeError && error.outcome.status === "update-required")
+    return error;
+  if (error instanceof TeamEntryRefusedError) return error;
   if (error instanceof HostSessionExchangeError) return error.outcome;
   if (error instanceof AccountRequestError) {
     if (error.status === 401) return "account-required";

@@ -52,6 +52,7 @@ export interface HttpHostApiClientOptions {
   readonly fetch: Fetch;
   /** IPC adapters return buffered bodies together with their headers. */
   readonly bufferedResponses?: boolean;
+  readonly assertResponseCurrent?: (response: Response) => void;
   readonly onAuthenticationRequired: () => void;
   readonly onVersionMismatch?: () => void;
 }
@@ -231,6 +232,7 @@ async function request<Name extends keyof typeof hostApi>(
         sizeError: () => new HostTransportError("response-too-large"),
       }),
     );
+    options.assertResponseCurrent?.(response);
     call?.signal?.throwIfAborted();
     if (declaration.stream && response.ok) {
       const modified = response.headers.get("last-modified");
@@ -255,6 +257,7 @@ async function request<Name extends keyof typeof hostApi>(
         if (error instanceof SyntaxError) return null;
         throw error;
       });
+    options.assertResponseCurrent?.(response);
     const parsed = responseEnvelopes.get(name)!.safeParse(body);
     if (parsed.success) {
       if (

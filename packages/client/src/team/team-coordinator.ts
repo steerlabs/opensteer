@@ -1,3 +1,4 @@
+import { teamEntryRefusalOutcome } from "@opensteer/protocol";
 import {
   ControlPlaneAccountIdSchema,
   type ControlPlaneAccountId,
@@ -404,7 +405,11 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
     team: VerifiedTeam,
     invite: TeamInviteSecret | null,
   ): Promise<TeamSessionEstablished> => {
-    if (invite === null || team.capabilities.includes("team-invite-native-continuation-v1"))
+    if (
+      !team.capabilities.includes("team-native-browser-return-v1") ||
+      invite === null ||
+      team.capabilities.includes("team-invite-native-continuation-v1")
+    )
       return ports.sessions.signIn(team, invite);
     browserJoin?.settle(false);
     let held!: { readonly settle: (continued: boolean) => void };
@@ -527,7 +532,10 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
       await ports.sessions.restore({ origin: intent.teamOrigin, teamDeploymentId });
     } catch (error) {
       // Removed meanwhile: nothing of this team is left to resume.
-      if (error instanceof TeamEntryRefusedError && error.reason === "not-a-member")
+      if (
+        error instanceof TeamEntryRefusedError &&
+        teamEntryRefusalOutcome(error.reason) === "membership"
+      )
         await remove(intent).catch(() => undefined);
       if (error instanceof TeamEntryRefusedError) return;
     }

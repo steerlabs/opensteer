@@ -174,11 +174,13 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   },
   "apps/mobile/src/client/mobile-client.ts": {
     counts: {
+      kind: 1,
       "connection.kind": 4,
       "connection?.kind": 1,
       "connection.authority.document.deploymentShape.kind": 1,
     },
-    reason: "Credential and attention reads distinguish personal computers from team sessions.",
+    reason:
+      "Credential and attention reads distinguish personal computers from team sessions; only team credentials follow the Account identity.",
   },
   "apps/mobile/src/screens/add-deployment.tsx": {
     counts: {
@@ -266,7 +268,7 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   },
   "packages/client/src/auth/native-oauth.ts": {
     counts: {
-      "connection.kind": 5,
+      "connection.kind": 4,
     },
     reason:
       "The boundary distinguishes team data from personal resource scope, and only team Hosts take an Account-vouched session exchange.",
@@ -313,11 +315,19 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   },
   "packages/client/src/connections/host-transport.ts": {
     counts: {
+      "options.expectedKind": 1,
       "this.#expectedKind": 1,
       deploymentKind: 1,
     },
     reason:
-      "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
+      "Transport pins deployment kind and negotiates the independent protocol before admitting a request; only team requests belong to an Account's team runtime.",
+  },
+  "packages/client/src/connections/host-attachment-fence.ts": {
+    counts: {
+      "connection.kind": 1,
+    },
+    reason:
+      "Only a team credential is bound to the Account's team runtime, so only it is fenced by an Account change.",
   },
   "packages/client/src/connections/private-deployment-connection.ts": {
     counts: {

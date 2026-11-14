@@ -1,5 +1,6 @@
+import { TeamEntryOutcomeError } from "../team/native-team-entry.js";
 import { createId } from "@opensteer/core";
-import type { SessionExchangeResponse } from "@opensteer/protocol";
+import { TeamEntryRefusalReasonSchema, type SessionExchangeResponse } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import { establishedCookieSession, testDiscoveryEnvelope } from "../test-support/index.js";
 import {
@@ -27,6 +28,39 @@ import {
 } from "./native-oauth.js";
 
 describe("HostSession", () => {
+  it("offers explicit team sign-in after passive browser-required entry", async () => {
+    const f = hostSessionFixture(connectionOfKind("team"));
+    f.oauth.signInTeam.mockRejectedValueOnce(
+      new TeamEntryOutcomeError({ status: "sign-in-required" }),
+    );
+    try {
+      await expect(
+        f.sessions.establish(f.attachment.resolved.deploymentId, false),
+      ).resolves.toMatchObject({ outcome: "needs-sign-in" });
+    } finally {
+      f.sessions.dispose();
+    }
+  });
+
+  it("recovers the rejected authorization without resolving and refreshing the attachment again", async () => {
+    const f = hostSessionFixture(connectionOfKind("team"));
+    f.oauth.recoverHostAuthorization.mockResolvedValue(true);
+    await expect(f.sessions.recoverUnauthorized(f.attachment)).resolves.toBe("recovered");
+    expect(f.resolveAttachment).not.toHaveBeenCalled();
+    expect(f.oauth.recoverHostAuthorization).toHaveBeenCalledWith(
+      f.attachment.connection,
+      f.attachment.resolved.authorization,
+    );
+    f.sessions.dispose();
+  });
+
+  it("preserves a team's membership refusal through pinned recovery", async () => {
+    const f = hostSessionFixture(connectionOfKind("team"));
+    const refusal = new TeamEntryRefusedError("not-a-member", "Ask for an invite");
+    f.oauth.recoverHostAuthorization.mockRejectedValue(refusal);
+    await expect(f.sessions.recoverUnauthorized(f.attachment)).resolves.toBe(refusal);
+  });
+
   it("fences a late unauthorized recovery, clears its credential, and drains it before explicit setup", async () => {
     const connection = remotePersonalConnection("connect", 7);
     const fixture = hostSessionFixture(connection);
@@ -251,6 +285,7 @@ describe("HostSession", () => {
       outcome: "authorizing",
     });
     expect(fixture.oauth.beginHostSignIn).toHaveBeenCalledWith(connection);
+    expect(fixture.oauth.signInTeam).toHaveBeenCalledWith(connection, undefined, true);
 
     fixture.oauth.emit(connection, "signed-in");
     await vi.waitFor(() =>
@@ -263,16 +298,34 @@ describe("HostSession", () => {
     );
   });
 
-  it("reports a team that turns the person away as blocked, not as a sign-in to retry", async () => {
+  it("routes returning native credentials through passive entry", async () => {
     const connection = connectionOfKind("team");
     const fixture = hostSessionFixture(connection);
-    fixture.oauth.signInTeam.mockRejectedValueOnce(
-      new TeamEntryRefusedError("not-a-member", "Ask for an invite."),
-    );
-    await expect(
-      fixture.sessions.establish(connection.authority.document.deploymentId),
-    ).resolves.toMatchObject({ detail: "Ask for an invite.", outcome: "blocked" });
+    fixture.oauth.emit(connection, "signed-in");
+    await fixture.sessions.establish(connection.authority.document.deploymentId, false);
+    expect(fixture.oauth.signInTeam).toHaveBeenCalledWith(connection, undefined, false);
   });
+
+  it.each(TeamEntryRefusalReasonSchema.options)(
+    "reports %s with the shared refusal outcome",
+    async (reason) => {
+      const connection = connectionOfKind("team");
+      const fixture = hostSessionFixture(connection);
+      fixture.oauth.signInTeam.mockRejectedValueOnce(new TeamEntryRefusedError(reason, "Refused"));
+      const establishing = fixture.sessions.establish(connection.authority.document.deploymentId);
+      if (reason === "not-a-member")
+        await expect(establishing).resolves.toMatchObject({
+          outcome: "blocked",
+          detail: "Refused",
+        });
+      else
+        await expect(establishing).rejects.toMatchObject({
+          code: "unavailable",
+          message: "Refused",
+        });
+      fixture.sessions.dispose();
+    },
+  );
 
   it("abandons an in-flight Host sign-in and lets a fresh attempt replace it", async () => {
     const connection = connectionOfKind("team");
@@ -470,11 +523,12 @@ function hostSessionFixture(
   };
   const accountCredentialRejected = vi.fn(async () => undefined);
   const clearDeploymentSession = vi.fn(async (_deploymentId: string) => undefined);
+  const resolveAttachment = vi.fn(async () => selection.current);
   const sessions = new HostSession({
     ...options,
     accountCredentialRejected,
     attachment: {
-      current: async () => selection.current,
+      current: resolveAttachment,
       currentKey: () => selection.current.resolved.key,
     },
     clearDeploymentSession,
@@ -484,6 +538,7 @@ function hostSessionFixture(
   });
   return {
     accountCredentialRejected,
+    resolveAttachment,
     attachment: selection.current,
     clearDeploymentSession,
     exchange,

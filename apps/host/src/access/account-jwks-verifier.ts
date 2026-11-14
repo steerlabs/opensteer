@@ -40,6 +40,8 @@ interface CachedJwks {
   readonly resolve: ReturnType<typeof createLocalJWKSet>;
 }
 
+export class AccountJwksUnavailableError extends Error {}
+
 export class RemoteAccountJwksVerifier {
   readonly #audience: string;
   readonly #fetch: typeof globalThis.fetch;
@@ -98,7 +100,9 @@ export class RemoteAccountJwksVerifier {
     }
     if (this.#refresh) return this.#refresh;
     if (force) this.#lastForcedRefreshAt = now;
-    const refresh = this.#fetchJwks();
+    const refresh = this.#fetchJwks().catch((cause: unknown) => {
+      throw new AccountJwksUnavailableError("Account keys are unavailable", { cause });
+    });
     this.#refresh = refresh;
     try {
       const cache = await refresh;

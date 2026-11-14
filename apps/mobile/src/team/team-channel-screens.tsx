@@ -1,4 +1,5 @@
 import { teamMentions, teamMessage } from "@opensteer/shared/teamMentions";
+import { shareTeamFile } from "./team-file-export.js";
 import { MenuView, type MenuComponentRef } from "@expo/ui/community/menu";
 import { PersonalTeamLinks, watchTeamReplyRead, unwrapRpcResult } from "@opensteer/client/host";
 import {
@@ -18,8 +19,6 @@ import {
 import type { HostApiCommandInput, TeamMember, TeamMessage } from "@opensteer/protocol";
 import { useFocusEffect, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { File, Paths } from "expo-file-system";
-import * as Sharing from "expo-sharing";
 import {
   useCallback,
   useEffect,
@@ -48,7 +47,7 @@ import { sendFromComposer } from "./composer-send.js";
 import { useConnectionBanner } from "./connection-banner.js";
 import { messageActions, type MessageActionId } from "./message-row.js";
 import type { MobileTeam } from "./mobile-teams.js";
-import { dataUri, useTeamMembers, useTeamPreviews, useTeamSession } from "./team-context.js";
+import { useTeamMembers, useTeamPreviews, useTeamSession } from "./team-context.js";
 import { GeneralWelcome } from "./team-entry-screens.js";
 import type {
   AgentReach,
@@ -503,7 +502,11 @@ function Place(props: {
     session.typing(channelId, rootId, next !== "");
     if (draftTimer.current !== null) clearTimeout(draftTimer.current);
     draftTimer.current = setTimeout(() => {
-      if (editing === null) void session.setDraft(view.scope, next).catch(() => undefined);
+      if (editing === null)
+        void session.setDraft(view.scope, next).catch((error: unknown) => {
+          if (!session.owner?.signal.aborted)
+            setFailure(error instanceof Error ? error.message : "Draft could not be saved.");
+        });
     }, 400);
   };
   const mentionQuery = activeMention(text, selection.start);
@@ -533,7 +536,7 @@ function Place(props: {
 
   const attach = async (): Promise<void> => {
     const source = await pickTeamPhoto().catch(() => null);
-    if (source === null) return;
+    if (source === null || session.owner?.signal.aborted) return;
     const refused = uploadRefusal(source);
     const entry: Staged = { source, fileId: null, refused, failed: null };
     setStaged((held) => [...held, entry]);
@@ -742,17 +745,7 @@ function Place(props: {
     }
   };
   const shareFile = async (file: TeamMessage["attachments"][number]): Promise<void> => {
-    const blob = await session.file(file, true);
-    if (blob === null) throw new Error(`${file.filename} isn't available to you any more.`);
-    const uri = await dataUri(blob);
-    const target = new File(
-      Paths.cache,
-      `team-${file.id}-${file.filename.replace(/[^\w.-]+/g, "_")}`,
-    );
-    if (target.exists) target.delete();
-    target.create();
-    await target.write(base64Bytes(uri.slice(uri.indexOf(",") + 1)));
-    await Sharing.shareAsync(target.uri, { mimeType: file.mediaType, dialogTitle: file.filename });
+    await shareTeamFile(session, file);
   };
 
   const banner = useConnectionBanner(props.team, snapshot.connection, () => session.connect());
@@ -916,13 +909,6 @@ export function activeMention(text: string, cursor: number): string | null {
   const before = text.slice(0, cursor);
   const match = /(^|\s)@([a-z0-9-]*)$/i.exec(before);
   return match === null ? null : match[2]!.toLowerCase();
-}
-
-function base64Bytes(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-  return bytes;
 }
 
 const styles = StyleSheet.create({

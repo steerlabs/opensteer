@@ -5,7 +5,11 @@ import {
   TeamMessageIdSchema,
   createId,
 } from "@opensteer/core";
-import { TeamConsistentCutSchema, type TeamConsistentCut } from "@opensteer/protocol";
+import {
+  TeamEntryRefusalReasonSchema,
+  TeamConsistentCutSchema,
+  type TeamConsistentCut,
+} from "@opensteer/protocol";
 import {
   MockTeamHost,
   mockTeamId,
@@ -97,6 +101,128 @@ describe("team synchronization", () => {
       f.host.dispose();
     }
   });
+
+  it.each(["Active team membership required", "Team session generation changed"])(
+    "removes the partition for an older server's bootstrap refusal: %s",
+    async (message) => {
+      const code = "forbidden";
+      const host = new MockTeamHost();
+      const persistence = createMemoryTeamPersistence();
+      const client = new TeamSessionClient({
+        scope,
+        persistence,
+        connect: host.connect,
+        rpc: new Proxy(host.rpc, {
+          get(target, key, receiver) {
+            if (key === "team.bootstrap.get")
+              return async () => ({
+                ok: false,
+                error: { code, message, retryable: false },
+              });
+            return Reflect.get(target, key, receiver);
+          },
+        }),
+      });
+      try {
+        await client.setDraft(channelScope, "Draft");
+        await expect(client.load(false)).rejects.toMatchObject({ code });
+        expect(client.getSnapshot().ended).toBe("removed");
+        expect(await persistence.load(scope)).toBeNull();
+      } finally {
+        client.dispose();
+        host.dispose();
+      }
+    },
+  );
+
+  it.each([...TeamEntryRefusalReasonSchema.options, "removed"])(
+    "preserves the partition unless %s is membership refusal",
+    async (reason) => {
+      const host = new MockTeamHost(),
+        persistence = createMemoryTeamPersistence();
+      let refuse = false;
+      const client = new TeamSessionClient({
+        scope,
+        persistence,
+        connect: host.connect,
+        rpc: new Proxy(host.rpc, {
+          get(target, key, receiver) {
+            if (key === "team.bootstrap.get" && refuse)
+              return async () => ({
+                ok: false,
+                error: {
+                  code:
+                    reason === "removed" || reason.startsWith("assertion-")
+                      ? "unauthorized"
+                      : "forbidden",
+                  reason,
+                  message: reason,
+                  retryable: false,
+                },
+              });
+            return Reflect.get(target, key, receiver);
+          },
+        }),
+      });
+      try {
+        await client.setDraft(channelScope, "Draft");
+        await client.send({
+          channelId: mockTeamChannelId,
+          threadRootId: null,
+          bodyMarkdown: "Pending",
+          mentions: [],
+          attachmentIds: [],
+        });
+        const before = await persistence.load(scope);
+        refuse = true;
+        await expect(client.load(false)).rejects.toMatchObject({ reason });
+        if (reason === "not-a-member" || reason === "removed")
+          expect(await persistence.load(scope)).toBeNull();
+        else expect(await persistence.load(scope)).toEqual(before);
+      } finally {
+        client.dispose();
+        host.dispose();
+      }
+    },
+  );
+
+  it("preserves not-a-member through live session teardown", async () => {
+    const host = new MockTeamHost();
+    let removed = false;
+    const client = new TeamSessionClient({
+      scope,
+      persistence: createMemoryTeamPersistence(),
+      connect: host.connect,
+      rpc: new Proxy(host.rpc, {
+        get(target, key, receiver) {
+          if (key === "team.bootstrap.get" && removed)
+            return async () => ({
+              ok: false,
+              error: {
+                code: "forbidden",
+                reason: "not-a-member",
+                message: "Ask for an invite",
+                retryable: false,
+              },
+            });
+          return Reflect.get(target, key, receiver);
+        },
+      }),
+    });
+    try {
+      await client.load(false);
+      removed = true;
+      await expect(client.load(false)).rejects.toMatchObject({ reason: "not-a-member" });
+      expect(client.getSnapshot()).toMatchObject({
+        ended: "removed",
+        refusalReason: "not-a-member",
+      });
+    } finally {
+      client.dispose();
+      host.dispose();
+    }
+  });
+
   it("reconciles recipient state across devices, snapshot and resume without inferring from requests", async () => {
     const f = fixture();
     const rootId = TeamMessageIdSchema.parse("1");
@@ -238,10 +364,16 @@ describe("team synchronization", () => {
             channel: expect.objectContaining({ id: target }),
             unread: true,
           }),
+          expect.any(Function),
         ),
       );
-      expect(host.calls.slice(before)).toEqual(["team.sidebar.get"]);
+      const current = notify.mock.calls[0]![1] as () => boolean;
+      expect(current()).toBe(true);
       expect(client.getSnapshot().sidebar?.nextCursor).toBe(cursor);
+      client.dispose();
+      expect(current()).toBe(false);
+      expect(host.calls.slice(before)).toEqual(["team.sidebar.get"]);
+      expect(client.getSnapshot().sidebar).toBeNull();
     } finally {
       client.dispose();
       host.dispose();

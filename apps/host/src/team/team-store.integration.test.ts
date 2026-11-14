@@ -845,6 +845,9 @@ describe("team transaction authority", () => {
       const unsent = await textUpload(files, member, c.id);
       const kept = await textUpload(files, owner, c.id);
       await new TeamMembersStore(access).change(owner, member.userId, "remove");
+      await expect(
+        fixture.database.transaction().execute((t) => access.member(t, member.userId)),
+      ).rejects.toMatchObject({ code: "forbidden", reason: "removed" });
       await files.collectGarbage();
       const remaining = await fixture.database.selectFrom("teamBlobs").select("id").execute();
       expect(remaining.map((row) => row.id)).toEqual([kept.id]);
