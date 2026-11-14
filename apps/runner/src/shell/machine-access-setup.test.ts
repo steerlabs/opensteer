@@ -825,6 +825,26 @@ describe("OpenSSH configuration", () => {
 });
 
 describe("machine access notice", () => {
+  it("keeps the notice identical across inventory order and elapsed time", () => {
+    const context = machineContext();
+    const inventory = {
+      ...context,
+      machines: [
+        ...context.machines,
+        {
+          ...machine("beta", "Beta"),
+          status: "offline" as const,
+          lastSeenAt: "2026-09-13T10:00:00.000Z",
+        },
+      ],
+    };
+    expect(renderMachineAccessNotice(inventory, 0)).toBe(
+      renderMachineAccessNotice(
+        { ...inventory, machines: [...inventory.machines].reverse() },
+        9999999999999,
+      ),
+    );
+  });
   it("renders online, offline, shares and omitted machines", () => {
     const context = machineContext();
     const notice = renderMachineAccessNotice(
@@ -846,7 +866,7 @@ describe("machine access notice", () => {
       Date.parse("2026-09-13T12:00:00.000Z"),
     );
     expect(notice).toContain("alpha (macOS, online)");
-    expect(notice).toContain("build-box (macOS, offline 2h)");
+    expect(notice).toContain("build-box (macOS, offline)");
     expect(notice).toContain("/srv/data (read-only); commands off; port forwarding off.");
     expect(notice).toContain("commands allowed; port forwarding allowed.");
     expect(notice).toContain(
@@ -910,7 +930,11 @@ describe("machine access notice", () => {
     expect(fitted.callerMachineName).toBe(context.callerMachineName);
     expect(notice).toContain(`This Run is on ${context.callerMachineName}.`);
     expect(fitted.machines.length).toBeGreaterThan(0);
-    expect(fitted.machines).toEqual(machines.slice(0, fitted.machines.length));
+    expect(fitted.machines).toEqual(
+      machines
+        .toSorted((a, b) => (a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0))
+        .slice(0, fitted.machines.length),
+    );
     expect(fitted.omittedMachines).toBe(3 + machines.length - fitted.machines.length);
     expect(notice).toContain(
       `…and ${fitted.omittedMachines} more computers are not listed and cannot be addressed this Run.`,

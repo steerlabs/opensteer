@@ -2063,7 +2063,15 @@ class ClaudeHarnessSession implements HarnessSession {
         ...this.#context.writableRoots.filter((root) => root !== this.#context.workspacePath),
         ...(this.#context.attachmentDirectory ? [this.#context.attachmentDirectory] : []),
       ],
-      env: { ...environment, ENABLE_TOOL_SEARCH: "true" },
+      env: {
+        ...environment,
+        ENABLE_TOOL_SEARCH: "true",
+        ...(this.#hasProviderTranscript && environment.MCP_CONNECTION_NONBLOCKING === undefined
+          ? { MCP_CONNECTION_NONBLOCKING: "0" }
+          : {}),
+      },
+      title: "Opensteer",
+      promptSuggestions: false,
       includePartialMessages: true,
       maxTurns: this.#config.maxTurns,
       managedSettings: managedClaudeSettings(this.#context),

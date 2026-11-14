@@ -29,7 +29,7 @@ export interface AgentToolSpec<
   readsOnly?(input: z.output<Input>): boolean;
   /** Present for the lifetime of a task bound to a team thread. */
   readonly team?: true;
-  /** Present in Runs that may use their owner's personal context while the owner is in a team. */
+  /** Present in Runs that may use their owner's personal context regardless of current team links. */
   readonly knowledge?: true;
   /** Overrides the schema derived from `input` when a union reads poorly to models. */
   readonly advertisedInputSchema?: Readonly<Record<string, unknown>>;

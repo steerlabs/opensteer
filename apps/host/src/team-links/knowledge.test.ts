@@ -44,6 +44,30 @@ function fixture(states: readonly PersonalTeamLink["state"][]) {
 }
 
 describe("an agent's team knowledge over its owner's links", () => {
+  it.each([[], ["revoked"], ["needs_update"]] as const)(
+    "denies every knowledge operation without an active link (%j)",
+    async (...states) => {
+      const f = fixture(states);
+      const caller = { runId: f.runId, teamOrigin: null, requestId: null };
+      for (const call of [
+        () => f.knowledge.topics(caller, {}),
+        () => f.knowledge.read(caller, { query: "hello" }),
+        () =>
+          f.knowledge.write(
+            caller,
+            knowledge_write.input.parse({
+              topicId: createId("knowledgeTopic"),
+              title: "Hi",
+              body: "Text",
+            }),
+          ),
+      ]) {
+        await expect(call()).rejects.toMatchObject({ code: "not_found" });
+      }
+      expect(f.sent).toEqual([]);
+    },
+  );
+
   it("names the asking request only to the team the Run's thread came from", async () => {
     const f = fixture(["active", "active"]);
     const [asking, other] = f.links.map((link) => link.teamId) as [DeploymentId, DeploymentId];

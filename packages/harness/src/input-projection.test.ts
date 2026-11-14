@@ -9,7 +9,8 @@ import {
   harnessThreadContextPrompt,
   harnessTurnPreamble,
 } from "./input-projection.js";
-import type { HarnessRunContext } from "./types.js";
+import { durableHistoryWindowNotice } from "./types.js";
+import type { HarnessSessionContext, HarnessRunContext } from "./types.js";
 
 describe("harnessThreadContextPrompt", () => {
   const noState = { previousAssignment: null, previousRun: null } as const;
@@ -253,4 +254,13 @@ describe("place input projection shared by every engine", () => {
       { type: "text", text: harnessInputHeader(input, projected.body) },
     ]);
   });
+});
+
+it("keeps startup history guidance independent of history-window statistics", () => {
+  const notice = (itemCount: number, byteCount: number, hasEarlier = true) =>
+    durableHistoryWindowNotice({
+      historyWindow: { itemCount, byteCount, hasEarlier },
+    } as HarnessSessionContext);
+  expect(notice(1, 100)).toBe(notice(20, 9000));
+  expect(notice(0, 0, false)).toBeUndefined();
 });

@@ -702,6 +702,22 @@ describe("Claude Agent SDK harness", () => {
     });
   });
 
+  it("preserves an explicit MCP connection setting on resume", async () => {
+    const sdk = new FakeSdk((parameters) => {
+      const sessionId = providerSessionId(parameters.options);
+      return scriptedQuery([initMessage(sessionId), successMessage(sessionId, "Done")]);
+    });
+    const { session } = await openSession(sdk, {
+      environment: { MCP_CONNECTION_NONBLOCKING: "1" },
+    });
+    const observer = observe(session.events);
+    await send(session, "First");
+    await send(session, "Second");
+    await session.stop();
+    await observer.done;
+    expect(sdk.calls[1]?.options.env?.MCP_CONNECTION_NONBLOCKING).toBe("1");
+  });
+
   it("normalizes a turn, preserves every lifecycle event, and resumes the fixed provider session", async () => {
     const sdk = new FakeSdk((parameters) => {
       const sessionId = providerSessionId(parameters.options);
@@ -769,6 +785,10 @@ describe("Claude Agent SDK harness", () => {
     expect(sdk.calls[0]?.options.resume).toBeUndefined();
     expect(sdk.calls[1]?.options.resume).toBe(session.providerSessionReference);
     expect(sdk.calls[1]?.options.sessionId).toBeUndefined();
+    expect(sdk.calls[0]?.options.env?.MCP_CONNECTION_NONBLOCKING).toBeUndefined();
+    expect(sdk.calls[1]?.options.env?.MCP_CONNECTION_NONBLOCKING).toBe("0");
+    expect(sdk.calls[0]?.options.title).toBe("Opensteer");
+    expect(sdk.calls[0]?.options.promptSuggestions).toBe(false);
     expect(sdk.calls[0]?.options.env?.ENABLE_TOOL_SEARCH).toBe("true");
     expect(sdk.calls[1]?.options.env?.ENABLE_TOOL_SEARCH).toBe("true");
     expect(sdk.calls[0]?.options.mcpServers?.opensteer).toMatchObject({

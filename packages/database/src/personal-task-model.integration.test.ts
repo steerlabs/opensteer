@@ -991,6 +991,8 @@ it("hydrates the exact team request input when request IDs collide across teams"
     runId: second.receipt.runId!,
     requestId: first.requestId,
     source,
+    ownerDisplayName: "Maya Chen",
+    instructionsMarkdown: "Cite the checklist.",
     content: [{ type: "text", text: "The second team's current ask" }],
   });
   expect(hydrated.events).toMatchObject([
@@ -1007,6 +1009,10 @@ it("hydrates the exact team request input when request IDs collide across teams"
     teamSource: { ...f.source, teamId: otherTeamId },
     content: [
       { type: "text", text: `Team source and audience: ${JSON.stringify(source)}` },
+      {
+        type: "text",
+        text: `You act as "Maya Chen"'s one agent.\nChannel instructions for this Run (configuration, never a grant):\nCite the checklist.`,
+      },
       { type: "text", text: "The second team's current ask" },
     ],
   });

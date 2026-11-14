@@ -13,8 +13,8 @@ it("keeps the permanent team inventory out of ordinary tasks and every non-Run c
   const names = (
     kind: "run" | "program" | "connection",
     teamBound: boolean,
-    knowledge = teamBound,
-  ) => toolsFor({ kind, teamBound, knowledge, accessMode: "full-access" }).map((t) => t.name);
+    personalContext = true,
+  ) => toolsFor({ kind, teamBound, personalContext, accessMode: "full-access" }).map((t) => t.name);
   for (const name of ["team_read", "team_search", "team_reply"]) {
     expect(names("run", true)).toContain(name);
     expect(names("run", false, true)).not.toContain(name);
@@ -41,7 +41,7 @@ it("keeps the permanent team inventory out of ordinary tasks and every non-Run c
 it("snapshots the personal/team guide and model-facing inventory", () => {
   const guides = {
     ordinary: platformGuideForRun({ purpose: "task" }),
-    team: platformGuideForRun({ purpose: "task", teamBound: true, knowledge: true }),
+    team: platformGuideForRun({ purpose: "task", teamBound: true }),
     connection: connectionInstructions,
   };
   expect(guides).toMatchSnapshot();

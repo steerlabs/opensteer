@@ -469,7 +469,9 @@ export function fitMachineAccessNotice(
   context: MachineAccessRunContext,
   now = Date.now(),
 ): MachineAccessRunContext {
-  const machines = [...context.machines];
+  const machines = context.machines.toSorted((a, b) =>
+    a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0,
+  );
   let omittedMachines = context.omittedMachines;
   while (
     machines.length > 0 &&
@@ -511,7 +513,7 @@ export function machineAccessUnavailableSentence(reason: MachineAccessUnavailabl
 
 export function renderMachineAccessNotice(
   context: MachineAccessRunContext,
-  now = Date.now(),
+  _now = Date.now(),
   unavailable?: MachineAccessUnavailableReason,
 ): string {
   if (context.machines.length === 0 && context.omittedMachines === 0)
@@ -523,17 +525,15 @@ export function renderMachineAccessNotice(
           unavailable ? ` ${machineAccessUnavailableSentence(unavailable)}` : ""
         }`
       : "Other computers you can reach over SSH (ssh, scp, sftp, rsync, git as usual; no interactive terminal, so run non-interactive commands):",
-    ...context.machines.map((machine) => {
-      const platform = machine.platform === "darwin" ? "macOS" : "Linux";
-      const status =
-        machine.status === "online"
-          ? "online"
-          : machine.lastSeenAt
-            ? `offline ${relativeTime(Date.parse(machine.lastSeenAt), now)}`
-            : "offline, never seen";
-      const shares = renderMachineNoticeShares(machine.shares);
-      return `- ${machine.alias} (${platform}, ${status}): ${shares}; commands ${machine.commands ? "allowed" : "off"}; port forwarding ${machine.forwarding ? "allowed" : "off"}${renderMachineNoticeFullAccess(machine)}.`;
-    }),
+    ...context.machines
+      .toSorted((a, b) => (a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0))
+      .map((machine) => {
+        const platform = machine.platform === "darwin" ? "macOS" : "Linux";
+        const status =
+          machine.status === "online" ? "online" : machine.lastSeenAt ? "offline" : "never seen";
+        const shares = renderMachineNoticeShares(machine.shares);
+        return `- ${machine.alias} (${platform}, ${status}): ${shares}; commands ${machine.commands ? "allowed" : "off"}; port forwarding ${machine.forwarding ? "allowed" : "off"}${renderMachineNoticeFullAccess(machine)}.`;
+      }),
   ];
   if (context.omittedMachines > 0) {
     lines.push(
@@ -737,14 +737,4 @@ function parseSshG(output: string): Readonly<Record<string, string>> {
     if (space > 0) parsed[line.slice(0, space)] ??= line.slice(space + 1);
   }
   return parsed;
-}
-
-function relativeTime(then: number, now: number): string {
-  const milliseconds = Math.max(0, now - then);
-  const minutes = Math.floor(milliseconds / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 48) return `${hours}h`;
-  return `${Math.floor(hours / 24)}d`;
 }

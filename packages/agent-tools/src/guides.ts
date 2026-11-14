@@ -63,7 +63,6 @@ export function platformGuideForRun(input: {
   readonly purpose: TaskPurpose;
   readonly teamBound?: boolean;
   readonly personalContext?: boolean;
-  readonly knowledge?: boolean;
 }): string {
   return [
     platformGuide,
@@ -73,7 +72,7 @@ export function platformGuideForRun(input: {
     ...(input.personalContext !== false ? [memoryGuide] : []),
     `Task purpose: ${input.purpose}`,
     ...(input.teamBound ? [teamGuide] : []),
-    ...(input.knowledge ? [knowledgeGuide] : []),
+    ...(input.personalContext !== false ? [knowledgeGuide] : []),
   ].join("\n\n");
 }
 

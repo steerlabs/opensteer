@@ -284,6 +284,8 @@ export function hydrateTeamTaskInput(
     readonly requestId: TeamAgentRequestId;
     readonly content: readonly import("@opensteer/core").ContentPart[];
     readonly source: TeamSource;
+    readonly ownerDisplayName: string;
+    readonly instructionsMarkdown: string;
   },
 ) {
   return withPersonalTransaction(database, async (transaction) => {
@@ -324,6 +326,10 @@ export function hydrateTeamTaskInput(
       });
     const content = MessageContentSchema.parse([
       { type: "text", text: `Team source and audience: ${JSON.stringify(source)}` },
+      {
+        type: "text",
+        text: `You act as ${JSON.stringify(input.ownerDisplayName)}'s one agent.\nChannel instructions for this Run (configuration, never a grant):\n${input.instructionsMarkdown}`,
+      },
       ...input.content,
     ]);
     await transaction

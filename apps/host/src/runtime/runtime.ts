@@ -1970,12 +1970,6 @@ export async function createHostRuntime(
           content: [{ type: "text" as const, text: JSON.stringify(context.messages) }],
         };
       },
-      teamKnowledgeAvailable: async () =>
-        (await database
-          .selectFrom("personalTeamLinks")
-          .select("id")
-          .where("state", "=", "active")
-          .executeTakeFirst()) !== undefined,
       onRunAdmitted: (threadId) => {
         void naming?.request(threadId);
       },
