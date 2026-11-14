@@ -1,4 +1,8 @@
-import { imagePathMaxLength, ThreadIdSchema, ToolOutputImageMediaTypeSchema } from "@opensteer/core";
+import {
+  imagePathMaxLength,
+  ThreadIdSchema,
+  ToolOutputImageMediaTypeSchema,
+} from "@opensteer/core";
 import { z } from "zod";
 
 /** Paths one `asset.urls` call can resolve, so a screen of images costs one round trip. */

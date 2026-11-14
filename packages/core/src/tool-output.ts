@@ -98,8 +98,7 @@ export function createToolOutput(
   text: string,
   images: readonly ToolOutputImage[] = [],
 ): ToolOutput {
-  const imagesField =
-    images.length > 0 ? { images: images.slice(0, toolOutputImageMaxCount) } : {};
+  const imagesField = images.length > 0 ? { images: images.slice(0, toolOutputImageMaxCount) } : {};
   // JSON and PostgreSQL `jsonb` cannot carry U+0000, so the durable form never
   // does. Every driver builds tool output here, which makes this the one place
   // to do it; replacing before measuring keeps the byte budget honest, since
