@@ -93,7 +93,7 @@ export class TeamFileService {
     const controller = new AbortController();
     const authorize = () =>
       this.access.database.transaction().execute(async (t) => {
-        if (!(await this.access.channel(t, actor, channelId)).post) return false;
+        if (!(await this.access.peerChannel(t, actor, channelId)).post) return false;
         if (actor.kind === "agent") {
           requireTeam(agent);
           await this.access.link(t, actor, agent.linkId);

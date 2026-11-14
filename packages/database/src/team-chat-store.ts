@@ -391,7 +391,7 @@ export class TeamChatStore {
     id: TeamChannelId,
     metadataOnly = false,
   ): Promise<TeamChannel> {
-    const authority = await this.access.channel(transaction, actor, id);
+    const authority = await this.access.peerChannel(transaction, actor, id);
     requireTeam(authority.read || (metadataOnly && authority.manage));
     const row = await transaction
       .selectFrom("teamChannels")
@@ -663,7 +663,8 @@ export class TeamChatStore {
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
       requireTeam(
-        row.kind === "group_dm" && (await this.access.channel(transaction, actor, channelId)).post,
+        row.kind === "group_dm" &&
+          (await this.access.peerChannel(transaction, actor, channelId)).post,
         "Only group DM participants can add people",
       );
       const entries = await transaction
@@ -751,7 +752,8 @@ export class TeamChatStore {
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
       requireTeam(
-        actor.kind === "human" && (await this.access.channel(transaction, actor, channelId)).manage,
+        actor.kind === "human" &&
+          (await this.access.peerChannel(transaction, actor, channelId)).manage,
       );
       requireTeam(
         channel.kind === "public" || channel.kind === "private",
@@ -870,7 +872,8 @@ export class TeamChatStore {
   ) {
     await this.access.mutateAs(actor, "channel.update", async (transaction) => {
       requireTeam(
-        actor.kind === "human" && (await this.access.channel(transaction, actor, channelId)).manage,
+        actor.kind === "human" &&
+          (await this.access.peerChannel(transaction, actor, channelId)).manage,
       );
       const row = await transaction
         .selectFrom("teamChannels")
@@ -1021,7 +1024,7 @@ export class TeamChatStore {
   ) {
     const relayed = await this.relay?.send(actor, input);
     if (relayed) return relayed;
-    const result = await this.access.contentWrite(
+    const result = await this.access.writeForPeer(
       actor,
       input.channelId,
       async (transaction, authority) => {
@@ -1476,7 +1479,7 @@ export class TeamChatStore {
   ) {
     if (!partner && (await this.relay?.edit(actor, channelId, messageId, input))) return [];
     const deletedRequests: import("@opensteer/core").TeamAgentRequestId[] = [];
-    await this.access.contentWrite(actor, channelId, async (transaction, authority) => {
+    await this.access.writeForPeer(actor, channelId, async (transaction, authority) => {
       await requireOwnerChannel(transaction, channelId);
       if (partner) await authorizePartnerWrite(transaction, actor, channelId, partner);
       else requireTeam(authority.read && actor.kind === "human");
@@ -1657,7 +1660,7 @@ export class TeamChatStore {
     partner?: TeamPartnerWriteContext,
   ) {
     if (!partner && (await this.relay?.pin(actor, channelId, messageId, pin))) return;
-    await this.access.contentWrite(actor, channelId, async (transaction, authority) => {
+    await this.access.writeForPeer(actor, channelId, async (transaction, authority) => {
       const shared = await requireOwnerChannel(transaction, channelId);
       if (partner) await authorizePartnerWrite(transaction, actor, channelId, partner);
       else requireTeam(actor.kind === "human" && authority.read && (!shared || authority.post));
@@ -1742,7 +1745,7 @@ export class TeamChatStore {
           await this.access.member(transaction, actor.userId);
           await this.access.checkSession(transaction);
           if (channelId)
-            requireTeam((await this.access.channel(transaction, actor, channelId)).read);
+            requireTeam((await this.access.peerChannel(transaction, actor, channelId)).read);
           const result = await read(transaction);
           if (actor.kind === "agent")
             await appendTeamAudit(transaction, {
@@ -1763,7 +1766,7 @@ export class TeamChatStore {
             if (linkId) await this.access.link(t, actor, linkId);
             await this.access.member(t, actor.userId);
             await this.access.checkSession(t);
-            return channelId ? (await this.access.channel(t, actor, channelId)).read : false;
+            return channelId ? (await this.access.peerChannel(t, actor, channelId)).read : false;
           }),
         () => value,
       );
@@ -1941,7 +1944,7 @@ export class TeamChatStore {
       undefined,
       async (t) => {
         if (input.channelId)
-          requireTeam((await this.access.channel(t, actor, input.channelId)).read);
+          requireTeam((await this.access.peerChannel(t, actor, input.channelId)).read);
         await sql`set local statement_timeout='2s'`.execute(t);
         let query = t
           .selectFrom("teamMessages")
@@ -2005,14 +2008,14 @@ export class TeamChatStore {
       () =>
         this.access.database.transaction().execute(async (t) => {
           for (const { message } of result.results)
-            if (!(await this.access.channel(t, actor, message.channelId)).read) return false;
+            if (!(await this.access.peerChannel(t, actor, message.channelId)).read) return false;
           return true;
         }),
       () => result,
     );
   }
   async readMarker(actor: TeamActor, channelId: TeamChannelId, throughMessageId: TeamMessageId) {
-    await this.access.contentWrite(actor, channelId, async (t, a) => {
+    await this.access.writeForPeer(actor, channelId, async (t, a) => {
       requireTeam(actor.kind === "human" && a.read);
       requireTeam(
         await t
@@ -2065,7 +2068,7 @@ export class TeamChatStore {
     rootId: TeamMessageId,
     enabled: boolean,
   ) {
-    const recipient = await this.access.contentWrite(actor, channelId, async (t, authority) => {
+    const recipient = await this.access.writeForPeer(actor, channelId, async (t, authority) => {
       requireTeam(
         actor.kind === "human" &&
           authority.read &&
@@ -2099,7 +2102,7 @@ export class TeamChatStore {
     channelId: TeamChannelId,
     notificationLevel: "mentions" | "all" | "muted",
   ) {
-    await this.access.contentWrite(actor, channelId, async (t, a) => {
+    await this.access.writeForPeer(actor, channelId, async (t, a) => {
       requireTeam(actor.kind === "human" && a.read);
       await t
         .insertInto("teamChannelMemberState")
@@ -2151,7 +2154,7 @@ export class TeamChatStore {
         const rows = await query.orderBy("id").limit(51).execute();
         const pageRows = rows.slice(0, 50),
           ids = pageRows.map((row) => row.id);
-        const authorities = await this.access.channels(t, actor, ids);
+        const authorities = await this.access.peerChannels(t, actor, ids);
         const shares = await teamChannelShares(t, ids, actor.userId);
         const states = ids.length
           ? await t

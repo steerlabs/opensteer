@@ -248,5 +248,5 @@ are ordered independently of message catch-up, so a late write receipt cannot un
 Queued relays recheck the local session, channel and request at the outbound handoff and cancel
 before the corresponding removal returns. Channel instructions stay
 local to each team's agents. The owner limits new ask references to 60 per share per minute, and
-the target team applies its normal requester and target budgets. Partner protocol version 3 is
+the target team applies its normal requester and target budgets. Partner protocol version 1 is
 required for this exchange.

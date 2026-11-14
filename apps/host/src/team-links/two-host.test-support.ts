@@ -133,7 +133,7 @@ export async function createTwoHostLinkFixture() {
           .where("id", "=", channelId)
           .forNoKeyUpdate()
           .execute();
-        const rights = await resolver.channel(tx, actor, channelId);
+        const rights = await resolver.peerChannel(tx, actor, channelId);
         if (!rights.post || rights.peopleOnly) throw linkError();
         return write(tx, rights);
       });
@@ -154,7 +154,7 @@ export async function createTwoHostLinkFixture() {
     team.database,
   );
   const resolver: TeamAccessResolver = {
-    async channel(tx, actor, target) {
+    async peerChannel(tx, actor, target) {
       const row = await tx
         .selectFrom("teamChannels")
         .selectAll()

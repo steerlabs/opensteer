@@ -169,7 +169,11 @@ export class TeamPartners {
     try {
       await this.store.access.outsideHumanSession(() => this.#open(row, offer));
     } catch (error) {
-      await this.store.access.outsideHumanSession(() => this.store.abandonProposal(row.id));
+      if (
+        error instanceof OpensteerError &&
+        (error.reason === "partner-pairing-refused" || error.reason === "identity-mismatch")
+      )
+        await this.store.access.outsideHumanSession(() => this.store.abandonProposal(row.id));
       throw error;
     }
     const result = await this.store.list(actor, this.connected, { id: row.id });
@@ -297,7 +301,7 @@ export class TeamPartners {
       ? undefined
       : await this.store.find(hello.authority.document.deploymentId);
     if (!hello.selector && (!existing || existing.role !== "listener")) throw partnerError();
-    entry.id = existing?.id ?? randomUUID();
+    entry.id = existing?.id ?? hello.selector ?? randomUUID();
     if (existing) {
       verifyPartnerPins(hello.authority, pins(existing));
       entry.id = existing.id;
@@ -332,14 +336,19 @@ export class TeamPartners {
     let row: PartnerRow;
     if (hello.selector) {
       if (!proof.verifier) throw partnerError();
-      row = await this.store.accept(
-        hello.selector,
-        proof.verifier,
-        hello.authority,
-        hello.name,
-        hello.approved,
-        entry.id,
-      );
+      try {
+        row = await this.store.accept(
+          hello.selector,
+          proof.verifier,
+          hello.authority,
+          hello.name,
+          hello.approved,
+        );
+      } catch (error) {
+        if (error instanceof OpensteerError && error.code === "forbidden")
+          await entry.peer.send({ type: "ready", state: "revoked", approved: false });
+        throw error;
+      }
     } else {
       if (proof.verifier || !existing) throw partnerError();
       row = await this.store.seen(existing.id, hello.approved);
@@ -408,6 +417,7 @@ export class TeamPartners {
           });
           const ready = TeamPartnerReadySchema.parse(await entry.peer.next());
           if (ready.state === "revoked") {
+            if (offer) throw partnerError("partner-pairing-refused");
             await this.store.revoke(row.id);
             throw partnerError("partner-revoked");
           }

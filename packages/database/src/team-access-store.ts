@@ -222,6 +222,7 @@ export class TeamAccessStore {
         post: false,
         manage: false,
         peopleOnly: false,
+        shared: false,
       }
     );
   }
@@ -230,10 +231,16 @@ export class TeamAccessStore {
     actor: TeamActor,
     channelIds: readonly TeamChannelId[],
   ) {
-    type Authority = { read: boolean; post: boolean; manage: boolean; peopleOnly: boolean };
+    type Authority = {
+      read: boolean;
+      post: boolean;
+      manage: boolean;
+      peopleOnly: boolean;
+      shared: boolean;
+    };
     if (!channelIds.length) return new Map<TeamChannelId, Authority>();
     const result = await sql<
-      Authority & { channelId: TeamChannelId; shared: boolean }
+      Authority & { channelId: TeamChannelId }
     >`${teamGroupPaths(actor.userId)}
       select c.id as channel_id, c.id in ${teamSharedChannelIds()} as shared,${teamChannelPeopleOnly()} as people_only,
       coalesce(bool_or(a.subject_id is not null),false) and (not ${teamChannelAgentsBlocked()} or ${actor.kind}='human')
@@ -246,11 +253,26 @@ export class TeamAccessStore {
       from team_channels c join team_members m on m.user_id=${actor.userId} and m.state='active'
       left join team_channel_members a on a.channel_id=c.id and ((a.subject_kind='person' and a.subject_id=m.user_id) or (a.subject_kind='group' and a.subject_id in(select id from member_groups)))
       where c.id in (${sql.join(channelIds)}) group by c.id,m.role`.execute(transaction);
-    for (const row of result.rows)
-      assertTeamSharedChannelVersion(row.shared && (row.read || row.manage));
-    return new Map(
-      result.rows.map(({ channelId, shared: _, ...authority }) => [channelId, authority]),
-    );
+    return new Map(result.rows.map(({ channelId, ...authority }) => [channelId, authority]));
+  }
+  async peerChannel(
+    transaction: Transaction<DatabaseSchema>,
+    actor: TeamActor,
+    channelId: TeamChannelId,
+  ) {
+    const authority = await this.channel(transaction, actor, channelId);
+    assertTeamSharedChannelVersion(authority.shared && (authority.read || authority.manage));
+    return authority;
+  }
+  async peerChannels(
+    transaction: Transaction<DatabaseSchema>,
+    actor: TeamActor,
+    channelIds: readonly TeamChannelId[],
+  ) {
+    const authorities = await this.channels(transaction, actor, channelIds);
+    for (const authority of authorities.values())
+      assertTeamSharedChannelVersion(authority.shared && (authority.read || authority.manage));
+    return authorities;
   }
   /** A person reads a topic granted to them, a group they are in, or everyone; their agent the same, never managing. */
   async topic(
@@ -638,6 +660,19 @@ export class TeamAccessStore {
         .executeTakeFirstOrThrow();
       await this.checkSession(transaction);
       return write(transaction, await this.channel(transaction, actor, channelId));
+    });
+  }
+  async writeForPeer<Value>(
+    actor: TeamActor,
+    channelId: TeamChannelId,
+    write: (
+      transaction: Transaction<DatabaseSchema>,
+      authority: Awaited<ReturnType<TeamAccessStore["channel"]>>,
+    ) => Promise<Value>,
+  ) {
+    return this.contentWrite(actor, channelId, (transaction, authority) => {
+      assertTeamSharedChannelVersion(authority.shared && (authority.read || authority.manage));
+      return write(transaction, authority);
     });
   }
   /** Knowledge writes hold the access fence through commit; the writer authorizes inside it. */
