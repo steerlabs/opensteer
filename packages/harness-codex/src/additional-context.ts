@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
@@ -8,6 +9,9 @@ export interface CodexContextEntry {
 
 // Codex middle-truncates values beyond 1,000 tokens, estimated as UTF-8 bytes / 4.
 const maximumValueBytes = 4_000;
+
+/** The last write to each inventory, so every builder of one conversation writes in turn. */
+const inventoryWrites = new Map<string, Promise<void>>();
 
 /**
  * Opensteer's application context as bounded, ordered keys. Codex emits a key
@@ -26,13 +30,7 @@ export class CodexAdditionalContext {
   }
 
   static async open(path: string): Promise<CodexAdditionalContext> {
-    const stored: unknown = await readFile(path, "utf8")
-      .then((text) => JSON.parse(text) as unknown)
-      .catch(() => []);
-    const keys = Array.isArray(stored)
-      ? stored.filter((key): key is string => typeof key === "string")
-      : [];
-    return new CodexAdditionalContext(path, keys);
+    return new CodexAdditionalContext(path, await readInventory(path));
   }
 
   async build(
@@ -47,17 +45,45 @@ export class CodexAdditionalContext {
         entries.set(key, { kind: "application", value: chunk });
       }
     }
-    if (this.#keys.size !== known) {
-      await mkdir(dirname(this.#path), { recursive: true, mode: 0o700 });
-      await writeFile(`${this.#path}.tmp`, JSON.stringify([...this.#keys].sort()), { mode: 0o600 });
-      await rename(`${this.#path}.tmp`, this.#path);
-    }
+    if (this.#keys.size !== known) await this.#persist();
     return Object.fromEntries(
       [...this.#keys]
         .sort()
         .map((key) => [key, entries.get(key) ?? { kind: "application", value: "" }]),
     );
   }
+
+  /** One write at a time per conversation, each merging what is recorded and replacing it atomically. */
+  #persist(): Promise<void> {
+    const path = this.#path;
+    const write = (inventoryWrites.get(path) ?? Promise.resolve()).then(async () => {
+      for (const key of await readInventory(path)) this.#keys.add(key);
+      const temporary = `${path}.${randomUUID()}.tmp`;
+      await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+      await writeFile(temporary, JSON.stringify([...this.#keys].sort()), { mode: 0o600 });
+      await rename(temporary, path);
+    });
+    const settled = write.catch(() => undefined);
+    inventoryWrites.set(path, settled);
+    void settled.then(() => {
+      if (inventoryWrites.get(path) === settled) inventoryWrites.delete(path);
+    });
+    return write;
+  }
+}
+
+/**
+ * The keys recorded for a conversation. A missing record is a conversation
+ * that has none yet; an unreadable one is replaced by the next write, and its
+ * lost keys simply stay unretired in the native history.
+ */
+async function readInventory(path: string): Promise<readonly string[]> {
+  const stored: unknown = await readFile(path, "utf8")
+    .then((text) => JSON.parse(text) as unknown)
+    .catch(() => []);
+  return Array.isArray(stored)
+    ? stored.filter((key): key is string => typeof key === "string")
+    : [];
 }
 
 function splitValue(value: string, level = 0): string[] {

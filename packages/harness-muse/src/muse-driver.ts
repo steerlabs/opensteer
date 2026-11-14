@@ -878,6 +878,7 @@ class MuseHarnessSession implements HarnessSession {
       const feedback = response.text
         ? boundedDenialNote(response.text, { maximumBytes: 20_000, tooLong: invalidResponse })
         : undefined;
+      this.#noteApprovalScope(choice);
       parseMuseApprovalDecide(
         await this.#requireHost().command("approval/decide", {
           approvalId: pending.request.approvalId,
@@ -887,7 +888,6 @@ class MuseHarnessSession implements HarnessSession {
           sessionId: this.providerSessionReference,
         }),
       );
-      this.#noteApprovalScope(choice);
       this.#pending.delete(requestId);
       return;
     }
@@ -1361,6 +1361,7 @@ class MuseHarnessSession implements HarnessSession {
         (candidate) => candidate.decision === "approved" && candidate.scope === "once",
       ) ?? request.availableChoices.find((candidate) => candidate.decision === "approved");
     if (!choice) throw new Error("Muse Code offered no approval choice for its workflow child");
+    this.#noteApprovalScope(choice);
     parseMuseApprovalDecide(
       await this.#requireHost().command("approval/decide", {
         approvalId: request.approvalId,
@@ -1369,10 +1370,13 @@ class MuseHarnessSession implements HarnessSession {
         sessionId: this.providerSessionReference,
       }),
     );
-    this.#noteApprovalScope(choice);
   }
 
-  /** Muse keeps an approval scoped beyond one call for the session, so that session serves no later Run. */
+  /**
+   * Muse keeps an approval scoped beyond one call for the session, so that
+   * session serves no later Run. Marked before the decision is sent: Muse can
+   * apply it and finish the turn before it answers the command.
+   */
   #noteApprovalScope(choice: { readonly decision: string; readonly scope?: string }): void {
     if (choice.decision === "approved" && choice.scope !== "once") this.#approvalOutlivesRun = true;
   }

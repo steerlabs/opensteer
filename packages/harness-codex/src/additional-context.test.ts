@@ -35,3 +35,27 @@ it("bounds UTF-8 values without losing paragraphs, lines or code points and reti
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+it("keeps every recorded key when builds of one conversation overlap", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-context-"));
+  try {
+    const path = join(directory, "state", "codex-context-keys.json");
+    const [first, second] = await Promise.all([
+      CodexAdditionalContext.open(path),
+      CodexAdditionalContext.open(path),
+    ]);
+    await Promise.all([
+      first.build({ skills_alpha: "Alpha" }),
+      first.build({ skills_gamma: "Gamma" }),
+      second.build({ skills_beta: "Beta" }),
+    ]);
+    const replacement = await CodexAdditionalContext.open(path);
+    expect(Object.keys(await replacement.build({}))).toEqual([
+      "skills_alpha_000001",
+      "skills_beta_000001",
+      "skills_gamma_000001",
+    ]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});

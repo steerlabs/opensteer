@@ -489,6 +489,25 @@ describe("Muse Code sessions", () => {
     },
   );
 
+  it("never reuses a session whose workflow child was granted a session-wide approval", async () => {
+    const fixture = await setup("child-approval-session");
+    const adapter = await fixture.driver.create({
+      config: {},
+      instanceId: fixture.context.harnessInstanceId,
+      sourceId: "meta",
+    });
+    const session = await adapter.startSession({ ...fixture.context, accessMode: "full-access" });
+    const observer = observe(session.events);
+    try {
+      await session.execute(fixture.turn("check"));
+      await observer.waitFor("run.completed");
+      expect(await session.releaseForReuse?.()).toBe(false);
+    } finally {
+      await session.stop();
+      await adapter.close();
+    }
+  });
+
   it("cancels a workflow using its real run identifier", async () => {
     const fixture = await setup("workflow-cancel");
     const adapter = await fixture.driver.create({

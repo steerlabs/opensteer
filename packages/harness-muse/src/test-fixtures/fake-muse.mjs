@@ -314,7 +314,7 @@ function serve() {
           finishTurn();
           return;
         }
-        if (scenario === "child-approval") {
+        if (scenario === "child-approval" || scenario === "child-approval-session") {
           notification("item/started", {
             item: {
               childSessionId: "019a3333-3333-7333-8333-333333333333",
@@ -334,13 +334,17 @@ function serve() {
             params: {
               approvalId: "approval-1",
               availableChoices: [
-                {
-                  acceptsFeedback: false,
-                  choiceId: "approve-once",
-                  decision: "approved",
-                  label: "Allow once",
-                  scope: "once",
-                },
+                ...(scenario === "child-approval-session"
+                  ? []
+                  : [
+                      {
+                        acceptsFeedback: false,
+                        choiceId: "approve-once",
+                        decision: "approved",
+                        label: "Allow once",
+                        scope: "once",
+                      },
+                    ]),
                 {
                   acceptsFeedback: false,
                   choiceId: "approve-session",
@@ -423,13 +427,17 @@ function serve() {
       return;
     }
     if (method === "approval/decide") {
-      response(id, {
-        approvalId: params.approvalId,
-        commandId: params.commandId,
-        status: "accepted",
-        terminal: true,
-      });
-      if (scenario === "child-approval") {
+      const accepted = () =>
+        response(id, {
+          approvalId: params.approvalId,
+          commandId: params.commandId,
+          status: "accepted",
+          terminal: true,
+        });
+      // Muse can apply a decision and finish before it answers the command.
+      if (scenario === "child-approval-session") setTimeout(accepted, 200);
+      else accepted();
+      if (scenario === "child-approval" || scenario === "child-approval-session") {
         queueMicrotask(() =>
           notification("item/completed", {
             item: {
