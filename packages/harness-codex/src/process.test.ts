@@ -1,6 +1,7 @@
 import { delay } from "@opensteer/shared/delay";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +18,40 @@ const lifecycleServer = fileURLToPath(
 );
 
 describe("Codex stdio process", () => {
+  it("keeps the recovery engine alive when its killed parent closes stdout during a write", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-survival-"));
+    const capture = join(directory, "capture.jsonl");
+    const child = spawn(
+      process.execPath,
+      [fakeServer, "--survive-parent", `--capture=${capture}`],
+      {
+        stdio: ["pipe", "pipe", "ignore"],
+      },
+    );
+    const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    try {
+      child.stdout.destroy();
+      child.stdin.end(JSON.stringify({ id: 1, method: "initialize", params: {} }) + "\n");
+      await vi.waitFor(
+        async () => {
+          expect(
+            await readFile(capture, "utf8"),
+            "engine never acknowledged the broken pipe",
+          ).toContain('"recoveryBrokenPipe":true');
+          expect(child.exitCode).toBeNull();
+          expect(() => process.kill(child.pid!, 0)).not.toThrow();
+        },
+        { timeout: 2000 },
+      );
+    } finally {
+      child.kill("SIGKILL");
+      await withTimeout(exited, 2000, {
+        timeoutError: () => new Error("Recovery fixture did not exit during cleanup"),
+      });
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("initializes explicitly configured Codex storage roots before starting app-server", async () => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-process-test-"));
     const providerHome = join(directory, "private", "harness-state", "codex");

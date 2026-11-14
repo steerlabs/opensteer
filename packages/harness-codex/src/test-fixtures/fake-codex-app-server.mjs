@@ -220,6 +220,14 @@ process.on("exit", () => {
     for (const terminal of thread.terminals) terminal.kill("SIGKILL");
 });
 
+if (process.argv.includes("--survive-parent")) {
+  // A killed Runner may close its read pipe before the engine's last write flushes.
+  process.stdout.on("error", (error) => {
+    if (error.code !== "EPIPE") throw error;
+    capture({ recoveryBrokenPipe: true });
+  });
+}
+
 lines.on("close", () => {
   if (scenario === "ignore-termination") setInterval(() => undefined, 1_000);
   else if (process.argv.includes("--survive-parent")) setInterval(() => undefined, 1_000);

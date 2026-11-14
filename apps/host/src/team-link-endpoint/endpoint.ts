@@ -118,6 +118,7 @@ export class TeamLinkEndpoint {
     let delivery = Promise.resolve();
     const delivered = new Set<TeamAgentRequestId>();
     const inFlightReturns = new Set<TeamAgentRequestId>();
+    let returnBacklog = false;
     const subscriber = {
       ownerUserId: link.ownerUserId,
       online: false,
@@ -130,6 +131,7 @@ export class TeamLinkEndpoint {
             if (!capacity) return;
             const revision = access.revision;
             const pending = await requests.pending(linkId, [...delivered], capacity);
+            returnBacklog = pending.length === capacity;
             const batches: (typeof pending)[number][][] = [];
             let batch: (typeof pending)[number][] = [];
             for (const request of pending) {
@@ -243,7 +245,7 @@ export class TeamLinkEndpoint {
               if (result.kind === "accepted" && result.request.kind === "return") {
                 delivered.delete(result.request.id);
                 inFlightReturns.delete(result.request.id);
-                await subscriber.deliver();
+                if (returnBacklog && inFlightReturns.size <= 100) await subscriber.deliver();
               }
             } catch (error) {
               await send({

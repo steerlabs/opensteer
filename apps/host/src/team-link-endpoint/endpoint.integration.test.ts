@@ -580,6 +580,7 @@ describe("standing team link authority", () => {
           this.emit("close");
         }
       }
+      const pendingSpy = vi.spyOn(requests, "pending");
       const socket = new Socket();
       await endpoint.attach(socket as unknown as WebSocket, linkId);
       try {
@@ -592,6 +593,7 @@ describe("standing team link authority", () => {
           timeoutError: () =>
             new Error(`Only ${socket.completed.size} of 205 returns were acknowledged`),
         });
+        expect(pendingSpy.mock.calls.length).toBeLessThanOrEqual(2);
         expect(socket.maxOutstanding).toBeLessThanOrEqual(200);
         expect(socket.delivered.get(consent.request.id)).toBe(1);
         expect([...socket.delivered.values()].every((count) => count === 1)).toBe(true);

@@ -192,10 +192,10 @@ export class TeamChatStore {
       channelId,
       threadRootId: rootId,
       messageId,
-      audience: (await this.#sourceAudiences(transaction, actor, [channelId])).get(channelId)!,
+      audience: (await this.sourceAudiences(transaction, actor, [channelId])).get(channelId)!,
     };
   }
-  async #sourceAudiences(
+  async sourceAudiences(
     transaction: Transaction<DatabaseSchema>,
     actor: TeamActor,
     channelIds: readonly TeamChannelId[],
@@ -1640,7 +1640,7 @@ export class TeamChatStore {
           );
         const rows = await query.orderBy("id", "desc").limit(51).execute();
         const messages = await teamMessageViews(t, rows.slice(0, 50));
-        const audiences = await this.#sourceAudiences(
+        const audiences = await this.sourceAudiences(
           t,
           actor,
           messages.map((message) => message.channelId),

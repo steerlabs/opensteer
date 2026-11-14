@@ -5,6 +5,8 @@ import {
   type TeamAskDecision,
   type TeamLinkId,
   type TeamMessageId,
+  type TeamChannelId,
+  type TeamActor,
 } from "@opensteer/core";
 import { TeamRequestContextSchema } from "@opensteer/protocol";
 import { sql, type Transaction } from "kysely";
@@ -113,7 +115,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
       await this.access.link(t, { kind: "agent", userId: link.ownerUserId }, linkId);
       let pending = t
         .selectFrom("teamAgentRequests")
-        .select("id")
+        .selectAll()
         .where("linkId", "=", linkId)
         .where("state", "in", ["awaiting_approval", "queued", "working", "needs_you"])
         .orderBy(sql`case when state in ('awaiting_approval','queued') then 0 else 1 end`)
@@ -122,50 +124,83 @@ export class TeamRequestsStore implements TeamRequestStorePort {
         .limit(limit);
       if (excludeRequestIds.length) pending = pending.where("id", "not in", excludeRequestIds);
       const rows = await pending.execute();
-      const requests = [];
-      for (const { id } of rows) {
-        const row = await this.#owned(t, linkId, id);
-        const triggerRow = await t
-          .selectFrom("teamMessages")
-          .selectAll()
-          .where("id", "=", row.triggerMessageId)
-          .where("channelId", "=", row.channelId)
-          .executeTakeFirstOrThrow();
-        const trigger = (await teamMessageViews(t, [triggerRow]))[0]!;
-        let attachments = trigger.attachments;
-        if (row.returnPayload) {
-          const origin = await t
-            .selectFrom("teamAgentRequests")
-            .select("replyMessageId")
-            .where("id", "=", row.returnPayload.originAskId)
-            .executeTakeFirstOrThrow();
-          const answer = origin.replyMessageId
-            ? await t
-                .selectFrom("teamMessages")
-                .selectAll()
-                .where("id", "=", origin.replyMessageId)
-                .executeTakeFirst()
-            : null;
-          attachments = answer ? (await teamMessageViews(t, [answer]))[0]!.attachments : [];
+      const actors = new Map<string, { actor: TeamActor; channels: Set<TeamChannelId> }>();
+      for (const row of rows) {
+        const owner = { kind: "agent" as const, userId: row.ownerUserId };
+        const asker = row.presentation?.asker;
+        for (const actor of [
+          owner,
+          ...(asker ? [{ kind: asker.actor, userId: asker.teamUserId }] : []),
+        ]) {
+          const key = `${actor.kind}:${actor.userId}`;
+          let entry = actors.get(key);
+          if (!entry) {
+            entry = { actor, channels: new Set() };
+            actors.set(key, entry);
+          }
+          entry.channels.add(row.channelId);
         }
-        requests.push({
+      }
+      for (const { actor, channels } of actors.values()) {
+        const rights = await this.access.channels(t, actor, [...channels]);
+        requireTeam([...channels].every((id) => rights.get(id)?.read && rights.get(id)?.post));
+      }
+      const originIds = rows.flatMap((row) =>
+        row.returnPayload ? [row.returnPayload.originAskId] : [],
+      );
+      const origins = originIds.length
+        ? await t
+            .selectFrom("teamAgentRequests")
+            .select(["id", "replyMessageId"])
+            .where("id", "in", originIds)
+            .execute()
+        : [];
+      const replies = new Map(origins.map((row) => [row.id, row.replyMessageId]));
+      const messageIds = [
+        ...new Set(
+          rows.flatMap((row) => {
+            if (!row.returnPayload) return [row.triggerMessageId];
+            requireTeam(replies.has(row.returnPayload.originAskId), "Return origin unavailable");
+            const replyId = replies.get(row.returnPayload.originAskId);
+            return replyId ? [replyId] : [];
+          }),
+        ),
+      ];
+      const messages = messageIds.length
+        ? await t.selectFrom("teamMessages").selectAll().where("id", "in", messageIds).execute()
+        : [];
+      const views = new Map((await teamMessageViews(t, messages)).map((row) => [row.id, row]));
+      const audiences = await this.chat.sourceAudiences(
+        t,
+        { kind: "agent", userId: link.ownerUserId },
+        [...new Set(rows.map((row) => row.channelId))],
+      );
+      const requests = rows.map((row) => {
+        const trigger = views.get(row.triggerMessageId);
+        requireTeam(row.returnPayload || (trigger && trigger.channelId === row.channelId));
+        const replyId = row.returnPayload ? replies.get(row.returnPayload.originAskId) : null;
+        return {
           bodyMarkdown:
             row.kind === "return"
               ? (row.returnPayload!.bodyMarkdown ?? "")
-              : (row.presentation?.bodyMarkdown ?? trigger.bodyMarkdown),
-          attachments,
+              : (row.presentation?.bodyMarkdown ?? trigger!.bodyMarkdown),
+          attachments: row.returnPayload
+            ? replyId
+              ? (views.get(replyId)?.attachments ?? [])
+              : []
+            : trigger!.attachments,
           request: teamRequestView(row),
           returnPayload: row.returnPayload,
           presentation: row.presentation,
-          source: await this.chat.source(
-            t,
-            { kind: "agent", userId: row.ownerUserId },
-            row.channelId,
-            row.threadRootId,
-            row.triggerMessageId,
-          ),
-        });
-      }
+          source: {
+            teamId: this.chat.identity.teamId,
+            channelId: row.channelId,
+            threadRootId: row.threadRootId,
+            messageId: row.triggerMessageId,
+            audience: audiences.get(row.channelId)!,
+          },
+        };
+      });
       return requests;
     });
     return this.access.handoff(
