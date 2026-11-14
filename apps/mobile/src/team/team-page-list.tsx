@@ -11,14 +11,7 @@ import { color, controlFontScaleLimit, material, radius, space, touchTarget } fr
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { UnreadDot } from "../threads/task-row.js";
-import {
-  Avatar,
-  ChannelGlyph,
-  FaceStack,
-  MentionCount,
-  PeopleOnlyBadge,
-  TeamTile,
-} from "./team-marks.js";
+import { Avatar, ChannelGlyph, FaceStack, MentionCount, PeopleOnlyBadge } from "./team-marks.js";
 import type { ChannelRowView, DmRowView, TeamDrawerSectionView } from "./team-models.js";
 
 type PageRow =
@@ -31,10 +24,10 @@ type PageRow =
   | { readonly kind: "dm"; readonly dm: DmRowView };
 
 /**
- * A team's own page: its knowledge, its channels (alphabetical), then its direct messages
- * (newest first). Unread is bold; mentions of the reader are an ember count;
- * a DM never shows an unread total. The team's menu is the page's title menu.
- * Each heading's + makes one; Browse channels closes the channel list.
+ * A team's side of the sidebar: its knowledge, its channels (alphabetical), then
+ * its direct messages (newest first). Unread is bold; mentions of the reader are
+ * an ember count; a DM never shows an unread total. Each heading's + makes one;
+ * Browse channels closes the channel list.
  */
 export function TeamPageList(props: {
   readonly section: TeamDrawerSectionView;
@@ -47,8 +40,8 @@ export function TeamPageList(props: {
   readonly onNewMessage: () => void;
   /** The end of the list is near: the team's next page of channels and DMs. */
   readonly onLoadMore: () => void;
-  /** A team the reader left or was removed from: take it off this phone. */
-  readonly onRemoveTeam: () => void;
+  /** The channel or DM in front, marked as the one open. */
+  readonly openChannelId: string | null;
   readonly paddingBottom: number;
 }): ReactNode {
   const { section } = props;
@@ -72,6 +65,7 @@ export function TeamPageList(props: {
     onNewChannel,
     onNewMessage,
     canCreateChannel,
+    openChannelId,
   } = props;
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<PageRow>) => {
@@ -116,50 +110,37 @@ export function TeamPageList(props: {
           return (
             <ChannelRow
               channel={item.channel}
-              current={false}
+              current={item.channel.id === openChannelId}
               id={item.channel.id}
               onOpen={onOpenChannel}
             />
           );
         case "dm":
-          return <DmRow current={false} dm={item.dm} onOpen={onOpenChannel} />;
+          return (
+            <DmRow current={item.dm.id === openChannelId} dm={item.dm} onOpen={onOpenChannel} />
+          );
       }
     },
-    [canCreateChannel, onBrowseChannels, onKnowledge, onNewChannel, onNewMessage, onOpenChannel],
+    [
+      canCreateChannel,
+      onBrowseChannels,
+      onKnowledge,
+      onNewChannel,
+      onNewMessage,
+      onOpenChannel,
+      openChannelId,
+    ],
   );
-  if (section.state === "removed") {
-    return (
-      <View style={styles.removed}>
-        <TeamTile size={20} team={section.team} />
-        <View style={styles.removedWords}>
-          <AppText numberOfLines={1} role="secondaryMedium" tone="soft">
-            You're no longer in {section.team.name}
-          </AppText>
-          <AppText role="caption" tone="muted">
-            Tasks it started stay in your list
-          </AppText>
-        </View>
-        <Pressable
-          accessibilityLabel={`Remove ${section.team.name} from this phone`}
-          accessibilityRole="button"
-          hitSlop={8}
-          onPress={props.onRemoveTeam}
-          style={styles.iconButton}
-        >
-          <Symbol name="xmark" size={14} tint={color.muted} weight="semibold" />
-        </Pressable>
-      </View>
-    );
-  }
   return (
     <FlatList
-      contentContainerStyle={{ paddingBottom: props.paddingBottom }}
+      contentContainerStyle={[styles.content, { paddingBottom: props.paddingBottom }]}
       data={rows}
       initialNumToRender={24}
       keyExtractor={rowKey}
       onEndReached={props.onLoadMore}
       onEndReachedThreshold={0.8}
       renderItem={renderItem}
+      showsVerticalScrollIndicator={false}
       windowSize={11}
     />
   );
@@ -319,6 +300,7 @@ function rowTone(unread: boolean, muted: boolean) {
 const markWidth = 28;
 
 const styles = StyleSheet.create({
+  content: { paddingHorizontal: space[8] },
   current: { ...material.selected },
   head: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
   headAction: {
@@ -329,43 +311,11 @@ const styles = StyleSheet.create({
     marginTop: space[4],
     width: touchTarget,
   },
-  headMain: {
-    alignItems: "center",
-    borderRadius: radius.md,
-    flex: 1,
-    flexDirection: "row",
-    gap: space[10],
-    minHeight: touchTarget,
-    paddingHorizontal: space[10],
-  },
-  iconButton: {
-    alignItems: "center",
-    borderRadius: radius.full,
-    height: touchTarget,
-    justifyContent: "center",
-    width: touchTarget,
-  },
   label: { flex: 1 },
   mark: { alignItems: "center", width: markWidth },
-  more: {
-    justifyContent: "center",
-    minHeight: touchTarget - 8,
-    paddingLeft: space[10] + markWidth + space[10],
-  },
   muted: { color: color.mutedDim },
   pressed: { ...material.quiet },
   read: { color: color.textSoft },
-  removed: {
-    ...material.plate,
-    alignItems: "center",
-    borderRadius: radius.md,
-    flexDirection: "row",
-    gap: space[10],
-    marginTop: space[12],
-    paddingLeft: space[10],
-    paddingVertical: space[8],
-  },
-  removedWords: { flex: 1, minWidth: 0 },
   row: {
     alignItems: "center",
     borderColor: "transparent",
@@ -378,15 +328,5 @@ const styles = StyleSheet.create({
     paddingRight: space[12],
   },
   subhead: { paddingBottom: space[2], paddingLeft: space[10], paddingTop: space[10] },
-  tag: {
-    backgroundColor: color.surfaceRaised,
-    borderRadius: radius.full,
-    paddingHorizontal: space[6],
-    paddingVertical: 1,
-  },
-  tagText: { color: color.muted, fontWeight: "600" },
-  tagUpdate: { backgroundColor: color.amberWash },
-  tagUpdateText: { color: color.amber, fontWeight: "600" },
-  teamName: { color: color.text, flexShrink: 1, fontWeight: "600" },
   unread: { color: color.text, fontWeight: "600" },
 });

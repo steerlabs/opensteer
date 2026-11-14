@@ -130,7 +130,7 @@ export async function openTeamGeneral(
     )?.channel.id;
   if (!navigationRef.isReady()) return;
   navigationRef.dispatch(StackActions.popToTop());
-  if (channelId === undefined) navigationRef.navigate("TeamHome", { teamId: teamDeploymentId });
+  if (channelId === undefined) navigationRef.navigate("TeamChannels", { teamId: teamDeploymentId });
   else navigationRef.navigate("TeamChannel", { teamId: teamDeploymentId, channelId });
 }
 

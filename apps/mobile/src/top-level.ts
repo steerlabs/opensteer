@@ -10,8 +10,8 @@ import { presentedFrom } from "./navigation-presentations.js";
  * A Deployment's stack is always `[Home, top-level?, ...drill-ins]`, with
  * sheets over any of them. Home, the New task composer, is the root and stays
  * mounted under everything. The top-level screen is Home itself or the one
- * screen directly on it: a task, a team, Automations, Tabs, a tab, Done or
- * Search, chosen from the sidebar, a notification or a link. It has the Menu
+ * screen directly on it: a task, a team's channel or place, Automations, Tabs,
+ * a tab, Done or Search, chosen from the sidebar, a notification or a link. It has the Menu
  * where Back would be, and its edge swipe opens the sidebar. Whatever is opened
  * from inside it is a drill-in with the native Back and its swipe.
  *
@@ -27,8 +27,11 @@ const topLevelRoutes: ReadonlySet<string> = new Set([
   "Schedules",
   "Tabs",
   "TaskSearch",
+  "TeamChannel",
+  "TeamChannels",
+  "TeamKnowledge",
+  "TeamSearch",
   "Teams",
-  "TeamHome",
   "Thread",
   "WorkspaceBrowser",
 ]);

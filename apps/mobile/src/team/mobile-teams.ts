@@ -206,6 +206,10 @@ class MobileTeamRuntime {
   #selection = 0;
   /** The team last opened on each computer: the one kept connected while its drawer shows. */
   readonly #recent = new Map<string, string>();
+  /** The team holding the socket now, whose sidebar is current without asking. */
+  #live: string | null = null;
+  /** When each team out of view was last painted for the sidebar. */
+  readonly #painted = new Map<string, number>();
   #foreground = true;
   #linksFor: HostClient | null = null;
   #snapshot: MobileTeamsSnapshot = { computerId: null, teams: [], unlinked: [], selected: null };
@@ -278,6 +282,8 @@ class MobileTeamRuntime {
     this.#names.clear();
     this.#members.clear();
     this.#recent.clear();
+    this.#painted.clear();
+    this.#live = null;
     this.#linksFor = null;
     this.#selected = null;
   }
@@ -516,6 +522,7 @@ class MobileTeamRuntime {
     if (teamId !== null && computerId !== null) this.#recent.set(computerId, teamId);
     const target = this.#foreground ? (teamId ?? this.#ambient()) : null;
     this.#selected = teamId;
+    this.#live = target;
     if (target === null) {
       await this.registry.select(null);
       return;
@@ -543,14 +550,29 @@ class MobileTeamRuntime {
     return (ready.find((team) => team.teamId === recent) ?? ready[0])?.teamId ?? null;
   }
 
-  /** Paints a drawer section for a team out of view: one bootstrap, no socket. */
-  async refresh(teamId: string): Promise<void> {
+  /**
+   * Paints a team out of view for the sidebar: one read, no socket. The team
+   * holding the socket is current already, and one painted in the last half
+   * minute is left alone, so opening the sidebar again costs no round trip.
+   * `retry` is the person asking: it paints now, or reconnects the socket.
+   */
+  async refresh(teamId: string, retry = false): Promise<void> {
+    if (!this.#signedIn(teamId)) return;
+    if (teamId === this.#live) {
+      if (retry) await this.select(this.#selected);
+      return;
+    }
+    const painted = this.#painted.get(teamId);
+    if (!retry && painted !== undefined && Date.now() - painted < paintInterval) return;
+    this.#painted.set(teamId, Date.now());
     try {
       const session = await this.session(teamId);
       if (session.getSnapshot().bootstrap === null) await session.load(false);
       else await session.refreshSidebar();
       this.#setState(teamId, "live", null);
     } catch (error) {
+      // A failed paint may be asked again at once: Try again is the person's.
+      this.#painted.delete(teamId);
       this.#fail(teamId, error);
     }
   }
@@ -971,6 +993,8 @@ class MobileTeamRuntime {
     };
   }
 }
+
+const paintInterval = 30_000;
 
 /**
  * Who the reader is on a team is not known before the first answer, and a
