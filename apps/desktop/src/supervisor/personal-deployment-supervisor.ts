@@ -1,4 +1,5 @@
 import type { ResolvedConnection, VerifiedHostEndpoint } from "@opensteer/client/connections";
+import { computerName } from "./computer-name.js";
 import {
   deploymentConnectionFromVerifiedEndpoints,
   type DeploymentCatalogStore,
@@ -45,7 +46,6 @@ import type {
   PersonalDeploymentSecrets,
 } from "../secrets/personal-deployment-credentials.js";
 import {
-  defaultPersonalDeploymentName,
   PersonalDeploymentManifestSchema,
   PersonalFilesystemError,
   PersonalRuntimeTransitionError,
@@ -111,6 +111,8 @@ interface PersonalDeploymentSupervisorOptions {
   readonly allocatePort?: () => Promise<number>;
   readonly baseEnvironment?: Readonly<Record<string, string>>;
   readonly catalog: Pick<DeploymentCatalogStore, "upsertAndSelect">;
+  /** The name the person gave this Mac, which a new Personal Deployment is called by default. */
+  readonly computerName?: () => Promise<string>;
   /**
    * The computer-use bridge for this Deployment's hosting Runner, or null where
    * computer use does not exist. The hosting Runner is this Mac's own Runner, so
@@ -219,6 +221,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   readonly #passkeys: boolean;
   readonly #baseEnvironment: Readonly<Record<string, string>>;
   readonly #catalog: Pick<DeploymentCatalogStore, "upsertAndSelect">;
+  readonly #computerName: () => Promise<string>;
   readonly #computerUse: PersonalDeploymentSupervisorOptions["computerUse"];
   readonly #credentials: PersonalDeploymentCredentialPort;
   readonly #files: PersonalDeploymentFilesystemPort;
@@ -281,6 +284,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         ? new FixedPersonalUserEnvironment(options.baseEnvironment)
         : new NativePersonalUserEnvironment());
     this.#catalog = options.catalog;
+    this.#computerName = options.computerName ?? computerName;
     this.#computerUse = options.computerUse;
     this.#credentials = options.credentials;
     this.#files = options.files;
@@ -419,7 +423,10 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     return () => this.#listeners.delete(listener);
   }
 
-  start(): Promise<DesktopPersonalDeploymentStatus> {
+  /** `name` is used only when this start creates the Deployment. */
+  start(
+    input: { readonly name?: string | undefined } = {},
+  ): Promise<DesktopPersonalDeploymentStatus> {
     if (this.#status.state === "ready") return Promise.resolve(this.#status);
     if (this.#startPromise) return this.#startPromise;
     if (this.#shutdownRequested || this.#stopPromise) {
@@ -438,7 +445,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         // newer wish to keep the stack running.
         if (this.#status.state === "ready") return this.#status;
         this.#desiredRunning = true;
-        return this.#startOperation(false);
+        return this.#startOperation(false, input.name);
       });
     })();
     this.#startPromise = operation;
@@ -529,7 +536,10 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     return child?.logs.text ?? this.#diagnosticLogs.get(component) ?? "";
   }
 
-  async #startOperation(recovery: boolean): Promise<DesktopPersonalDeploymentStatus> {
+  async #startOperation(
+    recovery: boolean,
+    name?: string | undefined,
+  ): Promise<DesktopPersonalDeploymentStatus> {
     this.#abort?.abort(new Error("A newer Personal deployment start replaced this attempt."));
     const abort = new AbortController();
     this.#abort = abort;
@@ -542,12 +552,13 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       if (this.#children.size || this.#browser) await this.#stopChildren();
       const release = await this.#release();
       // Read every start: an earlier attempt may have advanced the manifest.
-      let manifest = await this.#loadOrCreateManifest(release);
+      let manifest = await this.#loadOrCreateManifest(release, name);
       manifest = await this.#reconcileCompatibleRelease(manifest, release);
       this.#setStatus({
         components: componentsWithVersions(release),
         deploymentId: manifest.deploymentId,
         environmentId: manifest.environmentId,
+        name: manifest.name,
       });
       await this.#loopbackPorts.assertAvailable(manifest.postgresPort, "postgresql");
       await this.#loopbackPorts.assertAvailable(manifest.hostPort, "host");
@@ -604,13 +615,16 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       if (await this.#dataReset?.needsFreshStart()) this.#resetRecovered = true;
       return this.#files.load();
     })().then(
-      (manifest) => {
+      async (manifest) => {
+        // Read before the status settles, so the offer to set up names this Mac.
+        const name = manifest?.name ?? (await this.#computerName());
         if (this.#shutdownRequested) return manifest;
         if (manifest) {
           this.#setStatus({
             deploymentId: manifest.deploymentId,
             environmentId: manifest.environmentId,
             issue: null,
+            name,
             state: "checking",
             step: "checking-computer",
           });
@@ -619,6 +633,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
             deploymentId: null,
             environmentId: null,
             issue: null,
+            name,
             state: "stopped",
             step: null,
           });
@@ -1526,6 +1541,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
 
   async #loadOrCreateManifest(
     release: VerifiedPersonalRuntimeRelease,
+    name?: string | undefined,
   ): Promise<PersonalDeploymentManifest> {
     const existing = await this.#files.load();
     if (existing) return existing;
@@ -1546,7 +1562,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       hostInstanceId: createId("hostInstance"),
       hostKeyFingerprint: null,
       hostPort: firstPort,
-      name: defaultPersonalDeploymentName(),
+      name: name?.trim() || (await this.#computerName()),
       ownerInitialized: false,
       postgresPort: secondPort,
       release: release.identity,

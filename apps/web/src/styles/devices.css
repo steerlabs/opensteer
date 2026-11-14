@@ -420,6 +420,77 @@ a.devices-row:focus-visible {
   gap: var(--space-10);
 }
 
+/* Setting up this Mac: the recommended way in, so it carries the ember rim,
+   with the name it will be created under attached below. */
+.desktop-entry__setup {
+  overflow: hidden;
+  border: 1px solid var(--ember-line);
+  border-radius: var(--radius-md);
+  background: var(--sheen) var(--fill-plate);
+  box-shadow: var(--edge-plate);
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.desktop-entry__setup:has(.desktop-entry__setup-go:hover:not(:disabled)) {
+  border-color: color-mix(in srgb, var(--ember) 40%, transparent);
+}
+
+.desktop-entry__setup-go {
+  padding: var(--space-12) var(--space-16);
+}
+
+.desktop-entry__setup-go:hover:not(:disabled),
+.desktop-entry__setup-go:focus-visible {
+  background-color: var(--fill-quiet);
+}
+
+/* Lines up under the row's text, past its 34px glyph. */
+.desktop-entry__name {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  padding: var(--space-4) var(--space-16) var(--space-4)
+    calc(var(--space-16) + 34px + var(--space-12));
+  border-top: 1px solid var(--line);
+  font-size: var(--text-md);
+  animation: fade-in var(--duration-fast) var(--ease-out);
+}
+
+.desktop-entry__name-label {
+  flex: none;
+  color: var(--muted);
+}
+
+.desktop-entry__name-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-soft);
+  font-weight: var(--weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-entry__name-input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 var(--space-6);
+  border: 1px solid var(--rim-control);
+  border-radius: var(--radius-sm);
+  background: var(--fill-plate);
+  color: var(--text);
+  font: inherit;
+  font-weight: var(--weight-medium);
+}
+
+.desktop-entry__name-input:focus {
+  border-color: var(--ember-line);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ember-wash);
+}
+
 .desktop-entry__links {
   display: flex;
   flex-wrap: wrap;

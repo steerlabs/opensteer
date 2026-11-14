@@ -14,6 +14,7 @@ import {
   type DesktopAddDirectRouteInput,
   type DesktopConnectPrivateDeploymentInput,
   type DesktopPersonalAccountLinkStatus,
+  type DesktopCreatePersonalDeploymentInput,
   type DesktopPersonalDeploymentStatus,
 } from "@opensteer/protocol/desktop";
 import {
@@ -72,7 +73,7 @@ interface HostSessionPort {
 
 interface PersonalPort {
   readonly status: DesktopPersonalDeploymentStatus;
-  start(): Promise<DesktopPersonalDeploymentStatus>;
+  start(input?: DesktopCreatePersonalDeploymentInput): Promise<DesktopPersonalDeploymentStatus>;
   subscribe(listener: (status: DesktopPersonalDeploymentStatus) => void): () => void;
 }
 
@@ -341,15 +342,21 @@ export class DeploymentAccessService {
     await this.#catalogMutation("direct-connect", () => this.#ports.direct.connect(input));
   }
 
-  async createPersonalDeployment(): Promise<void> {
+  async createPersonalDeployment(input: DesktopCreatePersonalDeploymentInput = {}): Promise<void> {
     this.#assertActive();
     const personal = this.#personalSetup();
-    if (personal?.deploymentId !== null || personal.state !== "stopped" || !personal.canStart) {
+    // A setup that stopped before its Deployment was listed has nothing to
+    // retry through the list, so starting it again here is its way on.
+    const fresh = personal?.deploymentId === null && personal.state === "stopped";
+    const unfinished =
+      personal?.deploymentId != null &&
+      !this.#catalog.deployments.some(({ id }) => id === personal.deploymentId);
+    if (!personal?.canStart || !(fresh || unfinished)) {
       throw operationUnavailable("createPersonalDeployment");
     }
     await this.#simpleOperation(
       "create-personal",
-      () => this.#ports.personal.start(),
+      () => this.#ports.personal.start(input),
       (status) => {
         this.#personal = status;
       },

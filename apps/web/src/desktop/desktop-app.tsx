@@ -62,12 +62,7 @@ export function desktopAccessPresentationFromSnapshot(
   snapshot: DeploymentAccessSnapshot,
 ): DesktopAccessPresentation {
   const selected = snapshot.deployments.find(({ id }) => id === snapshot.selectedDeploymentId);
-  if (
-    snapshot.personalSetup &&
-    snapshot.personalSetup.deploymentId === null &&
-    snapshot.personalSetup.state !== "stopped" &&
-    snapshot.personalSetup.state !== "repair-required"
-  )
+  if (personalSetupShowing(snapshot.personalSetup, snapshot.deployments, selected))
     return "personal";
   if (!selected) return "picker";
   if (selected.status === "connected") return "ready";
@@ -84,6 +79,26 @@ export function desktopAccessPresentationFromSnapshot(
   // row's own authority reports and lets a person choose again.
   if (selected.status === "idle" || selected.status === "needs-remote-access") return "picker";
   return "waiting";
+}
+
+/**
+ * Setting up this computer stays on screen until its own Opensteer is listed
+ * and attaching. The supervisor names the Deployment long before it is
+ * listed, and the list adds it before it attaches; neither is a reason to
+ * show the screens from before setup began. Until it is listed, a setup that
+ * fails keeps its own screen too: nothing else here can try it again.
+ */
+function personalSetupShowing(
+  setup: DeploymentAccessSnapshot["personalSetup"],
+  deployments: DeploymentAccessSnapshot["deployments"],
+  selected: DeploymentAccessSnapshot["deployments"][number] | undefined,
+): boolean {
+  if (!setup) return false;
+  if (setup.deploymentId === null)
+    return setup.state !== "stopped" && setup.state !== "repair-required";
+  if (!deployments.some(({ id }) => id === setup.deploymentId)) return !selected;
+  if (setup.state !== "checking" && setup.state !== "starting") return false;
+  return !selected || (selected.id === setup.deploymentId && selected.status === "idle");
 }
 
 export function desktopHostTransportIdentity(
@@ -393,12 +408,20 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     }
 
     if (presentation === "personal") {
+      // Before the list has this computer's Deployment, setting up again is
+      // how it is retried, and there is no attempt for Back to cancel.
+      const listed = snapshot.deployments.some(
+        ({ id }) => id === snapshot.personalSetup?.deploymentId,
+      );
       return (
         <DesktopPersonalSetup
           actionError={snapshot.personalSetup?.issue?.detail ?? operationError}
-          computerName={selected?.name ?? thisComputerLabel()}
-          onBack={() => runBridgeOperation(bridge.cancel())}
-          onRetry={() => runBridgeOperation(bridge.retry())}
+          computerName={snapshot.personalSetup?.name ?? selected?.name ?? thisComputerLabel()}
+          firstRun={settingUpHere}
+          onBack={listed ? () => runBridgeOperation(bridge.cancel()) : undefined}
+          onRetry={() =>
+            runBridgeOperation(listed ? bridge.retry() : bridge.createPersonalDeployment({}))
+          }
           requestPending={busy}
           status={
             snapshot.personalSetup ?? {
@@ -485,10 +508,10 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
       const canSetUpHere =
         setup?.deploymentId === null && setup.state === "stopped" && setup.canStart;
       const setUpHere = canSetUpHere
-        ? () => {
+        ? (name?: string) => {
             setScreen(null);
             setSettingUpHere(true);
-            runBridgeOperation(bridge.createPersonalDeployment());
+            runBridgeOperation(bridge.createPersonalDeployment(name ? { name } : {}));
           }
         : null;
       if (snapshot.deployments.length === 0 && snapshot.unavailable.length === 0) {
