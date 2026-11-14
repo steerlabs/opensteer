@@ -861,11 +861,16 @@ export function desktopPreviewBridge(
       updateLocalExecution(joined);
       return joined;
     },
-    createPersonalDeployment: async () => {
+    createPersonalDeployment: async (input) => {
       const generation = ++personalGeneration;
+      const name = input?.name ?? stoppedPersonalStatus().name ?? "Mac mini";
+      // As the supervisor does: the Deployment has its id and name from the
+      // first step, long before it is listed.
       personal = DesktopPersonalDeploymentStatusSchema.parse({
         ...stoppedPersonalStatus(),
         canStart: false,
+        deploymentId: personalDeploymentId,
+        name,
         state: "starting",
         step: "checking-computer",
       });
@@ -940,7 +945,7 @@ export function desktopPreviewBridge(
         const created = deployment({
           id: personalDeploymentId,
           kind: "personal",
-          name: "Mac mini",
+          name,
           onThisComputer: true,
           origin: previewPersonalOrigin,
         });
@@ -963,7 +968,7 @@ export function desktopPreviewBridge(
         personalAccountLink = {
           account: null,
           deploymentId: created.id,
-          displayName: "Mac mini",
+          displayName: name,
           status: "unlinked",
           unlinkStep: null,
         };
@@ -1230,6 +1235,7 @@ function stoppedPersonalStatus(): DesktopPersonalDeploymentStatus {
     deploymentId: null,
     environmentId: null,
     issue: null,
+    name: "Mac mini",
     schemaVersion: 1,
     state: "stopped",
     step: null,

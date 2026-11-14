@@ -1,5 +1,5 @@
 import { deploymentPolicy } from "@opensteer/core";
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { DeploymentIdSchema } from "@opensteer/core";
 import {
   DesktopConnectPrivateDeploymentInputSchema,
@@ -60,7 +60,7 @@ function SecondaryPaths({
       {pairing ? (
         <>
           <button className="link-btn" onClick={() => onConnect("pairing")} type="button">
-            Use a pairing code or address
+            Use a pairing code
           </button>
           <span aria-hidden>·</span>
         </>
@@ -72,6 +72,104 @@ function SecondaryPaths({
   );
 }
 
+/**
+ * Setting up this Mac, with the name it will have. The name is fixed when
+ * setup creates this computer's Opensteer, so it is chosen here, before.
+ */
+function SetUpThisMac({
+  disabled,
+  name,
+  onRename,
+  onSetUp,
+}: {
+  readonly disabled: boolean;
+  readonly name: string | null;
+  readonly onRename: (name: string) => void;
+  readonly onSetUp: () => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  // Escape closes the field, and the blur that follows must not save it.
+  const discarding = useRef(false);
+  const save = () => {
+    const next = discarding.current ? "" : (draft?.trim() ?? "");
+    discarding.current = false;
+    if (next) onRename(next);
+    setDraft(null);
+  };
+  return (
+    <div className="desktop-entry__setup">
+      <OptionRow
+        as="button"
+        className="desktop-entry__setup-go"
+        detail="Your agent works here. No account needed."
+        disabled={disabled || draft !== null}
+        leading={
+          <span className="option-row__glyph">
+            <Icon name="laptop" />
+          </span>
+        }
+        onClick={onSetUp}
+        title="Set up this Mac"
+        trailing={<Icon name="chevron-right" />}
+      />
+      {name ? (
+        draft === null ? (
+          <div className="desktop-entry__name">
+            <span className="desktop-entry__name-label">Name</span>
+            <span className="desktop-entry__name-value">{name}</span>
+            <button
+              aria-label={`Rename ${name}`}
+              className="link-btn"
+              disabled={disabled}
+              onClick={() => setDraft(name)}
+              type="button"
+            >
+              Rename
+            </button>
+          </div>
+        ) : (
+          <form
+            className="desktop-entry__name"
+            onSubmit={(event) => {
+              event.preventDefault();
+              save();
+            }}
+          >
+            <label className="desktop-entry__name-label" htmlFor="desktop-entry-name">
+              Name
+            </label>
+            <input
+              autoFocus
+              className="desktop-entry__name-input"
+              id="desktop-entry-name"
+              maxLength={120}
+              onBlur={save}
+              onChange={(event) => setDraft(event.target.value)}
+              onFocus={(event) => event.currentTarget.select()}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  discarding.current = true;
+                  event.currentTarget.blur();
+                }
+              }}
+              spellCheck={false}
+              value={draft}
+            />
+            <button
+              className="link-btn"
+              onMouseDown={(event) => event.preventDefault()}
+              type="submit"
+            >
+              Done
+            </button>
+          </form>
+        )
+      ) : null}
+    </div>
+  );
+}
+
 export function DesktopWelcome({
   error,
   onConnect,
@@ -80,27 +178,21 @@ export function DesktopWelcome({
 }: {
   readonly error: string | null;
   readonly onConnect: (kind: ConnectKind) => void;
-  readonly onSetUpHere: (() => void) | null;
+  readonly onSetUpHere: ((name?: string) => void) | null;
   readonly places: DesktopPlaces;
 }) {
   const { bridge, snapshot } = places;
   const account = snapshot.account;
   const [actionError, setActionError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
+  const [chosenName, setChosenName] = useState<string | null>(null);
+  const macName = chosenName ?? snapshot.personalSetup?.name ?? null;
   usePlaceChecks(bridge, account.status === "signed-in");
   const run = (operation: () => Promise<void>) => {
     setActionError(null);
     void operation().catch((reason: unknown) => setActionError(actionErrorMessage(reason)));
   };
-  const setUpRow = (
-    <EntryRow
-      detail="Your agent lives and runs here. Best on a Mac that stays on. No account needed."
-      disabled={onSetUpHere === null}
-      icon="laptop"
-      onClick={() => onSetUpHere?.()}
-      title="Set up Opensteer on this Mac"
-    />
-  );
+  const setUp = () => onSetUpHere?.(chosenName ?? undefined);
 
   if (account.status === "signed-in") {
     return (
@@ -109,21 +201,14 @@ export function DesktopWelcome({
         description={
           snapshot.directoryFailure
             ? "Couldn’t load your list. Check your connection."
-            : "Set one up on this Mac, or open Opensteer on the Mac where you set it up. It shows up here by itself."
+            : "Set one up here, or open Opensteer on the Mac that has it. It shows up here by itself."
         }
         live
         title="No Opensteer on this account yet"
       >
         <ErrorNotice message={actionError ?? error} />
         {onSetUpHere ? (
-          <button
-            className="btn btn--primary onboarding__primary"
-            onClick={onSetUpHere}
-            type="button"
-          >
-            Set up Opensteer on this Mac
-            <Icon name="arrow-right" />
-          </button>
+          <SetUpThisMac disabled={false} name={macName} onRename={setChosenName} onSetUp={setUp} />
         ) : null}
         {snapshot.directoryFailure ? (
           <button
@@ -151,10 +236,20 @@ export function DesktopWelcome({
   }
 
   return (
-    <OnboardingCard bare live title="Welcome to Opensteer">
+    <OnboardingCard
+      bare
+      description="Your AI agent, working on your Mac."
+      live
+      title="Welcome to Opensteer"
+    >
       <ErrorNotice message={actionError ?? error} />
       <div className="desktop-entry__rows">
-        {setUpRow}
+        <SetUpThisMac
+          disabled={onSetUpHere === null}
+          name={macName}
+          onRename={setChosenName}
+          onSetUp={setUp}
+        />
         {account.available ? (
           account.status === "authorizing" ? (
             <div aria-live="polite" className="place-card" role="status">
@@ -170,18 +265,18 @@ export function DesktopWelcome({
             </div>
           ) : (
             <EntryRow
-              detail="Already have one on another Mac? Sign in to use this Mac with it."
+              detail="Already set up on another Mac? Sign in."
               icon="devices"
               onClick={() => run(() => bridge.signIn())}
-              title="Open your Opensteer"
+              title="Connect to my Opensteer"
             />
           )
         ) : (
           <EntryRow
-            detail="Already have one on another Mac? Use a pairing code from it."
+            detail="Already set up on another Mac? Use its pairing code."
             icon="devices"
             onClick={() => onConnect("pairing")}
-            title="Open your Opensteer"
+            title="Connect to my Opensteer"
           />
         )}
       </div>
@@ -209,7 +304,7 @@ export function DesktopChooser({
     readonly title: string;
   } | null;
   readonly onConnect: (kind: ConnectKind) => void;
-  readonly onSetUpHere: (() => void) | null;
+  readonly onSetUpHere: ((name?: string) => void) | null;
   readonly places: DesktopPlaces;
 }) {
   const { bridge, snapshot } = places;
@@ -292,7 +387,7 @@ export function DesktopChooser({
           <button
             className="place-panel__action"
             disabled={pending}
-            onClick={onSetUpHere}
+            onClick={() => onSetUpHere()}
             type="button"
           >
             <span aria-hidden className="place-row__check" />
@@ -300,7 +395,7 @@ export function DesktopChooser({
               <Icon name="laptop" />
             </span>
             <span className="place-row__text">
-              <span className="place-row__name">Set up Opensteer on this Mac</span>
+              <span className="place-row__name">Set up this Mac</span>
               <span className="place-row__detail">Your agent lives and runs here</span>
             </span>
           </button>

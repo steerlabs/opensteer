@@ -273,6 +273,7 @@ function desktopBridge(overrides: Record<string, unknown> = {}) {
       passwordsOpen: vi.fn(async () => undefined),
       passwordsStatus: vi.fn(async () => ({ availability: "unsupported", reason: "platform" })),
       recheckLocalEngines: vi.fn(async () => undefined),
+      signIn: vi.fn(async () => undefined),
       tailscaleShare: vi.fn(),
       tailscaleStatus: vi.fn(async () => ({ state: "not-installed" })),
       testNotification: vi.fn(async () => ({ outcome: "sent" })),
@@ -414,7 +415,8 @@ it("walks a Mac through AI, Set up this Mac and phone, remembering the step unti
   expect(container.textContent).toContain("Set up this Mac");
   await act(async () => button("Continue").click());
   await act(async () => button("Continue").click());
-  await act(async () => button("Finish").click());
+  // Nothing on the phone step is on yet, so leaving it is skipping it.
+  await act(async () => button("Skip for now").click());
   expect(container.textContent).toContain("Task home");
   expect(localStorage.getItem(key)).toBeNull();
 });
@@ -458,12 +460,13 @@ it("connects a phone through Opensteer Connect and names the phone that signed i
   });
   await mount();
   expect(radio("Opensteer Connect").getAttribute("aria-checked")).toBe("true");
-  await act(async () => button("Turn on").click());
+  await act(async () => button("Turn on Connect").click());
   // The Desktop answers "linked" before the app's own snapshot catches up;
   // that gap must never start a second browser sign-in.
   for (let flush = 0; flush < 5; flush += 1) await act(async () => undefined);
   expect(bridge.linkPersonal).toHaveBeenCalledTimes(1);
-  expect(container.textContent).toContain("Adding Studio Mac to your account");
+  expect(container.textContent).toContain("Add Studio Mac to your account");
+  expect(button("Connecting…").disabled).toBe(true);
 
   const linked = { ...access, personalAccountLink: { status: "linked" } };
   shell.deploymentAccess = linked;
@@ -517,6 +520,40 @@ it("connects a phone through Opensteer Connect and names the phone that signed i
   await act(async () => vi.advanceTimersByTimeAsync(4_000));
   expect(container.textContent).toContain("Opensteer on iPhone");
   expect(container.textContent).toContain("Signed in");
+});
+
+it("signs in through the browser first when Connect is turned on signed out", async () => {
+  let current: Record<string, unknown> = {
+    account: { available: true, status: "signed-out" },
+    personalAccountLink: { status: "unlinked" },
+  };
+  const publish = (account: { available: boolean; status: string }) => {
+    current = { ...current, account };
+    shell.deploymentAccess = current;
+    for (const listener of state.accessListeners) listener(current);
+  };
+  const { bridge } = desktopBridge({
+    getDeploymentAccessSnapshot: vi.fn(async () => current),
+    signIn: vi.fn(async () => publish({ available: true, status: "authorizing" })),
+  });
+  onThisMac(bridge, current);
+  localStorage.setItem(`opensteer.setup.v1:${shell.snapshot.deploymentId}`, "phone");
+  await mount();
+  expect(container.textContent).toContain("sign in to your Opensteer account in your browser");
+  await act(async () => button("Sign in and connect").click());
+  for (let flush = 0; flush < 5; flush += 1) await act(async () => undefined);
+  expect(bridge.signIn).toHaveBeenCalledTimes(1);
+  // Linking needs the Account session the browser is still making.
+  expect(bridge.linkPersonal).not.toHaveBeenCalled();
+  expect(container.querySelector('[aria-current="step"]')?.textContent).toBe(
+    "Sign in to your Opensteer account",
+  );
+
+  await act(async () => publish({ available: true, status: "signed-in" }));
+  await render();
+  for (let flush = 0; flush < 5; flush += 1) await act(async () => undefined);
+  expect(bridge.linkPersonal).toHaveBeenCalledTimes(1);
+  expect(bridge.signIn).toHaveBeenCalledTimes(1);
 });
 
 it("shares this Mac on the tailnet, then shows a one-time pairing code for the phone", async () => {
@@ -594,7 +631,7 @@ it("never undoes a mode another device chose after Connect came on", async () =>
     type: "personal.remoteAccess.request",
   });
   await mount();
-  await act(async () => button("Turn on").click());
+  await act(async () => button("Turn on Connect").click());
   expect(shell.hostClient.dispatch).toHaveBeenCalledTimes(1);
   await remoteChanged({
     ...remoteStatus,
@@ -768,7 +805,7 @@ it("keeps an address change and its failure on screen instead of the old code", 
   expect(container.querySelector(".setup-scan__svg")).toBeNull();
 });
 
-it.each(["Finish", "Back", "choice", "generation"])(
+it.each(["Skip for now", "Back", "choice", "generation"])(
   "discards a pending tailnet share after %s",
   async (change) => {
     const origin = "https://studio.tail2f9.ts.net";

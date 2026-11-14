@@ -1070,7 +1070,7 @@ async function runDesktop(
       subscribe: (listener) => hostSessions.subscribe(listener),
     },
     personal: {
-      start: () => personal.start(),
+      start: (input) => personal.start(input),
       // Read through, not copied: a status captured at wiring time would be
       // the supervisor's answer from before this app finished starting.
       get status() {

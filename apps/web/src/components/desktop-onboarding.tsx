@@ -19,9 +19,9 @@ const personalSteps: ReadonlyArray<{
   { label: "Checking this computer", step: "checking-computer" },
   { label: "Preparing your private database", step: "preparing-database" },
   { label: "Starting Opensteer", step: "starting-host" },
-  { label: "Preparing your agent’s home folder", step: "preparing-agent-home" },
   { label: "Connecting this computer", step: "connecting-computer" },
   { label: "Starting local agents", step: "starting-local-agents" },
+  { label: "Preparing your agent’s home folder", step: "preparing-agent-home" },
   { label: "Opening Opensteer", step: "ready" },
 ];
 
@@ -146,6 +146,7 @@ export function DesktopVerifiedDeployment({
 export function DesktopPersonalSetup({
   actionError,
   computerName,
+  firstRun = false,
   onBack,
   onRetry,
   requestPending = false,
@@ -154,7 +155,9 @@ export function DesktopPersonalSetup({
   readonly actionError: string | null;
   /** What this computer is called, so the row keeps its name once the app opens. */
   readonly computerName: string;
-  readonly onBack: () => void;
+  /** This window asked to set this computer up, rather than reopening it. */
+  readonly firstRun?: boolean;
+  readonly onBack?: (() => void) | undefined;
   readonly onRetry: () => void;
   readonly requestPending?: boolean;
   readonly status: DesktopPersonalDeploymentStatus;
@@ -173,7 +176,9 @@ export function DesktopPersonalSetup({
       ? "Opensteer needs an update"
       : status.state === "stopping"
         ? "Stopping this computer"
-        : "Setting up Opensteer";
+        : firstRun
+          ? `Setting up ${thisComputerLabel().replace(/^This /u, "this ")}`
+          : "Starting Opensteer";
   return (
     <SetupFrame
       description={

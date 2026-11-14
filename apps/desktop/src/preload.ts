@@ -172,6 +172,7 @@ import {
   DesktopStartLocalRunnerInputSchema,
   DesktopTailscaleShareResultSchema,
   DesktopTailscaleStatusSchema,
+  type DesktopCreatePersonalDeploymentInput,
 } from "@opensteer/protocol/desktop";
 import {
   DictationAvailabilitySchema,
@@ -668,7 +669,8 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
       desktopBridgeChannels.connectPrivate,
       DesktopConnectPrivateDeploymentInputSchema.parse(input),
     ),
-  createPersonalDeployment: () => invoke<void>(desktopBridgeChannels.createPersonalDeployment),
+  createPersonalDeployment: (input?: DesktopCreatePersonalDeploymentInput) =>
+    invoke<void>(desktopBridgeChannels.createPersonalDeployment, input ?? {}),
   getDeploymentAccessSnapshot: async () =>
     DeploymentAccessSnapshotSchema.parse(
       await invoke<DeploymentAccessSnapshot>(desktopBridgeChannels.getDeploymentAccessSnapshot),
