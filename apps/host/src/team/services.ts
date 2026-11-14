@@ -31,6 +31,7 @@ import type { DatabaseSchema } from "@opensteer/database";
 import {
   TeamAccessStore,
   requireTeam,
+  withTeamPeerVersion,
   type TeamStoreAccessEffects,
 } from "@opensteer/database/team-access";
 import { TeamMembersStore } from "@opensteer/database/team-members";
@@ -456,9 +457,11 @@ export async function startTeamServices(options: TeamServiceOptions) {
       case "team.share.participants.get":
         requireTeam(shares);
         return shares.store.participants(actor, teamReadSchemas[name].input.parse(raw));
-      case "team.shares.list":
+      case "team.shares.list": {
         requireTeam(shares);
-        return shares.store.list(actor, teamReadSchemas[name].input.parse(raw).channelId);
+        const input = teamReadSchemas[name].input.parse(raw);
+        return shares.store.list(actor, input.channelId, input.after);
+      }
       case "team.partners.list":
         requireTeam(options.partners);
         return options.partners.store.list(
@@ -653,97 +656,99 @@ export async function startTeamServices(options: TeamServiceOptions) {
         "Personal routes are unavailable on a team Host",
       );
       const session = await authenticate();
-      return access.withHumanSession(session, async () => {
-        const actor: TeamActor = { kind: "human", userId: session.user.id };
-        await options.database.transaction().execute((t) => access.member(t, actor.userId));
-        if (
-          name === "commands.dispatch" &&
-          typeof raw === "object" &&
-          raw !== null &&
-          "type" in raw &&
-          raw.type === "notification.preview.register"
-        ) {
-          const command = hostApi["commands.dispatch"].payload.parse(raw);
-          requireTeam(
-            command.type === "notification.preview.register" && options.registerPreviewKey,
-            "Preview registration unavailable",
-          );
-          const revision = access.revision;
-          await options.database.transaction().execute(async (t) => {
-            await t
-              .selectFrom("teamAccessState")
-              .select("revision")
-              .where("singletonKey", "=", "team")
-              .forShare()
-              .executeTakeFirstOrThrow();
-            const member = await access.member(t, actor.userId);
-            const active = await t
-              .selectFrom("authSessions")
-              .select("id")
-              .where("id", "=", session.id)
-              .where("userId", "=", actor.userId)
-              .where("memberGeneration", "=", member.generation)
-              .where("expiresAt", ">", new Date())
-              .executeTakeFirst();
-            requireTeam(active);
-            await options.registerPreviewKey!(session, command);
-          });
-          return access.handoff(
-            revision,
-            () =>
-              options.database.transaction().execute(async (t) => {
-                await access.checkSession(t);
-                return true;
-              }),
-            () => ({
-              type: command.type,
-              installationId: command.installationId,
-              keyId: command.keyId,
-              registered: true,
-            }),
-          );
-        }
-        if (name === "commands.dispatch") {
-          const revision = access.revision;
-          const command = TeamCommandSchema.parse(raw);
-          const result = await dispatch(actor, command);
-          if (
-            typeof result === "object" &&
-            result !== null &&
-            Object.keys(result).length === 1 &&
-            "type" in result
-          )
-            return result;
-          return access.handoff(
-            revision,
-            () =>
-              options.database.transaction().execute(async (t) => {
-                await access.member(t, actor.userId);
-                if (command.type === "team.invite.create" || command.type === "team.invite.reset")
-                  await access.admin(t, actor);
-                let channelId = "channelId" in command ? command.channelId : undefined;
-                if (
-                  typeof result === "object" &&
-                  result !== null &&
-                  "channel" in result &&
-                  typeof result.channel === "object" &&
-                  result.channel !== null &&
-                  "id" in result.channel
-                )
-                  channelId = TeamChannelIdSchema.parse(result.channel.id);
-                return !channelId || (await access.channel(t, actor, channelId)).read;
-              }),
-            () => result,
-          );
-        }
-        for (;;) {
-          const revision = access.revision;
-          const result = await read(actor, name, raw);
-          if (revision === access.revision) return result;
-          await authenticate();
+      return withTeamPeerVersion(Number(headers.get(teamApiVersionHeader)), () =>
+        access.withHumanSession(session, async () => {
+          const actor: TeamActor = { kind: "human", userId: session.user.id };
           await options.database.transaction().execute((t) => access.member(t, actor.userId));
-        }
-      });
+          if (
+            name === "commands.dispatch" &&
+            typeof raw === "object" &&
+            raw !== null &&
+            "type" in raw &&
+            raw.type === "notification.preview.register"
+          ) {
+            const command = hostApi["commands.dispatch"].payload.parse(raw);
+            requireTeam(
+              command.type === "notification.preview.register" && options.registerPreviewKey,
+              "Preview registration unavailable",
+            );
+            const revision = access.revision;
+            await options.database.transaction().execute(async (t) => {
+              await t
+                .selectFrom("teamAccessState")
+                .select("revision")
+                .where("singletonKey", "=", "team")
+                .forShare()
+                .executeTakeFirstOrThrow();
+              const member = await access.member(t, actor.userId);
+              const active = await t
+                .selectFrom("authSessions")
+                .select("id")
+                .where("id", "=", session.id)
+                .where("userId", "=", actor.userId)
+                .where("memberGeneration", "=", member.generation)
+                .where("expiresAt", ">", new Date())
+                .executeTakeFirst();
+              requireTeam(active);
+              await options.registerPreviewKey!(session, command);
+            });
+            return access.handoff(
+              revision,
+              () =>
+                options.database.transaction().execute(async (t) => {
+                  await access.checkSession(t);
+                  return true;
+                }),
+              () => ({
+                type: command.type,
+                installationId: command.installationId,
+                keyId: command.keyId,
+                registered: true,
+              }),
+            );
+          }
+          if (name === "commands.dispatch") {
+            const revision = access.revision;
+            const command = TeamCommandSchema.parse(raw);
+            const result = await dispatch(actor, command);
+            if (
+              typeof result === "object" &&
+              result !== null &&
+              Object.keys(result).length === 1 &&
+              "type" in result
+            )
+              return result;
+            return access.handoff(
+              revision,
+              () =>
+                options.database.transaction().execute(async (t) => {
+                  await access.member(t, actor.userId);
+                  if (command.type === "team.invite.create" || command.type === "team.invite.reset")
+                    await access.admin(t, actor);
+                  let channelId = "channelId" in command ? command.channelId : undefined;
+                  if (
+                    typeof result === "object" &&
+                    result !== null &&
+                    "channel" in result &&
+                    typeof result.channel === "object" &&
+                    result.channel !== null &&
+                    "id" in result.channel
+                  )
+                    channelId = TeamChannelIdSchema.parse(result.channel.id);
+                  return !channelId || (await access.channel(t, actor, channelId)).read;
+                }),
+              () => result,
+            );
+          }
+          for (;;) {
+            const revision = access.revision;
+            const result = await read(actor, name, raw);
+            if (revision === access.revision) return result;
+            await authenticate();
+            await options.database.transaction().execute((t) => access.member(t, actor.userId));
+          }
+        }),
+      );
     },
     dispatch,
     read,

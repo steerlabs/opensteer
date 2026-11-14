@@ -85,6 +85,7 @@ export const TeamRemotePeopleSchema = z.record(
   }),
 );
 export const TeamChannelShareSchema = z.object({
+  viewerHandle: TeamHandleSchema.optional(),
   shareId: z.uuid().optional(),
   agentsEnabled: z.boolean().optional(),
   updateRequired: z.boolean().optional(),

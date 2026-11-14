@@ -141,8 +141,12 @@ session exchange both admit through `TeamInvitesStore.acceptInTransaction`
 
 ## Transport and versions
 
-Team API version 6 requires explicit request kinds before personal work can be admitted. Version 5
-peers already send them and remain supported for asks, approval and private returns.
+Team API version 7 carries shared-channel state, external audiences and the asker's team. Shared
+channels (including follower archives) require version 7 for apps and personal Opensteer. Older
+peers see only unshared channels in discovery and cross-channel results, cannot read or write shared
+channels, and receive no shared-channel requests on personal links. Version 5 remains the minimum
+for unshared work because it already sends explicit request kinds. Sharing an open channel ends an
+older app's subscription with an Opensteer update message.
 A team Host checks only `teamApiVersion`, before authentication and parsing on every team
 surface, including bootstrap, subscriptions, binary routes and the personal link. Partner sockets negotiate their own protocol. Personal Hosts check
 only the personal Host epoch. Team updates use [deploy/team](../deploy/team/README.md); desktop

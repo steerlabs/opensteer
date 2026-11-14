@@ -332,6 +332,19 @@ export class TeamPartnerStore {
     });
   }
 
+  async abandonProposal(id: string) {
+    await this.write(async (t) => {
+      await t
+        .updateTable("teamPartnerLinks")
+        .set({ state: "revoked", revokedAt: new Date(), revokedBy: "local" })
+        .where("id", "=", id)
+        .where("role", "=", "dialer")
+        .where("partnerApproved", "=", false)
+        .where("state", "=", "pending")
+        .execute();
+    });
+  }
+
   async revoke(id: string, actor?: TeamActor) {
     await this.write(async (t) => {
       const row = await this.get(id, t);

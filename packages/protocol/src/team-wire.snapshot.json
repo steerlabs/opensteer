@@ -1,5 +1,5 @@
 {
-  "teamApiVersion": 6,
+  "teamApiVersion": 7,
   "minimumTeamApiVersion": 5,
   "input": {
     "rpc team.share.participants.get": {
@@ -31,6 +31,11 @@
         "channelId": {
           "type": "string",
           "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "after": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
         }
       },
       "additionalProperties": false
@@ -2927,6 +2932,18 @@
     "rpc team.shares.list": {
       "type": "object",
       "properties": {
+        "nextCursor": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "shares": {
           "maxItems": 50,
           "type": "array",
@@ -3510,6 +3527,11 @@
                       "share": {
                         "type": "object",
                         "properties": {
+                          "viewerHandle": {
+                            "type": "string",
+                            "maxLength": 48,
+                            "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                          },
                           "shareId": {
                             "type": "string",
                             "format": "uuid",
@@ -3761,6 +3783,11 @@
                   "share": {
                     "type": "object",
                     "properties": {
+                      "viewerHandle": {
+                        "type": "string",
+                        "maxLength": 48,
+                        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                      },
                       "shareId": {
                         "type": "string",
                         "format": "uuid",
@@ -3977,6 +4004,11 @@
               "share": {
                 "type": "object",
                 "properties": {
+                  "viewerHandle": {
+                    "type": "string",
+                    "maxLength": 48,
+                    "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                  },
                   "shareId": {
                     "type": "string",
                     "format": "uuid",
@@ -4127,6 +4159,11 @@
         "share": {
           "type": "object",
           "properties": {
+            "viewerHandle": {
+              "type": "string",
+              "maxLength": 48,
+              "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+            },
             "shareId": {
               "type": "string",
               "format": "uuid",
@@ -4909,6 +4946,11 @@
             "share": {
               "type": "object",
               "properties": {
+                "viewerHandle": {
+                  "type": "string",
+                  "maxLength": 48,
+                  "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                },
                 "shareId": {
                   "type": "string",
                   "format": "uuid",
@@ -5575,6 +5617,11 @@
             "share": {
               "type": "object",
               "properties": {
+                "viewerHandle": {
+                  "type": "string",
+                  "maxLength": 48,
+                  "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                },
                 "shareId": {
                   "type": "string",
                   "format": "uuid",
@@ -10207,6 +10254,11 @@
             "share": {
               "type": "object",
               "properties": {
+                "viewerHandle": {
+                  "type": "string",
+                  "maxLength": 48,
+                  "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                },
                 "shareId": {
                   "type": "string",
                   "format": "uuid",
@@ -10701,6 +10753,11 @@
             "share": {
               "type": "object",
               "properties": {
+                "viewerHandle": {
+                  "type": "string",
+                  "maxLength": 48,
+                  "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                },
                 "shareId": {
                   "type": "string",
                   "format": "uuid",
@@ -10900,6 +10957,11 @@
             "share": {
               "type": "object",
               "properties": {
+                "viewerHandle": {
+                  "type": "string",
+                  "maxLength": 48,
+                  "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                },
                 "shareId": {
                   "type": "string",
                   "format": "uuid",
@@ -12978,6 +13040,11 @@
                         "share": {
                           "type": "object",
                           "properties": {
+                            "viewerHandle": {
+                              "type": "string",
+                              "maxLength": 48,
+                              "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                            },
                             "shareId": {
                               "type": "string",
                               "format": "uuid",
@@ -13966,6 +14033,11 @@
                         "share": {
                           "type": "object",
                           "properties": {
+                            "viewerHandle": {
+                              "type": "string",
+                              "maxLength": 48,
+                              "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                            },
                             "shareId": {
                               "type": "string",
                               "format": "uuid",
@@ -14835,6 +14907,11 @@
                           "share": {
                             "type": "object",
                             "properties": {
+                              "viewerHandle": {
+                                "type": "string",
+                                "maxLength": 48,
+                                "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                              },
                               "shareId": {
                                 "type": "string",
                                 "format": "uuid",
@@ -18069,6 +18146,11 @@
                                 "share": {
                                   "type": "object",
                                   "properties": {
+                                    "viewerHandle": {
+                                      "type": "string",
+                                      "maxLength": 48,
+                                      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                                    },
                                     "shareId": {
                                       "type": "string",
                                       "format": "uuid",
@@ -19626,6 +19708,11 @@
                               "share": {
                                 "type": "object",
                                 "properties": {
+                                  "viewerHandle": {
+                                    "type": "string",
+                                    "maxLength": 48,
+                                    "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                                  },
                                   "shareId": {
                                     "type": "string",
                                     "format": "uuid",

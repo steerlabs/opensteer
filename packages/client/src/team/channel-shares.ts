@@ -15,6 +15,8 @@ type ShareCommand = Extract<
 >;
 export interface SharesState {
   readonly shares: readonly ChannelShare[];
+  readonly nextCursor: string | null;
+  readonly loadingMore: boolean;
   readonly links: readonly TeamPartnerLink[];
   readonly policy: Policy | null;
   readonly loading: boolean;
@@ -41,8 +43,12 @@ export class TeamChannelShares {
   readonly #listeners = new Set<() => void>();
   readonly #acceptIds = new Map<string, TeamChannelId>();
   #refresh: Promise<void> | null = null;
+  #more: Promise<void> | null = null;
+  #revision = 0;
   #state: SharesState = {
     shares: [],
+    nextCursor: null,
+    loadingMore: false,
     links: [],
     policy: null,
     loading: false,
@@ -57,7 +63,7 @@ export class TeamChannelShares {
     session.signal.addEventListener(
       "abort",
       () => {
-        this.#state = { ...this.#state, shares: [], links: [], policy: null };
+        this.#state = { ...this.#state, shares: [], nextCursor: null, links: [], policy: null };
         this.#emit();
       },
       { once: true },
@@ -79,13 +85,17 @@ export class TeamChannelShares {
   refresh = (): Promise<void> => {
     if (this.#session.signal.aborted) return Promise.resolve();
     if (this.#refresh) return this.#refresh;
+    const revision = ++this.#revision;
     this.#set({ loading: true, error: null });
     this.#refresh = this.#session.rpc["team.shares.list"](
       this.#channelId ? { channelId: this.#channelId } : {},
     )
       .then(teamRpcResult)
       .then(
-        (page) => this.#set({ shares: page.shares, loaded: true }),
+        (page) => {
+          if (revision === this.#revision)
+            this.#set({ shares: page.shares, nextCursor: page.nextCursor ?? null, loaded: true });
+        },
         (error: unknown) => this.#set({ error: actionError(error) }),
       )
       .finally(() => {
@@ -93,6 +103,34 @@ export class TeamChannelShares {
         this.#set({ loading: false });
       });
     return this.#refresh;
+  };
+  more = (): Promise<void> => {
+    if (this.#more) return this.#more;
+    const after = this.#state.nextCursor;
+    if (!after || this.#state.loading || this.#session.signal.aborted) return Promise.resolve();
+    const revision = this.#revision;
+    this.#set({ loadingMore: true, error: null });
+    this.#more = this.#session.rpc["team.shares.list"]({
+      ...(this.#channelId ? { channelId: this.#channelId } : {}),
+      after,
+    })
+      .then(teamRpcResult)
+      .then(
+        (page) => {
+          if (revision !== this.#revision) return;
+          const shares = new Map(this.#state.shares.map((share) => [share.id, share]));
+          for (const share of page.shares) shares.set(share.id, share);
+          this.#set({ shares: [...shares.values()], nextCursor: page.nextCursor ?? null });
+        },
+        (error: unknown) => {
+          if (revision === this.#revision) this.#set({ error: actionError(error) });
+        },
+      )
+      .finally(() => {
+        this.#more = null;
+        this.#set({ loadingMore: false });
+      });
+    return this.#more;
   };
   loadPartners = async (): Promise<void> => {
     if (this.#session.signal.aborted) return;

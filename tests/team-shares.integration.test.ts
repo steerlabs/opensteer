@@ -1,12 +1,17 @@
+import { withTeamPeerVersion } from "../packages/database/src/team-access-store.js";
 import { sql } from "kysely";
 import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import { once } from "node:events";
 import {
   TeamChannelAccessSchema,
+  TeamLinkServerFrameSchema,
   teamPartnerMaxFrameBytes,
 } from "../packages/protocol/src/index.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { WebSocket } from "ws";
 import { expect, it, vi } from "vitest";
+import { teamMessage } from "../packages/shared/src/teamMentions.js";
+import { teamPeopleDirectory } from "../packages/client/src/team/shared-channels.js";
 import { sharedFixture } from "./team-shares.test-support.js";
 import { teamCondition } from "./team-system.test-support.js";
 import type { TeamShareBatch, TeamShareOperation } from "../packages/protocol/src/index.js";
@@ -947,6 +952,301 @@ it("delivers an offline disconnect before a fresh offer when the partner reconne
     });
     const ready = await f.bSession.rpc["team.channel.get"]({ channelId: fresh });
     expect(ready.ok && ready.data.can.post).toBe(true);
+  } finally {
+    await f.close();
+  }
+});
+
+it("refuses old apps only for shared channel work", async () => {
+  const f = await sharedFixture();
+  try {
+    const headers = { ...f.bSession.headers, "x-opensteer-team-api-version": "5" };
+    const get = await f.b.host.app.inject({
+      method: "POST",
+      url: "/v1/rpc/team.channel.get",
+      payload: { channelId: f.bid },
+      headers,
+    });
+    expect(get.statusCode).toBe(409);
+    expect(get.json()).toMatchObject({
+      ok: false,
+      error: { reason: "api-version-mismatch", retryable: false },
+    });
+    expect(get.body).toContain("Update Opensteer");
+    const send = await f.b.host.app.inject({
+      method: "POST",
+      url: "/v1/rpc/commands.dispatch",
+      payload: {
+        type: "team.message.send",
+        channelId: f.bid,
+        threadRootId: null,
+        clientMessageId: randomUUID(),
+        bodyMarkdown: "Hidden audience",
+        mentions: [],
+        attachmentIds: [],
+      },
+      headers,
+    });
+    expect(send.statusCode).toBe(409);
+    expect(send.json()).toMatchObject({ ok: false, error: { reason: "api-version-mismatch" } });
+    const frames: unknown[] = [];
+    const peer = f.b.host.team.realtime.connect(
+      { kind: "human", userId: f.bUser },
+      {
+        send: (frame) => {
+          frames.push(frame);
+          return true;
+        },
+        close: () => {},
+      },
+    );
+    await expect(
+      peer.receive({
+        type: "team.subscribe",
+        teamApiVersion: 5,
+        subscriptionId: "old",
+        generation: 1,
+        scope: { kind: "channel", channelId: f.bid },
+        sidebar: false,
+        sinceSeq: null,
+      }),
+    ).rejects.toMatchObject({ reason: "api-version-mismatch" });
+    expect(frames).toEqual([]);
+    peer.close();
+    const internal = createId("teamChannel");
+    await command(f.bSession, {
+      type: "team.channel.create",
+      id: internal,
+      kind: "private",
+      name: "internal",
+      peopleOnly: false,
+      access: [],
+    });
+    const read = await f.b.host.app.inject({
+      method: "POST",
+      url: "/v1/rpc/team.channel.get",
+      payload: { channelId: internal },
+      headers,
+    });
+    expect(read.statusCode).toBe(200);
+    const bootstrap = await f.b.host.app.inject({
+      method: "POST",
+      url: "/v1/rpc/team.bootstrap.get",
+      payload: {},
+      headers,
+    });
+    expect(bootstrap.statusCode).toBe(200);
+    const entries = bootstrap.json().data.sidebar.channels;
+    expect(entries.some((entry: { channel: { id: string } }) => entry.channel.id === f.bid)).toBe(
+      false,
+    );
+    expect(
+      entries.some((entry: { channel: { id: string } }) => entry.channel.id === internal),
+    ).toBe(true);
+    const cuts: Array<{ channel: { share?: unknown } }> = [];
+    const closed = Promise.withResolvers<string>();
+    const watching = f.b.host.team.realtime.connect(
+      { kind: "human", userId: f.bUser },
+      {
+        send: (frame) => {
+          if (frame.type === "team.cut") cuts.push(frame.cut);
+          return true;
+        },
+        close: (reason) => closed.resolve(reason),
+      },
+    );
+    await watching.receive({
+      type: "team.subscribe",
+      teamApiVersion: 5,
+      subscriptionId: "internal",
+      generation: 1,
+      scope: { kind: "channel", channelId: internal },
+      sidebar: false,
+      sinceSeq: null,
+    });
+    expect(cuts).toHaveLength(1);
+    const offer = await command(f.bSession, {
+      type: "team.share.offer",
+      channelId: internal,
+      linkId: f.bLink,
+      historyVisibleConfirmed: true,
+    });
+    if (offer.type !== "team.share.offer") throw Error("No share offer");
+    await command(f.aSession, {
+      type: "team.share.accept",
+      shareId: offer.shareId,
+      id: createId("teamChannel"),
+      kind: "private",
+      name: "newly-shared",
+      peopleOnly: false,
+      access: [],
+    });
+    expect(
+      await withTimeout(closed.promise, 3000, {
+        timeoutError: () => Error("Old subscription survived sharing"),
+      }),
+    ).toContain("Update Opensteer");
+    expect(cuts.every((cut) => !cut.channel.share)).toBe(true);
+    watching.close();
+  } finally {
+    await f.close();
+  }
+});
+
+it("routes Ask my agent using the viewer's share handle in the initial channel cut", async () => {
+  const f = await sharedFixture();
+  let oldLink: WebSocket | undefined;
+  try {
+    const credential = `ost_link_${"b".repeat(43)}`;
+    const linkId = createId("teamLink");
+    await f.b.database
+      .insertInto("teamLinks")
+      .values({
+        id: linkId,
+        ownerUserId: f.bUser,
+        personalDeploymentId: createId("deployment"),
+        state: "active",
+        codeHash: randomUUID(),
+        codeExpiresAt: new Date(),
+        credentialHash: createHash("sha256").update(credential).digest("hex"),
+      })
+      .execute();
+    const bootstrap = await f.bSession.rpc["team.bootstrap.get"]({});
+    if (!bootstrap.ok) throw Error("No bootstrap");
+    const page = await f.bSession.rpc["team.messages.page"]({
+      channelId: f.bid,
+      page: { direction: "newest" },
+    });
+    if (!page.ok) throw Error("No channel page");
+    const share = page.data.channel.share;
+    expect(share).toMatchObject({ viewerHandle: "maya-2" });
+    const directory = teamPeopleDirectory(
+      [bootstrap.data.member],
+      page.data.people,
+      share?.viewerHandle ? { [f.bUser]: share.viewerHandle } : {},
+    );
+    const input = teamMessage(
+      { body: "Help me", toMyAgent: true },
+      directory.get(f.bUser)!,
+      directory,
+    );
+    const sent = await command(f.bSession, {
+      type: "team.message.send",
+      channelId: f.bid,
+      threadRootId: null,
+      clientMessageId: randomUUID(),
+      ...input,
+      mentions: [...input.mentions],
+      attachmentIds: [],
+    });
+    expect(sent.type === "team.message.send" && sent.wake).toBe("queued");
+    expect(await f.b.host.team.requests.pending(linkId)).toHaveLength(1);
+    expect(await withTeamPeerVersion(5, () => f.b.host.team.requests.pending(linkId))).toEqual([]);
+    const internalId = createId("teamChannel");
+    await command(f.bSession, {
+      type: "team.channel.create",
+      id: internalId,
+      kind: "private",
+      name: "internal-agent",
+      peopleOnly: false,
+      access: [],
+    });
+    const internal = await command(f.bSession, {
+      type: "team.message.send",
+      channelId: internalId,
+      threadRootId: null,
+      clientMessageId: randomUUID(),
+      bodyMarkdown: "@maya-agent Internal request",
+      mentions: [],
+      attachmentIds: [],
+    });
+    expect(internal.type === "team.message.send" && internal.wake).toBe("queued");
+    const requests = Promise.withResolvers<string[]>();
+    const denied = Promise.withResolvers<string>();
+    oldLink = new WebSocket(
+      new URL("/internal/v1/team/link", f.b.origin).toString().replace(/^http/u, "ws"),
+      { headers: { authorization: `Bearer ${credential}`, "x-opensteer-team-api-version": "5" } },
+    );
+    oldLink.on("message", (bytes) => {
+      const frame = TeamLinkServerFrameSchema.parse(JSON.parse(bytes.toString()));
+      if (frame.type === "requests")
+        requests.resolve(frame.requests.map((row) => row.source.channelId));
+      if (frame.type === "error" && frame.id === "old-shared-read")
+        denied.resolve(frame.error.message);
+    });
+    await withTimeout(once(oldLink, "open"), 3000, {
+      timeoutError: () => Error("Old personal link never connected"),
+    });
+    oldLink.send(JSON.stringify({ type: "hello", teamApiVersion: 5, terminalRequests: [] }));
+    expect(
+      await withTimeout(requests.promise, 3000, {
+        timeoutError: () => Error("Old personal link did not receive its internal request"),
+      }),
+    ).toEqual([internalId]);
+    oldLink.send(
+      JSON.stringify({
+        type: "read",
+        id: "old-shared-read",
+        channelId: f.bid,
+        runId: createId("run"),
+      }),
+    );
+    expect(
+      await withTimeout(denied.promise, 3000, {
+        timeoutError: () => Error("Old personal link's shared read was not refused"),
+      }),
+    ).toContain("Update Opensteer");
+    const request = (await f.b.host.team.requests.pending(linkId)).find(
+      (row) => row.request.channelId === f.bid,
+    )!;
+    await expect(
+      withTeamPeerVersion(5, () => f.b.host.team.requests.accept(linkId, request.request.id)),
+    ).rejects.toMatchObject({ reason: "api-version-mismatch" });
+  } finally {
+    oldLink?.terminate();
+    await f.close();
+  }
+});
+
+it("keeps every offer reachable across bounded pages while newer offers arrive", async () => {
+  const f = await sharedFixture();
+  try {
+    const rows = Array.from({ length: 51 }, (_, i) => ({
+      id: randomUUID(),
+      channelId: null,
+      historyFromShareId: null,
+      partnerLinkId: f.bLink,
+      role: "follower" as const,
+      state: "offered" as const,
+      generation: 1,
+      name: "Offer " + i,
+      peopleOnly: false,
+      offeredBy: null,
+      acceptedBy: null,
+      localApproved: false,
+      endedAt: null,
+    }));
+    await f.b.database.insertInto("teamShares").values(rows).execute();
+    const seen = new Set<string>();
+    let after: string | undefined;
+    do {
+      const page = await f.bSession.rpc["team.shares.list"](after ? { after } : {});
+      if (!page.ok) throw Error(page.error.message);
+      expect(page.data.shares.length).toBeLessThanOrEqual(50);
+      for (const share of page.data.shares) {
+        expect(seen.has(share.id)).toBe(false);
+        seen.add(share.id);
+      }
+      if (!after) {
+        expect(page.data.nextCursor).toBeTruthy();
+        await f.b.database
+          .insertInto("teamShares")
+          .values({ ...rows[0]!, id: randomUUID(), name: "New offer" })
+          .execute();
+      }
+      after = page.data.nextCursor ?? undefined;
+    } while (after);
+    for (const row of rows) expect(seen.has(row.id), row.name + " became unreachable").toBe(true);
   } finally {
     await f.close();
   }

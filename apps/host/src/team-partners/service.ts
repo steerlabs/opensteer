@@ -153,7 +153,12 @@ export class TeamPartners {
       descriptor.authority,
       new URL(offer.origin).hostname.slice(0, 160),
     );
-    await this.store.access.outsideHumanSession(() => this.#open(row, offer));
+    try {
+      await this.store.access.outsideHumanSession(() => this.#open(row, offer));
+    } catch (error) {
+      await this.store.access.outsideHumanSession(() => this.store.abandonProposal(row.id));
+      throw error;
+    }
     const result = await this.store.list(actor, this.connected, { id: row.id });
     const link = result.links.find((r) => r.id === row.id);
     if (!link) throw partnerError();
@@ -410,7 +415,7 @@ export class TeamPartners {
       );
     } catch (error) {
       await entry.peer.close();
-      this.#schedule(row.id);
+      if (!offer) this.#schedule(row.id);
       throw error;
     }
   }

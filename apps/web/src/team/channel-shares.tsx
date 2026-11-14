@@ -52,7 +52,7 @@ export function ChannelShares({
       >
         {state.loading ? "Refreshing…" : "Refresh offers"}
       </button>
-      {state.loaded && shares.length === 0 && !channel ? (
+      {state.loaded && shares.length === 0 && !state.nextCursor && !channel ? (
         <p className="details-note">No pending channel shares.</p>
       ) : null}
       {shares.map((share) => (
@@ -107,6 +107,16 @@ export function ChannelShares({
           {error(share.id)}
         </div>
       ))}
+      {state.nextCursor ? (
+        <button
+          className="btn btn--small"
+          disabled={state.loading || state.loadingMore}
+          onClick={() => void model.more()}
+          type="button"
+        >
+          {state.loadingMore ? "Loading…" : "Show more shares"}
+        </button>
+      ) : null}
       {state.loaded &&
       channel?.can.manage &&
       !blocked &&

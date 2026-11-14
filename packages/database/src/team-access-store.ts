@@ -1,4 +1,5 @@
 import { teamAskerCanPost, cancelUnavailableSharedAsks } from "./team-shared-agents.js";
+import { teamSharedChannelsApiVersion } from "@opensteer/protocol";
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
   OpensteerError,
@@ -42,6 +43,26 @@ export function teamConflict(message: string, reason?: string): never {
   throw new OpensteerError({ code: "conflict", message, ...(reason ? { reason } : {}) });
 }
 
+const teamPeerVersion = new AsyncLocalStorage<number>();
+export function withTeamPeerVersion<Value>(version: number, run: () => Value): Value {
+  return teamPeerVersion.run(version, run);
+}
+export function teamPeerSupportsSharedChannels() {
+  return (
+    (teamPeerVersion.getStore() ?? teamSharedChannelsApiVersion) >= teamSharedChannelsApiVersion
+  );
+}
+export function assertTeamSharedChannelVersion(shared: boolean) {
+  if (shared && !teamPeerSupportsSharedChannels())
+    teamConflict(
+      "Update Opensteer to use shared channels and their external audience.",
+      "api-version-mismatch",
+    );
+}
+export function teamSharedChannelIds() {
+  return sql<TeamChannelId>`(select channel_id from team_shares where channel_id is not null and (state='active' or role='follower'))`;
+}
+
 export function teamGroupPaths(userId: UserId | RawBuilder<unknown>) {
   return sql`with recursive member_groups(id, path) as (
     select p.group_id, array[p.group_id] from team_group_people p
@@ -77,7 +98,9 @@ export function teamReadableChannelIds(
 }
 
 export function teamReadableChannels(actor: TeamActor) {
-  return teamReadableChannelIds(actor.userId, actor.kind);
+  return teamPeerSupportsSharedChannels()
+    ? teamReadableChannelIds(actor.userId, actor.kind)
+    : sql<TeamChannelId>`(select id from team_channels where id in ${teamReadableChannelIds(actor.userId, actor.kind)} and id not in ${teamSharedChannelIds()})`;
 }
 
 export class TeamAccessStore {
@@ -98,7 +121,7 @@ export class TeamAccessStore {
     return this.#sessions.run({ sessionId: session.id, userId: session.user.id }, run);
   }
   outsideHumanSession<Value>(run: () => Value): Value {
-    return this.#sessions.exit(run);
+    return teamPeerVersion.exit(() => this.#sessions.exit(run));
   }
   async checkSession(transaction: Transaction<DatabaseSchema>) {
     const session = this.#sessions.getStore();
@@ -210,9 +233,9 @@ export class TeamAccessStore {
     type Authority = { read: boolean; post: boolean; manage: boolean; peopleOnly: boolean };
     if (!channelIds.length) return new Map<TeamChannelId, Authority>();
     const result = await sql<
-      Authority & { channelId: TeamChannelId }
+      Authority & { channelId: TeamChannelId; shared: boolean }
     >`${teamGroupPaths(actor.userId)}
-      select c.id as channel_id,${teamChannelPeopleOnly()} as people_only,
+      select c.id as channel_id, c.id in ${teamSharedChannelIds()} as shared,${teamChannelPeopleOnly()} as people_only,
       coalesce(bool_or(a.subject_id is not null),false) and (not ${teamChannelAgentsBlocked()} or ${actor.kind}='human')
         and not exists(select 1 from team_shares s where s.channel_id=c.id and s.role='follower' and not s.ready and s.state<>'ended')
         and not exists(select 1 from team_shares s join team_share_participants p on p.share_id=s.id where s.channel_id=c.id and s.role='follower' and p.principal_id=${actor.userId} and p.state='removed') as read,
@@ -223,7 +246,11 @@ export class TeamAccessStore {
       from team_channels c join team_members m on m.user_id=${actor.userId} and m.state='active'
       left join team_channel_members a on a.channel_id=c.id and ((a.subject_kind='person' and a.subject_id=m.user_id) or (a.subject_kind='group' and a.subject_id in(select id from member_groups)))
       where c.id in (${sql.join(channelIds)}) group by c.id,m.role`.execute(transaction);
-    return new Map(result.rows.map(({ channelId, ...authority }) => [channelId, authority]));
+    for (const row of result.rows)
+      assertTeamSharedChannelVersion(row.shared && (row.read || row.manage));
+    return new Map(
+      result.rows.map(({ channelId, shared: _, ...authority }) => [channelId, authority]),
+    );
   }
   /** A person reads a topic granted to them, a group they are in, or everyone; their agent the same, never managing. */
   async topic(

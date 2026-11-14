@@ -365,8 +365,12 @@ export const teamReadSchemas = {
     }),
   },
   "team.shares.list": {
-    input: z.strictObject({ channelId: TeamChannelIdSchema.optional() }),
+    input: z.strictObject({
+      channelId: TeamChannelIdSchema.optional(),
+      after: z.uuid().optional(),
+    }),
     output: z.object({
+      nextCursor: z.uuid().nullable().optional(),
       shares: z
         .array(
           z.object({

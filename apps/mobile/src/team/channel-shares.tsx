@@ -56,7 +56,7 @@ export function ChannelShares({
         label="Refresh offers"
         onPress={() => void model.refresh()}
       />
-      {state.loaded && shares.length === 0 && !channel ? (
+      {state.loaded && shares.length === 0 && !state.nextCursor && !channel ? (
         <GroupNote>No pending channel shares.</GroupNote>
       ) : null}
       {shares.map((share) => (
@@ -127,6 +127,15 @@ export function ChannelShares({
           {error(share.id)}
         </View>
       ))}
+      {state.nextCursor ? (
+        <SecondaryButton
+          compact
+          busy={state.loadingMore}
+          disabled={state.loading}
+          label="Show more shares"
+          onPress={() => void model.more()}
+        />
+      ) : null}
       {state.loaded &&
       channel?.can.manage &&
       !blocked &&

@@ -10,7 +10,11 @@ import type { z } from "zod";
 import { z as schema } from "zod";
 import type { TeamFileService } from "./file-service.js";
 import { assertTeamApiVersion } from "./services.js";
-import { requireTeam, type TeamAccessStore } from "@opensteer/database/team-access";
+import {
+  requireTeam,
+  withTeamPeerVersion,
+  type TeamAccessStore,
+} from "@opensteer/database/team-access";
 
 export const teamHumanFileRoutes = {
   upload: "/v1/team/files/upload/:channelId",
@@ -39,57 +43,61 @@ export function registerTeamBinaryRoutes(
       { onRequest: gate, bodyLimit: 100 * 1024 * 1024 + 65536 },
       async (request, reply) => {
         const session = await options.authenticate(request, true);
-        return options.access.withHumanSession(session, async () => {
-          const actor: TeamActor = { kind: "human", userId: session.user.id };
-          const { channelId } = schema
-            .strictObject({ channelId: TeamChannelIdSchema })
-            .parse(request.params);
-          const header = schema
-            .string()
-            .max(2048)
-            .parse(request.headers["x-opensteer-team-upload"]);
-          const metadata = TeamUploadMetadataSchema.parse(JSON.parse(header));
-          const controller = new AbortController(),
-            abort = () => controller.abort(new Error("Upload disconnected"));
-          request.raw.once("aborted", abort);
-          try {
-            const body = request.body as AsyncIterable<Uint8Array>;
-            requireTeam(body && Symbol.asyncIterator in body);
-            void reply.header("cache-control", "no-store");
-            return await options.files.upload(
-              actor,
-              channelId,
-              metadata,
-              splitTeamUpload(body, metadata),
-              undefined,
-              controller.signal,
-            );
-          } finally {
-            request.raw.off("aborted", abort);
-          }
-        });
+        return withTeamPeerVersion(Number(request.headers["x-opensteer-team-api-version"]), () =>
+          options.access.withHumanSession(session, async () => {
+            const actor: TeamActor = { kind: "human", userId: session.user.id };
+            const { channelId } = schema
+              .strictObject({ channelId: TeamChannelIdSchema })
+              .parse(request.params);
+            const header = schema
+              .string()
+              .max(2048)
+              .parse(request.headers["x-opensteer-team-upload"]);
+            const metadata = TeamUploadMetadataSchema.parse(JSON.parse(header));
+            const controller = new AbortController(),
+              abort = () => controller.abort(new Error("Upload disconnected"));
+            request.raw.once("aborted", abort);
+            try {
+              const body = request.body as AsyncIterable<Uint8Array>;
+              requireTeam(body && Symbol.asyncIterator in body);
+              void reply.header("cache-control", "no-store");
+              return await options.files.upload(
+                actor,
+                channelId,
+                metadata,
+                splitTeamUpload(body, metadata),
+                undefined,
+                controller.signal,
+              );
+            } finally {
+              request.raw.off("aborted", abort);
+            }
+          }),
+        );
       },
     );
     binary.get(teamHumanFileRoutes.download, { onRequest: gate }, async (request, reply) => {
       const session = await options.authenticate(request, false);
-      return options.access.withHumanSession(session, async () => {
-        const actor: TeamActor = { kind: "human", userId: session.user.id };
-        const { blobId, part } = schema
-          .strictObject({ blobId: TeamBlobIdSchema, part: schema.enum(["original", "preview"]) })
-          .parse(request.params);
-        const controller = new AbortController();
-        reply.raw.once("close", () => controller.abort());
-        const file = await options.files.download(
-          actor,
-          blobId,
-          part,
-          undefined,
-          controller.signal,
-        );
-        for (const [name, value] of Object.entries(file.headers)) void reply.header(name, value);
-        void reply.header("content-length", file.sizeBytes);
-        return reply.send(file.body);
-      });
+      return withTeamPeerVersion(Number(request.headers["x-opensteer-team-api-version"]), () =>
+        options.access.withHumanSession(session, async () => {
+          const actor: TeamActor = { kind: "human", userId: session.user.id };
+          const { blobId, part } = schema
+            .strictObject({ blobId: TeamBlobIdSchema, part: schema.enum(["original", "preview"]) })
+            .parse(request.params);
+          const controller = new AbortController();
+          reply.raw.once("close", () => controller.abort());
+          const file = await options.files.download(
+            actor,
+            blobId,
+            part,
+            undefined,
+            controller.signal,
+          );
+          for (const [name, value] of Object.entries(file.headers)) void reply.header(name, value);
+          void reply.header("content-length", file.sizeBytes);
+          return reply.send(file.body);
+        }),
+      );
     });
   });
 }

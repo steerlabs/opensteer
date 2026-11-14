@@ -11,6 +11,7 @@ import {
 import { TeamRequestTextSchema as TeamMarkdownSchema } from "@opensteer/core";
 import { TeamFileSchema, teamUploadMaxBytes } from "./team-chat.js";
 
+export const teamSharedChannelsApiVersion = 7;
 export const teamSharedAgentsCapability = "team-shared-agents-v1";
 export const teamShareCapability = "team-shared-channels-v1";
 export const teamShareMaxRows = 100_000;

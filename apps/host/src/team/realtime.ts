@@ -8,7 +8,12 @@ import {
 import { acceptsTeamApiVersion, teamApiVersionRefusal } from "@opensteer/deployment-authority";
 import type { z } from "zod";
 import type { TeamChatStore } from "@opensteer/database/team-chat";
-import { teamReadableChannels, type TeamAccessStore } from "@opensteer/database/team-access";
+import {
+  withTeamPeerVersion,
+  assertTeamSharedChannelVersion,
+  teamReadableChannels,
+  type TeamAccessStore,
+} from "@opensteer/database/team-access";
 
 type Frame = z.infer<typeof TeamServerFrameSchema>;
 type Scope = TeamConsistentCut["scope"];
@@ -26,6 +31,7 @@ interface Subscription {
   linkOwners: UserId[];
 }
 interface Peer {
+  version: number;
   actor: TeamActor;
   socket: TeamSocket;
   subscriptions: Map<string, Subscription>;
@@ -98,23 +104,24 @@ export class TeamRealtimeHub {
         this.#send(peer, { type: "team.agent.recipient", recipient });
     }
   }
-  #snapshot(actor: TeamActor, subscription: Subscription) {
+  #snapshot(actor: TeamActor, subscription: Subscription, version: number) {
     const key = JSON.stringify([
       actor,
+      version,
       subscription.scope,
       subscription.since,
       this.access.revision,
     ]);
     let pending = this.#snapshots.get(key);
     if (!pending) {
-      pending = this.chat
-        .resume(actor, {
+      pending = withTeamPeerVersion(version, () =>
+        this.chat.resume(actor, {
           subscriptionId: subscription.id,
           generation: subscription.generation,
           scope: subscription.scope!,
           sinceSeq: subscription.since,
-        })
-        .finally(() => this.#snapshots.delete(key));
+        }),
+      ).finally(() => this.#snapshots.delete(key));
       this.#snapshots.set(key, pending);
     }
     return pending.then((cut) => ({
@@ -123,13 +130,13 @@ export class TeamRealtimeHub {
       generation: subscription.generation,
     }));
   }
-  #sidebar(actor: TeamActor) {
-    const key = JSON.stringify([actor, this.access.revision]);
+  #sidebar(actor: TeamActor, version: number) {
+    const key = JSON.stringify([actor, version, this.access.revision]);
     let pending = this.#sidebars.get(key);
     if (!pending) {
-      pending = this.chat
-        .directory(actor, undefined, true)
-        .finally(() => this.#sidebars.delete(key));
+      pending = withTeamPeerVersion(version, () =>
+        this.chat.directory(actor, undefined, true),
+      ).finally(() => this.#sidebars.delete(key));
       this.#sidebars.set(key, pending);
     }
     return pending;
@@ -148,6 +155,7 @@ export class TeamRealtimeHub {
       throw new OpensteerError({ code: "forbidden", message: "Human team session required" });
     const peer: Peer = {
       actor,
+      version: 0,
       socket,
       subscriptions: new Map(),
       visible: false,
@@ -174,6 +182,7 @@ export class TeamRealtimeHub {
         if (!frame) return;
         peer.seen = Date.now();
         if (frame.type === "team.subscribe") {
+          peer.version = frame.teamApiVersion;
           const subscription: Subscription = {
             id: frame.subscriptionId,
             generation: frame.generation,
@@ -192,12 +201,12 @@ export class TeamRealtimeHub {
           peer.subscriptions.set(subscription.id, subscription);
           if (frame.sidebar && !hadSidebar) {
             const revision = this.access.revision;
-            const sidebar = await this.#sidebar(actor);
+            const sidebar = await this.#sidebar(actor, peer.version);
             await this.#handoff(peer, { type: "team.sidebar", sidebar }, revision);
           }
           if (frame.scope) {
             const revision = this.access.revision;
-            const cut = await this.#snapshot(actor, subscription);
+            const cut = await this.#snapshot(actor, subscription, peer.version);
             if (peer.subscriptions.get(subscription.id) !== subscription || peer.closed) return;
             subscription.can = cut.channel.can;
             subscription.linkOwners = cut.linkPresence.map((entry) => entry.ownerUserId);
@@ -209,9 +218,11 @@ export class TeamRealtimeHub {
           peer.watched = frame.watchedUserIds;
           this.#presence(peer);
         } else {
-          const allowed = await this.access.database
-            .transaction()
-            .execute(async (t) => (await this.access.channel(t, actor, frame.channelId)).read);
+          const allowed = await withTeamPeerVersion(peer.version, () =>
+            this.access.database
+              .transaction()
+              .execute(async (t) => (await this.access.channel(t, actor, frame.channelId)).read),
+          );
           if (!allowed) return;
           const key = `${actor.userId}:${frame.channelId}:${frame.rootId}`;
           const prior = this.#typing.get(key);
@@ -235,6 +246,15 @@ export class TeamRealtimeHub {
     };
   }
   #send(peer: Peer, frame: Frame) {
+    if (frame.type === "team.cut") {
+      const shared = !!frame.cut.channel.share;
+      try {
+        withTeamPeerVersion(peer.version, () => assertTeamSharedChannelVersion(shared));
+      } catch (error) {
+        this.#close(peer, error instanceof Error ? error.message : "Update Opensteer");
+        return;
+      }
+    }
     if (frame.type === "team.link.presence")
       frame = { ...frame, online: this.chat.identity.agentOnline?.(frame.userId) ?? frame.online };
     else if (frame.type === "team.cut")
@@ -252,22 +272,25 @@ export class TeamRealtimeHub {
       this.#close(peer, "Team connection exceeded its buffer");
   }
   async #handoff(peer: Peer, frame: Frame, revision: typeof this.access.revision) {
-    await this.access.handoff(
-      revision,
-      () =>
-        this.access.database.transaction().execute(async (t) => {
-          await this.access.member(t, peer.actor.userId);
-          return (
-            await Promise.all(
-              [...peer.subscriptions.values()]
-                .filter((s) => s.scope)
-                .map(
-                  async (s) => (await this.access.channel(t, peer.actor, s.scope!.channelId)).read,
-                ),
-            )
-          ).every(Boolean);
-        }),
-      () => this.#send(peer, frame),
+    await withTeamPeerVersion(peer.version, () =>
+      this.access.handoff(
+        revision,
+        () =>
+          this.access.database.transaction().execute(async (t) => {
+            await this.access.member(t, peer.actor.userId);
+            return (
+              await Promise.all(
+                [...peer.subscriptions.values()]
+                  .filter((s) => s.scope)
+                  .map(
+                    async (s) =>
+                      (await this.access.channel(t, peer.actor, s.scope!.channelId)).read,
+                  ),
+              )
+            ).every(Boolean);
+          }),
+        () => this.#send(peer, frame),
+      ),
     );
   }
   async #pump() {
@@ -288,7 +311,12 @@ export class TeamRealtimeHub {
           }
           for (const subscription of peer.subscriptions.values()) {
             if (!subscription.scope || !dirty.includes(subscription.scope.channelId)) continue;
-            const key = JSON.stringify([peer.actor, subscription.scope, subscription.since]);
+            const key = JSON.stringify([
+              peer.actor,
+              peer.version,
+              subscription.scope,
+              subscription.since,
+            ]);
             const list = groups.get(key) ?? [];
             list.push({ peer, subscription });
             groups.set(key, list);
@@ -297,15 +325,18 @@ export class TeamRealtimeHub {
         for (const viewers of groups.values()) {
           const first = viewers[0]!,
             subscription = first.subscription;
-          if (!subscription.scope) continue;
+          const scope = subscription.scope;
+          if (!scope) continue;
           try {
             const revision = this.access.revision;
-            const cut = await this.chat.resume(first.peer.actor, {
-              subscriptionId: subscription.id,
-              generation: subscription.generation,
-              scope: subscription.scope,
-              sinceSeq: subscription.since,
-            });
+            const cut = await withTeamPeerVersion(first.peer.version, () =>
+              this.chat.resume(first.peer.actor, {
+                subscriptionId: subscription.id,
+                generation: subscription.generation,
+                scope,
+                sinceSeq: subscription.since,
+              }),
+            );
             for (const { peer, subscription: current } of viewers) {
               if (peer.subscriptions.get(current.id) !== current || !current.can) continue;
               current.linkOwners = cut.linkPresence.map((entry) => entry.ownerUserId);
@@ -324,8 +355,12 @@ export class TeamRealtimeHub {
               );
               current.since = cut.throughSeq;
             }
-          } catch {
-            for (const { peer } of viewers) this.#close(peer, "Team subscription unavailable");
+          } catch (error) {
+            for (const { peer } of viewers)
+              this.#close(
+                peer,
+                error instanceof Error ? error.message : "Team subscription unavailable",
+              );
           }
         }
       }
@@ -336,14 +371,16 @@ export class TeamRealtimeHub {
   async #readable(peer: Peer) {
     while (peer.readable?.revision !== this.access.revision) {
       const revision = this.access.revision;
-      const ids = await this.access.database.transaction().execute(async (t) => {
-        await this.access.member(t, peer.actor.userId);
-        return t
-          .selectFrom("teamChannels")
-          .select("id")
-          .where("id", "in", teamReadableChannels(peer.actor))
-          .execute();
-      });
+      const ids = await withTeamPeerVersion(peer.version, () =>
+        this.access.database.transaction().execute(async (t) => {
+          await this.access.member(t, peer.actor.userId);
+          return t
+            .selectFrom("teamChannels")
+            .select("id")
+            .where("id", "in", teamReadableChannels(peer.actor))
+            .execute();
+        }),
+      );
       if (revision === this.access.revision)
         peer.readable = { revision, ids: new Set(ids.map((row) => row.id)) };
     }

@@ -389,3 +389,19 @@ it("keeps partner proofs and ordinary team/link credentials in separate route fa
     await f.close();
   }
 });
+
+it("allows a freshly verified pairing retry after an incorrect invite verifier", async () => {
+  const f = await pairFixture();
+  try {
+    const offer = parseTeamPartnerOffer(await invite(f.aSession));
+    await expect(
+      redeem(f.bSession, serializeTeamPartnerOffer({ ...offer, verifier: "A".repeat(43) })),
+    ).rejects.toThrow();
+    await expect(redeem(f.bSession, serializeTeamPartnerOffer(offer))).resolves.toMatchObject({
+      role: "dialer",
+      state: "pending",
+    });
+  } finally {
+    await f.close();
+  }
+});
