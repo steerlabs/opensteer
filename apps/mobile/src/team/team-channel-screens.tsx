@@ -1,8 +1,10 @@
+import { useTeamShareParticipants } from "@opensteer/client/react";
 import { teamMentions, teamMessage } from "@opensteer/shared/teamMentions";
 import { shareTeamFile } from "./team-file-export.js";
 import { MenuView, type MenuComponentRef } from "@expo/ui/community/menu";
 import { PersonalTeamLinks, watchTeamReplyRead, unwrapRpcResult } from "@opensteer/client/host";
 import {
+  channelShareView,
   teamAskRefusalNotice,
   teamScopeKey,
   type TeamSessionClient,
@@ -117,7 +119,7 @@ export function TeamChannelScreen(props: StaticScreenProps<TeamChannelRoute>): R
         session.selectThread(TeamChannelIdSchema.parse(channelId), null);
     }, [channelId, landing.settled, session]),
   );
-  const people = useTeamMembers(teamId);
+  const people = useTeamMembers(teamId, channelId);
   const memberCount = useChannelMemberCount(session, channelId);
   const header = useMemo(
     () =>
@@ -214,7 +216,7 @@ export function TeamThreadScreen(props: StaticScreenProps<TeamThreadRoute>): Rea
         );
     }, [channelId, landing.settled, rootId, session]),
   );
-  const people = useTeamMembers(teamId);
+  const people = useTeamMembers(teamId, channelId);
   const channelName = view?.channel?.name ?? null;
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -395,6 +397,7 @@ function Place(props: {
         previews,
         lastReadMessageId: newLineAt,
         pending: snapshot.pending,
+        sendErrors: snapshot.sendErrors,
         connected: snapshot.connection === "connected",
         now: new Date(),
         ...(rootId === null ? {} : { skipId: rootId }),
@@ -406,6 +409,7 @@ function Place(props: {
       rootId,
       snapshot.connection,
       snapshot.pending,
+      snapshot.sendErrors,
       snapshot.presence,
       view,
       viewerId,
@@ -510,11 +514,33 @@ function Place(props: {
     }, 400);
   };
   const mentionQuery = activeMention(text, selection.start);
+  const participants = useTeamShareParticipants(
+    session,
+    channelId,
+    channel.share ? mentionQuery : null,
+  );
   const mentions: readonly MentionOption[] | null =
     mentionQuery === null
       ? null
-      : mentionOptions({ query: mentionQuery, viewerId, members: props.members, reach });
-  const me = props.members.find((member) => member.userId === viewerId) ?? null;
+      : mentionOptions({
+          query: mentionQuery,
+          viewerId,
+          members: props.members,
+          reach,
+          people: [...directory.values()]
+            .filter((p) =>
+              p.externalTeam
+                ? participants.items.some(
+                    (row) => row.userId === p.userId && row.state === "active",
+                  )
+                : props.members.some((row) => row.userId === p.userId && row.state === "active"),
+            )
+            .map((p) => ({
+              ...p,
+              handle: participants.items.find((row) => row.userId === p.userId)?.handle ?? p.handle,
+            })),
+        });
+  const me = directory.get(viewerId) ?? null;
 
   const pickMention = (option: MentionOption): void => {
     if (mentionQuery === null) return;
@@ -570,7 +596,7 @@ function Place(props: {
           channelId,
           messageId: saving.id,
           bodyMarkdown: words,
-          mentions: [...teamMentions(words, props.members)],
+          mentions: [...teamMentions(words, directory.values())],
         });
         if (openEdit.current === saving) {
           setText(saving.draft);
@@ -589,12 +615,8 @@ function Place(props: {
     if (staged.some((row) => row.fileId === null)) return;
     const asking = rootId === null && toMyAgent && reach === "available" && me !== null;
     const message = me
-      ? teamMessage(
-          { body: words, toMyAgent: asking },
-          me,
-          new Map(props.members.map((member) => [member.userId, member])),
-        )
-      : { bodyMarkdown: words, mentions: teamMentions(words, props.members) };
+      ? teamMessage({ body: words, toMyAgent: asking }, me, directory)
+      : { bodyMarkdown: words, mentions: teamMentions(words, directory.values()) };
     try {
       session.typing(channelId, rootId, false);
       await sendFromComposer(
@@ -657,7 +679,9 @@ function Place(props: {
           canPost: channel.can.post,
           inThread: rootId !== null,
           message: heldView,
-        });
+        }).filter(
+          (action) => channel.can.post || action.id === "reply" || action.id === "copy-link",
+        );
   const act = async (message: TeamMessage, id: MessageActionId): Promise<void> => {
     switch (id) {
       case "reply":
@@ -748,12 +772,22 @@ function Place(props: {
     await shareTeamFile(session, file);
   };
 
-  const banner = useConnectionBanner(props.team, snapshot.connection, () => session.connect());
+  const connectionBanner = useConnectionBanner(props.team, snapshot.connection, () =>
+    session.connect(),
+  );
+  const shareView = channelShareView(channel.share);
+  const banner: ConnectionBannerView | null =
+    connectionBanner ??
+    (shareView && (channel.share?.state === "disconnected" || channel.share?.updateRequired)
+      ? { text: `${shareView.label}. ${shareView.detail}`, tone: "muted", action: null }
+      : null);
   const closed = channel.can.post
     ? null
-    : channel.archivedAt !== null
-      ? "This channel is archived."
-      : "You can read this channel but not post here.";
+    : channel.share?.state === "disconnected"
+      ? `No longer shared with ${channel.share.teamName}. This is a read-only archive.`
+      : channel.archivedAt !== null
+        ? "This channel is archived."
+        : "You can read this channel but not post here.";
   const typingKey = JSON.stringify([channelId, rootId]);
   const refusalNotice = teamAskRefusalNotice(
     snapshot.sendNotices[teamScopeKey(view.scope)] ?? [],
@@ -829,11 +863,13 @@ function Place(props: {
             );
             if (pending === undefined) return;
             const done =
-              choice === "edit"
-                ? session
-                    .editPending(clientMessageId, pending.command.bodyMarkdown)
-                    .then(() => setText(pending.command.bodyMarkdown))
-                : session.discardPending(clientMessageId);
+              choice === "retry"
+                ? session.reconcilePending()
+                : choice === "edit"
+                  ? session
+                      .editPending(clientMessageId, pending.command.bodyMarkdown)
+                      .then(() => setText(pending.command.bodyMarkdown))
+                  : session.discardPending(clientMessageId);
             void done.catch(report);
           },
           onCardAction: (requestId, action) => {

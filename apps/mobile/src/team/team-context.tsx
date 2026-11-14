@@ -1,3 +1,4 @@
+import { teamPeopleDirectory } from "@opensteer/client/team";
 import type {
   AccountTeamsClient,
   TeamConnectionIntent,
@@ -19,7 +20,7 @@ import {
   type ReactNode,
 } from "react";
 import type { MobileTeam, MobileTeams, MobileTeamsSnapshot } from "./mobile-teams.js";
-import { memberDirectory, type MemberDirectory } from "./team-views.js";
+import type { MemberDirectory } from "./team-views.js";
 
 const MobileTeamsContext = createContext<MobileTeams | null>(null);
 
@@ -138,7 +139,10 @@ export function useTeamSession(teamId: string): {
 }
 
 /** The team's people, for names, faces, handles and the @ list. */
-export function useTeamMembers(teamId: string): {
+export function useTeamMembers(
+  teamId: string,
+  channelId?: string,
+): {
   readonly members: readonly TeamMember[];
   readonly directory: MemberDirectory;
   /** Whether `members` has been read yet, so an empty list can be told from one not read. */
@@ -175,7 +179,25 @@ export function useTeamMembers(teamId: string): {
     teams.forgetMembers(teamId);
     setGeneration((next) => next + 1);
   }, [teamId, teams]);
-  const directory = useMemo(() => memberDirectory(read.members), [read.members]);
+  const session = useTeam(teamId)?.session ?? null;
+  const subscribePeople = useCallback(
+    (listener: () => void) => session?.subscribe(listener) ?? (() => undefined),
+    [session],
+  );
+  const readPeople = useCallback(() => {
+    const snapshot = session?.getSnapshot();
+    return channelId ? snapshot?.peopleByChannel?.[channelId] : snapshot?.people;
+  }, [session, channelId]);
+  const remotePeople = useSyncExternalStore(subscribePeople, readPeople, readPeople);
+  const readHandles = useCallback(
+    () => (channelId ? session?.getSnapshot().handlesByChannel?.[channelId] : undefined),
+    [session, channelId],
+  );
+  const handles = useSyncExternalStore(subscribePeople, readHandles, readHandles);
+  const directory = useMemo(
+    () => teamPeopleDirectory(read.members, remotePeople, handles),
+    [read.members, remotePeople, handles],
+  );
   return {
     members: read.members,
     directory,

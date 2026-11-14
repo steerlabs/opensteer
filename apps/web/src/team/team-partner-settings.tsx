@@ -1,3 +1,4 @@
+import { ChannelShares } from "./channel-shares.js";
 import { useEffect, useState } from "react";
 import { useTeamPartnerSettings } from "@opensteer/client/react";
 import {
@@ -49,6 +50,7 @@ export function TeamPartnerSettingsPage({ client }: { readonly client: TeamSessi
   };
   return (
     <>
+      <ChannelShares client={client} />
       <p className="settings-footnote">
         Connect another team, then choose which channels to share with it.
       </p>

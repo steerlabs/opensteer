@@ -1,3 +1,4 @@
+import { mergeTeamPeople, type TeamRemotePeople } from "./shared-channels.js";
 import type { TeamRuntimeOwner } from "./team-runtime-owner.js";
 import { bootstrapMembershipRefused, teamEntryRefusalOutcome } from "@opensteer/protocol";
 import type { TeamFileUpload } from "./files.js";
@@ -52,6 +53,10 @@ type TeamBootstrap = z.infer<typeof TeamBootstrapSchema>;
 type SearchInput = z.infer<typeof TeamSearchInputSchema>;
 type SearchPage = z.infer<typeof TeamSearchPageSchema>;
 export interface TeamSessionSnapshot {
+  readonly people?: TeamRemotePeople;
+  readonly peopleByChannel?: Readonly<Record<string, TeamRemotePeople>>;
+  readonly handlesByChannel?: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  readonly sendErrors?: Readonly<Record<string, unknown>>;
   readonly agentRecipients: readonly TeamAgentRecipient[];
   readonly bootstrap: TeamBootstrap | null;
   readonly sidebar: TeamSidebar | null;
@@ -109,6 +114,10 @@ export class TeamSessionClient {
   }
   readonly #listeners = new Set<() => void>();
   #snapshot: TeamSessionSnapshot = {
+    people: {},
+    peopleByChannel: {},
+    handlesByChannel: {},
+    sendErrors: {},
     agentRecipients: [],
     bootstrap: null,
     sidebar: null,
@@ -167,6 +176,15 @@ export class TeamSessionClient {
   #update(patch: Partial<TeamSessionSnapshot>): void {
     this.#snapshot = { ...this.#snapshot, ...patch };
     for (const listener of this.#listeners) listener();
+  }
+  #peoplePatch(people: TeamRemotePeople | undefined, channelId: TeamChannelId) {
+    return {
+      people: mergeTeamPeople(this.#snapshot.people ?? {}, people),
+      peopleByChannel: {
+        ...this.#snapshot.peopleByChannel,
+        [channelId]: mergeTeamPeople(this.#snapshot.peopleByChannel?.[channelId] ?? {}, people),
+      },
+    };
   }
   async load(connect = true): Promise<void> {
     if (this.#removed || this.#disposed) return;
@@ -489,7 +507,10 @@ export class TeamSessionClient {
     const current = this.#snapshot[view];
     if (lifetime !== this.#lifetime || !current || selected.generation !== current.generation)
       return;
-    this.#update({ [view]: reduceTeamPage(current, result, selected.generation, direction) });
+    this.#update({
+      ...this.#peoplePatch(result.people, selected.scope.channelId),
+      [view]: reduceTeamPage(current, result, selected.generation, direction),
+    });
   }
   async landMessage(
     channelId: TeamChannelId,
@@ -553,8 +574,46 @@ export class TeamSessionClient {
       selected.generation,
       "after",
     );
-    this.#update({ [view]: { ...next, hasMore: before.hasMore, anchorId: message.id } });
+    this.#update({
+      ...this.#peoplePatch(
+        mergeTeamPeople(mergeTeamPeople(message.people ?? {}, before.people), after.people),
+        channelId,
+      ),
+      [view]: { ...next, hasMore: before.hasMore, anchorId: message.id },
+    });
     return message;
+  }
+  async pinnedMessages(channelId: TeamChannelId) {
+    if (this.#removed || this.#disposed) throw new Error("Team session ended.");
+    const lifetime = this.#lifetime,
+      content = this.#contentGeneration;
+    const page = unwrapRpcResult(await this.rpc["team.pins.page"]({ channelId }));
+    if (lifetime !== this.#lifetime || content !== this.#contentGeneration)
+      throw new Error("Team access changed.");
+    this.#update({ ...this.#peoplePatch(page.people, channelId) });
+    return page;
+  }
+  async shareParticipants(input: {
+    readonly channelId: TeamChannelId;
+    readonly after?: string;
+    readonly query?: string;
+  }) {
+    if (this.#removed || this.#disposed) return null;
+    const lifetime = this.#lifetime,
+      content = this.#contentGeneration;
+    const page = unwrapRpcResult(await this.rpc["team.share.participants.get"](input));
+    if (lifetime !== this.#lifetime || content !== this.#contentGeneration) return null;
+    this.#update({
+      ...this.#peoplePatch(page.people, input.channelId),
+      handlesByChannel: {
+        ...this.#snapshot.handlesByChannel,
+        [input.channelId]: {
+          ...this.#snapshot.handlesByChannel?.[input.channelId],
+          ...Object.fromEntries(page.participants.map((person) => [person.userId, person.handle])),
+        },
+      },
+    });
+    return page;
   }
   async setAgentRecipient(
     channelId: TeamChannelId,
@@ -600,7 +659,10 @@ export class TeamSessionClient {
         if (!held) return;
         const next = reduceTeamCut(held, frame.cut);
         if (next !== held) {
-          this.#update({ [view]: next });
+          this.#update({
+            ...this.#peoplePatch(frame.cut.people, frame.cut.scope.channelId),
+            [view]: next,
+          });
           this.#applyRecipients(frame.cut.agentRecipients);
           if (
             frame.cut.type === "snapshot" &&
@@ -623,6 +685,9 @@ export class TeamSessionClient {
         const channel = this.#snapshot.channel,
           thread = this.#snapshot.thread;
         this.#update({
+          people: {},
+          peopleByChannel: {},
+          handlesByChannel: {},
           agentRecipients: [],
           sidebar: null,
           channel: channel ? emptyTeamTimeline("channel", ++this.#generation, channel.scope) : null,
@@ -863,7 +928,10 @@ export class TeamSessionClient {
   }
   async discardPending(clientMessageId: string): Promise<void> {
     if (this.#removed || this.#disposed) return;
+    const errors = { ...this.#snapshot.sendErrors };
+    delete errors[clientMessageId];
     this.#update({
+      sendErrors: errors,
       pending: this.#snapshot.pending.filter(
         (row) => row.command.clientMessageId !== clientMessageId,
       ),
@@ -897,6 +965,9 @@ export class TeamSessionClient {
     await this.#save();
   }
   async #transmit(pending: PendingTeamSend, lifetime: number): Promise<void> {
+    const errors = { ...this.#snapshot.sendErrors };
+    delete errors[pending.command.clientMessageId];
+    this.#update({ sendErrors: errors });
     try {
       const result = await this.rpc["commands.dispatch"](pending.command).then(unwrapRpcResult);
       if (lifetime !== this.#lifetime || result.type !== "team.message.send") return;
@@ -915,7 +986,12 @@ export class TeamSessionClient {
       await this.#confirm([result.message]);
     } catch (error) {
       if (lifetime !== this.#lifetime) return;
-      if (!refusedSend(error)) throw error;
+      if (!refusedSend(error)) {
+        this.#update({
+          sendErrors: { ...this.#snapshot.sendErrors, [pending.command.clientMessageId]: error },
+        });
+        throw error;
+      }
       await this.#fail([pending], error);
     }
   }
@@ -928,7 +1004,10 @@ export class TeamSessionClient {
         )
         .map((message) => message.clientMessageId),
     );
+    const errors = { ...this.#snapshot.sendErrors };
+    for (const id of confirmed) delete errors[id];
     this.#update({
+      sendErrors: errors,
       pending: this.#snapshot.pending.filter(
         (send) => !confirmed.has(send.command.clientMessageId),
       ),
@@ -1019,7 +1098,7 @@ export class TeamSessionClient {
     this.#update({ search: null });
     const search = await this.rpc["team.search"]({ input }).then(unwrapRpcResult);
     if (generation === this.#searchGeneration && lifetime === this.#lifetime)
-      this.#update({ search });
+      this.#update({ people: mergeTeamPeople(this.#snapshot.people ?? {}, search.people), search });
   }
   loadMoreSearch(): Promise<void> {
     if (this.#searchMore) return this.#searchMore;
@@ -1038,7 +1117,10 @@ export class TeamSessionClient {
           (row, index, rows) =>
             rows.findIndex((other) => other.message.id === row.message.id) === index,
         );
-        this.#update({ search: { ...page, results } });
+        this.#update({
+          people: mergeTeamPeople(this.#snapshot.people ?? {}, page.people),
+          search: { ...page, results },
+        });
       })
       .finally(() => {
         if (this.#searchMore === operation) this.#searchMore = null;
@@ -1146,6 +1228,10 @@ export class TeamSessionClient {
     this.#searchMore = null;
     this.#typingAt.clear();
     this.#update({
+      people: {},
+      peopleByChannel: {},
+      handlesByChannel: {},
+      sendErrors: {},
       agentRecipients: [],
       bootstrap: null,
       sidebar: null,

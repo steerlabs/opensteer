@@ -375,6 +375,10 @@ export const teamReadSchemas = {
             name: name,
             ready: z.boolean(),
             localApproved: z.boolean(),
+            canApprove: z.boolean().optional(),
+            canAccept: z.boolean().optional(),
+            canEnd: z.boolean().optional(),
+            peopleOnly: z.boolean().optional(),
           }),
         )
         .max(50),
