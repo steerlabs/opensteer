@@ -11,12 +11,14 @@ import {
   type TeamShareOperation,
 } from "@opensteer/protocol";
 import { TeamSharesStore, type Share } from "@opensteer/database/team-shares";
-import { requireTeam } from "@opensteer/database/team-access";
+import { emptyTeamAccessEffects, requireTeam } from "@opensteer/database/team-access";
 import {
   teamMessageViews,
   type TeamChatRelay,
   type TeamChatStore,
 } from "@opensteer/database/team-chat";
+import { setImmediate } from "node:timers/promises";
+import type { TeamRequestsStore } from "@opensteer/database/team-requests";
 import type { TeamPartners } from "./service.js";
 import { teamShareFileView } from "@opensteer/database/team-files";
 import type { TeamShareFiles } from "./files.js";
@@ -37,20 +39,24 @@ export class TeamShares implements TeamChatRelay {
   readonly #unsubscribe: () => void;
   readonly #unsubscribeAccess: () => void;
   readonly #unsubscribeRoster: () => void;
+  readonly #unsubscribeRequests: () => void;
 
   #closed = false;
   readonly partners: TeamPartners;
   readonly chat: TeamChatStore;
   readonly onError: () => void;
+  readonly requests: TeamRequestsStore;
   readonly generalChannel: () => Promise<TeamChannelId | null>;
   constructor(
     partners: TeamPartners,
     chat: TeamChatStore,
+    requests: TeamRequestsStore,
     onError: () => void,
     generalChannel: () => Promise<TeamChannelId | null> = async () => null,
   ) {
     this.partners = partners;
     this.chat = chat;
+    this.requests = requests;
     this.onError = onError;
     this.generalChannel = generalChannel;
     this.store = new TeamSharesStore(chat.access, chat);
@@ -58,6 +64,10 @@ export class TeamShares implements TeamChatRelay {
       this.store.reconcileAccess(t, effects),
     );
     this.#unsubscribeRoster = chat.access.onRevoke(() => this.refreshRosters());
+    this.#unsubscribeRequests = chat.onRequestChange((event) => {
+      if (event.kind === "cancelled")
+        partners.lifetimes.close({ ...emptyTeamAccessEffects, requests: [event.requestId] });
+    });
     chat.relay = this;
     partners.setDataHandler({
       receive: (id, op) => this.receive(id, op),
@@ -256,10 +266,20 @@ export class TeamShares implements TeamChatRelay {
     let job = this.#pulling.get(s.id);
     if (job) return job;
     job = (async () => {
+      let batches = 0;
       do {
         this.#dirty.delete(s.id);
         for (;;) {
           if (this.#closed) return;
+          if (batches++ >= 8) {
+            this.#retrySync(s.id, 1000);
+            throw new OpensteerError({
+              code: "conflict",
+              reason: "shared-channel-sync-pending",
+              retryable: true,
+              message: "This shared channel is catching up. Retry this change.",
+            });
+          }
           const current = await this.store.get(s.id);
           if (current.state !== "active" || current.role !== "follower") return;
           const parsed = TeamShareBatchSchema.safeParse(
@@ -290,6 +310,7 @@ export class TeamShares implements TeamChatRelay {
           const batch = parsed.data;
           if (await this.store.apply(current.partnerLinkId, current.id, current.generation, batch))
             await this.files?.files.collectGarbage();
+          await setImmediate();
           if (!batch.more) break;
         }
       } while (this.#dirty.has(s.id));
@@ -465,7 +486,10 @@ export class TeamShares implements TeamChatRelay {
     actor: TeamActor,
     s: Share,
     write: Extract<TeamShareOperation, { op: "write" }>["write"],
-    provenance?: Pick<Parameters<TeamChatStore["send"]>[1], "linkId" | "runId">,
+    provenance?: Pick<
+      Parameters<TeamChatStore["send"]>[1],
+      "linkId" | "runId" | "publication" | "agentRequestId"
+    >,
   ) {
     try {
       await this.#connecting.get(s.partnerLinkId);
@@ -487,19 +511,54 @@ export class TeamShares implements TeamChatRelay {
         retryable: true,
         message: "This shared channel is catching up. Retry this change.",
       });
-    s = await this.store.recordRelay(actor, s, write, provenance);
+    const controller = new AbortController();
+    const unregister = this.partners.lifetimes.register({
+      userId: actor.userId,
+      ...(provenance?.linkId ? { linkId: provenance.linkId } : {}),
+      ...(provenance?.agentRequestId ? { requestId: provenance.agentRequestId } : {}),
+      channelIds: [s.channelId!],
+      cancel: () =>
+        controller.abort(
+          new OpensteerError({ code: "not_found", message: "Shared channel not found" }),
+        ),
+    });
+    const authorize = async () => {
+      controller.signal.throwIfAborted();
+      requireTeam(await this.store.local(actor, s.channelId!));
+      if (actor.kind === "agent") {
+        requireTeam(provenance?.linkId);
+        await this.store.db
+          .transaction()
+          .execute((t) => this.chat.access.link(t, actor, provenance.linkId!));
+        if (provenance.agentRequestId)
+          await this.requests.authorize(provenance.linkId, provenance.agentRequestId, "post");
+      }
+      return true;
+    };
     let receipt;
     try {
+      s = await this.store.recordRelay(actor, s, write, provenance);
       receipt = TeamShareReceiptSchema.parse(
-        await this.partners.request(s.partnerLinkId, {
-          op: "write",
-          shareId: s.id,
-          generation: s.generation,
-          createdThrough: SequenceSchema.parse(s.creationCursor),
-          write,
-        }),
+        await this.partners.request(
+          s.partnerLinkId,
+          {
+            op: "write",
+            shareId: s.id,
+            generation: s.generation,
+            createdThrough: SequenceSchema.parse(s.creationCursor),
+            write,
+          },
+          controller.signal,
+          async (send) => {
+            const revision = this.chat.access.revision;
+            await authorize();
+            return this.chat.access.handoff(revision, authorize, send);
+          },
+        ),
       );
     } catch (error) {
+      controller.signal.throwIfAborted();
+      if (error instanceof OpensteerError && error.code === "forbidden") throw error;
       if (error instanceof OpensteerError && error.reason === "not-found")
         throw new OpensteerError({ code: "not_found", message: "Shared channel not found" });
       throw new OpensteerError({
@@ -508,6 +567,8 @@ export class TeamShares implements TeamChatRelay {
         retryable: true,
         message: "The owning team is unreachable. Retry this change.",
       });
+    } finally {
+      unregister();
     }
     if (await this.store.apply(s.partnerLinkId, s.id, s.generation, receipt.batch, false))
       await this.files?.files.collectGarbage();
@@ -629,6 +690,7 @@ export class TeamShares implements TeamChatRelay {
     this.#unsubscribe();
     this.#unsubscribeAccess();
     this.#unsubscribeRoster();
+    this.#unsubscribeRequests();
     this.chat.relay = undefined;
     await Promise.allSettled([
       ...this.#jobs,

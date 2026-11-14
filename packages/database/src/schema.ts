@@ -2671,6 +2671,7 @@ export interface TeamPartnerLinkTable {
 }
 
 export interface TeamShareTable {
+  policyRevision: Generated<string>;
   agentsEnabled: Generated<boolean>;
   historyFromShareId: string | null;
   syncError: Generated<"update-required" | null>;
@@ -2703,6 +2704,7 @@ export interface TeamShareParticipantTable {
   state: "active" | "removed";
 }
 export interface TeamShareRelayTable {
+  pendingBodies: Generated<string[]>;
   attachmentPublicIds: Generated<string[]>;
   agentTargets: ColumnType<readonly UserId[], readonly UserId[] | undefined, readonly UserId[]>;
   publication: Generated<boolean>;

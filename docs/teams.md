@@ -215,8 +215,9 @@ own local copy and relays its people's writes over the existing authenticated pa
 Remote authors are content principals, never members, and gain no access to other channels,
 knowledge, sessions or personal Opensteer. The partner protocol names only share IDs and public
 message IDs; each receiving team maps them to its own local keys. A follower verifies rows
-attributed to its people against the writes it relayed, and imported history creates no pushes,
-agent requests or unread mentions. Agent context names the external team; shared rooms cannot
+attributed to its people against the writes it relayed; unconfirmed edits never replace the
+accepted authorship proof. Local profile cards must name people this team recorded for that share
+or its history. Imported history creates no pushes, agent requests or unread mentions. Agent context names the external team; shared rooms cannot
 be treated as an internal audience for knowledge.
 
 Sharing exposes the channel's full history, including past agent answers, and requires confirmation.
@@ -238,7 +239,10 @@ channel. Until the target team admits the ask, its reference shows Asking. Only 
 public reply references cross between teams. Private returns bind to the asking team's recorded
 post, target principal and share; peers cannot choose a local task or Run. Pending asks cancel on
 trigger edits/deletion, participant removal or disconnect. Each team can turn off its own agents in
-the channel's details; the owner's people-only setting binds both teams. Channel instructions stay
+the channel's details; the owner's people-only setting binds both teams. Owner policy snapshots
+are ordered independently of message catch-up, so a late write receipt cannot undo a restriction.
+Queued relays recheck the local session, channel and request at the outbound handoff and cancel
+before the corresponding removal returns. Channel instructions stay
 local to each team's agents. The owner limits new ask references to 60 per share per minute, and
 the target team applies its normal requester and target budgets. Partner protocol version 3 is
 required for this exchange.

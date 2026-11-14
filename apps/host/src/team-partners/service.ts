@@ -22,6 +22,7 @@ import type { HostKeyPair } from "../identity/host-keys.js";
 import { TeamLinkNetwork } from "../team-links/network.js";
 import { TeamPartnerStore, type PartnerRow } from "./store.js";
 import { PartnerSocket } from "./socket.js";
+import { TeamLinkLifetimes } from "../team-link-endpoint/lifetimes.js";
 import {
   partnerError,
   signPartnerChallenge,
@@ -51,6 +52,8 @@ interface PartnerDataHandler {
   revoked(linkId: string): Promise<void>;
 }
 export class TeamPartners {
+  readonly lifetimes = new TeamLinkLifetimes();
+  readonly #unsubscribeAccess: () => void;
   readonly #entries = new Set<Entry>();
   readonly #pending = new Map<
     string,
@@ -65,6 +68,7 @@ export class TeamPartners {
     linkId: string,
     operation: TeamShareOperation,
     signal?: AbortSignal,
+    handoff: (send: () => Promise<void>) => Promise<void> = (send) => send(),
   ): Promise<unknown> {
     signal?.throwIfAborted();
     const entry = [...this.#entries].find(
@@ -77,16 +81,22 @@ export class TeamPartners {
     )
       throw partnerError("partner-unreachable");
     const id = randomUUID();
+    const controller = new AbortController();
+    const pendingSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
     try {
       return await withTimeout(
         new Promise<unknown>((resolve, reject) => {
           this.#pending.set(id, { entry, resolve, reject });
-          void entry.peer.send({ type: "share.request", id, operation }).catch(reject);
+          void handoff(() => {
+            pendingSignal.throwIfAborted();
+            return entry.peer.send({ type: "share.request", id, operation });
+          }).catch(reject);
         }),
         5000,
-        { ...(signal ? { signal } : {}), timeoutError: () => partnerError("partner-unreachable") },
+        { signal: pendingSignal, timeoutError: () => partnerError("partner-unreachable") },
       );
     } finally {
+      controller.abort();
       this.#pending.delete(id);
     }
   }
@@ -115,6 +125,9 @@ export class TeamPartners {
   constructor(options: TeamPartners["options"]) {
     this.options = options;
     this.#network = options.network ?? new TeamLinkNetwork(options.publicOnly);
+    this.#unsubscribeAccess = this.store.access.onRevoke((effects) =>
+      this.lifetimes.close(effects),
+    );
   }
 
   get store() {
@@ -579,6 +592,8 @@ export class TeamPartners {
     void job.catch(() => this.options.onError()).finally(() => this.#jobs.delete(job));
   }
   async close() {
+    this.#unsubscribeAccess();
+    this.lifetimes.stop();
     this.#abort.abort();
     for (const id of this.#retry.keys()) this.#cancelRetry(id);
     await Promise.all([...this.#entries].map((entry) => entry.peer.close()));

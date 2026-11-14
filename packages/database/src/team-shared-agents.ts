@@ -55,7 +55,15 @@ export async function teamAskerChannels(
         eb.selectFrom("teamSharingSettings").select("singletonKey").where("policy", "!=", "off"),
       ),
     )
-    .where((eb) => (actor.kind === "human" ? eb.val(true) : eb("c.peopleOnly", "=", false)))
+    .where((eb) =>
+      actor.kind === "human"
+        ? eb.val(true)
+        : eb.and([
+            eb("c.peopleOnly", "=", false),
+            eb("s.agentsEnabled", "=", true),
+            eb.or([eb("s.role", "=", "owner"), eb("s.peopleOnly", "=", false)]),
+          ]),
+    )
     .execute();
   return new Set(rows.map((row) => row.channelId!));
 }

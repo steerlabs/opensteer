@@ -172,6 +172,14 @@ export function migrationProvider(): MigrationProvider {
         "0017_team_share_files": { up: migrateTeamShareFiles },
         "0018_team_shared_agents": { up: migrateTeamSharedAgents },
         "0019_team_share_file_cache": { up: migrateTeamShareFileCache },
+        "0020_team_share_relay_policy": {
+          async up(database) {
+            await sql`alter table team_shares add column policy_revision bigint not null default 0;
+              alter table team_share_relays add column pending_bodies text[] not null default '{}'`.execute(
+              database,
+            );
+          },
+        },
       };
     },
   };
