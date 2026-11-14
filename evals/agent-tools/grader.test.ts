@@ -125,7 +125,7 @@ it("silence rejects any assistant text and unknown forbidden tools, after an ear
     line({
       expect: {
         noAssistantText: true,
-        notCalls: ["person_message", "person_notify"],
+        notCalls: ["person_notify", "opensteer_task_send"],
         earlierTextMust: ["42"],
       },
     }),
@@ -165,18 +165,20 @@ it("forbids partial arguments even on invalid attempts without banning other act
   const e = parseCases(
     line({
       expect: {
-        notCallsWithArgs: [{ tool: "trigger_write", args: { action: "run", nested: { id: 1 } } }],
+        notCallsWithArgs: [
+          { tool: "opensteer_automation_control", args: { action: "run_now", nested: { id: 1 } } },
+        ],
       },
     }),
   )[0]!.expect;
   const call = {
-    tool: "trigger_write",
+    tool: "opensteer_automation_control",
     valid: false,
-    args: { action: "run", nested: { id: 1, extra: true } },
+    args: { action: "run_now", nested: { id: 1, extra: true } },
   };
   expect(grade(e, [call], "").find((c) => c.name.startsWith("notCallsWithArgs"))?.pass).toBe(false);
   expect(
-    grade(e, [{ ...call, valid: true, args: { action: "get" } }], "").every((c) => c.pass),
+    grade(e, [{ ...call, valid: true, args: { action: "pause" } }], "").every((c) => c.pass),
   ).toBe(true);
 });
 
@@ -184,11 +186,11 @@ it("checks the first tool attempt's string argument, not a later repair", () => 
   const e = parseCases(
     line({
       expect: {
-        callsArgMatch: [{ tool: "computer", path: ["code"], pattern: "app\\(", first: true }],
+        callsArgMatch: [{ tool: "computer_use", path: ["code"], pattern: "app\\(", first: true }],
       },
     }),
   )[0]!.expect;
-  const call = (code: unknown, valid = true) => ({ tool: "computer", args: { code }, valid });
+  const call = (code: unknown, valid = true) => ({ tool: "computer_use", args: { code }, valid });
   expect(grade(e, [call('await app("Notes")')], "").every((c) => c.pass)).toBe(true);
   for (const calls of [
     [call('win.type("x")'), call('app("Notes")')],
@@ -205,7 +207,7 @@ it("requires a resumed computer call to bind a fresh window or phone before acti
   );
   const e = cases.find((c) => c.id === "resumed-computer-reopens")!.expect;
   const pass = (code: string) =>
-    grade(e, [{ tool: "computer", args: { code }, valid: true }], "").every((c) => c.pass);
+    grade(e, [{ tool: "computer_use", args: { code }, valid: true }], "").every((c) => c.pass);
   expect(pass('const win = await (await app("Notes")).window(); await win.observe();')).toBe(true);
   expect(pass('const p = await phone("Eval phone"); await p.observe();')).toBe(true);
   expect(pass('await app("Notes"); await globalThis.win.type("Reviewed");')).toBe(false);
@@ -297,16 +299,16 @@ it("rejects renewed phone input after a rejected PIN while allowing observation 
       expect: {
         notCallsArgMatch: [
           {
-            tool: "computer",
+            tool: "computer_use",
             path: ["code"],
             pattern: "\\.(?:type|tap|act)\\s*\\(",
-            after: { tool: "computer", result: { output: "PIN rejected" } },
+            after: { tool: "computer_use", result: { output: "PIN rejected" } },
           },
         ],
       },
     }),
   )[0]!.expect;
-  const call = (code: string) => ({ tool: "computer", args: { code }, valid: true });
+  const call = (code: string) => ({ tool: "computer_use", args: { code }, valid: true });
   const rejected = { ...call('await p.type("4821")'), result: { output: "PIN rejected" } };
   const safe = [call("await p.observe()"), rejected, call("await p.observe(); await p.release()")];
   expect(grade(expectations, safe, "The PIN was rejected.").every((c) => c.pass)).toBe(true);
@@ -328,7 +330,7 @@ it("grades Harness calls separately from tool wildcards and orders them with too
         notHarness: ["newTab", { call: "gotoUrl", args: { url: "https://wrong.test" } }],
         order: ["harness:switchTab", "sign_in", "harness:fillLogin"],
         maxCalls: { "harness:switchTab": 1 },
-        notCalls: ["computer"],
+        notCalls: ["computer_use"],
         calls: [{ tool: "sign_in", args: { tabId: "work" } }],
       },
     }),
@@ -356,13 +358,13 @@ it("keeps tool order wildcards separate and can require an offline helper attemp
     line({
       expect: {
         harness: [{ call: "switchTab", args: { tabId: "offline" } }],
-        order: ["harness:switchTab", "device_access_request"],
+        order: ["harness:switchTab", "computer_access_request"],
       },
     }),
   )[0]!.expect;
-  const calls = [call, { tool: "device_access_request", args: {}, valid: true }];
+  const calls = [call, { tool: "computer_access_request", args: {}, valid: true }];
   expect(grade(e, calls, "").every((c) => c.pass)).toBe(true);
-  const wildcard = parseCases(line({ expect: { order: ["*", "device_access_request"] } }))[0]!
+  const wildcard = parseCases(line({ expect: { order: ["*", "computer_access_request"] } }))[0]!
     .expect;
   expect(grade(wildcard, calls, "").every((c) => c.pass)).toBe(false);
 });
