@@ -51,6 +51,9 @@ it("denies device permissions and external protocols for every browser session (
     "clipboard-read",
     "camera",
     "microphone",
+    // Storage access changes a cross-site privacy decision, so it stays
+    // denied until an origin-scoped consent exists.
+    "storage-access",
   ]) {
     expect(check({}, permission)).toBe(false);
     const answer = vi.fn();
@@ -62,7 +65,6 @@ it("denies device permissions and external protocols for every browser session (
     "sensors",
     "background-sync",
     "clipboard-sanitized-write",
-    "storage-access",
     "screen-wake-lock",
     "payment-handler",
   ]) {
@@ -212,6 +214,16 @@ it("presents one reduced identity and supplies the navigation client hints Elect
   const insecure = vi.fn();
   sendHeaders({ url: "http://site.test/", requestHeaders: {} }, insecure);
   expect(insecure).toHaveBeenCalledWith({});
+  // Loopback http is a secure context in Chrome, so it gets the hints too.
+  const loopback = vi.fn();
+  sendHeaders({ url: "http://localhost:3000/", requestHeaders: {} }, loopback);
+  expect(loopback).toHaveBeenCalledWith({
+    requestHeaders: {
+      "Sec-CH-UA": '"Not?A_Brand";v="24", "Chromium";v="152"',
+      "Sec-CH-UA-Mobile": "?0",
+      "Sec-CH-UA-Platform": '"macOS"',
+    },
+  });
 });
 
 it("immediately cancels every request at a closed restoration gate, including service workers", async () => {

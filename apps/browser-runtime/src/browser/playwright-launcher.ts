@@ -1,4 +1,9 @@
-import type { BrowserCdpBackend, CdpChannel, CdpParameters } from "@opensteer/browser-core";
+import {
+  reducedUserAgentMetadata,
+  type BrowserCdpBackend,
+  type CdpChannel,
+  type CdpParameters,
+} from "@opensteer/browser-core";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   BrowserRuntimeError,
@@ -25,6 +30,7 @@ import { nodeErrorCode } from "@opensteer/shared/nodeError";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { release as osRelease } from "node:os";
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -77,6 +83,14 @@ interface PlaywrightChromiumLauncherOptions {
   executablePath: string;
   headless: boolean;
   proxyUrl?: string;
+}
+
+/** macOS marketing version from the Darwin kernel major, as UA-CH reports it. */
+function darwinPlatformVersion(): string {
+  if (process.platform !== "darwin") return "";
+  const major = Number(osRelease().split(".")[0]);
+  if (!Number.isInteger(major) || major < 20) return "";
+  return `${major >= 25 ? major + 1 : major - 9}.0.0`;
 }
 
 /** Reduced Chrome UA at the shipped engine major; stock headless announces itself. */
@@ -338,8 +352,25 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       signal?.throwIfAborted();
       const browser = await chromium.connect(browserServer.wsEndpoint());
       const openDialogs = new Map<Page, Dialog>();
+      const guestUserAgent = reducedChromeUserAgent(browser.version());
+      // Playwright derives UA metadata from the UA string, which reports the
+      // frozen "10_15_7" platform version and x86 on Apple Silicon. Override
+      // each page with metadata built from the real system instead.
+      const guestMetadata = reducedUserAgentMetadata(
+        browser.version(),
+        process.platform === "win32"
+          ? "Windows"
+          : process.platform === "darwin"
+            ? "macOS"
+            : "Linux",
+        {
+          architecture: process.arch === "arm64" ? "arm" : process.arch === "x64" ? "x86" : "",
+          bitness: process.arch === "arm64" || process.arch === "x64" ? "64" : "",
+          platformVersion: darwinPlatformVersion(),
+        },
+      );
       const context = await browser.newContext({
-        userAgent: reducedChromeUserAgent(browser.version()),
+        userAgent: guestUserAgent,
         acceptDownloads: false,
         // The Runtime's ledger alone sizes pages. A Playwright viewport would
         // be a second emulator that Playwright re-applies on its own, such as
@@ -366,6 +397,26 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
       });
       context.on("page", (page) => {
         page.on("close", () => openDialogs.delete(page));
+        if (guestMetadata)
+          void context
+            .newCDPSession(page)
+            .then((cdp) =>
+              cdp.send("Emulation.setUserAgentOverride", {
+                userAgent: guestUserAgent,
+                userAgentMetadata: {
+                  brands: guestMetadata.brands.map((entry) => ({ ...entry })),
+                  fullVersionList: guestMetadata.fullVersionList.map((entry) => ({ ...entry })),
+                  fullVersion: guestMetadata.fullVersion,
+                  platform: guestMetadata.platform,
+                  platformVersion: guestMetadata.platformVersion,
+                  architecture: guestMetadata.architecture,
+                  model: guestMetadata.model,
+                  mobile: guestMetadata.mobile,
+                  bitness: guestMetadata.bitness,
+                },
+              }),
+            )
+            .catch(() => undefined);
       });
       const anchor = await context.newPage();
       if (context.pages().every((page) => page === anchor)) await context.newPage();

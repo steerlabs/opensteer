@@ -60,6 +60,7 @@ import {
   bindBrowserSessionRequestGate,
   browserAcceptLanguages,
   browserIdentity,
+  chromeUserAgent,
   updateBrowserPasskeyPolicy,
   type BrowserIdentity,
   type BrowserSessionRequestGate,
@@ -158,6 +159,11 @@ export class ElectronBrowserLauncher implements BrowserLauncher {
     if (!path.isAbsolute(options.pagePolicyPreloadPath)) {
       throw new TypeError("The browser page policy preload path must be absolute.");
     }
+    // Contents that never see a session user agent (popups' first documents,
+    // passkey pages, local-profile pages before their override lands) fall
+    // back to the app default, so the default itself must not name the app
+    // or Electron.
+    app.userAgentFallback = chromeUserAgent(app.userAgentFallback);
     this.#localProfileRoot = options.localProfileRoot;
     this.#onLocalProfileOpenTiming = options.onLocalProfileOpenTiming;
     this.#onLocalProfileDiagnostic = options.onLocalProfileDiagnostic;
@@ -855,6 +861,7 @@ class ElectronBrowserContext implements BrowserContext {
             : "",
         fullVersion: process.versions.chrome,
       }),
+      browserAcceptLanguages(app.getPreferredSystemLanguages()),
     );
     this.#pages.add(page);
     page.onClose(() => {
@@ -1073,6 +1080,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       downloading: () => false,
     }),
     identity?: BrowserIdentity,
+    acceptLanguage?: string,
   ) {
     this.view = view;
     this.initialLoad = initialLoad;
@@ -1103,11 +1111,14 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     // contents in Electron 44, so present the session identity per page. The
     // metadata must accompany the string: without it Chromium empties
     // navigator.userAgentData while the wire still carries client hints.
-    if (!authenticator && identity)
+    // Pages whose debugger the passkey bridge owns are only overridden when
+    // that bridge has already attached; the app fallback covers them.
+    if (identity && inspector.isAttached())
       void inspector
         .sendCommand("Emulation.setUserAgentOverride", {
           userAgent: identity.userAgent,
           ...(identity.userAgentMetadata ? { userAgentMetadata: identity.userAgentMetadata } : {}),
+          ...(acceptLanguage ? { acceptLanguage } : {}),
         })
         .catch(() => undefined);
     const pageEnabled = authenticator ? undefined : inspector.sendCommand("Page.enable");

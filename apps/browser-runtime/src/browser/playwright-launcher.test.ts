@@ -264,6 +264,28 @@ describe("Chromium child environment", () => {
           viewport: null,
         }),
       );
+      // Playwright derives metadata from the UA string (frozen platform
+      // version, wrong architecture); each page is overridden with metadata
+      // built from the real system.
+      const pageHandler = (context.on as ReturnType<typeof vi.fn>).mock.calls.find(
+        ([event]) => event === "page",
+      )?.[1] as ((page: unknown) => void) | undefined;
+      expect(pageHandler).toBeDefined();
+      pageHandler!({ on: vi.fn() });
+      await vi.waitFor(() =>
+        expect(tabSession.send).toHaveBeenCalledWith(
+          "Emulation.setUserAgentOverride",
+          expect.objectContaining({
+            userAgent: expect.stringContaining("Chrome/151.0.0.0"),
+            userAgentMetadata: expect.objectContaining({
+              brands: [
+                { brand: "Chromium", version: "151" },
+                { brand: "Not=A?Brand", version: "99" },
+              ],
+            }),
+          }),
+        ),
+      );
 
       await expect(
         launched.cdp.send("Target.createTarget", { url: "https://example.com/" }),

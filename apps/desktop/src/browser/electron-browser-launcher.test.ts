@@ -208,6 +208,8 @@ vi.mock("electron", () => {
       on: vi.fn(),
       whenReady: vi.fn(async () => undefined),
       getPreferredSystemLanguages: () => ["en-US"],
+      userAgentFallback:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Opensteer/1.0 Chrome/152.0.7977.169 Electron/44.10.2 Safari/537.36",
     },
     safeStorage: {
       isAsyncEncryptionAvailable: async () => true,
@@ -2269,9 +2271,17 @@ describe("native Electron profiles", () => {
       const parameters = overrides[0]![1] as {
         userAgent: string;
         userAgentMetadata: { brands: unknown; platform: string };
+        acceptLanguage: string;
       };
       expect(parameters.userAgent).toContain("Chrome/152.0.0.0");
       expect(parameters.userAgent).not.toContain("Electron/");
+      expect(parameters.acceptLanguage).toBe("en-US,en");
+      // Contents that never see the session identity use the app fallback,
+      // which the launcher reduces for the same reason.
+      const { app } = await import("electron");
+      expect(app.userAgentFallback).toBe(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+      );
       // Without metadata Chromium empties navigator.userAgentData while the
       // wire carries client hints; the two identities must agree.
       expect(parameters.userAgentMetadata).toEqual(
