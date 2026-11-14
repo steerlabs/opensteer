@@ -90,6 +90,33 @@ describe("standing owner team authority", () => {
       }
     }
   });
+  it("reads older messages by cursor and newer ones after a message the agent saw", async () => {
+    const read = vi.fn<TeamToolPort["read"]>().mockResolvedValue({
+      source: { ...origin, messageId: TeamMessageIdSchema.parse("5") },
+      page: { messages: [], hasMore: false },
+    } as unknown as Awaited<ReturnType<TeamToolPort["read"]>>);
+    const handlers = teamToolHandlers({
+      port: { read } as unknown as TeamToolPort,
+      personalContext: async () => true,
+    });
+    for (const input of [
+      { channelId: origin.channelId, cursor: "4" },
+      { channelId: origin.channelId, afterMessageId: TeamMessageIdSchema.parse("4") },
+    ])
+      await handlers.opensteer_team_read({ caller: caller(), input, operationKey: "read" });
+    expect(read.mock.calls.map(([, query]) => query)).toEqual([
+      { channelId: origin.channelId, before: "4" },
+      { channelId: origin.channelId, after: "4" },
+    ]);
+    expect(
+      opensteer_team_read.input.safeParse({
+        channelId: origin.channelId,
+        cursor: "4",
+        afterMessageId: "4",
+      }).success,
+    ).toBe(false);
+  });
+
   it("denies shared conversations and every non-Run caller", async () => {
     const port = { read: vi.fn() } as unknown as TeamToolPort;
     const handlers = teamToolHandlers({ port, personalContext: async () => false });

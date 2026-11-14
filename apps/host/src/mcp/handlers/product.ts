@@ -1359,9 +1359,7 @@ export class ProductToolHandlers {
           this.#isEnvironmentConnected(environment.id) &&
           !this.#canRunHarness(environment.id, harness.driverKind)
         ) {
-          throw badRequest(
-            `Selected computer cannot run ${harness.driverKind} AI accounts`,
-          );
+          throw badRequest(`Selected computer cannot run ${harness.driverKind} AI accounts`);
         }
         const delegated = await this.#commands.delegateAdmittedThread({
           admission: mutationAdmission(

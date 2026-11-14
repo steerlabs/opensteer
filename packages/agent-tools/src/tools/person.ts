@@ -13,7 +13,7 @@ export const person_notify = defineAgentTool({
   name: "person_notify",
   title: "Update the person",
   description:
-    "Send worthwhile news to this Run’s requester while work continues; it may notify their devices. Refused on a delegation: ask the delegating task to tell the person. On a background wake, briefly say what happened in your final reply; send real finds to the asking task with opensteer_task_send queue, or by email through a connected integration. Put the completed answer in your final reply without a duplicate update.",
+    "Send worthwhile news to this Run’s requester while work continues; it may notify their devices. Refused on a delegation: ask the delegating task to tell the person. On a background wake, use it only for news worth interrupting the person for; send finds a task asked for to that task with opensteer_task_send queue, and otherwise just say briefly what happened in your final reply. Put the completed answer in your final reply without a duplicate update.",
   input: z.strictObject({ message: PersonMessageSchema }),
   output: PersonMessageOutputSchema,
   access: "write",

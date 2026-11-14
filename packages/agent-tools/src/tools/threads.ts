@@ -69,7 +69,9 @@ const readInput = z
       .nonnegative()
       .optional()
       .describe("nextTextOffset of a cut-off item, with its itemId."),
-    cursor: CursorSchema.optional().describe("nextCursor from the previous page; keep view and query."),
+    cursor: CursorSchema.optional().describe(
+      "nextCursor from the previous page; keep view and query.",
+    ),
     query: z.string().trim().min(1).max(256).optional().describe("Search message text."),
     aroundMessageId: MessageIdSchema.optional().describe(
       "Messages around this one; excludes query and cursor.",
@@ -92,7 +94,7 @@ export const opensteer_task_list = defineAgentTool({
   name: "opensteer_task_list",
   title: "List tasks",
   description:
-    "List reachable tasks, newest updated first, up to 50 per page; page with cursor. parentTaskId lists the tasks that task delegated, and each row carries its delegationId and taskStatus.",
+    "List reachable tasks, newest updated first, up to 50 per page; page with cursor. parentTaskId lists the tasks that task delegated (for this task's own, take its ID from opensteer_task_read), and each row carries its delegationId and taskStatus.",
   input: z.strictObject({
     cursor: CursorSchema.optional(),
     limit: z.number().int().min(1).max(50).default(25),

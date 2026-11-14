@@ -43,13 +43,14 @@ export function teamToolHandlers(options: {
           call.signal,
         );
       case "opensteer_team_read": {
-        const { threadId, cursor, ...input } =
+        const { threadId, cursor, afterMessageId, ...input } =
           call.input as ToolCall<"opensteer_team_read">["input"];
         const result = await options.port.read(
           run,
           {
             ...input,
             ...(threadId ? { threadRootId: threadId } : {}),
+            ...(afterMessageId ? { after: afterMessageId } : {}),
             ...(cursor
               ? input.channelId
                 ? { before: importMessageId(cursor) }

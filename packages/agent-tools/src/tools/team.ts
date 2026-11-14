@@ -24,15 +24,18 @@ export const opensteer_team_read = defineAgentTool({
   name: "opensteer_team_read",
   title: "Read team context",
   description:
-    "List linked teams with {}, list readable channels with teamId, or read messages with channelId. cursor reads older messages or the next channel page. People-only content is unavailable. Use opensteer_team_file_download for files.",
+    "List linked teams with {}, list readable channels with teamId, or read messages with channelId. cursor reads older messages or the next channel page; afterMessageId reads messages newer than one you saw. People-only content is unavailable. Use opensteer_team_file_download for files.",
   input: z
     .strictObject({
       teamId: DeploymentIdSchema.optional(),
       channelId: TeamChannelIdSchema.optional(),
       threadId: TeamMessageIdSchema.optional(),
       cursor: CursorSchema.optional(),
+      afterMessageId: TeamMessageIdSchema.optional(),
     })
-    .refine((i) => !i.threadId || !!i.channelId, "threadId requires channelId"),
+    .refine((i) => !i.threadId || !!i.channelId, "threadId requires channelId")
+    .refine((i) => !i.afterMessageId || !!i.channelId, "afterMessageId requires channelId")
+    .refine((i) => !(i.cursor && i.afterMessageId), "Choose cursor or afterMessageId"),
   output: z
     .union([
       z.strictObject({
