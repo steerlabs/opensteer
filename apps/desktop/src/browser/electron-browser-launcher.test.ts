@@ -182,7 +182,10 @@ vi.mock("electron", () => {
     clearCache: vi.fn(async () => undefined),
     clearStorageData: vi.fn(async () => undefined),
     getPreloadScripts: vi.fn(() => []),
-    getUserAgent: vi.fn(() => "Mozilla/5.0 Chrome/1 Safari/1"),
+    getUserAgent: vi.fn(
+      () =>
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.7977.169 Electron/44.10.2 Safari/537.36",
+    ),
     on: vi.fn(),
     registerPreloadScript: vi.fn(),
     setPermissionCheckHandler: vi.fn(),
@@ -191,6 +194,7 @@ vi.mock("electron", () => {
     unregisterPreloadScript: vi.fn(),
     webRequest: {
       onBeforeRequest: vi.fn(),
+      onBeforeSendHeaders: vi.fn(),
       onHeadersReceived: vi.fn(),
       onCompleted: vi.fn(),
       onErrorOccurred: vi.fn(),
@@ -2262,9 +2266,24 @@ describe("native Electron profiles", () => {
           ([method]) => method === "Emulation.setUserAgentOverride",
         );
       expect(overrides).toHaveLength(1);
-      const parameters = overrides[0]![1] as { userAgent: string };
-      expect(parameters.userAgent).toContain("Chrome/");
+      const parameters = overrides[0]![1] as {
+        userAgent: string;
+        userAgentMetadata: { brands: unknown; platform: string };
+      };
+      expect(parameters.userAgent).toContain("Chrome/152.0.0.0");
       expect(parameters.userAgent).not.toContain("Electron/");
+      // Without metadata Chromium empties navigator.userAgentData while the
+      // wire carries client hints; the two identities must agree.
+      expect(parameters.userAgentMetadata).toEqual(
+        expect.objectContaining({
+          brands: [
+            { brand: "Not?A_Brand", version: "24" },
+            { brand: "Chromium", version: "152" },
+          ],
+          platform: "macOS",
+          mobile: false,
+        }),
+      );
     } finally {
       await browser?.close();
       f.launcher.close();

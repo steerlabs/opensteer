@@ -61,6 +61,7 @@ import {
   browserAcceptLanguages,
   browserIdentity,
   updateBrowserPasskeyPolicy,
+  type BrowserIdentity,
   type BrowserSessionRequestGate,
 } from "./browser-session-policy.js";
 import {
@@ -845,7 +846,15 @@ class ElectronBrowserContext implements BrowserContext {
       this.#providerConfig,
       timing,
       this.#options.protection,
-      browserIdentity(this.#profileSession.getUserAgent()).userAgent,
+      browserIdentity(this.#profileSession.getUserAgent(), {
+        architecture: process.arch === "arm64" ? "arm" : process.arch === "x64" ? "x86" : "",
+        bitness: process.arch === "arm64" || process.arch === "x64" ? "64" : "",
+        platformVersion:
+          process.platform === "darwin" && typeof process.getSystemVersion === "function"
+            ? process.getSystemVersion()
+            : "",
+        fullVersion: process.versions.chrome,
+      }),
     );
     this.#pages.add(page);
     page.onClose(() => {
@@ -1063,7 +1072,7 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
       uploading: () => false,
       downloading: () => false,
     }),
-    userAgent?: string,
+    identity?: BrowserIdentity,
   ) {
     this.view = view;
     this.initialLoad = initialLoad;
@@ -1091,10 +1100,15 @@ class ElectronBrowserPage implements BrowserPage, ElectronPagePresentation {
     // Runtime initialization, and keep an opening until the ledger subscribes.
     if (!authenticator && !inspector.isAttached()) inspector.attach("1.3");
     // A fromPath (local profile) session's user agent never reaches its
-    // contents in Electron 44, so present the session identity per page.
-    if (!authenticator && userAgent)
+    // contents in Electron 44, so present the session identity per page. The
+    // metadata must accompany the string: without it Chromium empties
+    // navigator.userAgentData while the wire still carries client hints.
+    if (!authenticator && identity)
       void inspector
-        .sendCommand("Emulation.setUserAgentOverride", { userAgent })
+        .sendCommand("Emulation.setUserAgentOverride", {
+          userAgent: identity.userAgent,
+          ...(identity.userAgentMetadata ? { userAgentMetadata: identity.userAgentMetadata } : {}),
+        })
         .catch(() => undefined);
     const pageEnabled = authenticator ? undefined : inspector.sendCommand("Page.enable");
     // The passkey policy has two hooks, each where its timing holds. Electron

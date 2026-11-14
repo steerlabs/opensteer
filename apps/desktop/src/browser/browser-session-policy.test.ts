@@ -140,6 +140,7 @@ it("presents one reduced identity and supplies the navigation client hints Elect
   const { vi } = await import("vitest");
   const identity = browserIdentity(
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Opensteer/1.0 Chrome/152.0.7977.169 Electron/44.10.2 Safari/537.36",
+    { architecture: "arm", bitness: "64", platformVersion: "26.6.2" },
   );
   expect(identity.userAgent).toBe(
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
@@ -147,6 +148,25 @@ it("presents one reduced identity and supplies the navigation client hints Elect
   expect(identity.clientHints).toEqual({
     brands: '"Not?A_Brand";v="24", "Chromium";v="152"',
     platform: "macOS",
+  });
+  // The JS identity (CDP metadata) and the wire identity (client hints) come
+  // from the same source, so the brands a page reads are the brands it sends.
+  expect(identity.userAgentMetadata).toEqual({
+    brands: [
+      { brand: "Not?A_Brand", version: "24" },
+      { brand: "Chromium", version: "152" },
+    ],
+    fullVersionList: [
+      { brand: "Not?A_Brand", version: "24.0.0.0" },
+      { brand: "Chromium", version: "152.0.7977.169" },
+    ],
+    fullVersion: "152.0.7977.169",
+    platform: "macOS",
+    platformVersion: "26.6.2",
+    architecture: "arm",
+    model: "",
+    mobile: false,
+    bitness: "64",
   });
   expect(browserAcceptLanguages(["en-US", "fr-FR", "en"])).toBe("en-US,en,fr-FR,fr");
   const session = {

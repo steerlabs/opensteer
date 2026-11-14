@@ -34,27 +34,74 @@ const greaseByMajor: Readonly<Record<string, { brand: string; version: string }>
   "152": { brand: "Not?A_Brand", version: "24" },
 };
 
+export interface BrowserUserAgentMetadata {
+  readonly brands: readonly { readonly brand: string; readonly version: string }[];
+  readonly fullVersionList: readonly { readonly brand: string; readonly version: string }[];
+  readonly fullVersion: string;
+  readonly platform: string;
+  readonly platformVersion: string;
+  readonly architecture: string;
+  readonly model: string;
+  readonly mobile: boolean;
+  readonly bitness: string;
+}
+
 export interface BrowserIdentity {
   readonly userAgent: string;
   readonly clientHints: { readonly brands: string; readonly platform: string } | undefined;
+  readonly userAgentMetadata: BrowserUserAgentMetadata | undefined;
 }
 
 /** The one identity every browser session presents, derived from the engine. */
-export function browserIdentity(sessionUserAgent: string): BrowserIdentity {
+export function browserIdentity(
+  sessionUserAgent: string,
+  system?: {
+    architecture: string;
+    bitness: string;
+    platformVersion: string;
+    fullVersion?: string;
+  },
+): BrowserIdentity {
   const userAgent = chromeUserAgent(sessionUserAgent);
   const major = /Chrome\/(\d+)\./u.exec(userAgent)?.[1];
   const grease = major ? greaseByMajor[major] : undefined;
-  if (!major || !grease) return { userAgent, clientHints: undefined };
+  if (!major || !grease) return { userAgent, clientHints: undefined, userAgentMetadata: undefined };
   const platform = userAgent.includes("Windows NT")
     ? "Windows"
     : userAgent.includes("Macintosh")
       ? "macOS"
       : "Linux";
+  // The session user agent is already reduced by the time pages are created,
+  // so the caller supplies the engine's real full version when it has one.
+  const fullVersion =
+    system?.fullVersion ??
+    /Chrome\/(\d+\.\d+\.\d+\.\d+)/u.exec(sessionUserAgent)?.[1] ??
+    `${major}.0.0.0`;
   return {
     userAgent,
     clientHints: {
       brands: `"${grease.brand}";v="${grease.version}", "Chromium";v="${major}"`,
       platform,
+    },
+    // A CDP user-agent override without metadata empties navigator.userAgentData,
+    // so the JS identity must travel with the string, from the same source as
+    // the wire hints above.
+    userAgentMetadata: {
+      brands: [
+        { brand: grease.brand, version: grease.version },
+        { brand: "Chromium", version: major },
+      ],
+      fullVersionList: [
+        { brand: grease.brand, version: `${grease.version}.0.0.0` },
+        { brand: "Chromium", version: fullVersion },
+      ],
+      fullVersion,
+      platform,
+      platformVersion: system?.platformVersion ?? "",
+      architecture: system?.architecture ?? "",
+      model: "",
+      mobile: false,
+      bitness: system?.bitness ?? "",
     },
   };
 }
