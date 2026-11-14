@@ -146,7 +146,9 @@ describe("OpenCode access modes", () => {
   });
 
   it("translates full-access into an allow-everything table", () => {
-    const permission = opencodeAccessModeConfiguration("full-access", ["opensteer_opensteer_task_read"]);
+    const permission = opencodeAccessModeConfiguration("full-access", [
+      "opensteer_opensteer_task_read",
+    ]);
     const { task, ...rest } = permission;
     expect(task).toBe("allow");
     for (const action of Object.values(rest)) expect(action).toBe("allow");
@@ -155,7 +157,10 @@ describe("OpenCode access modes", () => {
   });
 
   it("approves Opensteer's own tools without a prompt in every mode", () => {
-    const openSteerTools = ["opensteer_opensteer_task_read", "opensteer_integrations_integration_call"];
+    const openSteerTools = [
+      "opensteer_opensteer_task_read",
+      "opensteer_integrations_integration_call",
+    ];
     for (const mode of ["approval-required", "auto-accept-edits", "full-access"] as const) {
       const permission = opencodeAccessModeConfiguration(mode, openSteerTools);
       for (const tool of openSteerTools) expect(permission[tool]).toBe("allow");

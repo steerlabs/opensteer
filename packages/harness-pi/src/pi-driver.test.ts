@@ -921,7 +921,10 @@ describe("Pi sessions", () => {
       data: { tool: { name: "opensteer_task_read", namespace: "opensteer" } },
     });
     expect(observer.events.find((event) => event.type === "tool.completed")).toMatchObject({
-      data: { isError: false, output: expect.objectContaining({ text: "served opensteer_task_read" }) },
+      data: {
+        isError: false,
+        output: expect.objectContaining({ text: "served opensteer_task_read" }),
+      },
     });
     await session.stop();
     await fixture.adapter.close();
@@ -950,7 +953,10 @@ describe("Pi sessions", () => {
   it("reads Opensteer's tools from a real MCP server over Streamable HTTP", async () => {
     const directory = await temporaryDirectory();
     const token = "os_secret_test_token";
-    const url = await startFakeMcpServer(directory, token, ["opensteer_task_read", "workspace_list"]);
+    const url = await startFakeMcpServer(directory, token, [
+      "opensteer_task_read",
+      "workspace_list",
+    ]);
     const connectOptions = { signal: new AbortController().signal, timeoutMs: 10_000 };
     expect(piToolCallTimeoutMs).toBe(heldToolCallTimeoutMs);
     const connection = await connectPiMcpServer(
