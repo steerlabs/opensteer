@@ -1,4 +1,4 @@
-import { retryDatabaseTransaction } from "./connection.js";
+import { retryDatabaseTransaction, withDatabaseTransaction } from "./connection.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { OpensteerError, browserTabOrderMaxTabs, type UserId } from "@opensteer/core";
 import {
@@ -313,7 +313,7 @@ export class PersonalTabStore {
     };
     return database
       ? read(database)
-      : this.database.transaction().setIsolationLevel("repeatable read").execute(read);
+      : withDatabaseTransaction(this.database, read, "repeatable read");
   }
   async groupIds(ownerId: UserId): Promise<BrowserSessionId[]> {
     const rows = await visiblePersonalTabLineages(this.database, ownerId)

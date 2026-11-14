@@ -9,6 +9,7 @@ import {
   beginAssignmentResultWait,
   endAssignmentResultWait,
   withoutDatabaseOperationSignal,
+  withDatabaseOperationSignal,
   readAgentRequest,
   requestRevision,
   AgentRequestResponderSchema,
@@ -1714,49 +1715,50 @@ export class ProductToolHandlers {
           });
           return detach;
         },
-        read: async () => {
-          await call.checkLive?.();
-          const thread = await this.#store.getThreadForOwner(threadId, caller.userId);
-          if (!thread) throw forbidden("Thread is unavailable");
+        read: ({ signal, expiresAt }) =>
+          withDatabaseOperationSignal(signal, expiresAt, async () => {
+            await call.checkLive?.();
+            const thread = await this.#store.getThreadForOwner(threadId, caller.userId);
+            if (!thread) throw forbidden("Thread is unavailable");
 
-          await this.#assertWaitTarget(caller, threadId);
-          await withDatabaseTransaction(this.#store.database, (tx) =>
-            assertThreadCaller(tx, threadCallerAuthority(caller)),
-          );
-          const snapshot = await readThreadWaitSnapshot(this.#store.database, {
-            threadId: thread.id,
-            userId: caller.userId,
-            ...(!assignment && runId ? { runId } : {}),
-            ...(assignment ? { assignmentId: assignment.id } : {}),
-            ...(input.afterMessageId ? { afterMessageId: input.afterMessageId } : {}),
-            ...(!assignment && afterSequence ? { afterSequence } : {}),
-          });
-          runId ??= snapshot.run?.id;
-          afterSequence ??= snapshot.lastSequence ?? zeroSequence;
-          const task = assignment
-            ? await this.#store.getAssignmentForOwner({
-                assignmentId: assignment.id,
-                ownerId: caller.userId,
-              })
-            : null;
-          if (assignment && !task) throw forbidden("Assignment is unavailable");
-          const connection =
-            caller.kind === "connection"
-              ? await this.#store.database
-                  .selectFrom("agentConnections")
-                  .select("expiresAt")
-                  .where("id", "=", caller.connectionId)
-                  .executeTakeFirst()
-              : undefined;
-          await call.checkLive?.();
-          return {
-            ...snapshot,
-            ...(task ? { settled: task.status !== "open", messages: [] } : {}),
-            ...(connection ? { authorityExpiresAt: connection.expiresAt.getTime() } : {}),
-            connected: this.#isEnvironmentConnected(thread.environmentId),
-            messages: assignment ? [] : await this.#readableMessages(caller, snapshot.messages),
-          };
-        },
+            await this.#assertWaitTarget(caller, threadId);
+            await withDatabaseTransaction(this.#store.database, (tx) =>
+              assertThreadCaller(tx, threadCallerAuthority(caller)),
+            );
+            const snapshot = await readThreadWaitSnapshot(this.#store.database, {
+              threadId: thread.id,
+              userId: caller.userId,
+              ...(!assignment && runId ? { runId } : {}),
+              ...(assignment ? { assignmentId: assignment.id } : {}),
+              ...(input.afterMessageId ? { afterMessageId: input.afterMessageId } : {}),
+              ...(!assignment && afterSequence ? { afterSequence } : {}),
+            });
+            runId ??= snapshot.run?.id;
+            afterSequence ??= snapshot.lastSequence ?? zeroSequence;
+            const task = assignment
+              ? await this.#store.getAssignmentForOwner({
+                  assignmentId: assignment.id,
+                  ownerId: caller.userId,
+                })
+              : null;
+            if (assignment && !task) throw forbidden("Assignment is unavailable");
+            const connection =
+              caller.kind === "connection"
+                ? await this.#store.database
+                    .selectFrom("agentConnections")
+                    .select("expiresAt")
+                    .where("id", "=", caller.connectionId)
+                    .executeTakeFirst()
+                : undefined;
+            await call.checkLive?.();
+            return {
+              ...snapshot,
+              ...(task ? { settled: task.status !== "open", messages: [] } : {}),
+              ...(connection ? { authorityExpiresAt: connection.expiresAt.getTime() } : {}),
+              connected: this.#isEnvironmentConnected(thread.environmentId),
+              messages: assignment ? [] : await this.#readableMessages(caller, snapshot.messages),
+            };
+          }),
       });
       const finishWait =
         caller.kind === "run" ? this.#questionNotices?.wait(caller.thread.id, threadId) : undefined;

@@ -6,14 +6,25 @@ interface Operation {
   readonly transaction: boolean;
 }
 const operation = new AsyncLocalStorage<Operation>();
-/** A transaction has a server-side deadline; cancelling its waiter can race rollback with pg_cancel_backend. */
 export function withDatabaseOperationSignal<T>(
   signal: AbortSignal,
   expiresAt: number,
   action: () => T,
 ): T {
   signal.throwIfAborted();
-  return operation.run({ signal, expiresAt, transaction: false }, action);
+  const remaining = Math.ceil(expiresAt - Date.now());
+  const deadline =
+    remaining > 0
+      ? AbortSignal.timeout(remaining)
+      : AbortSignal.abort(new DOMException("Database operation deadline expired", "TimeoutError"));
+  return operation.run(
+    {
+      signal: AbortSignal.any([signal, deadline]),
+      expiresAt,
+      transaction: false,
+    },
+    action,
+  );
 }
 export function withoutDatabaseOperationSignal<T>(action: () => T): T {
   return operation.exit(action);
@@ -28,6 +39,7 @@ export function inDatabaseOperationTransaction<T>(action: () => T): T {
 export function databaseOperationOptions(): AbortableQueryOptions {
   const current = operation.getStore();
   current?.signal.throwIfAborted();
+  // A transaction's server-side deadline must cancel its lock wait before rollback starts.
   return current && !current.transaction
     ? { signal: current.signal, inflightQueryAbortStrategy: "cancel query" }
     : {};

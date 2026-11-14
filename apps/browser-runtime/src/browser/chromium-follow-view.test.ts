@@ -1253,39 +1253,72 @@ describe("real Chromium pages follow the person's view", () => {
   }, 60_000);
 
   it("ignores a size the view sends for a tab that just closed", async () => {
-    const session = await startFollowSession();
+    const step = <T>(name: string, operation: Promise<T>) =>
+      withTimeout(operation, 5_000, {
+        timeoutError: () => new Error(`Closing-tab size scenario stalled at ${name}`),
+      });
+    const session = await step("session startup", startFollowSession());
     const root = session.rootSurfaceId;
-    await session.controller.handle({ type: "stream.subscribe" });
+    await step("stream subscription", session.controller.handle({ type: "stream.subscribe" }));
 
     // The view keeps sending its size for a tab it just closed.
-    await session.controller.handle({
-      type: "surface.open",
-      url: `${session.origin}/plain`,
-    });
-    const closing = session.ledger.active();
-    if (!closing || closing.surface.id === root) throw new Error("Missing the tab to close");
-    await Promise.all([
-      session.follow(closing.surface.id, { width: 900, height: 650 }),
+    await step(
+      "person tab open",
       session.controller.handle({
-        surfaceId: closing.surface.id,
-        type: "surface.close",
-      }),
-      session.follow(closing.surface.id, { width: 880, height: 640 }),
-      session.follow(closing.surface.id, { width: 860, height: 630 }),
-    ]);
-    await session.follow(closing.surface.id, { width: 840, height: 620 });
-    const agentClosed = asRecord(
-      await session.agent("Target.createTarget", {
+        type: "surface.open",
         url: `${session.origin}/plain`,
       }),
     );
+    const closing = session.ledger.active();
+    if (!closing || closing.surface.id === root) throw new Error("Missing the tab to close");
+    await Promise.all([
+      step("first size", session.follow(closing.surface.id, { width: 900, height: 650 })),
+      step(
+        "person tab close",
+        session.controller.handle({
+          surfaceId: closing.surface.id,
+          type: "surface.close",
+        }),
+      ),
+      step("second size", session.follow(closing.surface.id, { width: 880, height: 640 })),
+      step("third size", session.follow(closing.surface.id, { width: 860, height: 630 })),
+    ]);
+    await step(
+      "closed person tab size",
+      session.follow(closing.surface.id, { width: 840, height: 620 }),
+    );
+    const agentClosed = asRecord(
+      await step(
+        "agent tab open",
+        session.agent("Target.createTarget", {
+          url: `${session.origin}/plain`,
+        }),
+      ),
+    );
     const agentClosedSurface = session.ledger.surfaceIdForTarget(String(agentClosed.targetId));
     if (!agentClosedSurface) throw new Error("Missing the agent's tab");
-    await session.agent("Target.closeTarget", {
-      targetId: agentClosed.targetId,
-    });
-    await session.follow(agentClosedSurface, { width: 820, height: 610 });
-    await delay(200, browserTestSignal());
+    await step(
+      "agent tab close",
+      session.agent("Target.closeTarget", {
+        targetId: agentClosed.targetId,
+      }),
+    );
+    await step(
+      "closed agent tab size",
+      session.follow(agentClosedSurface, { width: 820, height: 610 }),
+    );
+    await step(
+      "closed tab removal",
+      waitForLedgerState(
+        session.ledger,
+        () =>
+          !session.ledger
+            .snapshot()
+            .some(
+              (surface) => surface.id === closing.surface.id || surface.id === agentClosedSurface,
+            ),
+      ),
+    );
     expect(session.errors()).toEqual([]);
     expect(session.ledger.snapshot().map((surface) => surface.id)).not.toContain(
       closing.surface.id,
