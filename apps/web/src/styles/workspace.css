@@ -573,14 +573,27 @@
   flex: 1 1 0;
 }
 
+/* Tabs is a sheet risen from the footer's line: lit and rounded along its
+   top, open at its foot. */
 .side-section--tabs {
+  --ground: var(--fill-sheet);
   flex: 0 1 var(--side-tabs-height, calc(var(--side-head) + 6 * var(--side-pitch)));
   max-height: max-content;
+  margin: var(--space-4) var(--space-6) 0;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--rim-sheet);
+  border-bottom: 0;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background:
+    linear-gradient(var(--ground) 0 0) padding-box,
+    var(--light-sheet),
+    var(--ground);
+  box-shadow: var(--edge-sheet);
 }
 
-/* The line between the pane above and Tabs takes no height of its own: its
-   grip reaches a little over the pane above and into Tabs' heading, and it
-   lights only where it can move. */
+/* The line along Tabs' top takes no height of its own: its grip reaches a
+   little over the pane above and into Tabs' heading, and it lights only
+   where it can move. */
 .side-split {
   position: relative;
   z-index: 1;
@@ -593,30 +606,26 @@
 
 .side-split::before {
   position: absolute;
-  inset: -3px 0 -7px;
+  inset: -3px 0 calc(-7px - var(--space-4));
   content: "";
-}
-
-.side-split::after {
-  position: absolute;
-  inset: -1px var(--space-6) auto;
-  height: 1px;
-  background: transparent;
-  content: "";
-  transition: background-color var(--duration-fast) var(--ease-out);
 }
 
 .side-split[data-fixed] {
   cursor: default;
 }
 
-.side-split:not([data-fixed]):hover::after,
-.side-split[data-resizing]::after {
-  background-color: color-mix(in srgb, var(--ember) 36%, transparent);
+/* Where the line can move, it lights Tabs' top edge. */
+.side-split + .side-section--tabs {
+  transition: border-top-color var(--duration-fast) var(--ease-out);
 }
 
-.side-split:not([data-fixed]):focus-visible::after {
-  background-color: color-mix(in srgb, var(--ember) 58%, transparent);
+.side-split:not([data-fixed]):hover + .side-section--tabs,
+.side-split[data-resizing] + .side-section--tabs {
+  border-top-color: color-mix(in srgb, var(--ember) 36%, transparent);
+}
+
+.side-split:not([data-fixed]):focus-visible + .side-section--tabs {
+  border-top-color: color-mix(in srgb, var(--ember) 58%, transparent);
 }
 
 .is-resizing-split,
@@ -832,7 +841,7 @@ button.side-needs:hover {
   scroll-snap-type: y mandatory;
 }
 
-/* Tabs' list runs to the section's foot: a row in part under it says there is
+/* Tabs' list runs to its sheet's foot: a row in part under it says there is
    more. */
 .side-section--tabs .side-list {
   height: 100%;
