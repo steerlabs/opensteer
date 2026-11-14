@@ -87,7 +87,7 @@ type AgentCopyInput = {
   readonly threadId: ThreadId;
   readonly deploymentId: DeploymentId;
   readonly callId: string;
-  readonly sessionId: string;
+  readonly tabId: import("@opensteer/protocol").BrowserSurfaceId;
   readonly site: string;
   readonly reason: string;
 };
@@ -588,7 +588,13 @@ export class BrowserSourceService {
   async agentCopyChromeCookies(input: AgentCopyInput): Promise<ChromeCookiesResult> {
     const site = parseSignInSite(input.site);
     if (await this.#refusesSite(site)) return unavailable(site, "not-allowed");
-    const sessionId = parseSignInSessionId(input.sessionId);
+    const target = await this.#browser.signInTarget({
+      agentBindingId: `run:${input.runId}`,
+      ownerId: input.ownerId,
+      tabId: input.tabId,
+    });
+    if (!target?.live) return unavailable(site, "session-closed");
+    const sessionId = target.sessionId;
     const invocationId = invocationUuid(`agent:${input.runId}:${input.callId}`);
     const receipt = await this.#store.getSignIn({ ownerId: input.ownerId, invocationId });
     if (receipt) return copiedResult(assertReceiptScope(receipt, sessionId, site));
@@ -596,13 +602,10 @@ export class BrowserSourceService {
       callId: input.callId,
       originatingRunId: input.runId,
     });
-    if (prior) return this.#requestResult(prior, sessionId, site);
-    const target = await this.#browser.signInTarget({
-      agentBindingId: `run:${input.runId}`,
-      ownerId: input.ownerId,
-      sessionId,
-    });
-    if (!target?.live) return unavailable(site, "session-closed");
+    if (prior) {
+      this.#assertRequestTab(prior, input.tabId);
+      return this.#requestResult(prior, sessionId, site);
+    }
     if (!target.stateImport) return unavailable(site, stateImportRefusal(target));
     const grant = await this.#store.getGrant({
       ownerId: input.ownerId,
@@ -619,7 +622,10 @@ export class BrowserSourceService {
       ownerId: input.ownerId,
       site,
     });
-    if (pending) return this.#completePending(pending, grant, sources, sessionId, site);
+    if (pending) {
+      this.#assertRequestTab(pending, input.tabId);
+      return this.#completePending(pending, grant, sources, sessionId, site);
+    }
     const ask = () => this.#openRequest({ ...input, site, target });
     if (grant) {
       const chosen = await this.#standingSource(grant, sources, site);
@@ -947,7 +953,11 @@ export class BrowserSourceService {
     if (request.payload.kind !== "browser.sign-in") throw new Error("Not a sign-in Request");
     const { site } = request.payload;
     const sessionId = parseSignInSessionId(request.payload.sessionId);
-    const target = await this.#browser.signInTarget({ ownerId: request.requestedBy, sessionId });
+    const target = await this.#browser.signInTarget({
+      ownerId: request.requestedBy,
+      sessionId,
+      ...(request.payload.tabId ? { tabId: request.payload.tabId } : {}),
+    });
     const closed = async (): Promise<RequestDelivery> => {
       const settled = await this.#requests.fulfilBrowserSignInRequest({
         ownerId: request.requestedBy,
@@ -989,6 +999,13 @@ export class BrowserSourceService {
     readonly site: string;
     readonly target: BrowserSignInTarget;
   }): Promise<ChromeCookiesResult> {
+    const current = await this.#browser.signInTarget({
+      ownerId: input.ownerId,
+      agentBindingId: `run:${input.runId}`,
+      sessionId: input.target.sessionId,
+      ...(input.target.tabId ? { tabId: input.target.tabId } : {}),
+    });
+    if (!current?.live) return unavailable(input.site, "session-closed");
     const created = await this.#requests
       .create({
         callId: input.callId,
@@ -1030,6 +1047,14 @@ export class BrowserSourceService {
     );
   }
 
+  #assertRequestTab(request: Request, tabId?: import("@opensteer/protocol").BrowserSurfaceId) {
+    if (tabId && request.payload.kind === "browser.sign-in" && request.payload.tabId !== tabId)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This sign-in Request belongs to a different tab. Return to that tab to continue.",
+      });
+  }
+
   #requestResult(
     request: Request,
     sessionId: BrowserSessionId,
@@ -1043,7 +1068,7 @@ export class BrowserSourceService {
     ) {
       throw new OpensteerError({
         code: "conflict",
-        message: "This call already asked for a different site or session.",
+        message: "This call already asked for a different site or tab.",
       });
     }
     return chromeCookiesResult(request, replayed);
@@ -1146,6 +1171,8 @@ export class BrowserSourceService {
     const current = await this.#browser.signInTarget({
       ownerId: input.ownerId,
       sessionId: target.sessionId,
+      ...(target.tabId ? { tabId: target.tabId } : {}),
+      ...(target.agentBindingId ? { agentBindingId: target.agentBindingId } : {}),
     });
     if (!current?.live || current.deploymentId !== target.deploymentId) {
       return problem("session-closed", site, null);
@@ -1172,6 +1199,13 @@ export class BrowserSourceService {
         message: "Personal deployment is unavailable",
       });
     }
+    const admitted = await this.#browser.signInTarget({
+      ownerId: input.ownerId,
+      sessionId: target.sessionId,
+      ...(target.tabId ? { tabId: target.tabId } : {}),
+      ...(target.agentBindingId ? { agentBindingId: target.agentBindingId } : {}),
+    });
+    if (!admitted?.live) return problem("session-closed", site, null);
     const applied = await this.#browser.applySiteCookies(target.sessionId, site, cookies);
     if (applied !== "applied") return problem(applied, site, null);
     const committed = await this.#store.commitSignIn({
@@ -1481,7 +1515,7 @@ function assertReceiptScope(
   if (receipt.sessionId !== sessionId || receipt.site !== site) {
     throw new OpensteerError({
       code: "conflict",
-      message: "This call already signed in a different site or session.",
+      message: "This call already signed in a different site or tab.",
     });
   }
   return receipt;

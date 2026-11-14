@@ -54,11 +54,8 @@ describe("Runner Agent Skills", () => {
     );
     expect(references).toEqual(
       expect.arrayContaining([
-        "browser_session_open",
-        "browser_session_list",
         "browser_profile_list",
         "browser_profile_request",
-        "browser_tab_read",
         "pending_request",
         "request_withdraw",
       ]),

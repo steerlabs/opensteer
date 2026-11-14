@@ -1,3 +1,4 @@
+import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import {
   thread_read,
   thread_list,
@@ -142,7 +143,7 @@ const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
   z.strictObject({
     ...requestBase,
     reason: z.string().trim().min(1).max(500),
-    sessionId: BrowserSessionIdSchema.optional(),
+    tabId: BrowserSurfaceIdSchema.optional(),
     site: z.string().trim().min(1).max(2_048),
     type: z.literal("use-saved-login"),
   }),

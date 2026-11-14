@@ -319,3 +319,50 @@ it("rejects renewed phone input after a rejected PIN while allowing observation 
     expect(grade(expectations, [...safe, call(code)], "").every((c) => c.pass)).toBe(false);
   expect(grade(expectations, [], "").every((c) => c.pass)).toBe(false);
 });
+
+it("grades Harness calls separately from tool wildcards and orders them with tools", () => {
+  const e = parseCases(
+    line({
+      expect: {
+        harness: [{ call: "switchTab", args: { tabId: "work" } }],
+        notHarness: ["newTab", { call: "gotoUrl", args: { url: "https://wrong.test" } }],
+        order: ["harness:switchTab", "sign_in", "harness:fillLogin"],
+        maxCalls: { "harness:switchTab": 1 },
+        notCalls: ["computer"],
+        calls: [{ tool: "sign_in", args: { tabId: "work" } }],
+      },
+    }),
+  )[0]!.expect;
+  const calls = [
+    { tool: "harness:switchTab", args: { tabId: "work" }, valid: true },
+    { tool: "sign_in", args: { tabId: "work", site: "example.test" }, valid: true },
+    { tool: "harness:fillLogin", args: { loginRef: "sealed" }, valid: true },
+  ];
+  expect(grade(e, calls, "").every((c) => c.pass)).toBe(true);
+  for (const broken of [
+    calls.slice(1),
+    [calls[1]!, calls[0]!, calls[2]!],
+    [...calls, { tool: "harness:newTab", args: {}, valid: false }],
+    [...calls, calls[0]!],
+  ])
+    expect(grade(e, broken, "").every((c) => c.pass)).toBe(false);
+  const onlyTools = parseCases(line({ expect: { notCalls: ["*"] } }))[0]!.expect;
+  expect(grade(onlyTools, [calls[0]!], "").every((c) => c.pass)).toBe(true);
+});
+
+it("keeps tool order wildcards separate and can require an offline helper attempt", () => {
+  const call = { tool: "harness:switchTab", args: { tabId: "offline" }, valid: false };
+  const e = parseCases(
+    line({
+      expect: {
+        harness: [{ call: "switchTab", args: { tabId: "offline" } }],
+        order: ["harness:switchTab", "device_access_request"],
+      },
+    }),
+  )[0]!.expect;
+  const calls = [call, { tool: "device_access_request", args: {}, valid: true }];
+  expect(grade(e, calls, "").every((c) => c.pass)).toBe(true);
+  const wildcard = parseCases(line({ expect: { order: ["*", "device_access_request"] } }))[0]!
+    .expect;
+  expect(grade(wildcard, calls, "").every((c) => c.pass)).toBe(false);
+});

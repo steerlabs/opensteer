@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { open, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -152,7 +153,7 @@ export async function negotiateBackend(base, sessionId) {
     backend.version !== 1 ||
     !["cdp", "actions"].includes(backend.backend)
   )
-    throw new Error("Invalid exact-session browser backend negotiation");
+    throw new Error("Invalid browser backend negotiation");
   return backend.backend;
 }
 
@@ -243,7 +244,7 @@ export class ActionsClient {
         reject(
           new BrowserActionError(
             READS.has(action.type) ? "timeout" : "outcome-unknown",
-            `${action.type} did not answer; inspect the page, do not resend input`,
+            `${action.type === "session.tabs" ? "listTabs()" : action.type} did not answer; inspect the page, do not resend input`,
           ),
         );
       }, timeoutMs + 1_000);
@@ -343,6 +344,7 @@ export class ActionsClient {
 }
 
 export function createActionsHarness(client, initialTargetId) {
+  const operations = new AsyncLocalStorage();
   let selected = initialTargetId;
   const bindings = new Map();
   // Tabs this attachment claimed; listing a tab does not make it ours or wake it.
@@ -375,19 +377,15 @@ export function createActionsHarness(client, initialTargetId) {
     return inventory.map(publicTab);
   };
   const bind = async () => {
+    const captured = operations.getStore();
+    if (captured) return captured;
     if (closed.has(selected))
       throw new BrowserActionError(
         "target-closed",
         "The selected tab closed; choose an exact tab with switchTab",
       );
-    if (!selected) {
-      await listTabs();
-      if (inventory.length !== 1)
-        throw new Error(
-          "Choose an exact tab with --tab or switchTab(targetId); listTabs() shows the tabs",
-        );
-      selected = inventory[0].surfaceId;
-    }
+    if (!selected)
+      throw new Error("Call switchTab(tabId) or newTab(url) before using page helpers.");
     if (!claimed.has(selected)) await claim(selected);
     return bindings.get(selected);
   };
@@ -694,7 +692,8 @@ export function createActionsHarness(client, initialTargetId) {
     },
     ariaSnapshot: async () => (await send({ type: "dom.snapshot" })).text,
   });
-  const stageFiles = async (paths) => {
+  const stageFiles = async (paths, binding = undefined) => {
+    binding ??= await bind();
     const list = Array.isArray(paths) ? paths : [paths];
     if (!list.length || list.length > 256)
       throw new TypeError("stageFiles requires between 1 and 256 files");
@@ -711,7 +710,7 @@ export function createActionsHarness(client, initialTargetId) {
         for (;;) {
           const { bytesRead } = await handle.read(buffer, 0, buffer.length, offset);
           const last = offset + bytesRead >= info.size;
-          const result = await send({
+          const result = await sendOn(binding, {
             type: "file.stage",
             data: buffer.subarray(0, bytesRead).toString("base64"),
             fileId,
@@ -733,6 +732,7 @@ export function createActionsHarness(client, initialTargetId) {
     return files;
   };
   return Object.freeze({
+    run: (operation) => operations.run(bindings.get(selected), operation),
     page,
     listTabs,
     pageInfo,
@@ -746,7 +746,7 @@ export function createActionsHarness(client, initialTargetId) {
       await listTabs();
       const known = bindings.get(surfaceId);
       if (!known || closed.has(surfaceId))
-        throw new BrowserActionError("target-closed", "That exact tab is no longer in the session");
+        throw new BrowserActionError("target-closed", "That tab is no longer available");
       const claimedBinding = await claim(surfaceId);
       selected = surfaceId;
       return publicTab(claimedBinding);
@@ -815,16 +815,17 @@ export function createActionsHarness(client, initialTargetId) {
       }
     },
     setInputFiles: async (target, paths) => {
+      const binding = await bind();
       const list = Array.isArray(paths) ? paths : [paths];
       if (!list.length || list.length > 256)
         throw new TypeError("setInputFiles requires between 1 and 256 files");
       const handles = list.every((file) => typeof file === "string" && file.startsWith("staged:"))
         ? list
-        : await stageFiles(list);
+        : await stageFiles(list, binding);
       const stagedFileIds = handles.map((handle) => handle.slice("staged:".length));
       if (stagedFileIds.some((id) => !/^[A-Za-z0-9_-]{1,64}$/u.test(id)))
         throw new TypeError("Invalid staged file handle");
-      return send({
+      return sendOn(binding, {
         type: "file.choose",
         ...(typeof target === "string"
           ? { locator: { by: "css", value: text(target) } }

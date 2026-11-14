@@ -1,9 +1,9 @@
 interface:
   display_name: "Opensteer Browser"
-  short_description: "Browse websites with sessions and saved profiles"
+  short_description: "Find and use browser tabs as the right identity"
   default_prompt: "Use $opensteer:browser to work through a website, using the intended identity."
 dependencies:
   tools:
     - type: "mcp"
       value: "opensteer"
-      description: "Opensteer browser session, profile, and access tools"
+      description: "Opensteer browser profile, sign-in and access tools"

@@ -38,7 +38,7 @@ const browserServiceMain = fileURLToPath(
 );
 
 /**
- * One agent's work, as the skill and tools describe it: two sessions side by
+ * One agent's work, as the skill and tools describe it: two browsers side by
  * side, the chat's photo uploaded, every mistake explained, a granted profile
  * signed in, and the sign-in still there after Chromium dies.
  */
@@ -89,15 +89,34 @@ export async function agentJourney(
   const report = JSON.parse(first.assistantText) as AgentReport;
   if ("error" in report) throw new Error(report.error);
 
-  // Two sessions, both held by the Run, each driven by its own ID.
-  const [sessionA, sessionB] = report.opened;
-  expect(sessionA).not.toBe(sessionB);
+  const [tabA, tabB] = report.opened;
+  const tabs = await stack.host.store.database
+    .selectFrom("personalTabs")
+    .selectAll()
+    .where("id", "in", [
+      tabA,
+      tabB,
+      report.profileSibling,
+      report.guestReuse.second,
+      report.profileTab,
+    ])
+    .execute();
+  const sessionFor = (tabId: string) => tabs.find((tab) => tab.id === tabId)!.groupId;
+  expect(sessionFor(tabA)).not.toBe(sessionFor(tabB));
+  expect(sessionFor(report.profileSibling)).toBe(sessionFor(tabB));
+  expect(sessionFor(report.guestReuse.second)).toBe(sessionFor(tabA));
   expect(report.listed).toEqual(
     expect.arrayContaining([
-      { attached: true, id: sessionA },
-      { attached: true, id: sessionB },
+      expect.objectContaining({ tabId: tabA, usedByThisTask: true }),
+      expect.objectContaining({ tabId: tabB, usedByThisTask: true }),
     ]),
   );
+  expect(report.reused).toEqual({ before: 3, after: 3, tabId: tabA });
+  const profileSession = sessionFor(report.profileTab);
+  expect(profileSession).toBe(sessionFor(tabB));
+  expect(
+    await stack.host.store.database.selectFrom("browserSessions").select("id").execute(),
+  ).toHaveLength(2);
   // The chat's photo reaches the page under its own name and type, byte for byte.
   expect(report.photoName).toBe("mattress.png");
   const expectedPhoto = { name: "mattress.png", size: photo.byteLength, type: "image/png" };
@@ -114,22 +133,21 @@ export async function agentJourney(
     received: ["single", "hidden"],
     url: `${pageOrigin}/upload`,
   });
-  // One tab carries the visits: the session's own page, navigated in place.
+  // The browsing tab carries visits in place; its Guest sibling stays open.
   const { browsing } = report;
-  expect(browsing.start).toMatchObject({ tabs: 1, url: `${pageOrigin}/upload?first` });
-  expect(browsing.inPlace).toMatchObject({ tabs: 1, url: `${pageOrigin}/upload?next` });
+  expect(browsing.start).toMatchObject({ tabs: 2, url: `${pageOrigin}/upload?first` });
+  expect(browsing.inPlace).toMatchObject({ tabs: 2, url: `${pageOrigin}/upload?next` });
   // A tab that cannot open is never left behind, and the page in use stays in use.
   expect(browsing.failed).toMatchObject({
     failures: [
       { error: "Navigation requires an HTTP or HTTPS URL" },
       { error: expect.stringMatching(/^Could not open http:\/\/127\.0\.0\.1:1\/: net::ERR_/u) },
     ],
-    tabs: 1,
+    tabs: 2,
     url: `${pageOrigin}/upload?next`,
   });
-  // Past six tabs the agent hears once that it is collecting tabs; closing
-  // what it opened leaves the session as it found it.
-  expect(browsing.many).toMatchObject({ tabs: 1, whileMany: 8 });
+  // Closing the temporary tabs leaves the two original Guest tabs.
+  expect(browsing.many).toMatchObject({ tabs: 2, whileMany: 9 });
   // Cmd+V crosses the Runner and Host to the session's router, which refuses
   // it however the agent presses it; the page receives neither key nor paste.
   expect(browsing.paste).toMatchObject({
@@ -138,20 +156,18 @@ export async function agentJourney(
     typedOnly: true,
     vKeys: 0,
   });
-  expect(
-    browsing.many.stderr.match(/\[opensteer\] This Browser Session has \d+ tabs open/gu),
-  ).toEqual(["[opensteer] This Browser Session has 7 tabs open"]);
+  expect(browsing.many.stderr.match(/\[opensteer\] This browser has \d+ tabs open/gu)).toEqual([
+    "[opensteer] This browser has 7 tabs open",
+  ]);
   // Every mistake says what happened and what to do next.
-  expect(report.withoutSession.stderr).toContain("--session <Browser Session ID>");
+  expect(report.withoutTab.stderr).toContain("Call switchTab(tabId) or newTab");
   expect(report.outsideFile.stderr).toContain("accepts only files staged for this Browser Session");
-  for (const refused of [report.endedSession, report.unknownSession]) {
+  for (const refused of [report.endedTab, report.unknownTab]) {
     expect(refused.code).not.toBe(0);
-    expect(refused.stderr).toContain(
-      "This Browser Session has ended or is unavailable. Open a session with browser_session_open.",
-    );
+    expect(refused.stderr).toContain("This tab has closed. Use Browser Harness listTabs().");
   }
   expect(report.accessAlreadyAvailable.error).toContain(
-    "This browser profile is already available. Open it with browser_session_open.",
+    "This browser profile is already available. Open a tab with Browser Harness newTab(url, { profile: profileId }).",
   );
   expect(report.signedIn).toMatchObject({
     stdout: expect.stringContaining("marketplace_session=signed-in"),
@@ -165,7 +181,7 @@ export async function agentJourney(
     // A controlled sign-in waits for native cookie commit before it reports success.
     expect(
       await stack.host.browser.applySiteCookies(
-        BrowserSessionIdSchema.parse(report.profileSession),
+        BrowserSessionIdSchema.parse(profileSession),
         browserSiteFromUrl(pageOrigin),
         [
           {
@@ -183,8 +199,7 @@ export async function agentJourney(
       ),
     ).toBe("applied");
   }
-  const watch =
-    label === "relayed" ? await watchBrowserSession(stack, report.profileSession) : null;
+  const watch = label === "relayed" ? await watchBrowserSession(stack, profileSession) : null;
   if (watch && process.env.OPENSTEER_BROWSER_WATCH_CHROMIUM_ARTIFACT_PATH) {
     await writeFile(
       process.env.OPENSTEER_BROWSER_WATCH_CHROMIUM_ARTIFACT_PATH,
@@ -197,7 +212,7 @@ export async function agentJourney(
     return (
       bootstrap.ok &&
       bootstrap.data.browser.groups.rows.every(
-        (session) => session.sessionId !== report.profileSession || session.state !== "ready",
+        (session) => session.sessionId !== profileSession || session.state !== "ready",
       )
     );
   }, 20_000);
@@ -826,21 +841,24 @@ type AgentReport =
         };
         readonly start: { readonly tabs: number; readonly url: string };
       };
-      readonly endedSession: HarnessResult;
-      readonly listed: { readonly attached: boolean; readonly id: string }[];
+      readonly endedTab: HarnessResult;
+      readonly listed: { readonly usedByThisTask: boolean; readonly tabId: string }[];
       readonly opened: [string, string];
       readonly outsideFile: HarnessResult;
       readonly photoName: string;
-      readonly profileSession: string;
+      readonly profileTab: string;
+      readonly profileSibling: string;
+      readonly guestReuse: { readonly first: string; readonly second: string };
+      readonly reused: { readonly before: number; readonly after: number; readonly tabId: string };
       readonly second: { readonly url: string };
       readonly signedIn: HarnessResult;
-      readonly unknownSession: HarnessResult;
+      readonly unknownTab: HarnessResult;
       readonly upload: {
         readonly chooser: unknown;
         readonly direct: unknown;
         readonly received: Record<"hidden" | "single", unknown>;
       };
-      readonly withoutSession: HarnessResult;
+      readonly withoutTab: HarnessResult;
     };
 
 /**

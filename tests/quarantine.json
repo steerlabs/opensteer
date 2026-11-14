@@ -632,5 +632,38 @@
     "evidence": [
       "Reproduced locally while diagnosing A15-deadline-soak-1: expected /element was not found/, received a 300 ms timeout waiting for CDP Runtime.getProperties. Same cause and acceptance as A15-deadline-soak-1."
     ]
+  },
+  {
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-11-13T23:26:00Z",
+    "deadline": "2026-11-20T23:26:00Z",
+    "sha": "cfe134868e561ff20551d0bdb70cdcd22f71c141",
+    "file": "tests/browser-sessions-viewer.integration.test.ts",
+    "name": [
+      "Browser Sessions through a whole deployment",
+      "says a tab is loading only while its own page loads, through the catalog, and Stop ends it"
+    ],
+    "evidence": [
+      "Failed 1/18 once on the agent-tabs branch: closing the still-loading tab returned ok:false, then Deployment and BrowserRuntime cleanup rejected with runtime-shutdown.queue-timeout. The next two full-file runs of the same code under OPENSTEER_LOCK_ORDER_MODE=enforce passed 18/18. The assertion now matches the whole response so a recurrence carries its error.",
+      "Root cause unproved. Investigate the close/navigation/runtime-disposal interleaving under load, keep the loading and close assertions and existing timeouts, and require full-file evidence plus a deterministic regression before resolving."
+    ]
+  },
+  {
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-11-13T23:26:00Z",
+    "deadline": "2026-11-20T23:26:00Z",
+    "sha": "36aab700ee2ecb88cd5c4f6b547b98b24613b473",
+    "file": "tests/browser-stream.bench.ts",
+    "name": [
+      "measures browser input through Host, shaped transport, shared Watch and real canvas presentation"
+    ],
+    "evidence": [
+      "Fails on main: at 36aab700e (with only the benchmark's missing Host API version on its viewer sockets corrected, without which neither socket is admitted) the full matrix failed 2 of 3 runs, and failed the same way with the agent-tabs change. Command: OPENSTEER_LOCK_ORDER_MODE=enforce OPENSTEER_BROWSER_STREAM_BENCH={\"profile\":\"all\",\"scenario\":\"all\",\"runs\":1,\"duration\":4} pnpm test:integration -- --config scripts/browser-stream.vitest.config.ts tests/browser-stream.bench.ts. One failure reported weak-cell/article-scroll presenting 2868 of the expected final 2880 pixels with one unmatched wheel input and zero rejections; a lone weak-cell/article-scroll run passed.",
+      "Root cause unproved. Determine whether the last wheel input or its final picture is lost under the full matrix, keep the zero-unmatched and final-pixel assertions and existing deadlines, add deterministic coverage at the responsible layer, and qualify every link/scenario combination before resolving."
+    ]
   }
 ]

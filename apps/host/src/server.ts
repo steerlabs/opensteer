@@ -546,7 +546,12 @@ export async function createHostServer(
   registerSessionExchangeRoute(app, {
     personalRemoteAccess: dependencies.personalRemoteAccess?.service,
   });
-  registerAgentCdpBridge(app, dependencies.browser, dependencies.runToolTokens);
+  registerAgentCdpBridge(
+    app,
+    dependencies.browser,
+    dependencies.runToolTokens,
+    dependencies.browserTabs,
+  );
   registerBrowserSourceWire(
     app,
     dependencies.browserSources,

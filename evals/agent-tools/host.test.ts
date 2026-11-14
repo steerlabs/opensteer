@@ -8,10 +8,19 @@ import { expect, it } from "vitest";
 import { parseCases } from "./cases.js";
 import { startFakeHost } from "./host.js";
 
-it("returns a native runtime update refusal as an MCP tool error after validation", async () => {
+it("returns a fixture refusal as an MCP tool error after validation", async () => {
   const testCase = parseCases(
-    await readFile(new URL("./cases/browser.ndjson", import.meta.url), "utf8"),
-  ).find((testCase) => testCase.id === "native-runtime-update-refusal")!;
+    JSON.stringify({
+      id: "mock-error",
+      area: "transport",
+      kind: "guard",
+      profile: "task",
+      source: { commit: "a".repeat(40), note: "Mock errors retain production input validation" },
+      turns: ["Inspect availability"],
+      mocks: { integration_search: { $error: "Service is offline." } },
+      expect: { calls: [{ tool: "integration_search", args: { query: "mail" } }] },
+    }),
+  )[0]!;
   const host = await startFakeHost(testCase);
   const client = new Client({ name: "eval-profile-refusal", version: "1" });
   try {
@@ -24,10 +33,10 @@ it("returns a native runtime update refusal as an MCP tool error after validatio
     const result = await client.callTool({ name: call.tool, arguments: call.args });
     expect(result).toMatchObject({
       isError: true,
-      content: [{ type: "text", text: "Update this computer to open this profile." }],
+      content: [{ type: "text", text: "Service is offline." }],
     });
-    expect(host.calls).toEqual([
-      { ...call, valid: true, result: { $error: "Update this computer to open this profile." } },
+    expect(host.calls).toMatchObject([
+      { ...call, valid: true, result: { $error: "Service is offline." } },
     ]);
     const invalid = await client.callTool({ name: call.tool, arguments: { unexpected: true } });
     expect(invalid.isError).toBe(true);
@@ -252,7 +261,6 @@ it("preserves production action validation before consuming mocks", async () => 
           threadId: "thr_00000000-0000-4000-8000-000000000001",
         },
       ],
-      ["browser_session_open", { fresh: true, sessionId: "existing" }],
     ] as const) {
       const result = await client.callTool({ name, arguments: args });
       expect(result.isError).toBe(true);

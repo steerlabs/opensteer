@@ -7,25 +7,21 @@ import {
 } from "@opensteer/core";
 import type { RequestStore } from "@opensteer/database";
 import type {
+  BrowserSurfaceId,
   PasswordSignInAvailability,
   SavedLoginResult,
   SavedLoginUnavailableReason,
   UseCardResult,
 } from "@opensteer/protocol";
 import type { PersonalHostAccessRouteEnvelope } from "@opensteer/deployment-authority";
-import type { BrowserService } from "./browser-service.js";
+import type { BrowserService, BrowserSignInTarget } from "./browser-service.js";
 import type { PasswordSignInService } from "./password-sign-in-service.js";
 import {
   PasswordsOffers,
   type PasswordsOffer,
   type PasswordsOfferOutcome,
 } from "./passwords-offers.js";
-import {
-  admitSignIn,
-  parseSignInSessionId,
-  parseSignInSite,
-  signInSiteRefusal,
-} from "./sign-in-admission.js";
+import { admitSignIn, parseSignInSite, signInSiteRefusal } from "./sign-in-admission.js";
 
 interface AgentCall {
   readonly ownerId: UserId;
@@ -39,12 +35,12 @@ interface AgentCall {
 
 export type SavedLoginInput = AgentCall & {
   /** Omitted for a genuine Mac or phone app. */
-  readonly sessionId?: string;
+  readonly tabId?: BrowserSurfaceId;
   /** Whether the calling Runner can fill a released login into a browser field. */
   readonly loginFill: boolean;
 };
 
-export type CardUseInput = AgentCall & { readonly sessionId: string };
+export type CardUseInput = AgentCall & { readonly tabId: BrowserSurfaceId };
 
 type Passwords = Pick<
   PasswordSignInService,
@@ -99,14 +95,24 @@ export class SavedLoginService {
 
   async useSavedLogin(input: SavedLoginInput): Promise<SavedLoginResult> {
     const site = parseSignInSite(input.site);
+    if (await this.#refusesSite(site)) return unavailable(site, "not-allowed");
+    const target =
+      input.tabId === undefined
+        ? null
+        : await this.#browser.signInTarget({
+            agentBindingId: `run:${input.runId}`,
+            ownerId: input.ownerId,
+            tabId: input.tabId,
+          });
+    if (input.tabId !== undefined && !target?.live) return unavailable(site, "session-closed");
     const key = offerKey(input.threadId, site);
     const result = (this.#turns.get(key) ?? Promise.resolve()).then(async () => {
-      const result = await this.#signIn({ ...input, site });
+      const result = await this.#signIn({ ...input, site }, target);
       this.#offers.note(
         {
           ownerId: input.ownerId,
           runId: input.runId,
-          sessionId: input.sessionId ?? null,
+          tabId: input.tabId ?? null,
           site,
           threadId: input.threadId,
         },
@@ -130,19 +136,25 @@ export class SavedLoginService {
       reason,
     });
     if (await this.#refusesSite(site)) return unavailable("not-allowed");
-    const sessionId = parseSignInSessionId(input.sessionId);
-    const check = () =>
+    const check = (sessionId?: BrowserSignInTarget["sessionId"]) =>
       this.#browser.signInTarget({
         agentBindingId: `run:${input.runId}`,
         ownerId: input.ownerId,
-        sessionId,
+        tabId: input.tabId,
+        ...(sessionId ? { sessionId } : {}),
       });
     const target = await check();
     if (!target?.live) return unavailable("session-closed");
     if (!target.main) return unavailable("main-browser-required");
+    const frozenInput = { ...input, sessionId: target.sessionId, surfaceId: target.tabId };
     const availability = await this.#passwords.probeCard(input.ownerId);
-    const current = await check();
-    if (!current?.live || current.computer?.runnerId !== target.computer?.runnerId)
+    const current = await check(target.sessionId);
+    if (
+      !current?.live ||
+      current.sessionId !== target.sessionId ||
+      current.tabId !== target.tabId ||
+      current.computer?.runnerId !== target.computer?.runnerId
+    )
       return unavailable("session-closed");
     switch (availability) {
       case "has-card":
@@ -161,13 +173,19 @@ export class SavedLoginService {
     }
     if (!current.cardFill || !target.computer) return unavailable("runtime-outdated");
     const result = await this.#passwords.requestCard({
-      ...input,
+      ...frozenInput,
       site,
       cardRunnerId: target.computer.runnerId,
       admitStart: () => this.#admit(input.runId, input.deploymentId, site),
     });
-    const after = await check();
-    if (!after?.live || !after.cardFill || after.computer?.runnerId !== target.computer.runnerId)
+    const after = await check(target.sessionId);
+    if (
+      !after?.live ||
+      after.sessionId !== target.sessionId ||
+      after.tabId !== target.tabId ||
+      !after.cardFill ||
+      after.computer?.runnerId !== target.computer.runnerId
+    )
       return unavailable("session-closed");
     return result;
   }
@@ -181,19 +199,32 @@ export class SavedLoginService {
     this.#offers.close();
   }
 
-  async #signIn(input: SavedLoginInput & { readonly site: string }): Promise<SavedLoginResult> {
+  async #signIn(
+    input: SavedLoginInput & { readonly site: string },
+    target: BrowserSignInTarget | null,
+  ): Promise<SavedLoginResult> {
     const { site } = input;
-    const call = { ...input, arrivedAt: Date.now() };
-    if (await this.#refusesSite(site)) return unavailable(site, "not-allowed");
-    const sessionId = input.sessionId === undefined ? null : parseSignInSessionId(input.sessionId);
-    const target =
-      sessionId === null
-        ? null
-        : await this.#browser.signInTarget({
-            agentBindingId: `run:${input.runId}`,
-            ownerId: input.ownerId,
-            sessionId,
-          });
+    const sessionId = target?.sessionId ?? null;
+    const check = async () => {
+      if (target === null) return;
+      const current = await this.#browser.signInTarget({
+        ownerId: input.ownerId,
+        agentBindingId: `run:${input.runId}`,
+        sessionId: target.sessionId,
+        ...(input.tabId ? { tabId: input.tabId } : {}),
+      });
+      if (!current?.live)
+        throw new OpensteerError({
+          code: "conflict",
+          message: "This sign-in tab has closed or changed browser. Select its tab again.",
+        });
+    };
+    await check();
+    const call = {
+      ...input,
+      arrivedAt: Date.now(),
+      ...(target ? { sessionId: target.sessionId, surfaceId: target.tabId } : {}),
+    };
     const fillsHere =
       sessionId === null || (input.loginFill && !!target?.live && target.main && target.signIn);
     const joined = fillsHere ? this.#passwords.join(call) : null;
@@ -220,6 +251,7 @@ export class SavedLoginService {
       if (!target.signIn || !input.loginFill) return unavailable(site, "runtime-outdated");
     }
     const availability = await this.#passwords.probe(input.ownerId, site);
+    await check();
     if (availability !== "has-login") return unavailable(site, availabilityReason(availability));
     return this.#passwords.request({
       ...call,

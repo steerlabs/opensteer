@@ -1863,21 +1863,22 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "minLength": 1,
           "type": "string",
         },
-        "sessionId": {
-          "description": "Browser Session to receive the cookies.",
-          "pattern": "^bsn_[0-9a-f-]{36}$",
-          "type": "string",
-        },
         "site": {
           "description": "Site whose login is needed, such as github.com. Covers its subdomains.",
           "maxLength": 2048,
           "minLength": 1,
           "type": "string",
         },
+        "tabId": {
+          "description": "Browser tab to receive the cookies.",
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string",
+        },
       },
       "required": [
         "reason",
-        "sessionId",
+        "tabId",
         "site",
       ],
       "type": "object",
@@ -1905,14 +1906,15 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "minLength": 1,
           "type": "string",
         },
-        "sessionId": {
-          "description": "Browser Session showing the site's sign-in form; omit for a genuine app.",
-          "pattern": "^bsn_[0-9a-f-]{36}$",
-          "type": "string",
-        },
         "site": {
           "description": "Site whose login is needed, such as github.com. Covers its subdomains.",
           "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+        "tabId": {
+          "description": "Browser tab showing the site's sign-in form; omit for a genuine app.",
+          "maxLength": 512,
           "minLength": 1,
           "type": "string",
         },
@@ -1945,12 +1947,13 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "minLength": 1,
           "type": "string",
         },
-        "sessionId": {
-          "pattern": "^bsn_[0-9a-f-]{36}$",
-          "type": "string",
-        },
         "site": {
           "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+        "tabId": {
+          "maxLength": 512,
           "minLength": 1,
           "type": "string",
         },
@@ -1958,7 +1961,7 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "required": [
         "site",
         "reason",
-        "sessionId",
+        "tabId",
       ],
       "type": "object",
     },
@@ -2129,190 +2132,6 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "type": "object",
     },
     "name": "device_access_request",
-  },
-  {
-    "access": "read",
-    "callers": [
-      "run",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "cursor": {
-          "description": "nextCursor from the previous page; omit for the first page.",
-          "maxLength": 512,
-          "minLength": 1,
-          "type": "string",
-        },
-        "query": {
-          "description": "Search title, site, group or profile; keep it when following nextCursor.",
-          "maxLength": 200,
-          "minLength": 1,
-          "type": "string",
-        },
-      },
-      "type": "object",
-    },
-    "name": "browser_tab_read",
-  },
-  {
-    "access": "write",
-    "callers": [
-      "run",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "action": {
-          "enum": [
-            "group",
-            "ungroup",
-            "update_group",
-            "close",
-            "restore",
-            "move",
-          ],
-          "type": "string",
-        },
-        "before": {
-          "maxLength": 512,
-          "minLength": 1,
-          "type": "string",
-        },
-        "collapsed": {
-          "type": "boolean",
-        },
-        "color": {
-          "enum": [
-            "grey",
-            "blue",
-            "red",
-            "yellow",
-            "green",
-            "pink",
-            "purple",
-            "cyan",
-            "orange",
-          ],
-          "type": "string",
-        },
-        "groupId": {
-          "pattern": "^btg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "tabIds": {
-          "items": {
-            "maxLength": 512,
-            "minLength": 1,
-            "type": "string",
-          },
-          "maxItems": 500,
-          "minItems": 1,
-          "type": "array",
-        },
-        "title": {
-          "maxLength": 80,
-          "type": "string",
-        },
-        "toGroupId": {
-          "pattern": "^btg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-      },
-      "required": [
-        "action",
-      ],
-      "type": "object",
-    },
-    "name": "browser_tab_write",
-  },
-  {
-    "access": "read",
-    "callers": [
-      "run",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {},
-      "type": "object",
-    },
-    "name": "browser_session_list",
-  },
-  {
-    "access": "write",
-    "callers": [
-      "run",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "environmentId": {
-          "description": "Computer for an unplaced profile/Guest; defaults to this execution or the only browser. Cannot move a placed profile.",
-          "pattern": "^env_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "fresh": {
-          "const": true,
-          "description": "New Guest session; no saved identity or persistent data.",
-          "type": "boolean",
-        },
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "profileId": {
-          "description": "Accessible named profile for a new session.",
-          "pattern": "^bpr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-          "type": "string",
-        },
-        "sessionId": {
-          "description": "Existing session to attach with its original identity.",
-          "pattern": "^bsn_[0-9a-f-]{36}$",
-          "type": "string",
-        },
-      },
-      "type": "object",
-    },
-    "name": "browser_session_open",
-  },
-  {
-    "access": "write",
-    "callers": [
-      "run",
-    ],
-    "input": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
-      "properties": {
-        "operationKey": {
-          "description": "Retry key for identical input; usually omit.",
-          "maxLength": 128,
-          "minLength": 1,
-          "type": "string",
-        },
-        "sessionId": {
-          "pattern": "^bsn_[0-9a-f-]{36}$",
-          "type": "string",
-        },
-      },
-      "required": [
-        "sessionId",
-      ],
-      "type": "object",
-    },
-    "name": "browser_session_close",
   },
   {
     "access": "read",

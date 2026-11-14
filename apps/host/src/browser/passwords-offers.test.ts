@@ -40,7 +40,7 @@ function watch(options: { wake?: () => Promise<PasswordsOfferOutcome> } = {}) {
   const input = {
     ownerId: createId("user"),
     runId: createId("run"),
-    sessionId: null,
+    tabId: null,
     site,
     threadId: createId("thread"),
   };
@@ -116,12 +116,12 @@ describe("what the agent reads", () => {
       id: "offer",
       ownerId: createId("user"),
       runId: createId("run"),
-      sessionId: "bsn_session",
+      tabId: "tab-fixture",
       site,
       threadId: createId("thread"),
     });
     expect(message).toContain(site);
-    expect(message).toContain("bsn_session");
+    expect(message).toContain("tab-fixture");
     expect(message).toContain("use_saved_login again");
   });
 });

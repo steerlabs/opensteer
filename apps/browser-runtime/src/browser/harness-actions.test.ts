@@ -1,6 +1,11 @@
-import { describe, expect } from "vitest";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { cleanup } from "./browser-test-lifecycle.js";
+import { describe, expect, it } from "vitest";
 import { waitForBrowserState } from "./browser-test-lifecycle.js";
-import { acceptance } from "./harness-actions.test-support.js";
+import { acceptance, startTabJourney } from "./harness-actions.test-support.js";
 
 describe("Browser Harness element actions / real hosted Chromium", () => {
   acceptance(
@@ -43,7 +48,7 @@ await js("document.querySelector('#zip').focus();true");await typeText('10014');
     async (kit, report) => {
       const output = await kit.run(`
 const tabs=await listTabs(); const before=await currentTab();
-assert(tabs.some(t=>t.targetId===before.targetId),'legacy inventory');
+assert(tabs.some(t=>t.tabId===before.tabId),'legacy inventory');
 const controls=await js(\`[...document.querySelectorAll('[role=dialog] input[name="pl_dimensionCapacity"]')].map(e=>{const l=document.querySelector('label[for="'+e.id+'"]');l.scrollIntoView({block:'nearest'});const r=l.getBoundingClientRect();return {value:e.value,x:r.x+r.width/2,y:r.y+r.height/2}})\`);
 const pos=controls.find(e=>e.value==='512gb'); await clickAt(pos.x,pos.y);
 console.log(JSON.stringify({controls,target:'512gb',selected:await js("document.querySelector('[name=pl_dimensionCapacity]:checked').value")}));`);
@@ -487,7 +492,7 @@ assert(await page.getByRole('button',{name:${name},exact:true,includeHidden:true
       );
       expect(JSON.parse(inventory.stdout)).toHaveLength(2);
       await other.close();
-      await kit.run(`const tabs=await listTabs();const current=await currentTab();assert(tabs.some(t=>t.targetId===current.targetId),'legacy inventory');
+      await kit.run(`const tabs=await listTabs();const current=await currentTab();assert(tabs.some(t=>t.tabId===current.tabId),'legacy inventory');
 await fillInput('.legacy','replace');await fillInput('.legacy',' appended',{clear:false});
 assert(await js("document.querySelectorAll('.legacy')[1].value")==='second','first match semantics');
 await js("document.querySelector('#zip').focus();true");await pressKey('Enter',{modifiers:0});
@@ -658,24 +663,30 @@ acceptance(
       inventory: true,
     });
     expect(JSON.parse(inventory.stdout)).toContainEqual(
-      expect.objectContaining({ surfaceId: kit.surfaceId, state: "suspended" }),
+      expect.objectContaining({ tabId: kit.surfaceId, state: "asleep" }),
     );
     const out = await kit.run(`console.log(JSON.stringify(await currentTab()));`, {
       tab: kit.surfaceId,
     });
     expect(out.stderr).toMatch(/asleep.*reloaded/i);
-    expect(JSON.parse(out.stdout)).toMatchObject({ surfaceId: kit.surfaceId });
+    expect(JSON.parse(out.stdout)).toMatchObject({ tabId: kit.surfaceId });
     expect(kit.ledger.snapshot().find((tab) => tab.id === kit.surfaceId)?.state).toBe("live");
-    const implicit = await kit.run(`console.log(JSON.stringify(await currentTab()));`, {
-      inventory: true,
-    });
-    expect(JSON.parse(implicit.stdout)).toMatchObject({ surfaceId: kit.surfaceId });
+    const implicit = await kit.run(
+      `const [tab] = await listTabs(); await switchTab(tab); console.log(JSON.stringify(await currentTab()));`,
+      {
+        inventory: true,
+      },
+    );
+    expect(JSON.parse(implicit.stdout)).toMatchObject({ tabId: kit.surfaceId });
     expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(true);
-    const implicitWake = await kit.run(`console.log(JSON.stringify(await currentTab()));`, {
-      inventory: true,
-    });
+    const implicitWake = await kit.run(
+      `const [tab] = await listTabs(); await switchTab(tab); console.log(JSON.stringify(await currentTab()));`,
+      {
+        inventory: true,
+      },
+    );
     expect(implicitWake.stderr).toMatch(/asleep.*reloaded/i);
-    expect(JSON.parse(implicitWake.stdout)).toMatchObject({ surfaceId: kit.surfaceId });
+    expect(JSON.parse(implicitWake.stdout)).toMatchObject({ tabId: kit.surfaceId });
 
     let slept = false;
     kit.hooks.before = async (method, _parameters, sessionId) => {
@@ -697,3 +708,172 @@ acceptance(
   },
   "01",
 );
+
+describe("Browser Harness tab facade", () => {
+  it("starts with --tab alone, pages the Host catalog and switches between CDP and actions", async () => {
+    const kit = await startTabJourney();
+    const a = kit.first.surfaceId,
+      b = kit.second.surfaceId;
+    const out = await kit.run(
+      `
+const first = await pageInfo();
+assert(first.tabId === ${JSON.stringify(a)} && !('surfaceId' in first) && !('targetId' in first), 'public tab identity');
+const saved = page.locator('body');
+const limited = await listTabs({limit: 1});
+assert(limited.length === 1 && limited[0].current === true, 'current flag');
+const all = await listTabs({limit: 1, all: true});
+assert(all.length === 3 && all.filter(t => t.current).length === 1, 'cursor pages');
+await switchTab(all[1]);
+await fails(() => saved.textContent(), /fresh page handles/);
+assert((await currentTab()).tabId === ${JSON.stringify(b)}, 'other browser');
+await switchTab(${JSON.stringify(kit.phoneId)});
+assert((await pageInfo()).title === 'Phone', 'actions backend');
+assert(await page.locator('body').textContent() === 'Phone text', 'actions locator');
+await fails(() => js('true'), /unsupported-operation/);
+const phoneHandle = page.locator('body');
+await switchTab(${JSON.stringify(a)});
+await fails(() => phoneHandle.textContent(), /fresh page handles/);
+assert(await page.locator('body').count() === 1, 'CDP reconnect');
+console.log('done');`,
+      a,
+    );
+    expect(out.stdout.trim()).toBe("done");
+    expect(out.stderr.split("\n").filter((line) => line.includes("tabs match"))).toEqual([
+      "[opensteer] 3 tabs match; showing 1. Narrow listTabs({ query, state }) or pass { all: true }.",
+    ]);
+    expect(
+      kit.calls.filter((call) => call.path === "tabs/use").map((call) => call.input.tabId),
+    ).toEqual([a, b, kit.phoneId, a]);
+    expect(kit.calls.filter((call) => call.path === "tabs")).toHaveLength(4);
+  });
+
+  it("requires selection, opens locally or by identity, replays an uncertain open, and closes another browser's tab", async () => {
+    const kit = await startTabJourney();
+    const a = kit.first.surfaceId,
+      b = kit.second.surfaceId;
+    const empty = await kit.run(`
+await fails(() => pageInfo(), /switchTab.*newTab/);
+await fails(() => newTab(), /profile.*guest/);
+const rows = await listTabs({ query: 'Phone', state: 'open' });
+assert(rows.length === 1 && !rows[0].current, 'unselected filtered inventory');`);
+    expect(empty.stderr).toBe("");
+    const local = await kit.run(
+      `const saved=page.locator('body'); const id = await newTab(); assert(id === (await currentTab()).tabId, 'new local tab'); await fails(()=>saved.count(), /fresh page handles/); await switchTab(${JSON.stringify(a)}); assert((await currentTab()).tabId===${JSON.stringify(a)}, 'same browser selection'); console.log(id);`,
+      a,
+    );
+    expect(kit.first.ledger.snapshot().some((tab) => tab.id === local.stdout.trim())).toBe(true);
+    expect(kit.calls.some((call) => call.path === "tabs/open")).toBe(false);
+    expect(
+      kit.calls.filter((call) => call.path === "tabs/use").map((call) => call.input.tabId),
+    ).toEqual([a]);
+    kit.uncertainOpen();
+    const opened = await kit.run(
+      `const id = await newTab('about:blank', {profile: 'Work'}); assert(id === (await currentTab()).tabId, 'profile tab'); console.log(id);`,
+    );
+    expect(kit.opens.size).toBe(1);
+    const attempts = kit.calls.filter((call) => call.path === "tabs/open");
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]!.input).toEqual(attempts[1]!.input);
+    await kit.run(`await newTab('about:blank', {guest:true});`);
+    expect(await kit.second.ledger.sleep(b, () => null)).toBe(true);
+    await kit.run(
+      `const result=await closeTab(${JSON.stringify(b)}); assert(result.closed[0]===${JSON.stringify(b)}, 'closed foreign tab'); assert((await currentTab()).tabId===${JSON.stringify(a)}, 'kept current'); await organizeTabs({action:'move',tabIds:[${JSON.stringify(a)}]}); await closeTab(); await fails(() => pageInfo(), /switchTab/);`,
+      a,
+    );
+    expect(kit.second.ledger.snapshot().some((tab) => tab.id === b)).toBe(false);
+    expect(
+      kit.calls.some(
+        (call) => call.path === "tabs/organize" && typeof call.input.operationKey === "string",
+      ),
+    ).toBe(true);
+    expect(opened.stdout.trim()).toBe([...kit.opens.values()][0]!.tabId);
+  });
+
+  it("finishes a page wait on its own tab after the script switches away", async () => {
+    const kit = await startTabJourney();
+    const a = kit.first.surfaceId,
+      b = kit.second.surfaceId;
+    const out = await kit.run(
+      `await switchTab(${JSON.stringify(a)});
+const until = Date.now() + 400;
+const pending = page.waitForFunction((at) => Date.now() > at, until);
+await switchTab(${JSON.stringify(b)});
+await pending;
+console.log((await currentTab()).tabId);`,
+    );
+    expect(out.stdout.trim()).toBe(b);
+  });
+
+  it("keeps a browser with work in flight connected while a script walks more browsers", async () => {
+    const kit = await startTabJourney({ phones: 5 });
+    const held = kit.holdPhoneQuery();
+    const [busy, ...others] = kit.phoneIds;
+    const running = kit.run(
+      `await switchTab(${JSON.stringify(busy)});
+const pending = page.locator('body').innerText();
+for (const id of ${JSON.stringify(others)}) await switchTab(id);
+console.log(await pending);`,
+    );
+    await withTimeout(held.entered, 10_000, {
+      timeoutError: () => new Error("the first phone's page read never started"),
+    });
+    // The script has switched through every phone, so the first is no longer selected.
+    await waitForBrowserState(
+      () => kit.calls.filter((call) => call.path === "tabs/use").length === kit.phoneIds.length,
+    );
+    held.release();
+    expect((await running).stdout.trim()).toBe("Phone text");
+  });
+
+  it("keeps every upload chunk on its captured browser while switching", async () => {
+    const kit = await startTabJourney();
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-tab-upload-"));
+    cleanup.push(() => rm(directory, { recursive: true, force: true }));
+    const file = join(directory, "payload.txt");
+    await writeFile(file, "x".repeat(600_000));
+    const chunks: Array<{ browser: string; offset: unknown }> = [];
+    const admitted = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    cleanup.push(async () => {
+      release.resolve();
+    });
+    for (const [name, browser] of [
+      ["first", kit.first],
+      ["second", kit.second],
+    ] as const) {
+      browser.hooks.before = async (method, parameters) => {
+        if (method === "Opensteer.stageFile") {
+          chunks.push({ browser: name, offset: parameters?.offset });
+          if (name === "first" && parameters?.offset === 0) {
+            admitted.resolve();
+            await withTimeout(release.promise, 5_000, {
+              timeoutError: () => new Error("Switch never released the first upload chunk"),
+            });
+          }
+        }
+        if (name === "first" && method === "Browser.getVersion")
+          await withTimeout(admitted.promise, 5_000, {
+            timeoutError: () => new Error("First upload chunk was never admitted"),
+          });
+        if (name === "second" && method === "Opensteer.listTabs") release.resolve();
+      };
+    }
+    const out = await kit.run(
+      `
+const upload = stageFiles(${JSON.stringify(file)});
+upload.catch(() => {});
+await cdp("Browser.getVersion");
+await switchTab(${JSON.stringify(kit.second.surfaceId)});
+const paths = await upload;
+assert(paths.length === 1 && (await currentTab()).tabId === ${JSON.stringify(kit.second.surfaceId)}, 'upload and switch');
+console.log('done');`,
+      kit.first.surfaceId,
+    );
+    expect(out.stdout.trim()).toBe("done");
+    expect(chunks).toEqual([
+      { browser: "first", offset: 0 },
+      { browser: "first", offset: 262144 },
+      { browser: "first", offset: 524288 },
+    ]);
+  });
+});

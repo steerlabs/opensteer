@@ -1,3 +1,10 @@
+import {
+  BrowserAgentTabListQuerySchema,
+  BrowserAgentTabListResultSchema,
+  browserAgentResponseMaxBytes,
+  type BrowserAgentTabListQuery,
+  type BrowserAgentTabListResult,
+} from "@opensteer/protocol/browser-agent";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import {
   OpensteerError,
@@ -10,23 +17,17 @@ import {
 import { BrowserTabGroupStore, OpensteerStore } from "@opensteer/database";
 import {
   BrowserSurfaceIdSchema,
-  BrowserSessionIdSchema,
-  BrowserTabReadResultSchema,
   BrowserTabWriteInputSchema,
   BrowserTabMoveSchema,
   type BrowserTabMove,
-  browserPageSite,
   browserTabRestoreMaxTabs,
-  agentToolPayloadMaxSerializedBytes,
   type BrowserSessionId,
-  type BrowserTabReadInput,
-  type BrowserTabReadResult,
   type BrowserTabWriteInput,
   type BrowserTabWriteResult,
 } from "@opensteer/protocol";
 import { z } from "zod";
 import { createHash } from "node:crypto";
-import type { BrowserService, BrowserSessionRecord } from "./browser-service.js";
+import type { BrowserService } from "./browser-service.js";
 
 export type BrowserTabActor =
   | { readonly kind: "person"; readonly ownerId: UserId }
@@ -38,13 +39,12 @@ export type BrowserTabActor =
     };
 type AgentActor = Extract<BrowserTabActor, { kind: "agent" }>;
 const CursorSchema = z.strictObject({
-  queryFingerprint: z.string().length(64).optional(),
+  queryFingerprint: z.string().length(64),
   ownerId: UserIdSchema,
-  createdAt: z.iso.datetime({ precision: 6 }),
-  lineageId: BrowserSessionIdSchema,
-  tabId: BrowserSurfaceIdSchema,
+  tabIdHash: z.string().length(64),
 });
-const restartCursorNext = "Repeat browser_tab_read without cursor.";
+const cursorTabKey = (tabId: string) => createHash("sha256").update(tabId).digest("hex");
+const restartCursorNext = "Repeat Browser Harness listTabs() without a cursor.";
 
 function badRequest(message: string, next?: string): never {
   throw refused("bad_request", message, next);
@@ -53,7 +53,7 @@ function unreachable(): never {
   throw new OpensteerError({
     code: "forbidden",
     message: "A tab is not a saved tab you can reach.",
-    next: "Use a tabId from browser_tab_read.",
+    next: "Use a tabId from Browser Harness listTabs().",
   });
 }
 
@@ -71,17 +71,17 @@ export class BrowserTabGroupService {
     this.#publish = options.publish;
   }
 
-  #reach(actor: AgentActor, database = this.#groups.database) {
-    const repository = new OpensteerStore(database);
-    const sessions = new Map<BrowserSessionId, Promise<BrowserSessionRecord | null>>();
-    return (sessionId: BrowserSessionId) => {
-      let result = sessions.get(sessionId);
-      if (!result) {
-        result = this.#browser.agentReachableSavedSession(actor, sessionId, repository);
-        sessions.set(sessionId, result);
-      }
-      return result;
-    };
+  #reach(
+    actor: AgentActor,
+    database = this.#groups.database,
+    access: "read" | "read-write" = "read",
+  ) {
+    const sessions = this.#browser.agentReachableSavedSessions(
+      actor,
+      access,
+      new OpensteerStore(database),
+    );
+    return async (sessionId: BrowserSessionId) => (await sessions).get(sessionId) ?? null;
   }
   async #authorize(
     actor: BrowserTabActor,
@@ -97,7 +97,7 @@ export class BrowserTabGroupService {
     );
     if (rows.length !== new Set(tabIds).size) unreachable();
     if (actor.kind === "agent") {
-      const mayReach = this.#reach(actor, database);
+      const mayReach = this.#reach(actor, database, "read-write");
       if (
         (await Promise.all(rows.map((row) => mayReach(row.latestSessionId)))).some(
           (reachable) => !reachable,
@@ -121,155 +121,122 @@ export class BrowserTabGroupService {
     return visible.filter((group) => group !== null);
   }
 
-  async read(actor: AgentActor, input: BrowserTabReadInput): Promise<BrowserTabReadResult> {
+  async read(
+    actor: AgentActor,
+    input: Omit<BrowserAgentTabListQuery, "limit"> & { limit?: number },
+  ): Promise<BrowserAgentTabListResult> {
+    const parsed = BrowserAgentTabListQuerySchema.parse(input);
+    await this.#browser.admitAgentBrowser(actor, "read");
     await this.#browser.flushPendingTabDescriptors();
-    const query = input.query?.normalize("NFKC").toLowerCase();
-    const queryFingerprint = query ? createHash("sha256").update(query).digest("hex") : undefined;
+    const query = parsed.query?.normalize("NFKC").toLowerCase();
+    const queryFingerprint = createHash("sha256")
+      .update(JSON.stringify([query ?? null, parsed.state ?? null]))
+      .digest("hex");
     let cursor: z.infer<typeof CursorSchema> | undefined;
-    if (input.cursor) {
+    if (parsed.cursor) {
       try {
         cursor = CursorSchema.parse(
-          JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")),
+          JSON.parse(Buffer.from(parsed.cursor, "base64url").toString("utf8")),
         );
       } catch {
-        badRequest("Invalid saved-tab cursor.", restartCursorNext);
+        badRequest("Invalid tab cursor.", restartCursorNext);
       }
-      if (cursor.ownerId !== actor.ownerId)
-        badRequest("This saved-tab cursor belongs to a different reader.", restartCursorNext);
-      if (cursor.queryFingerprint !== queryFingerprint)
-        badRequest("This saved-tab cursor belongs to a different search.", restartCursorNext);
+      if (cursor.ownerId !== actor.ownerId || cursor.queryFingerprint !== queryFingerprint)
+        badRequest("This tab cursor belongs to a different reader or search.", restartCursorNext);
     }
-    const mayReach = this.#reach(actor);
-    const ordered = await this.#groups.orderedTabs(actor.ownerId);
-    const reachable = await Promise.all(ordered.tabs.map((tab) => mayReach(tab.latestSessionId)));
-    const reachableIds = new Set(
-      ordered.tabs.filter((_, index) => reachable[index]).map((tab) => tab.id),
+    const [ordered, sessions, profiles, computers] = await Promise.all([
+      this.#groups.orderedTabs(actor.ownerId),
+      this.#browser.agentReachableSavedSessions(actor),
+      this.#browser.listAgentProfiles(actor.ownerId),
+      this.#browser.agentBrowserComputers(actor.ownerId),
+    ]);
+    const profileOf = new Map(
+      profiles.map((profile) => [profile.id, { id: profile.id, name: profile.name }]),
     );
-    const positions = new Map(
-      ordered.arrangement.order
-        .filter((id) => reachableIds.has(id))
-        .map((id, position) => [id, position]),
+    const computerOf = new Map(computers.map((computer) => [computer.id, computer.name]));
+    const groups = ordered.groups.filter((group) =>
+      group.sessionIds.every((id) => sessions.has(id)),
     );
-    const visibleGroups = await this.#visibleGroups(actor, mayReach, ordered.groups);
-    const groups = visibleGroups.map((group) => ({
-      id: group.id,
-      title: group.title,
-      color: group.color,
-      collapsed: group.collapsed,
-      createdBy:
-        group.createdByThreadId === null
-          ? ("person" as const)
-          : group.createdByThreadId === actor.threadId
-            ? ("this-task" as const)
-            : ("another-task" as const),
-      tabCount: group.tabIds.length,
-    }));
     const membership = new Map(
-      visibleGroups.flatMap((group) => group.tabIds.map((tabId) => [tabId, group.id] as const)),
+      groups.flatMap((group) => group.tabIds.map((id) => [id, group] as const)),
     );
-    const profiles = query ? await this.#browser.listAgentProfiles(actor.ownerId) : [];
-    const profileNames = new Map(profiles.map((profile) => [profile.id, profile.name]));
-    const groupTitles = new Map(groups.map((group) => [group.id, group.title]));
-    const matches = new Map<string, Array<"title" | "site" | "group" | "profile">>();
-    if (query) {
-      for (const row of ordered.tabs) {
-        if (!reachableIds.has(row.id)) continue;
-        const session = await mayReach(row.latestSessionId);
-        const fields = {
-          title: row.title,
-          site: browserPageSite(row.url),
-          group: groupTitles.get(membership.get(BrowserSurfaceIdSchema.parse(row.id))!) ?? "",
-          profile: session?.profileId ? (profileNames.get(session.profileId) ?? "") : "Guest",
-        };
-        matches.set(
-          row.id,
-          (Object.keys(fields) as Array<keyof typeof fields>).filter((field) =>
-            fields[field].normalize("NFKC").toLowerCase().includes(query),
-          ),
-        );
-      }
-    }
-    // Positions need the full visible order; page that same snapshot instead of rescanning it.
-    const candidates = ordered.tabs
-      .filter(
-        (row) =>
-          reachableIds.has(row.id) &&
-          (!query || Boolean(matches.get(row.id)?.length)) &&
-          (!cursor ||
-            row.lineageTimestamp < cursor.createdAt ||
-            (row.lineageTimestamp === cursor.createdAt &&
-              (row.groupId < cursor.lineageId ||
-                (row.groupId === cursor.lineageId && row.id > cursor.tabId)))),
-      )
-      .sort((a, b) =>
-        a.lineageTimestamp !== b.lineageTimestamp
-          ? a.lineageTimestamp < b.lineageTimestamp
-            ? 1
-            : -1
-          : a.groupId !== b.groupId
-            ? a.groupId < b.groupId
-              ? 1
-              : -1
-            : a.id < b.id
-              ? -1
-              : a.id > b.id
-                ? 1
-                : 0,
-      )
-      .slice(0, 65);
-    const exhausted = candidates.length < 65;
-    const tabs: BrowserTabReadResult["tabs"] = [];
-    let bytes = Buffer.byteLength(JSON.stringify({ groups, tabs, nextCursor: null }), "utf8");
-    for (const row of candidates.slice(0, 64)) {
+    const rows = new Map(ordered.tabs.map((tab) => [tab.id, tab]));
+    const matching: BrowserAgentTabListResult["tabs"] = [];
+    for (const id of ordered.arrangement.order) {
+      const row = rows.get(id);
+      const session = row && sessions.get(row.latestSessionId);
+      if (!row || !session) continue;
       const tabId = BrowserSurfaceIdSchema.parse(row.id);
-      const session = await mayReach(row.latestSessionId);
-      if (!session) unreachable();
-      const occupants =
+      const group = membership.get(tabId);
+      const profile = session.profileId ? profileOf.get(session.profileId) : null;
+      if (session.profileId && !profile) continue;
+      const state =
         row.state === "live"
-          ? this.#browser.tabOccupants(actor.ownerId, row.latestSessionId, tabId)
-          : [];
-      const tab: BrowserTabReadResult["tabs"][number] = {
+          ? this.#browser.tabStateOf(session.id, tabId) === "suspended"
+            ? "asleep"
+            : "open"
+          : row.state === "restoring"
+            ? "opening"
+            : "asleep";
+      if (parsed.state && state !== parsed.state) continue;
+      if (
+        query &&
+        ![row.title, row.url, group?.title ?? "", profile?.name ?? "Guest"].some((field) =>
+          field.normalize("NFKC").toLowerCase().includes(query),
+        )
+      )
+        continue;
+      const occupants =
+        row.state === "live" ? this.#browser.tabOccupants(actor.ownerId, session.id, tabId) : [];
+      matching.push({
         tabId,
         title: row.title.slice(0, 256),
-        ...(query ? { matchedFields: matches.get(row.id) } : {}),
-        site: browserPageSite(row.url).slice(0, 2048),
-        state:
-          row.state === "live"
-            ? this.#browser.tabStateOf(row.latestSessionId, tabId) === "suspended"
-              ? "asleep"
-              : "open"
-            : row.state === "restoring"
-              ? "opening"
-              : "asleep",
-        sessionId: row.state === "live" ? row.latestSessionId : null,
-        profileId: session.profileId,
-        groupId: membership.get(tabId) ?? null,
-        position: positions.get(tabId),
+        url: row.url,
+        profile: profile ?? null,
+        computer: computerOf.get(session.runnerId) ?? null,
+        state,
+        groupId: group?.id ?? null,
         usedByThisTask: occupants.some((o) => o.threadId === actor.threadId),
         usedByOtherTask: occupants.some((o) => o.threadId !== actor.threadId),
-      };
-      const addedBytes = Buffer.byteLength(JSON.stringify(tab), "utf8") + 1;
-      // Reserve the cursor and tool result envelope within the shared tool response budget.
-      if (bytes + addedBytes > agentToolPayloadMaxSerializedBytes - 1024) break;
-      tabs.push(tab);
-      bytes += addedBytes;
+      });
     }
-    const last = candidates[tabs.length - 1];
-    return BrowserTabReadResultSchema.parse({
-      groups,
+    const after = cursor
+      ? matching.findIndex((tab) => cursorTabKey(tab.tabId) === cursor.tabIdHash) + 1
+      : 0;
+    if (cursor && after === 0)
+      badRequest("This tab cursor is no longer available.", restartCursorNext);
+    const tabs: BrowserAgentTabListResult["tabs"] = [];
+    let bytes = 1024;
+    for (const tab of matching.slice(after, after + parsed.limit)) {
+      const size = Buffer.byteLength(JSON.stringify(tab), "utf8") + 1;
+      if (bytes + size > browserAgentResponseMaxBytes) break;
+      tabs.push(tab);
+      bytes += size;
+    }
+    await this.#browser.admitAgentBrowser(actor, "read");
+    return BrowserAgentTabListResultSchema.parse({
       tabs,
-      ...(query
-        ? { totalMatches: [...matches.values()].filter((fields) => fields.length > 0).length }
-        : {}),
+      groups: groups.map((group) => ({
+        groupId: group.id,
+        title: group.title,
+        color: group.color,
+        collapsed: group.collapsed,
+        tabCount: group.tabIds.length,
+        createdBy:
+          group.createdByThreadId === null
+            ? "person"
+            : group.createdByThreadId === actor.threadId
+              ? "this-task"
+              : "another-task",
+      })),
+      total: matching.length,
       nextCursor:
-        last && (!exhausted || candidates.length > tabs.length)
+        after + tabs.length < matching.length && tabs.length
           ? Buffer.from(
               JSON.stringify({
                 ownerId: actor.ownerId,
-                createdAt: last.lineageTimestamp,
-                lineageId: last.groupId,
-                tabId: last.id,
-                ...(queryFingerprint ? { queryFingerprint } : {}),
+                queryFingerprint,
+                tabIdHash: cursorTabKey(tabs.at(-1)!.tabId),
               }),
             ).toString("base64url")
           : null,
@@ -356,7 +323,7 @@ export class BrowserTabGroupService {
       throw refused(
         "not_found",
         "Tab group not found.",
-        "Get current group IDs from browser_tab_read.",
+        "Get current group IDs from Browser Harness listTabs().",
       );
     await this.#authorize(actor, group.tabIds);
     const layout = await this.#groups.update(
@@ -378,7 +345,13 @@ export class BrowserTabGroupService {
     const failed: Array<{ tabId: z.infer<typeof BrowserSurfaceIdSchema>; message: string }> = [];
     for (const tabId of new Set(tabIds)) {
       try {
-        await this.#browser.closePersonalTab(actor.ownerId, tabId, actor.kind === "person");
+        await this.#authorize(actor, [tabId], this.#groups.database, true);
+        await this.#browser.closePersonalTab(
+          actor.ownerId,
+          tabId,
+          actor.kind === "person",
+          actor.kind === "agent" ? actor : undefined,
+        );
         closed.push(tabId);
       } catch (error) {
         failed.push({

@@ -16,7 +16,7 @@ export interface PasswordsOffer {
   readonly id: string;
   readonly ownerId: UserId;
   readonly runId: RunId;
-  readonly sessionId: string | null;
+  readonly tabId: string | null;
   readonly site: string;
   readonly threadId: ThreadId;
 }
@@ -36,7 +36,7 @@ function offerChange(result: SavedLoginResult): "offer" | "end" | "keep" {
 
 /** What a woken agent reads: a fact about Passwords, with the decision left to it. */
 export function passwordsLoginSavedMessage(offer: PasswordsOffer): string {
-  const session = offer.sessionId === null ? "" : ` for Browser Session ${offer.sessionId}`;
+  const session = offer.tabId === null ? "" : ` for browser tab ${offer.tabId}`;
   return `Opensteer Passwords now has a login for ${offer.site}, saved after your last use_saved_login, so that result is out of date. If the task still needs ${offer.site}, call use_saved_login again${session}.`;
 }
 
@@ -68,7 +68,7 @@ export class PasswordsOffers {
 
   /** Follows what one `use_saved_login` came to. */
   note(
-    input: Pick<PasswordsOffer, "ownerId" | "runId" | "sessionId" | "site" | "threadId">,
+    input: Pick<PasswordsOffer, "ownerId" | "runId" | "tabId" | "site" | "threadId">,
     result: SavedLoginResult,
   ): void {
     const change = offerChange(result);

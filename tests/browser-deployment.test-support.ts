@@ -7,6 +7,7 @@ import {
   enrollmentToken,
 } from "../apps/host/src/runtime/personal-machine.test-support.js";
 import { execFileSync } from "node:child_process";
+import { z } from "zod";
 import { createPublicKey, randomBytes, randomUUID, type KeyObject } from "node:crypto";
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, mkdtemp, rm } from "node:fs/promises";
@@ -154,6 +155,8 @@ export interface Browser {
   close(): Promise<void>;
 }
 
+const ownedChromiumPids = new Set<number>();
+
 /** This computer's Chromium behind the loopback bridge its Runner relays for. */
 export async function startBrowser(
   options: {
@@ -178,6 +181,20 @@ export async function startBrowser(
       localProfiles: launcher.localProfiles,
       launch: async (request, signal) => {
         const browser = await launcher.launch(request, signal);
+        try {
+          const processes = z
+            .object({
+              processInfo: z.array(z.object({ type: z.string(), id: z.number().int().positive() })),
+            })
+            .parse(await browser.cdp.send("SystemInfo.getProcessInfo"));
+          const pid = processes.processInfo.find((info) => info.type === "browser")?.id;
+          if (!pid) throw new Error("The owned Chromium did not report its PID.");
+          ownedChromiumPids.add(pid);
+          browser.onClose(() => ownedChromiumPids.delete(pid));
+        } catch (error) {
+          await browser.close();
+          throw error;
+        }
         options.onLaunch?.(browser, request);
         return browser;
       },
@@ -220,13 +237,16 @@ export async function startBrowser(
 
 /** An abrupt Chromium exit: nothing is saved on the way down. */
 export function killChromium(parentPid: number): void {
-  const pids = execFileSync("pgrep", ["-P", String(parentPid), "-f", executablePath!], {
-    encoding: "utf8",
-  })
-    .split("\n")
-    .filter(Boolean);
+  const pids =
+    parentPid === process.pid
+      ? [...ownedChromiumPids]
+      : execFileSync("pgrep", ["-P", String(parentPid)], { encoding: "utf8" })
+          .trim()
+          .split("\n")
+          .filter(Boolean)
+          .map(Number);
   expect(pids.length).toBeGreaterThan(0);
-  for (const pid of pids) process.kill(Number(pid), "SIGKILL");
+  for (const pid of pids) process.kill(pid, "SIGKILL");
 }
 
 export async function createProfile(

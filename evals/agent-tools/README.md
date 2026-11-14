@@ -43,6 +43,14 @@ fixture label and selects no tools or authority.
   explicit unavailable result. Calls reach a mock only after the production MCP service's
   input and access checks, so semantic errors stay errors even when the flat schema accepts
   the arguments.
+- `browser` optionally supplies `profiles`, `tabs` (the agent tab rows plus `pageText` and
+  `pageTitle`), `offlineComputers`, and `personActiveTab`. Every case receives a fake
+  `OPENSTEER_BROWSER_HARNESS`; scripts run in a bounded VM with fixture helpers and no
+  filesystem or network APIs. Tab state survives scripts and turns; only the last turn's
+  calls are graded. `expect.harness: [{call: "switchTab", args: {tabId: "receipt"}}]`
+  matches partial normalized arguments, including failed attempts. `notHarness` accepts helper names or partial call
+  objects, including failed attempts. `order`, `minCalls`, and `maxCalls` accept
+  `harness:<helper>` alongside tool names; ordinary tool wildcards keep their meaning.
 - `expect.files` runs before cleanup. A missing path fails a positive match and passes a
   prohibition; a symlink makes the sample incomplete; `.eval-*` directories are never read.
 - `after` chains a case onto an earlier one, moving the producer's actual Agent home files into

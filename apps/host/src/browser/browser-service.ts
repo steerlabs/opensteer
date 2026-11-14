@@ -16,6 +16,11 @@ import {
   type BrowserRuntimeServerMessage,
   type BrowserSessionState,
 } from "@opensteer/protocol/browser";
+import type {
+  BrowserAgentTabOpenInput,
+  BrowserAgentTabOpenResult,
+  BrowserAgentTabUseResult,
+} from "@opensteer/protocol/browser-agent";
 import type { PersonalTabDescriptor } from "@opensteer/database";
 import { browserBasicInputAllows } from "@opensteer/protocol/browser";
 import { editingClipboardPartCount } from "@opensteer/protocol/editing";
@@ -31,13 +36,13 @@ import {
 } from "@opensteer/protocol/browser-actions";
 import type { BrowserEngine } from "@opensteer/protocol";
 import type { AdministrationCommandIdentity } from "@opensteer/database";
-import type { ResourceAccessInput } from "@opensteer/database";
 import { RunPlaceRecorder } from "../agents/run-place-recorder.js";
 import { type BrowserCookie } from "@opensteer/browser-profile/cookies";
 import {
   OpensteerError,
   UserIdSchema,
   RunnerIdSchema,
+  RunIdSchema,
   type AgentEvent,
   type AuthSessionId,
   type BrowserAccessSuggestion,
@@ -403,7 +408,9 @@ export interface BrowserSessionRepository {
     readonly ownerId: UserId;
   }): Promise<readonly BrowserSessionWithAttachmentCountRecord[]>;
 
-  resolveResourceAccess?(input: ResourceAccessInput): Promise<{ specialistAllowed: boolean }>;
+  resolveResourceAccess?: OpensteerStore["resolveResourceAccess"];
+  runCapabilityScope?: OpensteerStore["runCapabilityScope"];
+  assertActiveGrant?: OpensteerStore["assertActiveGrant"];
   listBrowserSessions(ownerId: UserId): Promise<readonly BrowserSessionRecord[]>;
   /** The conversations using each session that the reader can open, bounded per session. */
   listBrowserSessionThreads(input: {
@@ -537,6 +544,7 @@ export type StartBrowserSessionInput = {
 
 /** A live session as a Chrome sign-in sees it. */
 export interface BrowserSignInTarget {
+  readonly agentBindingId?: string;
   readonly deploymentId: DeploymentId;
   readonly tabId?: BrowserSurfaceId;
   readonly sessionId: BrowserSessionId;
@@ -570,6 +578,8 @@ type BrowserCdpWireResponse = Extract<
 
 interface BrowserServiceOptions {
   readonly requireAgentAccess?: (runnerId: RunnerId) => Promise<void>;
+  /** Whether agents may see this computer's tabs, online or not; refuses like `requireAgentAccess`. */
+  readonly requireAgentVisibility?: (runnerId: RunnerId) => Promise<void>;
   readonly detachRunnerAgents?: (runnerId: RunnerId) => Promise<readonly BrowserSessionId[]>;
   readonly deploymentId: DeploymentId;
   readonly hostOrigin: URL;
@@ -741,10 +751,31 @@ export class BrowserService {
   readonly #onDeploymentEvent: (event: AgentEvent) => void;
   readonly #agentAdmissions = new KeyedMutationQueue();
   readonly #requireAgentAccess: (runnerId: RunnerId) => Promise<void>;
+  readonly #requireAgentVisibility: (runnerId: RunnerId) => Promise<void>;
   readonly #detachRunnerAgents: BrowserServiceOptions["detachRunnerAgents"];
   readonly #deviceAttachments = new Map<string, { runnerId: RunnerId; close: () => void }>();
   withRunnerAdmission<T>(runnerId: RunnerId, action: () => Promise<T>): Promise<T> {
     return this.#agentAdmissions.run(runnerId, action);
+  }
+
+  /**
+   * Admits an agent and sends its command in the computer's admission lane, so
+   * turning browser access off cannot land between them; the answer is awaited
+   * after the lane is released. Without an agent the command is the person's.
+   */
+  async #sendAdmitted<T>(
+    agent: { ownerId: UserId; agentBindingId: string } | undefined,
+    record: BrowserSessionRecord,
+    send: () => Promise<T>,
+  ): Promise<T> {
+    if (!agent) return send();
+    const { sent } = await this.withRunnerAdmission(record.runnerId, async () => {
+      await this.admitAgentBrowser(agent, "read-write", [record]);
+      const sent = send();
+      sent.catch(() => undefined);
+      return { sent };
+    });
+    return sent;
   }
   async disableAgentAccess(runnerId: RunnerId): Promise<void> {
     for (const attachment of this.#deviceAttachments.values())
@@ -772,6 +803,7 @@ export class BrowserService {
 
   constructor(options: BrowserServiceOptions) {
     this.#requireAgentAccess = options.requireAgentAccess ?? (async () => {});
+    this.#requireAgentVisibility = options.requireAgentVisibility ?? (async () => {});
     this.#detachRunnerAgents = options.detachRunnerAgents;
     this.#deploymentId = options.deploymentId;
     this.#personal = options.personal === true;
@@ -1001,38 +1033,66 @@ export class BrowserService {
               placement: placementOf(previous),
               ...(previous.profileId ? { profileId: previous.profileId } : { fresh: true }),
               origin: previous.origin,
+              ...(agent ? { agentBindingId: agent.agentBindingId } : {}),
               opener: previous.opener ?? null,
             }),
         );
+        if (agent) await this.admitAgentBrowser(agent, "read-write", [previous]);
         await finish();
         broker = this.#brokers.get(sessionId);
       } else if (!broker.clientRows(this.#presence(sessionId)).records.has(tabId)) {
+        if (agent) await this.admitAgentBrowser(agent, "read-write", [previous]);
         await tabs.bind(initial.groupId, sessionId, tabId);
         await this.clientStreams.source.groupChanged(sessionId, { tabs: true });
         if (row.favicon) broker.restoreIcon(tabId, row.url, row.favicon);
-        await broker.requestCdp({
-          type: "cdp.command",
-          requestId: randomUUID(),
-          command: {
-            method: browserHostMethods.openTab,
-            parameters: {
-              idempotencyKey: `restore:${tabId}`,
-              surfaceId: tabId,
-              ...(url === "about:blank" ? {} : { url }),
+        const live = broker;
+        await this.#sendAdmitted(agent, previous, () =>
+          live.requestCdp({
+            type: "cdp.command",
+            requestId: randomUUID(),
+            command: {
+              method: browserHostMethods.openTab,
+              parameters: {
+                idempotencyKey: `restore:${tabId}`,
+                surfaceId: tabId,
+                ...(url === "about:blank" ? {} : { url }),
+                // Signed so the runtime credits the agent, not the person, with this page.
+                ...(agent
+                  ? {
+                      operationAuthority: this.#signer.issue({
+                        creationOrigin: "agent",
+                        access: "read-write",
+                        identity: { kind: "fresh" },
+                        runtimeId: previous.runtimeId,
+                        sessionId,
+                        subject: ownerId,
+                        operationExpiresAt: new Date(Date.now() + 18_000).toISOString(),
+                        remainingBudgetMs: 18_000,
+                        initialNavigation: {
+                          operationKey: `restore:${tabId}`,
+                          ...(url === "about:blank" ? {} : { url }),
+                        },
+                      }),
+                    }
+                  : {}),
+              },
             },
-          },
-        });
+          }),
+        );
       }
       if (
         broker?.live &&
         broker.surfaceState === 1 &&
         broker.surfaceStateOf(tabId) === "suspended"
       ) {
-        await broker.requestCdp({
-          type: "cdp.command",
-          requestId: randomUUID(),
-          command: { method: browserHostMethods.resumeTab, parameters: { surfaceId: tabId } },
-        });
+        const live = broker;
+        await this.#sendAdmitted(agent, previous, () =>
+          live.requestCdp({
+            type: "cdp.command",
+            requestId: randomUUID(),
+            command: { method: browserHostMethods.resumeTab, parameters: { surfaceId: tabId } },
+          }),
+        );
       }
       if (!(await tabs.get(ownerId, tabId))) {
         if (broker?.live) await this.#disposePersonalTab(ownerId, sessionId, tabId, broker);
@@ -1135,11 +1195,29 @@ export class BrowserService {
     };
   }
 
-  async closePersonalTab(ownerId: UserId, tabId: BrowserSurfaceId, person = true) {
-    let row = await this.#personalTabs?.close(ownerId, tabId, person);
+  async closePersonalTab(
+    ownerId: UserId,
+    tabId: BrowserSurfaceId,
+    person = true,
+    agent?: { ownerId: UserId; agentBindingId: string },
+  ) {
+    const admit = async (database?: PersonalTabStore["database"]) => {
+      if (!agent) return;
+      const tabs = database ? new PersonalTabStore(database) : this.#personalTabs;
+      const row = await tabs?.get(ownerId, tabId);
+      const record = row ? await tabs?.session(ownerId, row.groupId) : null;
+      await this.admitAgentBrowser(
+        agent,
+        "read-write",
+        record ? [record] : [],
+        database ? new OpensteerStore(database) : this.#repository,
+      );
+    };
+    await admit();
+    let row = await this.#personalTabs?.close(ownerId, tabId, person, agent ? admit : undefined);
     if (!row) {
       await this.flushPendingTabDescriptors();
-      row = await this.#personalTabs?.close(ownerId, tabId, person);
+      row = await this.#personalTabs?.close(ownerId, tabId, person, agent ? admit : undefined);
     }
     if (!row) throw new OpensteerError({ code: "not_found", message: "Browser tab not found." });
     const marks = this.#personUseGroups.get(row.groupId);
@@ -1150,7 +1228,9 @@ export class BrowserService {
       const session = await this.#personalTabs!.session(ownerId, row.groupId);
       const broker = session ? this.#brokers.get(session.id) : undefined;
       if (session && broker?.live)
-        await this.#disposePersonalTab(ownerId, session.id, tabId, broker);
+        await this.#sendAdmitted(agent, session, () =>
+          this.#disposePersonalTab(ownerId, session.id, tabId, broker),
+        );
       // The closed revision reaches every viewer, so a slower earlier lineage can't bring it back.
       if (session) {
         await this.clientStreams.source.groupChanged(session.id, { tabs: true });
@@ -1386,6 +1466,7 @@ export class BrowserService {
         });
       }
       if (
+        input.threadId &&
         !(await this.agentMayAccessSession(
           { ...input, ...(input.threadId ? { agentBindingId: `thread:${input.threadId}` } : {}) },
           record,
@@ -1636,7 +1717,11 @@ export class BrowserService {
     if (changed) this.#onHistoryChanged(ownerId, input.profileId);
   }
 
-  async openTab(ownerId: UserId, input: BrowserTabOpenCommand): Promise<BrowserTabOpenResult> {
+  async openTab(
+    ownerId: UserId,
+    input: BrowserTabOpenCommand,
+    agent?: { ownerId: UserId; agentBindingId: string; threadId: ThreadId },
+  ): Promise<BrowserTabOpenResult> {
     const expiresAt = Date.now() + 20_000;
     const cancellation = new AbortController();
     const budget: BrowserTabOpenBudget = {
@@ -1653,7 +1738,7 @@ export class BrowserService {
     timer.unref?.();
     try {
       return await withDatabaseOperationSignal(budget.signal, budget.expiresAt, () =>
-        withTimeout(this.#openTab(ownerId, input, budget), 18_000, {
+        withTimeout(this.#openTab(ownerId, input, budget, agent), 18_000, {
           signal: budget.signal,
           timeoutError: timeout,
         }),
@@ -1722,6 +1807,7 @@ export class BrowserService {
     ownerId: UserId,
     input: BrowserTabOpenCommand,
     budget: BrowserTabOpenBudget,
+    agent?: { ownerId: UserId; agentBindingId: string; threadId: ThreadId },
   ): Promise<BrowserTabOpenResult> {
     const parsed = BrowserTabOpenCommandSchema.parse(input);
     const command = parsed.url ? { ...parsed, url: safeNavigationUrl(parsed.url) } : parsed;
@@ -1733,6 +1819,7 @@ export class BrowserService {
         let pendingFinish: (() => Promise<void>) | undefined;
         const select = async () => {
           budget.signal.throwIfAborted();
+          if (agent) await this.admitAgentBrowser(agent);
           const fingerprint = createHash("sha256").update(JSON.stringify(command)).digest("hex");
           let binding = await this.#repository.getBrowserTabOpen(ownerId, command.idempotencyKey);
           if (binding) {
@@ -1770,9 +1857,14 @@ export class BrowserService {
               .filter(
                 (candidate) =>
                   candidate.state === "ready" &&
-                  candidate.origin === "person" &&
-                  candidate.opener?.kind === "person" &&
-                  candidate.opener.userId === ownerId &&
+                  (agent
+                    ? candidate.origin !== "trigger" &&
+                      (profileId !== null ||
+                        (candidate.opener?.kind === "task" &&
+                          candidate.opener.threadId === agent.threadId))
+                    : candidate.origin === "person" &&
+                      candidate.opener?.kind === "person" &&
+                      candidate.opener.userId === ownerId) &&
                   candidate.profileId === profileId &&
                   samePlacement(placement, placementOf(candidate)) &&
                   this.#brokers.get(candidate.id)?.live,
@@ -1788,12 +1880,26 @@ export class BrowserService {
                 ownerId,
                 placement,
                 sessionId: createBrowserSessionId(),
+                ...(agent
+                  ? {
+                      origin: "agent" as const,
+                      agentBindingId: agent.agentBindingId,
+                      opener: await this.#repository.browserSessionOpenerForBinding(
+                        agent.agentBindingId,
+                        ownerId,
+                      ),
+                    }
+                  : {}),
                 ...(profileId ? { profileId } : { fresh: true as const }),
                 ...(command.url ? { initialUrl: command.url } : {}),
                 ...(command.viewport ? { viewport: command.viewport } : {}),
               };
           }
           budget.signal.throwIfAborted();
+          if (agent) {
+            await this.admitAgentBrowser(agent, "read-write", record ? [record] : []);
+            await this.#requireAgentAccess(runnerId);
+          }
           binding = {
             callerUserId: ownerId,
             idempotencyKey: command.idempotencyKey,
@@ -1820,10 +1926,14 @@ export class BrowserService {
               (openedTabId) => {
                 tabId = openedTabId;
               },
-              command.url ? { ownerId, typed: command.typed === true } : undefined,
+              command.url && !agent ? { ownerId, typed: command.typed === true } : undefined,
             );
             const openingBinding = binding;
             pendingFinish = async () => {
+              if (agent) {
+                await this.admitAgentBrowser(agent);
+                await this.#requireAgentAccess(runnerId);
+              }
               await finish();
               if (!tabId)
                 throw this.#tabOpenRefusal(
@@ -1854,10 +1964,10 @@ export class BrowserService {
           command.identity === undefined
             ? await selectAndStart()
             : await this.#serializeKey(
-                `identity:${ownerId}:${command.identity.kind === "profile" ? command.identity.profileId : "guest"}`,
+                `identity:${ownerId}:${command.identity.kind === "profile" ? command.identity.profileId : agent ? `guest:${agent.threadId}:${command.placement?.runnerId}` : "guest"}`,
                 selectAndStart,
               );
-        return await this.#resumeTabOpen(ownerId, command, binding, budget);
+        return await this.#resumeTabOpen(ownerId, command, binding, budget, agent);
       } catch (error) {
         // Initial-start failures close their exact broker before reaching here.
         // An additional page can fail definitively only on the Runtime's reply;
@@ -1895,7 +2005,7 @@ export class BrowserService {
       );
     throw this.#tabOpenRefusal(
       "browser-session-closed",
-      "The browser session has ended. Open a new browser.",
+      "The browser has ended. Open another tab.",
     );
   }
 
@@ -1920,6 +2030,7 @@ export class BrowserService {
     command: BrowserTabOpenCommand,
     binding: BrowserTabOpenBinding,
     budget: BrowserTabOpenBudget,
+    agent?: { ownerId: UserId; agentBindingId: string; threadId: ThreadId },
   ): Promise<BrowserTabOpenResult> {
     if (binding.outcome.kind === "failed") throw this.#tabOpenFailure(binding);
     return this.#serializeKey(binding.chosenSessionId, async () => {
@@ -1933,51 +2044,66 @@ export class BrowserService {
           "The original browser is unavailable. This request cannot start another browser.",
         );
       budget.signal.throwIfAborted();
+      if (agent && binding.outcome.kind === "opened")
+        await this.admitAgentBrowser(agent, "read-write", [record]);
       if (binding.outcome.kind !== "opened") {
-        this.#requireOpenableSession(record);
-        // A submitted initial page cannot be repeated after an uncertain start.
-        if (binding.browserStarted)
-          throw this.#tabOpenRefusal(
-            "browser-tab-open-outcome-unknown",
-            "The original page outcome is unknown. Inspect the browser before opening another page.",
-          );
-        const broker = this.#brokers.get(record.id);
-        if (!broker?.live)
-          throw this.#tabOpenRefusal(
-            "browser-session-unavailable",
-            "This browser is not ready to open a page. Try again shortly.",
-          );
-        const navigationId = command.url
-          ? broker.beginHistoryNavigation(ownerId, command.typed === true)
-          : undefined;
-        budget.pageRequested = true;
-        const response = await broker.requestCdp({
-          type: "cdp.command",
-          requestId: randomUUID(),
-          ...(navigationId ? { navigationId } : {}),
-          command: {
-            method: browserHostMethods.openTab,
-            parameters: {
-              operationAuthority: this.#signer.issue({
-                creationOrigin: "person",
-                access: "read-write",
-                identity: { kind: "fresh" },
-                runtimeId: record.runtimeId,
-                sessionId: record.id,
-                subject: ownerId,
-                operationExpiresAt: new Date(budget.expiresAt).toISOString(),
-                remainingBudgetMs: Math.max(1, budget.expiresAt - Date.now()),
-                initialNavigation: {
-                  operationKey: binding.initialPageOperationKey,
-                  ...(command.url ? { url: command.url } : {}),
-                },
-              }),
-              idempotencyKey: binding.initialPageOperationKey,
-              ...(command.url === undefined ? {} : { url: command.url }),
-              ...(command.viewport === undefined ? {} : { viewport: command.viewport }),
+        // Admission and the page request share the computer's admission lane, so
+        // turning browser access off cannot land between them.
+        const send = async () => {
+          if (agent) await this.admitAgentBrowser(agent, "read-write", [record]);
+          this.#requireOpenableSession(record);
+          // A submitted initial page cannot be repeated after an uncertain start.
+          if (binding.browserStarted)
+            throw this.#tabOpenRefusal(
+              "browser-tab-open-outcome-unknown",
+              "The original page outcome is unknown. Inspect the browser before opening another page.",
+            );
+          const broker = this.#brokers.get(record.id);
+          if (!broker?.live)
+            throw this.#tabOpenRefusal(
+              "browser-session-unavailable",
+              "This browser is not ready to open a page. Try again shortly.",
+            );
+          const navigationId =
+            command.url && !agent
+              ? broker.beginHistoryNavigation(ownerId, command.typed === true)
+              : undefined;
+          budget.pageRequested = true;
+          const request = broker.requestCdp({
+            type: "cdp.command",
+            requestId: randomUUID(),
+            ...(navigationId ? { navigationId } : {}),
+            command: {
+              method: browserHostMethods.openTab,
+              parameters: {
+                operationAuthority: this.#signer.issue({
+                  creationOrigin: agent ? "agent" : "person",
+                  access: "read-write",
+                  identity: { kind: "fresh" },
+                  runtimeId: record.runtimeId,
+                  sessionId: record.id,
+                  subject: ownerId,
+                  operationExpiresAt: new Date(budget.expiresAt).toISOString(),
+                  remainingBudgetMs: Math.max(1, budget.expiresAt - Date.now()),
+                  initialNavigation: {
+                    operationKey: binding.initialPageOperationKey,
+                    ...(command.url ? { url: command.url } : {}),
+                  },
+                }),
+                idempotencyKey: binding.initialPageOperationKey,
+                ...(command.url === undefined ? {} : { url: command.url }),
+                ...(command.viewport === undefined ? {} : { viewport: command.viewport }),
+              },
             },
-          },
-        });
+          });
+          // Awaited just after the lane releases; a rejection meanwhile is not unhandled.
+          request.catch(() => undefined);
+          return { broker, navigationId, request };
+        };
+        const { broker, navigationId, request } = agent
+          ? await this.withRunnerAdmission(record.runnerId, send)
+          : await send();
+        const response = await request;
         const { tabId } = z.object({ tabId: BrowserSurfaceIdSchema }).parse(response.result);
         broker.bindHistoryNavigation(navigationId, tabId);
         binding = { ...binding, outcome: { kind: "opened", tabId } };
@@ -2520,11 +2646,16 @@ export class BrowserService {
     sessionId: BrowserSessionId,
     repository: Pick<
       BrowserSessionRepository,
-      "getBrowserSessionForOwner" | "resolveResourceAccess"
+      | "getBrowserSessionForOwner"
+      | "listBrowserSessions"
+      | "resolveResourceAccess"
+      | "runCapabilityScope"
+      | "assertActiveGrant"
     > = this.#repository,
   ): Promise<BrowserSessionRecord | null> {
     const session = await repository.getBrowserSessionForOwner(sessionId, input.ownerId);
-    return session !== null && (await this.agentMayAccessSession(input, session, repository))
+    return session !== null &&
+      (await this.agentMayAccessSession(input, session, repository, "read"))
       ? session
       : null;
   }
@@ -2767,6 +2898,138 @@ export class BrowserService {
     return this.listProfiles(ownerId);
   }
 
+  async openAgentTab(
+    agent: {
+      ownerId: UserId;
+      agentBindingId: string;
+      threadId: ThreadId;
+      environmentId?: EnvironmentId;
+    },
+    input: BrowserAgentTabOpenInput,
+  ): Promise<BrowserAgentTabOpenResult> {
+    const scope = await this.admitAgentBrowser(agent);
+    if (scope && scope.threadId !== agent.threadId)
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "This tab belongs to a different task binding.",
+      });
+    let identity: NonNullable<BrowserTabOpenCommand["identity"]>;
+    let placement: BrowserPlacementSelector | undefined;
+    if (input.identity.kind === "profile") {
+      const profiles = await this.#repository.listBrowserProfiles(agent.ownerId);
+      const name = input.identity.profile;
+      const byId = profiles.find((profile) => profile.id === name);
+      const matches = byId
+        ? [byId]
+        : profiles.filter((profile) => profile.name.toLowerCase() === name.toLowerCase());
+      if (matches.length !== 1)
+        throw new OpensteerError({
+          code: "bad_request",
+          message: matches.length
+            ? "That profile name is ambiguous. Use browser_profile_list and pass a profile ID."
+            : "Unknown browser profile. Use browser_profile_list to find its name or ID.",
+        });
+      identity = { kind: "profile", profileId: matches[0]!.id };
+    } else {
+      identity = { kind: "guest" };
+      const homes = await this.#repository.listEligibleBrowserRunners(agent.ownerId);
+      placement = this.#defaultPlacement(
+        {
+          origin: "agent",
+          ...(input.identity.computer ? { chosenEnvironmentId: input.identity.computer } : {}),
+          ...(agent.environmentId ? { environmentId: agent.environmentId } : {}),
+        },
+        this.#eligiblePlacements(homes),
+        homes,
+      );
+    }
+    const opened = await this.openTab(
+      agent.ownerId,
+      {
+        type: "browser.tab.open",
+        identity,
+        ...(placement ? { placement } : {}),
+        ...(input.url && input.url !== "about:blank" ? { url: input.url } : {}),
+        idempotencyKey: createHash("sha256")
+          .update(`agent:${agent.agentBindingId}:${input.operationKey}`)
+          .digest("hex"),
+      },
+      agent,
+    );
+    const { backend, record } = await this.#admitAgentBackend(
+      { ...agent, sessionId: opened.sessionId },
+      undefined,
+      true,
+    );
+    await this.#recordAgentTabPlace(agent, record, opened.tabId);
+    return { tabId: opened.tabId, sessionId: opened.sessionId, backend };
+  }
+
+  async useAgentTab(
+    agent: { ownerId: UserId; agentBindingId: string },
+    tabId: BrowserSurfaceId,
+  ): Promise<BrowserAgentTabUseResult> {
+    await this.admitAgentBrowser(agent);
+    await this.flushPendingTabDescriptors();
+    const row = await this.#personalTabs?.get(agent.ownerId, tabId);
+    if (!row)
+      throw new OpensteerError({
+        code: "not_found",
+        message: "This tab has closed. Use Browser Harness listTabs().",
+      });
+    const record = await this.#personalTabs!.session(agent.ownerId, row.groupId);
+    const broker = record ? this.#brokers.get(record.id) : undefined;
+    if (record && broker?.live && broker.pageOf(tabId)) {
+      await this.#admitAgentBackend({ ...agent, sessionId: record.id }, undefined, true);
+      let reloaded = false;
+      if (broker.surfaceStateOf(tabId) === "suspended") {
+        const response = await this.#sendAdmitted(agent, record, () =>
+          broker.requestCdp({
+            type: "cdp.command",
+            requestId: randomUUID(),
+            command: { method: browserHostMethods.resumeTab, parameters: { surfaceId: tabId } },
+          }),
+        );
+        reloaded = z.object({ reloaded: z.boolean() }).parse(response.result).reloaded;
+      }
+      const { backend } = await this.#admitAgentBackend({ ...agent, sessionId: record.id });
+      if (!broker.pageOf(tabId))
+        throw new OpensteerError({ code: "not_found", message: "This tab has closed." });
+      await this.#recordAgentTabPlace(agent, record, tabId);
+      return { tabId, sessionId: record.id, backend, reloaded };
+    }
+    const restored = await this.restoreAgentPersonalTab(agent, tabId);
+    const { backend, record: active } = await this.#admitAgentBackend({
+      ...agent,
+      sessionId: restored.sessionId,
+    });
+    await this.#recordAgentTabPlace(agent, active, tabId);
+    return { ...restored, backend, reloaded: true };
+  }
+
+  async #recordAgentTabPlace(
+    agent: { ownerId: UserId; agentBindingId: string },
+    record: BrowserSessionRecord,
+    tabId: BrowserSurfaceId,
+  ) {
+    await this.admitAgentBrowser(agent, "read-write", [record]);
+    const [actor] = await this.#repository.resolvePlaceActors({
+      agentBindingIds: [agent.agentBindingId],
+      ownerIds: [agent.ownerId],
+    });
+    const data = this.#placeData(record.id, tabId);
+    if (actor && data) this.#runPlaces.enter(actor.runId, actor.generation, data);
+    this.announceUsage(
+      await this.#repository.recordAgentBrowserUse({
+        ...agent,
+        sessionId: record.id,
+        tabId,
+        page: data ? { title: data.title, site: data.site ?? "" } : null,
+      }),
+    );
+    await this.#restoreHoldings(record.id);
+  }
+
   async listAgentSessions(input: {
     agentBindingId: string;
     ownerId: UserId;
@@ -2806,8 +3069,7 @@ export class BrowserService {
     if ([input.fresh, input.profileId, input.sessionId].filter(Boolean).length !== 1) {
       throw new OpensteerError({
         code: "bad_request",
-        message:
-          "Choose exactly one of an existing Browser Session, a granted browser profile, or a fresh session.",
+        message: "Choose an existing tab, a browser profile, or Guest.",
       });
     }
     const chosenEnvironmentId = input.chosenEnvironmentId;
@@ -2815,7 +3077,7 @@ export class BrowserService {
       throw new OpensteerError({
         code: "bad_request",
         message:
-          "An existing Browser Session already runs on a computer, so attaching to it cannot choose one.",
+          "An existing tab already belongs to a computer, so selecting it cannot choose one.",
       });
     }
     // Opening by profile or fresh always starts a new session; continuing one
@@ -2826,12 +3088,12 @@ export class BrowserService {
         input.ownerId,
       );
       if (!record || isTerminal(record.state)) {
-        throw new OpensteerError({ code: "not_found", message: "Browser Session not found." });
+        throw new OpensteerError({ code: "not_found", message: "Browser tab unavailable." });
       }
       if (!(await this.agentMayAccessSession(input, record))) {
         throw new OpensteerError({
           code: "forbidden",
-          message: "That Browser Session is not available to this task.",
+          message: "That tab is not available to this task.",
         });
       }
       await this.withRunnerAdmission(record.runnerId, async () => {
@@ -2875,7 +3137,7 @@ export class BrowserService {
       await this.stop(input.ownerId, opened.session.id).catch(() => undefined);
       throw new OpensteerError({
         code: "forbidden",
-        message: "The Browser Session became unavailable to this task while it was opening.",
+        message: "The browser became unavailable to this task while it was opening.",
       });
     }
     await this.withRunnerAdmission(openedRecord.runnerId, async () => {
@@ -2902,7 +3164,7 @@ export class BrowserService {
     if (!(await this.agentMayAccessSession(input, record))) {
       throw new OpensteerError({
         code: "forbidden",
-        message: "That Browser Session is not available to this task.",
+        message: "That tab is not available to this task.",
       });
     }
     return this.withRunnerAdmission(record.runnerId, async () => {
@@ -2988,7 +3250,7 @@ export class BrowserService {
     const broker = this.#brokers.get(record.id);
     if (!broker)
       throw new BrowserCdpConnectionEnded(
-        `Browser Session ${record.id} lost its browser connection. Open a new one with browser_session_open.`,
+        "This tab lost its browser connection. Use Browser Harness listTabs() and switchTab(tabId) to reconnect.",
       );
     const backend: "cdp" | "actions" | undefined = broker.cdpBoundary
       ? "cdp"
@@ -2998,13 +3260,15 @@ export class BrowserService {
     if (!backend || (requested !== undefined && requested !== backend))
       throw browserActionFailure(
         "unsupported-operation",
-        "This Browser Session does not support that agent backend.",
+        "This tab does not support that agent backend.",
       );
     if (!broker.sharedControl)
       throw browserActionFailure(
         "unsupported-operation",
-        "The browser cannot keep your tab separate from the agent's tab. Update Opensteer on that computer, then open a new session.",
+        "The browser cannot keep your tab separate from the agent's tab. Update Opensteer on that computer, then reopen the tab.",
       );
+    // Attaching is new access; a command on an open attachment follows its Run's end.
+    await this.admitAgentBrowser(input, "read-write", [record], this.#repository, !hold);
     if (hold && input.sessionId) await this.#holdForAgent(input, record);
     return { record, broker, backend };
   }
@@ -3027,7 +3291,7 @@ export class BrowserService {
     onEvent: (event: BrowserActionEvent) => void,
     onClosed?: () => void,
   ) {
-    const record = await this.#usableAgentSession(input, input.sessionId);
+    const record = await this.#usableAgentSession(input, input.sessionId, false);
     return this.withRunnerAdmission(record.runnerId, () =>
       this.#attachActionsForAgent(input, onEvent, onClosed),
     );
@@ -3095,10 +3359,7 @@ export class BrowserService {
           const request = BrowserActionRequestSchema.parse(value);
           assertOpen();
           if (request.sessionId !== record.id)
-            throw browserActionFailure(
-              "forbidden",
-              "The action addresses another Browser Session.",
-            );
+            throw browserActionFailure("forbidden", "The action addresses another browser.");
           await this.#admitAgentBackend(input, "actions");
           assertOpen();
           broker.assertActionTarget(request);
@@ -3145,8 +3406,8 @@ export class BrowserService {
     request(command: BrowserCdpRequest["command"]): Promise<unknown>;
   }> {
     const record = input.sessionId
-      ? await this.#usableAgentSession(input, input.sessionId)
-      : await this.#followedAgentSession(input);
+      ? await this.#usableAgentSession(input, input.sessionId, false)
+      : await this.#followedAgentSession(input, false);
     return this.withRunnerAdmission(record.runnerId, () =>
       this.#attachCdpForAgent(input, onEvent, onClosed),
     );
@@ -3277,11 +3538,14 @@ export class BrowserService {
         assertAttached(bindingWasEnded);
         const admitted = await this.#admitAgentBackend(input, "cdp");
         if (admitted.record.id !== record.id)
-          throw new BrowserCdpConnectionEnded("This Run opened another Browser Session.");
+          throw new BrowserCdpConnectionEnded(
+            "This Run selected another browser. Use Browser Harness switchTab(tabId) to select the tab again.",
+          );
         if (command.method === "Opensteer.stageFile" && !broker.fileStaging) {
           throw new OpensteerError({
             code: "conflict",
-            message: `The browser running Browser Session ${record.id} is an older Opensteer version that cannot receive files. Update Opensteer on that computer.`,
+            message:
+              "The computer running this tab has an older Opensteer version that cannot receive files. Update Opensteer on that computer.",
           });
         }
         if (
@@ -3307,7 +3571,7 @@ export class BrowserService {
           if (broker.surfaceStateOf(surfaceId) === undefined)
             throw new OpensteerError({
               code: "not_found",
-              message: "Browser tab not found in this session.",
+              message: "This tab is no longer available in this browser.",
             });
         } else if (Object.values(browserHostMethods).some((method) => method === command.method))
           throw new OpensteerError({
@@ -3395,7 +3659,8 @@ export class BrowserService {
     )
       throw new OpensteerError({
         code: "conflict",
-        message: "This browser profile is already available. Open it with browser_session_open.",
+        message:
+          "This browser profile is already available. Open a tab with Browser Harness newTab(url, { profile: profileId }).",
       });
     const created = await this.#repository.requests.create({
       callId: input.callId,
@@ -3430,10 +3695,23 @@ export class BrowserService {
     readonly ownerId: UserId;
     readonly targetId?: string;
     readonly surfaceId?: string;
-    readonly sessionId: BrowserSessionId;
+    readonly tabId?: BrowserSurfaceId;
+    readonly sessionId?: BrowserSessionId;
     readonly agentBindingId?: string;
   }): Promise<BrowserSignInTarget | null> {
-    const record = await this.#repository.getBrowserSessionForOwner(input.sessionId, input.ownerId);
+    const row = input.tabId ? await this.#personalTabs?.get(input.ownerId, input.tabId) : null;
+    const bound = row ? await this.#personalTabs?.session(input.ownerId, row.groupId) : null;
+    if (input.tabId && (!row || !bound || (input.sessionId && input.sessionId !== bound.id))) {
+      if (input.agentBindingId === undefined) return null;
+      throw new OpensteerError({
+        code: "conflict",
+        message: "This sign-in tab has closed or changed browser. Select its tab again.",
+      });
+    }
+    const sessionId = bound?.id ?? input.sessionId;
+    const record = sessionId
+      ? await this.#repository.getBrowserSessionForOwner(sessionId, input.ownerId)
+      : null;
     if (!record) return null;
     if (
       input.agentBindingId !== undefined &&
@@ -3447,7 +3725,7 @@ export class BrowserService {
     ) {
       throw new OpensteerError({
         code: "forbidden",
-        message: "That Browser Session is not available to this task.",
+        message: "That tab is not available to this task.",
       });
     }
     const profile =
@@ -3455,12 +3733,15 @@ export class BrowserService {
         ? null
         : await this.#repository.getBrowserProfile(record.profileId, input.ownerId);
     const broker = this.#brokers.get(record.id);
-    let tabId = input.surfaceId ? BrowserSurfaceIdSchema.parse(input.surfaceId) : undefined;
-    if (tabId && !broker?.pageOf(tabId))
+    let tabId =
+      input.tabId ?? (input.surfaceId ? BrowserSurfaceIdSchema.parse(input.surfaceId) : undefined);
+    if (tabId && !broker?.pageOf(tabId)) {
+      if (input.tabId && input.agentBindingId === undefined) return null;
       throw new OpensteerError({
         code: "not_found",
         message: "The sign-in page is no longer available.",
       });
+    }
     if (input.targetId && broker?.live) {
       const response = await broker.requestCdp({
         type: "cdp.command",
@@ -3471,9 +3752,24 @@ export class BrowserService {
         .object({ targetInfo: z.object({ surfaceId: BrowserSurfaceIdSchema.optional() }) })
         .parse(response.result).targetInfo.surfaceId;
     }
+    if (input.agentBindingId) await this.admitAgentBrowser(input, "read-write", [record]);
+    if (input.tabId) {
+      const current = await this.#personalTabs?.get(input.ownerId, input.tabId);
+      const latest = current
+        ? await this.#personalTabs?.session(input.ownerId, current.groupId)
+        : null;
+      if (!latest || latest.id !== record.id || !broker?.pageOf(input.tabId)) {
+        if (input.agentBindingId === undefined) return null;
+        throw new OpensteerError({
+          code: "conflict",
+          message: "This sign-in tab has closed or changed browser. Select its tab again.",
+        });
+      }
+    }
     const target = this.#resolveTarget(placementOf(record));
     return {
       ...(tabId ? { tabId } : {}),
+      ...(input.agentBindingId ? { agentBindingId: input.agentBindingId } : {}),
       live: record.state === "ready" && broker?.live === true,
       profileId: record.profileId,
       profileName: profile?.name ?? null,
@@ -3500,7 +3796,11 @@ export class BrowserService {
 
   setRequestPins(
     key: string,
-    pins: readonly { sessionId: BrowserSessionId; runId: RunId | null }[],
+    pins: readonly {
+      sessionId: BrowserSessionId;
+      runId: RunId | null;
+      surfaceId?: BrowserSurfaceId;
+    }[],
   ): void {
     const previous = this.#requestPins.get(key) ?? [];
     if (pins.length)
@@ -3509,8 +3809,10 @@ export class BrowserService {
         pins.map((pin) => ({
           ...pin,
           surfaceId:
+            pin.surfaceId ??
             previous.find((old) => old.sessionId === pin.sessionId && old.runId === pin.runId)
-              ?.surfaceId ?? this.#requestSurface(pin.sessionId, pin.runId),
+              ?.surfaceId ??
+            this.#requestSurface(pin.sessionId, pin.runId),
         })),
       );
     else this.#requestPins.delete(key);
@@ -3526,7 +3828,15 @@ export class BrowserService {
     this.setRequestPins(
       request.id,
       request.status === "pending" && sessionId
-        ? [{ sessionId, runId: request.originatingRunId }]
+        ? [
+            {
+              sessionId,
+              runId: request.originatingRunId,
+              ...(payload.kind === "browser.sign-in" && payload.tabId
+                ? { surfaceId: payload.tabId }
+                : {}),
+            },
+          ]
         : [],
     );
   }
@@ -3937,6 +4247,13 @@ export class BrowserService {
           : null;
       if (input.initialSurfaceId && !target.tabRestoreVersion)
         throw unavailable("Update this browser computer to reopen tabs.");
+      if (input.agentBindingId) {
+        await this.admitAgentBrowser({
+          ownerId: input.ownerId,
+          agentBindingId: input.agentBindingId,
+        });
+        await this.#requireAgentAccess(placement.runnerId);
+      }
       const record = await this.#repository.createBrowserSession({
         id: sessionId,
         ...(input.tabGroupId ? { tabGroupId: input.tabGroupId } : {}),
@@ -4175,7 +4492,7 @@ export class BrowserService {
         }
       };
     };
-    return origin === "person"
+    return origin === "person" && !input.agentBindingId
       ? admit()
       : this.withRunnerAdmission(placement.runnerId, async () => {
           await this.#requireAgentAccess(placement.runnerId);
@@ -4195,28 +4512,117 @@ export class BrowserService {
   async #usableAgentSession(
     input: { ownerId: UserId; agentBindingId?: string },
     sessionId: BrowserSessionId,
+    authorize = true,
   ): Promise<BrowserSessionRecord> {
     const record = await this.#repository.getBrowserSessionForOwner(sessionId, input.ownerId);
-    if (!record || isTerminal(record.state) || !(await this.agentMayAccessSession(input, record)))
+    if (
+      !record ||
+      isTerminal(record.state) ||
+      (authorize &&
+        // A command of an ended Run's open connection still answers, but never acts
+        // or holds the session again; new tab operations refuse an ended Run.
+        !(await this.admitAgentBrowser(input, "read-write", [record], this.#repository, true).then(
+          () => true,
+        )))
+    )
       throw new BrowserCdpConnectionEnded(
-        "This Browser Session has ended or is unavailable. Open a session with browser_session_open.",
+        "This tab has ended or is unavailable. Use Browser Harness listTabs() and switchTab(tabId).",
       );
     return record;
   }
 
-  async #followedAgentSession(input: {
-    readonly agentBindingId: string;
-    readonly ownerId: UserId;
-  }): Promise<BrowserSessionRecord> {
+  async #followedAgentSession(
+    input: {
+      readonly agentBindingId: string;
+      readonly ownerId: UserId;
+    },
+    authorize = true,
+  ): Promise<BrowserSessionRecord> {
     const [latest] = await this.#repository.listActiveBrowserSessionsForAgentBinding(
       input.agentBindingId,
     );
     if (!latest) {
       throw new BrowserCdpConnectionEnded(
-        "This Run has no open Browser Session. Open one with browser_session_open.",
+        "This Run has no selected tab. Use Browser Harness listTabs() and switchTab(tabId), or newTab(url, { guest: true }).",
       );
     }
-    return this.#usableAgentSession(input, latest.id);
+    return this.#usableAgentSession(input, latest.id, authorize);
+  }
+
+  async admitAgentBrowser(
+    input: { ownerId: UserId; agentBindingId?: string },
+    access: "read" | "read-write" = "read-write",
+    records: readonly BrowserSessionRecord[] = [],
+    repository: Pick<
+      BrowserSessionRepository,
+      | "getBrowserSessionForOwner"
+      | "listBrowserSessions"
+      | "resolveResourceAccess"
+      | "runCapabilityScope"
+      | "assertActiveGrant"
+    > = this.#repository,
+    endedBindingAnswers = false,
+  ) {
+    if (!input.agentBindingId)
+      throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
+    if (this.#endedBindings.has(input.agentBindingId)) {
+      if (!endedBindingAnswers)
+        throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
+      // Its connection's own token check ends it; until then the command only answers.
+      for (const record of records)
+        if (!(await repository.getBrowserSessionForOwner(record.id, input.ownerId)))
+          throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
+      return null;
+    }
+    let scope: Awaited<ReturnType<OpensteerStore["runCapabilityScope"]>> = null;
+    if (input.agentBindingId.startsWith("run:") && repository.runCapabilityScope) {
+      scope = await repository.runCapabilityScope(RunIdSchema.parse(input.agentBindingId.slice(4)));
+      if (!scope || scope.requestedBy !== input.ownerId)
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "This Run's browser access has ended.",
+        });
+      await repository.assertActiveGrant?.(scope);
+    }
+    if (repository.resolveResourceAccess) {
+      const authority = await repository.resolveResourceAccess({
+        ownerUserId: input.ownerId,
+        agentBindingId: input.agentBindingId,
+        explicitAccess: "read-write",
+      });
+      if (!authority.access || (access === "read-write" && authority.access !== "read-write"))
+        throw new OpensteerError({
+          code: "forbidden",
+          message:
+            access === "read-write"
+              ? "This task has read-only browser access and cannot drive or change tabs."
+              : "This task cannot read browser tabs.",
+        });
+    }
+    if (records.length) {
+      const owned = new Set(
+        (records.length === 1
+          ? [await repository.getBrowserSessionForOwner(records[0]!.id, input.ownerId)].filter(
+              (record) => record !== null,
+            )
+          : await repository.listBrowserSessions(input.ownerId)
+        ).map((record) => record.id),
+      );
+      if (records.some((record) => !owned.has(record.id)))
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "This tab is unavailable to this task. Use Browser Harness listTabs().",
+        });
+      await Promise.all(
+        [...new Set(records.map((record) => record.runnerId))].map((runnerId) =>
+          this.#requireAgentAccess(runnerId),
+        ),
+      );
+    }
+    if (scope) await repository.assertActiveGrant?.(scope);
+    if (this.#endedBindings.has(input.agentBindingId))
+      throw new BrowserCdpConnectionEnded("This task's browser access has ended.");
+    return scope;
   }
 
   async agentMayAccessSession(
@@ -4224,17 +4630,57 @@ export class BrowserService {
     record: BrowserSessionRecord,
     repository: Pick<
       BrowserSessionRepository,
-      "getBrowserSessionForOwner" | "resolveResourceAccess"
+      | "getBrowserSessionForOwner"
+      | "listBrowserSessions"
+      | "resolveResourceAccess"
+      | "runCapabilityScope"
+      | "assertActiveGrant"
     > = this.#repository,
+    access: "read" | "read-write" = "read-write",
   ): Promise<boolean> {
-    const owned = await repository.getBrowserSessionForOwner(record.id, input.ownerId);
-    if (!owned) return false;
-    if (input.agentBindingId && repository.resolveResourceAccess)
-      await repository.resolveResourceAccess({
-        ownerUserId: input.ownerId,
-        agentBindingId: input.agentBindingId,
-      });
+    await this.admitAgentBrowser(input, access, [record], repository);
     return true;
+  }
+
+  async agentReachableSavedSessions(
+    input: { ownerId: UserId; agentBindingId: string },
+    access: "read" | "read-write" = "read",
+    repository: Pick<
+      BrowserSessionRepository,
+      | "getBrowserSessionForOwner"
+      | "listBrowserSessions"
+      | "resolveResourceAccess"
+      | "runCapabilityScope"
+      | "assertActiveGrant"
+    > = this.#repository,
+  ) {
+    await this.admitAgentBrowser(input, access, [], repository);
+    const records = await repository.listBrowserSessions(input.ownerId);
+    const runners = [...new Set(records.map((record) => record.runnerId))];
+    // An offline computer's tabs stay listed; using one says the computer is offline.
+    const admissions = await Promise.allSettled(
+      runners.map((runnerId) => this.#requireAgentVisibility(runnerId)),
+    );
+    for (const admission of admissions) {
+      if (
+        admission.status === "rejected" &&
+        !(
+          admission.reason instanceof OpensteerError &&
+          (admission.reason.code === "forbidden" || admission.reason.code === "not_found")
+        )
+      )
+        throw admission.reason;
+    }
+    const allowed = new Set(
+      runners.filter((_, index) => admissions[index]?.status === "fulfilled"),
+    );
+    return new Map(
+      records.filter((record) => allowed.has(record.runnerId)).map((record) => [record.id, record]),
+    );
+  }
+
+  async agentBrowserComputers(ownerId: UserId) {
+    return this.#repository.listEligibleBrowserRunners(ownerId);
   }
 
   /**
@@ -4380,7 +4826,7 @@ export class BrowserService {
     if (!record || !(await this.agentMayAccessSession(input, record))) {
       throw new OpensteerError({
         code: "conflict",
-        message: "The Browser Session is no longer available to this Run.",
+        message: "This tab is no longer available to this Run.",
       });
     }
     const profile =
@@ -6769,7 +7215,8 @@ export class HostedBrowserBroker {
         throw new OpensteerError({
           cause,
           code: "internal",
-          message: `Browser Session ${this.#sessionId} disconnected, but Opensteer could not save its ended state. Open a new one with browser_session_open.`,
+          message:
+            "The browser disconnected, but Opensteer could not save its ended state. Use Browser Harness listTabs() to select another tab.",
         });
       } finally {
         try {
@@ -7269,7 +7716,7 @@ function browserMachineChoices(placements: readonly BrowserPlacement[]): string 
 function runnerPlacementConflict(placements: readonly BrowserPlacement[]): OpensteerError {
   return new OpensteerError({
     code: "conflict",
-    message: `Choose which connected computer should run this browser session: ${browserMachineChoices(placements)}.`,
+    message: `Choose which connected computer should run this browser: ${browserMachineChoices(placements)}.`,
   });
 }
 
@@ -7352,7 +7799,7 @@ function browserStartUnavailable(
 ): OpensteerError {
   const error = new Error(`Browser Session ${correlationId} failed during ${stage}.`, { cause });
   console.error("browser.session.start.failed", correlationId, stage, error);
-  return unavailable("The Browser Runtime could not start a session.", error);
+  return unavailable("The Browser Runtime could not start this browser.", error);
 }
 
 const editingClientKinds = new Set<string>([

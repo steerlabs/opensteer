@@ -52,35 +52,6 @@ describe("Opensteer tool inputs", () => {
       false,
     );
   });
-  it("keeps browser session identity explicit", () => {
-    const schema = tool("browser_session_open").input;
-    expect(schema.safeParse({ fresh: true }).success).toBe(true);
-    expect(
-      schema.safeParse({ profileId: "bpr_00000000-0000-4000-a000-000000000000" }).success,
-    ).toBe(true);
-    expect(schema.safeParse({}).success).toBe(false);
-    expect(
-      schema.safeParse({
-        fresh: true,
-        sessionId: "bsn_00000000-0000-4000-a000-000000000000",
-      }).success,
-    ).toBe(false);
-  });
-  it("lets a browser session name the machine that runs it", () => {
-    const schema = tool("browser_session_open").input;
-    expect(
-      schema.safeParse({
-        environmentId: "env_00000000-0000-4000-a000-000000000000",
-        fresh: true,
-      }).success,
-    ).toBe(true);
-    // A machine is not an identity, so naming one still leaves the identity
-    // choice required.
-    expect(
-      schema.safeParse({ environmentId: "env_00000000-0000-4000-a000-000000000000" }).success,
-    ).toBe(false);
-    expect(schema.safeParse({ environmentId: "runner-1", fresh: true }).success).toBe(false);
-  });
   it("keeps both Trigger tool input schemas union-free", () => {
     for (const name of ["trigger_read", "trigger_write"] as const) {
       const json = JSON.stringify(

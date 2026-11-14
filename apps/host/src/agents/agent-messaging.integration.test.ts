@@ -1,3 +1,5 @@
+import { generateKeyPairSync } from "node:crypto";
+import { BrowserAttachTicketSigner } from "../browser/browser-ticket.js";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
@@ -67,16 +69,20 @@ integration("agent-to-agent messaging round trip", () => {
   const realtime = new RealtimeHub({
     store,
   });
+  const tabBrowser = new BrowserService({
+    deploymentId: createId("deployment"),
+    hostOrigin: new URL("https://host.test"),
+    onSessionsChanged: () => {},
+    onDeploymentEvent: () => {},
+    repository: store,
+    signer: new BrowserAttachTicketSigner({
+      keyId: "test",
+      privateKey: generateKeyPairSync("ed25519").privateKey,
+    }),
+  });
   const browserTabs = new BrowserTabGroupService({
     groups: new BrowserTabGroupStore(database),
-    browser: {
-      flushPendingTabDescriptors: async () => undefined,
-      agentReachableSavedSession: BrowserService.prototype.agentReachableSavedSession,
-      agentMayAccessSession: BrowserService.prototype.agentMayAccessSession,
-      listAgentProfiles: async () => [],
-      tabOccupants: () => [],
-      tabStateOf: () => undefined,
-    } as unknown as BrowserService,
+    browser: tabBrowser,
     publish: vi.fn(),
   });
   const claimsByToken = new Map<string, RunToolScope>();
@@ -163,6 +169,7 @@ integration("agent-to-agent messaging round trip", () => {
     `.execute(database);
   });
   afterAll(async () => {
+    await tabBrowser.close();
     await database.destroy();
   });
   it("authorizes person_show against saved-tab ownership and Thread visibility", async () => {
@@ -546,7 +553,7 @@ integration("agent-to-agent messaging round trip", () => {
       }
     },
   );
-  it("searches asleep saved tabs before pagination and reports matching fields", async () => {
+  it("searches asleep saved tabs before pagination by title, group, profile and URL", async () => {
     const f = await createMessagingFixture();
     const sessionId = createBrowserSessionId();
     await store.createBrowserSession({
@@ -571,8 +578,6 @@ integration("agent-to-agent messaging round trip", () => {
         openerId: null,
       }),
     );
-    await tabs.recordChanges(sessionId, rows.slice(64), []);
-    await tabs.suspend(sessionId);
     const recentSessionId = createBrowserSessionId();
     await store.createBrowserSession({
       id: recentSessionId,
@@ -584,15 +589,18 @@ integration("agent-to-agent messaging round trip", () => {
       runtimeId: "test",
     });
     await tabs.recordChanges(recentSessionId, rows.slice(0, 64), []);
-    const read = async (input: Record<string, string>) => {
-      const result = await service.handle(f.tokenA, {
-        type: "browser.tab.read",
-        requestId: randomUUID(),
-        input,
-      });
-      if (result.type !== "browser.tab.read.result") throw new Error("Expected tab read");
-      return result.result;
-    };
+    await tabs.recordChanges(sessionId, rows.slice(64), []);
+    await tabs.suspend(sessionId);
+    const read = (input: Record<string, string>) =>
+      browserTabs.read(
+        {
+          kind: "agent",
+          ownerId: f.userId,
+          threadId: f.threadA.id,
+          agentBindingId: `run:${claimsByToken.get(f.tokenA)!.runId}`,
+        },
+        { limit: 64, ...input },
+      );
     const first = await read({});
     expect(first.tabs).toHaveLength(64);
     expect(first.tabs.every((tab) => tab.title === "Recent")).toBe(true);
@@ -600,10 +608,8 @@ integration("agent-to-agent messaging round trip", () => {
       query: "gmail",
     });
     expect(found.tabs).toHaveLength(5);
-    expect(
-      found.tabs.every((tab) => tab.state === "asleep" && tab.matchedFields?.includes("title")),
-    ).toBe(true);
-    expect(found.totalMatches).toBe(5);
+    expect(found.tabs.every((tab) => tab.state === "asleep" && tab.title === "Gmail")).toBe(true);
+    expect(found.total).toBe(5);
     await new BrowserTabGroupStore(database).group(f.userId, {
       tabIds: [rows[69]!.id],
       title: "Archive",
@@ -618,7 +624,7 @@ integration("agent-to-agent messaging round trip", () => {
     ).toMatchObject([
       {
         tabId: rows[69]!.id,
-        matchedFields: ["group"],
+        groupId: expect.any(String),
       },
     ]);
     expect(
@@ -626,13 +632,13 @@ integration("agent-to-agent messaging round trip", () => {
         await read({
           query: "Guest",
         })
-      ).tabs.every((tab) => tab.matchedFields?.includes("profile")),
+      ).tabs.every((tab) => tab.profile === null),
     ).toBe(true);
     const paged = await read({
       query: "example",
     });
     expect(paged.tabs).toHaveLength(64);
-    expect(paged.totalMatches).toBe(65);
+    expect(paged.total).toBe(65);
     expect(paged.nextCursor).toBeTruthy();
     expect(
       (
@@ -647,14 +653,14 @@ integration("agent-to-agent messaging round trip", () => {
         query: "gmail",
         cursor: paged.nextCursor!,
       }),
-    ).rejects.toThrow("different search");
+    ).rejects.toThrow("This tab cursor belongs to a different reader or search.");
     await tabs.close(f.userId, rows[69]!.id);
     expect(
       (
         await read({
           query: "gmail",
         })
-      ).totalMatches,
+      ).total,
     ).toBe(4);
   });
   it("round-trips typed agent authorship across Threads", async () => {

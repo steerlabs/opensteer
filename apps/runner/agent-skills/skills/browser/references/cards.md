@@ -1,6 +1,6 @@
 # Saved payment cards
 
-At checkout, call `use_card` with the merchant site, reason and current browser sessionId.
+At checkout, call `use_card` with the merchant site, reason and the checkout `tabId`.
 The call waits for the person and returns the outcome. Pending grants no access; do not poll,
 resubmit or route around it. A decline ends this attempt: do not ask again. An expired approval
 needs a fresh request if the purchase is still wanted. For no-saved-card, passwords-off or passwords-not-set-up, tell the person to open Passwords

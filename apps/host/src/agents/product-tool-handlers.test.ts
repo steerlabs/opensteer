@@ -1,3 +1,4 @@
+import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { messageItem } from "../mcp/thread-items.js";
 import type { AgentTriggerManager } from "../mcp/handlers/triggers.js";
 import { mcpToolCallId } from "../integrations/mcp-call-id.js";
@@ -20,11 +21,7 @@ import {
 } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
-import {
-  createBrowserSessionId,
-  HarnessInstanceCatalogSchema,
-  type HarnessInstanceCatalog,
-} from "@opensteer/protocol";
+import { HarnessInstanceCatalogSchema, type HarnessInstanceCatalog } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { BrowserService } from "../browser/browser-service.js";
 import { type RunToolTokenService } from "./run-tool-tokens.js";
@@ -283,17 +280,19 @@ describe("Product tool handlers", () => {
       originatingThreadId: claims.threadId,
     });
   });
-  it.each(["use-saved-login"] as const)(
-    "keeps %s Browser Session requests admitted through the single sign-in permission",
+  it.each(["use_saved_login", "copy_chrome_cookies"] as const)(
+    "keeps %s tab requests admitted through the single sign-in permission",
     async (type) => {
       const current = thread(currentThreadId, nativeHarnessId, "Worker");
       const result = {
         status: "unavailable",
         site: "https://example.com",
-        reason: "no-saved-login",
+        reason: "unsupported",
       } as const;
       const useSavedLogin = vi.fn(async () => result);
+      const agentCopyChromeCookies = vi.fn(async () => result);
       const { service, admitRunToolCall } = makeService({
+        browserSources: { agentCopyChromeCookies },
         savedLogins: {
           useSavedLogin,
           useCard: async () => {
@@ -307,27 +306,22 @@ describe("Product tool handlers", () => {
         messages: [],
         threads: [current],
       });
-      const sessionId = createBrowserSessionId();
-      const requestId = crypto.randomUUID();
+      const tabId = BrowserSurfaceIdSchema.parse("sign-in-tab");
       await expect(
-        service.handle("run-token", {
-          requestId,
+        service.service.callTool(
+          "run-token",
           type,
-          sessionId,
-          site: result.site,
-          reason: "Read the account",
-        }),
-      ).resolves.toEqual({
-        requestId,
-        type: `${type}.result`,
-        result,
-      });
-      expect(useSavedLogin).toHaveBeenCalledWith(
-        expect.objectContaining({
-          sessionId,
-          site: result.site,
-        }),
-      );
+          {
+            tabId,
+            site: result.site,
+            reason: "Read the account",
+          },
+          { operationKey: "tab-sign-in" },
+        ),
+      ).resolves.toEqual(result);
+      expect(
+        type === "use_saved_login" ? useSavedLogin : agentCopyChromeCookies,
+      ).toHaveBeenCalledWith(expect.objectContaining({ tabId, site: result.site }));
       expect(admitRunToolCall).not.toHaveBeenCalled();
     },
   );
@@ -663,95 +657,6 @@ describe("Product tool handlers", () => {
     expect(enqueueThreadInput).not.toHaveBeenCalled();
   });
 
-  it("carries a chosen browser machine through and refuses one this user cannot reach", async () => {
-    const current = thread(currentThreadId, nativeHarnessId, "Owner task", null, {});
-    const freshSummary = {
-      access: "read-write" as const,
-      activeAttachmentCount: 1,
-      attached: true,
-      createdAt: now,
-      id: createBrowserSessionId(),
-      origin: "agent" as const,
-      placement: {
-        kind: "runner" as const,
-        runnerId: createId("runner"),
-      },
-      profileId: null,
-      profileName: null,
-      runtimeId: "hosted-browser-1",
-      state: "ready" as const,
-      updatedAt: now,
-    };
-    const openAgentSession = vi.fn(async () => ({
-      session: freshSummary,
-      wasExisting: false,
-    }));
-    const { service } = makeService({
-      browser: {
-        openAgentSession,
-      },
-      commands: {
-        delegateThread: vi.fn(),
-        enqueueThreadInput: vi.fn(),
-      },
-      environments: [environmentId, targetEnvironmentId],
-      messages: [],
-      threads: [current],
-    });
-    await expect(
-      service.handle("run-token", {
-        environmentId: targetEnvironmentId,
-        fresh: true,
-        requestId: crypto.randomUUID(),
-        type: "browser.session.open",
-      }),
-    ).resolves.toMatchObject({
-      type: "browser.session.open.result",
-    });
-    expect(openAgentSession).toHaveBeenCalledWith(
-      expect.objectContaining({
-        chosenEnvironmentId: targetEnvironmentId,
-        // The Run's own machine still travels, so an unnamed session keeps
-        // landing next to the agent.
-        environmentId,
-        fresh: true,
-      }),
-    );
-    await expect(
-      service.handle("run-token", {
-        environmentId: createId("environment"),
-        fresh: true,
-        requestId: crypto.randomUUID(),
-        type: "browser.session.open",
-      }),
-    ).rejects.toMatchObject({
-      code: "bad_request",
-      message: expect.stringContaining("not exist"),
-    });
-    const { service: unreachable } = makeService({
-      browser: {
-        openAgentSession: vi.fn(),
-      },
-      commands: {
-        delegateThread: vi.fn(),
-        enqueueThreadInput: vi.fn(),
-      },
-      environments: [environmentId, targetEnvironmentId],
-      foreignEnvironmentId: targetEnvironmentId,
-      messages: [],
-      threads: [current],
-    });
-    await expect(
-      unreachable.handle("run-token", {
-        environmentId: targetEnvironmentId,
-        fresh: true,
-        requestId: crypto.randomUUID(),
-        type: "browser.session.open",
-      }),
-    ).rejects.toMatchObject({
-      code: "forbidden",
-    });
-  });
   it("admits full access requests from %s before calling the service", async () => {
     const current = thread(currentThreadId, nativeHarnessId, "Client", null, {});
     const request = vi.fn(async () => ({

@@ -1,3 +1,23 @@
+import { createBrowserSessionId, BrowserSurfaceIdSchema } from "@opensteer/protocol";
+import {
+  BrowserAgentTabListQuerySchema,
+  BrowserAgentTabListResultSchema,
+  BrowserAgentTabUseInputSchema,
+  BrowserAgentTabUseResultSchema,
+  BrowserAgentTabOpenInputSchema,
+  BrowserAgentTabOpenResultSchema,
+  BrowserAgentTabCloseInputSchema,
+  BrowserAgentTabCloseResultSchema,
+  BrowserAgentTabOrganizeInputSchema,
+  BrowserAgentTabOrganizeResultSchema,
+  type BrowserAgentTabOpenResult,
+  type BrowserAgentTab,
+  type BrowserAgentTabGroup,
+} from "@opensteer/protocol/browser-agent";
+import {
+  BrowserActionRequestSchema,
+  BrowserActionResponseSchema,
+} from "@opensteer/protocol/browser-actions";
 import { SessionCdpRouter, type CdpParameters } from "@opensteer/browser-core";
 import {
   BrowserController,
@@ -54,10 +74,10 @@ interface CommandTrace {
 }
 type Kit = Awaited<ReturnType<typeof startActionJourney>>;
 
-async function startActionJourney(id: string, report: Record<string, unknown>) {
+export async function startActionJourney(id: string, report: Record<string, unknown>) {
   const site = await serveHarnessActionsFixture();
   cleanup.push(() => site.close());
-  const claims = validClaims();
+  const claims = { ...validClaims(), sessionId: createBrowserSessionId() };
   const browser = await new TestChromiumLauncher({
     executablePath,
     chromiumSandbox: false,
@@ -186,7 +206,7 @@ async function startActionJourney(id: string, report: Record<string, unknown>) {
   ) => {
     const record: Record<string, unknown> = {
       program,
-      args: ["--session", claims.sessionId, ...(options.inventory ? [] : ["--tab", targetId])],
+      args: options.inventory ? [] : ["--tab", targetId],
     };
     runs.push(record);
     try {
@@ -365,4 +385,221 @@ export function expectGroupsReleasedBeforeDetach(kit: Kit): string[] {
     expect(releases[0]!.finished!, key).toBeLessThanOrEqual(detach!.at);
   }
   return [...groups.keys()];
+}
+
+/** Two real Chromium browsers plus `phones` fake phone browsers, each its own session. */
+export async function startTabJourney({ phones: phoneCount = 1 } = {}) {
+  const first = await startActionJourney("20", {});
+  const second = await startActionJourney("20", {});
+  const kits = [first, second];
+  const calls: Array<{ path: string; input: Record<string, unknown> }> = [];
+  const opens = new Map<string, BrowserAgentTabOpenResult>();
+  const groups: BrowserAgentTabGroup[] = [];
+  let uncertainOpen = false;
+  const phones = Array.from({ length: phoneCount }, () => {
+    const id = BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
+    return {
+      id,
+      session: createBrowserSessionId(),
+      binding: {
+        surfaceId: id,
+        documentId: "phone-doc",
+        geometryRevision: 1,
+        title: "Phone",
+        url: "https://phone.test/",
+        state: "live",
+      },
+    };
+  });
+  const phoneId = phones[0]!.id;
+  // A page read on the first phone waits here while held.
+  let heldQuery: { entered: () => void; released: Promise<void> } | null = null;
+  const bridge = await startHarnessBridge(
+    async (method, parameters, sessionId, browserSessionId) => {
+      const kit = kits.find((candidate) => candidate.claims.sessionId === browserSessionId);
+      if (!kit) throw new Error("Wrong browser binding");
+      await kit.hooks.before?.(method, parameters, sessionId);
+      const result = await sendAsAgent(
+        (message) => kit.controller.handle(message),
+        kit.sink.messages,
+        method,
+        parameters,
+        sessionId,
+      );
+      await kit.hooks.after?.(method, parameters);
+      return result;
+    },
+    undefined,
+    {
+      agent: async (path, input, query) => {
+        calls.push({ path, input });
+        const rows: BrowserAgentTab[] = kits.flatMap((kit) =>
+          kit.ledger.snapshot().map((tab) => ({
+            tabId: tab.id,
+            title: tab.title,
+            url: tab.url,
+            profile: null,
+            computer: "Test computer",
+            state: tab.state === "suspended" ? "asleep" : "open",
+            usedByThisTask: true,
+            usedByOtherTask: false,
+            groupId: null,
+          })),
+        );
+        for (const phone of phones)
+          rows.push({
+            tabId: phone.id,
+            title: "Phone",
+            url: phone.binding.url,
+            profile: null,
+            computer: "Phone",
+            state: "open",
+            usedByThisTask: false,
+            usedByOtherTask: false,
+            groupId: null,
+          });
+        if (path === "tabs") {
+          const parsed = BrowserAgentTabListQuerySchema.parse(Object.fromEntries(query));
+          const filtered = rows.filter(
+            (tab) =>
+              (!parsed.query || `${tab.title} ${tab.url}`.includes(parsed.query)) &&
+              (!parsed.state || tab.state === parsed.state),
+          );
+          const offset = Number(parsed.cursor ?? 0);
+          return BrowserAgentTabListResultSchema.parse({
+            tabs: filtered.slice(offset, offset + parsed.limit),
+            groups,
+            total: filtered.length,
+            nextCursor:
+              offset + parsed.limit < filtered.length ? String(offset + parsed.limit) : null,
+          });
+        }
+        if (path === "tabs/use") {
+          const { tabId } = BrowserAgentTabUseInputSchema.parse(input);
+          const phone = phones.find((candidate) => candidate.id === tabId);
+          if (phone)
+            return BrowserAgentTabUseResultSchema.parse({
+              tabId,
+              sessionId: phone.session,
+              backend: "actions",
+              reloaded: false,
+            });
+          const kit = kits.find((candidate) =>
+            candidate.ledger.snapshot().some((tab) => tab.id === tabId),
+          );
+          if (!kit) throw new Error("Tab unavailable");
+          return BrowserAgentTabUseResultSchema.parse({
+            tabId,
+            sessionId: kit.claims.sessionId,
+            backend: "cdp",
+            reloaded: false,
+          });
+        }
+        if (path === "tabs/open") {
+          const parsed = BrowserAgentTabOpenInputSchema.parse(input);
+          let result = opens.get(parsed.operationKey);
+          if (!result) {
+            const kit = second;
+            await kit.controller.handle({
+              type: "surface.open",
+              ...(parsed.url === "about:blank" ? {} : { url: parsed.url! }),
+            });
+            result = BrowserAgentTabOpenResultSchema.parse({
+              tabId: kit.ledger.active()!.surface.id,
+              sessionId: kit.claims.sessionId,
+              backend: "cdp",
+            });
+            opens.set(parsed.operationKey, result);
+          }
+          if (uncertainOpen) {
+            uncertainOpen = false;
+            // The Host's own uncertain-open refusal: a conflict naming its reason.
+            return Response.json(
+              {
+                error: {
+                  code: "conflict",
+                  message:
+                    "Opening did not confirm its outcome. Retry this request to recover its original page.",
+                  reason: "browser-tab-open-outcome-unknown",
+                  retryable: false,
+                },
+              },
+              { status: 409 },
+            );
+          }
+          return result;
+        }
+        if (path === "tabs/close") {
+          const { tabIds } = BrowserAgentTabCloseInputSchema.parse(input);
+          for (const tabId of tabIds) {
+            const kit = kits.find((candidate) =>
+              candidate.ledger.snapshot().some((tab) => tab.id === tabId),
+            )!;
+            await kit.ledger.closeSurface(tabId);
+          }
+          return BrowserAgentTabCloseResultSchema.parse({ closed: tabIds, failed: [] });
+        }
+        if (path === "tabs/organize") {
+          const parsed = BrowserAgentTabOrganizeInputSchema.parse(input);
+          return BrowserAgentTabOrganizeResultSchema.parse({ action: parsed.action });
+        }
+        throw new Error(`Unknown agent route ${path}`);
+      },
+      actions: async (raw) => {
+        const message = BrowserActionRequestSchema.parse(raw);
+        const type = message.action.type;
+        const phone = phones.find((candidate) => candidate.session === message.sessionId);
+        if (!phone) throw new Error("Wrong phone binding");
+        const phoneBinding = phone.binding;
+        if (type === "dom.query" && phone === phones[0] && heldQuery) {
+          heldQuery.entered();
+          await heldQuery.released;
+        }
+        const response = BrowserActionResponseSchema.parse({
+          id: message.id,
+          result:
+            type === "session.tabs"
+              ? { type, tabs: [phoneBinding], nextCursor: null }
+              : type === "surface.attach"
+                ? { type, binding: phoneBinding }
+                : type === "page.info"
+                  ? {
+                      type,
+                      binding: phoneBinding,
+                      loading: false,
+                      navigationFailed: false,
+                      sizedByAgent: false,
+                      dialog: null,
+                    }
+                  : type === "dom.query"
+                    ? { type, value: "Phone text" }
+                    : { type, outcome: "acted", trusted: false },
+        });
+        if (!("result" in response)) throw new Error("Action fixture returned an error");
+        return response.result;
+      },
+    },
+  );
+  cleanup.push(() => bridge.close());
+  return {
+    first,
+    second,
+    calls,
+    opens,
+    groups,
+    phoneId,
+    phoneIds: phones.map((phone) => phone.id),
+    /** Holds the first phone's next page reads until `release`. */
+    holdPhoneQuery: () => {
+      const entered = Promise.withResolvers<void>();
+      const released = Promise.withResolvers<void>();
+      heldQuery = { entered: () => entered.resolve(), released: released.promise };
+      return { entered: entered.promise, release: () => released.resolve() };
+    },
+    uncertainOpen: () => {
+      uncertainOpen = true;
+    },
+    run: (program: string, tab?: string) =>
+      runHarness(bridge.url, first.claims.sessionId, tab, programAssertions + program),
+  };
 }

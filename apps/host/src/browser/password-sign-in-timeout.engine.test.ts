@@ -139,7 +139,7 @@ describe.each(holdEngines)("$label held MCP", (engine) => {
       const turn = await stack.sendMessage({
         threadId,
 
-        text: `This is a fake-data transport test. Call use_saved_login exactly once with sessionId bsn_00000000-0000-4000-8000-000000000001, site https://example.test, reason Test held sign-in. This fake session does not need opening or inspecting. Wait for this same tool call to return after ${holdMs / 1_000} seconds. Do not retry it or run other tools while it is pending. The ready result's account field contains an unpredictable marker. Reply with exactly that marker after receiving it. Never browse, open files, or retrieve credentials.`,
+        text: `This is a fake-data transport test. Call use_saved_login exactly once with tabId tab-00000000-0000-4000-8000-000000000001, site https://example.test, reason Test held sign-in. This fake tab does not need opening or inspecting. Wait for this same tool call to return after ${holdMs / 1_000} seconds. Do not retry it or run other tools while it is pending. The ready result's account field contains an unpredictable marker. Reply with exactly that marker after receiving it. Never browse, open files, or retrieve credentials.`,
       });
       lastAnswer = turn.assistantText;
       expect(calls).toBe(1);
