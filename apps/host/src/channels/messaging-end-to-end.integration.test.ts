@@ -1,4 +1,3 @@
-import { emptyAutomaticModelConfig } from "@opensteer/core";
 import { testRunnerDescriptor } from "@opensteer/database/test-support/store";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 
@@ -144,7 +143,6 @@ integration("messaging end to end", () => {
     await sql`insert into principals(id,kind,user_id,display_name) values ('pri_00000000-0000-4000-8000-000000000001','system',null,'Opensteer'),(${"pri_" + randomUUID()},'user',${personal.userId},'Alex') on conflict do nothing`.execute(
       database,
     );
-    await store.setAutomaticModelConfig(personal.userId, emptyAutomaticModelConfig);
     credentials = new CredentialService({ key: randomBytes(32), store });
     await credentials.initialize();
     ownerUserId = personal.userId;

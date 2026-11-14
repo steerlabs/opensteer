@@ -3,7 +3,6 @@ import { PrincipalIdSchema } from "@opensteer/channel-core";
 import {
   OpensteerError,
   PersonalSettingsSchema,
-  emptyAutomaticModelConfig,
   emptyExecutionPreferences,
   type ComputerFolder,
   type UserId,
@@ -49,7 +48,6 @@ export async function initializePersonalSettings(
       timeZone: null,
       quietTaskDays: 0,
       executionPreferences: emptyExecutionPreferences,
-      backgroundModelPreferences: emptyAutomaticModelConfig,
     })
     .onConflict((c) => c.column("singletonKey").doNothing())
     .executeTakeFirstOrThrow();

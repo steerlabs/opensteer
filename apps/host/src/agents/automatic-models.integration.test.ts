@@ -1,20 +1,22 @@
 import {
-  automaticModelWants,
+  backgroundModelWants,
   createId,
-  emptyAutomaticModelConfig,
   HarnessIdSchema,
   ModelSelectionSchema,
   SpecialistManifestSchema,
-  type AutomaticModelConfig,
+  type AgentHomeSettings,
   type EnvironmentId,
-  type HarnessInstanceId,
   type SpecialistManifest,
   type Thread,
   type ThreadAccessMode,
   type UserId,
 } from "@opensteer/core";
 import type { HarnessInstanceRecord } from "@opensteer/database";
-import { HarnessInstanceCatalogSchema, type HarnessObservedConnection } from "@opensteer/protocol";
+import {
+  HarnessInstanceCatalogSchema,
+  type AgentHomeSettingsFileView,
+  type HarnessObservedConnection,
+} from "@opensteer/protocol";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   readAutomaticModelPreview,
@@ -72,7 +74,8 @@ interface AccountSpec {
 function world(
   specs: readonly AccountSpec[],
   options: {
-    config?: AutomaticModelConfig;
+    settings?: AgentHomeSettings;
+    file?: AgentHomeSettingsFileView;
     /** Indexes of accounts the person excluded. */
     exclude?: readonly number[];
     accessModes?: readonly ThreadAccessMode[];
@@ -123,12 +126,17 @@ function world(
       })),
     }),
   }));
-  const config = options.config ?? structuredClone(emptyAutomaticModelConfig);
-  config.excludedAccounts.push(...(options.exclude ?? []).map((index) => harnesses[index]!.id));
+  const settings: AgentHomeSettings = {
+    backgroundModels: {
+      ...options.settings?.backgroundModels,
+      excludedAccounts: (options.exclude ?? []).map((index) => harnesses[index]!.id),
+    },
+  };
+  const file = options.file ?? { status: "valid" };
   const dependencies = {
     store: {
       database: owner.database,
-      getAutomaticModelConfig: async () => config,
+      getAgentHomeSettings: async () => ({ settings, file }),
       listEnvironmentsForUser: async () => [
         {
           id: main,
@@ -147,6 +155,7 @@ function world(
       isAvailable: () => true,
       canRunHarness: () => true,
       harnessAccessModes: () => options.accessModes ?? ["full-access"],
+      identityForEnvironment: () => ({ capabilities: ["background-text-v1"] }),
     },
   } as unknown as AutomaticModelDependencies &
     Parameters<typeof readAutomaticModelPreview>[0] &
@@ -154,7 +163,6 @@ function world(
   return {
     dependencies,
     harnesses,
-    config,
   };
 }
 const anyAccount = () =>
@@ -197,7 +205,7 @@ describe("automatic model resolution on the Host", () => {
     ]);
     const { candidates } = await resolveAutomaticModels(dependencies, {
       userId,
-      wants: (config) => automaticModelWants(config, "light"),
+      wants: (current) => backgroundModelWants(current, "light"),
       canRun: anyAccount,
     });
     expect(candidates.map((candidate) => candidate.harnessInstanceId)).toEqual([harnesses[1]!.id]);
@@ -215,7 +223,7 @@ describe("automatic model resolution on the Host", () => {
     ]);
     const { candidates } = await resolveAutomaticModels(dependencies, {
       userId,
-      wants: (config) => automaticModelWants(config, "light"),
+      wants: (current) => backgroundModelWants(current, "light"),
       original: {
         environmentId: main,
         harnessInstanceId: harnesses[0]!.id,
@@ -250,7 +258,7 @@ describe("automatic model resolution on the Host", () => {
     const own = harnesses[0]!.id;
     const { candidates, skipped } = await resolveAutomaticModels(dependencies, {
       userId,
-      wants: (config) => automaticModelWants(config, "light"),
+      wants: (current) => backgroundModelWants(current, "light"),
       original: {
         environmentId: main,
         harnessInstanceId: own,
@@ -267,7 +275,13 @@ describe("automatic model resolution on the Host", () => {
       }),
     );
   });
-  it("previews light as the general preference and deep on the hosting computer, ending with its remembered model", async () => {
+  it("shows what runs each background job: naming anywhere, memory on the hosting computer", async () => {
+    const error = {
+      path: "/Users/alex/Opensteer/settings.json",
+      line: 3,
+      column: 5,
+      message: "Expected double-quoted property name",
+    };
     const { dependencies, harnesses } = world(
       [
         {
@@ -282,6 +296,17 @@ describe("automatic model resolution on the Host", () => {
       ],
       {
         accessModes: ["full-access"],
+        settings: {
+          backgroundModels: {
+            naming: [
+              {
+                engine: HarnessIdSchema.parse("claude"),
+                model: selection("claude-opus-5-5").modelId,
+              },
+            ],
+          },
+        },
+        file: { status: "invalid", error },
       },
     );
     await owner.store.rememberExecutionChoice(userId, {
@@ -296,59 +321,26 @@ describe("automatic model resolution on the Host", () => {
         }),
       },
     });
-    const view = await readAutomaticModelPreview(
-      {
-        ...dependencies,
-        store: {
-          ...dependencies.store,
-          getThreadForOwner: async () => ({
-            environmentId: main,
-            harnessInstanceId: harnesses[1]!.id,
-            accessMode: "full-access",
-            modelSelection: ModelSelectionSchema.parse({
-              providerId: "openai",
-              modelId: "gpt-6.1-terra",
-              options: {},
-            }),
-          }),
-        } as never,
+    // Opus lives on the laptop: naming may use it, memory may not, so nightly memory ends with Chat's model.
+    expect(await readAutomaticModelPreview(dependencies, userId)).toEqual({
+      file: { status: "invalid", error },
+      excludedAccounts: [],
+      naming: {
+        harnessInstanceId: harnesses[0]!.id,
+        accountDisplayName: "Account 1",
+        computerDisplayName: "Laptop",
+        modelDisplayName: "Display claude-opus-5-5",
+        usageLimited: false,
       },
-      userId,
-    );
-    expect(view.light.label).toBe("General preference");
-    expect(view.light.candidates).toEqual([]);
-    // Opus is ranked for deep but lives on the laptop, so only the remembered model qualifies.
-    expect(view.deep.candidates).toEqual([
-      expect.objectContaining({
+      light: null,
+      deep: {
         harnessInstanceId: harnesses[1]!.id,
-        original: true,
-        modelDisplayName: "Display gpt-6.1-terra",
         accountDisplayName: "Account 2",
         computerDisplayName: "Studio Mac",
-        providerDisplayName: "OpenAI",
-      }),
-    ]);
-    expect(view.deep.skipped).toContainEqual(
-      expect.objectContaining({
-        harnessInstanceId: harnesses[0]!.id,
-        reason: "wrong-computer",
-        computerDisplayName: "Laptop",
-      }),
-    );
-    expect(view.accounts.map((account) => account.eligible)).toEqual([true, true]);
-    // Settings is read over cellular links: no snapshot, one selection, no catalog internals.
-    for (const account of view.accounts) {
-      expect(account).not.toHaveProperty("account");
-      expect(Object.keys(account.catalog!.models[0]!).sort()).toEqual([
-        "displayName",
-        "modelId",
-        "providerId",
-      ]);
-    }
-    expect(Object.keys(view.deep.candidates[0]!)).not.toEqual(
-      expect.arrayContaining(["runModelSelection"]),
-    );
-    expect(view.deep.candidates[0]!.modelSelection.modelId).toBe("gpt-6.1-terra");
+        modelDisplayName: "Display gpt-6.1-terra",
+        usageLimited: false,
+      },
+    });
   });
 });
 describe("Settings preview under concurrent account changes", () => {
@@ -368,21 +360,21 @@ describe("Settings preview under concurrent account changes", () => {
       .fn()
       .mockResolvedValueOnce(harnesses)
       .mockResolvedValue(harnesses.slice(1));
-    const getAutomaticModelConfig = vi.fn(dependencies.store.getAutomaticModelConfig);
+    const getAgentHomeSettings = vi.fn(dependencies.store.getAgentHomeSettings);
     const view = await readAutomaticModelPreview(
       {
         ...dependencies,
         store: {
           ...dependencies.store,
-          getAutomaticModelConfig,
+          getAgentHomeSettings,
           listHarnessInstances,
         } as never,
       },
       userId,
     );
     expect(listHarnessInstances).toHaveBeenCalledTimes(1);
-    expect(getAutomaticModelConfig).toHaveBeenCalledTimes(1);
-    expect(view.accounts).toHaveLength(2);
+    expect(getAgentHomeSettings).toHaveBeenCalledTimes(1);
+    expect(view.naming?.harnessInstanceId).toBe(harnesses[0]!.id);
   });
 });
 describe("specialist placement", () => {
@@ -410,13 +402,12 @@ describe("specialist placement", () => {
       specialist,
       caller: extra.caller,
     });
-  const light = (modelId: string) => ({
-    roles: {
-      light: [exact(modelId)],
+  const light = (modelId: string): AgentHomeSettings => ({
+    backgroundModels: {
+      light: [{ engine: HarnessIdSchema.parse("claude"), model: exact(modelId).model }],
     },
-    excludedAccounts: [] as HarnessInstanceId[],
   });
-  it("expands a role in place between exact entries, from the caller's own config", async () => {
+  it("expands a role in place between exact entries, from the caller's own settings", async () => {
     const models = [
       exact("claude-opus-5-5"),
       {
@@ -431,7 +422,7 @@ describe("specialist placement", () => {
         },
       ],
       {
-        config: light("claude-haiku-5-5"),
+        settings: light("claude-haiku-5-5"),
       },
     );
     await expect(
@@ -445,7 +436,7 @@ describe("specialist placement", () => {
         modelId: "claude-haiku-5-5",
       },
     });
-    // The role's model unavailable: the next exact entry follows, nothing is appended.
+    // Neither the role's model nor the recommended order is offered: the next exact entry follows.
     const missing = world(
       [
         {
@@ -453,7 +444,7 @@ describe("specialist placement", () => {
         },
       ],
       {
-        config: light("claude-haiku-5-5"),
+        settings: light("claude-haiku-5-5"),
       },
     );
     await expect(
@@ -476,16 +467,7 @@ describe("specialist placement", () => {
         },
       ],
       {
-        config: {
-          roles: {
-            light: [
-              {
-                engine: HarnessIdSchema.parse("claude"),
-              },
-            ],
-          },
-          excludedAccounts: [],
-        },
+        settings: { backgroundModels: { light: [{ engine: HarnessIdSchema.parse("claude") }] } },
       },
     );
     await expect(
@@ -524,7 +506,7 @@ describe("specialist placement", () => {
         models: [
           {
             ...exact("claude-haiku-5-5"),
-            harnessInstanceId: createId("harnessInstance"),
+            account: createId("harnessInstance"),
           },
         ],
       }).success,

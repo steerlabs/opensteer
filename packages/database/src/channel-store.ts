@@ -63,6 +63,7 @@ import {
   type RunnerId,
   type UserId,
   type ThreadId,
+  excludedBackgroundAccounts,
 } from "@opensteer/core";
 import { type Kysely, type Selectable, sql, type Transaction } from "kysely";
 import type {
@@ -73,7 +74,7 @@ import type {
   IntegrationConnectionTable,
 } from "./schema.js";
 import { executionEnvironmentIsAvailableToUser } from "./execution-authority.js";
-import { getAutomaticModelConfig } from "./background-model-store.js";
+import { readAgentHomeSettings } from "./agent-home-settings-store.js";
 import { enqueueThreadInputInTransaction } from "./store.js";
 import { appendHostDeploymentEvent } from "./deployment-events.js";
 import { assertPersonalOwner } from "./private-resource-owner.js";
@@ -2684,7 +2685,9 @@ async function channelPlacement(
   }
   if (authorized.size === 0)
     throw new ChannelIngressDeferredError("No work location is available with an AI engine");
-  const { excludedAccounts } = await getAutomaticModelConfig(transaction, input.userId);
+  const excludedAccounts = excludedBackgroundAccounts(
+    (await readAgentHomeSettings(transaction, input.userId)).settings,
+  );
   // Snapshot order follows the connected work locations' preference order.
   const snapshot = input.availableEngines.flatMap(({ environmentId }) =>
     accounts

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
-  automaticModelWants,
+  backgroundModelWants,
+  excludedBackgroundAccounts,
   type AgentEvent,
   type EnvironmentId,
   type ResolvedModelCandidate,
@@ -111,7 +112,7 @@ export class ThreadNaming {
       { store, runners },
       {
         userId: input.requestedBy,
-        wants: (config) => automaticModelWants(config, "light"),
+        wants: (settings) => backgroundModelWants(settings, "naming"),
         original: { ...input, fromPastRun: true },
         canRun: backgroundTextSupport(runners),
       },
@@ -135,10 +136,10 @@ export class ThreadNaming {
         // Checked once a slot is free, just before sending: the wait can outlast an exclusion.
         const identity = runners.identityForEnvironment(candidate.environmentId);
         if (!identity) return { failure: "offline" as const };
-        const [current, harness, config] = await Promise.all([
+        const [current, harness, { settings }] = await Promise.all([
           store.getThreadNamingInput(threadId),
           store.getHarnessInstance(candidate.harnessInstanceId),
-          store.getAutomaticModelConfig(input.requestedBy),
+          store.getAgentHomeSettings(input.requestedBy),
         ]);
         if (
           !current ||
@@ -150,7 +151,7 @@ export class ThreadNaming {
           !harness?.enabled ||
           harness.removedAt ||
           harness.runtimeRevision !== candidate.harnessRevision ||
-          config.excludedAccounts.includes(candidate.harnessInstanceId) ||
+          excludedBackgroundAccounts(settings).includes(candidate.harnessInstanceId) ||
           !(await store.environmentIsAvailableToUser(candidate.environmentId, input.requestedBy))
         )
           return { failure: "account-changed" as const };

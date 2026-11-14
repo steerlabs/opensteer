@@ -965,6 +965,7 @@ describe("HostCommandDispatcher model selection", () => {
           previousAssignment: null,
           previousRun: null,
         }),
+        getAgentHomeSettings: async () => ({ settings: {}, file: { status: "missing" } }),
         loadRunDispatchContext: async () => ({
           providerSessionStateLayout: "session",
           personalContext: true,
@@ -1142,6 +1143,7 @@ describe("HostCommandDispatcher run planning", () => {
             previousAssignment: null,
             previousRun: null,
           }),
+          getAgentHomeSettings: async () => ({ settings: {}, file: { status: "missing" } }),
           loadRunDispatchContext: async () => ({
             providerSessionStateLayout: "session",
             personalContext: true,

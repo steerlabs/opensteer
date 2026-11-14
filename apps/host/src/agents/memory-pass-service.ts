@@ -1,5 +1,5 @@
 import {
-  automaticModelWants,
+  backgroundModelWants,
   ExecutionPreferencesSchema,
   ModelSelectionSchema,
   OpensteerError,
@@ -158,8 +158,8 @@ export class MemoryPassService {
       { store, runners },
       {
         userId: settings.ownerId,
-        wants: (config) =>
-          automaticModelWants(config, trigger.systemRole === "memory-light" ? "light" : "deep"),
+        wants: (settings) =>
+          backgroundModelWants(settings, trigger.systemRole === "memory-light" ? "light" : "deep"),
         original:
           trigger.systemRole === "memory-nightly"
             ? await this.remembered(settings.ownerId)

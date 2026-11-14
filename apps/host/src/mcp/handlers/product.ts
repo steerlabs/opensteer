@@ -64,6 +64,7 @@ import {
   type Message,
   type Thread,
   type ThreadAccessMode,
+  excludedBackgroundAccounts,
 } from "@opensteer/core";
 import type { BrowserUsageCredit, OpensteerStore } from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
@@ -1537,8 +1538,8 @@ export class ProductToolHandlers {
     };
   }
   async #automaticDefault(userId: UserId, environmentId: EnvironmentId) {
-    const [{ excludedAccounts }, harnesses, catalogs] = await Promise.all([
-      this.#store.getAutomaticModelConfig(userId),
+    const [{ settings }, harnesses, catalogs] = await Promise.all([
+      this.#store.getAgentHomeSettings(userId),
       this.#store.listHarnessInstances({ environmentIds: [environmentId] }),
       this.#store.listHarnessCatalogs([environmentId]),
     ]);
@@ -1554,7 +1555,7 @@ export class ProductToolHandlers {
         catalog:
           catalogs.find((record) => record.harnessInstanceId === harness.id)?.catalog ?? null,
       })),
-      excludedAccounts,
+      excludedAccounts: excludedBackgroundAccounts(settings),
       canRun: () => ({ ok: true }),
     });
     return chosen

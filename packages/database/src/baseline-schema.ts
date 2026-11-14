@@ -306,7 +306,6 @@ create table personal_settings (
   "time_zone" text,
   "quiet_task_days" integer not null,
   "execution_preferences" jsonb not null,
-  "background_model_preferences" jsonb not null,
   primary key ("singleton_key")
 );
 

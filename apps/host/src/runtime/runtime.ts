@@ -19,6 +19,7 @@ import {
 import { TaskAdmissionService } from "../threads/task-admission-service.js";
 import {
   personalSettings,
+  reportAgentHomeSettings,
   reportAgentHomeSkills,
   ensureDeployment,
   personalDeploymentOwner,
@@ -1676,6 +1677,18 @@ export async function createHostRuntime(
             report,
           );
           if (changed) notices.notify({ runnerId: identity.runnerId });
+        },
+        onSettingsReport: async (identity, report) => {
+          if (!identity.environmentIds.includes(report.environmentId)) return;
+          await reportAgentHomeSettings(
+            database,
+            {
+              ...identity.fence,
+              environmentId: report.environmentId,
+              bindingGeneration: report.bindingGeneration,
+            },
+            report,
+          );
         },
         onLive: (_identity, live) => {
           const frame = liveRuns.apply(live.progress);

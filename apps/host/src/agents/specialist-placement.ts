@@ -39,7 +39,7 @@ export async function specialistPlacement(
 ): Promise<DelegationPlacement> {
   const { candidates, skipped } = await resolveAutomaticModels(dependencies, {
     userId: request.userId,
-    wants: (config) => expandModelWants(request.specialist.models, config),
+    wants: (settings) => expandModelWants(request.specialist.models, settings),
     original: request.specialist.fallback === "caller" ? request.caller : undefined,
     canRun: personalExecution(dependencies.runners, request),
   });

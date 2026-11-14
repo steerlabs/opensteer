@@ -1,6 +1,6 @@
+import type { AgentHomeSettingsState } from "@opensteer/database";
 import {
   createId,
-  emptyAutomaticModelConfig,
   ModelSelectionSchema,
   type HarnessInstanceId,
   type ResolvedModelCandidate,
@@ -54,7 +54,10 @@ function fixture() {
   const store = {
     getThreadNamingInput: vi.fn(async () => input),
     getHarnessInstance: vi.fn(async () => ({ enabled: true, removedAt: null, runtimeRevision: 1 })),
-    getAutomaticModelConfig: vi.fn(async () => structuredClone(emptyAutomaticModelConfig)),
+    getAgentHomeSettings: vi.fn(async (): Promise<AgentHomeSettingsState> => ({
+      settings: {},
+      file: { status: "missing" },
+    })),
     environmentIsAvailableToUser: vi.fn(async () => true),
     applyGeneratedThreadName: vi.fn(async () => ({ events: [] })),
     listThreadNamingCandidates: vi.fn(async () => [{ id: threadId }]),
@@ -272,9 +275,11 @@ it.each(["excluded", "revoked"])(
       },
     );
     if (change === "excluded")
-      f.store.getAutomaticModelConfig.mockResolvedValue({
-        roles: {},
-        excludedAccounts: [first.harnessInstanceId as HarnessInstanceId],
+      f.store.getAgentHomeSettings.mockResolvedValue({
+        settings: {
+          backgroundModels: { excludedAccounts: [first.harnessInstanceId as HarnessInstanceId] },
+        },
+        file: { status: "valid" },
       });
     else f.store.environmentIsAvailableToUser.mockResolvedValue(false as never);
     releases.splice(0).forEach((release) => release());

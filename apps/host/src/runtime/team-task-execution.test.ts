@@ -1,10 +1,5 @@
 import { expect, it } from "vitest";
-import {
-  createId,
-  emptyAutomaticModelConfig,
-  emptyExecutionPreferences,
-  HarnessIdSchema,
-} from "@opensteer/core";
+import { createId, emptyExecutionPreferences, HarnessIdSchema } from "@opensteer/core";
 import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { resolveTeamTaskExecution } from "./team-task-execution.js";
 
@@ -30,7 +25,7 @@ it("admits a team task using the engine's default when no personal model was cho
   });
   const dependencies = {
     store: {
-      getAutomaticModelConfig: async () => emptyAutomaticModelConfig,
+      getAgentHomeSettings: async () => ({ settings: {}, file: { status: "missing" as const } }),
       listEnvironmentsForUser: async () => [{ id: environmentId, name: "This computer" }],
       listHarnessInstances: async () => [
         {

@@ -1284,7 +1284,7 @@ describe.each(qualifiedEngines)("$label Thread names and symbols", (engine) => {
       // The light model this account names with, as Settings reports it.
       const automatic = await active.api["automaticModels.get"]({});
       if (!automatic.ok) throw new Error(automatic.error.message);
-      evidence.lightModel = automatic.data.light.candidates[0]?.modelSelection ?? null;
+      evidence.lightModel = automatic.data.naming?.modelDisplayName ?? null;
       // Naming is the Host's own job beside the Run; it settles within its deadline.
       const named = () =>
         active.host.store.database

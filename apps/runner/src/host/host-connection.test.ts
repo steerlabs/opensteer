@@ -135,6 +135,7 @@ describe("AgentsWorkSession", () => {
       });
       const runtime = {
         observeAgentHomeSkills: () => undefined,
+        observeAgentHomeSettings: () => undefined,
         subscribeHarnessPreparation: () => () => undefined,
         handleCommand: async (command: RunnerCommand) => {
           calls.push(command.type);

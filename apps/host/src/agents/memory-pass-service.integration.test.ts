@@ -9,6 +9,7 @@ import {
   type Thread,
 } from "@opensteer/core";
 import { createMemoryPass, needsYouPage, type MemoryPassExecution } from "@opensteer/database";
+import { writeAgentHomeSettings } from "@opensteer/database/test-support/personal";
 import { HarnessIdSchema, ModelSelectionSchema } from "@opensteer/core";
 import {
   describeStore,
@@ -1235,12 +1236,12 @@ describeStore("managed memory passes", (it) => {
         .execute(),
     });
 
-    // This retry reads the person's config only after the other retry's pass commits.
-    const read = f.store.getAutomaticModelConfig.bind(f.store);
+    // This retry reads the person's settings only after the other retry's pass commits.
+    const read = f.store.getAgentHomeSettings.bind(f.store);
     let release!: () => void;
     const released = new Promise<void>((resolve) => (release = resolve));
     const held = vi
-      .spyOn(f.store, "getAutomaticModelConfig")
+      .spyOn(f.store, "getAgentHomeSettings")
       .mockImplementationOnce(async (userId) => {
         await released;
         return read(userId);
@@ -1257,9 +1258,8 @@ describeStore("managed memory passes", (it) => {
       },
     ]);
     // Nothing is usable any more, but this occurrence's pass is already decided.
-    await f.store.setAutomaticModelConfig(base.userId, {
-      roles: {},
-      excludedAccounts: [claude.id],
+    await writeAgentHomeSettings(f.database, {
+      backgroundModels: { excludedAccounts: [claude.id] },
     });
     release();
     await expect(retry).resolves.toBeUndefined();
@@ -1297,9 +1297,8 @@ describeStore("managed memory passes", (it) => {
     await s.instance.ensureForPersonal();
     const light = await role(f, base.userId);
     const { occurrence } = await tick(f, base, light.trigger);
-    await f.store.setAutomaticModelConfig(base.userId, {
-      roles: {},
-      excludedAccounts: [base.harnessInstance.id],
+    await writeAgentHomeSettings(f.database, {
+      backgroundModels: { excludedAccounts: [base.harnessInstance.id] },
     });
     // Admission holds the occurrence until the personal mutation fence is released.
     await holdingRow(f, "personalSettings", "personal", async (release) => {
@@ -1321,9 +1320,8 @@ describeStore("managed memory passes", (it) => {
     await s.instance.ensureForPersonal();
     const light = await role(f, base.userId);
     const { occurrence } = await tick(f, base, light.trigger);
-    await f.store.setAutomaticModelConfig(base.userId, {
-      roles: {},
-      excludedAccounts: [base.harnessInstance.id],
+    await writeAgentHomeSettings(f.database, {
+      backgroundModels: { excludedAccounts: [base.harnessInstance.id] },
     });
     await expect(s.instance.admissionSelection(occurrence.id, light.anchorThread!)).rejects.toThrow(
       MANAGED_MEMORY_WAKE_SKIPPED,
@@ -1424,10 +1422,7 @@ describeStore("managed memory passes", (it) => {
     const light = await role(f, base.userId);
     const nightly = await role(f, base.userId, "memory-nightly");
     const exclude = (...excludedAccounts: HarnessInstanceId[]) =>
-      f.store.setAutomaticModelConfig(base.userId, {
-        roles: {},
-        excludedAccounts,
-      });
+      writeAgentHomeSettings(f.database, { backgroundModels: { excludedAccounts } });
 
     // The Trigger's creator, personal owner, is the principal. Light has no remembered
     // fallback: with Claude excluded by them, it waits.
@@ -1504,9 +1499,9 @@ describeStore("managed memory passes", (it) => {
       memoryPassWaitingReason,
     );
     await exclude();
-    // A person's deep list replaces the maintained one and comes before the remembered choice.
-    await f.store.setAutomaticModelConfig(base.userId, {
-      roles: {
+    // A person's deep list comes before the recommended order and the remembered choice.
+    await writeAgentHomeSettings(f.database, {
+      backgroundModels: {
         deep: [
           {
             engine: HarnessIdSchema.parse("claude"),
@@ -1514,7 +1509,6 @@ describeStore("managed memory passes", (it) => {
           },
         ],
       },
-      excludedAccounts: [],
     });
     expect(
       await instance.admissionSelection(nightlyTick.occurrence.id, nightly.anchorThread!),
@@ -1529,10 +1523,7 @@ describeStore("managed memory passes", (it) => {
         options: {},
       },
     });
-    await f.store.setAutomaticModelConfig(base.userId, {
-      roles: {},
-      excludedAccounts: [],
-    });
+    await writeAgentHomeSettings(f.database, {});
 
     // Memory turned off stays off while models come and go.
     await f.database

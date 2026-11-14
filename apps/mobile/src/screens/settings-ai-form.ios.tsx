@@ -3,21 +3,7 @@ import {
   idleCompactionChoices,
   idleCompactionHelp,
 } from "@opensteer/client/host";
-import { parseAutomaticModelConfig } from "@opensteer/client/host";
-import {
-  useNativeState,
-  Button,
-  DisclosureGroup,
-  TextField,
-  Toggle,
-  HStack,
-  Menu,
-  Picker,
-  Section,
-  Spacer,
-  Text,
-  VStack,
-} from "@expo/ui/swift-ui";
+import { Button, HStack, Menu, Picker, Section, Spacer, Text, VStack } from "@expo/ui/swift-ui";
 import {
   accessibilityLabel,
   accessibilityAddTraits,
@@ -25,28 +11,25 @@ import {
   disabled,
   frame,
   labelStyle,
-  lineLimit,
   font,
   foregroundStyle,
   pickerStyle,
   tag,
 } from "@expo/ui/swift-ui/modifiers";
 import {
-  automaticModelChoices,
-  automaticModelsExplanation,
-  automaticModelsTitle,
-  automaticRoleTitles,
-  automaticRoleEntries,
-  automaticPreviewLines,
+  backgroundModelRows,
+  backgroundModelsFileError,
+  backgroundModelsNote,
+  backgroundModelsTitle,
+  notUsedForBackgroundWork,
 } from "@opensteer/client/host";
-import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { color, touchTarget } from "../theme.js";
 import { ErrorText, Lines } from "./settings-form-primitives.ios.js";
 import type {
   AiAccountRow,
   AiAccountsForm,
-  AutomaticModelsForm,
+  BackgroundModelsForm,
   SettingsFormProps,
 } from "./settings-form.types.js";
 const secondary = foregroundStyle({ type: "hierarchical", style: "secondary" });
@@ -60,14 +43,20 @@ export function AiSettingsForm(
     | "engineUpdates"
     | "onEngineUpdate"
     | "onChooseModel"
-    | "automatic"
+    | "backgroundModels"
   >,
 ): ReactNode {
   const engineUpdates = props.engineUpdates ?? [];
   return (
     <>
       <Button label="Choose account and model" onPress={() => props.onChooseModel?.()} />
-      {props.aiAccounts ? <Accounts form={props.aiAccounts} /> : null}
+      {props.aiAccounts ? (
+        <Accounts
+          form={props.aiAccounts}
+          notUsedForBackground={props.backgroundModels?.view?.excludedAccounts ?? []}
+        />
+      ) : null}
+      {props.backgroundModels ? <BackgroundModels form={props.backgroundModels} /> : null}
       {engineUpdates.length === 0 ? null : (
         <Section title="AI">
           {engineUpdates.map((engine) => (
@@ -111,12 +100,17 @@ export function AiSettingsForm(
           {props.idleCompaction.error ? <ErrorText detail={props.idleCompaction.error} /> : null}
         </Section>
       ) : null}
-      {props.automatic ? <AutomaticModels form={props.automatic} /> : null}
     </>
   );
 }
 
-function Accounts({ form }: { readonly form: AiAccountsForm }): ReactNode {
+function Accounts({
+  form,
+  notUsedForBackground,
+}: {
+  readonly form: AiAccountsForm;
+  readonly notUsedForBackground: readonly string[];
+}): ReactNode {
   return (
     <>
       {form.confirmation === null ? null : (
@@ -148,7 +142,12 @@ function Accounts({ form }: { readonly form: AiAccountsForm }): ReactNode {
       {form.groups.map((group) => (
         <Section key={group.driverKind} title={group.name}>
           {group.rows.map((row) => (
-            <AccountRowView form={form} key={row.id} row={row} />
+            <AccountRowView
+              form={form}
+              key={row.id}
+              notUsedForBackground={notUsedForBackground.includes(row.id)}
+              row={row}
+            />
           ))}
           {group.addable ? (
             <Button
@@ -165,6 +164,7 @@ function Accounts({ form }: { readonly form: AiAccountsForm }): ReactNode {
 
 function AccountRowView(props: {
   readonly form: AiAccountsForm;
+  readonly notUsedForBackground: boolean;
   readonly row: AiAccountRow;
 }): ReactNode {
   const { form, row } = props;
@@ -183,6 +183,9 @@ function AccountRowView(props: {
             {row.name}
           </Text>
           {row.isDefault ? <Text modifiers={[secondary, footnote]}>Default</Text> : null}
+          {props.notUsedForBackground ? (
+            <Text modifiers={[secondary, footnote]}>{notUsedForBackgroundWork}</Text>
+          ) : null}
         </HStack>
         {row.line === null ? null : <Text modifiers={[lineTone, footnote]}>{row.line}</Text>}
       </VStack>
@@ -224,111 +227,20 @@ function AccountRowView(props: {
   );
 }
 
-function AutomaticModels({ form }: { readonly form: AutomaticModelsForm }): ReactNode {
-  const [json, setJson] = useState<string | null>(null);
-  const nativeJson = useNativeState(JSON.stringify(form.view?.config ?? {}, null, 2));
-  const configJson = JSON.stringify(form.view?.config ?? {}, null, 2);
-  useEffect(() => {
-    nativeJson.set(configJson);
-    setJson(null);
-  }, [configJson, nativeJson]);
-  if (!form.supported) return null;
+function BackgroundModels({ form }: { readonly form: BackgroundModelsForm }): ReactNode {
   const view = form.view;
+  const fileError = view ? backgroundModelsFileError(view) : null;
   return (
-    <Section title={automaticModelsTitle}>
-      {form.explanation ? (
-        <>
-          <Text>{automaticModelsExplanation}</Text>
-          <Button label="Dismiss" onPress={form.dismiss} />
-        </>
-      ) : null}
+    <Section title={backgroundModelsTitle}>
       {view ? (
-        <>
-          {(["light", "deep"] as const).map((role) => (
-            <VStack key={role} alignment="leading">
-              <Text>{automaticRoleTitles[role]}</Text>
-              {role === "light" ? <Text>General preference</Text> : null}
-              {automaticRoleEntries(view, role).map((entry, index, entries) => (
-                <VStack key={index} alignment="leading">
-                  <Text>{entry.label}</Text>
-                  <HStack>
-                    <Button
-                      label={`Move ${role} ${index + 1} up`}
-                      modifiers={[disabled(form.pending || index === 0)]}
-                      onPress={() => form.edit(role, { type: "move", index, offset: -1 })}
-                    />
-                    <Button
-                      label={`Move ${role} ${index + 1} down`}
-                      modifiers={[disabled(form.pending || index === entries.length - 1)]}
-                      onPress={() => form.edit(role, { type: "move", index, offset: 1 })}
-                    />
-                    <Button
-                      label={`Remove ${role} ${index + 1}`}
-                      modifiers={[disabled(form.pending)]}
-                      onPress={() => form.edit(role, { type: "remove", index })}
-                    />
-                  </HStack>
-                </VStack>
-              ))}
-              <Picker
-                label={`Add ${automaticRoleTitles[role]}`}
-                selection=""
-                modifiers={[pickerStyle("menu"), disabled(form.pending)]}
-                onSelectionChange={(value: string) => {
-                  const choice = automaticModelChoices(view)[Number(value)];
-                  if (value && choice) form.edit(role, { type: "add", want: choice.want });
-                }}
-              >
-                <Text modifiers={[tag("")]}>Choose model and account</Text>
-                {automaticModelChoices(view).map((choice, index) => (
-                  <Text key={index} modifiers={[tag(String(index))]}>
-                    {choice.label}
-                  </Text>
-                ))}
-              </Picker>
-              <Button
-                label={`Reset ${role} to default`}
-                modifiers={[disabled(form.pending)]}
-                onPress={() => form.edit(role, { type: "reset" })}
-              />
-              {automaticPreviewLines(view, role).map((line, i) => (
-                <Text key={i}>{line}</Text>
-              ))}
-              {view[role].candidates.length === 0 ? <Text>No usable model right now.</Text> : null}
-            </VStack>
-          ))}
-          <Text>Accounts</Text>
-          {view.accounts.map((a) => (
-            <Toggle
-              key={a.harnessInstanceId}
-              label={`${a.accountDisplayName} · ${a.computerDisplayName}`}
-              isOn={!view.config.excludedAccounts.includes(a.harnessInstanceId)}
-              modifiers={[disabled(form.pending)]}
-              onIsOnChange={() => form.toggle(a.harnessInstanceId)}
-            />
-          ))}
-          <DisclosureGroup label="Advanced">
-            <TextField
-              axis="vertical"
-              modifiers={[lineLimit(8)]}
-              text={nativeJson}
-              onTextChange={setJson}
-            />
-            <Button
-              label="Save JSON"
-              modifiers={[disabled(form.pending)]}
-              onPress={() =>
-                form.save(() =>
-                  parseAutomaticModelConfig(JSON.parse(json ?? JSON.stringify(view.config))),
-                )
-              }
-            />
-          </DisclosureGroup>
-        </>
+        backgroundModelRows(view).map((row) => (
+          <Lines detail={row.detail} key={row.role} title={row.title} />
+        ))
       ) : (
-        <Text>Loading…</Text>
+        <Text>{form.error ? "Background models could not be loaded." : "Loading…"}</Text>
       )}
-      <ErrorText detail={form.error} />
+      {fileError ? <ErrorText detail={fileError} /> : null}
+      <Text modifiers={[secondary, footnote]}>{backgroundModelsNote}</Text>
     </Section>
   );
 }
