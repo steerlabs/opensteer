@@ -67,3 +67,5 @@ export {
 } from "./team-views.js";
 
 export * from "./devices.js";
+
+export * from "./team-partner.js";

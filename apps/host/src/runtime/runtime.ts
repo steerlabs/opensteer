@@ -400,6 +400,7 @@ export interface TeamHostRuntime {
   listen(): Promise<string>;
 }
 export interface HostRuntimeOptions {
+  readonly teamPartnerNetwork?: import("../team-partners/service.js").TeamPartnerNetwork;
   readonly onDeploymentEvent?: (event: AgentEvent) => void;
   readonly executionClock?: import("@opensteer/shared/clock").Clock;
   /** Controls notification grace/backoff independently of Account transport. */

@@ -3,7 +3,7 @@
 A team server is the same Host software with kind `team`, for shared chat and knowledge. A team
 runs it themselves or has Opensteer run it for them ([hosted teams](hosted-teams.md)). The team
 server authenticates members and relays content; personal Opensteer trusts it to do both honestly.
-Hostile team-server operators are outside this trust model. Membership and administrator roles
+Members trust their own team server; a partner server receives no membership or personal authority. Membership and administrator roles
 never grant access to another person's personal Opensteer, files, credentials or Mac. Each
 person's private Opensteer has kind `personal`; only that computer runs their agent. Families
 use the same team server. Operational steps live in the
@@ -143,7 +143,7 @@ session exchange both admit through `TeamInvitesStore.acceptInTransaction`
 
 Team API version 5 requires version 5 peers for asks that need approval and private returns.
 A team Host checks only `teamApiVersion`, before authentication and parsing on every team
-surface, including bootstrap, subscriptions, binary routes and the link. Personal Hosts check
+surface, including bootstrap, subscriptions, binary routes and the personal link. Partner sockets negotiate their own protocol. Personal Hosts check
 only the personal Host epoch. Team updates use [deploy/team](../deploy/team/README.md); desktop
 supervision updates personal Opensteer.
 
@@ -189,3 +189,19 @@ removing a person frees the files no message holds before the command returns, a
 uploads expire after a day. Link credentials and request provenance belong in headers, never URLs. Mobile push uses
 generic text and sealed previews through Account; no plaintext team content enters the push
 provider. Desktop notifications come from team sidebar sockets; there is no Web Push.
+
+## Partner teams
+
+Partner links are separate from person-owned agent links and grant no content access by themselves.
+The redeemer is always the dialer; the issuing team never fetches a partner-chosen address. Hosted
+teams dial public addresses only. Each side pins the other's signed team identity, origin, Host key
+and instance, then proves possession of that key against fresh challenges on every connection.
+Partner protocol compatibility is independent of the team-client API window. There is no bearer
+credential and no key rotation: changed identity requires revocation and a fresh pairing.
+
+Sharing defaults to administrators. An unaddressed invite still needs the issuing team's approval
+after it learns the redeemer's identity; members-propose requires local admin approval on both sides.
+The members policy allows member approvals and automatic acceptance. Turning sharing off closes
+connections and retains proposals and approvals; turning it back on reconnects them. Either team can
+revoke unilaterally, closing its sockets before returning and notifying the other when connected.
+A dialer learns a listener’s offline revocation at its next authenticated connection.

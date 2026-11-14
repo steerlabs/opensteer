@@ -2,6 +2,7 @@ import { sql, type Kysely } from "kysely";
 import { Migrator, type MigrationProvider, type MigrationResultSet } from "kysely/migration";
 import { migrateTeamAgentAsks } from "./team-agent-asks-migration.js";
 import { migrateTeamAgents } from "./team-agent-migration.js";
+import { migrateTeamPartnerLinks } from "./team-partner-links-migration.js";
 import { migrateTeamPrincipals } from "./team-principals-migration.js";
 import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
 import { TEAM_KNOWLEDGE_NOTES_SQL } from "./team-knowledge-schema.js";
@@ -25,6 +26,7 @@ export const teamKnowledgeNotesMigrationName = "0006_team_knowledge_notes";
 export const teamAgentMigrationName = "0011_team_agent_contracts";
 export const teamAgentAsksMigrationName = "0012_team_agent_asks";
 export const teamPrincipalsMigrationName = "0014_team_principals";
+export const teamPartnerLinksMigrationName = "0015_team_partner_links";
 export function migrationProvider(): MigrationProvider {
   return {
     async getMigrations() {
@@ -161,6 +163,7 @@ export function migrationProvider(): MigrationProvider {
           },
         },
         [teamPrincipalsMigrationName]: { up: migrateTeamPrincipals },
+        [teamPartnerLinksMigrationName]: { up: migrateTeamPartnerLinks },
       };
     },
   };

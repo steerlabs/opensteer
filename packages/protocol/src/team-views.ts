@@ -1,3 +1,4 @@
+import { TeamPartnerLinkSchema, TeamPartnerOfferTextSchema } from "./team-partner.js";
 import { z } from "zod";
 import { teamReadSchemas } from "./team-api.js";
 import { ProtocolErrorSchema } from "./common.js";
@@ -125,6 +126,12 @@ export const TeamLinkViewViewSchema = z.object({ ...TeamLinkViewSchema.shape });
 export const PersonalTeamLinkViewSchema = z.object({ ...PersonalTeamLinkSchema.shape });
 
 export const TeamCommandResultViewSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("team.partner.invite.create"), offer: TeamPartnerOfferTextSchema }),
+  z.object({ type: z.literal("team.partner.invite.revoke") }),
+  z.object({ type: z.literal("team.partner.invite.redeem"), link: TeamPartnerLinkSchema }),
+  z.object({ type: z.literal("team.partner.approve") }),
+  z.object({ type: z.literal("team.partner.revoke") }),
+  z.object({ type: z.literal("team.sharing.policy.set") }),
   z.object({ type: z.literal("team.agent.recipient.set") }),
   z.object({ type: z.literal("team.channel.create"), channel: TeamChannelViewSchema }),
   z.object({ type: z.literal("team.channel.update") }),
@@ -313,6 +320,9 @@ const TeamKnowledgeTopicViewViewSchema = z.object({
 });
 
 export const teamReadViews = {
+  "team.partners.list": teamReadSchemas["team.partners.list"].output,
+  "team.partner.invites.list": teamReadSchemas["team.partner.invites.list"].output,
+  "team.sharing.policy.get": teamReadSchemas["team.sharing.policy.get"].output,
   "team.agent.recipient.get": teamReadSchemas["team.agent.recipient.get"].output.strip(),
   "team.bootstrap.get": TeamBootstrapViewSchema,
   "team.sidebar.get": TeamSidebarViewSchema,

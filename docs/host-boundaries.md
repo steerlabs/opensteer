@@ -91,7 +91,8 @@ consumed ticket reusable ([DisplayStreamHub](../apps/host/src/computer-use/displ
 
 A personal Host checks only [`hostApiVersion`](../packages/deployment-authority/src/authority.ts).
 A team Host checks only its `teamApiVersion` window, including auth/bootstrap, binary routes and
-the link, before authentication or parsing; discovery advertises kind and its API versions. See
+the personal link, before authentication or parsing; discovery advertises kind and its API versions.
+Team partner sockets use their separate mutual-proof protocol and version. See
 [Teams](teams.md#transport-and-versions). The personal epoch's
 comments record each change. Bump it only when an older counterpart would misstate a meaning or
 act unsafely, because a mismatch stops every app on the other epoch. Clients check the raw discovery

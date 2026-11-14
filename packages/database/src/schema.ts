@@ -1966,6 +1966,20 @@ export interface DatabaseSchema {
   };
   teamMembers: TeamMemberTable;
   teamPrincipals: TeamPrincipalTable;
+  teamSharingSettings: {
+    singletonKey: "team";
+    policy: "off" | "admins" | "members-propose" | "members";
+  };
+  teamPartnerInvites: {
+    id: string;
+    verifierHash: string;
+    createdBy: UserId;
+    createdAt: Timestamp;
+    expiresAt: Timestamp;
+    consumedAt: NullableTimestamp;
+    revokedAt: NullableTimestamp;
+  };
+  teamPartnerLinks: TeamPartnerLinkTable;
   teamAccessState: TeamAccessStateTable;
   teamGroups: TeamGroupTable;
   teamGroupPeople: TeamGroupPersonTable;
@@ -2615,4 +2629,26 @@ export interface PersonalTeamRequestTable {
   source: JsonColumn<TeamSource>;
   createdAt: Timestamp;
   finishedAt: NullableTimestamp;
+}
+
+export interface TeamPartnerLinkTable {
+  id: string;
+  partnerTeamId: DeploymentId;
+  partnerOrigin: string;
+  partnerHostKeyFingerprint: string;
+  partnerHostInstanceId: HostInstanceId;
+  partnerAuthority: JsonColumn<import("@opensteer/protocol").TeamPartnerAuthority>;
+  partnerName: string;
+  role: "dialer" | "listener";
+  state: "pending" | "active" | "revoked";
+  localApproved: boolean;
+  partnerApproved: boolean;
+  createdBy: UserId;
+  approvedBy: UserId | null;
+  createdAt: Timestamp;
+  approvedAt: NullableTimestamp;
+  lastSeenAt: NullableTimestamp;
+  lastError: "identity-mismatch" | "unsupported-partner-version" | "unreachable" | null;
+  revokedAt: NullableTimestamp;
+  revokedBy: "local" | "partner" | null;
 }

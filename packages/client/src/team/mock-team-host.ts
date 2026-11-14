@@ -1,3 +1,10 @@
+import {
+  TeamPartnerLinkSchema,
+  TeamPartnerInviteSchema,
+  serializeTeamPartnerOffer,
+  parseTeamPartnerOffer,
+  type TeamSharingPolicy,
+} from "@opensteer/protocol";
 import { OpensteerError, type TeamChannelId, createId } from "@opensteer/core";
 import { acceptsTeamApiVersion } from "@opensteer/deployment-authority";
 import {
@@ -82,6 +89,9 @@ export class MockTeamSocket implements WebSocketClient {
   }
 }
 export class MockTeamHost {
+  sharingPolicy: TeamSharingPolicy = "admins";
+  readonly partners = new Map<string, z.infer<typeof TeamPartnerLinkSchema>>();
+  readonly partnerInvites = new Map<string, z.infer<typeof TeamPartnerInviteSchema>>();
   readonly agentRecipients = new Map<
     string,
     {
@@ -507,6 +517,22 @@ export class MockTeamHost {
         (current.invite.maxUses === null || current.invite.usedCount < current.invite.maxUses);
       return { invite: live ? current.invite : null };
     }
+    if (name === "team.sharing.policy.get")
+      return { policy: this.sharingPolicy, canSet: this.bootstrap.member.role !== "member" };
+    if (name === "team.partners.list" || name === "team.partner.invites.list") {
+      const after = (input as { after?: string }).after;
+      const values =
+        name === "team.partners.list"
+          ? [...this.partners.values()]
+          : [...this.partnerInvites.values()];
+      const rows = values
+        .filter((row) => !after || row.id > after)
+        .sort((a, b) => a.id.localeCompare(b.id));
+      return {
+        [name === "team.partners.list" ? "links" : "invites"]: rows.slice(0, 50),
+        nextCursor: rows.length > 50 ? rows[49]!.id : null,
+      };
+    }
     if (name === "team.links.list")
       return {
         links: [...this.links.values()].filter((link) => link.state !== "revoked").slice(0, 50),
@@ -566,6 +592,105 @@ export class MockTeamHost {
           registered: true,
         };
       const command = TeamCommandSchema.parse(common);
+      if (command.type.startsWith("team.partner.") || command.type === "team.sharing.policy.set") {
+        const admin = this.bootstrap.member.role !== "member";
+        const fail = () => {
+          throw new OpensteerError({ code: "forbidden", message: "Team sharing action refused" });
+        };
+        if (command.type === "team.sharing.policy.set") {
+          if (!admin) fail();
+          this.sharingPolicy = command.policy;
+          if (command.policy === "off")
+            for (const row of this.partners.values()) row.connected = false;
+        } else if (command.type === "team.partner.invite.create") {
+          if (this.sharingPolicy === "off" || (this.sharingPolicy === "admins" && !admin)) fail();
+          const id = crypto.randomUUID(),
+            createdAt = new Date().toISOString(),
+            expiresAt = new Date(Date.now() + 600_000).toISOString();
+          this.partnerInvites.set(id, {
+            id,
+            createdBy: this.userId,
+            createdAt,
+            expiresAt,
+            consumedAt: null,
+            revokedAt: null,
+          });
+          return {
+            type: command.type,
+            offer: serializeTeamPartnerOffer({
+              teamId: this.teamId,
+              origin: this.origin,
+              hostInstanceId: createId("hostInstance"),
+              hostKeyFingerprint: `sha256:${"A".repeat(43)}`,
+              selector: id,
+              verifier: (crypto.randomUUID() + crypto.randomUUID())
+                .replaceAll("-", "")
+                .slice(0, 43),
+              expiresAt,
+            }),
+          };
+        } else if (command.type === "team.partner.invite.redeem") {
+          if (this.sharingPolicy === "off" || (this.sharingPolicy === "admins" && !admin)) fail();
+          const offer = parseTeamPartnerOffer(command.offer);
+          if (Date.parse(offer.expiresAt) <= Date.now()) fail();
+          const approved = admin || this.sharingPolicy === "members";
+          const link = TeamPartnerLinkSchema.parse({
+            id: crypto.randomUUID(),
+            partnerTeamId: offer.teamId,
+            partnerOrigin: offer.origin,
+            partnerHostInstanceId: offer.hostInstanceId,
+            partnerHostKeyFingerprint: offer.hostKeyFingerprint,
+            partnerName: new URL(offer.origin).hostname.slice(0, 160),
+            role: "dialer",
+            state: "pending",
+            localApproved: approved,
+            partnerApproved: false,
+            createdBy: this.userId,
+            approvedBy: approved ? this.userId : null,
+            createdAt: new Date().toISOString(),
+            approvedAt: approved ? new Date().toISOString() : null,
+            lastSeenAt: null,
+            revokedAt: null,
+            revokedBy: null,
+            lastError: null,
+            connected: false,
+            canApprove: !approved && admin,
+            canRevoke: true,
+          });
+          this.partners.set(link.id, link);
+          return { type: command.type, link };
+        } else if (command.type === "team.partner.invite.revoke") {
+          const invite = this.partnerInvites.get(command.inviteId);
+          if (!invite || (!admin && invite.createdBy !== this.userId)) fail();
+          invite!.revokedAt = new Date().toISOString();
+        } else if (
+          command.type === "team.partner.approve" ||
+          command.type === "team.partner.revoke"
+        ) {
+          const row = this.partners.get(command.linkId);
+          if (!row || row.state === "revoked") fail();
+          if (command.type === "team.partner.approve") {
+            if (this.sharingPolicy === "off" || (!admin && this.sharingPolicy !== "members"))
+              fail();
+            row!.localApproved = true;
+            row!.approvedBy = this.userId;
+            row!.approvedAt = new Date().toISOString();
+            row!.state = row!.partnerApproved ? "active" : "pending";
+          } else {
+            if (
+              !admin &&
+              this.sharingPolicy !== "members" &&
+              !(row!.createdBy === this.userId && !row!.localApproved)
+            )
+              fail();
+            row!.state = "revoked";
+            row!.revokedAt = new Date().toISOString();
+            row!.revokedBy = "local";
+            row!.connected = false;
+          }
+        }
+        return { type: command.type };
+      }
       if (isMockKnowledgeCommand(command))
         return this.knowledge.command(command, {
           kind: "human",

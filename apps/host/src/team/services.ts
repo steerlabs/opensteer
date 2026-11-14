@@ -1,3 +1,4 @@
+import type { TeamPartners } from "../team-partners/service.js";
 import {
   OpensteerError,
   type AuthenticatedSession,
@@ -53,6 +54,7 @@ export function assertTeamApiVersion(headers: Headers) {
     });
 }
 export interface TeamServiceOptions {
+  readonly partners?: TeamPartners;
   readonly kind: DeploymentKind;
   readonly database: Kysely<DatabaseSchema>;
   readonly access?: TeamAccessStore;
@@ -193,6 +195,28 @@ export async function startTeamServices(options: TeamServiceOptions) {
     if (command.type.startsWith("team.knowledge."))
       return options.knowledge.command(actor, command);
     switch (command.type) {
+      case "team.partner.invite.create":
+        requireTeam(options.partners);
+        return { type: command.type, ...(await options.partners.store.createInvite(actor)) };
+      case "team.partner.invite.revoke":
+        requireTeam(options.partners);
+        await options.partners.store.revokeInvite(actor, command.inviteId);
+        break;
+      case "team.partner.invite.redeem":
+        requireTeam(options.partners);
+        return { type: command.type, ...(await options.partners.redeem(actor, command.offer)) };
+      case "team.partner.approve":
+        requireTeam(options.partners);
+        await options.partners.approve(actor, command.linkId);
+        break;
+      case "team.partner.revoke":
+        requireTeam(options.partners);
+        await options.partners.revoke(actor, command.linkId);
+        break;
+      case "team.sharing.policy.set":
+        requireTeam(options.partners);
+        await options.partners.setPolicy(actor, command.policy);
+        break;
       case "team.channel.create":
         return { type: command.type, channel: await chat.create(actor, command) };
       case "team.channel.update":
@@ -371,6 +395,20 @@ export async function startTeamServices(options: TeamServiceOptions) {
     await options.database.transaction().execute((t) => access.checkSession(t));
     if (name.startsWith("team.knowledge.")) return options.knowledge.read(actor, name, raw);
     switch (name) {
+      case "team.partners.list":
+        requireTeam(options.partners);
+        return options.partners.store.list(
+          actor,
+          options.partners.connected,
+          teamReadSchemas[name].input.parse(raw),
+        );
+      case "team.partner.invites.list":
+        requireTeam(options.partners);
+        return options.partners.store.invites(actor, teamReadSchemas[name].input.parse(raw).after);
+      case "team.sharing.policy.get":
+        requireTeam(options.partners);
+        teamReadSchemas[name].input.parse(raw);
+        return options.partners.store.getPolicy(actor);
       case "team.bootstrap.get": {
         const member = await members.get(actor);
         const hosted = (await options.hostedTeam?.()) ?? null;
@@ -523,6 +561,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
   }
   return {
     kind: "team" as const,
+    partners: options.partners,
     access,
     resolver: access,
     locks: access,
