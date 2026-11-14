@@ -105,7 +105,11 @@ import {
   isSetupPath,
   placeSelection,
   rememberPlace,
+  rememberedPlace,
+  rememberedNewTab,
+  rememberedTalk,
   rememberNewTab,
+  workspaceSide,
   useWorkspaceNavigation,
 } from "./workspace/navigation.js";
 import { DeploymentOperationBanner } from "./deployment-operation.js";
@@ -315,6 +319,9 @@ export function AppShell({
       void navigateTo(teamLinkPath(url));
     });
   }, [navigateTo, suppliedDesktopBridge]);
+  // The remembered place reopens once per viewer for the shell's life: Settings
+  // unmounts the workspace's keys, and coming back from it is not a launch.
+  const placeRestored = useRef<string | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const mobileNavigation = useMediaQuery(drawerQuery);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
@@ -1093,6 +1100,7 @@ export function AppShell({
                   desktop={desktopWindowChrome}
                   hostClient={hostClient}
                   onShowShortcuts={openShortcuts}
+                  restored={placeRestored}
                 />
               )}
             </TabCloserProvider>
@@ -1125,10 +1133,13 @@ function WorkspaceKeys({
   desktop,
   hostClient,
   onShowShortcuts,
+  restored,
 }: {
   readonly desktop: boolean;
   readonly hostClient: HostClient;
   readonly onShowShortcuts: () => void;
+  /** The viewer whose remembered place has been reopened, kept by the shell. */
+  readonly restored: React.RefObject<string | null>;
 }) {
   const newTab = useNewTab();
   useWorkspaceShortcuts({ desktop, hostClient, onNewTab: () => newTab(), onShowShortcuts });
@@ -1140,6 +1151,64 @@ function WorkspaceKeys({
   const deploymentId = useHostSelector(hostClient, selectDeploymentId);
   const userId = useHostSelector(hostClient, selectUserId);
   const canonicalized = useRef<string | null>(null);
+  const restoreVersion = useHostSelector(hostClient, (snapshot) => snapshot.tabRestoreVersion);
+  // The restore answers after a read; by then the address may have moved on
+  // (Home names its draft), and the place joins that address, not the old one.
+  const address = useRef({ pathname, search });
+  address.current = { pathname, search };
+  useEffect(() => {
+    if (!known || !deploymentId || !userId || restoreVersion !== 1) return;
+    const viewer = `${deploymentId}:${userId}`;
+    if (restored.current === viewer) return;
+    restored.current = viewer;
+    const opened = address.current;
+    // A remembered place belongs to Tasks; a team or full-window page keeps its own address.
+    if (
+      workspaceSide(opened.pathname) !== "tasks" ||
+      new URLSearchParams(opened.search).has("panel") ||
+      new URLSearchParams(opened.search).has("browser")
+    )
+      return;
+    const scope = { deploymentId, userId };
+    if (rememberedTalk(scope)) return;
+    const remembered = rememberedPlace(scope);
+    let cancelled = false;
+    if (remembered?.kind === "browser") {
+      void (async () => {
+        const store = hostClient.browserTabs;
+        const groupId = store.group(remembered.sessionId)
+          ? remembered.sessionId
+          : (store.groupForSession(remembered.sessionId) ??
+            (remembered.tabId ? store.groupForTab(remembered.tabId) : undefined));
+        let sessionId =
+          groupId && remembered.tabId && store.tab(groupId, remembered.tabId)
+            ? store.group(groupId)!.sessionId
+            : null;
+        // A group the client holds only part of cannot say the tab is gone; the Host can.
+        if (sessionId === null && !(groupId && store.tabs(groupId).whole)) {
+          const read = await hostClient.readPersonalTabs?.(remembered.sessionId);
+          if (read?.tabs?.some((tab) => tab.id === remembered.tabId)) sessionId = read.session.id;
+        }
+        if (cancelled) return;
+        const now = address.current;
+        if (workspaceSide(now.pathname) !== "tasks") return;
+        const params = new URLSearchParams(now.search);
+        params.set("panel", "browser");
+        if (sessionId !== null) {
+          params.set("browser", sessionId);
+          params.set("browserTab", remembered.tabId ?? "");
+        }
+        void navigate({ pathname: now.pathname, search: `?${params}` }, { replace: true });
+      })().catch(() => undefined);
+    } else if (rememberedNewTab(scope)) {
+      const params = new URLSearchParams(opened.search);
+      params.set("panel", "browser");
+      void navigate({ pathname: opened.pathname, search: `?${params}` }, { replace: true });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [deploymentId, hostClient, known, navigate, restoreVersion, userId]);
   useEffect(() => {
     // A redirect owns its own address change; nothing else rewrites it meanwhile.
     if (canonicalized.current === key || pathname === "/live") return;

@@ -313,6 +313,24 @@ export function rememberedPlace(scope: PlaceMemoryScope): SurfaceDestination | n
   }
 }
 
+export function rememberedNewTab(scope: PlaceMemoryScope): boolean {
+  const key = memoryKey(scope);
+  if (!key) return false;
+  try {
+    return localStorage.getItem(key) === '{"kind":"launcher"}';
+  } catch {
+    return false;
+  }
+}
+export function rememberedTalk(scope: PlaceMemoryScope): boolean {
+  const key = memoryKey(scope);
+  if (!key) return false;
+  try {
+    return RememberedTalkSchema.safeParse(JSON.parse(localStorage.getItem(key) ?? "null")).success;
+  } catch {
+    return false;
+  }
+}
 function rememberTalk(scope: PlaceMemoryScope): void {
   const key = memoryKey(scope);
   if (!key) return;
@@ -563,7 +581,7 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
   const { search } = location;
   const { deploymentId, userId } = scope;
   const [placeOpening, setPlaceOpening] = useState(0);
-  const { teams, surface } = useTeams();
+  const { surface } = useTeams();
   const viewers = useTeamViewers();
   const scopeKey = sideMemoryKey(scope);
   const memory = useRef<{ key: string | null; value: SideMemory } | null>(null);
@@ -660,11 +678,6 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
   const openSide = useCallback(
     (targetSide: string) => {
       if (surface === "team-web" && targetSide === "tasks") return;
-      const team = teams.find((candidate) => candidate.teamId === targetSide);
-      if (surface === "personal-web" && team) {
-        window.open(team.origin, "_blank", "noopener,noreferrer");
-        return;
-      }
       remember(latest.current);
       if (workspaceSide(latest.current.pathname) === targetSide) return;
       const target = bookmarks.bookmarks[targetSide];
@@ -681,7 +694,7 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
         restored && target.startFrom !== null ? { startFrom: target.startFrom } : undefined,
       );
     },
-    [surface, teams, remember, bookmarks, viewers, go],
+    [surface, remember, bookmarks, viewers, go],
   );
   const choosePlace = useCallback(
     (

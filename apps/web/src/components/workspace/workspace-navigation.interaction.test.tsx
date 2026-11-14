@@ -180,98 +180,108 @@ describe("Settings returns to the workspace exactly as it was", () => {
 });
 
 describe("selection actions own exactly their axis, one history entry each", () => {
-  it("recovers a directly selected browser outside the bounded catalog", async () => {
-    let destination: { kind: "browser"; sessionId: string; tabId: string };
-    const read = vi.fn();
-    await mount((source) => {
-      const original = source.getSnapshot();
-      const selected = pageTab(source);
-      if (selected.destination.kind !== "browser" || !selected.destination.tabId)
-        throw new Error("Expected browser tab");
-      destination = {
-        kind: "browser",
-        sessionId: selected.destination.sessionId,
-        tabId: selected.destination.tabId,
-      };
-      const group: PersonalTabLineage = {
-        id: createBrowserSessionId(),
-        revision: 1,
-        createdAt: "2026-10-19T12:00:00.000Z",
-        session: {
-          id: destination.sessionId as PersonalTabLineage["session"]["id"],
-          access: "read-write",
-          createdAt: "2026-10-19T12:00:00.000Z",
-          updatedAt: "2026-10-19T12:00:00.000Z",
-          origin: "person",
-          placement: {
-            kind: "runner",
-            runnerId: selected.device!
-              .machineId as PersonalTabLineage["session"]["placement"]["runnerId"],
-          },
-          profileId: null,
-          runtimeId: "test",
-          state: "failed",
-        },
-        tabs: [
-          {
-            kind: "browser",
-            id: BrowserSurfaceIdSchema.parse(destination.tabId),
-            sessionId: destination.sessionId as PersonalTabLineage["session"]["id"],
-            title: selected.title,
-            site: selected.site ?? "",
-            order: 0,
-            openerId: null,
-            state: "suspended",
-          },
-        ],
-      };
-      let snapshot: HostSnapshot = seedBrowserSnapshot(
-        {
-          ...original,
-          browserSessions: original.browserSessions
-            .filter((session) => session.id === destination.sessionId)
-            .map((session) =>
-              seedBrowserSession(
-                { ...session, state: "failed" as const },
-                { generation: 0, revision: 0, rows: [] },
-              ),
-            ),
-          tabRestoreVersion: 1,
-        } as HostSnapshot,
-        [],
-      );
-      vi.spyOn(source, "getSnapshot").mockImplementation(() => snapshot);
-      Object.defineProperty(source, "browserTabs", { get: () => snapshot.browserTabs });
-      // Outside the bounded catalog, the client holds none of this browser's rows.
-      source.browserTabs.clear();
-      const listeners = new Set<() => void>();
-      vi.spyOn(source, "subscribe").mockImplementation((listener) => {
-        listeners.add(listener);
-        return () => {
-          listeners.delete(listener);
+  it.each([false, true])(
+    "recovers a selected browser outside the bounded catalog (remembered: %s)",
+    async (remembered) => {
+      let destination: { kind: "browser"; sessionId: string; tabId: string };
+      const read = vi.fn();
+      await mount((source) => {
+        const original = source.getSnapshot();
+        const selected = pageTab(source);
+        if (selected.destination.kind !== "browser" || !selected.destination.tabId)
+          throw new Error("Expected browser tab");
+        destination = {
+          kind: "browser",
+          sessionId: selected.destination.sessionId,
+          tabId: selected.destination.tabId,
         };
-      });
-      read.mockImplementation(async () => {
-        snapshot = seedBrowserSnapshot(
-          seedBrowserSnapshot({ ...snapshot } as HostSnapshot, [group]),
+        const group: PersonalTabLineage = {
+          id: createBrowserSessionId(),
+          revision: 1,
+          createdAt: "2026-10-19T12:00:00.000Z",
+          session: {
+            id: destination.sessionId as PersonalTabLineage["session"]["id"],
+            access: "read-write",
+            createdAt: "2026-10-19T12:00:00.000Z",
+            updatedAt: "2026-10-19T12:00:00.000Z",
+            origin: "person",
+            placement: {
+              kind: "runner",
+              runnerId: selected.device!
+                .machineId as PersonalTabLineage["session"]["placement"]["runnerId"],
+            },
+            profileId: null,
+            runtimeId: "test",
+            state: "failed",
+          },
+          tabs: [
+            {
+              kind: "browser",
+              id: BrowserSurfaceIdSchema.parse(destination.tabId),
+              sessionId: destination.sessionId as PersonalTabLineage["session"]["id"],
+              title: selected.title,
+              site: selected.site ?? "",
+              order: 0,
+              openerId: null,
+              state: "suspended",
+            },
+          ],
+        };
+        let snapshot: HostSnapshot = seedBrowserSnapshot(
+          {
+            ...original,
+            browserSessions: original.browserSessions
+              .filter((session) => session.id === destination.sessionId)
+              .map((session) =>
+                seedBrowserSession(
+                  { ...session, state: "failed" as const },
+                  { generation: 0, revision: 0, rows: [] },
+                ),
+              ),
+            tabRestoreVersion: 1,
+          } as HostSnapshot,
+          [],
         );
-        for (const listener of listeners) listener();
-        return group;
+        vi.spyOn(source, "getSnapshot").mockImplementation(() => snapshot);
+        Object.defineProperty(source, "browserTabs", { get: () => snapshot.browserTabs });
+        // Outside the bounded catalog, the client holds none of this browser's rows.
+        source.browserTabs.clear();
+        const listeners = new Set<() => void>();
+        vi.spyOn(source, "subscribe").mockImplementation((listener) => {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        });
+        read.mockImplementation(async () => {
+          snapshot = seedBrowserSnapshot(
+            seedBrowserSnapshot({ ...snapshot } as HostSnapshot, [group]),
+          );
+          for (const listener of listeners) listener();
+          return group;
+        });
+        Object.assign(source, { readPersonalTabs: read });
+        if (remembered) {
+          rememberPlace(
+            { deploymentId: original.deploymentId, userId: original.user!.id },
+            destination,
+          );
+          return "/";
+        }
+        return `/?panel=browser&browser=${destination.sessionId}&browserTab=${destination.tabId}`;
       });
-      Object.assign(source, { readPersonalTabs: read });
-      return `/?panel=browser&browser=${destination.sessionId}&browserTab=${destination.tabId}`;
-    });
-    await settle(60);
-    expect(read).toHaveBeenCalledWith(destination!.sessionId);
-    const params = new URLSearchParams(history.at(-1)!.search);
-    expect(params.get("browserTab")).toBe(destination!.tabId);
-    expect(
-      placeList(client.getSnapshot()).some(
-        (place) =>
-          place.destination.kind === "browser" && place.destination.tabId === destination!.tabId,
-      ),
-    ).toBe(true);
-  });
+      await settle(60);
+      expect(read).toHaveBeenCalledWith(destination!.sessionId);
+      const params = new URLSearchParams(history.at(-1)!.search);
+      expect(params.get("browserTab")).toBe(destination!.tabId);
+      expect(
+        placeList(client.getSnapshot()).some(
+          (place) =>
+            place.destination.kind === "browser" && place.destination.tabId === destination!.tabId,
+        ),
+      ).toBe(true);
+    },
+  );
   it("task row: the conversation changes, the place stays, the middle is not remounted", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     const place = pageTab();
