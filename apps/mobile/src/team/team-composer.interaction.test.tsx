@@ -24,6 +24,9 @@ vi.mock("../thread/composer-bar.js", () => ({
 vi.mock("../ui/primitives.js", () => ({
   AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
 }));
+vi.mock("../../modules/paste-target/index.js", () => ({
+  PasteTarget: ({ children }: { children?: ReactNode }) => <>{children}</>,
+}));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("../ui/composer-action.js", () => ({ ComposerAction: () => null }));
 vi.mock("./attachments.js", () => ({ StagedAttachments: () => null }));
@@ -50,6 +53,7 @@ it.each(["people-only", "not-connected"] as const)(
       onMention: vi.fn(),
       attachments: [],
       onAttach: vi.fn(),
+      onPasteImages: vi.fn(),
       onRemoveAttachment: vi.fn(),
       onSend: vi.fn(),
     };

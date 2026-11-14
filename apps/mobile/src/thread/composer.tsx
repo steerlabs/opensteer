@@ -1,4 +1,5 @@
 import { useMobileClient } from "../ui/mobile-client-context.js";
+import { PasteTarget } from "../../modules/paste-target/index.js";
 import { useCompactionOffer } from "@opensteer/client/react";
 import { compactionOfferText } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
@@ -953,31 +954,33 @@ export function Composer(props: {
                 onPress={() => input.current?.focus()}
                 style={styles.lane}
               >
-                <TextInput
-                  accessibilityLabel="Message"
-                  cursorColor={color.ember}
-                  maxFontSizeMultiplier={controlFontScaleLimit}
-                  multiline
-                  onBlur={() => setFocused(false)}
-                  onChangeText={editText}
-                  onSelectionChange={(event) => {
-                    selection.current = event.nativeEvent.selection;
-                  }}
-                  onFocus={() => {
-                    setFocused(true);
-                    settle();
-                  }}
-                  // A touch that reaches the field is proof no menu is over it any
-                  // more: iOS gives no dismissal event for a native menu, and this
-                  // is the moment the bar can stop holding its shape for one.
-                  onTouchStart={settle}
-                  placeholder={pageInBar === null ? props.placeholder : "Ask about this page…"}
-                  placeholderTextColor={color.muted}
-                  ref={input}
-                  selectionColor={color.ember}
-                  style={[styles.input, { maxHeight: fieldMaxHeight }]}
-                  value={displayedText}
-                />
+                <PasteTarget onPasteImages={(event) => void staged.paste(event.nativeEvent)}>
+                  <TextInput
+                    accessibilityLabel="Message"
+                    cursorColor={color.ember}
+                    maxFontSizeMultiplier={controlFontScaleLimit}
+                    multiline
+                    onBlur={() => setFocused(false)}
+                    onChangeText={editText}
+                    onSelectionChange={(event) => {
+                      selection.current = event.nativeEvent.selection;
+                    }}
+                    onFocus={() => {
+                      setFocused(true);
+                      settle();
+                    }}
+                    // A touch that reaches the field is proof no menu is over it any
+                    // more: iOS gives no dismissal event for a native menu, and this
+                    // is the moment the bar can stop holding its shape for one.
+                    onTouchStart={settle}
+                    placeholder={pageInBar === null ? props.placeholder : "Ask about this page…"}
+                    placeholderTextColor={color.muted}
+                    ref={input}
+                    selectionColor={color.ember}
+                    style={[styles.input, { maxHeight: fieldMaxHeight }]}
+                    value={displayedText}
+                  />
+                </PasteTarget>
               </Pressable>
             ) : (
               // The open Request is answered by choosing, so the bar holds only

@@ -8,7 +8,10 @@ import { HostClientRequestError, stageAttachment, type HostClient } from "@opens
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { operationDetail } from "../client/mobile-client.js";
 import { type DraftAttachment, type ThreadDraftStore } from "../client/thread-drafts.js";
+import type { PastedImages } from "../../modules/paste-target/index.js";
 import {
+  discardPastedImage,
+  importPastedImage,
   openChatDraftFile,
   pickChatFile,
   pickChatPhoto,
@@ -35,6 +38,8 @@ export interface DraftAttachments {
   /** Why a file was not added, until the next pick. */
   readonly notice: string | null;
   pick(kind: "file" | "photo"): Promise<void>;
+  /** Adds images pasted into the message field, as temporary files the paste wrote. */
+  paste(pasted: PastedImages): Promise<void>;
   /** Takes files a claimed message now carries off the strip; nothing is discarded. */
   release(keys: readonly string[]): void;
   remove(key: string): void;
@@ -324,29 +329,24 @@ export function useDraftAttachments(options: {
     resume();
   }, [items, resume]);
 
-  const pick = async (kind: "file" | "photo"): Promise<void> => {
-    setNotice(null);
-    if (latest.current.length >= attachmentMessageMaxCount) {
-      setNotice(`A message holds at most ${attachmentMessageMaxCount} files.`);
-      return;
-    }
-    let picked: PickedAttachmentSource | null;
-    try {
-      picked = kind === "photo" ? await pickChatPhoto(files) : await pickChatFile(files);
-    } catch (error) {
-      if (mounted.current) setNotice(operationDetail(error, "That file could not be attached."));
-      return;
-    }
-    if (picked === null) return;
-    const total = latest.current.reduce((sum, item) => sum + item.sizeBytes, 0);
-    if (!mounted.current || total + picked.sizeBytes > attachmentMessageMaxBytes) {
+  /** Adds one file a picker or a paste produced, unless the message is full. */
+  const add = (picked: PickedAttachmentSource): boolean => {
+    if (!mounted.current) {
       forgetCopy(files, picked.localUri);
-      if (mounted.current) {
-        setNotice(
-          `${picked.name} would take this message past ${attachmentMessageMaxBytes / 1_048_576} MB. Send what is here first.`,
-        );
-      }
-      return;
+      return false;
+    }
+    if (latest.current.length >= attachmentMessageMaxCount) {
+      forgetCopy(files, picked.localUri);
+      setNotice(`A message holds at most ${attachmentMessageMaxCount} files.`);
+      return false;
+    }
+    const total = latest.current.reduce((sum, item) => sum + item.sizeBytes, 0);
+    if (total + picked.sizeBytes > attachmentMessageMaxBytes) {
+      forgetCopy(files, picked.localUri);
+      setNotice(
+        `${picked.name} would take this message past ${attachmentMessageMaxBytes / 1_048_576} MB. Send what is here first.`,
+      );
+      return false;
     }
     const item: ComposerAttachment = {
       attachmentId: null,
@@ -360,8 +360,59 @@ export function useDraftAttachments(options: {
     };
     localDirty.current = true;
     localRevision.current += 1;
+    // Kept current here too, so several files added in one go each see the others.
+    latest.current = [...latest.current, item];
     setItems((current) => [...current, item]);
     upload(item);
+    return true;
+  };
+
+  const pick = async (kind: "file" | "photo"): Promise<void> => {
+    setNotice(null);
+    if (latest.current.length >= attachmentMessageMaxCount) {
+      setNotice(`A message holds at most ${attachmentMessageMaxCount} files.`);
+      return;
+    }
+    let picked: PickedAttachmentSource | null;
+    try {
+      picked = kind === "photo" ? await pickChatPhoto(files) : await pickChatFile(files);
+    } catch (error) {
+      if (mounted.current) setNotice(operationDetail(error, "That file could not be attached."));
+      return;
+    }
+    if (picked !== null) add(picked);
+  };
+
+  const paste = async (pasted: PastedImages): Promise<void> => {
+    setNotice(null);
+    const waiting = [...pasted.images];
+    let problem: string | null = null;
+    for (let image = waiting.shift(); image !== undefined; image = waiting.shift()) {
+      let picked: PickedAttachmentSource | null = null;
+      if (mounted.current && latest.current.length < attachmentMessageMaxCount) {
+        try {
+          picked = await importPastedImage(files, image);
+        } catch (error) {
+          problem = operationDetail(error, "A pasted image could not be attached.");
+          continue;
+        }
+      } else discardPastedImage(image.uri);
+      // A refusal has said why; what is left of the paste is not attached either.
+      if (picked === null || !add(picked)) {
+        for (const rest of waiting) discardPastedImage(rest.uri);
+        if (picked === null && mounted.current)
+          setNotice(`A message holds at most ${attachmentMessageMaxCount} files.`);
+        return;
+      }
+    }
+    if (!mounted.current) return;
+    if (problem !== null) setNotice(problem);
+    else if (pasted.failed > 0)
+      setNotice(
+        pasted.failed === 1
+          ? "A pasted image could not be read."
+          : `${pasted.failed} pasted images could not be read.`,
+      );
   };
 
   const remove = (key: string): void => {
@@ -411,7 +462,7 @@ export function useDraftAttachments(options: {
     for (const item of added) upload(item);
   };
 
-  return { items, notice, pick, release, remove, restore, retry };
+  return { items, notice, paste, pick, release, remove, restore, retry };
 }
 
 /** What a message carries for a file the Host holds, or null while it does not. */

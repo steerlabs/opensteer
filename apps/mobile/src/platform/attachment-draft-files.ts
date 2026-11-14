@@ -153,6 +153,27 @@ export async function pickChatPhoto(
   );
 }
 
+/** A pasted image arrives as a temporary file; it is moved into the draft's private storage. */
+export async function importPastedImage(
+  scope: LocalAttachmentDraftScope,
+  image: { readonly uri: string; readonly mediaType: string; readonly name: string },
+): Promise<PickedAttachmentSource> {
+  try {
+    return await copyToPrivateDraft(image.uri, image, scope);
+  } finally {
+    discardPastedImage(image.uri);
+  }
+}
+
+export function discardPastedImage(uri: string): void {
+  try {
+    const file = new File(uri);
+    if (file.exists) file.delete();
+  } catch {
+    // Already gone: the system may clear temporary files at any time.
+  }
+}
+
 /** A saved draft URI is opened only within the current authenticated scope. */
 function scopedChatDraftFile(scope: LocalAttachmentDraftScope, localUri: string): File {
   const directory = draftDirectory(scope);

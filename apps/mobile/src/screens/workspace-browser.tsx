@@ -1,3 +1,4 @@
+import { useVerticalBar } from "../ui/vertical-bar.js";
 import { contactSupport } from "../report-mail.js";
 import { PendingBrowserTabView, showPendingBrowserTab } from "../browser/pending-browser-tab.js";
 import {
@@ -85,7 +86,6 @@ import {
   ToolbarAsk,
   ToolbarLeave,
   useNativeBarAway,
-  useVerticalBar,
 } from "../browser/place-bar.js";
 import { Toolbar, ToolbarCapsule, ToolbarMenu } from "../browser/toolbar.js";
 import {

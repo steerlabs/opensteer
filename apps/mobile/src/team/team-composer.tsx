@@ -15,6 +15,7 @@ import { ComposerAction } from "../ui/composer-action.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { StagedAttachments } from "./attachments.js";
+import { PasteTarget, type PastedImages } from "../../modules/paste-target/index.js";
 import { MentionList } from "./mention-list.js";
 import { AgentOrb, PeopleOnlyBadge } from "./team-marks.js";
 import type { AgentReach, MentionOption, StagedAttachmentView } from "./team-models.js";
@@ -41,6 +42,7 @@ export interface TeamComposerProps {
   readonly onMention: () => void;
   readonly attachments: readonly StagedAttachmentView[];
   readonly onAttach: () => void;
+  readonly onPasteImages: (pasted: PastedImages) => void;
   readonly onRemoveAttachment: (attachmentId: string) => void;
   readonly onSend: () => void;
   /** A one-time line above the composer, such as the hint after joining. */
@@ -151,29 +153,34 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
                   </AppText>
                 </Pressable>
               ) : null}
-              <TextInput
-                accessibilityLabel={toMyAgent ? "Ask your agent" : props.placeholder}
-                cursorColor={color.ember}
-                maxFontSizeMultiplier={controlFontScaleLimit}
-                multiline
-                onBlur={() => setFocused(false)}
-                onChangeText={props.onChangeText}
-                onFocus={() => setFocused(true)}
-                onKeyPress={(event) => {
-                  if (toMyAgent && event.nativeEvent.key === "Backspace" && props.text === "") {
-                    props.onToMyAgentChange(false);
+              <PasteTarget
+                onPasteImages={(event) => props.onPasteImages(event.nativeEvent)}
+                style={styles.field}
+              >
+                <TextInput
+                  accessibilityLabel={toMyAgent ? "Ask your agent" : props.placeholder}
+                  cursorColor={color.ember}
+                  maxFontSizeMultiplier={controlFontScaleLimit}
+                  multiline
+                  onBlur={() => setFocused(false)}
+                  onChangeText={props.onChangeText}
+                  onFocus={() => setFocused(true)}
+                  onKeyPress={(event) => {
+                    if (toMyAgent && event.nativeEvent.key === "Backspace" && props.text === "") {
+                      props.onToMyAgentChange(false);
+                    }
+                  }}
+                  onSelectionChange={(event) =>
+                    props.onSelectionChange?.(event.nativeEvent.selection)
                   }
-                }}
-                onSelectionChange={(event) =>
-                  props.onSelectionChange?.(event.nativeEvent.selection)
-                }
-                placeholder={toMyAgent ? "Ask your agent…" : props.placeholder}
-                placeholderTextColor={color.muted}
-                ref={input}
-                selectionColor={color.ember}
-                style={styles.input}
-                value={props.text}
-              />
+                  placeholder={toMyAgent ? "Ask your agent…" : props.placeholder}
+                  placeholderTextColor={color.muted}
+                  ref={input}
+                  selectionColor={color.ember}
+                  style={styles.input}
+                  value={props.text}
+                />
+              </PasteTarget>
             </Pressable>
           }
           leading={
@@ -315,9 +322,9 @@ const styles = StyleSheet.create({
   },
   editingLabel: { color: color.textSoft, fontWeight: "600" },
   captionLine: { paddingHorizontal: space[14] },
+  field: { flex: 1 },
   input: {
     color: color.text,
-    flex: 1,
     fontSize: type.body.fontSize,
     fontWeight: type.body.fontWeight,
     includeFontPadding: false,

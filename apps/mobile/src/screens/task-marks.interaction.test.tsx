@@ -169,6 +169,7 @@ vi.mock("../ui/bar-title.js", () => ({
   useBarTitleRoom: () => 300,
   useBarTitleWidth: () => 260,
 }));
+vi.mock("../ui/vertical-bar.js", () => ({ useVerticalBar: () => false }));
 vi.mock("../ui/glass.js", () => ({
   GlassSurface: ({ children }: { readonly children?: ReactNode }) => <>{children}</>,
   useLiquidGlass: () => harness.liquidGlass,

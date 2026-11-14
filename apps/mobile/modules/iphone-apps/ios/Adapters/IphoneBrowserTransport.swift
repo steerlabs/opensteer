@@ -100,6 +100,15 @@ public final class IphoneBrowserTransport: @unchecked Sendable {
     lock.lock(); socket?.cancel(with: .goingAway, reason: nil); socket = nil; lock.unlock()
   }
 
+  /// Takes the stream offline only while it is still `expected`: a replaced connection's late
+  /// failure must not end the one that followed it. Returns whether it did.
+  @discardableResult func offline(reason: String, ifCurrent expected: URLSessionWebSocketTask) -> Bool {
+    lock.lock(); defer { lock.unlock() }
+    guard socket === expected else { return false }
+    offline(reason: reason)
+    return true
+  }
+
   func erase(deploymentId: String, completion: @escaping (Bool) -> Void) {
     offline(reason: "enrollment-removed")
     lock.lock(); erasing = true; descriptor = nil

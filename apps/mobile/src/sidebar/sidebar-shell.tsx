@@ -45,6 +45,7 @@ import {
   useReservedRegionsReady,
 } from "react-native-reserved-regions";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useVerticalBar } from "../ui/vertical-bar.js";
 import { paramsDestination, tabsRoute } from "../browser/surface-route.js";
 import {
   deriveShell,
@@ -111,11 +112,17 @@ const destinations: ReadonlySet<string> = new Set<SidebarDestination>([
  * Each platform's own sidebar. iOS moves the screen aside to show what is
  * beside it, the way its conversation apps do, and dims what stays in view;
  * Android lays Material's modal drawer over the screen under a heavier scrim.
+ * Beside iPhone Duo's vertical bar iOS lays the list over the screen too:
+ * UIKit pins that bar, and the screen's bar items in it, to the window, so a
+ * screen moved under it strands its Menu a drawer's width from the bar.
  */
-const sidebarMotion =
-  Platform.OS === "ios"
-    ? { overlayColor: "rgba(0, 0, 0, 0.45)", type: DrawerType.SLIDE }
-    : { overlayColor: "rgba(0, 0, 0, 0.62)", type: DrawerType.FRONT };
+function sidebarMotion(verticalBar: boolean): { overlayColor: string; type: DrawerType } {
+  if (Platform.OS !== "ios") return { overlayColor: "rgba(0, 0, 0, 0.62)", type: DrawerType.FRONT };
+  return {
+    overlayColor: "rgba(0, 0, 0, 0.45)",
+    type: verticalBar ? DrawerType.FRONT : DrawerType.SLIDE,
+  };
+}
 
 interface ShellProps {
   readonly children: ReactNode;
@@ -150,6 +157,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   // The shell surface's own safe area: a conversation is judged on the room it
   // has once the notch or bar at its edge is taken out.
   const insets = useSafeAreaInsets();
+  const motion = sidebarMotion(useVerticalBar());
   // Where the reader had scrolled the task list. The drawer and the docked
   // column are different views of it, and the shell outlives both, so a fold
   // that swaps one for the other returns the list where it was.
@@ -405,12 +413,12 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
             }
             // The leading edge, where the column docks and iOS's own swipe starts.
             drawerPosition={rtl ? DrawerPosition.RIGHT : DrawerPosition.LEFT}
-            drawerType={sidebarMotion.type}
+            drawerType={motion.type}
             drawerWidth={drawerWidth}
             edgeWidth={28}
             keyboardDismissMode={DrawerKeyboardDismissMode.ON_DRAG}
             onDrawerStateChanged={onDrawerStateChanged}
-            overlayColor={sidebarMotion.overlayColor}
+            overlayColor={motion.overlayColor}
             ref={drawer}
             renderNavigationView={() =>
               docked ? null : (

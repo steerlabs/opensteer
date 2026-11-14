@@ -4,6 +4,7 @@ import { CryptoDigestAlgorithm, digest } from "expo-crypto";
 import { File } from "expo-file-system";
 import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
+import type { PastedImage } from "../../modules/paste-target/index.js";
 
 /** A file the person chose for a team message, still only on this phone. */
 export interface TeamUploadSource {
@@ -33,6 +34,17 @@ export async function pickTeamPhoto(): Promise<TeamUploadSource | null> {
     name: asset.fileName ?? "photo.jpg",
     mediaType: asset.mimeType ?? "image/jpeg",
     size: asset.fileSize ?? new File(asset.uri).size ?? 0,
+  };
+}
+
+/** An image pasted into the message field, already written to a file this app owns. */
+export function pastedTeamSource(image: PastedImage): TeamUploadSource {
+  return {
+    localId: globalThis.crypto.randomUUID(),
+    uri: image.uri,
+    name: image.name,
+    mediaType: image.mediaType,
+    size: new File(image.uri).size ?? 0,
   };
 }
 

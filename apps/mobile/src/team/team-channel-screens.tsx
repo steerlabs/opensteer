@@ -60,7 +60,9 @@ import type {
   StagedAttachmentView,
 } from "./team-models.js";
 import type { TeamComposerProps } from "./team-composer.js";
+import type { PastedImages } from "../../modules/paste-target/index.js";
 import {
+  pastedTeamSource,
   pickTeamPhoto,
   uploadRefusal,
   uploadToTeam,
@@ -562,7 +564,16 @@ function Place(props: {
 
   const attach = async (): Promise<void> => {
     const source = await pickTeamPhoto().catch(() => null);
-    if (source === null || session.owner?.signal.aborted) return;
+    if (source !== null) await stage(source);
+  };
+
+  const pasteImages = (pasted: PastedImages): void => {
+    if (pasted.failed > 0) setFailure("A pasted image could not be read.");
+    for (const image of pasted.images) void stage(pastedTeamSource(image));
+  };
+
+  const stage = async (source: TeamUploadSource): Promise<void> => {
+    if (session.owner?.signal.aborted) return;
     const refused = uploadRefusal(source);
     const entry: Staged = { source, fileId: null, refused, failed: null };
     setStaged((held) => [...held, entry]);
@@ -813,6 +824,7 @@ function Place(props: {
     onMention: () => changeText(`${text.slice(0, selection.start)}@${text.slice(selection.end)}`),
     attachments: staged.map(stagedView),
     onAttach: () => void attach(),
+    onPasteImages: pasteImages,
     onRemoveAttachment: (id) =>
       setStaged((held) => held.filter((row) => row.source.localId !== id)),
     onSend: () => void send(),
