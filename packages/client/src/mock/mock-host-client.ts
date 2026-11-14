@@ -7305,6 +7305,7 @@ class MockHostState {
     if (!held || (command.leaseId !== undefined && held.view.leaseId !== command.leaseId)) return;
     this.editLeases.delete(command.messageId);
     this.update(this.withInputQueue(this.snapshot, command.threadId));
+    this.admitNextInput(command.threadId);
   }
 
   /** Another of the person's devices opens a waiting message to edit it, as journeys script. */
@@ -7329,7 +7330,22 @@ class MockHostState {
     const view = { deviceLabel, expiresAt: this.leaseExpiry(), leaseId };
     this.editLeases.set(messageId, { here, view });
     this.update(this.withInputQueue(this.snapshot, threadId));
+    this.lapseEditLease(threadId, messageId, leaseId);
     return view;
+  }
+
+  /** As the Host's sweep does, a lease nobody renewed lapses and its queue moves on. */
+  private lapseEditLease(threadId: string, messageId: string, leaseId: string): void {
+    const held = this.editLeases.get(messageId);
+    if (held?.view.leaseId !== leaseId) return;
+    const remaining = Date.parse(held.view.expiresAt) - this.now().getTime();
+    if (remaining > 0) {
+      setTimeout(() => this.lapseEditLease(threadId, messageId, leaseId), remaining);
+      return;
+    }
+    this.editLeases.delete(messageId);
+    this.update(this.withInputQueue(this.snapshot, threadId));
+    this.admitNextInput(threadId);
   }
 
   private leaseExpiry(): string {
@@ -7425,6 +7441,7 @@ class MockHostState {
     );
     const saved = { edit, fingerprint, message };
     this.editReceipts.set(command.idempotencyKey, saved);
+    this.admitNextInput(command.threadId);
     return saved;
   }
 
@@ -7575,6 +7592,7 @@ class MockHostState {
       !thread ||
       !next ||
       thread.inputQueuePaused ||
+      this.liveLease(next.message.id) ||
       this.snapshot.runQueue.some((run) => run.threadId === threadId)
     ) {
       return;
@@ -11163,7 +11181,7 @@ class MockHostState {
     if (waiting.length === 0) return;
     let entries = this.snapshot.transcripts[thread.id] ?? [];
     const barrierIndex = (this.threadInputQueues.get(thread.id) ?? []).findIndex(
-      (item) => item.input.freshContext,
+      (item) => item.input.freshContext || this.liveLease(item.message.id) !== undefined,
     );
     const beforeBarrier = new Set(
       (this.threadInputQueues.get(thread.id) ?? []).slice(

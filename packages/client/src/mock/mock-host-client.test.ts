@@ -397,6 +397,26 @@ describe("MockHostClient", () => {
     client.dispose();
   });
 
+  it("holds the queue at a message another device is editing until its lease ends", async () => {
+    const client = createClient();
+    try {
+      const thread = await client.createThread(threadInput(client));
+      vi.useFakeTimers();
+      const first = sendMessage(client, thread.id, "First turn");
+      const queued = unwrapSend(await sendMessage(client, thread.id, "Then this"));
+      client.mockOtherDeviceEdit(thread.id, queued.message.id, "iPhone");
+      // The first turn's scripted reply plays out well inside the lease's two minutes.
+      await vi.advanceTimersByTimeAsync(60_000);
+      await first;
+      expect(client.getSnapshot().inputQueues[thread.id]?.items).toHaveLength(1);
+      await client.releaseWaitingMessage(thread.id, queued.message.id);
+      expect(client.getSnapshot().inputQueues[thread.id]?.items ?? []).toHaveLength(0);
+    } finally {
+      client.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it("dispatches thread.input.steer and thread.input.cancel with typed results and refusals", async () => {
     const client = createClient();
     const thread = await client.createThread(threadInput(client));
