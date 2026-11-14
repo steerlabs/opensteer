@@ -207,7 +207,6 @@ export function migrationProvider(): MigrationProvider {
                 connection_generation bigint not null,
                 connection_id text not null,
                 connection_lease_id text not null,
-                binding_generation integer not null,
                 read_sequence bigint not null,
                 read_at timestamptz not null,
                 file_status text not null check(file_status in ('valid','missing','invalid')),

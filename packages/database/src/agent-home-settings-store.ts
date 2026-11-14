@@ -3,38 +3,48 @@ import {
   RunnerSettingsReportSchema,
   type AgentHomeSettingsFileView,
   type RunnerSettingsReport,
-  type TaskRuntimeFenceSchema,
 } from "@opensteer/protocol";
 import { sql, type Kysely } from "kysely";
-import type { z } from "zod";
+import { isDeepStrictEqual } from "node:util";
 import type { DatabaseSchema } from "./schema.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { assertPersonalOwner } from "./private-resource-owner.js";
 
-type Fence = z.infer<typeof TaskRuntimeFenceSchema>;
+type Fence = Pick<
+  RunnerSettingsReport,
+  | "bootId"
+  | "connectionGeneration"
+  | "connectionId"
+  | "connectionLeaseId"
+  | "environmentId"
+  | "runnerId"
+>;
 /** The last valid settings.json and what the hosting Runner last found in the file. */
 export interface AgentHomeSettingsState {
   readonly settings: AgentHomeSettings;
   readonly file: AgentHomeSettingsFileView;
 }
 
-/** Keeps the last valid settings: an invalid read changes only the file's status. */
+/**
+ * Keeps the last valid settings: an invalid read changes only the file's status.
+ * Returns the personal owner when an accepted report changed the settings or the file's status.
+ */
 export async function reportAgentHomeSettings(
   database: Kysely<DatabaseSchema>,
   authenticated: Fence,
   input: RunnerSettingsReport,
-): Promise<boolean> {
+): Promise<UserId | null> {
   const report = RunnerSettingsReportSchema.parse(input);
   if (Object.entries(authenticated).some(([key, value]) => report[key as keyof Fence] !== value))
-    return false;
+    return null;
   return withPersonalTransaction(database, async (transaction) => {
     const owner = await transaction
       .selectFrom("personalSettings")
       .select("ownerId")
       .executeTakeFirst();
-    if (!owner) return false;
+    if (!owner) return null;
     const personal = await assertPersonalOwner(transaction, owner.ownerId);
-    if (authenticated.runnerId !== personal.hostingComputerId) return false;
+    if (authenticated.runnerId !== personal.hostingComputerId) return null;
     const live = await transaction
       .selectFrom("runners")
       .innerJoin("executionEnvironments", "executionEnvironments.runnerId", "runners.id")
@@ -45,24 +55,38 @@ export async function reportAgentHomeSettings(
       .where("executionEnvironments.id", "=", authenticated.environmentId)
       .forShare(["runners", "executionEnvironments"])
       .executeTakeFirst();
-    if (!live) return false;
+    if (!live) return null;
+    const before = await transaction
+      .selectFrom("agentHomeSettings")
+      .select(["fileStatus", "fileError", "settings"])
+      .where("computerId", "=", authenticated.runnerId)
+      .forUpdate()
+      .executeTakeFirst();
     const { result } = report;
     const settings =
       result.status === "valid" ? result.settings : result.status === "missing" ? {} : null;
     const error = result.status === "invalid" ? JSON.stringify(result.error) : null;
-    const written = await sql`insert into agent_home_settings
-      (computer_id,environment_id,boot_id,connection_generation,connection_id,connection_lease_id,binding_generation,read_sequence,read_at,file_status,file_error,settings)
-      values(${authenticated.runnerId},${report.environmentId},${report.bootId},${report.connectionGeneration},${report.connectionId},${report.connectionLeaseId},${report.bindingGeneration},${report.readSequence},${report.readAt},${result.status},${error}::jsonb,${JSON.stringify(settings ?? {})}::jsonb)
+    const written = await sql<{
+      fileStatus: AgentHomeSettingsFileView["status"];
+      fileError: unknown;
+      settings: unknown;
+    }>`insert into agent_home_settings
+      (computer_id,environment_id,boot_id,connection_generation,connection_id,connection_lease_id,read_sequence,read_at,file_status,file_error,settings)
+      values(${authenticated.runnerId},${report.environmentId},${report.bootId},${report.connectionGeneration},${report.connectionId},${report.connectionLeaseId},${report.readSequence},${report.readAt},${result.status},${error}::jsonb,${JSON.stringify(settings ?? {})}::jsonb)
       on conflict(computer_id) do update set environment_id=excluded.environment_id,boot_id=excluded.boot_id,
         connection_generation=excluded.connection_generation,connection_id=excluded.connection_id,connection_lease_id=excluded.connection_lease_id,
-        binding_generation=excluded.binding_generation,read_sequence=excluded.read_sequence,read_at=excluded.read_at,
+        read_sequence=excluded.read_sequence,read_at=excluded.read_at,
         file_status=excluded.file_status,file_error=excluded.file_error,
         settings=case when excluded.file_status='invalid' then agent_home_settings.settings else excluded.settings end
       where agent_home_settings.connection_generation<excluded.connection_generation
         or(agent_home_settings.connection_generation=excluded.connection_generation and agent_home_settings.connection_id=excluded.connection_id
           and agent_home_settings.connection_lease_id=excluded.connection_lease_id and agent_home_settings.read_sequence<excluded.read_sequence)
-      returning computer_id`.execute(transaction);
-    return written.rows.length > 0;
+      returning file_status as "fileStatus",file_error as "fileError",settings`.execute(
+      transaction,
+    );
+    const after = written.rows[0];
+    if (!after || (before && isDeepStrictEqual(before, after))) return null;
+    return owner.ownerId;
   });
 }
 

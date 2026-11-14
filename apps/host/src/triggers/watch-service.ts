@@ -6,7 +6,11 @@ import { runnerAgentToolsFailure, type EnvironmentId, type TriggerId } from "@op
 import type { TriggerStore } from "@opensteer/database";
 import type { RunnerIdentity, RunnerRegistry } from "@opensteer/orchestration";
 import type { WatchReconcileActivation } from "@opensteer/protocol";
-import { WATCH_CAPABILITY_RENEWAL_MS, WATCH_START_RETRY_MS } from "@opensteer/triggers";
+import {
+  TRIGGER_PROGRAM_VERSION_REFUSAL,
+  WATCH_CAPABILITY_RENEWAL_MS,
+  WATCH_START_RETRY_MS,
+} from "@opensteer/triggers";
 import type { BrowserService } from "../browser/browser-service.js";
 import type {
   WatchCapabilityScope,
@@ -180,11 +184,11 @@ export class WatchService {
           context.activation.environmentId,
           context.toolContractVersion,
         ));
-      if (incompatibility) {
+      if (incompatibility || context.toolContractVersion !== 4) {
         unavailable.push({
           activationId: context.activation.id,
           executionGeneration: context.activation.executionGeneration,
-          reason: incompatibility,
+          reason: incompatibility ?? TRIGGER_PROGRAM_VERSION_REFUSAL,
         });
         continue;
       }

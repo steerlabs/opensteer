@@ -128,6 +128,8 @@ export type User = z.infer<typeof UserSchema>;
 // The wire contract stays limited to the capabilities every Runner actually advertises.
 export const RunnerCapabilitySchema = z.enum([
   "background-text-v1",
+  // Reports settings.json in the Agent home its welcome names, before it attaches.
+  "agent-home-settings-v1",
   "settings-plugin-policy-v1",
   "assignments-v1",
   // Runs a successor attempt of a Run from the Host's next ordinal, and stops

@@ -8,6 +8,7 @@ import { openAppTunnel } from "../apps/app-tunnel.js";
 import type { HostAppRequest } from "@opensteer/protocol";
 import type { RunnerConfig } from "@opensteer/config";
 import type {
+  ComputerFolder,
   EnvironmentId,
   HarnessId,
   HarnessInstanceId,
@@ -1099,6 +1100,7 @@ export class ReconnectingHostConnection {
     const work: RunnerWorkSession = agents
       ? new AgentsWorkSession({
           agents,
+          agentHome: welcome.agentHome,
           appTransport: this.#config,
           environmentId: () => requiredEnvironmentId(this.#identity),
           fail: (reason) => socket.close(1011, reason),
@@ -1171,8 +1173,9 @@ export class ReconnectingHostConnection {
       },
     });
     try {
-      // Before anything else on this connection, the Host learns every Run this
-      // Runner holds and answers which of them continue here.
+      // The Host hears the first settings.json read, then every Run this Runner
+      // holds, and answers which continue here before it dispatches anything.
+      await work.initialReports();
       await sink.send({
         complete: true,
         executions: work.attachInventory(),
@@ -1244,6 +1247,8 @@ interface RunnerWorkSession {
     RunnerOperationalReport,
     { readonly type: "runner.executions.attach" }
   >["executions"];
+  /** What the Host must hear before it dispatches anything: the first read of settings.json. */
+  initialReports(): Promise<void>;
   handle(message: RunnerWorkMessage): Promise<void>;
   /** Stops accepting work and waits for whatever is already in flight. */
   close(): Promise<void>;
@@ -1252,6 +1257,8 @@ interface RunnerWorkSession {
 interface AgentsWorkSessionOptions {
   readonly appTransport: Pick<RunnerConfig, "hostUrl" | "mode" | "controlCaPath">;
   readonly agents: RunnerAgentsConnection;
+  /** The Agent home this computer hosts, as the Host's welcome named it. */
+  readonly agentHome?: ComputerFolder | undefined;
   readonly environmentId: () => EnvironmentId;
   readonly fail: (reason: string) => void;
   readonly fence: RunnerConnectionFenceLedger;
@@ -1281,6 +1288,7 @@ export class AgentsWorkSession implements RunnerWorkSession {
    */
   readonly #voiceResponses = new Set<Promise<void>>();
   readonly #initialSkills: Promise<void>;
+  readonly #initialSettings: Promise<void>;
   #ordered: Promise<void> = Promise.resolve();
   #orderedPending = 0;
 
@@ -1295,9 +1303,12 @@ export class AgentsWorkSession implements RunnerWorkSession {
           : { status: "failed", reason: "unreadable" },
       );
     });
-    options.agents.runtime.observeAgentHomeSettings((bindingGeneration, read) =>
-      this.#reportSettings(bindingGeneration, read),
-    );
+    this.#initialSettings = options.agents.runtime
+      .observeAgentHomeSettings(
+        (read) => this.#reportSettings(read),
+        options.agentHome ? { agentHome: options.agentHome, signal: this.#signal } : undefined,
+      )
+      .catch(() => undefined);
     this.#initialSkills = Promise.resolve();
     this.#unsubscribePreparation = options.agents.runtime.subscribeHarnessPreparation(
       (harnessInstanceId) => {
@@ -1314,6 +1325,10 @@ export class AgentsWorkSession implements RunnerWorkSession {
       activeTriggerOccurrenceIds: [...runtime.activeTriggerOccurrenceIds()],
       activeWatchActivationIds: [...runtime.activeWatchActivationIds()],
     };
+  }
+
+  initialReports(): Promise<void> {
+    return this.#initialSettings;
   }
 
   attachInventory(): ReturnType<RunnerWorkSession["attachInventory"]> {
@@ -1421,12 +1436,13 @@ export class AgentsWorkSession implements RunnerWorkSession {
   async close(): Promise<void> {
     this.#unsubscribePreparation();
     this.#options.agents.runtime.observeAgentHomeSkills(undefined);
-    this.#options.agents.runtime.observeAgentHomeSettings(undefined);
+    void this.#options.agents.runtime.observeAgentHomeSettings(undefined);
     this.#lifetime.abort(new Error("Host connection stopped"));
     await withTimeout(
       Promise.allSettled([
         this.#ordered.then(() => Promise.allSettled(this.#commandResponses)),
         this.#initialSkills,
+        this.#initialSettings,
         ...this.#catalogResponses,
         ...this.#authenticationResponses,
         ...this.#modelServerResponses,
@@ -1768,14 +1784,12 @@ export class AgentsWorkSession implements RunnerWorkSession {
 
   #settingsSequence = 0;
   async #reportSettings(
-    bindingGeneration: number,
     result: import("@opensteer/protocol").RunnerSettingsReport["result"],
   ): Promise<void> {
     if (this.#signal.aborted) return;
     await this.#options.sink.send({
       ...this.#options.fence.fence,
       environmentId: this.#options.environmentId(),
-      bindingGeneration,
       type: "runner.settings.report",
       readSequence: ++this.#settingsSequence,
       readAt: new Date().toISOString(),
@@ -1810,6 +1824,7 @@ function reachOnlyWorkSession(sink: CausallyOrderedRunnerSink): RunnerWorkSessio
       activeWatchActivationIds: [],
     }),
     attachInventory: () => [],
+    initialReports: () => Promise.resolve(),
     close: () => Promise.resolve(),
     settled: () => true,
     handle: async (message) => {
@@ -2241,6 +2256,7 @@ export function runnerCapabilities(
       ? ["claude-compaction-v1" as const]
       : []),
 
+    "agent-home-settings-v1",
     "settings-plugin-policy-v1",
     "assignments-v1",
     "attempts-v1",

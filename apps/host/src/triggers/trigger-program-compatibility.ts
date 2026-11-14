@@ -1,5 +1,6 @@
 import type { EnvironmentId } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
+import { TRIGGER_PROGRAM_VERSION_REFUSAL } from "@opensteer/triggers";
 
 export type TriggerProgramRunnerStore = Pick<
   OpensteerStore,
@@ -12,8 +13,7 @@ export async function triggerProgramCompatibilityReason(
   environmentId: EnvironmentId,
   version: number,
 ): Promise<string | null> {
-  if (version !== 4)
-    return "Programs require tool contract version 4 and the opensteer_task_send and opensteer_task_delegate tools.";
+  if (version !== 4) return TRIGGER_PROGRAM_VERSION_REFUSAL;
   const environment = await store.getEnvironment(environmentId);
   const capabilities = environment?.runnerId
     ? await store.runnerCapabilities(environment.runnerId)
