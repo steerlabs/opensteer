@@ -2,6 +2,7 @@ import { sql, type Kysely } from "kysely";
 import { Migrator, type MigrationProvider, type MigrationResultSet } from "kysely/migration";
 import { migrateTeamAgentAsks } from "./team-agent-asks-migration.js";
 import { migrateTeamAgents } from "./team-agent-migration.js";
+import { migrateTeamSharedAgents } from "./team-shared-agents-migration.js";
 import { migrateTeamChannelShares } from "./team-shares-migration.js";
 import { migrateTeamShareFiles } from "./team-share-files-migration.js";
 import { migrateTeamPartnerLinks } from "./team-partner-links-migration.js";
@@ -168,6 +169,7 @@ export function migrationProvider(): MigrationProvider {
         [teamPartnerLinksMigrationName]: { up: migrateTeamPartnerLinks },
         "0016_team_channel_shares": { up: migrateTeamChannelShares },
         "0017_team_share_files": { up: migrateTeamShareFiles },
+        "0018_team_shared_agents": { up: migrateTeamSharedAgents },
       };
     },
   };

@@ -184,6 +184,15 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
   return (
     <Screen edgeToEdge>
       <ChannelDetailsBody
+        sharedAgents={
+          value.can.manage && value.share?.shareId && value.share.agentsEnabled !== undefined
+            ? {
+                enabled: value.share.agentsEnabled,
+                onChange: (enabled) =>
+                  run({ type: "team.share.agents.set", shareId: value.share!.shareId!, enabled }),
+              }
+            : undefined
+        }
         actions={{
           onMembers: () => navigation.navigate("TeamMembers", { teamId, channelId }),
           onFiles: () => navigation.navigate("TeamFiles", { teamId, channelId }),

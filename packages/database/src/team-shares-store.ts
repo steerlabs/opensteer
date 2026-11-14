@@ -1,3 +1,11 @@
+import {
+  exportSharedAsks,
+  importSharedAsks,
+  applySharedAskStatus,
+  sharedAskStates,
+  cancelSharedAsks,
+} from "./team-shared-agents.js";
+import { createTeamAskReturn } from "./team-request-returns.js";
 import { randomUUID } from "node:crypto";
 import {
   createId,
@@ -37,7 +45,7 @@ import {
   teamReadableChannelIds,
   teamReadableChannels,
 } from "./team-access-store.js";
-import { TeamChatStore } from "./team-chat-store.js";
+import { TeamChatStore, teamMessageViews } from "./team-chat-store.js";
 import { teamPrincipalProfiles } from "./team-principals-store.js";
 import {
   authorizePartnerWrite,
@@ -350,6 +358,7 @@ export class TeamSharesStore {
             "personalDeploymentId",
             "callerRunId",
             "attachmentPublicIds",
+            "admitted",
           ])
           .expression(
             t
@@ -366,6 +375,7 @@ export class TeamSharesStore {
                 "personalDeploymentId",
                 "callerRunId",
                 "attachmentPublicIds",
+                sql<boolean>`true`.as("admitted"),
               ])
               .where("shareId", "=", s.historyFromShareId),
           )
@@ -644,11 +654,13 @@ export class TeamSharesStore {
         .execute(),
       exportTeamShareFiles(t, ids),
     ]);
+    const asks = await exportSharedAsks(t, s.id, ids);
     return rows.map((r) => {
       const p = principals.find((p) => p.id === r.authorUserId)!;
       const pin = pins.find((p) => p.messageId === r.id);
       return TeamShareRowSchema.parse({
         kind: "text",
+        asks: asks(r.id),
         publicId: r.publicId,
         ordinal: r.createdSeq,
         sequence: r.changeSeq,
@@ -876,6 +888,7 @@ export class TeamSharesStore {
             mentions: [],
             attachmentIds: [],
             partner: { ...context, attachments: w.attachments },
+            publication: w.publication ?? false,
           })
         ).message.id;
       });
@@ -894,6 +907,7 @@ export class TeamSharesStore {
         );
     }
     this.chat.changed(s.channelId!);
+    await this.chat.notifyRequests(id);
     return this.db
       .transaction()
       .setIsolationLevel("repeatable read")
@@ -936,7 +950,7 @@ export class TeamSharesStore {
     actor: TeamActor,
     s: Share,
     write: Extract<TeamShareOperation, { op: "write" }>["write"],
-    provenance?: Pick<Parameters<TeamChatStore["send"]>[1], "linkId" | "runId">,
+    provenance?: Pick<Parameters<TeamChatStore["send"]>[1], "linkId" | "runId" | "publication">,
   ) {
     return this.access.contentWrite(actor, s.channelId!, async (t, a) => {
       requireTeam(a.post);
@@ -952,6 +966,8 @@ export class TeamSharesStore {
           .insertInto("teamShareRelays")
           .values({
             shareId: s.id,
+            agentTargets: sql`${JSON.stringify((await this.chat.mentions(t, actor, s.channelId!, write.bodyMarkdown)).filter((m) => m.kind === "agent").map((m) => m.userId))}::jsonb`,
+            publication: provenance?.publication ?? false,
             authorUserId: actor.userId,
             authorKind: actor.kind,
             clientMessageId: write.clientMessageId,
@@ -1021,6 +1037,13 @@ export class TeamSharesStore {
           BigInt(batch.cursor.sequence) < BigInt(s.cursor))
       )
         shareNotFound();
+      await t
+        .selectFrom("teamMembers")
+        .select("userId")
+        .where("state", "=", "active")
+        .orderBy("userId")
+        .forNoKeyUpdate()
+        .execute();
       await this.lockRoster(t, s, batch.people);
       await t
         .selectFrom("teamChannelMemberState")
@@ -1060,16 +1083,24 @@ export class TeamSharesStore {
         .innerJoin("teamPrincipals as p", "p.id", "a.principalId")
         .select(["p.homeTeamId", "p.homeUserId", "a.state", "a.level"])
         .where("a.shareId", "=", s.id)
-        .where("p.memberUserId", "is not", null)
         .execute();
+      const previousLocal = previous.filter((p) => p.homeTeamId === this.chat.identity.teamId);
       const localRoster = batch.people.filter((p) => p.teamId === this.chat.identity.teamId);
+      const remoteAccessLost = previous.some((old) => {
+        if (old.homeTeamId === this.chat.identity.teamId || old.state !== "active") return false;
+        const next = batch.people.find(
+          (p) => p.teamId === old.homeTeamId && p.userId === old.homeUserId,
+        );
+        return next?.state !== "active" || (old.level === "post" && next.level !== "post");
+      });
       const accessChanged =
         !s.ready ||
         batch.peopleOnly !== s.peopleOnly ||
-        localRoster.length !== previous.length ||
+        remoteAccessLost ||
+        localRoster.length !== previousLocal.length ||
         localRoster.some(
           (p) =>
-            !previous.some(
+            !previousLocal.some(
               (old) =>
                 old.homeUserId === p.userId && old.state === p.state && old.level === p.level,
             ),
@@ -1330,6 +1361,50 @@ export class TeamSharesStore {
             : [],
         );
         if (pins.length) await t.insertInto("teamMessagePins").values(pins).execute();
+        const withdrawn = saved
+          .filter((v) => {
+            const old = byPublic.get(v.row.publicId);
+            return (
+              v.row.deletedAt ||
+              (old &&
+                (v.row.bodyMarkdown !== old.bodyMarkdown ||
+                  v.row.editedAt !== (old.editedAt?.toISOString() ?? null)))
+            );
+          })
+          .map((v) => v.id);
+        if (withdrawn.length) {
+          const pending = await t
+            .selectFrom("teamAgentRequests")
+            .selectAll()
+            .where("triggerMessageId", "in", withdrawn)
+            .where("state", "in", ["awaiting_approval", "queued", "working", "needs_you"])
+            .where("replyMessageId", "is", null)
+            .orderBy("id")
+            .forNoKeyUpdate()
+            .execute();
+          for (const request of pending) {
+            const deleted = saved.find((v) => v.id === request.triggerMessageId)!.row.deletedAt;
+            await t
+              .updateTable("teamAgentRequests")
+              .set({
+                state: "cancelled",
+                finishedAt: new Date(),
+                failureCode: deleted ? "trigger_deleted" : "trigger_edited",
+                changeSeq,
+              })
+              .where("id", "=", request.id)
+              .execute();
+            await createTeamAskReturn(t, request, "cancelled", changeSeq);
+          }
+          await cancelSharedAsks(t, withdrawn, changeSeq, "trigger_edited");
+        }
+        await importSharedAsks(
+          t,
+          this.chat,
+          { ...s, peopleOnly: batch.peopleOnly },
+          saved,
+          changeSeq,
+        );
         if (s.ready) {
           const outgoing = saved.filter((r) => r.fresh && !r.row.deletedAt);
           if (outgoing.length)
@@ -1405,6 +1480,211 @@ export class TeamSharesStore {
     });
     const s = await this.get(id);
     this.chat.changed(s.channelId!);
+    if (batch.rows.length) {
+      const requests = await this.db
+        .selectFrom("teamAgentRequests as r")
+        .innerJoin("teamMessages as m", "m.id", "r.triggerMessageId")
+        .select(["r.id", "r.linkId", "r.state"])
+        .where("m.channelId", "=", s.channelId!)
+        .where(
+          "m.publicId",
+          "in",
+          batch.rows.map((row) => row.publicId),
+        )
+        .execute();
+      for (const request of requests)
+        await this.chat.requestChanged({
+          requestId: request.id,
+          linkId: request.linkId,
+          kind: ["awaiting_approval", "queued", "working", "needs_you"].includes(request.state)
+            ? "queued"
+            : "cancelled",
+        });
+    }
+  }
+  async relayAdmission(actor: TeamActor, s: Share, messageId: TeamMessageId) {
+    const result = await this.access.contentWrite(actor, s.channelId!, async (t, authority) => {
+      requireTeam(authority.post);
+      await this.scoped(t, s.partnerLinkId, s.id, s.generation, "follower");
+      const row = await t
+        .selectFrom("teamMessages")
+        .selectAll()
+        .where("channelId", "=", s.channelId!)
+        .where("id", "=", messageId)
+        .where("authorUserId", "=", actor.userId)
+        .where("authorKind", "=", actor.kind)
+        .executeTakeFirstOrThrow();
+      const proof = await t
+        .selectFrom("teamShareRelays")
+        .selectAll()
+        .where("shareId", "=", s.id)
+        .where("authorUserId", "=", actor.userId)
+        .where("authorKind", "=", actor.kind)
+        .where("clientMessageId", "=", row.clientMessageId)
+        .executeTakeFirstOrThrow();
+      if (proof.admitted) {
+        const askOutcomes = await this.chat.askOutcomes(t, row.id);
+        const own = askOutcomes.find((o) => o.ownerUserId === actor.userId)?.outcome;
+        return {
+          message: (await teamMessageViews(t, [row]))[0]!,
+          wake:
+            own === "no-access" ? ("people-only" as const) : (own ?? ("not-requested" as const)),
+          askOutcomes,
+        };
+      }
+      if (actor.kind === "agent") {
+        requireTeam(proof.agentLinkId);
+        await this.access.link(t, actor, proof.agentLinkId);
+      }
+      requireTeam(!row.deletedAt && !row.editedAt && proof.bodyMarkdown === row.bodyMarkdown);
+      await t
+        .selectFrom("teamMembers")
+        .select("userId")
+        .where("userId", "in", [actor.userId, ...proof.agentTargets])
+        .orderBy("userId")
+        .forNoKeyUpdate()
+        .execute();
+      await t
+        .selectFrom("teamShareRelays")
+        .select(["shareId", "authorUserId", "authorKind", "clientMessageId"])
+        .where("shareId", "=", s.id)
+        .where("authorUserId", "=", actor.userId)
+        .where("authorKind", "=", actor.kind)
+        .where("clientMessageId", "=", row.clientMessageId)
+        .forNoKeyUpdate()
+        .execute();
+      await t
+        .updateTable("teamShareRelays")
+        .set({ admitted: true })
+        .where("shareId", "=", s.id)
+        .where("authorUserId", "=", actor.userId)
+        .where("authorKind", "=", actor.kind)
+        .where("clientMessageId", "=", row.clientMessageId)
+        .execute();
+      await lockTeamMessages(t, [row.id, ...(row.threadRootId ? [row.threadRootId] : [])]);
+      const { changeSeq } = await bumpTeamChannel(t, s.channelId!);
+      await t
+        .updateTable("teamMessages")
+        .set({ changeSeq })
+        .where("id", "in", [row.id, ...(row.threadRootId ? [row.threadRootId] : [])])
+        .execute();
+      const admitted = await this.chat.admitRequests(
+        t,
+        actor,
+        { ...row, changeSeq },
+        proof.agentTargets.map((userId) => ({ userId, kind: "agent" })),
+        { self: true, shareId: s.id, publication: proof.publication },
+      );
+      for (const outcome of admitted.outcomes)
+        await appendTeamAudit(t, {
+          actor,
+          action: "request.create",
+          resourceKind: "message",
+          resourceId: row.id,
+          channelId: row.channelId,
+          outcome: outcome.outcome === "queued" ? "allowed" : "denied",
+          metadata: outcome,
+        });
+      return {
+        message: (await teamMessageViews(t, [{ ...row, changeSeq }]))[0]!,
+        wake: admitted.wake,
+        askOutcomes: await this.chat.askOutcomes(t, row.id),
+      };
+    });
+    this.chat.changed(s.channelId!);
+    await this.chat.notifyRequests(messageId);
+    return result;
+  }
+  async recoverRelayAdmissions(s: Share) {
+    const rows = await this.db
+      .selectFrom("teamShareRelays as l")
+      .innerJoin("teamMessages as m", (join) =>
+        join.onRef("m.publicId", "=", "l.publicId").on("m.channelId", "=", s.channelId!),
+      )
+      .select(["l.authorUserId", "l.authorKind", "m.id"])
+      .where("l.shareId", "=", s.id)
+      .where("l.admitted", "=", false)
+      .where("m.createdAt", ">", new Date(Date.now() - 7 * 86400000))
+      .where("m.deletedAt", "is", null)
+      .where("m.editedAt", "is", null)
+      .orderBy("m.id")
+      .execute();
+    for (const row of rows) {
+      try {
+        await this.relayAdmission({ kind: row.authorKind, userId: row.authorUserId }, s, row.id);
+      } catch (error) {
+        if (!(error instanceof OpensteerError && error.code === "forbidden")) throw error;
+      }
+    }
+  }
+  async agentStatuses(s: Share) {
+    return this.db.transaction().execute(async (t) => {
+      await this.scoped(t, s.partnerLinkId, s.id, s.generation, "follower");
+      return (await sharedAskStates(t, s.id)).filter((a) => a.memberUserId && a.status);
+    });
+  }
+  async agentStatus(linkId: string, op: Extract<TeamShareOperation, { op: "ask.status" }>) {
+    const s = await this.db
+      .transaction()
+      .execute((t) => this.scoped(t, linkId, op.shareId, op.generation, "owner"));
+    const changed = await this.access.contentWrite(
+      { kind: "human", userId: op.target.userId },
+      s.channelId!,
+      async (t) => {
+        await this.scoped(t, linkId, s.id, op.generation, "owner");
+        const link = await t
+          .selectFrom("teamPartnerLinks")
+          .select("partnerTeamId")
+          .where("id", "=", linkId)
+          .executeTakeFirstOrThrow();
+        if (op.target.teamId !== link.partnerTeamId) shareNotFound();
+        const ref = await t
+          .selectFrom("teamShareAsks as a")
+          .innerJoin("teamMessages as m", "m.id", "a.triggerMessageId")
+          .innerJoin("teamPrincipals as p", "p.id", "a.targetPrincipalId")
+          .selectAll("a")
+          .where("a.shareId", "=", s.id)
+          .where("m.publicId", "=", op.triggerPublicId)
+          .where("p.homeTeamId", "=", op.target.teamId)
+          .where("p.homeUserId", "=", op.target.userId)
+          .executeTakeFirst();
+        if (!ref) shareNotFound();
+        await lockTeamMessages(t, [ref.threadRootId, ref.triggerMessageId]);
+        const { changeSeq } = await bumpTeamChannel(t, s.channelId!);
+        if (!(await applySharedAskStatus(t, ref.id, op.status, changeSeq))) return null;
+        await t
+          .updateTable("teamMessages")
+          .set({ changeSeq })
+          .where("id", "in", [ref.threadRootId, ref.triggerMessageId])
+          .execute();
+        return ref.triggerMessageId;
+      },
+    );
+    if (changed) {
+      this.chat.changed(s.channelId!);
+      await this.chat.notifyRequests(changed);
+    }
+    return {};
+  }
+  async setAgents(actor: TeamActor, id: string, enabled: boolean) {
+    const share = await this.access.mutate(async (t) => {
+      const s = await t
+        .selectFrom("teamShares")
+        .selectAll()
+        .where("id", "=", id)
+        .where("state", "=", "active")
+        .executeTakeFirstOrThrow();
+      requireTeam(
+        actor.kind === "human" && (await this.access.channel(t, actor, s.channelId!)).manage,
+      );
+      await t
+        .updateTable("teamShares")
+        .set({ agentsEnabled: enabled })
+        .where("id", "=", id)
+        .execute();
+      return { value: s, effects: { ...emptyTeamAccessEffects, channels: [s.channelId!] } };
+    });
+    this.chat.changed(share.channelId!);
   }
   async setParticipant(actor: TeamActor, id: string, principalId: UserId, blocked: boolean) {
     const s = await this.access.mutate(async (t) => {
@@ -1447,8 +1727,13 @@ export class TeamSharesStore {
     if (effects.channels.length && !effects.users.length)
       query = query.where("channelId", "in", [...effects.channels]);
     const shares = await query.orderBy("id").execute();
+    const relayWriters = new Map<string, UserId[]>();
     for (const share of shares) {
       const local = await this.localRoster(t, share);
+      relayWriters.set(
+        share.id,
+        share.agentsEnabled ? local.filter((p) => p.level === "post").map((p) => p.userId) : [],
+      );
       let changed = false;
       if (share.role === "owner") {
         const previous = await t
@@ -1493,6 +1778,32 @@ export class TeamSharesStore {
           ? roster
           : [...roster.filter((p) => p.teamId !== this.chat.identity.teamId), ...local];
       this.validateRoster(people);
+    }
+    if (shares.length) {
+      await t
+        .selectFrom("teamShareRelays")
+        .select(["shareId", "authorUserId", "authorKind", "clientMessageId"])
+        .where(
+          "shareId",
+          "in",
+          shares.map((s) => s.id),
+        )
+        .where("admitted", "=", false)
+        .orderBy("shareId")
+        .orderBy("authorUserId")
+        .orderBy("authorKind")
+        .orderBy("clientMessageId")
+        .forNoKeyUpdate()
+        .execute();
+      for (const [shareId, writers] of relayWriters) {
+        let revoked = t
+          .updateTable("teamShareRelays")
+          .set({ admitted: true })
+          .where("shareId", "=", shareId)
+          .where("admitted", "=", false);
+        if (writers.length) revoked = revoked.where("authorUserId", "not in", writers);
+        await revoked.execute();
+      }
     }
   }
   async end(id: string, actor?: TeamActor, context?: { linkId: string; generation: number }) {
@@ -1666,6 +1977,7 @@ export class TeamSharesStore {
           name: s.name,
           ready: s.ready,
           localApproved: s.localApproved,
+          agentsEnabled: s.agentsEnabled,
         })),
       };
     });

@@ -1,5 +1,5 @@
 {
-  "teamApiVersion": 5,
+  "teamApiVersion": 6,
   "minimumTeamApiVersion": 5,
   "input": {
     "rpc team.share.participants.get": {
@@ -682,6 +682,29 @@
     "rpc sessions.list": {
       "type": "object",
       "properties": {},
+      "additionalProperties": false
+    },
+    "command team.share.agents.set": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.share.agents.set"
+        },
+        "shareId": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "shareId",
+        "enabled"
+      ],
       "additionalProperties": false
     },
     "command team.share.participant.restore": {
@@ -2985,6 +3008,9 @@
               },
               "peopleOnly": {
                 "type": "boolean"
+              },
+              "agentsEnabled": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -3484,6 +3510,14 @@
                       "share": {
                         "type": "object",
                         "properties": {
+                          "shareId": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "agentsEnabled": {
+                            "type": "boolean"
+                          },
                           "updateRequired": {
                             "type": "boolean"
                           },
@@ -3727,6 +3761,14 @@
                   "share": {
                     "type": "object",
                     "properties": {
+                      "shareId": {
+                        "type": "string",
+                        "format": "uuid",
+                        "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                      },
+                      "agentsEnabled": {
+                        "type": "boolean"
+                      },
                       "updateRequired": {
                         "type": "boolean"
                       },
@@ -3935,6 +3977,14 @@
               "share": {
                 "type": "object",
                 "properties": {
+                  "shareId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "agentsEnabled": {
+                    "type": "boolean"
+                  },
                   "updateRequired": {
                     "type": "boolean"
                   },
@@ -4077,6 +4127,14 @@
         "share": {
           "type": "object",
           "properties": {
+            "shareId": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            "agentsEnabled": {
+              "type": "boolean"
+            },
             "updateRequired": {
               "type": "boolean"
             },
@@ -4619,12 +4677,30 @@
                       "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                     },
                     "kind": {
-                      "default": "self",
                       "type": "string",
                       "enum": [
                         "self",
                         "ask",
                         "return"
+                      ]
+                    },
+                    "pendingRemote": {
+                      "type": "boolean"
+                    },
+                    "askRefusal": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "people-only",
+                            "no-access",
+                            "no-link",
+                            "rate-limited"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
                       ]
                     },
                     "consentExpiresAt": {
@@ -4780,6 +4856,7 @@
                   },
                   "required": [
                     "id",
+                    "kind",
                     "ownerUserId",
                     "channelId",
                     "threadRootId",
@@ -4832,6 +4909,14 @@
             "share": {
               "type": "object",
               "properties": {
+                "shareId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                },
+                "agentsEnabled": {
+                  "type": "boolean"
+                },
                 "updateRequired": {
                   "type": "boolean"
                 },
@@ -5258,12 +5343,30 @@
                       "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                     },
                     "kind": {
-                      "default": "self",
                       "type": "string",
                       "enum": [
                         "self",
                         "ask",
                         "return"
+                      ]
+                    },
+                    "pendingRemote": {
+                      "type": "boolean"
+                    },
+                    "askRefusal": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "people-only",
+                            "no-access",
+                            "no-link",
+                            "rate-limited"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
                       ]
                     },
                     "consentExpiresAt": {
@@ -5419,6 +5522,7 @@
                   },
                   "required": [
                     "id",
+                    "kind",
                     "ownerUserId",
                     "channelId",
                     "threadRootId",
@@ -5471,6 +5575,14 @@
             "share": {
               "type": "object",
               "properties": {
+                "shareId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                },
+                "agentsEnabled": {
+                  "type": "boolean"
+                },
                 "updateRequired": {
                   "type": "boolean"
                 },
@@ -5854,12 +5966,30 @@
                 "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
               },
               "kind": {
-                "default": "self",
                 "type": "string",
                 "enum": [
                   "self",
                   "ask",
                   "return"
+                ]
+              },
+              "pendingRemote": {
+                "type": "boolean"
+              },
+              "askRefusal": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "people-only",
+                      "no-access",
+                      "no-link",
+                      "rate-limited"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               },
               "consentExpiresAt": {
@@ -6015,6 +6145,7 @@
             },
             "required": [
               "id",
+              "kind",
               "ownerUserId",
               "channelId",
               "threadRootId",
@@ -6335,12 +6466,30 @@
                       "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                     },
                     "kind": {
-                      "default": "self",
                       "type": "string",
                       "enum": [
                         "self",
                         "ask",
                         "return"
+                      ]
+                    },
+                    "pendingRemote": {
+                      "type": "boolean"
+                    },
+                    "askRefusal": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "people-only",
+                            "no-access",
+                            "no-link",
+                            "rate-limited"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
                       ]
                     },
                     "consentExpiresAt": {
@@ -6496,6 +6645,7 @@
                   },
                   "required": [
                     "id",
+                    "kind",
                     "ownerUserId",
                     "channelId",
                     "threadRootId",
@@ -6825,12 +6975,30 @@
                           "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                         },
                         "kind": {
-                          "default": "self",
                           "type": "string",
                           "enum": [
                             "self",
                             "ask",
                             "return"
+                          ]
+                        },
+                        "pendingRemote": {
+                          "type": "boolean"
+                        },
+                        "askRefusal": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "people-only",
+                                "no-access",
+                                "no-link",
+                                "rate-limited"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
                           ]
                         },
                         "consentExpiresAt": {
@@ -6986,6 +7154,7 @@
                       },
                       "required": [
                         "id",
+                        "kind",
                         "ownerUserId",
                         "channelId",
                         "threadRootId",
@@ -7997,12 +8166,30 @@
                 "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
               },
               "kind": {
-                "default": "self",
                 "type": "string",
                 "enum": [
                   "self",
                   "ask",
                   "return"
+                ]
+              },
+              "pendingRemote": {
+                "type": "boolean"
+              },
+              "askRefusal": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "people-only",
+                      "no-access",
+                      "no-link",
+                      "rate-limited"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               },
               "consentExpiresAt": {
@@ -8158,6 +8345,7 @@
             },
             "required": [
               "id",
+              "kind",
               "ownerUserId",
               "channelId",
               "threadRootId",
@@ -8542,12 +8730,30 @@
                       "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                     },
                     "kind": {
-                      "default": "self",
                       "type": "string",
                       "enum": [
                         "self",
                         "ask",
                         "return"
+                      ]
+                    },
+                    "pendingRemote": {
+                      "type": "boolean"
+                    },
+                    "askRefusal": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "people-only",
+                            "no-access",
+                            "no-link",
+                            "rate-limited"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
                       ]
                     },
                     "consentExpiresAt": {
@@ -8703,6 +8909,7 @@
                   },
                   "required": [
                     "id",
+                    "kind",
                     "ownerUserId",
                     "channelId",
                     "threadRootId",
@@ -9033,12 +9240,30 @@
                       "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                     },
                     "kind": {
-                      "default": "self",
                       "type": "string",
                       "enum": [
                         "self",
                         "ask",
                         "return"
+                      ]
+                    },
+                    "pendingRemote": {
+                      "type": "boolean"
+                    },
+                    "askRefusal": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "enum": [
+                            "people-only",
+                            "no-access",
+                            "no-link",
+                            "rate-limited"
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
                       ]
                     },
                     "consentExpiresAt": {
@@ -9194,6 +9419,7 @@
                   },
                   "required": [
                     "id",
+                    "kind",
                     "ownerUserId",
                     "channelId",
                     "threadRootId",
@@ -9902,6 +10128,18 @@
         "sessions"
       ]
     },
+    "command team.share.agents.set": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "team.share.agents.set"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
     "command team.share.participant.restore": {
       "type": "object",
       "properties": {
@@ -9969,6 +10207,14 @@
             "share": {
               "type": "object",
               "properties": {
+                "shareId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                },
+                "agentsEnabled": {
+                  "type": "boolean"
+                },
                 "updateRequired": {
                   "type": "boolean"
                 },
@@ -10455,6 +10701,14 @@
             "share": {
               "type": "object",
               "properties": {
+                "shareId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                },
+                "agentsEnabled": {
+                  "type": "boolean"
+                },
                 "updateRequired": {
                   "type": "boolean"
                 },
@@ -10646,6 +10900,14 @@
             "share": {
               "type": "object",
               "properties": {
+                "shareId": {
+                  "type": "string",
+                  "format": "uuid",
+                  "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                },
+                "agentsEnabled": {
+                  "type": "boolean"
+                },
                 "updateRequired": {
                   "type": "boolean"
                 },
@@ -11046,12 +11308,30 @@
                     "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                   },
                   "kind": {
-                    "default": "self",
                     "type": "string",
                     "enum": [
                       "self",
                       "ask",
                       "return"
+                    ]
+                  },
+                  "pendingRemote": {
+                    "type": "boolean"
+                  },
+                  "askRefusal": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "people-only",
+                          "no-access",
+                          "no-link",
+                          "rate-limited"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
                     ]
                   },
                   "consentExpiresAt": {
@@ -11207,6 +11487,7 @@
                 },
                 "required": [
                   "id",
+                  "kind",
                   "ownerUserId",
                   "channelId",
                   "threadRootId",
@@ -12697,6 +12978,14 @@
                         "share": {
                           "type": "object",
                           "properties": {
+                            "shareId": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            },
+                            "agentsEnabled": {
+                              "type": "boolean"
+                            },
                             "updateRequired": {
                               "type": "boolean"
                             },
@@ -13079,12 +13368,30 @@
                                   "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                                 },
                                 "kind": {
-                                  "default": "self",
                                   "type": "string",
                                   "enum": [
                                     "self",
                                     "ask",
                                     "return"
+                                  ]
+                                },
+                                "pendingRemote": {
+                                  "type": "boolean"
+                                },
+                                "askRefusal": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "people-only",
+                                        "no-access",
+                                        "no-link",
+                                        "rate-limited"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
                                   ]
                                 },
                                 "consentExpiresAt": {
@@ -13240,6 +13547,7 @@
                               },
                               "required": [
                                 "id",
+                                "kind",
                                 "ownerUserId",
                                 "channelId",
                                 "threadRootId",
@@ -13290,12 +13598,30 @@
                             "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                           },
                           "kind": {
-                            "default": "self",
                             "type": "string",
                             "enum": [
                               "self",
                               "ask",
                               "return"
+                            ]
+                          },
+                          "pendingRemote": {
+                            "type": "boolean"
+                          },
+                          "askRefusal": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "people-only",
+                                  "no-access",
+                                  "no-link",
+                                  "rate-limited"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
                             ]
                           },
                           "consentExpiresAt": {
@@ -13451,6 +13777,7 @@
                         },
                         "required": [
                           "id",
+                          "kind",
                           "ownerUserId",
                           "channelId",
                           "threadRootId",
@@ -13639,6 +13966,14 @@
                         "share": {
                           "type": "object",
                           "properties": {
+                            "shareId": {
+                              "type": "string",
+                              "format": "uuid",
+                              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                            },
+                            "agentsEnabled": {
+                              "type": "boolean"
+                            },
                             "updateRequired": {
                               "type": "boolean"
                             },
@@ -14021,12 +14356,30 @@
                                   "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                                 },
                                 "kind": {
-                                  "default": "self",
                                   "type": "string",
                                   "enum": [
                                     "self",
                                     "ask",
                                     "return"
+                                  ]
+                                },
+                                "pendingRemote": {
+                                  "type": "boolean"
+                                },
+                                "askRefusal": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "people-only",
+                                        "no-access",
+                                        "no-link",
+                                        "rate-limited"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
                                   ]
                                 },
                                 "consentExpiresAt": {
@@ -14182,6 +14535,7 @@
                               },
                               "required": [
                                 "id",
+                                "kind",
                                 "ownerUserId",
                                 "channelId",
                                 "threadRootId",
@@ -14241,12 +14595,30 @@
                             "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                           },
                           "kind": {
-                            "default": "self",
                             "type": "string",
                             "enum": [
                               "self",
                               "ask",
                               "return"
+                            ]
+                          },
+                          "pendingRemote": {
+                            "type": "boolean"
+                          },
+                          "askRefusal": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "people-only",
+                                  "no-access",
+                                  "no-link",
+                                  "rate-limited"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
                             ]
                           },
                           "consentExpiresAt": {
@@ -14402,6 +14774,7 @@
                         },
                         "required": [
                           "id",
+                          "kind",
                           "ownerUserId",
                           "channelId",
                           "threadRootId",
@@ -14462,6 +14835,14 @@
                           "share": {
                             "type": "object",
                             "properties": {
+                              "shareId": {
+                                "type": "string",
+                                "format": "uuid",
+                                "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                              },
+                              "agentsEnabled": {
+                                "type": "boolean"
+                              },
                               "updateRequired": {
                                 "type": "boolean"
                               },
@@ -15584,12 +15965,30 @@
                         "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                       },
                       "kind": {
-                        "default": "self",
                         "type": "string",
                         "enum": [
                           "self",
                           "ask",
                           "return"
+                        ]
+                      },
+                      "pendingRemote": {
+                        "type": "boolean"
+                      },
+                      "askRefusal": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "enum": [
+                              "people-only",
+                              "no-access",
+                              "no-link",
+                              "rate-limited"
+                            ]
+                          },
+                          {
+                            "type": "null"
+                          }
                         ]
                       },
                       "consentExpiresAt": {
@@ -15745,6 +16144,7 @@
                     },
                     "required": [
                       "id",
+                      "kind",
                       "ownerUserId",
                       "channelId",
                       "threadRootId",
@@ -15768,6 +16168,11 @@
                           "asker": {
                             "type": "object",
                             "properties": {
+                              "homeTeamName": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 160
+                              },
                               "teamUserId": {
                                 "type": "string",
                                 "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -15936,6 +16341,11 @@
                           "author": {
                             "type": "object",
                             "properties": {
+                              "homeTeamName": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 160
+                              },
                               "teamUserId": {
                                 "type": "string",
                                 "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -16291,12 +16701,30 @@
                           "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                         },
                         "kind": {
-                          "default": "self",
                           "type": "string",
                           "enum": [
                             "self",
                             "ask",
                             "return"
+                          ]
+                        },
+                        "pendingRemote": {
+                          "type": "boolean"
+                        },
+                        "askRefusal": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "people-only",
+                                "no-access",
+                                "no-link",
+                                "rate-limited"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
                           ]
                         },
                         "consentExpiresAt": {
@@ -16452,6 +16880,7 @@
                       },
                       "required": [
                         "id",
+                        "kind",
                         "ownerUserId",
                         "channelId",
                         "threadRootId",
@@ -16491,12 +16920,30 @@
                               "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                             },
                             "kind": {
-                              "default": "self",
                               "type": "string",
                               "enum": [
                                 "self",
                                 "ask",
                                 "return"
+                              ]
+                            },
+                            "pendingRemote": {
+                              "type": "boolean"
+                            },
+                            "askRefusal": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "people-only",
+                                    "no-access",
+                                    "no-link",
+                                    "rate-limited"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
                               ]
                             },
                             "consentExpiresAt": {
@@ -16652,6 +17099,7 @@
                           },
                           "required": [
                             "id",
+                            "kind",
                             "ownerUserId",
                             "channelId",
                             "threadRootId",
@@ -16675,6 +17123,11 @@
                                 "asker": {
                                   "type": "object",
                                   "properties": {
+                                    "homeTeamName": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 160
+                                    },
                                     "teamUserId": {
                                       "type": "string",
                                       "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -17384,12 +17837,30 @@
                                           "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                                         },
                                         "kind": {
-                                          "default": "self",
                                           "type": "string",
                                           "enum": [
                                             "self",
                                             "ask",
                                             "return"
+                                          ]
+                                        },
+                                        "pendingRemote": {
+                                          "type": "boolean"
+                                        },
+                                        "askRefusal": {
+                                          "anyOf": [
+                                            {
+                                              "type": "string",
+                                              "enum": [
+                                                "people-only",
+                                                "no-access",
+                                                "no-link",
+                                                "rate-limited"
+                                              ]
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
                                           ]
                                         },
                                         "consentExpiresAt": {
@@ -17545,6 +18016,7 @@
                                       },
                                       "required": [
                                         "id",
+                                        "kind",
                                         "ownerUserId",
                                         "channelId",
                                         "threadRootId",
@@ -17597,6 +18069,14 @@
                                 "share": {
                                   "type": "object",
                                   "properties": {
+                                    "shareId": {
+                                      "type": "string",
+                                      "format": "uuid",
+                                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                    },
+                                    "agentsEnabled": {
+                                      "type": "boolean"
+                                    },
                                     "updateRequired": {
                                       "type": "boolean"
                                     },
@@ -18151,12 +18631,30 @@
                                           "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                                         },
                                         "kind": {
-                                          "default": "self",
                                           "type": "string",
                                           "enum": [
                                             "self",
                                             "ask",
                                             "return"
+                                          ]
+                                        },
+                                        "pendingRemote": {
+                                          "type": "boolean"
+                                        },
+                                        "askRefusal": {
+                                          "anyOf": [
+                                            {
+                                              "type": "string",
+                                              "enum": [
+                                                "people-only",
+                                                "no-access",
+                                                "no-link",
+                                                "rate-limited"
+                                              ]
+                                            },
+                                            {
+                                              "type": "null"
+                                            }
                                           ]
                                         },
                                         "consentExpiresAt": {
@@ -18312,6 +18810,7 @@
                                       },
                                       "required": [
                                         "id",
+                                        "kind",
                                         "ownerUserId",
                                         "channelId",
                                         "threadRootId",
@@ -19127,6 +19626,14 @@
                               "share": {
                                 "type": "object",
                                 "properties": {
+                                  "shareId": {
+                                    "type": "string",
+                                    "format": "uuid",
+                                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                                  },
+                                  "agentsEnabled": {
+                                    "type": "boolean"
+                                  },
                                   "updateRequired": {
                                     "type": "boolean"
                                   },
@@ -19308,12 +19815,30 @@
                                     "pattern": "^tar_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                                   },
                                   "kind": {
-                                    "default": "self",
                                     "type": "string",
                                     "enum": [
                                       "self",
                                       "ask",
                                       "return"
+                                    ]
+                                  },
+                                  "pendingRemote": {
+                                    "type": "boolean"
+                                  },
+                                  "askRefusal": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "enum": [
+                                          "people-only",
+                                          "no-access",
+                                          "no-link",
+                                          "rate-limited"
+                                        ]
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
                                     ]
                                   },
                                   "consentExpiresAt": {
@@ -19469,6 +19994,7 @@
                                 },
                                 "required": [
                                   "id",
+                                  "kind",
                                   "ownerUserId",
                                   "channelId",
                                   "threadRootId",

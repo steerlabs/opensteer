@@ -1992,6 +1992,11 @@ export interface DatabaseSchema {
   teamChannelMembers: TeamChannelMemberTable;
   teamChannelMemberState: TeamChannelMemberStateTable;
   teamShares: TeamShareTable;
+  teamShareAsks: TeamShareAskTable;
+  teamRequestStatuses: TeamAgentRequestTable & {
+    pendingRemote: boolean;
+    askRefusal: "people-only" | "no-access" | "no-link" | "rate-limited" | null;
+  };
   teamShareParticipants: TeamShareParticipantTable;
   teamShareRelays: TeamShareRelayTable;
   teamMessages: TeamMessageTable;
@@ -2546,6 +2551,7 @@ export interface TeamLinkTable {
   revokedAt: NullableTimestamp;
 }
 export interface TeamAgentRequestTable {
+  shareId: Generated<string | null>;
   targetAgentHandle: Generated<string | null>;
   kind: Generated<TeamAgentRequestKind>;
   presentation: ColumnType<
@@ -2663,6 +2669,7 @@ export interface TeamPartnerLinkTable {
 }
 
 export interface TeamShareTable {
+  agentsEnabled: Generated<boolean>;
   historyFromShareId: string | null;
   syncError: Generated<"update-required" | null>;
   storedRows: Generated<number>;
@@ -2695,6 +2702,9 @@ export interface TeamShareParticipantTable {
 }
 export interface TeamShareRelayTable {
   attachmentPublicIds: Generated<string[]>;
+  agentTargets: ColumnType<readonly UserId[], readonly UserId[] | undefined, readonly UserId[]>;
+  publication: Generated<boolean>;
+  admitted: Generated<boolean>;
   agentLinkId: Generated<TeamLinkId | null>;
   personalDeploymentId: Generated<DeploymentId | null>;
   callerRunId: Generated<RunId | null>;
@@ -2705,4 +2715,20 @@ export interface TeamShareRelayTable {
   bodyMarkdown: string;
   threadRootPublicId: string | null;
   publicId: string | null;
+}
+
+export interface TeamShareAskTable {
+  id: TeamAgentRequestId;
+  shareId: string;
+  channelId: TeamChannelId;
+  triggerMessageId: TeamMessageId;
+  threadRootId: TeamMessageId;
+  targetPrincipalId: UserId;
+  targetAgentHandle: string;
+  localRequestId: TeamAgentRequestId | null;
+  status: JsonColumn<import("@opensteer/protocol").TeamShareAskStatus | null>;
+  outcome: TeamAgentReturnPayload["outcome"] | null;
+  replyMessageId: TeamMessageId | null;
+  createdAt: Timestamp;
+  changeSeq: string;
 }

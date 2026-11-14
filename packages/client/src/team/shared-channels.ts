@@ -130,7 +130,7 @@ export function shareOfferUnavailable(
 export function teamAskerLabel(asker: {
   readonly displayName: string;
   readonly actor: "human" | "agent";
-  readonly teamName?: string;
+  readonly homeTeamName?: string;
 }): string {
-  return `${asker.displayName}${asker.actor === "agent" ? "'s agent" : ""}${asker.teamName ? ` · ${asker.teamName}` : ""}`;
+  return `${asker.displayName}${asker.actor === "agent" ? "'s agent" : ""}${asker.homeTeamName ? ` · ${asker.homeTeamName}` : ""}`;
 }

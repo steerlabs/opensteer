@@ -17,7 +17,15 @@ export function teamAskStatuses(
     .map((request) => {
       const name = ownerName(request.ownerUserId);
       let status: string;
-      if (request.replyMessageId) status = "Answered";
+      if (request.askRefusal)
+        status = {
+          "people-only": "People only",
+          "no-access": "Unavailable",
+          "no-link": "Not connected",
+          "rate-limited": "Request limit reached",
+        }[request.askRefusal];
+      else if (request.pendingRemote) status = "Asking…";
+      else if (request.replyMessageId) status = "Answered";
       else if (request.failureCode === "expired") status = "Expired";
       else
         switch (request.state) {
@@ -67,5 +75,8 @@ export function teamAskAudienceLabel(audience: TeamAudience): string {
     dm: "Direct message",
     group_dm: "Group message",
   }[audience.channelKind];
-  return `${audience.teamName} · ${kind} · ${audience.memberCount} ${audience.memberCount === 1 ? "person" : "people"}`;
+  const external = audience.externalTeams?.length
+    ? ` · Shared with ${audience.externalTeams.map((t) => t.name).join(", ")}`
+    : "";
+  return `${audience.teamName} · ${kind} · ${audience.memberCount} ${audience.memberCount === 1 ? "person" : "people"}${external}`;
 }

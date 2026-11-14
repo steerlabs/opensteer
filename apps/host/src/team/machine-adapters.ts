@@ -1,3 +1,4 @@
+import { sql } from "kysely";
 import type { TeamActor, TeamLinkId } from "@opensteer/core";
 import {
   TeamFileResultSchema,
@@ -91,7 +92,11 @@ export function createTeamMachineAdapters(
             const source = await chat.source(t, actor, input.channelId, rootId ?? null);
             const owner = await t
               .selectFrom("teamMembers")
-              .select("handle")
+              .select(
+                sql<string>`coalesce((select a.handle from team_share_participants a join team_shares s on s.id=a.share_id
+                where s.channel_id=${input.channelId} and a.principal_id=${actor.userId} and (s.state='active' or s.role='follower')
+                order by s.created_at desc limit 1),handle)`.as("handle"),
+              )
               .where("userId", "=", actor.userId)
               .executeTakeFirstOrThrow();
             return TeamReadResultSchema.parse({ page, source, ownerHandle: owner.handle });

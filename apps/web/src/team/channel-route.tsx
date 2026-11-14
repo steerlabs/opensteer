@@ -1034,6 +1034,19 @@ function ChannelDetailsPane({
       channel={channel}
       sharing={live ? <ChannelShares client={view.client} channel={live} /> : null}
       notify={level}
+      sharedAgents={
+        manage && live?.share?.shareId && live.share.agentsEnabled !== undefined
+          ? {
+              enabled: live.share.agentsEnabled,
+              onChange: (enabled) =>
+                void dispatch({
+                  type: "team.share.agents.set",
+                  shareId: live.share!.shareId!,
+                  enabled,
+                }),
+            }
+          : undefined
+      }
       workingAgents={workingAgents}
     />
   );

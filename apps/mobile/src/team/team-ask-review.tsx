@@ -106,7 +106,11 @@ export function TeamAskReview({
             </AppText>
             <AppText>
               Approving lets your agent use your things and post its answer in #
-              {ask.audience.channelName}.
+              {ask.audience.channelName}
+              {ask.audience.externalTeams?.length
+                ? `, a channel shared with ${ask.audience.externalTeams.map((t) => t.name).join(", ")}`
+                : ""}
+              .
             </AppText>
           </>
         )}

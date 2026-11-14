@@ -1,3 +1,4 @@
+import { TeamRunRequestSchema } from "./team-link.js";
 import { expect, it } from "vitest";
 import { createId } from "@opensteer/core";
 import {
@@ -68,4 +69,36 @@ it("bounds both sync rows and encoded batch bytes", () => {
       rows: Array.from({ length: teamShareBatchRows }, () => large),
     }).success,
   ).toBe(false);
+});
+
+it("keeps partner ask status free of local execution authority and private tool steps", () => {
+  const status = {
+    revision: "1",
+    state: "awaiting_approval",
+    consentExpiresAt: new Date().toISOString(),
+    acceptedAt: null,
+    expiresAt: null,
+    finishedAt: null,
+    failureCode: null,
+    outcome: null,
+    replyPublicId: null,
+  };
+  const operation = {
+    op: "ask.status",
+    shareId: crypto.randomUUID(),
+    generation: 1,
+    triggerPublicId: crypto.randomUUID(),
+    target: row().author,
+    status,
+  };
+  expect(TeamShareOperationSchema.safeParse(operation).success).toBe(true);
+  for (const extra of [
+    { resumeRunId: createId("run") },
+    { requestId: createId("teamAgentRequest") },
+    { steps: [{ kind: "read_files", count: 1 }] },
+  ])
+    expect(
+      TeamShareOperationSchema.safeParse({ ...operation, status: { ...status, ...extra } }).success,
+    ).toBe(false);
+  expect(TeamRunRequestSchema.shape.request.shape.kind.safeParse(undefined).success).toBe(false);
 });

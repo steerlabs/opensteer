@@ -24,12 +24,28 @@ export async function teamAttachmentRefs(
 
 export async function createTeamAskReturn(
   transaction: Transaction<DatabaseSchema>,
-  ask: Selectable<TeamAgentRequestTable>,
+  ask: Pick<
+    Selectable<TeamAgentRequestTable>,
+    | "id"
+    | "kind"
+    | "ownerUserId"
+    | "targetAgentHandle"
+    | "channelId"
+    | "threadRootId"
+    | "triggerMessageId"
+    | "replyMessageId"
+  >,
   outcome: TeamAgentReturnOutcome,
   changeSeq: string,
   replyMessageId?: TeamMessageId,
 ) {
   if (ask.kind !== "ask" || (ask.replyMessageId && !replyMessageId)) return;
+  await transaction
+    .updateTable("teamShareAsks")
+    .set({ outcome })
+    .where("localRequestId", "=", ask.id)
+    .where("outcome", "is", null)
+    .execute();
   const trigger = await transaction
     .selectFrom("teamMessages")
     .selectAll()

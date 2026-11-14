@@ -131,6 +131,7 @@ export const TeamLinkViewViewSchema = z.object({ ...TeamLinkViewSchema.shape });
 export const PersonalTeamLinkViewSchema = z.object({ ...PersonalTeamLinkSchema.shape });
 
 export const TeamCommandResultViewSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("team.share.agents.set") }),
   z.object({ type: z.literal("team.share.participant.restore") }),
   z.object({ type: z.literal("team.share.participant.remove") }),
   z.object({ type: z.literal("team.share.offer"), shareId: z.uuid() }),

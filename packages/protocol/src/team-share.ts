@@ -1,6 +1,8 @@
 import { z } from "zod";
 import {
   DeploymentIdSchema,
+  TeamAgentRequestStateSchema,
+  TeamAgentReturnOutcomeSchema,
   IsoDateTimeSchema,
   SequenceSchema,
   TeamHandleSchema,
@@ -9,6 +11,7 @@ import {
 import { TeamRequestTextSchema as TeamMarkdownSchema } from "@opensteer/core";
 import { TeamFileSchema, teamUploadMaxBytes } from "./team-chat.js";
 
+export const teamSharedAgentsCapability = "team-shared-agents-v1";
 export const teamShareCapability = "team-shared-channels-v1";
 export const teamShareMaxRows = 100_000;
 export const teamShareMaxBytes = 128 * 1024 * 1024;
@@ -45,8 +48,42 @@ export const TeamSharePersonSchema = TeamSharePersonRefSchema.extend({
   level: z.enum(["read", "post"]),
   state: z.enum(["active", "removed"]),
 }).strict();
+export const TeamShareAskStatusSchema = z
+  .strictObject({
+    revision: SequenceSchema,
+    refusal: z.enum(["people-only", "no-access", "no-link", "rate-limited"]).optional(),
+    state: TeamAgentRequestStateSchema.exclude(["queued"]),
+    consentExpiresAt: IsoDateTimeSchema.nullable(),
+    acceptedAt: IsoDateTimeSchema.nullable(),
+    expiresAt: IsoDateTimeSchema.nullable(),
+    finishedAt: IsoDateTimeSchema.nullable(),
+    failureCode: z
+      .enum([
+        "expired",
+        "access_revoked",
+        "link_revoked",
+        "trigger_deleted",
+        "trigger_edited",
+        "execution_failed",
+      ])
+      .nullable(),
+    outcome: TeamAgentReturnOutcomeSchema.nullable(),
+    replyPublicId: z.uuid().nullable(),
+  })
+  .refine(
+    (v) =>
+      ["declined", "done", "failed", "cancelled", "stopped"].includes(v.state) ===
+      (v.finishedAt !== null),
+  )
+  .refine((v) => (v.outcome === "answered") === (v.replyPublicId !== null));
+export type TeamShareAskStatus = z.infer<typeof TeamShareAskStatusSchema>;
+export const TeamShareAskSchema = z.strictObject({
+  target: TeamSharePersonRefSchema,
+  status: TeamShareAskStatusSchema.nullable(),
+});
 export const TeamShareRowSchema = z.strictObject({
   kind: z.literal("text"),
+  asks: z.array(TeamShareAskSchema).max(20).optional(),
   publicId: z.uuid(),
   ordinal: SequenceSchema,
   sequence: SequenceSchema,
@@ -83,6 +120,7 @@ const scope = { shareId: z.uuid(), generation: z.number().int().positive() };
 export const TeamShareWriteSchema = z.discriminatedUnion("action", [
   z.strictObject({
     action: z.literal("send"),
+    publication: z.boolean().optional(),
     author: TeamSharePersonRefSchema,
     authorKind: z.enum(["human", "agent"]),
     clientMessageId: z.uuid(),
@@ -136,6 +174,13 @@ export const TeamShareOperationSchema = z.discriminatedUnion("op", [
     createdThrough: SequenceSchema,
     ...scope,
     write: TeamShareWriteSchema,
+  }),
+  z.strictObject({
+    op: z.literal("ask.status"),
+    ...scope,
+    triggerPublicId: z.uuid(),
+    target: TeamSharePersonRefSchema,
+    status: TeamShareAskStatusSchema,
   }),
   z.strictObject({ op: z.literal("end"), ...scope }),
   z.strictObject({
