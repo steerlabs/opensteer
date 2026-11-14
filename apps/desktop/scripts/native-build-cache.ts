@@ -372,7 +372,11 @@ export async function nativeReleaseInputs(
   kind: NativeHelperKind,
   architectures: readonly string[],
   run: (executable: string, args: readonly string[]) => Promise<string> = (executable, args) =>
-    runBounded(executable, args, { cwd: root, timeoutMs: 10_000 }),
+    runBounded(executable, args, {
+      cwd: root,
+      // `swift package` compiles every manifest; on a fresh runner that alone took over 10 s.
+      timeoutMs: args[0] === "package" ? 120_000 : 10_000,
+    }),
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<NativeInputProof | undefined> {
   if (environment.OPENSTEER_NATIVE_BUILD_CACHE === "off") return undefined;
