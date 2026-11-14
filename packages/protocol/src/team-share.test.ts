@@ -51,6 +51,7 @@ it("bounds both sync rows and encoded batch bytes", () => {
     rows: [row()],
     people: [],
     peopleOnly: false,
+    policyRevision: "0",
     cursor: { created: "1", sequence: "1", publicId: "" },
     more: false,
   };

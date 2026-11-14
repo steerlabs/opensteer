@@ -117,10 +117,12 @@ export async function startTeamServices(options: TeamServiceOptions) {
     teamName: options.teamName,
     agentOnline: (ownerUserId) => options.machine?.isOnline?.(ownerUserId) ?? false,
   });
+  const requests = new TeamRequestsStore(access, chat);
   const shares = options.partners
     ? new TeamShares(
         options.partners,
         chat,
+        requests,
         () => options.backgroundError("team-maintenance"),
         async () => (await options.hostedTeam?.())?.generalChannelId ?? null,
       )
@@ -131,7 +133,6 @@ export async function startTeamServices(options: TeamServiceOptions) {
     origin: options.origin,
     hostKeyFingerprint: options.hostKeyFingerprint,
   });
-  const requests = new TeamRequestsStore(access, chat);
   const files = new TeamFilesStore(access, { storageLimitBytes: options.storageLimitBytes });
   const fileService = new TeamFileService(files, access, options.dataDirectory);
   if (shares) {

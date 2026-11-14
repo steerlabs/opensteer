@@ -678,12 +678,14 @@ it("holds no local access lock while a relay waits and rechecks owner authority 
     const entered = Promise.withResolvers<void>(),
       partners = f.b.host.team.partners!,
       request = partners.request.bind(partners);
-    vi.spyOn(partners, "request").mockImplementation(async (id, op) => {
+    vi.spyOn(partners, "request").mockImplementation(async (id, op, signal, handoff) => {
       if (op.op === "write") {
         entered.resolve();
-        await release.promise;
+        await withTimeout(release.promise, 3000, {
+          timeoutError: () => new Error("Relay barrier never released"),
+        });
       }
-      return request(id, op);
+      return request(id, op, signal, handoff);
     });
     const sending = f.bSession.rpc["commands.dispatch"]({
       type: "team.message.send",
@@ -818,6 +820,15 @@ it("updates owner participants in the ACL transaction and synchronizes a followe
           .where("p.homeUserId", "=", bob)
           .executeTakeFirst();
         expect(p, "Local removal never reached the owner").toEqual({ state: "removed" });
+        expect(
+          await f.b.database
+            .selectFrom("teamShareParticipants")
+            .select("state")
+            .where("shareId", "=", f.shareId)
+            .where("principalId", "=", bob)
+            .executeTakeFirst(),
+          "Owner removal acknowledgement never reached the follower",
+        ).toEqual({ state: "removed" });
       },
       { timeout: 3000 },
     );
@@ -952,6 +963,421 @@ it("delivers an offline disconnect before a fresh offer when the partner reconne
     });
     const ready = await f.bSession.rpc["team.channel.get"]({ channelId: fresh });
     expect(ready.ok && ready.data.can.post).toBe(true);
+  } finally {
+    await f.close();
+  }
+});
+
+it("a write receipt must preserve the owner's current people-only policy", async () => {
+  const f = await sharedFixture();
+  try {
+    const linkId = createId("teamLink");
+    await f.b.database
+      .insertInto("teamLinks")
+      .values({
+        id: linkId,
+        ownerUserId: f.bUser,
+        personalDeploymentId: createId("deployment"),
+        state: "active",
+        codeHash: randomUUID(),
+        codeExpiresAt: new Date(),
+        credentialHash: randomUUID(),
+      })
+      .execute();
+    const clientMessageId = randomUUID();
+    await command(f.bSession, {
+      type: "team.message.send",
+      channelId: f.bid,
+      threadRootId: null,
+      clientMessageId,
+      bodyMarkdown: "Before restriction",
+      mentions: [],
+      attachmentIds: [],
+    });
+    const delayed = await f.a.host.team.shares!.store.write(f.aLink, {
+      op: "write",
+      shareId: f.shareId,
+      generation: 1,
+      createdThrough: SequenceSchema.parse("0"),
+      write: {
+        action: "send",
+        author: { teamId: f.b.host.deployment.id, userId: f.bUser },
+        authorKind: "human",
+        clientMessageId,
+        bodyMarkdown: "Before restriction",
+        threadRootPublicId: null,
+        attachments: [],
+      },
+    });
+    expect(delayed.batch.peopleOnly).toBe(false);
+    await command(f.aSession, {
+      type: "team.channel.update",
+      channelId: f.aid,
+      name: "shared-project",
+      peopleOnly: true,
+    });
+    await vi.waitFor(
+      async () => expect((await f.b.host.team.shares!.store.get(f.shareId)).peopleOnly).toBe(true),
+      { timeout: 3000 },
+    );
+    vi.spyOn(f.b.host.team.shares!, "sync").mockResolvedValue(undefined);
+    const result = await command(f.bSession, {
+      type: "team.message.send",
+      channelId: f.bid,
+      threadRootId: null,
+      clientMessageId: randomUUID(),
+      bodyMarkdown: "@maya-2-agent Should stay blocked",
+      mentions: [],
+      attachmentIds: [],
+    });
+    expect(result.type === "team.message.send" && result.wake).toBe("people-only");
+    expect((await f.b.host.team.shares!.store.get(f.shareId)).peopleOnly).toBe(true);
+    await f.b.host.team.shares!.store.apply(f.bLink, f.shareId, 1, delayed.batch, false);
+    expect((await f.b.host.team.shares!.store.get(f.shareId)).peopleOnly).toBe(true);
+    await expect(
+      f.b.host.team.chat.page({ kind: "agent", userId: f.bUser }, f.bid),
+    ).rejects.toThrow();
+    expect(await f.b.host.team.requests.pending(linkId)).toHaveLength(0);
+  } finally {
+    await f.close();
+  }
+});
+
+it.each(["before-send", "refused"] as const)(
+  "an edit that is %s keeps committed authorship available to sync",
+  async (failureKind) => {
+    const f = await sharedFixture();
+    try {
+      const sent = await command(f.bSession, {
+        type: "team.message.send",
+        channelId: f.bid,
+        threadRootId: null,
+        clientMessageId: randomUUID(),
+        bodyMarkdown: "original",
+        mentions: [],
+        attachmentIds: [],
+      });
+      if (sent.type !== "team.message.send") throw Error("No message");
+      await f.b.host.team.shares!.sync(await f.b.host.team.shares!.store.get(f.shareId));
+      const partners = f.b.host.team.partners!;
+      const request = partners.request.bind(partners);
+      const failure = vi
+        .spyOn(partners, "request")
+        .mockImplementation((id, op, signal, handoff) => {
+          if (op.op === "write" && op.write.action === "edit")
+            return Promise.reject(
+              failureKind === "refused"
+                ? new OpensteerError({
+                    code: "not_found",
+                    reason: "not-found",
+                    message: "Shared channel not found",
+                  })
+                : Error("Before send"),
+            );
+          return request(id, op, signal, handoff);
+        });
+      await expect(
+        command(f.bSession, {
+          type: "team.message.edit",
+          channelId: f.bid,
+          messageId: sent.message.id,
+          bodyMarkdown: "edited",
+          mentions: [],
+        }),
+      ).rejects.toThrow();
+      failure.mockRestore();
+      const ownerRow = await f.a.database
+        .selectFrom("teamMessages")
+        .select("id")
+        .where("channelId", "=", f.aid)
+        .executeTakeFirstOrThrow();
+      vi.spyOn(f.b.host.team.shares!, "sync").mockResolvedValue(undefined);
+      await command(f.aSession, {
+        type: "team.message.pin",
+        channelId: f.aid,
+        messageId: ownerRow.id,
+      });
+      const current = await f.b.host.team.shares!.store.get(f.shareId);
+      const batch = await f.a.host.team.shares!.store.pull(f.aLink, {
+        op: "pull",
+        shareId: f.shareId,
+        generation: 1,
+        cursor: {
+          created: SequenceSchema.parse(current.creationCursor),
+          sequence: SequenceSchema.parse(current.cursor),
+          publicId: current.cursorPublicId,
+        },
+      });
+      expect(batch.rows).toHaveLength(1);
+      await expect(f.b.host.team.shares!.store.apply(f.bLink, f.shareId, 1, batch)).resolves.toBe(
+        false,
+      );
+      expect(
+        await f.b.database
+          .selectFrom("teamMessagePins")
+          .select("messageId")
+          .where("channelId", "=", f.bid)
+          .execute(),
+      ).toEqual([{ messageId: sent.message.id }]);
+      expect(
+        await f.b.database
+          .selectFrom("teamShareRelays")
+          .select("bodyMarkdown")
+          .where("shareId", "=", f.shareId)
+          .execute(),
+      ).toEqual([{ bodyMarkdown: "original" }]);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+it("a peer must not distinguish a hidden local person from a nonexistent person", async () => {
+  const f = await sharedFixture();
+  try {
+    const invite = await command(f.bSession, {
+      type: "team.invite.create",
+      id: createId("teamInvite"),
+      maxUses: 1,
+      expiresAt: new Date(Date.now() + 60000).toISOString(),
+    });
+    if (invite.type !== "team.invite.create") throw Error("No invite");
+    const hidden = await f.b.acceptInvite(invite.url, "Hidden Person");
+    const batch = await f.a.host.team.shares!.store.pull(f.aLink, {
+      op: "pull",
+      shareId: f.shareId,
+      generation: 1,
+      cursor: {
+        created: SequenceSchema.parse("0"),
+        sequence: SequenceSchema.parse("0"),
+        publicId: "",
+      },
+    });
+    const inject = (userId: typeof hidden) =>
+      f.b.host.team.shares!.store.apply(
+        f.bLink,
+        f.shareId,
+        1,
+        {
+          ...batch,
+          people: [
+            ...batch.people,
+            {
+              teamId: f.b.host.deployment.id,
+              userId,
+              name: "Guessed",
+              handle: "guessed",
+              level: "read",
+              state: "removed",
+            },
+          ],
+        },
+        false,
+      );
+    const outcomes = await Promise.allSettled([inject(hidden), inject(createId("user"))]);
+    expect(outcomes.map((x) => x.status)).toEqual(["rejected", "rejected"]);
+    for (const outcome of outcomes) {
+      if (outcome.status !== "rejected") throw new Error("Unshared identity was admitted");
+      expect(outcome.reason).toMatchObject({
+        code: "not_found",
+        message: "Shared channel not found",
+      });
+    }
+    expect(
+      await f.b.database
+        .selectFrom("teamShareParticipants")
+        .select("principalId")
+        .where("shareId", "=", f.shareId)
+        .where("principalId", "=", hidden)
+        .execute(),
+    ).toEqual([]);
+    expect(f.b.host.team.partners!.connected(f.bLink)).toBe(true);
+  } finally {
+    await f.close();
+  }
+});
+
+it("a repeated empty more batch must stop the sync loop", async () => {
+  const f = await sharedFixture();
+  try {
+    const current = await f.b.host.team.shares!.store.get(f.shareId);
+    const baseline = await f.a.host.team.shares!.store.pull(f.aLink, {
+      op: "pull",
+      shareId: f.shareId,
+      generation: 1,
+      cursor: {
+        created: SequenceSchema.parse(current.creationCursor),
+        sequence: SequenceSchema.parse(current.cursor),
+        publicId: current.cursorPublicId,
+      },
+    });
+    const request = f.b.host.team.partners!.request.bind(f.b.host.team.partners!);
+    let pulls = 0;
+    vi.spyOn(f.b.host.team.partners!, "request").mockImplementation((id, op, signal, handoff) => {
+      if (op.op === "pull") {
+        pulls++;
+        if (pulls > 3) return Promise.reject(Error("Review safety stop"));
+        return Promise.resolve({ ...baseline, rows: [], cursor: op.cursor, more: true });
+      }
+      return request(id, op, signal, handoff);
+    });
+    await expect(f.b.host.team.shares!.sync(current)).rejects.toThrow();
+    expect(pulls).toBe(1);
+  } finally {
+    await f.close();
+  }
+});
+
+it.each(["channel", "session"] as const)(
+  "a follower relay rechecks %s authority before exporting",
+  async (removal) => {
+    const f = await sharedFixture();
+    const release = Promise.withResolvers<void>();
+    const rosterRelease = Promise.withResolvers<void>();
+    try {
+      const entered = Promise.withResolvers<void>();
+      const request = f.b.host.team.partners!.request.bind(f.b.host.team.partners!);
+      vi.spyOn(f.b.host.team.partners!, "request").mockImplementation(
+        async (id, op, signal, handoff) => {
+          if (op.op === "write") {
+            entered.resolve();
+            await withTimeout(release.promise, 3000, {
+              timeoutError: () => new Error("Relay barrier never released"),
+            });
+          }
+          if (op.op === "roster")
+            await withTimeout(rosterRelease.promise, 3000, {
+              timeoutError: () => new Error("Roster barrier never released"),
+            });
+          return request(id, op, signal, handoff);
+        },
+      );
+      const sending = f.bSession.rpc["commands.dispatch"]({
+        type: "team.message.send",
+        channelId: f.bid,
+        threadRootId: null,
+        clientMessageId: randomUUID(),
+        bodyMarkdown: "Do not export after removal",
+        mentions: [],
+        attachmentIds: [],
+      });
+      await withTimeout(entered.promise, 2000, {
+        timeoutError: () => Error("Relay never started"),
+      });
+      const actor = { kind: "human" as const, userId: f.bUser };
+      const acl = await f.b.host.team.chat.accessList(actor, f.bid);
+      if (removal === "channel")
+        await f.b.host.team.chat.setAccess(actor, f.bid, SequenceSchema.parse(acl.revision), []);
+      else
+        await f.b.database
+          .updateTable("authSessions")
+          .set({ expiresAt: new Date(0) })
+          .where("userId", "=", f.bUser)
+          .execute();
+
+      release.resolve();
+      await sending;
+      const exported = await f.a.database
+        .selectFrom("teamMessages")
+        .select("bodyMarkdown")
+        .where("channelId", "=", f.aid)
+        .execute();
+      expect(exported).toEqual([]);
+    } finally {
+      release.resolve();
+      rosterRelease.resolve();
+      await f.close();
+    }
+  },
+);
+
+it("applies an empty catch-up without the exclusive access mutation or a channel change", async () => {
+  const f = await sharedFixture();
+  try {
+    const copy = f.b.host.team.shares!;
+    await copy.sync(await copy.store.get(f.shareId));
+    const current = await copy.store.get(f.shareId);
+    const batch = await f.a.host.team.shares!.store.pull(f.aLink, {
+      op: "pull",
+      shareId: f.shareId,
+      generation: 1,
+      cursor: {
+        created: SequenceSchema.parse(current.creationCursor),
+        sequence: SequenceSchema.parse(current.cursor),
+        publicId: current.cursorPublicId,
+      },
+    });
+    const before = await f.b.database
+      .selectFrom("teamChannels")
+      .select("changeSeq")
+      .where("id", "=", f.bid)
+      .executeTakeFirstOrThrow();
+    const mutate = vi.spyOn(f.b.host.team.access, "mutate");
+    const changed = vi.spyOn(f.b.host.team.chat, "changed");
+    await copy.store.apply(f.bLink, f.shareId, 1, batch);
+    expect(mutate).not.toHaveBeenCalled();
+    expect(changed).not.toHaveBeenCalled();
+    expect(
+      await f.b.database
+        .selectFrom("teamChannels")
+        .select("changeSeq")
+        .where("id", "=", f.bid)
+        .executeTakeFirstOrThrow(),
+    ).toEqual(before);
+  } finally {
+    await f.close();
+  }
+});
+
+it("bounds even progressing sync turns and releases the access fence between batches", async () => {
+  const f = await sharedFixture();
+  try {
+    const copy = f.b.host.team.shares!;
+    vi.spyOn(copy, "sync").mockResolvedValue(undefined);
+    await command(f.aSession, {
+      type: "team.message.send",
+      channelId: f.aid,
+      threadRootId: null,
+      clientMessageId: randomUUID(),
+      bodyMarkdown: "Owner message",
+      mentions: [],
+      attachmentIds: [],
+    });
+    const current = await copy.store.get(f.shareId);
+    const sample = await f.a.host.team.shares!.store.pull(f.aLink, {
+      op: "pull",
+      shareId: f.shareId,
+      generation: 1,
+      cursor: {
+        created: SequenceSchema.parse("0"),
+        sequence: SequenceSchema.parse("0"),
+        publicId: "",
+      },
+    });
+    vi.mocked(copy.sync).mockRestore();
+    const request = f.b.host.team.partners!.request.bind(f.b.host.team.partners!);
+    let pulls = 0;
+    vi.spyOn(f.b.host.team.partners!, "request").mockImplementation((id, op, signal, handoff) => {
+      if (op.op !== "pull") return request(id, op, signal, handoff);
+      if (++pulls > 9) return Promise.reject(Error("Sync turn exceeded safety bound"));
+      const ordinal = SequenceSchema.parse(String(BigInt(op.cursor.created) + 1n));
+      return Promise.resolve({
+        ...sample,
+        rows: [
+          { ...sample.rows[0]!, ordinal, publicId: randomUUID(), clientMessageId: randomUUID() },
+        ],
+        cursor: { ...op.cursor, created: ordinal },
+        more: true,
+      });
+    });
+    await expect(copy.sync(current)).rejects.toMatchObject({
+      reason: "shared-channel-sync-pending",
+      retryable: true,
+    });
+    expect(pulls).toBe(8);
+    const actor = { kind: "human" as const, userId: f.bUser };
+    const access = await f.b.host.team.chat.accessList(actor, f.bid);
+    await f.b.host.team.chat.setAccess(actor, f.bid, SequenceSchema.parse(access.revision), []);
   } finally {
     await f.close();
   }

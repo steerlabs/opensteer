@@ -110,6 +110,7 @@ export const TeamShareBatchSchema = z
     rows: z.array(TeamShareRowSchema).max(teamShareBatchRows),
     people: z.array(TeamSharePersonSchema).max(1000),
     peopleOnly: z.boolean(),
+    policyRevision: SequenceSchema,
     cursor: TeamShareCursorSchema,
     more: z.boolean(),
   })

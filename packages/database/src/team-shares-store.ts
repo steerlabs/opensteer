@@ -352,6 +352,7 @@ export class TeamSharesStore {
             "authorKind",
             "clientMessageId",
             "bodyMarkdown",
+            "pendingBodies",
             "threadRootPublicId",
             "publicId",
             "agentLinkId",
@@ -369,6 +370,7 @@ export class TeamSharesStore {
                 "authorKind",
                 "clientMessageId",
                 "bodyMarkdown",
+                "pendingBodies",
                 "threadRootPublicId",
                 "publicId",
                 "agentLinkId",
@@ -420,13 +422,44 @@ export class TeamSharesStore {
     }));
   }
   async roster(s: Share) {
-    return this.db
-      .transaction()
-      .setIsolationLevel("repeatable read")
-      .execute(async (t) => {
-        const current = await this.scoped(t, s.partnerLinkId, s.id, s.generation, undefined, true);
-        return this.localRoster(t, current);
-      });
+    return this.access.knowledgeWrite(async (t) => {
+      const current = await this.scoped(t, s.partnerLinkId, s.id, s.generation, undefined, true);
+      const people = await this.localRoster(t, current);
+      if (current.role === "follower") {
+        await this.lockRoster(t, current, people);
+        await t
+          .selectFrom("teamShares")
+          .select("id")
+          .where("id", "=", current.id)
+          .forNoKeyUpdate()
+          .execute();
+        const prior = await t
+          .selectFrom("teamShareParticipants")
+          .selectAll()
+          .where("shareId", "=", current.id)
+          .orderBy("shareId")
+          .orderBy("principalId")
+          .forNoKeyUpdate()
+          .execute();
+        const occupied = new Set(prior.map((p) => p.handle));
+        const fresh = people
+          .filter((p) => !prior.some((a) => a.principalId === p.userId))
+          .sort((a, b) => a.userId.localeCompare(b.userId))
+          .map((p) => {
+            const handle = uniqueTeamHandle(p.handle, occupied);
+            occupied.add(handle);
+            return {
+              shareId: current.id,
+              principalId: p.userId,
+              handle,
+              level: "read" as const,
+              state: "removed" as const,
+            };
+          });
+        if (fresh.length) await t.insertInto("teamShareParticipants").values(fresh).execute();
+      }
+      return people;
+    });
   }
   async lockRoster(t: Tx, s: Share, people: TeamSharePerson[] = []) {
     await t
@@ -465,6 +498,29 @@ export class TeamSharesStore {
     const existing = people.length
       ? await teamPrincipalProfiles(t)
           .where("p.homeTeamId", "=", homeTeamId as TeamSharePerson["teamId"])
+          .where((eb) =>
+            share.role !== "follower" || homeTeamId !== this.chat.identity.teamId
+              ? eb.val(true)
+              : eb.or([
+                  eb.exists(
+                    eb
+                      .selectFrom("teamShareParticipants as a")
+                      .select("a.principalId")
+                      .where("a.shareId", "in", [
+                        share.id,
+                        ...(share.historyFromShareId ? [share.historyFromShareId] : []),
+                      ])
+                      .whereRef("a.principalId", "=", "p.id"),
+                  ),
+                  eb.exists(
+                    eb
+                      .selectFrom("teamShareRelays as r")
+                      .select("r.authorUserId")
+                      .where("r.shareId", "=", share.id)
+                      .whereRef("r.authorUserId", "=", "p.id"),
+                  ),
+                ]),
+          )
           .where(
             "p.homeUserId",
             "in",
@@ -786,6 +842,7 @@ export class TeamSharesStore {
               .execute();
         const people = await this.pullProjection(t, s);
         const projected = await this.exportRows(t, s, rows.slice(0, teamShareBatchRows));
+        const policyRevision = SequenceSchema.parse(channel.changeSeq);
         for (let count = projected.length; count >= 0; count--) {
           const selected = projected.slice(0, count),
             last = selected.at(-1);
@@ -802,6 +859,7 @@ export class TeamSharesStore {
             rows: selected,
             people,
             peopleOnly: channel.peopleOnly,
+            policyRevision,
             cursor,
             more: creation || rows.length > count,
           };
@@ -929,10 +987,16 @@ export class TeamSharesStore {
           .limit(teamShareBatchRows + 1)
           .execute();
         if (!rows.some((r) => r.id === committed.id)) rows.push(committed);
+        const channel = await t
+          .selectFrom("teamChannels")
+          .select(["peopleOnly", "changeSeq"])
+          .where("id", "=", s.channelId!)
+          .executeTakeFirstOrThrow();
         const parsed = TeamShareBatchSchema.safeParse({
           rows: await this.exportRows(t, s, rows),
           people: await this.pullProjection(t, s),
-          peopleOnly: s.peopleOnly,
+          peopleOnly: channel.peopleOnly,
+          policyRevision: SequenceSchema.parse(channel.changeSeq),
           cursor: { created: op.createdThrough, sequence: SequenceSchema.parse("0"), publicId: "" },
           more: false,
         });
@@ -1010,16 +1074,106 @@ export class TeamSharesStore {
           );
         }
       }
-      if (write.action === "edit")
+      if (write.action === "edit") {
+        const proof = await t
+          .selectFrom("teamShareRelays")
+          .selectAll()
+          .where("shareId", "=", s.id)
+          .where("authorUserId", "=", actor.userId)
+          .where("authorKind", "=", actor.kind)
+          .where("publicId", "=", write.publicId)
+          .forNoKeyUpdate()
+          .executeTakeFirst();
+        requireTeam(
+          proof &&
+            (proof.pendingBodies.includes(write.bodyMarkdown) || proof.pendingBodies.length < 32),
+          "Too many unconfirmed edits",
+        );
         await t
           .updateTable("teamShareRelays")
-          .set({ bodyMarkdown: write.bodyMarkdown })
+          .set({ pendingBodies: [...new Set([...proof.pendingBodies, write.bodyMarkdown])] })
           .where("shareId", "=", s.id)
           .where("authorUserId", "=", actor.userId)
           .where("publicId", "=", write.publicId)
           .execute();
+      }
       return current;
     });
+  }
+  async validateBatch(t: Tx, s: Share, batch: TeamShareBatch, advance: boolean) {
+    if (advance) {
+      const created = BigInt(batch.cursor.created),
+        sequence = BigInt(batch.cursor.sequence);
+      if (created < BigInt(s.creationCursor) || sequence < BigInt(s.cursor)) shareNotFound();
+      if (batch.more) {
+        const creation = created > BigInt(s.creationCursor);
+        const change =
+          sequence > BigInt(s.cursor) ||
+          (sequence === BigInt(s.cursor) && batch.cursor.publicId > s.cursorPublicId);
+        const last = batch.rows.at(-1);
+        if (
+          !last ||
+          !(creation
+            ? batch.cursor.sequence === s.cursor &&
+              batch.cursor.publicId === s.cursorPublicId &&
+              batch.cursor.created === last.ordinal &&
+              batch.rows.every(
+                (r, i) =>
+                  BigInt(r.ordinal) > BigInt(i ? batch.rows[i - 1]!.ordinal : s.creationCursor),
+              )
+            : change &&
+              batch.cursor.sequence === last.sequence &&
+              batch.cursor.publicId === last.publicId &&
+              batch.rows.every((r, i) => {
+                const previous = i
+                  ? batch.rows[i - 1]!
+                  : { sequence: s.cursor, publicId: s.cursorPublicId };
+                return (
+                  BigInt(r.sequence) > BigInt(previous.sequence) ||
+                  (r.sequence === previous.sequence && r.publicId > previous.publicId)
+                );
+              }))
+        )
+          shareNotFound();
+      }
+    }
+    const link = await t
+      .selectFrom("teamPartnerLinks")
+      .select("partnerTeamId")
+      .where("id", "=", s.partnerLinkId)
+      .executeTakeFirstOrThrow();
+    if (
+      batch.people.some(
+        (p) => p.teamId !== link.partnerTeamId && p.teamId !== this.chat.identity.teamId,
+      )
+    )
+      shareNotFound();
+    const local = batch.people.filter((p) => p.teamId === this.chat.identity.teamId);
+    if (local.length) {
+      const recorded = await t
+        .selectFrom("teamShareParticipants as a")
+        .innerJoin("teamPrincipals as p", "p.id", "a.principalId")
+        .select("p.homeUserId")
+        .where("a.shareId", "in", [s.id, ...(s.historyFromShareId ? [s.historyFromShareId] : [])])
+        .where("p.homeTeamId", "=", this.chat.identity.teamId)
+        .execute();
+      const authors = await t
+        .selectFrom("teamShareRelays")
+        .select("authorUserId")
+        .distinct()
+        .where("shareId", "=", s.id)
+        .where(
+          "authorUserId",
+          "in",
+          local.map((p) => p.userId),
+        )
+        .execute();
+      const known = new Set([
+        ...recorded.map((p) => p.homeUserId),
+        ...authors.map((p) => p.authorUserId),
+      ]);
+      if (local.some((p) => !known.has(p.userId))) shareNotFound();
+    }
   }
   async apply(
     linkId: string,
@@ -1029,14 +1183,63 @@ export class TeamSharesStore {
     advance = true,
   ) {
     TeamShareBatchSchema.parse(batch);
+    await this.db.transaction().execute(async (t) => {
+      await this.validateBatch(
+        t,
+        await this.scoped(t, linkId, id, generation, "follower"),
+        batch,
+        advance,
+      );
+    });
+    if (!batch.rows.length && !batch.more) {
+      const unchanged = await this.access.knowledgeWrite(async (t) => {
+        const s = await this.scoped(t, linkId, id, generation, "follower");
+        await t
+          .selectFrom("teamShares")
+          .select("id")
+          .where("id", "=", id)
+          .forNoKeyUpdate()
+          .execute();
+        const current = await this.scoped(t, linkId, id, generation, "follower");
+        await this.validateBatch(t, current, batch, advance);
+        if (!current.ready || current.syncError) return false;
+        const canonical = (people: TeamSharePerson[]) =>
+          JSON.stringify(
+            [...people].sort(
+              (a, b) => a.teamId.localeCompare(b.teamId) || a.userId.localeCompare(b.userId),
+            ),
+          );
+        const stale = BigInt(batch.policyRevision) < BigInt(current.policyRevision);
+        if (
+          !stale &&
+          (batch.peopleOnly !== current.peopleOnly ||
+            canonical(batch.people) !== canonical(await this.pullProjection(t, current)))
+        )
+          return false;
+        await t
+          .updateTable("teamShares")
+          .set({
+            policyRevision: stale ? current.policyRevision : batch.policyRevision,
+            ...(advance
+              ? {
+                  cursor: batch.cursor.sequence,
+                  creationCursor: batch.cursor.created,
+                  cursorPublicId: batch.cursor.publicId,
+                }
+              : {}),
+          })
+          .where("id", "=", s.id)
+          .execute();
+        return true;
+      });
+      if (unchanged) return;
+    }
     const removedFiles = await this.access.mutate(async (t) => {
       const s = await this.scoped(t, linkId, id, generation, "follower");
-      if (
-        advance &&
-        (BigInt(batch.cursor.created) < BigInt(s.creationCursor) ||
-          BigInt(batch.cursor.sequence) < BigInt(s.cursor))
-      )
-        shareNotFound();
+      await this.validateBatch(t, s, batch, advance);
+      const currentPolicy = BigInt(batch.policyRevision) >= BigInt(s.policyRevision);
+      const people = currentPolicy ? batch.people : await this.pullProjection(t, s);
+      const peopleOnly = currentPolicy ? batch.peopleOnly : s.peopleOnly;
       await t
         .selectFrom("teamMembers")
         .select("userId")
@@ -1044,7 +1247,7 @@ export class TeamSharesStore {
         .orderBy("userId")
         .forNoKeyUpdate()
         .execute();
-      await this.lockRoster(t, s, batch.people);
+      await this.lockRoster(t, s, people);
       await t
         .selectFrom("teamChannelMemberState")
         .select(["channelId", "userId"])
@@ -1073,7 +1276,7 @@ export class TeamSharesStore {
         .where("id", "=", linkId)
         .executeTakeFirstOrThrow();
       if (
-        batch.people.some(
+        people.some(
           (p) => p.teamId !== link.partnerTeamId && p.teamId !== this.chat.identity.teamId,
         )
       )
@@ -1085,17 +1288,15 @@ export class TeamSharesStore {
         .where("a.shareId", "=", s.id)
         .execute();
       const previousLocal = previous.filter((p) => p.homeTeamId === this.chat.identity.teamId);
-      const localRoster = batch.people.filter((p) => p.teamId === this.chat.identity.teamId);
+      const localRoster = people.filter((p) => p.teamId === this.chat.identity.teamId);
       const remoteAccessLost = previous.some((old) => {
         if (old.homeTeamId === this.chat.identity.teamId || old.state !== "active") return false;
-        const next = batch.people.find(
-          (p) => p.teamId === old.homeTeamId && p.userId === old.homeUserId,
-        );
+        const next = people.find((p) => p.teamId === old.homeTeamId && p.userId === old.homeUserId);
         return next?.state !== "active" || (old.level === "post" && next.level !== "post");
       });
       const accessChanged =
         !s.ready ||
-        batch.peopleOnly !== s.peopleOnly ||
+        peopleOnly !== s.peopleOnly ||
         remoteAccessLost ||
         localRoster.length !== previousLocal.length ||
         localRoster.some(
@@ -1108,12 +1309,20 @@ export class TeamSharesStore {
       const own = await this.localRoster(t, s),
         allowedOwn = new Map(own.map((p) => [p.userId, p]));
 
-      const remote = batch.people.filter((p) => p.teamId === link.partnerTeamId);
+      const remote = people.filter((p) => p.teamId === link.partnerTeamId);
       await this.mergeRoster(t, s, remote, link.partnerTeamId);
-      const localPeople = batch.people.filter((p) => p.teamId === this.chat.identity.teamId);
+      const localPeople = people.filter((p) => p.teamId === this.chat.identity.teamId);
       if (localPeople.some((p) => !allowedOwn.has(p.userId) && p.state === "active"))
         shareNotFound();
       await this.mergeRoster(t, s, localPeople, this.chat.identity.teamId);
+      await t
+        .updateTable("teamShares")
+        .set({
+          peopleOnly,
+          policyRevision: currentPolicy ? batch.policyRevision : s.policyRevision,
+        })
+        .where("id", "=", s.id)
+        .execute();
       // The owner's handles are authoritative on the follower, including collisions with local names.
       const participants = await t
         .selectFrom("teamShareParticipants as a")
@@ -1163,38 +1372,51 @@ export class TeamSharesStore {
             .where("clientMessageId", "in", ownClientIds)
             .execute()
         : [];
-      const verified = batch.rows.map((row) => {
-        const p = principals.get(key(row.author.teamId, row.author.userId));
-        if (!p) shareNotFound();
-        let proof: Selectable<DatabaseSchema["teamShareRelays"]> | undefined;
-        if (row.author.teamId === this.chat.identity.teamId) {
-          proof = ledger.find(
-            (l) =>
-              l.authorUserId === p.id &&
-              l.authorKind === row.authorKind &&
-              l.clientMessageId === row.clientMessageId &&
-              (l.publicId === null || l.publicId === row.publicId) &&
-              l.threadRootPublicId === row.threadRootPublicId &&
-              (row.deletedAt ||
-                JSON.stringify(l.attachmentPublicIds) ===
-                  JSON.stringify(row.attachments.map((f) => f.publicId))) &&
-              (row.deletedAt || l.bodyMarkdown === row.bodyMarkdown),
-          );
-          if (!proof) shareNotFound();
-        }
-        return { row, p, old: byPublic.get(row.publicId), proof };
-      });
-      await t
-        .selectFrom("teamShareRelays")
-        .select(["shareId", "authorUserId", "authorKind", "clientMessageId"])
-        .where("shareId", "=", s.id)
-        .orderBy("shareId")
-        .orderBy("authorUserId")
-        .orderBy("authorKind")
-        .orderBy("clientMessageId")
-        .forNoKeyUpdate()
-        .execute();
+      const verified = batch.rows
+        .filter((row) => {
+          const old = byPublic.get(row.publicId);
+          return !old || BigInt(old.ownerChangeSeq ?? "0") < BigInt(row.sequence);
+        })
+        .map((row) => {
+          const p = principals.get(key(row.author.teamId, row.author.userId));
+          if (!p) shareNotFound();
+          let proof: Selectable<DatabaseSchema["teamShareRelays"]> | undefined;
+          if (row.author.teamId === this.chat.identity.teamId) {
+            proof = ledger.find(
+              (l) =>
+                l.authorUserId === p.id &&
+                l.authorKind === row.authorKind &&
+                l.clientMessageId === row.clientMessageId &&
+                (l.publicId === null || l.publicId === row.publicId) &&
+                l.threadRootPublicId === row.threadRootPublicId &&
+                (row.deletedAt ||
+                  JSON.stringify(l.attachmentPublicIds) ===
+                    JSON.stringify(row.attachments.map((f) => f.publicId))) &&
+                (row.deletedAt ||
+                  l.bodyMarkdown === row.bodyMarkdown ||
+                  l.pendingBodies.includes(row.bodyMarkdown)),
+            );
+            if (!proof) shareNotFound();
+          }
+          return { row, p, old: byPublic.get(row.publicId), proof };
+        });
       const ownRows = verified.filter((v) => v.row.author.teamId === this.chat.identity.teamId);
+      if (ownRows.length)
+        await t
+          .selectFrom("teamShareRelays")
+          .select(["shareId", "authorUserId", "authorKind", "clientMessageId"])
+          .where("shareId", "=", s.id)
+          .where(
+            "clientMessageId",
+            "in",
+            ownRows.map((v) => v.row.clientMessageId),
+          )
+          .orderBy("shareId")
+          .orderBy("authorUserId")
+          .orderBy("authorKind")
+          .orderBy("clientMessageId")
+          .forNoKeyUpdate()
+          .execute();
       if (ownRows.length)
         await t
           .insertInto("teamShareRelays")
@@ -1207,21 +1429,19 @@ export class TeamSharesStore {
               authorUserId: p.id,
               authorKind: row.authorKind,
               clientMessageId: row.clientMessageId,
-              bodyMarkdown: ledger.find(
-                (l) =>
-                  l.authorUserId === p.id &&
-                  l.authorKind === row.authorKind &&
-                  l.clientMessageId === row.clientMessageId,
-              )!.bodyMarkdown,
+              bodyMarkdown: row.deletedAt ? proof!.bodyMarkdown : row.bodyMarkdown,
+              pendingBodies: proof!.pendingBodies.filter((body) => body !== row.bodyMarkdown),
               threadRootPublicId: row.threadRootPublicId,
               publicId: row.publicId,
               attachmentPublicIds: proof!.attachmentPublicIds,
             })),
           )
           .onConflict((c) =>
-            c
-              .columns(["shareId", "authorUserId", "authorKind", "clientMessageId"])
-              .doUpdateSet({ publicId: sql`excluded.public_id` }),
+            c.columns(["shareId", "authorUserId", "authorKind", "clientMessageId"]).doUpdateSet({
+              publicId: sql`excluded.public_id`,
+              bodyMarkdown: sql`excluded.body_markdown`,
+              pendingBodies: sql`excluded.pending_bodies`,
+            }),
           )
           .execute();
       await lockTeamMessages(t, [...existing.map((r) => r.id), ...rootRows.map((r) => r.id)]);
@@ -1398,13 +1618,7 @@ export class TeamSharesStore {
           }
           await cancelSharedAsks(t, withdrawn, changeSeq, "trigger_edited");
         }
-        await importSharedAsks(
-          t,
-          this.chat,
-          { ...s, peopleOnly: batch.peopleOnly },
-          saved,
-          changeSeq,
-        );
+        await importSharedAsks(t, this.chat, { ...s, peopleOnly }, saved, changeSeq);
         if (s.ready) {
           const outgoing = saved.filter((r) => r.fresh && !r.row.deletedAt);
           if (outgoing.length)
@@ -1457,7 +1671,8 @@ export class TeamSharesStore {
       await t
         .updateTable("teamShares")
         .set({
-          peopleOnly: batch.peopleOnly,
+          peopleOnly,
+          policyRevision: currentPolicy ? batch.policyRevision : s.policyRevision,
           syncError: null,
           storedRows,
           storedBytes: String(storedBytes),
@@ -1763,6 +1978,8 @@ export class TeamSharesStore {
           await this.mergeRoster(t, share, local, this.chat.identity.teamId);
         }
       }
+      if (share.role === "owner" && (changed || effects.channels.includes(share.channelId!)))
+        await bumpTeamChannel(t, share.channelId!);
       if (share.role === "owner" && !changed) continue;
       const roster = await this.pullProjection(t, share);
       if (share.role === "follower") {

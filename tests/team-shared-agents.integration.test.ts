@@ -1,3 +1,4 @@
+import { withTimeout } from "../packages/shared/src/withTimeout.js";
 import { startTeamKnowledge } from "../apps/host/src/knowledge/team-knowledge.js";
 import { appendTeamAudit } from "../packages/database/src/team-audit-store.js";
 import { needsYouPage } from "../packages/database/src/index.js";
@@ -528,3 +529,88 @@ it("enforces the target team's requester budget by foreign principal", async () 
     await f.close();
   }
 });
+
+it.each(["request", "link"] as const)(
+  "cancels a follower agent's queued publication when its %s authority ends",
+  async (removal) => {
+    const f = await sharedFixture();
+    const release = Promise.withResolvers<void>();
+    try {
+      const linkId = createId("teamLink");
+      await f.b.database
+        .insertInto("teamLinks")
+        .values({
+          id: linkId,
+          ownerUserId: f.bUser,
+          personalDeploymentId: createId("deployment"),
+          state: "active",
+          codeHash: randomUUID(),
+          codeExpiresAt: new Date(),
+          credentialHash: randomUUID(),
+        })
+        .execute();
+      await command(f.bSession, {
+        type: "team.message.send",
+        channelId: f.bid,
+        threadRootId: null,
+        clientMessageId: randomUUID(),
+        bodyMarkdown: "@maya-2-agent Help",
+        mentions: [],
+        attachmentIds: [],
+      });
+      const request = (await f.b.host.team.requests.pending(linkId))[0]!.request;
+      await f.b.host.team.requests.accept(linkId, request.id);
+      const entered = Promise.withResolvers<AbortSignal | undefined>();
+      const original = f.b.host.team.partners!.request.bind(f.b.host.team.partners!);
+      vi.spyOn(f.b.host.team.partners!, "request").mockImplementation(
+        async (id, op, signal, handoff) => {
+          if (op.op === "write") {
+            entered.resolve(signal);
+            await withTimeout(release.promise, 3000, {
+              timeoutError: () => new Error("Publication barrier never released"),
+            });
+          }
+          return original(id, op, signal, handoff);
+        },
+      );
+      const posting = f.b.host.team.requests
+        .post(linkId, {
+          channelId: f.bid,
+          threadRootId: request.threadRootId,
+          requestId: request.id,
+          clientMessageId: randomUUID(),
+          bodyMarkdown: "Do not export cancelled publication",
+          attachmentIds: [],
+          publication: true,
+        })
+        .then(
+          () => true,
+          () => false,
+        );
+      const signal = await withTimeout(entered.promise, 2000, {
+        timeoutError: () => new Error("Publication never reached the relay"),
+      });
+      if (removal === "request")
+        await f.b.host.team.requests.status(linkId, request.id, { state: "cancelled", steps: [] });
+      else await f.b.host.team.links.revoke({ kind: "human", userId: f.bUser }, linkId);
+      expect(signal?.aborted).toBe(true);
+      release.resolve();
+      expect(
+        await withTimeout(posting, 2000, {
+          timeoutError: () => new Error("Revoked publication never settled"),
+        }),
+      ).toBe(false);
+      expect(
+        await f.a.database
+          .selectFrom("teamMessages")
+          .select("id")
+          .where("channelId", "=", f.aid)
+          .where("bodyMarkdown", "=", "Do not export cancelled publication")
+          .execute(),
+      ).toEqual([]);
+    } finally {
+      release.resolve();
+      await f.close();
+    }
+  },
+);
