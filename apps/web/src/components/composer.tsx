@@ -1,3 +1,4 @@
+import { compactionOfferText } from "@opensteer/client/host";
 import {
   dictationLabels,
   dictationView,
@@ -70,6 +71,7 @@ export interface ComposerQuote {
 
 /** What a send carries beside its words. */
 export interface ComposerSubmission {
+  readonly compaction?: import("@opensteer/core").CompactionSendChoice;
   /** The places the message includes — pages, Mac apps, phones — as the draft held them. */
   readonly places: readonly PlaceContentPart[];
   /** Exact accepted command content, only when a saved send is sent again. */
@@ -89,6 +91,7 @@ export interface ComposerSubmission {
  * same message, or it is a second one.
  */
 export interface PendingSubmission {
+  readonly compaction?: import("@opensteer/core").CompactionSendChoice;
   readonly places?: readonly PlaceContentPart[];
   /** Exact accepted command content, only when a saved send is sent again. */
   readonly content?: readonly ContentPart[];
@@ -128,6 +131,7 @@ export interface ComposerRestore {
 }
 
 interface ComposerProps {
+  compactionOffer?: { visible: boolean; dismiss: () => void };
   dictationScope?: string;
   hidden?: boolean;
   variant?: "conversation" | "work";
@@ -232,6 +236,7 @@ export function Composer({
   onHoldingChange,
   onEscape,
   onSend,
+  compactionOffer,
   onStop,
   pendingSends = null,
   placeholder,
@@ -526,6 +531,7 @@ export function Composer({
     setError(null);
     try {
       await onSend(submission.body, {
+        ...(submission.compaction ? { compaction: submission.compaction } : {}),
         attachments: submission.attachments,
         places: submission.places ?? [],
         ...(submission.content ? { content: submission.content } : {}),
@@ -589,7 +595,10 @@ export function Composer({
     }
   };
 
-  const submit = async (text = latestDraft.current) => {
+  const submit = async (
+    text = latestDraft.current,
+    choice?: import("@opensteer/core").CompactionSendChoice,
+  ) => {
     const body = text.trim();
     const carried = staged.items;
     if (disabled || readOnly || submittingRef.current || !canSend) return;
@@ -600,6 +609,7 @@ export function Composer({
     const carriedQuote = quote;
     const places = context?.parts() ?? [];
     const submission: PendingSubmission = {
+      ...(choice || compactionOffer?.visible ? { compaction: choice ?? "compactFirst" } : {}),
       attachments: parts,
       body,
       ...(places.length > 0 ? { places } : {}),
@@ -1000,12 +1010,17 @@ export function Composer({
       ) : null}
       {showSend ? (
         <button
-          aria-label={queues ? "Queue message" : sendLabel}
+          aria-label={
+            compactionOffer?.visible ? "Summarize and send" : queues ? "Queue message" : sendLabel
+          }
           aria-describedby={blockedBy ? blockedById : undefined}
           className="composer__send"
           disabled={!canSend}
           onClick={() => void finishAndSend()}
-          title={blockedBy ?? (queues ? "Queue message" : sendLabel)}
+          title={
+            blockedBy ??
+            (compactionOffer?.visible ? "Summarize and send" : queues ? "Queue message" : sendLabel)
+          }
           type="button"
         >
           <Icon name="send" />
@@ -1049,6 +1064,30 @@ export function Composer({
           owner={owner}
           returnFocusTo={textareaRef}
         />
+      ) : null}
+      {compactionOffer?.visible ? (
+        <div className="composer__notice" role="status">
+          <p>{compactionOfferText}</p>
+          <button
+            className="btn btn--small btn--primary"
+            type="button"
+            disabled={!canSend}
+            onClick={() => void finishAndSend()}
+          >
+            Summarize and send
+          </button>
+          <button
+            className="btn btn--small"
+            type="button"
+            disabled={!canSend}
+            onClick={() => {
+              compactionOffer.dismiss();
+              void submit(latestDraft.current, "keepFullHistory");
+            }}
+          >
+            Send with full history
+          </button>
+        </div>
       ) : null}
       {sendBlocked !== null && !settingsRequired ? (
         <p className="composer__notice" role="status">

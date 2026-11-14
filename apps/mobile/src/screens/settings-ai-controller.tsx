@@ -1,3 +1,4 @@
+import { useIdleCompactionSettings } from "@opensteer/client/react";
 import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
 import { harnessDriverLabel } from "@opensteer/core";
 import { useNavigation } from "@react-navigation/native";
@@ -38,9 +39,11 @@ export function AiSettingsController(): ReactNode {
     });
   }, [engineUpdateError, engineUpdatePending, snapshot]);
   const hostClient = selection.hostClient;
+  const idleCompaction = useIdleCompactionSettings(hostClient);
   const form = (automatic: AutomaticModelsForm | null, aiAccounts: AiAccountsForm | null) => (
     <AiSettingsForm
       aiAccounts={aiAccounts}
+      {...(hostClient ? { idleCompaction } : {})}
       onChooseModel={() => {
         if (selection.deploymentId)
           navigation.navigate("NewThread", { deploymentId: selection.deploymentId });

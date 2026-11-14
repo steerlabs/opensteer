@@ -102,3 +102,5 @@ export * from "./personal-stream-cache.js";
 export * from "./needs-you.js";
 
 export * from "./thread-visits.js";
+
+export * from "./idle-compaction.js";

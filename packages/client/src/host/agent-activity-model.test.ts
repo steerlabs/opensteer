@@ -2796,3 +2796,14 @@ it("keeps a delivery-only turn visible after a Run ends without a reply", () => 
     conversationRows(groupTranscriptEntries([entry]), { live: false, atComputer: () => false }),
   ).toHaveLength(1);
 });
+
+it("keeps completed maintenance visible as a summary even without a message or work", () => {
+  const entry = run({
+    status: "completed",
+    replyMessageId: null,
+    compaction: { status: "created", reason: "idle" },
+  });
+  expect(
+    conversationRows(groupTranscriptEntries([entry]), { live: false, atComputer: () => false }),
+  ).toHaveLength(1);
+});

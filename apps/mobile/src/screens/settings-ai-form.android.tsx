@@ -1,4 +1,9 @@
-import { Text, TextButton } from "@expo/ui/jetpack-compose";
+import {
+  idleCompactionTitle,
+  idleCompactionChoices,
+  idleCompactionHelp,
+} from "@opensteer/client/host";
+import { RadioButton, Text, TextButton } from "@expo/ui/jetpack-compose";
 import {
   automaticModelChoices,
   automaticModelsExplanation,
@@ -32,7 +37,13 @@ import type {
 export function AiSettingsForm(
   props: Pick<
     SettingsFormProps,
-    "aiAccounts" | "page" | "engineUpdates" | "onEngineUpdate" | "onChooseModel" | "automatic"
+    | "idleCompaction"
+    | "aiAccounts"
+    | "page"
+    | "engineUpdates"
+    | "onEngineUpdate"
+    | "onChooseModel"
+    | "automatic"
   >,
 ): ReactNode {
   const engineUpdates = props.engineUpdates ?? [];
@@ -63,6 +74,31 @@ export function AiSettingsForm(
           ))}
         </Section>
       )}
+      {props.idleCompaction ? (
+        <Section title={idleCompactionTitle} footer={idleCompactionHelp}>
+          {idleCompactionChoices.map((choice) => (
+            <LinkRow
+              key={choice.value}
+              title={choice.label}
+              disabled={props.idleCompaction?.pending}
+              trailing={
+                <RadioButton
+                  selected={props.idleCompaction?.policy.mode === choice.value}
+                  enabled={!props.idleCompaction?.pending}
+                  onClick={() => props.idleCompaction?.save({ mode: choice.value })}
+                />
+              }
+              detail={choice.description}
+              onPress={
+                props.idleCompaction!.pending
+                  ? undefined
+                  : () => props.idleCompaction?.save({ mode: choice.value })
+              }
+            />
+          ))}
+          <ErrorText detail={props.idleCompaction.error} />
+        </Section>
+      ) : null}
       {props.automatic ? <AutomaticModels form={props.automatic} /> : null}
     </>
   );

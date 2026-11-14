@@ -1,3 +1,4 @@
+import { compactionLabel, compactionDisclosure } from "@opensteer/client/host";
 import { useNavigation } from "@react-navigation/native";
 import { useTeamsSnapshot } from "../team/team-context.js";
 import type { TeamSource } from "@opensteer/core";
@@ -224,8 +225,14 @@ function TurnView(props: {
   const { onToggle, turn, turnKey } = props;
   const folds = turnFolds(turn);
   const open = turnOpen(turn, props.open);
+  if (
+    turn.run?.compaction &&
+    (turn.run.compaction.reason === "idle" || turn.run.compaction.reason === "before-send")
+  )
+    return <CompactionDivider run={turn.run} />;
   return (
     <View style={styles.turn}>
+      {turn.run?.compaction ? <CompactionDivider run={turn.run} /> : null}
       <TurnContent
         {...(folds ? { fold: { onToggle: () => onToggle(turnKey, open), open } } : {})}
         reveal={props.reveal ?? null}
@@ -362,6 +369,11 @@ function ConversationTurn(props: {
   // the Thread opened, or that scrolling brought back, just stands there.
   const typed = useRef(false);
   if (composing) typed.current = true;
+  if (
+    turn.run?.compaction &&
+    (turn.run.compaction.reason === "idle" || turn.run.compaction.reason === "before-send")
+  )
+    return <CompactionDivider run={turn.run} />;
   const onActivity =
     activityKey === null || onOpenActivity === undefined
       ? undefined
@@ -383,6 +395,7 @@ function ConversationTurn(props: {
     ) : null;
   return (
     <View style={styles.turn}>
+      {turn.run?.compaction ? <CompactionDivider run={turn.run} /> : null}
       {line?.kind === "now" ? (
         <ComputerUseLine key={line.now.session.sessionId} now={line.now} />
       ) : line?.kind === "kept" ? (
@@ -1876,5 +1889,59 @@ function TeamInputSource({ source }: { readonly source: TeamSource }): ReactNode
     >
       {label}
     </Pressable>
+  );
+}
+
+function CompactionDivider({ run }: { readonly run: RunEntry }): ReactNode {
+  const scope = useContext(TaskScopeContext);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  if (!run.compaction) return null;
+  return (
+    <View
+      style={{
+        paddingVertical: space[10],
+        borderTopWidth: StyleSheet.hairlineWidth,
+        borderColor: color.lineStrong,
+      }}
+    >
+      <Pressable
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityHint={compactionDisclosure}
+        onPress={() => setOpen(!open)}
+        style={{ minHeight: touchTarget, justifyContent: "center" }}
+      >
+        <AppText role="caption" tone="muted">
+          {compactionLabel(run.compaction)}
+        </AppText>
+      </Pressable>
+      {open ? (
+        <AppText role="caption" tone="muted">
+          {compactionDisclosure}
+        </AppText>
+      ) : null}
+      {run.compaction.status === "running" && scope ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Stop summarizing conversation"
+          disabled={busy}
+          onPress={() => {
+            setBusy(true);
+            void scope.hostClient
+              .stopRun(scope.threadId)
+              .catch((e: unknown) =>
+                setError(e instanceof Error ? e.message : "Could not stop summary."),
+              )
+              .finally(() => setBusy(false));
+          }}
+          style={{ minHeight: touchTarget, justifyContent: "center" }}
+        >
+          <AppText role="caption">Stop</AppText>
+        </Pressable>
+      ) : null}
+      {error ? <AppText role="caption">{error}</AppText> : null}
+    </View>
   );
 }
