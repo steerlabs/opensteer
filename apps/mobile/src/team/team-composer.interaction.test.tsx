@@ -75,7 +75,7 @@ it.each(["people-only", "not-connected"] as const)(
     try {
       act(() => root.render(<TeamComposer {...props} />));
       act(() => root.render(<TeamComposer {...props} agent={agent} />));
-      const chip = host.querySelector<HTMLElement>('[aria-label="To my agent"]');
+      const chip = host.querySelector<HTMLElement>('[aria-label="@My agent"]');
       expect(chip, "The enabled recipient must remain removable").not.toBeNull();
       act(() => chip!.click());
       expect(change).toHaveBeenCalledExactlyOnceWith(false);

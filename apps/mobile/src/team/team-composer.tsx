@@ -126,7 +126,7 @@ export function TeamComposer(props: TeamComposerProps): ReactNode {
             {toMyAgent ? (
               <Pressable
                 accessibilityHint="Turns off asking your agent"
-                accessibilityLabel="To my agent"
+                accessibilityLabel="@My agent"
                 accessibilityRole="button"
                 onPress={() => props.onToMyAgentChange(false)}
                 style={styles.agentChip}
