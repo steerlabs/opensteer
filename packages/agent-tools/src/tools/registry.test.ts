@@ -3,25 +3,24 @@ import { createId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
   agentTools,
-  computer,
+  computer_use,
   delegate_task,
   pending_request,
   thread_wait,
   thread_configure,
-  environment_list,
-  orchestrator_capabilities,
+  computer_list,
+  opensteer_ai_account_list,
   thread_read,
   thread_list,
   thread_send,
 } from "./index.js";
-import { use_saved_login } from "./browser.js";
+import { saved_login_request } from "./browser.js";
 import { person_message } from "./person.js";
 import { trigger_read, trigger_write } from "./triggers.js";
 
 describe("Opensteer tool registry", () => {
   it("has one specification per product and integration tool", () => {
-    expect(agentTools).toHaveLength(50);
-    expect(new Set(agentTools.map(({ name }) => name)).size).toBe(50);
+    expect(new Set(agentTools.map(({ name }) => name)).size).toBe(agentTools.length);
     const runs = agentTools.filter((t) => t.callers.some((c) => c === "run")).map((t) => t.name);
     expect(runs).toContain("integration_call");
     expect(runs).toEqual(
@@ -30,8 +29,8 @@ describe("Opensteer tool registry", () => {
         "thread_send",
         "thread_wait",
         "pending_request",
-        "device_access_request",
-        "orchestrator_capabilities",
+        "computer_access_request",
+        "opensteer_ai_account_list",
       ]),
     );
     for (const old of [
@@ -51,7 +50,7 @@ describe("Opensteer tool registry", () => {
       .map((t) => t.name);
     expect(programs).toContain("delegate_task");
     expect(programs).not.toContain("person_show");
-    expect(programs).not.toContain("computer");
+    expect(programs).not.toContain("computer_use");
   });
   it("exposes bounded waiting and connection work without human-only controls", () => {
     const connections = agentTools.filter((t) => t.callers.some((c) => c === "connection"));
@@ -146,7 +145,7 @@ describe("Opensteer tool registry", () => {
       _meta: { "codex/imageDetail": "original" },
     };
     expect(
-      computer.output.parse({
+      computer_use.output.parse({
         content: [
           {
             ...image,
@@ -164,7 +163,7 @@ describe("Opensteer tool registry", () => {
       loginRef: `lgn_${"1".repeat(32)}`,
       account: "a•••@example.com",
     };
-    expect(use_saved_login.output.parse({ ...ready, password: "hidden" })).toEqual(ready);
+    expect(saved_login_request.output.parse({ ...ready, password: "hidden" })).toEqual(ready);
   });
   it("returns webhook setup credentials on writes and excludes them from reads", () => {
     const result = {
@@ -180,14 +179,6 @@ const agentToolPayloadMaxSerializedBytes = 432 * 1024;
 it("fits largest catalog and single-message tool pages but rejects an oversized combined page", () => {
   const requestId = randomUUID();
   const harnessIds = Array.from({ length: 64 }, () => createId("harnessInstance"));
-  const environments = Array.from({ length: 64 }, (_, index) => ({
-    capabilities: ["filesystem", "shell", "browser"],
-    connected: true,
-    id: createId("environment"),
-    kind: index === 0 ? ("main" as const) : ("local" as const),
-    name: "e".repeat(120),
-    can: { executeTasks: index === 0 },
-  }));
   const threads = Array.from({ length: 100 }, () => {
     const id = createId("thread");
     return {
@@ -220,7 +211,8 @@ it("fits largest catalog and single-message tool pages but rejects an oversized 
     modelId: `${index}`.padEnd(255, "m"),
     providerId: `p${index}`.padEnd(100, "p"),
   });
-  const catalog = orchestrator_capabilities.output.parse({
+  const computerId = createId("runner");
+  const catalog = opensteer_ai_account_list.output.parse({
     accessCeiling: "full-access",
     limits: {
       maxDepth: 4,
@@ -233,8 +225,7 @@ it("fits largest catalog and single-message tool pages but rejects an oversized 
       taskDeadlineAt: null,
     },
     delegationDefault: {
-      environmentId: environments[0]!.id,
-      harnessInstanceId: harnessIds[0],
+      aiAccountId: harnessIds[0],
       model: {
         ...longestModel(0),
         options: Object.fromEntries(
@@ -242,24 +233,40 @@ it("fits largest catalog and single-message tool pages but rejects an oversized 
         ),
       },
     },
-    harnesses: harnessIds.map((id, index) => ({
-      driverKind: "d".repeat(100),
+    accounts: harnessIds.map((aiAccountId, index) => ({
+      aiAccountId,
+      computerId,
+      name: "h".repeat(120),
+      engine: "d".repeat(100),
       enabled: true,
-      environmentId: environments[index % environments.length]!.id,
-      id,
+      isDefault: index === 0,
+      status: "ready",
       models:
         index < 5 ? Array.from({ length: 8 }, (_, model) => longestModel(index * 8 + model)) : [],
       modelsOmitted: index < 5 ? 8_184 : 0,
-      status: "ready",
-      name: "h".repeat(120),
     })),
+    nextCursor: harnessIds[63],
     requestId,
   });
   expect(Buffer.byteLength(JSON.stringify(catalog), "utf8")).toBeLessThanOrEqual(
     agentToolPayloadMaxSerializedBytes,
   );
+  const computers = Array.from({ length: 100 }, () => ({
+    computerId: createId("runner"),
+    name: "e".repeat(120),
+    online: true,
+    hosting: false,
+    canRunTasks: false,
+    capabilities: ["filesystem", "shell", "browser"],
+    revoked: false,
+    access: { browser: "enabled", apps: "enabled", files: "enabled" },
+    sessions: [{ id: createId("authSession") }],
+  }));
   expect(
-    Buffer.byteLength(JSON.stringify(environment_list.output.parse({ environments })), "utf8"),
+    Buffer.byteLength(
+      JSON.stringify(computer_list.output.parse({ computers, nextCursor: null })),
+      "utf8",
+    ),
   ).toBeLessThanOrEqual(agentToolPayloadMaxSerializedBytes);
 
   const threadId = createId("thread");

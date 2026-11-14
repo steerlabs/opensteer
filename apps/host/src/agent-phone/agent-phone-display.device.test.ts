@@ -863,7 +863,7 @@ it.each([
       gateway = agent.gateway,
     ): Promise<ToolResult> {
       const code = `const p = await phone(${JSON.stringify(discoveredPhone.name)}); await p.${operation}(${actions ? JSON.stringify(actions) : ""})`;
-      const result = await gateway.call("computer", { code });
+      const result = await gateway.call("computer_use", { code });
       transcript.push({ code, result });
       return result;
     }
@@ -3056,7 +3056,7 @@ it.each([
         const refused = await call("act", [{ type: "wake" }], on.task.gateway);
         expect(refused.isError, "the held phone handle cannot act after lowering").toBe(true);
         expect(resultText(refused), "lowering to read refuses native actions").toBe(
-          `failed: ${row.name} allows seeing only. Ask for read-write access to act: call integration_request {kind: "computer-app", runnerId, access, reason} with access "read-write"; do not retry this call until it is fulfilled.`,
+          `failed: ${row.name} allows seeing only. Ask for read-write access to act: call app_access_request {computerId, access, reason} with access "read-write"; do not retry this call until it is fulfilled.`,
         );
         await setAccess("read-write");
         await oldTicketRefused(onTicket);

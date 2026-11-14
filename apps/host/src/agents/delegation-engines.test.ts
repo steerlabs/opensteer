@@ -1,16 +1,17 @@
-import { OrchestratorCapabilitiesInputSchema } from "@opensteer/agent-tools/tools";
+import { AiAccountListInputSchema } from "@opensteer/agent-tools/tools";
 import { createId, HarnessIdSchema } from "@opensteer/core";
 import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { agentTools } from "@opensteer/agent-tools";
 import type { HarnessInstanceRecord } from "@opensteer/database";
 import { describe, expect, it, vi } from "vitest";
+import { aiAccountDiscovery } from "../mcp/ai-accounts.js";
 import { delegationEngines } from "./delegation-placement.js";
 
 /* Failure cases: search after limiting, OR instead of all words, reordered models,
  * lost boolean/default values, stale/cross-engine/cross-query cursors, no-match
  * mistaken for unavailable, duplicate accounts collapsed, disabled/disconnected
  * catalogs exposed as ready, global budget exceeded. */
-describe("environment model discovery", () => {
+describe("AI account model discovery", () => {
   const environmentId = createId("environment");
   const harness = (name = "Account"): HarnessInstanceRecord => ({
     id: createId("harnessInstance"),
@@ -59,7 +60,7 @@ describe("environment model discovery", () => {
     }));
     return { accounts, catalogs, store: { listHarnessCatalogs: vi.fn(async () => catalogs) } };
   }
-  it("preserves a delegation-ready light choice through catalog storage and both projections", async () => {
+  it("preserves a delegation-ready light choice through catalog storage and the tool output", async () => {
     const f = fixture();
     const lightModel = { providerId: "openai", modelId: "model-49", options: { effort: "max" } };
     f.catalogs[0]!.catalog = HarnessInstanceCatalogSchema.parse({
@@ -72,10 +73,19 @@ describe("environment model discovery", () => {
       canRun: () => true,
     });
     expect(discovery[0]).toMatchObject({ lightModel, models: [] });
-    const tool = agentTools.find(({ name }) => name === "orchestrator_capabilities")!;
+    const tool = agentTools.find(({ name }) => name === "opensteer_ai_account_list")!;
+    const { id, environmentId: _, driverKind, ...account } = discovery[0]!;
     expect(
       tool.output.parse({
-        harnesses: discovery,
+        accounts: [
+          {
+            ...account,
+            aiAccountId: id,
+            computerId: createId("runner"),
+            engine: driverKind,
+            isDefault: false,
+          },
+        ],
         accessCeiling: "full-access",
         limits: {
           maxDepth: 4,
@@ -89,9 +99,8 @@ describe("environment model discovery", () => {
         },
       }),
     ).toMatchObject({
-      harnesses: [{ lightModel }],
+      accounts: [{ lightModel }],
     });
-    expect((await delegationEngines(f.store, f.accounts))[0]).toMatchObject({ lightModel });
     expect(
       (
         await delegationEngines(f.store, f.accounts, {
@@ -101,25 +110,20 @@ describe("environment model discovery", () => {
         })
       )[0],
     ).not.toHaveProperty("lightModel");
-    f.catalogs[0]!.catalog = HarnessInstanceCatalogSchema.parse({
-      ...f.catalogs[0]!.catalog,
-      lightModel: undefined,
-    });
-    expect((await delegationEngines(f.store, f.accounts))[0]).not.toHaveProperty("lightModel");
   });
   it("normalizes blank search at both boundaries and shares unfiltered cursors", async () => {
     const tool = agentTools
       .filter((tool) => tool.callers.some((kind) => kind === "run"))
-      .find(({ name }) => name === "orchestrator_capabilities")!;
+      .find(({ name }) => name === "opensteer_ai_account_list")!;
     const variants = [{}, { query: "" }, { query: " \t\n " }];
     const f = fixture();
     const id = f.accounts[0]!.id;
-    const discover = (input: ReturnType<typeof OrchestratorCapabilitiesInputSchema.parse>) =>
+    const discover = (input: ReturnType<typeof AiAccountListInputSchema.parse>) =>
       delegationEngines(f.store, f.accounts, { input, connected: () => true, canRun: () => true });
     const firstPages: Awaited<ReturnType<typeof delegationEngines>> = [];
     for (const variant of variants) {
-      const input = { ...variant, harnessInstanceId: id };
-      const parsed = OrchestratorCapabilitiesInputSchema.parse(input);
+      const input = { ...variant, aiAccountId: id };
+      const parsed = AiAccountListInputSchema.parse(input);
       expect(parsed.query).toBeUndefined();
       expect(tool.input.parse(input)).toEqual(parsed);
       firstPages.push((await discover(parsed))[0]!);
@@ -129,8 +133,8 @@ describe("environment model discovery", () => {
       expect(page.models).toHaveLength(8);
       expect(page.modelsOmitted).toBe(42);
       for (const variant of variants) {
-        const input = { ...variant, harnessInstanceId: id, cursor: page.modelsNextCursor };
-        const parsed = OrchestratorCapabilitiesInputSchema.parse(input);
+        const input = { ...variant, aiAccountId: id, cursor: page.modelsNextCursor };
+        const parsed = AiAccountListInputSchema.parse(input);
         expect(parsed.query).toBeUndefined();
         expect(tool.input.parse(input)).toEqual(parsed);
         const next = (await discover(parsed))[0]!;
@@ -139,17 +143,26 @@ describe("environment model discovery", () => {
       }
     }
     for (const query of [null, 42, {}, "x".repeat(257)]) {
-      expect(OrchestratorCapabilitiesInputSchema.safeParse({ query }).success).toBe(false);
+      expect(AiAccountListInputSchema.safeParse({ query }).success).toBe(false);
       expect(tool.input.safeParse({ query }).success).toBe(false);
     }
-    for (const variant of variants) {
-      expect(
-        OrchestratorCapabilitiesInputSchema.safeParse({
-          ...variant,
-          cursor: firstPages[0]!.modelsNextCursor,
-        }).success,
-      ).toBe(false);
-    }
+    // Without aiAccountId a cursor pages accounts, so a model page cursor is refused there.
+    const unread = () => {
+      throw new Error("A refused cursor reads nothing");
+    };
+    await expect(
+      aiAccountDiscovery({
+        store: {
+          listAgentHarnessInstancesForUser: unread,
+          listHarnessCatalogs: unread,
+          listEnvironmentsForUser: unread,
+        },
+        userId: createId("user"),
+        input: AiAccountListInputSchema.parse({ cursor: firstPages[0]!.modelsNextCursor }),
+        connected: () => true,
+        canRun: () => true,
+      }),
+    ).rejects.toMatchObject({ code: "bad_request" });
   });
   it("searches the complete catalog, keeps account identity and compact typed options", async () => {
     const f = fixture([harness(), harness()]);
@@ -179,7 +192,7 @@ describe("environment model discovery", () => {
     const id = f.accounts[0]!.id;
     const first = (
       await delegationEngines(f.store, f.accounts, {
-        input: { harnessInstanceId: id },
+        input: { aiAccountId: id },
         connected: () => true,
         canRun: () => true,
       })
@@ -188,7 +201,7 @@ describe("environment model discovery", () => {
     expect(first.models).toHaveLength(8);
     const second = (
       await delegationEngines(f.store, f.accounts, {
-        input: { harnessInstanceId: id, cursor },
+        input: { aiAccountId: id, cursor },
         connected: () => true,
         canRun: () => true,
       })
@@ -196,14 +209,7 @@ describe("environment model discovery", () => {
     expect(second.models[0]?.modelId).toBe("model-8");
     await expect(
       delegationEngines(f.store, f.accounts, {
-        input: { cursor },
-        connected: () => true,
-        canRun: () => true,
-      }),
-    ).rejects.toThrow();
-    await expect(
-      delegationEngines(f.store, f.accounts, {
-        input: { harnessInstanceId: id, cursor, query: "sol" },
+        input: { aiAccountId: id, cursor, query: "sol" },
         connected: () => true,
         canRun: () => true,
       }),
@@ -211,7 +217,7 @@ describe("environment model discovery", () => {
     f.catalogs[0]!.catalog.models.reverse();
     await expect(
       delegationEngines(f.store, f.accounts, {
-        input: { harnessInstanceId: id, cursor },
+        input: { aiAccountId: id, cursor },
         connected: () => true,
         canRun: () => true,
       }),

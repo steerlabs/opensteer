@@ -165,7 +165,7 @@ vi.mock("@modelcontextprotocol/sdk/server/mcp.js", () => ({
           return { isError: true, content: [{ type: "text", text: "Tool is unavailable" }] };
         const result = await callback(request.params.arguments ?? {}, extra);
         if (
-          ["computer", "integration_call"].includes(request.params.name) &&
+          ["computer_use", "integration_call"].includes(request.params.name) &&
           result &&
           typeof result === "object" &&
           "structuredContent" in result &&
@@ -250,22 +250,22 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     try {
       const run = await world.startRun("Use computer code");
       const gateway = await world.gateway(run);
-      const first = await gateway.call("computer", {
+      const first = await gateway.call("computer_use", {
         code: "globalThis.value = 40; return value + 2",
       });
       expect(first.isError, JSON.stringify(first)).toBeUndefined();
       expect(text(first)).toContain("42");
-      expect(text(await gateway.call("computer", { code: "return ++value" }))).toContain("41");
+      expect(text(await gateway.call("computer_use", { code: "return ++value" }))).toContain("41");
       expect(
-        (await gateway.call("computer", { code: 'throw new Error("script failed")' })).isError,
+        (await gateway.call("computer_use", { code: 'throw new Error("script failed")' })).isError,
       ).toBe(true);
-      expect(text(await gateway.call("computer", { code: "return value" }))).toBe("41");
+      expect(text(await gateway.call("computer_use", { code: "return value" }))).toBe("41");
       const warm = await world.gateway(await world.startRun("Warm engine, new Run"));
-      expect(text(await warm.call("computer", { code: "return typeof value" }))).toBe(
+      expect(text(await warm.call("computer_use", { code: "return typeof value" }))).toBe(
         '"undefined"',
       );
       const trigger = await world.gateway(run, true);
-      expect((await trigger.call("computer", { code: "return 1" })).isError).toBe(true);
+      expect((await trigger.call("computer_use", { code: "return 1" })).isError).toBe(true);
       const artifactDirectory = process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR;
       if (artifactDirectory) {
         await mkdir(artifactDirectory, { recursive: true });
@@ -344,7 +344,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       await replPhone(world, gateway);
       expect(
         (
-          await gateway.call("computer", {
+          await gateway.call("computer_use", {
             code: 'const p=await phone("Pixel 8"); await p.observe(); await p.tap(1); await p.release()',
           })
         ).isError,
@@ -365,7 +365,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         type: "tool.started",
         data: {
           callId: "outer-computer",
-          tool: { name: "computer", namespace: "opensteer.integrations" },
+          tool: { name: "computer_use", namespace: "opensteer.integrations" },
           arguments: { code: "await p.tap(1)" },
         },
       };
@@ -407,8 +407,11 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const second = await startRun(world.store, world.owner, "Next turn", first.threadId);
       const next = await world.gateway(second);
       expect(
-        (await next.call("computer", { code: 'const p=await phone("Pixel 8"); await p.observe()' }))
-          .isError,
+        (
+          await next.call("computer_use", {
+            code: 'const p=await phone("Pixel 8"); await p.observe()',
+          })
+        ).isError,
       ).toBeUndefined();
       const subject =
         hostEvents[0]?.type === "tool.started" ? hostEvents[0].data.integration : undefined;
@@ -488,9 +491,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     access: "read" | "read-write" = "read-write",
   ) {
     if (!world.phoneId || !world.fakePhone) throw new Error("Missing phone");
-    const result = await gateway.call("integration_request", {
-      kind: "computer-app",
-      runnerId: world.phoneId,
+    const result = await gateway.call("app_access_request", {
+      computerId: world.phoneId,
       access,
       reason: "Use the phone",
     });
@@ -509,18 +511,18 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const run = await world.startRun("Capability gating");
       const gateway = await world.gateway(run);
       expect(await gateway.list()).toMatchObject({
-        tools: expect.arrayContaining([expect.objectContaining({ name: "computer" })]),
+        tools: expect.arrayContaining([expect.objectContaining({ name: "computer_use" })]),
       });
       world.executionCapability.on = false;
       const listed = (await gateway.list()) as { tools: { name: string }[] };
-      expect(listed.tools.map((row) => row.name)).toContain("computer");
-      expect((await gateway.call("computer", { code: "return 1" })).isError).toBe(true);
+      expect(listed.tools.map((row) => row.name)).toContain("computer_use");
+      expect((await gateway.call("computer_use", { code: "return 1" })).isError).toBe(true);
       world.executionCapability.on = true;
       const trigger = await world.gateway(run, true);
       expect(
         ((await trigger.list()) as { tools: { name: string }[] }).tools.map((row) => row.name),
-      ).not.toContain("computer");
-      expect((await trigger.call("computer", { code: "return 1" })).isError).toBe(true);
+      ).not.toContain("computer_use");
+      expect((await trigger.call("computer_use", { code: "return 1" })).isError).toBe(true);
     } finally {
       await world.close();
     }
@@ -533,7 +535,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const gateway = await world.gateway(run);
       const fake = await replPhone(world, gateway);
       world.imageGate.on = true;
-      const result = await gateway.call("computer", {
+      const result = await gateway.call("computer_use", {
         code: 'const p=await phone("Pixel 8"); const alias=await phone("Pixel 8"); await p.observe(); await Promise.all([p.tap(1),alias.type("hello")]); await p.release(); return "finished"',
       });
       expect(result.isError, JSON.stringify(result)).toBeUndefined();
@@ -590,7 +592,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const run = await world.startRun("Read phone through code");
       const gateway = await world.gateway(run);
       const fake = await replPhone(world, gateway, "read");
-      const result = await gateway.call("computer", {
+      const result = await gateway.call("computer_use", {
         code: 'const p=await phone("Pixel 8"); await p.observe(); await p.tap(1)',
       });
       expect(result.isError).toBe(true);
@@ -626,7 +628,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const fake = await replPhone(world, gateway);
       expect(
         (
-          await gateway.call("computer", {
+          await gateway.call("computer_use", {
             code: 'globalThis.p=await phone("Pixel 8"); await p.observe()',
           })
         ).isError,
@@ -635,12 +637,12 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         resume = resolve;
       });
       const cancellation = new AbortController();
-      const pending = gateway.call("computer", { code: "await p.tap(1)" }, cancellation.signal);
+      const pending = gateway.call("computer_use", { code: "await p.tap(1)" }, cancellation.signal);
       await fake.reached("act");
       expect(fake.received("act")).toBe(1);
-      expect((await gateway.call("computer", { code: "return 2" })).isError).toBe(true);
+      expect((await gateway.call("computer_use", { code: "return 2" })).isError).toBe(true);
       const competitor = await world.gateway(await world.startRun("Competing phone code"));
-      const busy = await competitor.call("computer", {
+      const busy = await competitor.call("computer_use", {
         code: 'const p=await phone("Pixel 8"); await p.observe()',
       });
       expect(busy.isError).toBe(true);
@@ -667,7 +669,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       });
       expect(fake.received("act")).toBe(1);
       await world.platform.endComputerRun(run.runId);
-      expect((await gateway.call("computer", { code: "return 3" })).isError).toBe(true);
+      expect((await gateway.call("computer_use", { code: "return 3" })).isError).toBe(true);
     } finally {
       resume();
       await world.close();
@@ -701,9 +703,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       try {
         const run = await world.startRun("Retain cancelled action audit");
         const gateway = await world.gateway(run);
-        await gateway.call("integration_request", {
-          kind: "computer-app",
-          runnerId: world.macId,
+        await gateway.call("app_access_request", {
+          computerId: world.macId,
           app: "Notes",
           access: "read-write",
           reason: "Audit partial actions",
@@ -713,7 +714,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         await world.approveOnMac(setup);
         expect(
           (
-            await gateway.call("computer", {
+            await gateway.call("computer_use", {
               code: 'globalThis.w=await (await app("Notes")).window(); await w.observe()',
             })
           ).isError,
@@ -730,7 +731,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           ? { type: "type", text: { loginRef, field: "password" } }
           : { type: "click", target: { index: 1 } };
         const pending = gateway.call(
-          "computer",
+          "computer_use",
           {
             code: `await w.act(${JSON.stringify([first, { type: "key", keys: "cmd+s" }])}); print("guest-resumed")`,
           },
@@ -798,12 +799,12 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const fake = await replPhone(world, gateway);
       expect(
         (
-          await gateway.call("computer", {
+          await gateway.call("computer_use", {
             code: 'globalThis.p=await phone("Pixel 8"); await p.observe()',
           })
         ).isError,
       ).toBeUndefined();
-      const pending = gateway.call("computer", {
+      const pending = gateway.call("computer_use", {
         code: "await sleep(100); try{await p.tap(1)}catch(e){print(e.code)}; await p.tap(1)",
       });
       fake.stopFromPhone();
@@ -818,7 +819,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       expect(fake.received("act")).toBe(0);
       expect(
         (
-          await gateway.call("computer", {
+          await gateway.call("computer_use", {
             code: 'const p=await phone("Pixel 8"); await p.observe()',
           })
         ).isError,
@@ -837,7 +838,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const fake = await replPhone(world, gateway);
       expect(
         (
-          await gateway.call("computer", {
+          await gateway.call("computer_use", {
             code: 'globalThis.p=await phone("Pixel 8"); await p.observe()',
           })
         ).isError,
@@ -845,7 +846,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       fake.gate = new Promise<void>((resolve) => {
         resume = resolve;
       });
-      const pending = gateway.call("computer", { code: "await p.tap(1)" });
+      const pending = gateway.call("computer_use", { code: "await p.tap(1)" });
       await fake.reached("act");
       expect(fake.received("act")).toBe(1);
       fake.stopFromPhone();
@@ -854,7 +855,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       expect(JSON.stringify(result)).toContain("stopped-by-user");
       expect(
         (
-          await gateway.call("computer", {
+          await gateway.call("computer_use", {
             code: "try{await p.observe()}catch(e){print(e.code)};await p.observe()",
           })
         ).isError,
@@ -888,9 +889,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     try {
       const run = await world.startRun("Type a saved login");
       const gateway = await world.gateway(run);
-      await gateway.call("integration_request", {
-        kind: "computer-app",
-        runnerId: world.macId,
+      await gateway.call("app_access_request", {
+        computerId: world.macId,
         app: "Notes",
         access: "read-write",
         reason: "Type a saved login",
@@ -899,7 +899,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       if (!setup) throw new Error("Missing approval");
       await world.approveOnMac(setup);
       const loginRef = `lgn_${"a".repeat(32)}`;
-      const result = await gateway.call("computer", {
+      const result = await gateway.call("computer_use", {
         code: `const a=await app("Notes");const w=await a.window(7);await w.observe();await w.type({loginRef:"${loginRef}",field:"password"})`,
       });
       expect(result.isError, JSON.stringify(result)).toBeUndefined();
@@ -929,9 +929,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const run = await world.startRun("Observe Notes, Calendar, Notes");
       const gateway = await world.gateway(run);
       for (const app of ["Notes", "Calendar"]) {
-        await gateway.call("integration_request", {
-          kind: "computer-app",
-          runnerId: world.macId,
+        await gateway.call("app_access_request", {
+          computerId: world.macId,
           app,
           access: "read",
           reason: "Read app",
@@ -941,7 +940,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         await world.approveOnMac(setup);
       }
       world.imageGate.on = true;
-      const result = await gateway.call("computer", {
+      const result = await gateway.call("computer_use", {
         code: 'for(const name of ["Notes","Calendar","Notes"]){const a=await app(name);const w=await a.window();await w.observe({screenshot:true})}',
       });
       expect(result.isError, JSON.stringify(result)).toBeUndefined();
@@ -988,10 +987,10 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         "while(true){}",
         "const chunks=[]; for(let i=0;i<80;i++){chunks.push(new Uint8Array(1024*1024)); await sleep(0)}",
       ]) {
-        const result = await gateway.call("computer", { code });
+        const result = await gateway.call("computer_use", { code });
         expect(result.isError, code.slice(0, 80)).toBe(true);
       }
-      const cpu = await gateway.call("computer", {
+      const cpu = await gateway.call("computer_use", {
         code: "for(;;){let x=0; for(let i=0;i<200000;i++) x+=i; await sleep(0)}",
       });
       expect(cpu.isError).toBe(true);
@@ -1017,7 +1016,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     try {
       const run = await world.startRun("Bound sleeping programs");
       const gateway = await world.gateway(run);
-      const call = gateway.call("computer", {
+      const call = gateway.call("computer_use", {
         code: 'await sleep(100000); return "too late"',
       });
       await sleeping.promise;
@@ -1039,7 +1038,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         gateways.push(await world.gateway(await world.startRun(`Resident computer context ${i}`)));
       const runs = await Promise.all(
         gateways.slice(0, 5).map((gateway) =>
-          gateway.call("computer", {
+          gateway.call("computer_use", {
             code: "const started=Date.now(); await sleep(500); return {started,finished:Date.now()}",
           }),
         ),
@@ -1052,9 +1051,10 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       );
       for (let i = 0; i < gateways.length; i++)
         expect(
-          (await gateways[i]!.call("computer", { code: "globalThis.seed=1; return seed" })).isError,
+          (await gateways[i]!.call("computer_use", { code: "globalThis.seed=1; return seed" }))
+            .isError,
         ).toBeUndefined();
-      expect(text(await gateways[0]!.call("computer", { code: "return typeof seed" }))).toBe(
+      expect(text(await gateways[0]!.call("computer_use", { code: "return typeof seed" }))).toBe(
         '"undefined"',
       );
     } finally {
@@ -1070,7 +1070,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       await replPhone(world, gateway);
       expect(
         (
-          await gateway.call("computer", {
+          await gateway.call("computer_use", {
             code: 'globalThis.p=await phone("Pixel 8"); globalThis.secretMarker=123; await p.observe()',
           })
         ).isError,
@@ -1089,9 +1089,9 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         requestId: "revoke-repl-phone",
       });
       expect(
-        text(await gateway.call("computer", { code: "return [typeof p,typeof secretMarker]" })),
+        text(await gateway.call("computer_use", { code: "return [typeof p,typeof secretMarker]" })),
       ).toBe('["undefined","undefined"]');
-      expect((await gateway.call("computer", { code: 'await phone("Pixel 8")' })).isError).toBe(
+      expect((await gateway.call("computer_use", { code: 'await phone("Pixel 8")' })).isError).toBe(
         true,
       );
     } finally {
@@ -1104,9 +1104,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     try {
       const run = await world.startRun("Use Notes code");
       const gateway = await world.gateway(run);
-      await gateway.call("integration_request", {
-        kind: "computer-app",
-        runnerId: world.macId,
+      await gateway.call("app_access_request", {
+        computerId: world.macId,
         app: "Notes",
         access: "read-write",
         reason: "Write Notes",
@@ -1115,7 +1114,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       if (!setup) throw new Error("Missing Mac approval");
       await world.approveOnMac(setup);
       world.imageGate.on = true;
-      const result = await gateway.call("computer", {
+      const result = await gateway.call("computer_use", {
         code: 'const a=await app("Notes"); print(await apps()); print(await a.windows()); const w=await a.window(8); const alias=await a.window(8); await Promise.all([w.observe({screenshot:true}),alias.click(1)]); await w.type("milk"); return "finished"',
       });
       expect(result.isError, JSON.stringify(result)).toBeUndefined();
@@ -1145,7 +1144,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       expect(world.computerUse.sessionsForRunner(world.macId)[0]?.windows).toEqual([
         { appKey: apps.notes.bundleId.toLowerCase(), id: 8, title: "Work" },
       ]);
-      const search = json(await gateway.call("integration_search", { runnerId: world.macId }));
+      const search = json(await gateway.call("integration_search", { computerId: world.macId }));
       expect(JSON.stringify(search)).not.toContain("toolRef");
       const artifactDirectory = process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR;
       if (artifactDirectory) {
@@ -1180,7 +1179,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         resume = resolve;
       });
       pending = gateway.call(
-        "computer",
+        "computer_use",
         { code: 'await (await phone("Pixel 8")).observe()' },
         cancellation.signal,
       );
@@ -1207,9 +1206,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     try {
       const run = await world.startRun("Mac guest result contract");
       const gateway = await world.gateway(run);
-      await gateway.call("integration_request", {
-        kind: "computer-app",
-        runnerId: world.macId,
+      await gateway.call("app_access_request", {
+        computerId: world.macId,
         app: "Notes",
         access: "read-write",
         reason: "Check action results",
@@ -1217,7 +1215,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const [setup] = await world.persistence.listComputerAppSetupRequests(world.owner.userId);
       if (!setup) throw new Error("Missing approval");
       await world.approveOnMac(setup);
-      const result = await gateway.call("computer", {
+      const result = await gateway.call("computer_use", {
         code: 'globalThis.w=await (await app("Notes")).window(); await w.observe(); return [await w.click(1),await w.type("milk"),await w.key("cmd+s"),await w.setValue(1,"saved"),await w.scroll(1,"down"),await w.act([{type:"key",keys:"escape"}])]',
       });
       expect(result.isError, JSON.stringify(result)).toBeUndefined();
@@ -1236,7 +1234,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         message: "The button became unavailable.",
         performed: ["Clicked element 1"],
       };
-      const stopped = await gateway.call("computer", {
+      const stopped = await gateway.call("computer_use", {
         code: 'try {await w.act([{type:"click",target:{index:1}},{type:"key",keys:"cmd+s"}])} catch(error) {return {isComputerError:error instanceof ComputerError,code:error.code,message:error.message,performed:error.performed,leaked:["kind","observation","value","content","error"].filter(key=>key in error)}}',
       });
       const stoppedReturn = stopped.content.at(-1);
@@ -1250,7 +1248,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       });
       expect(world.fakeMac.actReceivedCount).toBe(7);
       world.fakeMac.windowGroupsSupported = false;
-      const unsupported = await gateway.call("computer", {
+      const unsupported = await gateway.call("computer_use", {
         code: 'await (await app("Notes")).windows()',
       });
       expect(unsupported).toEqual(
@@ -1266,9 +1264,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     try {
       const run = await world.startRun("Mixed Mac version");
       const gateway = await world.gateway(run);
-      await gateway.call("integration_request", {
-        kind: "computer-app",
-        runnerId: world.macId,
+      await gateway.call("app_access_request", {
+        computerId: world.macId,
         app: "Notes",
         access: "read",
         reason: "Read Notes",
@@ -1277,7 +1274,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       if (!setup) throw new Error("Missing approval");
       await world.approveOnMac(setup);
       world.macVersion.value = 1;
-      const result = await gateway.call("computer", {
+      const result = await gateway.call("computer_use", {
         code: 'const a=await app("Notes"); await a.windows()',
       });
       expect(result.isError).toBe(true);
@@ -1290,7 +1287,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       expect(world.fakeMac.frames.filter((frame) => frame.operation === "windows")).toEqual([]);
       const search = json(await gateway.call("integration_search", { query: "Computer use" }));
       expect(macRow(search).computers[0]).toMatchObject({ computerUseVersion: 1 });
-      expect(search).toMatchObject({ results: [], total: 0, nextOffset: null });
+      expect(search).toMatchObject({ results: [], total: 0, nextCursor: null });
       expect(search.guidance.computers).toContain(
         "computerUseVersion other than 2: update Opensteer on that Mac",
       );
@@ -1353,9 +1350,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     try {
       const run = await world.startRun("Remember Notes after finishing");
       const gateway = await world.gateway(run);
-      await gateway.call("integration_request", {
-        kind: "computer-app",
-        runnerId: world.macId,
+      await gateway.call("app_access_request", {
+        computerId: world.macId,
         app: "Notes",
         access: "read-write",
         reason: "Read Notes",
@@ -1365,7 +1361,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       await world.approveOnMac(setup);
       expect(
         (
-          await gateway.call("computer", {
+          await gateway.call("computer_use", {
             code: 'globalThis.w=await (await app("Notes")).window(); await w.observe()',
           })
         ).isError,
@@ -1383,10 +1379,10 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         data: {
           callId: "native-latest-act",
           arguments: { code: "await w.click(1)" },
-          tool: { namespace: "opensteer.integrations", name: "computer" },
+          tool: { namespace: "opensteer.integrations", name: "computer_use" },
         },
       };
-      const acted = await gateway.call("computer", { code: "await w.click(1)" });
+      const acted = await gateway.call("computer_use", { code: "await w.click(1)" });
       expect(acted.isError).toBeUndefined();
       // End before the live-activity coalescer fires, before any history reads.
       expect(scheduled.size).toBeGreaterThan(0);
@@ -1438,7 +1434,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           data: { callId: "native-latest-act", isError: false, output: { text: text(acted) } },
         },
       });
-      const described = await gateway.call("integration_search", { runnerId: world.macId });
+      const described = await gateway.call("integration_search", { computerId: world.macId });
       await store.commitRunnerEvent({
         environmentId: run.environmentId,
         runnerBootId: run.runnerBootId,
@@ -1528,9 +1524,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     try {
       const run = await world.startRun("Included places");
       const gateway = await world.gateway(run);
-      await gateway.call("integration_request", {
-        kind: "computer-app",
-        runnerId: world.macId,
+      await gateway.call("app_access_request", {
+        computerId: world.macId,
         app: "Notes",
         access: "read",
         reason: "Read included Notes",
@@ -1538,9 +1533,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       let [setup] = await world.persistence.listComputerAppSetupRequests(world.owner.userId);
       if (!setup) throw new Error("Missing app approval");
       await world.approveOnMac(setup);
-      await gateway.call("integration_request", {
-        kind: "computer-app",
-        runnerId: world.phoneId,
+      await gateway.call("app_access_request", {
+        computerId: world.phoneId,
         access: "read",
         reason: "Read included phone",
       });
@@ -2157,7 +2151,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     // Initialization carries no duplicate instructions; discovery carries shared guidance.
     expect(mcp.instructions).toBeUndefined();
 
-    // 1. Search without runnerId: the catalog row names the Mac and the next step.
+    // 1. Search without computerId: the catalog row names the Mac and the next step.
     const catalog = json(await a.call("integration_search", { query: "Computer use" }));
     const row = catalog.catalog.find(({ definitionId }: { definitionId: string }) => {
       return definitionId === "macos-app";
@@ -2165,29 +2159,28 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(row).toMatchObject({
       integration: "Computer use",
       computers: [
-        { runnerId: world.macId, name: mac, state: "ready", appApproval: "ask", apps: [] },
+        { computerId: world.macId, name: mac, state: "ready", appApproval: "ask", apps: [] },
       ],
     });
 
-    // 2. Search with runnerId: installed apps, each with its own next step.
-    const installed = json(await a.call("integration_search", { runnerId: world.macId }));
-    expect(installed).toMatchObject({ total: 4, nextOffset: null });
+    // 2. Search with computerId: installed apps, each with its own next step.
+    const installed = json(await a.call("integration_search", { computerId: world.macId }));
+    expect(installed).toMatchObject({ total: 4, nextCursor: null });
     expect(installed.apps).toContainEqual({
       name: "Notes",
       bundleId: "com.apple.Notes",
       status: "not-approved",
       callable: false,
     });
-    expect(installed.guidance.computers).toContain("Search with runnerId to list installed apps");
+    expect(installed.guidance.computers).toContain("Search with computerId to list installed apps");
     const filtered = json(
-      await a.call("integration_search", { runnerId: world.macId, query: "note", limit: 1 }),
+      await a.call("integration_search", { computerId: world.macId, query: "note", limit: 1 }),
     );
-    expect(filtered).toMatchObject({ total: 1, nextOffset: null, apps: [{ name: "Notes" }] });
+    expect(filtered).toMatchObject({ total: 1, nextCursor: null, apps: [{ name: "Notes" }] });
 
     // 3. Request under ask: pending, and the Mac is told to review it now.
-    const pending = await a.call("integration_request", {
-      kind: "computer-app",
-      runnerId: world.macId,
+    const pending = await a.call("app_access_request", {
+      computerId: world.macId,
       app: "Notes",
       access: "read-write",
       reason: "Add the groceries to the shared list.",
@@ -2209,7 +2202,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     await vi.waitFor(() => expect(world.fakeMac.reviews).toEqual([setup!.id]));
 
     // Searching again while it waits must not invite a second request.
-    const waiting = json(await a.call("integration_search", { runnerId: world.macId }));
+    const waiting = json(await a.call("integration_search", { computerId: world.macId }));
     expect(waiting.apps.find(({ name }: { name: string }) => name === "Notes")).toEqual({
       name: "Notes",
       bundleId: "com.apple.Notes",
@@ -2224,7 +2217,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(fulfilled.status).toBe("fulfilled");
 
     // 5. The continuation names the app selector the model will use.
-    const approved = json(await a.call("integration_search", { runnerId: world.macId }));
+    const approved = json(await a.call("integration_search", { computerId: world.macId }));
     const notes = approved.apps.find(({ name }: { name: string }) => name === "Notes");
     expect(notes).toEqual({
       name: "Notes",
@@ -2259,7 +2252,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     ).toEqual(refusal("Use the computer tool to see and operate apps and phones."));
 
     // 6. Observe the bound window, without an image-capable engine and then with one.
-    const observed = await a.call("computer", {
+    const observed = await a.call("computer_use", {
       code: 'globalThis.w=await (await app("Notes", {computer:"Alex\'s Mac"})).window(); await w.observe({screenshot:true})',
     });
     expect(observed.structuredContent).toBeUndefined();
@@ -2267,7 +2260,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     const firstText = `Looked at Notes\nObservation obs-1 of Notes (Groceries) — 2 elements. Screenshot 1200×900 px; all coordinates are screenshot pixels.\n${tree}\nWindows: [{"id":7,"title":"Groceries","current":true},{"id":8,"title":"Work","current":false}]\nScreenshot unavailable in this engine.`;
     expect(observed.content).toEqual([{ type: "text", text: firstText }]);
     world.imageGate.on = true;
-    const pictured = await a.call("computer", { code: "await w.observe({screenshot:true})" });
+    const pictured = await a.call("computer_use", { code: "await w.observe({screenshot:true})" });
     expect(pictured.content).toEqual([
       {
         type: "text",
@@ -2284,7 +2277,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     ]);
 
     // 7. A batch uses the latest per-window snapshot and does not observe after acting.
-    const acted = await a.call("computer", {
+    const acted = await a.call("computer_use", {
       code: 'await w.act([{type:"click",target:{index:1}},{type:"type",text:"Milk"}])',
     });
     expect(acted.isError).toBeUndefined();
@@ -2296,29 +2289,29 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     ).toEqual(["bind", "observe", "observe", "act"]);
     expect(world.fakeMac.frames.at(-1)?.params).toMatchObject({ snapshot: "obs-2" });
     world.fakeMac.invalidateSnapshots();
-    expect(await a.call("computer", { code: 'await w.key("cmd+s")' })).toEqual(
+    expect(await a.call("computer_use", { code: 'await w.key("cmd+s")' })).toEqual(
       refusal("stale-observation: Observe this window again."),
     );
     expect(
-      await a.call("computer", {
+      await a.call("computer_use", {
         code: 'const unseen=await (await app("Notes")).window(8); await unseen.key("cmd+s")',
       }),
     ).toEqual(refusal("stale-observation: Observe this window first."));
     expect(
-      text(await a.call("computer", { code: "await w.observe({screenshot:true})" })),
+      text(await a.call("computer_use", { code: "await w.observe({screenshot:true})" })),
     ).toContain("Observation obs-3");
 
     // 8. A second task finds the app held, by name, in search and in the call.
     const runB = await world.startRun("Weekly review");
     const b = await world.gateway(runB);
-    const held = json(await b.call("integration_search", { runnerId: world.macId }));
+    const held = json(await b.call("integration_search", { computerId: world.macId }));
     expect(held.apps.find(({ name }: { name: string }) => name === "Notes")).toMatchObject({
       status: "approved",
       inUse: true,
       callable: false,
-      heldByThread: "Shopping list",
+      heldByTask: "Shopping list",
     });
-    expect(await b.call("computer", { code: 'await (await app("Notes")).window()' })).toEqual(
+    expect(await b.call("computer_use", { code: 'await (await app("Notes")).window()' })).toEqual(
       refusal(
         `busy: This app is already being used by another task. (Thread: Shopping list) ${computerUseBusyNextStep}`,
       ),
@@ -2327,7 +2320,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     // 9. Stop on the Mac ends every session there; the next call says so.
     world.fakeMac.stopFromPill();
     await vi.waitFor(() => expect(world.computerUse.sessionsForRunner(world.macId)).toEqual([]));
-    expect(await a.call("computer", { code: "await w.observe()" })).toEqual(
+    expect(await a.call("computer_use", { code: "await w.observe()" })).toEqual(
       refusal(`stopped-by-user: Computer use was stopped for this task on ${mac}.`),
     );
     expect(world.fakeMac.openSessions()).toEqual([]);
@@ -2346,8 +2339,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       access: "read" | "read-write",
     ): Promise<string> => {
       const body = json(
-        await gateway.call("integration_request", {
-          kind: "computer-app",
+        await gateway.call("app_access_request", {
           app,
           access,
           reason: `Use ${app}.`,
@@ -2446,8 +2438,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     const world = await createWorld(database);
     const runA = await world.startRun("Shopping list");
     const a = await world.gateway(runA);
-    await a.call("integration_request", {
-      kind: "computer-app",
+    await a.call("app_access_request", {
       app: "Notes",
       access: "read-write",
       reason: "Add the groceries.",
@@ -2464,9 +2455,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
 
     // A new app is fulfilled in the same result and its handle works at once.
     const calendar = json(
-      await a.call("integration_request", {
-        kind: "computer-app",
-        runnerId: world.macId,
+      await a.call("app_access_request", {
+        computerId: world.macId,
         app: "Calendar",
         access: "read-write",
         reason: "Add the dentist appointment.",
@@ -2478,7 +2468,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     });
     expect(
       text(
-        await a.call("computer", {
+        await a.call("computer_use", {
           code: 'await (await (await app("Calendar")).window()).observe()',
         }),
       ),
@@ -2486,8 +2476,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
 
     // More access than an approval holds is a prompt on the Mac, even now.
     const textEdit = json(
-      await a.call("integration_request", {
-        kind: "computer-app",
+      await a.call("app_access_request", {
         app: "TextEdit",
         access: "read",
         reason: "Read the draft.",
@@ -2499,8 +2488,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     });
     const reviews = world.fakeMac.reviews.length;
     const widen = json(
-      await a.call("integration_request", {
-        kind: "computer-app",
+      await a.call("app_access_request", {
         app: "TextEdit",
         access: "read-write",
         reason: "Fix the typo in the draft.",
@@ -2531,16 +2519,14 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
 
     // The deny list and an unknown app answer in the Mac's own words.
     expect(
-      await a.call("integration_request", {
-        kind: "computer-app",
+      await a.call("app_access_request", {
         app: "1Password",
         access: "read",
         reason: "Find the Wi-Fi password.",
       }),
     ).toEqual(refusal("Opensteer does not operate password managers."));
     expect(
-      await a.call("integration_request", {
-        kind: "computer-app",
+      await a.call("app_access_request", {
         app: "Photoshop",
         access: "read",
         reason: "Crop the photo.",
@@ -2549,7 +2535,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
 
     // The ordinary integration forms name no app, so they are sent to the one that does.
     const oneAppAtATime = refusal(
-      'Computer use is requested one app at a time: call integration_request {kind: "computer-app", runnerId, app, access, reason}.',
+      "Computer use is requested one app at a time: call app_access_request {computerId, app, access, reason}.",
     );
     expect(
       await a.call("integration_request", {
@@ -2583,8 +2569,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       requestId: "block-calendar",
     });
     expect(
-      await a.call("integration_request", {
-        kind: "computer-app",
+      await a.call("app_access_request", {
         app: "Calendar",
         access: "read",
         reason: "Look at the week.",
@@ -2592,10 +2577,10 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     ).toEqual(
       refusal(`Calendar is blocked on ${mac}. The owner can unblock it from any Opensteer app.`),
     );
-    expect(await a.call("computer", { code: 'await app("Calendar")' })).toEqual(
+    expect(await a.call("computer_use", { code: 'await app("Calendar")' })).toEqual(
       refusal("app-not-allowed: No approved app matches Calendar. Search integrations for access."),
     );
-    const listing = json(await a.call("integration_search", { runnerId: world.macId }));
+    const listing = json(await a.call("integration_search", { computerId: world.macId }));
     expect(listing.apps).toEqual([
       expect.objectContaining({
         name: "Notes",
@@ -2638,8 +2623,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     const studio = await world.addMac("Studio Mac");
     const d2 = await world.gateway(runD);
     expect(
-      await d2.call("integration_request", {
-        kind: "computer-app",
+      await d2.call("app_access_request", {
         app: "Notes",
         access: "read",
         reason: "Read the notes.",
@@ -2654,9 +2638,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     world.fakeMac.detach();
     const setupRequests = await world.persistence.listComputerAppSetupRequests(world.owner.userId);
     expect(
-      await a.call("integration_request", {
-        kind: "computer-app",
-        runnerId: world.macId,
+      await a.call("app_access_request", {
+        computerId: world.macId,
         app: "Mail",
         access: "read",
         reason: "Find the invoice.",
@@ -2665,14 +2648,14 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     expect(await world.persistence.listComputerAppSetupRequests(world.owner.userId)).toEqual(
       setupRequests,
     );
-    expect(await a.call("integration_search", { runnerId: world.macId })).toEqual(
+    expect(await a.call("integration_search", { computerId: world.macId })).toEqual(
       refusal(`${mac} is offline.`),
     );
     const offlineCatalog = json(await a.call("integration_search", { query: "Computer use" }));
     expect(macRow(offlineCatalog).computers[0]).toMatchObject({ state: "offline" });
     expect(offlineCatalog.guidance.computers).toContain("state offline: wait for it to return");
     expect(JSON.stringify(offlineCatalog)).not.toContain("toolRef");
-    expect(await a.call("computer", { code: 'await (await app("Notes")).windows()' })).toEqual(
+    expect(await a.call("computer_use", { code: 'await (await app("Notes")).windows()' })).toEqual(
       refusal(`offline: ${mac} is offline. Notes will work again when it is back.`),
     );
 
@@ -2680,8 +2663,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     await world.fakeMac.attach();
     const trigger = await world.gateway(runA, true);
     expect(
-      await trigger.call("integration_request", {
-        kind: "computer-app",
+      await trigger.call("app_access_request", {
         app: "Notes",
         access: "read",
         reason: "Look.",
@@ -2689,7 +2671,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     ).toEqual(
       refusal("A session on a computer belongs to a running task, so only a task can ask for one."),
     );
-    expect(await trigger.call("computer", { code: "return 1" })).toEqual(
+    expect(await trigger.call("computer_use", { code: "return 1" })).toEqual(
       refusal("Tool is unavailable"),
     );
     await world.close();
@@ -2750,7 +2732,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
   }
 
   function phoneCode(gateway: Gateway, code: string) {
-    return gateway.call("computer", {
+    return gateway.call("computer_use", {
       code: `const p=await phone(${JSON.stringify(phone)});\n${code}`,
     });
   }
@@ -2775,11 +2757,10 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
   ): Promise<void> {
     const { fakePhone, phoneId } = phoneOf(world);
     const asked = json(
-      await gateway.call("integration_request", {
+      await gateway.call("app_access_request", {
         access,
-        kind: "computer-app",
         reason: "Text the driver the gate code.",
-        runnerId: phoneId,
+        computerId: phoneId,
       }),
     );
     expect(asked).toMatchObject({ kind: "computer.app.access", status: "pending" });
@@ -3110,7 +3091,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const run = await world.startRun("List phone apps");
     const gateway = await world.gateway(run);
     const result = json(
-      await gateway.call("integration_search", { runnerId: phoneId, query: "Messages" }),
+      await gateway.call("integration_search", { computerId: phoneId, query: "Messages" }),
     );
     expect(result.apps).toEqual([
       { label: "Messages", packageName: "com.google.android.apps.messaging" },
@@ -3124,7 +3105,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     expect(world.computerUse.sessionsForRunner(phoneId)).toEqual([]);
     expect(world.computerUse.holders(phoneId).size).toBe(0);
     fakePhone.detach();
-    expect(await gateway.call("integration_search", { runnerId: phoneId })).toEqual(
+    expect(await gateway.call("integration_search", { computerId: phoneId })).toEqual(
       refusal(`${phone} is offline.`),
     );
     await world.close();
@@ -3185,9 +3166,8 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     expect(policy).toHaveBeenCalledWith({ runnerId: world.macId, ownerUserId: world.owner.userId });
     inventory.mockClear();
     policy.mockClear();
-    const invalidApp = await gateway.call("integration_request", {
-      kind: "computer-app",
-      runnerId: world.phoneId!,
+    const invalidApp = await gateway.call("app_access_request", {
+      computerId: world.phoneId!,
       app: "Messages",
       access: "read",
       reason: "List messages",
@@ -3198,9 +3178,8 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     expect(policy).toHaveBeenCalledWith({ runnerId: world.macId, ownerUserId: world.owner.userId });
     inventory.mockClear();
     policy.mockClear();
-    const invalidPhone = await gateway.call("integration_request", {
-      kind: "computer-app",
-      runnerId: world.macId,
+    const invalidPhone = await gateway.call("app_access_request", {
+      computerId: world.macId,
       access: "read",
       reason: "See the screen",
     });
@@ -3307,7 +3286,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const gatewayA = await world.gateway(runA);
     await grantedPhone(world, gatewayA, "read-write");
     // Begin the reservation probe after this task's persistent REPL is ready.
-    expect(text(await gatewayA.call("computer", { code: "return 1" }))).toBe("1");
+    expect(text(await gatewayA.call("computer_use", { code: "return 1" }))).toBe("1");
     let resume!: () => void;
     fakePhone.gate = new Promise<void>((resolve) => {
       resume = resolve;
@@ -3319,9 +3298,8 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const runB = await world.startRun("Competing display holder");
     const gatewayB = await world.gateway(runB);
     const request = json(
-      await gatewayB.call("integration_request", {
-        kind: "computer-app",
-        runnerId: phoneId,
+      await gatewayB.call("app_access_request", {
+        computerId: phoneId,
         access: "read",
         reason: "Check the phone",
       }),
@@ -3361,31 +3339,29 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
         },
       ],
     });
-    expect(json(await a.call("integration_search", { runnerId: phoneId }))).toMatchObject({
+    expect(json(await a.call("integration_search", { computerId: phoneId }))).toMatchObject({
       apps: [{ label: "Messages", packageName: "com.google.android.apps.messaging" }],
       total: 1,
     });
     expect(
-      await a.call("integration_request", {
+      await a.call("app_access_request", {
         access: "read",
         app: "Messages",
-        kind: "computer-app",
         reason: "Read the messages.",
-        runnerId: phoneId,
+        computerId: phoneId,
       }),
     ).toEqual(
       refusal(
-        `${phone} is an Android phone, which is asked for whole: call integration_request {kind: "computer-app", runnerId, access, reason} without app.`,
+        `${phone} is an Android phone, which is asked for whole: call app_access_request {computerId, access, reason} without app.`,
       ),
     );
 
     // 2. Ask for the whole phone: a durable Request, with no phone relay.
     const pending = json(
-      await a.call("integration_request", {
+      await a.call("app_access_request", {
         access: "read-write",
-        kind: "computer-app",
         reason: "Text the driver the gate code.",
-        runnerId: phoneId,
+        computerId: phoneId,
       }),
     );
     expect(pending).toMatchObject({
@@ -3550,11 +3526,10 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const b = await world.gateway(runB);
     await (async () => {
       const asked = json(
-        await b.call("integration_request", {
+        await b.call("app_access_request", {
           access: "read",
-          kind: "computer-app",
           reason: "Check the lunch order.",
-          runnerId: phoneId,
+          computerId: phoneId,
         }),
       );
       // The phone already covers this task’s ask, so it comes straight back.
@@ -3564,7 +3539,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     expect((await phoneRow(b)).phones[0]).toMatchObject({
       inUse: true,
       callable: false,
-      heldByThread: "Text the driver",
+      heldByTask: "Text the driver",
     });
     const framesBefore = fakePhone.frames.length;
     expect(await phoneCode(b, "await p.observe()")).toEqual(
@@ -3634,11 +3609,10 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const other = await world.gateway(second);
     await (async () => {
       const asked = json(
-        await other.call("integration_request", {
+        await other.call("app_access_request", {
           access: "read",
-          kind: "computer-app",
           reason: "Check the lunch order.",
-          runnerId: phoneId,
+          computerId: phoneId,
         }),
       );
       expect(asked).not.toHaveProperty("toolRefs");
@@ -3756,7 +3730,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     expect(text(await phoneCode(gateway, "await p.observe()"))).toContain(`Looked at ${phone}`);
     expect(await phoneCode(gateway, 'await p.act([{ type: "wake" }])')).toEqual(
       refusal(
-        `failed: ${phone} allows seeing only. Ask for read-write access to act: call integration_request {kind: "computer-app", runnerId, access, reason} with access "read-write"; do not retry this call until it is fulfilled.`,
+        `failed: ${phone} allows seeing only. Ask for read-write access to act: call app_access_request {computerId, access, reason} with access "read-write"; do not retry this call until it is fulfilled.`,
       ),
     );
     expect(
@@ -3820,21 +3794,20 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const strangers = await world.addStrangersPhone("Someone else's Pixel");
     const gateway = await world.gateway(await world.startRun("Text the driver"));
     const ask = (runnerId: string) =>
-      gateway.call("integration_request", {
+      gateway.call("app_access_request", {
         access: "read",
-        kind: "computer-app",
         reason: "Look at it.",
-        runnerId,
+        computerId: runnerId,
       });
     const unknown = (runnerId: string) =>
-      `No Android phone set up for agents has runnerId ${runnerId}. Search "Android phone" with integration_search to list your phones and their runnerIds.`;
+      `No Android phone set up for agents has computerId ${runnerId}. Search "Android phone" with integration_search to list your phones and their computerIds.`;
 
     expect(await ask(strangers)).toEqual(refusal(unknown(strangers)));
     const nobody = createId("runner");
     expect(await ask(nobody)).toEqual(refusal(unknown(nobody)));
     expect(await ask(world.macId)).toEqual(
       refusal(
-        `${mac} is a Mac, whose apps are asked for one at a time: call integration_request {kind: "computer-app", runnerId, app, access, reason}.`,
+        `${mac} is a Mac, whose apps are asked for one at a time: call app_access_request {computerId, app, access, reason}.`,
       ),
     );
     fakePhone.detach();
@@ -3924,7 +3897,7 @@ function json(result: ToolResult) {
     value.catalog?.some((row: { computers?: readonly unknown[] }) => row.computers?.length)
   ) {
     for (const rule of [
-      'integration_request {kind: "computer-app", runnerId, app, access, reason}',
+      "app_access_request {computerId, app, access, reason}",
       "blocked: only the computer owner can unblock it from any Opensteer app",
       "pending:mac waits for its owner",
       "do not poll, repeat or route around the Request",
@@ -3937,7 +3910,7 @@ function json(result: ToolResult) {
   }
   if (value.catalog?.some((row: { phones?: readonly unknown[] }) => row.phones?.length)) {
     for (const rule of [
-      'integration_request {kind: "computer-app", runnerId, access, reason}',
+      "app_access_request {computerId, access, reason}",
       "owner approves from any Opensteer app",
       "approval:pending",
       "do not poll, repeat or route around the Request",

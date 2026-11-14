@@ -10,17 +10,8 @@ import {
 } from "@opensteer/core";
 import type { HarnessInstanceRecord, OpensteerStore } from "@opensteer/database";
 import { isRetryableHarnessCatalogStatus } from "@opensteer/harness";
-import {
-  agentHarnessModelsShown,
-  agentInspectionModelsShown,
-  type AgentHarnessSummary,
-  type EnvironmentHarnessSummary,
-  type AgentModelSummary,
-} from "@opensteer/agent-tools/outputs";
-import {
-  OrchestratorCapabilitiesInputSchema,
-  type OrchestratorCapabilitiesInput,
-} from "@opensteer/agent-tools/tools";
+import type { AiAccountModel, AiAccountStatus } from "@opensteer/agent-tools/outputs";
+import type { AiAccountListInput } from "@opensteer/agent-tools/tools";
 import type { HarnessInstanceCatalog, HarnessModelDescriptor } from "@opensteer/protocol";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -130,8 +121,8 @@ export async function delegationPlacement(
   if (candidates.length === 0) {
     throw badRequest(
       request.harnessInstanceId
-        ? `${request.harnessInstanceId} is not an enabled AI engine on ${environment.name}. orchestrator_capabilities lists the engines a task there can run.`
-        : `${environment.name} has no enabled ${parentHarness.driverKind} AI engine on ${parentHarness.sourceId}. Name another engine with harnessInstanceId; orchestrator_capabilities lists the engines a task there can run.`,
+        ? `${request.harnessInstanceId} is not an enabled AI account on ${environment.name}. opensteer_ai_account_list lists the accounts a task there can run.`
+        : `${environment.name} has no enabled ${parentHarness.driverKind} AI account on ${parentHarness.sourceId}. Name another with aiAccountId; opensteer_ai_account_list lists the accounts a task there can run.`,
     );
   }
   const inspected = await Promise.all(
@@ -188,163 +179,114 @@ export async function delegationPlacement(
 }
 
 /**
- * The engine profiles an agent may name for new delegated work, each with the
- * models its latest catalog offers. Each profile shows a bounded share and one
- * inspection a bounded total, and says how many more it has, so the largest
+ * The AI accounts an agent may name for new delegated work, each with the
+ * models its latest catalog offers. Each account shows a bounded share and one
+ * listing a bounded total, and says how many more it has, so the largest
  * reply fits the agent's tool budget.
  */
 type DelegationEngine = Pick<
   HarnessInstanceRecord,
   "driverKind" | "enabled" | "environmentId" | "id" | "name" | "runtimeRevision"
 >;
-type DelegationModelPage = {
-  readonly harnessInstanceId: HarnessInstanceId;
-  readonly cursor?: string | undefined;
-};
 type EngineCatalogStore = Pick<OpensteerStore, "listHarnessCatalogs">;
 interface EngineDiscovery {
-  readonly input: OrchestratorCapabilitiesInput;
+  readonly input: Pick<AiAccountListInput, "query" | "aiAccountId" | "cursor">;
   readonly connected: (id: EnvironmentId) => boolean;
   readonly canRun: (id: EnvironmentId, driverKind: HarnessId) => boolean;
 }
-// Reserve the rest of the durable tool-event ceiling for environment/profile metadata.
+export interface DiscoveredEngine {
+  readonly id: HarnessInstanceId;
+  readonly environmentId: EnvironmentId;
+  readonly driverKind: HarnessId;
+  readonly enabled: boolean;
+  readonly name: string;
+  readonly status: AiAccountStatus;
+  readonly detail?: string;
+  readonly lightModel?: DelegationModelChoice;
+  readonly models: readonly AiAccountModel[];
+  readonly modelsOmitted: number;
+  readonly modelsNextCursor?: string;
+}
+// Reserve the rest of the durable tool-event ceiling for account metadata.
 const discoveryModelBytes = 256 * 1_024;
 
-export function delegationEngines(
-  store: EngineCatalogStore,
-  harnesses: readonly DelegationEngine[],
-  discovery: EngineDiscovery,
-): Promise<EnvironmentHarnessSummary[]>;
-export function delegationEngines(
-  store: EngineCatalogStore,
-  harnesses: readonly DelegationEngine[],
-  modelPage?: DelegationModelPage,
-): Promise<AgentHarnessSummary[]>;
 export async function delegationEngines(
   store: EngineCatalogStore,
   harnesses: readonly DelegationEngine[],
-  selection?: DelegationModelPage | EngineDiscovery,
-): Promise<AgentHarnessSummary[] | EnvironmentHarnessSummary[]> {
+  discovery: EngineDiscovery,
+): Promise<DiscoveredEngine[]> {
   const catalogs = await store.listHarnessCatalogs(
     [...new Set(harnesses.map(({ environmentId }) => environmentId))],
     harnesses.map(({ id }) => id),
   );
-  if (selection && "input" in selection) {
-    const discovery = {
-      ...selection,
-      input: OrchestratorCapabilitiesInputSchema.parse(selection.input),
-    };
-    const query = [
-      ...new Set(discovery.input.query?.toLowerCase().split(/\s+/).filter(Boolean) ?? []),
-    ].sort();
-    let remaining = 40;
-    let remainingBytes = discoveryModelBytes;
-    return harnesses.map(({ driverKind, enabled, environmentId, id, name, runtimeRevision }) => {
-      const catalog = catalogs.find(
-        (row) => row.environmentId === environmentId && row.harnessInstanceId === id,
-      )?.catalog;
-      const status = !enabled
-        ? "disabled"
-        : !discovery.connected(environmentId)
-          ? "disconnected"
-          : !discovery.canRun(environmentId, driverKind)
-            ? "unavailable"
-            : (catalog?.status ?? "unreported");
-      const offered =
-        status === "ready"
-          ? catalog!.models.filter((model) => {
-              const text =
-                `${model.modelId} ${model.providerId} ${model.displayName} ${name} ${driverKind}`.toLowerCase();
-              return (
-                model.unavailableReason === undefined && query.every((word) => text.includes(word))
-              );
-            })
-          : [];
-      const focused = discovery.input.harnessInstanceId === id;
-      const hash = focused
-        ? createHash("sha256")
-            .update(JSON.stringify({ query, status, name, driverKind, runtimeRevision, catalog }))
-            .digest("hex")
-        : "";
-      const start = focused ? modelPageStart(discovery.input.cursor, id, hash, offered.length) : 0;
-      const candidates = offered.slice(start, start + Math.min(8, remaining));
-      const projected = candidates.map(({ modelId, providerId, displayName, options }) => ({
-        modelId,
-        providerId,
-        ...(displayName === modelId ? {} : { displayName }),
-        ...(options.length
-          ? {
-              options: options.map((option) =>
-                option.type === "toggle"
-                  ? {
-                      id: option.id,
-                      values: [false, true] as [false, true],
-                      default: option.defaultValue,
-                    }
-                  : {
-                      id: option.id,
-                      values: option.values.map(({ value }) => value),
-                      ...(option.defaultValue === undefined
-                        ? {}
-                        : { default: option.defaultValue }),
-                    },
-              ),
-            }
-          : {}),
-      }));
-      const shown: EnvironmentHarnessSummary["models"] = [];
-      for (const model of projected) {
-        const bytes = Buffer.byteLength(JSON.stringify(model));
-        if (bytes > discoveryModelBytes)
-          throw new OpensteerError({
-            code: "resource_exhausted",
-            message: `${name}: discovery options for ${model.modelId} exceed the model metadata limit`,
-          });
-        if (bytes > remainingBytes) break;
-        shown.push(model);
-        remainingBytes -= bytes;
-      }
-      remaining -= shown.length;
-      const next = start + shown.length;
-      return {
-        driverKind,
-        enabled,
-        environmentId,
-        id,
-        name,
-        status,
-        ...(catalog?.detail && status === catalog.status && status !== "ready"
-          ? { detail: catalog.detail }
-          : {}),
-        ...(status === "ready" && catalog?.status === "ready" && catalog.lightModel
-          ? { lightModel: catalog.lightModel }
-          : {}),
-        models: shown,
-        modelsOmitted: offered.length - next,
-        ...(focused && next < offered.length
-          ? { modelsNextCursor: modelPageCursor(id, hash, next) }
-          : {}),
-      };
-    });
-  }
-  const modelPage = selection;
-  let remaining = agentInspectionModelsShown;
-  return harnesses.map(({ driverKind, enabled, environmentId, id, name }) => {
+  const query = [
+    ...new Set(discovery.input.query?.toLowerCase().split(/\s+/).filter(Boolean) ?? []),
+  ].sort();
+  let remaining = 40;
+  let remainingBytes = discoveryModelBytes;
+  return harnesses.map(({ driverKind, enabled, environmentId, id, name, runtimeRevision }) => {
     const catalog = catalogs.find(
-      (record) => record.environmentId === environmentId && record.harnessInstanceId === id,
+      (row) => row.environmentId === environmentId && row.harnessInstanceId === id,
     )?.catalog;
+    const status = !enabled
+      ? "disabled"
+      : !discovery.connected(environmentId)
+        ? "disconnected"
+        : !discovery.canRun(environmentId, driverKind)
+          ? "unavailable"
+          : (catalog?.status ?? "unreported");
     const offered =
-      catalog?.status === "ready"
-        ? catalog.models.filter((model) => model.unavailableReason === undefined)
+      status === "ready"
+        ? catalog!.models.filter((model) => {
+            const text =
+              `${model.modelId} ${model.providerId} ${model.displayName} ${name} ${driverKind}`.toLowerCase();
+            return (
+              model.unavailableReason === undefined && query.every((word) => text.includes(word))
+            );
+          })
         : [];
-    const focused = modelPage?.harnessInstanceId === id;
-    const catalogHash = focused
+    const focused = discovery.input.aiAccountId === id;
+    const hash = focused
       ? createHash("sha256")
-          .update(JSON.stringify({ status: catalog?.status, models: catalog?.models }))
+          .update(JSON.stringify({ query, status, name, driverKind, runtimeRevision, catalog }))
           .digest("hex")
       : "";
-    const start = focused ? modelPageStart(modelPage?.cursor, id, catalogHash, offered.length) : 0;
-    const shown = offered.slice(start, start + Math.min(agentHarnessModelsShown, remaining));
+    const start = focused ? modelPageStart(discovery.input.cursor, id, hash, offered.length) : 0;
+    const candidates = offered.slice(start, start + Math.min(8, remaining));
+    const projected = candidates.map(({ modelId, providerId, displayName, options }) => ({
+      modelId,
+      providerId,
+      ...(displayName === modelId ? {} : { displayName }),
+      ...(options.length
+        ? {
+            options: options.map((option) =>
+              option.type === "toggle"
+                ? {
+                    id: option.id,
+                    values: [false, true] as [false, true],
+                    default: option.defaultValue,
+                  }
+                : {
+                    id: option.id,
+                    values: option.values.map(({ value }) => value),
+                    ...(option.defaultValue === undefined ? {} : { default: option.defaultValue }),
+                  },
+            ),
+          }
+        : {}),
+    }));
+    const shown: AiAccountModel[] = [];
+    for (const model of projected) {
+      const bytes = Buffer.byteLength(JSON.stringify(model));
+      if (bytes > discoveryModelBytes)
+        throw new OpensteerError({
+          code: "resource_exhausted",
+          message: `${name}: discovery options for ${model.modelId} exceed the model metadata limit`,
+        });
+      if (bytes > remainingBytes) break;
+      shown.push(model);
+      remainingBytes -= bytes;
+    }
     remaining -= shown.length;
     const next = start + shown.length;
     return {
@@ -352,15 +294,19 @@ export async function delegationEngines(
       enabled,
       environmentId,
       id,
-      ...(enabled && catalog?.status === "ready" && catalog.lightModel
+      name,
+      status,
+      ...(catalog?.detail && status === catalog.status && status !== "ready"
+        ? { detail: catalog.detail }
+        : {}),
+      ...(status === "ready" && catalog?.status === "ready" && catalog.lightModel
         ? { lightModel: catalog.lightModel }
         : {}),
-      models: shown.map(({ modelId, providerId }): AgentModelSummary => ({ modelId, providerId })),
+      models: shown,
       modelsOmitted: offered.length - next,
       ...(focused && next < offered.length
-        ? { modelsNextCursor: modelPageCursor(id, catalogHash, next) }
+        ? { modelsNextCursor: modelPageCursor(id, hash, next) }
         : {}),
-      name,
     };
   });
 }

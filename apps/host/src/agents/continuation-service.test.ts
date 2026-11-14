@@ -444,7 +444,7 @@ describe("continuationMessage", () => {
     expect(message).not.toContain("open a fresh Browser Session");
     expect(message).not.toContain("because Opensteer Passwords stopped answering");
     expect(message).not.toContain("the user did not sign in another way");
-    expect(message).toContain("use_saved_login again");
+    expect(message).toContain("saved_login_request again");
   });
   it("uses the live personal ref on every surface without inventing a session", async () => {
     const request = RequestSchema.parse({
@@ -475,7 +475,7 @@ describe("continuationMessage", () => {
     expect(message).toContain("type");
     expect(message).toContain("fillLogin");
     expect(message).not.toContain("Browser Session undefined");
-    expect(await continuationMessage(request, inventory())).toContain("use_saved_login again");
+    expect(await continuationMessage(request, inventory())).toContain("saved_login_request again");
   });
   it("does not claim access when the Mac has been removed", async () => {
     await expect(

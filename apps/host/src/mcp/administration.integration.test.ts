@@ -48,7 +48,9 @@ function mcp(dependencies: AdministrationDependencies, userId: UserId) {
     new AdministrationToolHandlers(
       new AdministrationService(dependencies, vi.fn()),
       async () => [],
+      () => true,
     ),
+    vi.fn(),
   );
   const service = new OpensteerMcpService({
     callers: { authenticate: async () => caller },
@@ -58,8 +60,8 @@ function mcp(dependencies: AdministrationDependencies, userId: UserId) {
   });
   return {
     service,
-    call: async (name: string, input: Record<string, unknown>) => {
-      const result = await service.callTool("token", name, input, { operationKey: randomUUID() });
+    call: async (name: string, input: Record<string, unknown>, operationKey = randomUUID()) => {
+      const result = await service.callTool("token", name, input, { operationKey });
       if (typeof result === "string") throw new Error(`${name} returned text, not a record`);
       return result;
     },
@@ -86,13 +88,13 @@ async function retryAfterPersonChange(
   observe: () => Promise<unknown>,
   different: Record<string, unknown>,
 ) {
-  const keyed = { ...input, operationKey: randomUUID() };
-  const original = await agent.call(name, keyed);
+  const key = randomUUID();
+  const original = await agent.call(name, input, key);
   await change();
   const afterPerson = await observe();
-  expect(await agent.call(name, keyed)).toEqual(original);
+  expect(await agent.call(name, input, key)).toEqual(original);
   expect(await observe()).toEqual(afterPerson);
-  await expect(agent.call(name, { ...keyed, ...different })).rejects.toMatchObject({
+  await expect(agent.call(name, { ...input, ...different }, key)).rejects.toMatchObject({
     code: "conflict",
   });
   expect(await observe()).toEqual(afterPerson);
@@ -101,9 +103,9 @@ async function retryAfterPersonChange(
 describeStore("MCP administration", (it) => {
   for (const action of [
     "rename",
-    "set_enabled",
+    "disable",
     "set_default",
-    "configure_model",
+    "set_model_limits",
     "remember_execution",
     "set_time_zone",
     "computer_rename",
@@ -146,8 +148,8 @@ describeStore("MCP administration", (it) => {
         environmentId: run.environmentId,
         harnessInstanceId: run.harnessInstance.id,
       };
-      let name = "settings_write";
-      let input: Record<string, unknown> = { action, ...common };
+      let name = "opensteer_ai_account_update";
+      let input: Record<string, unknown> = { action, aiAccountId: run.harnessInstance.id };
       let different: Record<string, unknown> = {};
       let person: HostApiCommand;
       let observe: () => Promise<unknown> = () =>
@@ -158,9 +160,8 @@ describeStore("MCP administration", (it) => {
           different = { name: "Changed" };
           person = { type: "harness.rename", ...common, name: "B", idempotencyKey: randomUUID() };
           break;
-        case "set_enabled":
-          input.enabled = false;
-          different = { enabled: true };
+        case "disable":
+          different = { action: "enable" };
           person = {
             type: "harness.enabled.set",
             ...common,
@@ -169,19 +170,18 @@ describeStore("MCP administration", (it) => {
           };
           break;
         case "set_default":
-          input.harnessInstanceId = other.id;
-          different = { harnessInstanceId: run.harnessInstance.id };
+          input.aiAccountId = other.id;
+          different = { aiAccountId: run.harnessInstance.id };
           person = { type: "harness.default.set", ...common, idempotencyKey: randomUUID() };
           observe = () => f.store.listHarnessInstances({ environmentIds: [run.environmentId] });
           break;
-        case "configure_model":
+        case "set_model_limits":
           await f.store.updateHarnessInstance({
             id: run.harnessInstance.id,
             config: { models: { test: { contextWindow: 1000 } } },
           });
-          input.nativeModelId = "test";
-          input.settings = { contextWindow: 2000 };
-          different = { settings: { contextWindow: 4000 } };
+          input.modelLimits = { modelId: "test", limits: { contextWindow: 2000 } };
+          different = { modelLimits: { modelId: "test", limits: { contextWindow: 4000 } } };
           person = {
             type: "harness.model.configure",
             ...common,
@@ -191,7 +191,8 @@ describeStore("MCP administration", (it) => {
           };
           break;
         case "remember_execution":
-          input = { action, accessMode: "approval-required" };
+          name = "opensteer_defaults_update";
+          input = { accessMode: "approval-required" };
           different = { accessMode: "full-access" };
           person = {
             type: "execution.preferences.remember",
@@ -201,7 +202,8 @@ describeStore("MCP administration", (it) => {
           observe = () => f.store.getExecutionPreferences(run.userId);
           break;
         case "set_time_zone":
-          input = { action, timeZone: "UTC" };
+          name = "opensteer_defaults_update";
+          input = { timeZone: "UTC" };
           different = { timeZone: "Europe/Paris" };
           person = {
             type: "viewer.timeZone.update",
@@ -211,8 +213,8 @@ describeStore("MCP administration", (it) => {
           observe = () => f.store.notificationState.timeZoneFor(run.userId);
           break;
         case "computer_rename":
-          name = "computer_write";
-          input = { action: "rename", machineId: run.runnerId, name: "A" };
+          name = "computer_update";
+          input = { computerId: run.runnerId, name: "A" };
           different = { name: "Changed" };
           person = {
             type: "machine.rename",
@@ -334,19 +336,19 @@ describeStore("MCP administration", (it) => {
       run.userId,
     );
     try {
-      const listed = await agent.call("browser_profile_write", { action: "list" });
+      const listed = await agent.call("browser_profile_list", {});
       expect(listed.profiles).toEqual([
         {
           id: profile.id,
           name: "Private",
-          home: { runnerId: browserRunnerId, name: "Browser", reachable: false },
+          home: { computerId: browserRunnerId, name: "Browser", reachable: false },
         },
       ]);
       expect(JSON.stringify(listed)).not.toContain("storageInstanceId");
       await retryAfterPersonChange(
         agent,
-        "browser_profile_write",
-        { action: "rename", profileId: profile.id, name: "A" },
+        "browser_profile_update",
+        { profileId: profile.id, name: "A" },
         () => browser.renameProfile({ ownerId: run.userId, profileId: profile.id, name: "B" }),
         () => f.store.getBrowserProfile(profile.id, run.userId),
         { name: "Changed" },
@@ -362,16 +364,16 @@ describeStore("MCP administration", (it) => {
       const history = () => f.store.browserHistory.list(profile.id, run.userId);
       await retryAfterPersonChange(
         agent,
-        "browser_profile_write",
-        { action: "clear_history", profileId: profile.id },
+        "browser_profile_remove",
+        { target: "history", profileId: profile.id },
         visit,
         history,
-        { action: "remove_history", url: "https://example.test/history" },
+        { target: "history_url", url: "https://example.test/history" },
       );
       await retryAfterPersonChange(
         agent,
-        "browser_profile_write",
-        { action: "remove_history", profileId: profile.id, url: "https://example.test/history" },
+        "browser_profile_remove",
+        { target: "history_url", profileId: profile.id, url: "https://example.test/history" },
         visit,
         history,
         { url: "https://example.test/other" },
@@ -450,8 +452,8 @@ describeStore("MCP administration", (it) => {
     try {
       await retryAfterPersonChange(
         agent,
-        "browser_profile_write",
-        { action: "delete", profileId: profile.id },
+        "browser_profile_remove",
+        { target: "profile", profileId: profile.id },
         () =>
           f.store.createBrowserProfile({
             ownerId: run.userId,
@@ -459,12 +461,12 @@ describeStore("MCP administration", (it) => {
             idempotencyKey: "new-profile",
           }),
         () => f.store.listBrowserProfiles(run.userId),
-        { action: "rename", name: "Changed" },
+        { target: "history" },
       );
       await retryAfterPersonChange(
         agent,
-        "browser_profile_write",
-        { action: "remove_site", site: site.site },
+        "browser_profile_remove",
+        { target: "site", site: site.site },
         () => sources.upsertGrant(site),
         () =>
           f.database
@@ -501,8 +503,8 @@ describeStore("MCP administration", (it) => {
     try {
       await retryAfterPersonChange(
         agent,
-        "computer_write",
-        { action: "stop_session", sessionId },
+        "computer_remove",
+        { target: "session", sessionId },
         () =>
           f.store.reserveShellSession({
             sessionId,
@@ -608,8 +610,8 @@ describeStore("MCP administration", (it) => {
     try {
       await retryAfterPersonChange(
         agent,
-        "computer_write",
-        { action: "revoke", machineId: targetRunnerId },
+        "computer_remove",
+        { target: "computer", computerId: targetRunnerId },
         () => f.store.rememberExecutionChoice(run.userId, { accessMode: "approval-required" }),
         () =>
           f.database
@@ -617,7 +619,7 @@ describeStore("MCP administration", (it) => {
             .select(["revokedAt", "connectionGeneration"])
             .where("id", "=", targetRunnerId)
             .executeTakeFirstOrThrow(),
-        { machineId: createId("runner") },
+        { computerId: createId("runner") },
       );
       expect(revoked).toHaveBeenCalledOnce();
       expect(abandonSession).toHaveBeenCalledWith(session.id);
@@ -665,35 +667,30 @@ describeStore("MCP administration", (it) => {
       const observe = () => channels.dashboard(run.userId);
       await retryAfterPersonChange(
         agent,
-        "channel_manage",
-        { action: "pause", connectionId: configured.connection.id },
+        "opensteer_messaging_bridge_update",
+        { bridgeId: configured.connection.id, paused: true },
         () => channels.setConnectionStatus(configured.connection.id, run.userId, "connected"),
         observe,
-        { action: "resume" },
+        { paused: false },
       );
       await retryAfterPersonChange(
         agent,
-        "channel_manage",
-        { action: "resume", connectionId: configured.connection.id },
+        "opensteer_messaging_bridge_update",
+        { bridgeId: configured.connection.id, paused: false },
         () => channels.setConnectionStatus(configured.connection.id, run.userId, "paused"),
         observe,
-        { action: "pause" },
+        { paused: true },
       );
       const resumed = (await channels.dashboard(run.userId)).bindings[0]!;
       expect(resumed.accessPolicy).toEqual(configured.binding.accessPolicy);
       expect(resumed.executionPolicy).toEqual(configured.binding.executionPolicy);
-      const revoke = {
-        action: "revoke_binding",
-        bindingId: configured.binding.id,
-        operationKey: "revoke-binding-once",
-      };
       await retryAfterPersonChange(
         agent,
-        "channel_manage",
-        revoke,
+        "opensteer_messaging_bridge_remove",
+        { routeId: configured.binding.id },
         () => channels.setConnectionStatus(configured.connection.id, run.userId, "connected"),
         observe,
-        { action: "pause", connectionId: configured.connection.id },
+        { routeId: randomUUID() },
       );
       expect(
         (
@@ -748,7 +745,7 @@ describeStore("MCP administration", (it) => {
       run.userId,
     );
     try {
-      await agent.call("plugin_manage", { action: "list" });
+      await agent.call("opensteer_plugin_list", {});
       expect(
         (
           await f.database
@@ -760,19 +757,19 @@ describeStore("MCP administration", (it) => {
       ).toBe("ready");
       await retryAfterPersonChange(
         agent,
-        "plugin_manage",
-        { action: "disable", pluginId },
+        "opensteer_plugin_update",
+        { pluginId, enabled: false },
         () => setPluginEnabled(platform, run.userId, pluginId, true),
         () => platform.settings.detail(run.userId, { kind: "plugin", pluginId }),
-        { action: "enable" },
+        { enabled: true },
       );
       await retryAfterPersonChange(
         agent,
-        "plugin_manage",
-        { action: "enable", pluginId },
+        "opensteer_plugin_update",
+        { pluginId, enabled: true },
         () => setPluginEnabled(platform, run.userId, pluginId, false),
         () => platform.settings.detail(run.userId, { kind: "plugin", pluginId }),
-        { action: "disable" },
+        { enabled: false },
       );
     } finally {
       await agent.service.close();
@@ -832,8 +829,8 @@ describeStore("MCP administration", (it) => {
       await manifest("Agent update");
       await retryAfterPersonChange(
         agent,
-        "plugin_manage",
-        { action: "update", pluginId, directory: source },
+        "opensteer_plugin_install",
+        { pluginId, directory: source },
         async () => {
           await manifest("Person update");
           await platform.installAgentPlugin({
@@ -864,8 +861,8 @@ describeStore("MCP administration", (it) => {
       store.specialists.setRemovalHandler(async () => {});
       await retryAfterPersonChange(
         agent,
-        "plugin_manage",
-        { action: "remove_specialist", specialistId: specialist.id },
+        "opensteer_plugin_remove",
+        { target: "specialist", specialistId: specialist.id },
         () =>
           store.specialists.add({
             pluginId,
@@ -876,8 +873,8 @@ describeStore("MCP administration", (it) => {
       );
       await retryAfterPersonChange(
         agent,
-        "plugin_manage",
-        { action: "remove", pluginId },
+        "opensteer_plugin_remove",
+        { target: "plugin", pluginId },
         () =>
           store.plugins.install({
             id: pluginId,
@@ -954,8 +951,8 @@ describeStore("MCP administration", (it) => {
     try {
       await retryAfterPersonChange(
         agent,
-        "integration_manage",
-        { action: "disconnect", connectionId },
+        "integration_remove",
+        { target: "account", connectionId },
         async () => {
           connectionId = createIntegrationId("connection");
           await connect(false);
@@ -1065,8 +1062,8 @@ describeStore("MCP administration", (it) => {
     try {
       await retryAfterPersonChange(
         agent,
-        "integration_manage",
-        { action: "disconnect", connectionId },
+        "integration_remove",
+        { target: "account", connectionId },
         () =>
           f.database
             .updateTable("integrationConnections")
@@ -1078,8 +1075,8 @@ describeStore("MCP administration", (it) => {
       );
       await retryAfterPersonChange(
         agent,
-        "integration_manage",
-        { action: "uninstall", installationId },
+        "integration_remove",
+        { target: "integration", installationId },
         install,
         () => store.listInstallations(),
         { installationId: createIntegrationId("installation") },
@@ -1143,8 +1140,8 @@ describeStore("MCP administration", (it) => {
     try {
       await retryAfterPersonChange(
         agent,
-        "integration_manage",
-        { action: "revoke_grant", grantId },
+        "integration_remove",
+        { target: "grant", grantId },
         async () => {
           await f.database
             .insertInto("integrationGrants")

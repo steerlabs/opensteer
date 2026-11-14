@@ -1341,7 +1341,7 @@ function interrupted(): Settlement {
   return { status: "fulfilled", response: { outcome: "interrupted" } };
 }
 /**
- * What a `use_saved_login` call learns from its Request without a live lease:
+ * What a `saved_login_request` call learns from its Request without a live lease:
  * an approval whose reference is gone reads as expired.
  */
 export function savedLoginRequestResult(request: Request): SavedLoginResult {

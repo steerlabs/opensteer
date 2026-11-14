@@ -254,7 +254,7 @@ describe("delegationPlacement on another machine", () => {
     ).rejects.toMatchObject({
       code: "bad_request",
       message:
-        "Build machine has no enabled native AI engine on native. Name another engine with harnessInstanceId; orchestrator_capabilities lists the engines a task there can run.",
+        "Build machine has no enabled native AI account on native. Name another with aiAccountId; opensteer_ai_account_list lists the accounts a task there can run.",
     });
   });
   it("names every compatible choice and requires an explicit profile when several qualify", async () => {

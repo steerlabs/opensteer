@@ -97,10 +97,10 @@ function fixture() {
     thread_send: vi.fn(async () => {
       throw new Error("Unexpected effect");
     }),
-    plugin_install: vi.fn(async () => {
+    opensteer_plugin_install: vi.fn(async () => {
       throw new Error("Unexpected effect");
     }),
-    integration_search: vi.fn(async () => ({ total: 0, nextOffset: null })),
+    integration_search: vi.fn(async () => ({ total: 0, nextCursor: null })),
   } as unknown as AgentToolHandlers;
   const changes = new Set<
     Parameters<import("@opensteer/orchestration").RealtimeHub["observe"]>[0]
@@ -245,7 +245,7 @@ describe("Opensteer MCP spine", () => {
     });
     const pending = { requestId, kind: "browser.access", status: "pending", replayed: false };
     Object.assign(f.handlers, {
-      use_saved_login: async () => ({
+      saved_login_request: async () => ({
         status: "pending",
         site: "https://example.com",
         requestId,
@@ -311,7 +311,7 @@ describe("Opensteer MCP spine", () => {
                   }
                 : state === "settled"
                   ? {
-                      name: "use_saved_login",
+                      name: "saved_login_request",
                       arguments: { site: "example.com", reason: "Check email" },
                     }
                   : {
@@ -909,7 +909,7 @@ describe("Opensteer MCP spine", () => {
     const client = await connect(f.url, "connection");
     try {
       const names = (await client.listTools()).tools.map((t) => t.name);
-      expect(names).toContain("settings_write");
+      expect(names).toContain("opensteer_defaults_update");
       expect(names).toContain("computer_list");
       expect(names).toContain("pending_request");
     } finally {
@@ -925,13 +925,13 @@ describe("Opensteer MCP spine", () => {
       mimeType: "image/png",
       _meta: { "codex/imageDetail": "original" as const },
     };
-    f.handlers.computer = async () => ({
+    f.handlers.computer_use = async () => ({
       content: [{ ...image, _meta: { ...image._meta, surpriseSecret: "hidden" } }],
     });
     const client = await connect(f.url, "run");
     try {
       const result = await client.callTool(
-        { name: "computer", arguments: { code: "observe" } },
+        { name: "computer_use", arguments: { code: "observe" } },
         undefined,
         { timeout: 5000 },
       );
@@ -953,7 +953,7 @@ describe("Opensteer MCP spine", () => {
       expect(names).toContain("integration_search");
       expect(names).toContain("thread_wait");
       expect(client.getInstructions()).toBeUndefined();
-      expect(names).not.toContain("computer");
+      expect(names).not.toContain("computer_use");
       expect(names).not.toContain("person_show");
       await expect(
         f.service.callTool("program", "person_message", { message: "hi" }, { operationKey: "p" }),
@@ -1071,10 +1071,11 @@ describe("Opensteer MCP spine", () => {
       const names = (await client.listTools(undefined, { timeout: 5000 })).tools.map((t) => t.name);
       expect(names).toContain("delegate_task");
       expect(names).toContain("thread_wait");
-      expect(names).not.toContain("browser_profile_write");
-      expect(names).not.toContain("computer");
-      expect(names).not.toContain("use_saved_login");
-      expect(names).not.toContain("copy_chrome_cookies");
+      expect(names).toContain("browser_profile_list");
+      expect(names).not.toContain("browser_profile_remove");
+      expect(names).not.toContain("computer_use");
+      expect(names).not.toContain("saved_login_request");
+      expect(names).not.toContain("chrome_cookies_request");
       expect(names).not.toContain("person_message");
     } finally {
       await client.close();
@@ -1135,12 +1136,12 @@ describe("Opensteer MCP spine", () => {
     await expect(
       f.service.callTool(
         "run",
-        "plugin_install",
+        "opensteer_plugin_install",
         { directory: "plugin" },
         { operationKey: "settings" },
       ),
     ).rejects.toThrow("requires full-access");
-    expect(f.handlers.plugin_install).not.toHaveBeenCalled();
+    expect(f.handlers.opensteer_plugin_install).not.toHaveBeenCalled();
   });
   it("checks input before running a handler", async () => {
     const f = fixture();

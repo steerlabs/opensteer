@@ -1,5 +1,5 @@
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
-import { OrchestratorCapabilitiesSchema } from "@opensteer/agent-tools/outputs";
+import { AiAccountListOutputSchema } from "@opensteer/agent-tools/outputs";
 import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
@@ -432,15 +432,15 @@ integration("personal task delegation lifecycle", () => {
     const mcp = await startDiscoveryMcp(fixture.token);
     try {
       const result = await mcp.client.callTool({
-        name: "orchestrator_capabilities",
+        name: "opensteer_ai_account_list",
         arguments: {
-          harnessInstanceId: fixture.lentHarnessInstanceId,
+          aiAccountId: fixture.lentHarnessInstanceId,
           query: "sol",
         },
       });
       expect(result.isError).not.toBe(true);
-      const page = OrchestratorCapabilitiesSchema.parse(result.structuredContent);
-      expect(page.harnesses[0]).toMatchObject({
+      const page = AiAccountListOutputSchema.parse(result.structuredContent);
+      expect(page.accounts[0]).toMatchObject({
         status: "authentication-required",
         detail: "Reconnect this account",
         models: [],
@@ -505,9 +505,9 @@ integration("personal task delegation lifecycle", () => {
       const bytes: number[] = [];
       do {
         const result = await mcp.client.callTool({
-          name: "orchestrator_capabilities",
+          name: "opensteer_ai_account_list",
           arguments: {
-            harnessInstanceId: fixture.lentHarnessInstanceId,
+            aiAccountId: fixture.lentHarnessInstanceId,
             ...(cursor
               ? {
                   cursor,
@@ -516,11 +516,11 @@ integration("personal task delegation lifecycle", () => {
           },
         });
         expect(result.isError).not.toBe(true);
-        const page = OrchestratorCapabilitiesSchema.parse(result.structuredContent);
+        const page = AiAccountListOutputSchema.parse(result.structuredContent);
         const size = Buffer.byteLength(JSON.stringify(page));
         expect(size).toBeLessThan(432 * 1_024);
         bytes.push(size);
-        const engine = page.harnesses[0]!;
+        const engine = page.accounts[0]!;
         expect(engine.models.length).toBeGreaterThan(0);
         for (const model of engine.models) {
           expect(model.options).toEqual(
@@ -531,7 +531,7 @@ integration("personal task delegation lifecycle", () => {
           );
           seen.push(model.modelId);
         }
-        cursor = engine.modelsNextCursor;
+        cursor = page.nextCursor;
       } while (cursor);
       expect(seen).toEqual(["large-0", "large-1", "large-2", "large-3"]);
       acceptanceEvidence.push({
@@ -604,12 +604,12 @@ integration("personal task delegation lifecycle", () => {
       const mcp = await startDiscoveryMcp(caller.token);
       try {
         const listed = await mcp.client.listTools();
-        expect(listed.tools.map(({ name }) => name)).toContain("environment_list");
+        expect(listed.tools.map(({ name }) => name)).toContain("computer_list");
         expect(listed.tools.map(({ name }) => name)).not.toContain("workspace_list");
-        const accounts = OrchestratorCapabilitiesSchema.parse(
+        const accounts = AiAccountListOutputSchema.parse(
           (
             await mcp.client.callTool({
-              name: "orchestrator_capabilities",
+              name: "opensteer_ai_account_list",
               arguments: {
                 query: "sol OPENAI",
               },
@@ -617,21 +617,21 @@ integration("personal task delegation lifecycle", () => {
           ).structuredContent,
         );
         expect(
-          accounts.harnesses
+          accounts.accounts
             .filter(({ models }) =>
               models.some(({ modelId }) => modelId === testModelSelection.modelId),
             )
-            .map(({ id }) => id)
+            .map(({ aiAccountId }) => aiAccountId)
             .sort(),
         ).toEqual([fixture.lentHarnessInstanceId]);
         const threadPages = vi.spyOn(store, "ownerThreadPageForOwner");
         let discovery: Awaited<ReturnType<typeof mcp.client.callTool>>;
         try {
           discovery = await mcp.client.callTool({
-            name: "orchestrator_capabilities",
+            name: "opensteer_ai_account_list",
             arguments: {
               query: "sol OPENAI",
-              harnessInstanceId: fixture.lentHarnessInstanceId,
+              aiAccountId: fixture.lentHarnessInstanceId,
             },
           });
           expect(threadPages).not.toHaveBeenCalled();
@@ -639,8 +639,8 @@ integration("personal task delegation lifecycle", () => {
           threadPages.mockRestore();
         }
         expect(discovery.isError).not.toBe(true);
-        const page = OrchestratorCapabilitiesSchema.parse(discovery.structuredContent);
-        const engine = page.harnesses[0]!;
+        const page = AiAccountListOutputSchema.parse(discovery.structuredContent);
+        const engine = page.accounts[0]!;
         const model = engine.models[0]!;
         expect(model.modelId).toBe(testModelSelection.modelId);
         expect(model.options).toEqual([
@@ -667,7 +667,7 @@ integration("personal task delegation lifecycle", () => {
           name: "delegate_task",
           arguments: {
             task: "Have Sol review this",
-            harnessInstanceId: engine.id,
+            harnessInstanceId: engine.aiAccountId,
             model: choice,
           },
         });
@@ -810,7 +810,7 @@ integration("personal task delegation lifecycle", () => {
       callTool: (call: { arguments: Record<string, unknown>; name: string }) => {
         const { modelPage, ...rest } = call.arguments;
         return mcp.client.callTool({
-          name: "orchestrator_capabilities",
+          name: "opensteer_ai_account_list",
           arguments: {
             ...rest,
             ...(modelPage as Record<string, unknown> | undefined),
@@ -822,77 +822,73 @@ integration("personal task delegation lifecycle", () => {
       const seen = new Map<
         string,
         {
-          environmentId: string;
+          computerId: string;
           models: readonly {
             modelId: string;
           }[];
           modelsOmitted: number;
         }
       >();
-      let harnessCursor: string | undefined;
+      let accountCursor: string | undefined;
       for (;;) {
         const result = await discoveryClient.callTool({
-          arguments: harnessCursor
+          arguments: accountCursor
             ? {
-                harnessCursor,
+                cursor: accountCursor,
               }
             : {},
-          name: "orchestrator_capabilities",
+          name: "opensteer_ai_account_list",
         });
         if (result.isError) throw new Error(JSON.stringify(result.content));
         const page = result.structuredContent as {
           delegationDefault: {
-            environmentId: string;
-            harnessInstanceId: string;
+            aiAccountId: string;
             model: {
               modelId: string;
               providerId: string;
             };
           };
-          harnesses: {
-            id: string;
-            environmentId: string;
+          accounts: {
+            aiAccountId: string;
+            computerId: string;
             models: {
               modelId: string;
             }[];
             modelsOmitted: number;
           }[];
-          harnessesNextCursor?: string;
+          nextCursor?: string;
         };
         expect(page.delegationDefault).toMatchObject({
-          environmentId: fixture.mainEnvironmentId,
-          harnessInstanceId: fixture.mainHarnessInstanceId,
+          aiAccountId: fixture.mainHarnessInstanceId,
           model: {
             modelId: testModelSelection.modelId,
             providerId: testModelSelection.providerId,
           },
         });
-        if (!harnessCursor) expect(page.harnesses.map(({ id }) => id)).not.toContain(targetId);
-        expect(page.harnesses.every(({ models }) => models.length <= 8)).toBe(true);
+        if (!accountCursor)
+          expect(page.accounts.map(({ aiAccountId }) => aiAccountId)).not.toContain(targetId);
+        expect(page.accounts.every(({ models }) => models.length <= 8)).toBe(true);
         expect(
-          page.harnesses.reduce((count, { models }) => count + models.length, 0),
+          page.accounts.reduce((count, { models }) => count + models.length, 0),
         ).toBeLessThanOrEqual(40);
-        for (const harness of page.harnesses) seen.set(harness.id, harness);
-        harnessCursor = page.harnessesNextCursor;
-        if (!harnessCursor) break;
+        for (const account of page.accounts) seen.set(account.aiAccountId, account);
+        accountCursor = page.nextCursor;
+        if (!accountCursor) break;
       }
       expect(seen.size).toBe(71);
-      expect(seen.get(targetId)?.environmentId).toBe(targetEnvironmentId);
+      expect(seen.get(targetId)?.computerId).toBe(fixture.mainRunnerId);
       expect(seen.has(disabledId)).toBe(true);
       {
         const found = await discoveryClient.callTool({
-          name: "orchestrator_capabilities",
+          name: "opensteer_ai_account_list",
           arguments: {
-            harnessInstanceId: targetId,
+            aiAccountId: targetId,
             query: "OPENAI catalog 110",
           },
         });
         expect(found.isError).not.toBe(true);
         const foundPage = found.structuredContent as {
-          environments: {
-            id: string;
-          }[];
-          harnesses: {
+          accounts: {
             status: string;
             models: {
               modelId: string;
@@ -901,7 +897,7 @@ integration("personal task delegation lifecycle", () => {
             modelsOmitted: number;
           }[];
         };
-        expect(foundPage.harnesses[0]).toMatchObject({
+        expect(foundPage.accounts[0]).toMatchObject({
           status: "ready",
           modelsOmitted: 0,
           models: [
@@ -923,14 +919,14 @@ integration("personal task delegation lifecycle", () => {
           ],
         });
         const none = await discoveryClient.callTool({
-          name: "orchestrator_capabilities",
+          name: "opensteer_ai_account_list",
           arguments: {
-            harnessInstanceId: targetId,
+            aiAccountId: targetId,
             query: "nothing matches this",
           },
         });
         expect(none.structuredContent).toMatchObject({
-          harnesses: [
+          accounts: [
             {
               status: "ready",
               models: [],
@@ -939,24 +935,18 @@ integration("personal task delegation lifecycle", () => {
           ],
         });
         const first = await discoveryClient.callTool({
-          name: "orchestrator_capabilities",
+          name: "opensteer_ai_account_list",
           arguments: {
-            harnessInstanceId: targetId,
+            aiAccountId: targetId,
           },
         });
-        const cursor = (
-          first.structuredContent as {
-            harnesses: {
-              modelsNextCursor: string;
-            }[];
-          }
-        ).harnesses[0]!.modelsNextCursor;
+        const cursor = (first.structuredContent as { nextCursor: string }).nextCursor;
         for (const args of [
           {
             cursor,
           },
           {
-            harnessInstanceId: targetId,
+            aiAccountId: targetId,
             cursor,
             query: "110",
           },
@@ -964,7 +954,7 @@ integration("personal task delegation lifecycle", () => {
           expect(
             (
               await discoveryClient.callTool({
-                name: "orchestrator_capabilities",
+                name: "opensteer_ai_account_list",
                 arguments: args,
               })
             ).isError,
@@ -988,7 +978,7 @@ integration("personal task delegation lifecycle", () => {
         const focused = await discoveryClient.callTool({
           arguments: {
             modelPage: {
-              harnessInstanceId: starvedId,
+              aiAccountId: starvedId,
               ...(recoveredCursor
                 ? {
                     cursor: recoveredCursor,
@@ -996,19 +986,19 @@ integration("personal task delegation lifecycle", () => {
                 : {}),
             },
           },
-          name: "orchestrator_capabilities",
+          name: "opensteer_ai_account_list",
         });
         if (focused.isError) throw new Error(JSON.stringify(focused.content));
         const page = focused.structuredContent as {
-          harnesses: {
+          accounts: {
             models: {
               modelId: string;
             }[];
-            modelsNextCursor?: string;
           }[];
+          nextCursor?: string;
         };
-        for (const model of page.harnesses[0]!.models) recovered.add(model.modelId);
-        recoveredCursor = page.harnesses[0]!.modelsNextCursor;
+        for (const model of page.accounts[0]!.models) recovered.add(model.modelId);
+        recoveredCursor = page.nextCursor;
         if (!recoveredCursor) break;
       }
       expect(recovered.size).toBe(30);
@@ -1020,7 +1010,7 @@ integration("personal task delegation lifecycle", () => {
         const result = await discoveryClient.callTool({
           arguments: {
             modelPage: {
-              harnessInstanceId: targetId,
+              aiAccountId: targetId,
               ...(modelCursor
                 ? {
                     cursor: modelCursor,
@@ -1028,19 +1018,19 @@ integration("personal task delegation lifecycle", () => {
                 : {}),
             },
           },
-          name: "orchestrator_capabilities",
+          name: "opensteer_ai_account_list",
         });
         if (result.isError) throw new Error(JSON.stringify(result.content));
         const page = result.structuredContent as {
-          harnesses: {
+          accounts: {
             models: {
               modelId: string;
             }[];
-            modelsNextCursor?: string;
           }[];
+          nextCursor?: string;
         };
-        for (const model of page.harnesses[0]!.models) discovered.add(model.modelId);
-        modelCursor = page.harnesses[0]!.modelsNextCursor;
+        for (const model of page.accounts[0]!.models) discovered.add(model.modelId);
+        modelCursor = page.nextCursor;
         staleCursor ??= modelCursor;
         if (modelCursor && !repeatedCatalog) {
           await store.recordHarnessCatalogs({
@@ -1060,10 +1050,10 @@ integration("personal task delegation lifecycle", () => {
           await discoveryClient.callTool({
             arguments: {
               modelPage: {
-                harnessInstanceId: disabledId,
+                aiAccountId: disabledId,
               },
             },
-            name: "orchestrator_capabilities",
+            name: "opensteer_ai_account_list",
           })
         ).isError,
       ).toBe(undefined);
@@ -1072,11 +1062,11 @@ integration("personal task delegation lifecycle", () => {
           await discoveryClient.callTool({
             arguments: {
               modelPage: {
-                harnessInstanceId: fixture.mainHarnessInstanceId,
+                aiAccountId: fixture.mainHarnessInstanceId,
                 cursor: staleCursor,
               },
             },
-            name: "orchestrator_capabilities",
+            name: "opensteer_ai_account_list",
           })
         ).isError,
       ).toBe(true);
@@ -1085,11 +1075,11 @@ integration("personal task delegation lifecycle", () => {
           await discoveryClient.callTool({
             arguments: {
               modelPage: {
-                harnessInstanceId: targetId,
+                aiAccountId: targetId,
                 cursor: "garbage",
               },
             },
-            name: "orchestrator_capabilities",
+            name: "opensteer_ai_account_list",
           })
         ).isError,
       ).toBe(true);
@@ -1112,7 +1102,7 @@ integration("personal task delegation lifecycle", () => {
                 cursor: staleCursor,
               },
             },
-            name: "orchestrator_capabilities",
+            name: "opensteer_ai_account_list",
           })
         ).isError,
       ).toBe(true);

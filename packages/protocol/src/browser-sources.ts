@@ -118,7 +118,7 @@ export const BrowserSignInOutcomeSchema = z.discriminatedUnion("status", [
 ]);
 export type BrowserSignInOutcome = z.infer<typeof BrowserSignInOutcomeSchema>;
 
-/** Why `copy_chrome_cookies` copied nothing; `chrome-signed-out` means no paired Chrome has the site. */
+/** Why `chrome_cookies_request` copied nothing; `chrome-signed-out` means no paired Chrome has the site. */
 export const ChromeCookiesUnavailableReasonSchema = z.union([
   BrowserSourceExportProblemSchema.exclude(["no-state"]),
   z.enum([
@@ -135,7 +135,7 @@ export const ChromeCookiesUnavailableReasonSchema = z.union([
 export type ChromeCookiesUnavailableReason = z.infer<typeof ChromeCookiesUnavailableReasonSchema>;
 
 /**
- * What an agent learns from `copy_chrome_cookies`. It never carries cookie
+ * What an agent learns from `chrome_cookies_request`. It never carries cookie
  * values, and `copied` means only that cookies reached the session: the site
  * may still refuse them.
  */

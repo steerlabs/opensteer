@@ -74,8 +74,8 @@ it("holds device access through MCP and resumes with rebuilt routes after the po
       if (args[1] === "device-access") stopped.resolve();
       return result;
     });
-    const held = callMcpTool(host.origin, run.toolsToken, "device_access_request", {
-      machineId: target.runnerId,
+    const held = callMcpTool(host.origin, run.toolsToken, "computer_access_request", {
+      computerId: target.runnerId,
       access: "files",
       reason: "Read project",
     });
@@ -115,10 +115,10 @@ it("holds device access through MCP and resumes with rebuilt routes after the po
           await callMcpTool(host.origin, continued.toolsToken, "computer_list", {}),
         ).toMatchObject({
           structuredContent: {
-            machines: expect.arrayContaining([
+            computers: expect.arrayContaining([
               expect.objectContaining({
-                id: target.runnerId,
-                connected: false,
+                computerId: target.runnerId,
+                online: false,
                 access: { browser: "unsupported", apps: "unsupported", files: "enabled" },
               }),
             ]),

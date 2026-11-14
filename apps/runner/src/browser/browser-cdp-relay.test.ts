@@ -88,7 +88,7 @@ describe("BrowserCdpRelay", () => {
             JSON.stringify({
               error: {
                 code: "forbidden",
-                message: "browser is off. Use device_access_request if needed.",
+                message: "browser is off. Use computer_access_request if needed.",
                 reason: "device-access-off",
                 machineId: deviceRefusalMachine,
                 capability: "browser",
@@ -145,7 +145,7 @@ describe("BrowserCdpRelay", () => {
       const deviceRefusal = await fetch(`${base}/agent/tabs?device-refusal=1`);
       expect(await deviceRefusal.json()).toEqual({
         error: {
-          message: "browser is off. Use device_access_request if needed.",
+          message: "browser is off. Use computer_access_request if needed.",
           reason: "device-access-off",
           machineId: deviceRefusalMachine,
           capability: "browser",

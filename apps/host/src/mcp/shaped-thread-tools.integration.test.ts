@@ -30,7 +30,7 @@ import {
   thread_interrupt,
   thread_wait,
   pending_request,
-  orchestrator_capabilities,
+  opensteer_ai_account_list,
 } from "@opensteer/agent-tools/tools";
 import { ThreadReadOutputSchema } from "@opensteer/agent-tools/outputs";
 import {
@@ -1057,7 +1057,7 @@ describeStore("shaped agent Thread tools", (it) => {
       data: {
         nodeId,
         callId: "sensitive",
-        tool: { name: "computer", namespace: "opensteer" },
+        tool: { name: "computer_use", namespace: "opensteer" },
         arguments: { secret: "NEVER_RETURN" },
       },
     });
@@ -1570,7 +1570,9 @@ describeStore("shaped agent Thread tools", (it) => {
     ).rejects.toThrow("Request is unavailable");
   });
 
-  it("discovers enforced budgets separately from computer tools", async ({ storeFixture }) => {
+  it("discovers enforced budgets and names each AI account's computer", async ({
+    storeFixture,
+  }) => {
     const s = await waitingTask(storeFixture, "orchestration-limits");
     const run = await storeFixture.database
       .selectFrom("runs")
@@ -1582,11 +1584,14 @@ describeStore("shaped agent Thread tools", (it) => {
       .set({ maxDelegations: 7, usedDelegations: 2, maxAutonomousRuns: 12, usedAutonomousRuns: 4 })
       .where("id", "=", run.causalChainId)
       .execute();
-    const result = await s.product.orchestrator_capabilities({
+    const result = await s.product.opensteer_ai_account_list({
       caller: s.caller,
-      input: orchestrator_capabilities.input.parse({}),
+      input: opensteer_ai_account_list.input.parse({}),
       operationKey: randomUUID(),
     });
+    expect(result.accounts).toContainEqual(
+      expect.objectContaining({ aiAccountId: s.f.harnessInstance.id, computerId: s.f.runnerId }),
+    );
     expect(result).toMatchObject({
       accessCeiling: s.caller.accessMode,
       limits: {
@@ -1597,13 +1602,6 @@ describeStore("shaped agent Thread tools", (it) => {
         maxWaitMs: 100_000,
       },
     });
-    const computers = await s.product.environment_list({
-      caller: s.caller,
-      input: {},
-      operationKey: randomUUID(),
-    });
-    expect(computers.environments).toHaveLength(1);
-    expect(computers).not.toHaveProperty("harnesses");
   });
   it("lists personal recent places and refuses another person", async ({ storeFixture }) => {
     const f = await storeFixture.startRunFixture("shaped-places");
@@ -1729,11 +1727,11 @@ describeStore("shaped agent Thread tools", (it) => {
     const f = await storeFixture.startRunFixture("shaped-tools");
     const s = setup(storeFixture, f);
     for (const name of [
-      "use_saved_login",
-      "copy_chrome_cookies",
-      "use_card",
-      "computer",
-      "computer.type",
+      "saved_login_request",
+      "chrome_cookies_request",
+      "card_request",
+      "computer_use",
+      "computer_use.type",
     ]) {
       const t = await tool(storeFixture, f, name);
       for (const event of [t.started, t.completed])

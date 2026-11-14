@@ -22,20 +22,26 @@ it("pages text by code point without splitting a surrogate pair", () => {
 });
 
 it.each([
-  "use_saved_login",
-  "copy_chrome_cookies",
-  "use_card",
+  "saved_login_request",
+  "chrome_cookies_request",
+  "card_request",
   "trigger_write",
-  "computer",
-  "computer.type",
-  "mcp__opensteer__computer",
-  "opensteer_use_saved_login",
-  "computer (opensteer MCP Server)",
+  "computer_use",
+  "computer_use.type",
+  "mcp__opensteer__computer_use",
+  "opensteer_saved_login_request",
+  "computer_use (opensteer MCP Server)",
 ])("withholds %s however an engine spells it", (name) => {
   expect(withheldTool(name)).toBe(true);
 });
 
-it.each(["shell", "integration_call", "thread_read", "computers_list"])("keeps %s", (name) => {
+it.each([
+  "shell",
+  "integration_call",
+  "thread_read",
+  "computer_list",
+  "custom_integration_request",
+])("keeps %s", (name) => {
   expect(withheldTool(name)).toBe(false);
 });
 
