@@ -252,7 +252,7 @@ describe("first-party integration catalog", () => {
     expect(
       validateJsonSchema(observe?.inputSchema, { operation: "observe", extra: true }),
     ).not.toEqual([]);
-    for (const row of config.operations) expect(row.description).toContain("computer tool");
+    for (const row of config.operations) expect(row.description).toContain("computer_use");
     expect(config.platforms).toEqual(["darwin"]);
     expect(config.accessLabels).toEqual({ read: "Can see", readWrite: "Can see and control" });
     expect(

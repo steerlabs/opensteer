@@ -613,7 +613,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           account: row.grant.connectionId,
           operation: row.tool.name,
         }),
-      ).toEqual(refusal("Use the computer tool to see and operate apps and phones."));
+      ).toEqual(refusal("Use computer_use to see and operate apps and phones."));
     } finally {
       await world.close();
     }
@@ -2227,14 +2227,12 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       callable: true,
     });
     expect(await continuationMessage(fulfilled, inventorySource(world.platform))).toBe(
-      `Request ${fulfilled.id} was fulfilled. Notes on ${mac} is ready. Use app("Notes", {computer: "Alex's Mac"}) in the computer tool. Continue.`,
+      `Request ${fulfilled.id} was fulfilled. Notes on ${mac} is ready. Use app("Notes", {computer: "Alex's Mac"}) in computer_use. Continue.`,
     );
 
     expect(notes).not.toHaveProperty("toolRefs");
     expect(notes).not.toHaveProperty("nextAction");
-    expect(approved.guidance.computers).toContain(
-      "With callable:true, use app() in the computer tool",
-    );
+    expect(approved.guidance.computers).toContain("With callable:true, use app() in computer_use");
     expect(approved.guidance.computers).toContain(
       "do not poll, repeat or route around the Request",
     );
@@ -2249,7 +2247,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         account: legacy.grant.connectionId,
         operation: legacy.tool.name,
       }),
-    ).toEqual(refusal("Use the computer tool to see and operate apps and phones."));
+    ).toEqual(refusal("Use computer_use to see and operate apps and phones."));
 
     // 6. Observe the bound window, without an image-capable engine and then with one.
     const observed = await a.call("computer_use", {
@@ -2399,7 +2397,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const request = await world.requestById(requestId);
       expect(request.status).toBe("fulfilled");
       expect(await continuationMessage(request, inventorySource(world.platform))).toBe(
-        `Request ${requestId} was fulfilled. ${app} on ${mac} is ready. Use app(${JSON.stringify(app)}, {computer: ${JSON.stringify(mac)}}) in the computer tool. Continue.`,
+        `Request ${requestId} was fulfilled. ${app} on ${mac} is ready. Use app(${JSON.stringify(app)}, {computer: ${JSON.stringify(mac)}}) in computer_use. Continue.`,
       );
     }
     // Both Threads share the wider personal grant, independent of ask order.
@@ -2464,7 +2462,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     );
     expect(calendar).toEqual({
       status: "fulfilled",
-      nextAction: "Use the computer tool to see and operate approved apps and phones.",
+      nextAction: "Use computer_use to see and operate approved apps and phones.",
     });
     expect(
       text(
@@ -2484,7 +2482,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     );
     expect(textEdit).toEqual({
       status: "fulfilled",
-      nextAction: "Use the computer tool to see and operate approved apps and phones.",
+      nextAction: "Use computer_use to see and operate approved apps and phones.",
     });
     const reviews = world.fakeMac.reviews.length;
     const widen = json(
@@ -2630,7 +2628,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       }),
     ).toEqual(
       refusal(
-        `This task is not running on a Mac set up for computer use, so name one with runnerId. These are set up: ${mac} (${world.macId}), Studio Mac (${studio}).`,
+        `This task is not running on a Mac set up for computer use, so name one with computerId. These are set up: ${mac} (${world.macId}), Studio Mac (${studio}).`,
       ),
     );
 
@@ -2668,9 +2666,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         access: "read",
         reason: "Look.",
       }),
-    ).toEqual(
-      refusal("A session on a computer belongs to a running task, so only a task can ask for one."),
-    );
+    ).toEqual(refusal("Tool is unavailable"));
     expect(await trigger.call("computer_use", { code: "return 1" })).toEqual(
       refusal("Tool is unavailable"),
     );
@@ -3334,7 +3330,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
           callable: false,
           computerToolEnabled: true,
           name: phone,
-          runnerId: phoneId,
+          computerId: phoneId,
           state: "ready",
         },
       ],
@@ -3399,12 +3395,12 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       name: phone,
       callable: true,
       computerToolEnabled: true,
-      runnerId: phoneId,
+      computerId: phoneId,
       state: "ready",
     });
     expect(granted).not.toHaveProperty("toolRefs");
     expect(await continuationMessage(fulfilled, inventorySource(world.platform))).toBe(
-      `Request ${fulfilled.id} was fulfilled. ${phone} is ready. Use phone(${JSON.stringify(phone)}) in the computer tool. Release it when you are done so another task can use it. Continue.`,
+      `Request ${fulfilled.id} was fulfilled. ${phone} is ready. Use phone(${JSON.stringify(phone)}) in computer_use. Release it when you are done so another task can use it. Continue.`,
     );
 
     const [row] = await world.platform.listCallableTools({
@@ -3417,7 +3413,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
         account: row.grant.connectionId,
         operation: row.tool.name,
       }),
-    ).toEqual(refusal("Use the computer tool to see and operate apps and phones."));
+    ).toEqual(refusal("Use computer_use to see and operate apps and phones."));
 
     // 4. Observe: the header a client titles the step with, the phone's
     // state line by line, then the tree.
@@ -3738,7 +3734,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
         ...retiredAct,
         arguments: { observationId: "retired", actions: [{ type: "wake" }] },
       }),
-    ).toEqual(refusal("Use the computer tool to see and operate apps and phones."));
+    ).toEqual(refusal("Use computer_use to see and operate apps and phones."));
     expect(fakePhone.received("act")).toBe(0);
     expect(json(await phoneCode(gateway, "return await p.release()"))).toEqual({ released: true });
     await world.close();

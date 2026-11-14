@@ -445,7 +445,7 @@ integration("Machine access session lifecycle", () => {
     const denied = await runShim(launch, "ssh", [alias, "true"]);
     expect(denied.code).toBe(255);
     expect(denied.stderr).toContain(
-      `device-access-off: machineId=${target.runnerId}, capability=files.`,
+      `device-access-off: computerId=${target.runnerId}, capability=files.`,
     );
     expect(denied.stderr).toContain("Files and commands are off on Example Mac.");
     // A refusal reserves nothing, so no row was ever written for it.

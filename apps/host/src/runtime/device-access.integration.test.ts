@@ -45,14 +45,15 @@ it("holds device access through MCP and resumes with rebuilt routes after the po
     expect(run.integrationTools.instructions).not.toContain(target.runnerId);
     expect(await callMcpTool(host.origin, run.toolsToken, "computer_list", {})).toMatchObject({
       structuredContent: {
-        machines: expect.arrayContaining([
+        computers: expect.arrayContaining([
           expect.objectContaining({
-            id: target.runnerId,
-            connected: true,
+            computerId: target.runnerId,
+            online: true,
             access: { browser: "unsupported", apps: "unsupported", files: "disabled" },
           }),
           expect.objectContaining({
-            id: caller.runnerId,
+            computerId: caller.runnerId,
+            hosting: true,
             access: expect.objectContaining({ files: "enabled" }),
           }),
         ]),

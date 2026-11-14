@@ -1,3 +1,4 @@
+import { createChannelId } from "@opensteer/channel-core";
 import {
   enrollTestRunner,
   personalBrowserRepository,
@@ -690,7 +691,7 @@ describeStore("MCP administration", (it) => {
         { routeId: configured.binding.id },
         () => channels.setConnectionStatus(configured.connection.id, run.userId, "connected"),
         observe,
-        { routeId: randomUUID() },
+        { routeId: createChannelId("binding") },
       );
       expect(
         (

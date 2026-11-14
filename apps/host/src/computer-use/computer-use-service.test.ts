@@ -1438,7 +1438,7 @@ describe("ComputerUseService call lifecycle", () => {
     ).rejects.toMatchObject({
       code: "failed",
       message: expect.stringMatching(
-        /^Those actions are not usable — actions\[1\]\.[a-z]+: .+\. Correct those fields as the computer tool describes, observe this window again, and act on its snapshot\.$/u,
+        /^Those actions are not usable — actions\[1\]\.[a-z]+: .+\. Correct those fields as computer_use describes, observe this window again, and act on its snapshot\.$/u,
       ),
     });
     expect(test.sent).toEqual([]);
