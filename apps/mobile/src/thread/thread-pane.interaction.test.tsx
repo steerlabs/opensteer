@@ -3541,7 +3541,7 @@ describe("a conversation in a pane that changes shape", () => {
     const host = fakeHost(
       snapshotFor({ entries: [], machines: [], run: null, threadId: conversationId }),
     );
-    await mount(host, conversationId);
+    const { container } = await mount(host, conversationId);
     const list = () => {
       if (harness.list === null) throw new Error("No transcript list.");
       return harness.list;
@@ -3572,7 +3572,10 @@ describe("a conversation in a pane that changes shape", () => {
     harness.scrollToOffset.mockReset();
     act(() => list().onContentSizeChange?.(390, 2000));
     expect(harness.scrollToOffset).not.toHaveBeenCalled();
-    near(1400);
+    // The pill takes them back, and is gone once they follow again.
+    await press(container, "Jump to latest");
+    expect(harness.scrollToOffset).toHaveBeenLastCalledWith({ animated: true, offset: 1400 });
+    expect(container.querySelector('[aria-label="Jump to latest"]')).toBeNull();
 
     // With the keyboard up the newest entry is past its inset, not under it.
     const inset = (bottom: number) =>

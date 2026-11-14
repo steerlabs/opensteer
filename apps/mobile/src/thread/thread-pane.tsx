@@ -383,6 +383,11 @@ function ThreadPaneForUser(
     [],
   );
   const [atTail, setAtTail] = useState(true);
+  // Whether the list follows the newest entry, and what the pill and reading state show of it.
+  const follow = useCallback((follows: boolean): void => {
+    tail.current = { ...tail.current, follows };
+    setAtTail(follows);
+  }, []);
   // How far below the bar the transcript starts, under the Run's page.
   const [pageInset, setPageInset] = useState(0);
   // True while the reader is held in a window loaded around an older update.
@@ -584,12 +589,11 @@ function ThreadPaneForUser(
     if (anchorMessageId === null || anchored.current === anchorMessageId) return;
     anchored.current = anchorMessageId;
     setHistorical(true);
-    tail.current = { ...tail.current, follows: false };
-    setAtTail(false);
+    follow(false);
     void hostClient.loadTranscriptAround(threadId, anchorMessageId).catch((error: unknown) => {
       setFailure(operationDetail(error, "That update could not be opened."));
     });
-  }, [anchorMessageId, hostClient, threadId]);
+  }, [anchorMessageId, follow, hostClient, threadId]);
 
   /** Puts the live conversation back and returns the reader to its foot. */
   const returnToLatest = useCallback((): void => {
@@ -605,15 +609,14 @@ function ThreadPaneForUser(
         anchorShown.current = null;
         props.onAnchorReleased?.();
         setHistorical(false);
-        tail.current = { ...tail.current, follows: true };
-        setAtTail(true);
+        follow(true);
         scrollToLatest(false);
       })
       .catch((error: unknown) => {
         setFailure(operationDetail(error, "The latest activity could not be loaded."));
       })
       .finally(() => setReturning(false));
-  }, [hostClient, props.onAnchorReleased, returning, scrollToLatest, threadId]);
+  }, [follow, hostClient, props.onAnchorReleased, returning, scrollToLatest, threadId]);
   const anchor = useMemo(
     () =>
       anchorMessageId === null
@@ -752,8 +755,7 @@ function ThreadPaneForUser(
     (place: LinkedPlace, entryId: string): void => {
       if (place.index >= 0) {
         scrollAttempts.current = 0;
-        tail.current = { ...tail.current, follows: false };
-        setAtTail(false);
+        follow(false);
         listRef.current?.scrollToIndex({
           animated: false,
           index: place.index - heldHead,
@@ -768,7 +770,7 @@ function ThreadPaneForUser(
       }
       if (place.activityKey !== null) openActivity(place.activityKey, entryId);
     },
-    [heldHead, openActivity],
+    [follow, heldHead, openActivity],
   );
   useEffect(() => {
     if (anchorMessageId === null || anchor === null || anchorShown.current === anchorMessageId) {
@@ -1308,7 +1310,7 @@ function ThreadPaneForUser(
                   returnToLatest();
                   return;
                 }
-                tail.current = { ...tail.current, follows: true };
+                follow(true);
                 scrollToLatest(true);
               }}
               style={({ pressed }) => [styles.jump, pressed && styles.jumpPressed]}

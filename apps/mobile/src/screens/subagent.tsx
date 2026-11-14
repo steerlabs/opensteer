@@ -542,6 +542,8 @@ function Body(props: {
   const column = useReadingColumn();
   const list = useRef<ScrollViewInstance>(null);
   const tail = useRef<TailReading>({ follows: false, offset: 0 });
+  // The keyboard's inset under the list, as the dock reports it: the foot is past it.
+  const inset = useRef(0);
   const card = detail?.card ?? null;
   const settled = card !== null && card.endedAt !== null;
   return (
@@ -558,6 +560,9 @@ function Body(props: {
       ]}
       contentInsetAdjustmentBehavior="never"
       maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+      onContentInsetChange={({ bottom }) => {
+        inset.current = bottom;
+      }}
       onContentSizeChange={() => {
         if (tail.current.follows) list.current?.scrollToEnd({ animated: false });
       }}
@@ -566,7 +571,7 @@ function Body(props: {
         tail.current = readTail(
           tail.current,
           contentOffset.y,
-          contentSize.height - layoutMeasurement.height,
+          contentSize.height + inset.current - layoutMeasurement.height,
           true,
         );
       }}

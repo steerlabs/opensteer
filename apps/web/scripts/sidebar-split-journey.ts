@@ -635,9 +635,16 @@ try {
       const before = await read();
       const box = (await list.boundingBox())!;
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      const ended = list.evaluate(
+        (node) =>
+          new Promise<boolean>((resolve) => {
+            node.addEventListener("scrollend", () => resolve(true), { once: true });
+            setTimeout(() => resolve(false), 2000);
+          }),
+      );
       // Part of a row's pitch, so the scroll stops between rows.
       await page.mouse.wheel(0, 50);
-      await page.waitForTimeout(150);
+      expectThat({ step: "scroll" }, await ended, "Tasks' scroll never ended");
       const stopped = await read();
       // Well past any settling a script could do once the scroll is still.
       await page.waitForTimeout(500);

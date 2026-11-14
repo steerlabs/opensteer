@@ -135,8 +135,8 @@ function windowEdges(list: HTMLElement): { readonly top: number; readonly bottom
 
 /**
  * Brings a row fully into its list's view, flush with the edge it comes in
- * at, so it lands on the list's snap to whole rows; moving only that list
- * (never the page or the sidebar around it).
+ * at (in a snapping list, on a row top), moving only that list, never the
+ * page or the sidebar around it.
  */
 export function revealInList(row: HTMLElement): void {
   const list = row.closest<HTMLElement>("[data-scroll-edges]");

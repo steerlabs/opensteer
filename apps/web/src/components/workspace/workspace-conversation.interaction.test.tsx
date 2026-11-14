@@ -799,8 +799,13 @@ describe("a conversation's page above it at phone width", () => {
 
 describe("a conversation's foot", () => {
   const task = "thr_00000000-0000-4000-8000-000000000902";
-  /** The transcript scrolls 400px of `content`; the rest of the layout is not measured. */
+  /**
+   * The transcript scrolls a 400px window of `content`, clamped as a browser
+   * clamps it; the rest of the layout is not measured.
+   */
   function transcriptGeometry(geometry: { content: number }) {
+    const tops = new WeakMap<Element, number>();
+    const max = () => geometry.content - 400;
     const size = (element: Element, key: "clientHeight" | "scrollHeight") =>
       element.classList.contains("transcript-scroll")
         ? { clientHeight: 400, scrollHeight: geometry.content }[key]
@@ -809,6 +814,15 @@ describe("a conversation's foot", () => {
       vi.spyOn(HTMLElement.prototype, key, "get").mockImplementation(function (this: HTMLElement) {
         return size(this, key);
       });
+    vi.spyOn(Element.prototype, "scrollTop", "get").mockImplementation(function (this: Element) {
+      return Math.min(tops.get(this) ?? 0, Math.max(0, max()));
+    });
+    vi.spyOn(Element.prototype, "scrollTop", "set").mockImplementation(function (
+      this: Element,
+      top: number,
+    ) {
+      tops.set(this, Math.max(0, Math.min(top, max())));
+    });
   }
   const scrollTo = (scroller: HTMLElement, top: number) =>
     act(async () => {
@@ -835,7 +849,7 @@ describe("a conversation's foot", () => {
     for (const _ of [1, 2]) await scrollTo(scroller, 1600);
     geometry.content = 2100;
     await arrives("The first reply");
-    expect(scroller.scrollTop, "A reader at the foot was not kept there").toBe(2100);
+    expect(scroller.scrollTop, "A reader at the foot was not kept there").toBe(1700);
 
     await scrollTo(scroller, 1670);
     geometry.content = 2200;
@@ -847,7 +861,7 @@ describe("a conversation's foot", () => {
     await scrollTo(scroller, 1800);
     geometry.content = 2300;
     await arrives("The third reply");
-    expect(scroller.scrollTop).toBe(2300);
+    expect(scroller.scrollTop).toBe(1900);
     geometry.content = 2400;
     await scrollTo(scroller, 1850);
     expect(scroller.scrollTop, "A scroll up beside a reflow was taken for the reflow").toBe(1850);
