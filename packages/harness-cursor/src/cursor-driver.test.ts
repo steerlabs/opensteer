@@ -566,6 +566,29 @@ function optionProducts(
 }
 
 describe("Cursor turns", () => {
+  it.each(["completed", "failed"])("reports native image generation: %s", async (outcome) => {
+    const fixture = await setup({ scenario: `image-${outcome}` });
+    try {
+      const session = await fixture.adapter.startSession(fixture.context);
+      const observer = observe(session.events);
+      await session.execute(fixture.turn("Draw a tree"));
+      await session.stop();
+      const completed = observer.events.find((event) => event.type === "tool.completed");
+      expect(completed?.data.isError).toBe(outcome === "failed");
+      expect(completed?.data.output.images).toEqual(
+        outcome === "completed"
+          ? [{ path: "/tmp/tree.jpg", mediaType: "image/jpeg", generated: true }]
+          : undefined,
+      );
+      expect(observer.events.find((event) => event.type === "tool.started")?.data.tool).toEqual({
+        name: "image_generation",
+        namespace: "cursor",
+      });
+    } finally {
+      await fixture.adapter.close();
+    }
+  });
+
   it("publishes one ordered lifecycle with usage before the terminal event", async () => {
     const fixture = await setup({});
     const session = await fixture.adapter.startSession(fixture.context);

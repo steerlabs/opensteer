@@ -1,5 +1,10 @@
-import { OpensteerError, type ToolIdentity } from "@opensteer/core";
-import { opensteerToolIdentity } from "@opensteer/harness";
+import {
+  createToolOutput,
+  imageGenerationToolName,
+  OpensteerError,
+  type ToolIdentity,
+} from "@opensteer/core";
+import { generatedImage, opensteerToolIdentity } from "@opensteer/harness";
 import {
   cursorAgentToolsServerName,
   cursorIntegrationToolsServerName,
@@ -100,6 +105,7 @@ export interface CursorToolCall {
 /** What Cursor calls its own tools, and what Opensteer calls them. */
 const cursorToolNames: Readonly<Record<string, string>> = {
   editToolCall: "edit",
+  generateImageToolCall: imageGenerationToolName,
   getMcpToolsToolCall: "get_mcp_tools",
   globToolCall: "glob",
   grepToolCall: "grep",
@@ -140,7 +146,18 @@ export function readCursorToolCall(frame: CursorFrame): CursorToolCall | undefin
       ? cursorMcpToolIdentity(args)
       : { name: cursorToolNames[kind] ?? kind.replace(/ToolCall$/u, ""), namespace: "cursor" },
     isError: cursorToolFailed(result),
-    output: result ?? "",
+    output:
+      kind === "generateImageToolCall"
+        ? createToolOutput(
+            cursorToolFailed(result) ? "Image generation failed" : "Image generation completed",
+            typeof result === "object" &&
+              result !== null &&
+              Object.hasOwn(result, "success") &&
+              !cursorToolFailed(result)
+              ? generatedImage(args.filePath)
+              : [],
+          )
+        : (result ?? ""),
   };
 }
 

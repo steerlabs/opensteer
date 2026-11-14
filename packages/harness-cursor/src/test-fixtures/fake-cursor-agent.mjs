@@ -499,6 +499,28 @@ async function main() {
       },
       type: "tool_call",
     });
+  } else if (scenario === "image-completed" || scenario === "image-failed") {
+    const args = { prompt: "A tree", filePath: "/tmp/tree.jpg" };
+    emit({
+      type: "tool_call",
+      subtype: "started",
+      call_id: "image-call",
+      tool_call: { generateImageToolCall: { args } },
+    });
+    emit({
+      type: "tool_call",
+      subtype: "completed",
+      call_id: "image-call",
+      tool_call: {
+        generateImageToolCall: {
+          args,
+          result:
+            scenario === "image-completed"
+              ? { success: {} }
+              : { error: { message: "Renderer failed" } },
+        },
+      },
+    });
   } else if (scenario === "unknown-tool") {
     emit({
       call_id: "tool_new_1",

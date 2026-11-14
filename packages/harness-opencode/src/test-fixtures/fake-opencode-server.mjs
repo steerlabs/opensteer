@@ -370,6 +370,34 @@ function route(url, request, response, payload) {
 function runScenario(id, payload) {
   capture({ kind: "prompt", pid: process.pid, sessionID: id, payload });
   assistantMessage();
+  if (scenario.startsWith("image-")) {
+    const state = {
+      input: { prompt: "A tree" },
+      metadata: { jobID: "image-job", path: "/tmp/tree", model: "test/image" },
+      output: "Job launched",
+    };
+    toolPart("image-call", "experimental_image_generate", "running", state);
+    toolPart("image-call", "experimental_image_generate", "completed", state);
+    emit("session.idle", { sessionID: id });
+    if (scenario === "image-stop") return;
+    emit("session.inbox.enqueued", {
+      sessionID: id,
+      inboxID: "image-report",
+      item: {
+        type: "synthetic",
+        delivery: "steer",
+        payload: {
+          text: "Image outcome. Saved image: /tmp/tree.png (test/image).",
+          metadata: {
+            source: "experimental_image_generate",
+            jobID: "image-job",
+            state: scenario.slice(6),
+          },
+        },
+      },
+    });
+    return;
+  }
   switch (scenario) {
     case "subagents-detail-background-hold":
     case "subagents-detail-nested-ask":

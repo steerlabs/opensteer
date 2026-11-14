@@ -1,5 +1,5 @@
 import { toolOutputWithImages } from "@opensteer/harness";
-import { backgroundLightModels } from "@opensteer/core";
+import { backgroundLightModels, imageGenerationToolName } from "@opensteer/core";
 import { resolveLightModel } from "@opensteer/harness";
 import { stat, mkdir, copyFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
@@ -11,6 +11,7 @@ import {
   createId,
   harnessCatalogEntry,
   harnessUsageLimitFailureCode,
+  ToolOutputSchema,
   type HarnessInstanceId,
   type PendingRequest,
   type RequestId,
@@ -958,7 +959,10 @@ class CursorHarnessSession implements HarnessSession {
             data: {
               callId,
               isError: call.isError,
-              output: toolOutputWithImages(call.output, this.#context.imageStore),
+              output:
+                call.identity.name === imageGenerationToolName
+                  ? ToolOutputSchema.parse(call.output)
+                  : toolOutputWithImages(call.output, this.#context.imageStore),
             },
             type: "tool.completed",
           });
