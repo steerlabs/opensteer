@@ -1,3 +1,4 @@
+import { collectStreamText, spawnSupervised } from "@opensteer/harness";
 import { delay } from "@opensteer/shared/delay";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
@@ -29,6 +30,7 @@ describe("Codex stdio process", () => {
       },
     );
     const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    let enginePid: number | undefined;
     try {
       child.stdout.destroy();
       child.stdin.end(JSON.stringify({ id: 1, method: "initialize", params: {} }) + "\n");
@@ -38,19 +40,96 @@ describe("Codex stdio process", () => {
             await readFile(capture, "utf8"),
             "engine never acknowledged the broken pipe",
           ).toContain('"recoveryBrokenPipe":true');
+          const records = (await readFile(capture, "utf8"))
+            .trim()
+            .split("\n")
+            .map((line) => JSON.parse(line));
+          enginePid = records.find((record) => record.fakeCodexProcess)?.fakeCodexProcess.pid;
+          expect(enginePid).toBeTypeOf("number");
+          expect(() => process.kill(enginePid!, 0)).not.toThrow();
           expect(child.exitCode).toBeNull();
           expect(() => process.kill(child.pid!, 0)).not.toThrow();
         },
         { timeout: 2000 },
       );
     } finally {
-      child.kill("SIGKILL");
+      child.kill("SIGTERM");
+      if (enginePid !== undefined) killFixture(enginePid);
       await withTimeout(exited, 2000, {
         timeoutError: () => new Error("Recovery fixture did not exit during cleanup"),
       });
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "leaves recovery processes alive after the killed Runner's supervisor finishes",
+    async () => {
+      const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-orphan-"));
+      const capture = join(directory, "capture.jsonl");
+      const engine = spawnSupervised({
+        executable: process.execPath,
+        args: [
+          fakeServer,
+          "--scenario=recovery-held",
+          "--survive-parent",
+          "--recovery-tool",
+          `--capture=${capture}`,
+        ],
+        cwd: directory,
+        environment: {},
+        output: "raw",
+      });
+      const output = collectStreamText(engine.stdout);
+      const errors = collectStreamText(engine.stderr);
+      let pids: number[] = [];
+      try {
+        for (const message of [
+          { id: 1, method: "initialize", params: {} },
+          { id: 2, method: "thread/start", params: {} },
+          { id: 3, method: "turn/start", params: { threadId: "codex-thread-1", input: [] } },
+        ])
+          engine.child.stdin.write(JSON.stringify(message) + "\n");
+        await vi.waitFor(
+          async () => {
+            const records = (await readFile(capture, "utf8"))
+              .trim()
+              .split("\n")
+              .map((line) => JSON.parse(line));
+            pids = records.flatMap((record) =>
+              record.recoveryTurn
+                ? [record.recoveryTurn.pid]
+                : record.recoveryChild
+                  ? [record.recoveryChild.pid]
+                  : [],
+            );
+            expect(pids).toHaveLength(2);
+          },
+          { timeout: 2000 },
+        );
+        // EOF on this pipe is what SIGKILL of the owning Runner leaves behind.
+        const control = engine.child.stdio[3];
+        if (!control || typeof control === "number" || !("destroy" in control))
+          throw new Error("No supervisor control pipe");
+        control.destroy();
+        await withTimeout(engine.exited, 2000, {
+          timeoutError: () => new Error("Supervisor did not finish its parent-death cleanup"),
+        });
+        for (const pid of pids)
+          expect(
+            () => process.kill(pid, 0),
+            `Recovery PID ${pid} must survive supervisor cleanup`,
+          ).not.toThrow();
+      } finally {
+        for (const pid of pids) killFixture(pid);
+        await engine.terminate(0);
+        await withTimeout(Promise.all([output, errors]), 2000, {
+          timeoutError: () => new Error("Recovery fixture pipes did not close"),
+        });
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("initializes explicitly configured Codex storage roots before starting app-server", async () => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-process-test-"));
@@ -279,4 +358,12 @@ function stringEnvironment(environment: NodeJS.ProcessEnv): Record<string, strin
       (entry): entry is [string, string] => entry[1] !== undefined,
     ),
   );
+}
+
+function killFixture(pid: number): void {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
+  }
 }

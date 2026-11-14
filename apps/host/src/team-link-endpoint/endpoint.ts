@@ -115,60 +115,67 @@ export class TeamLinkEndpoint {
         () => write(frame),
       );
     };
-    let delivery = Promise.resolve();
+    let delivery: Promise<void> | undefined;
+    let deliveryRequested = false;
     const delivered = new Set<TeamAgentRequestId>();
     const inFlightReturns = new Set<TeamAgentRequestId>();
     let returnBacklog = false;
     const subscriber = {
       ownerUserId: link.ownerUserId,
       online: false,
-      deliver: () => {
-        const next = delivery
-          .catch(() => undefined)
-          .then(async () => {
-            if (!hello || !active) return;
-            const capacity = 200 - inFlightReturns.size;
-            if (!capacity) return;
-            const revision = access.revision;
-            const pending = await requests.pending(linkId, [...delivered], capacity);
-            returnBacklog = pending.length === capacity;
-            const batches: (typeof pending)[number][][] = [];
-            let batch: (typeof pending)[number][] = [];
-            for (const request of pending) {
-              const next = [...batch, request];
-              if (
-                batch.length &&
-                (batch.length === 32 ||
-                  Buffer.byteLength(JSON.stringify({ type: "requests", requests: next })) >
-                    teamLinkMaxFrameBytes)
-              ) {
-                batches.push(batch);
-                batch = [];
+      deliver: (refill = false) => {
+        if (!refill) deliveryRequested = true;
+        if (delivery) return delivery;
+        delivery = Promise.resolve().then(async () => {
+          try {
+            do {
+              deliveryRequested = false;
+              if (!hello || !active) return;
+              const capacity = 200 - inFlightReturns.size;
+              if (!capacity) return;
+              const revision = access.revision;
+              const pending = await requests.pending(linkId, [...delivered], capacity);
+              returnBacklog = pending.length === capacity;
+              const batches: (typeof pending)[number][][] = [];
+              let batch: (typeof pending)[number][] = [];
+              for (const request of pending) {
+                const next = [...batch, request];
+                if (
+                  batch.length &&
+                  (batch.length === 32 ||
+                    Buffer.byteLength(JSON.stringify({ type: "requests", requests: next })) >
+                      teamLinkMaxFrameBytes)
+                ) {
+                  batches.push(batch);
+                  batch = [];
+                }
+                batch.push(request);
               }
-              batch.push(request);
-            }
-            if (batch.length) batches.push(batch);
-            for (const batch of batches) {
-              await access.handoff(
-                revision,
-                async () => {
-                  const current = await requests.pending(linkId, [...delivered], capacity);
-                  return batch.every((item) =>
-                    current.some((entry) => entry.request.id === item.request.id),
-                  );
-                },
-                () => {
-                  write({ type: "requests", requests: batch });
-                  for (const item of batch) {
-                    delivered.add(item.request.id);
-                    if (item.request.kind === "return") inFlightReturns.add(item.request.id);
-                  }
-                },
-              );
-            }
-          });
-        delivery = next;
-        return next;
+              if (batch.length) batches.push(batch);
+              for (const batch of batches) {
+                await access.handoff(
+                  revision,
+                  async () => {
+                    const current = await requests.pending(linkId, [...delivered], capacity);
+                    return batch.every((item) =>
+                      current.some((entry) => entry.request.id === item.request.id),
+                    );
+                  },
+                  () => {
+                    write({ type: "requests", requests: batch });
+                    for (const item of batch) {
+                      delivered.add(item.request.id);
+                      if (item.request.kind === "return") inFlightReturns.add(item.request.id);
+                    }
+                  },
+                );
+              }
+            } while (deliveryRequested || (returnBacklog && inFlightReturns.size <= 100));
+          } finally {
+            delivery = undefined;
+          }
+        });
+        return delivery;
       },
       cancel: (requestId: TeamAgentRequestId) => {
         delivered.delete(requestId);
@@ -245,7 +252,9 @@ export class TeamLinkEndpoint {
               if (result.kind === "accepted" && result.request.kind === "return") {
                 delivered.delete(result.request.id);
                 inFlightReturns.delete(result.request.id);
-                if (returnBacklog && inFlightReturns.size <= 100) await subscriber.deliver();
+                // A page read must not hold up acknowledgments for the current window.
+                if (returnBacklog && inFlightReturns.size <= 100)
+                  void subscriber.deliver(true).catch(() => close());
               }
             } catch (error) {
               await send({

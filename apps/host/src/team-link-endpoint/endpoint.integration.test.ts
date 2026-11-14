@@ -563,9 +563,13 @@ describe("standing team link authority", () => {
                 queueMicrotask(() => this.acceptNext());
               }
             }
-          if (frame.type === "error") this.drained.reject(new Error(JSON.stringify(frame)));
+          if (frame.type === "error")
+            this.drained.reject(
+              new Error(`${JSON.stringify(frame)} after ${this.completed.size} acknowledgments`),
+            );
           if (frame.type === "result") {
             this.completed.add(frame.id);
+            if (this.completed.size === 150) refillReleased.resolve();
             this.outstanding.delete(frame.id);
             this.accepting = false;
             queueMicrotask(() => this.acceptNext());
@@ -580,7 +584,19 @@ describe("standing team link authority", () => {
           this.emit("close");
         }
       }
-      const pendingSpy = vi.spyOn(requests, "pending");
+      const refillReleased = Promise.withResolvers<void>();
+      const pending = requests.pending.bind(requests);
+      const pendingSpy = vi.spyOn(requests, "pending").mockImplementation(async (...args) => {
+        const page = await pending(...args);
+        if (pendingSpy.mock.calls.length === 2)
+          await withTimeout(refillReleased.promise, 4000, {
+            timeoutError: () =>
+              new Error(
+                `Acknowledgments stopped at ${socket.completed.size} while the refill was in flight`,
+              ),
+          });
+        return page;
+      });
       const socket = new Socket();
       await endpoint.attach(socket as unknown as WebSocket, linkId);
       try {
@@ -609,6 +625,7 @@ describe("standing team link authority", () => {
               .executeTakeFirstOrThrow(),
           ).toMatchObject({ state: "cancelled", failureCode: null });
       } finally {
+        refillReleased.resolve();
         socket.close();
       }
     });
