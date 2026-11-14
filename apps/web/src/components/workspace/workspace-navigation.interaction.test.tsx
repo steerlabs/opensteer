@@ -518,8 +518,10 @@ describe("focus never lands on the body", () => {
 });
 
 describe("the Needs you pill", () => {
-  it("opens the Needs you list and loads older consent for review", async () => {
+  it("opens the Needs you list, loads older asks, and opens one in the task it waits in", async () => {
+    let askTask = "";
     await mount((source) => {
+      askTask = source.getSnapshot().threads.find((thread) => thread.purpose === "task")!.id;
       const older = {
         kind: "team-ask" as const,
         teamId: createId("deployment"),
@@ -546,6 +548,11 @@ describe("the Needs you pill", () => {
             memberCount: 2,
             peopleOnly: false,
           },
+        },
+        task: {
+          threadId: ThreadIdSchema.parse(askTask),
+          messageId: createId("message"),
+          revision: 0,
         },
       };
       const getSnapshot = source.getSnapshot.bind(source);
@@ -583,8 +590,9 @@ describe("the Needs you pill", () => {
     );
     expect(row).toBeDefined();
     await click(row!);
-    expect(element('[role="dialog"]').textContent).toContain("Review the older ask");
-    expect(element('[role="dialog"]').textContent).toContain("Approve");
+    // No dialog of its own: the ask is answered in its task.
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(history.at(-1)!.path).toBe(`/tasks/${askTask}`);
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
   });
 });
