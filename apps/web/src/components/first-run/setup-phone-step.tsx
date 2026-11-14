@@ -476,17 +476,23 @@ function ConnectPanel({
     return (
       <Panel>
         {view.steps ? (
-          <ol aria-label="Turning on Connect" className="setup-checks">
-            {view.steps.map((step) => (
-              <li
-                className={`setup-checks__item setup-checks__item--${step.state}`}
-                key={step.label}
-              >
-                <span aria-hidden className="setup-checks__mark" />
-                <span>{step.label}</span>
-              </li>
-            ))}
-          </ol>
+          <>
+            <ol aria-label="Turning on Connect" className="setup-checks">
+              {view.steps.map((step) => (
+                <li
+                  aria-current={step.state === "active" ? "step" : undefined}
+                  className={`setup-checks__item setup-checks__item--${step.state}`}
+                  key={step.label}
+                >
+                  <span aria-hidden className="setup-checks__mark" />
+                  <span>{step.label}</span>
+                </li>
+              ))}
+            </ol>
+            <p className="visually-hidden" role="status">
+              {view.sentence}
+            </p>
+          </>
         ) : (
           <p className="setup-panel__status" role="status">
             <span aria-hidden className="spinner" /> {view.sentence}

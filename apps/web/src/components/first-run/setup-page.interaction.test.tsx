@@ -545,7 +545,7 @@ it("signs in through the browser first when Connect is turned on signed out", as
   expect(bridge.signIn).toHaveBeenCalledTimes(1);
   // Linking needs the Account session the browser is still making.
   expect(bridge.linkPersonal).not.toHaveBeenCalled();
-  expect(container.querySelector(".setup-checks__item--active")?.textContent).toBe(
+  expect(container.querySelector('[aria-current="step"]')?.textContent).toBe(
     "Sign in to your Opensteer account",
   );
 

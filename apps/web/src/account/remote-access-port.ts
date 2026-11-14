@@ -36,7 +36,7 @@ function refuseUnfinished(outcome: PersonalAccountLinkOutcome): void {
 
 type DesktopSignInBridge = Pick<
   OpensteerDesktopBridge,
-  "getDeploymentAccessSnapshot" | "onDeploymentAccessSnapshotChanged" | "signIn"
+  "cancel" | "getDeploymentAccessSnapshot" | "onDeploymentAccessSnapshotChanged" | "signIn"
 >;
 
 /**
@@ -58,8 +58,10 @@ export function desktopRemoteAccessPort(
 }
 
 /**
- * Opens the Account sign-in in the browser, unless it is already open, and
- * settles when it ends: signed in, or given up in the browser.
+ * Opens the Account sign-in in the browser and settles when it ends: signed
+ * in, or given up. A browser tab closed mid sign-in sends nothing back, so a
+ * sign-in still open from before is replaced by a fresh one, and stopping
+ * the wait ends the one it opened.
  */
 export async function signInThroughBrowser(
   bridge: DesktopSignInBridge,
@@ -68,7 +70,8 @@ export async function signInThroughBrowser(
   const { account } = await bridge.getDeploymentAccessSnapshot();
   signal.throwIfAborted();
   if (account.status === "signed-in") return;
-  if (account.status !== "authorizing") await bridge.signIn();
+  if (account.status === "authorizing") await bridge.cancel();
+  await bridge.signIn();
   signal.throwIfAborted();
   await new Promise<void>((resolve, reject) => {
     let unsubscribe: (() => void) | null = null;
@@ -80,7 +83,13 @@ export async function signInThroughBrowser(
       signal.removeEventListener("abort", aborted);
       settle();
     };
-    const aborted = () => finish(() => reject(signal.reason));
+    const aborted = () => {
+      finish(() => reject(signal.reason));
+      void bridge
+        .getDeploymentAccessSnapshot()
+        .then(({ account: now }) => (now.status === "authorizing" ? bridge.cancel() : undefined))
+        .catch(() => undefined);
+    };
     const evaluate = ({ account: next }: DeploymentAccessSnapshot) => {
       if (next.status === "signed-in") finish(resolve);
       else if (next.status !== "authorizing")

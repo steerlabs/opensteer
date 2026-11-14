@@ -80,6 +80,9 @@ describe("signInThroughBrowser", () => {
     let listener: ((next: DeploymentAccessSnapshot) => void) | null = null;
     let account = { available: true, status };
     const desktop = {
+      cancel: vi.fn(async () => {
+        account = { available: true, status: "signed-out" };
+      }),
       getDeploymentAccessSnapshot: vi.fn(async () => ({ account }) as DeploymentAccessSnapshot),
       onDeploymentAccessSnapshotChanged: vi.fn((next: typeof listener) => {
         listener = next;
@@ -116,12 +119,23 @@ describe("signInThroughBrowser", () => {
     expect(givenUp.listening()).toBe(false);
   });
 
-  it("joins a sign-in already open in the browser instead of opening another", async () => {
-    const open = accountBridge("authorizing");
-    const joined = signInThroughBrowser(open.desktop, new AbortController().signal);
-    await vi.waitFor(() => expect(open.listening()).toBe(true));
-    open.publish("signed-in");
-    await expect(joined).resolves.toBeUndefined();
-    expect(open.desktop.signIn).not.toHaveBeenCalled();
+  it("replaces a sign-in left open, and ends the one it opened when the wait stops", async () => {
+    // A tab closed mid sign-in never says so; pressing again must open the browser again.
+    const stale = accountBridge("authorizing");
+    const fresh = signInThroughBrowser(stale.desktop, new AbortController().signal);
+    await vi.waitFor(() => expect(stale.listening()).toBe(true));
+    expect(stale.desktop.cancel).toHaveBeenCalledOnce();
+    expect(stale.desktop.signIn).toHaveBeenCalledOnce();
+    stale.publish("signed-in");
+    await expect(fresh).resolves.toBeUndefined();
+
+    const stopped = accountBridge("signed-out");
+    const controller = new AbortController();
+    const waiting = signInThroughBrowser(stopped.desktop, controller.signal);
+    await vi.waitFor(() => expect(stopped.listening()).toBe(true));
+    controller.abort(new Error("Cancelled."));
+    await expect(waiting).rejects.toThrow("Cancelled.");
+    expect(stopped.listening()).toBe(false);
+    await vi.waitFor(() => expect(stopped.desktop.cancel).toHaveBeenCalledOnce());
   });
 });

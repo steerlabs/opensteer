@@ -215,6 +215,10 @@ if (scenario.kind !== "setup") {
       accessListeners.add(listener);
       return () => accessListeners.delete(listener);
     },
+    cancel: async () => {
+      access = { ...access, account: { ...access.account, status: "signed-out" } };
+      for (const listener of accessListeners) listener(access);
+    },
     // The browser's sign-in stays open, so the step it waits on can be looked at.
     signIn: async () => {
       access = { ...access, account: { ...access.account, status: "authorizing" } };

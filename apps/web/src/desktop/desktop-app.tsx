@@ -62,7 +62,8 @@ export function desktopAccessPresentationFromSnapshot(
   snapshot: DeploymentAccessSnapshot,
 ): DesktopAccessPresentation {
   const selected = snapshot.deployments.find(({ id }) => id === snapshot.selectedDeploymentId);
-  if (personalSetupShowing(snapshot.personalSetup, selected)) return "personal";
+  if (personalSetupShowing(snapshot.personalSetup, snapshot.deployments, selected))
+    return "personal";
   if (!selected) return "picker";
   if (selected.status === "connected") return "ready";
   // An Account place opens through the Account: until it is signed in again,
@@ -84,14 +85,18 @@ export function desktopAccessPresentationFromSnapshot(
  * Setting up this computer stays on screen until its own Opensteer is listed
  * and attaching. The supervisor names the Deployment long before it is
  * listed, and the list adds it before it attaches; neither is a reason to
- * show the screens from before setup began.
+ * show the screens from before setup began. Until it is listed, a setup that
+ * fails keeps its own screen too: nothing else here can try it again.
  */
 function personalSetupShowing(
   setup: DeploymentAccessSnapshot["personalSetup"],
+  deployments: DeploymentAccessSnapshot["deployments"],
   selected: DeploymentAccessSnapshot["deployments"][number] | undefined,
 ): boolean {
-  if (!setup || setup.state === "stopped" || setup.state === "repair-required") return false;
-  if (setup.deploymentId === null) return true;
+  if (!setup) return false;
+  if (setup.deploymentId === null)
+    return setup.state !== "stopped" && setup.state !== "repair-required";
+  if (!deployments.some(({ id }) => id === setup.deploymentId)) return !selected;
   if (setup.state !== "checking" && setup.state !== "starting") return false;
   return !selected || (selected.id === setup.deploymentId && selected.status === "idle");
 }
@@ -403,13 +408,20 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
     }
 
     if (presentation === "personal") {
+      // Before the list has this computer's Deployment, setting up again is
+      // how it is retried, and there is no attempt for Back to cancel.
+      const listed = snapshot.deployments.some(
+        ({ id }) => id === snapshot.personalSetup?.deploymentId,
+      );
       return (
         <DesktopPersonalSetup
           actionError={snapshot.personalSetup?.issue?.detail ?? operationError}
           computerName={snapshot.personalSetup?.name ?? selected?.name ?? thisComputerLabel()}
           firstRun={settingUpHere}
-          onBack={() => runBridgeOperation(bridge.cancel())}
-          onRetry={() => runBridgeOperation(bridge.retry())}
+          onBack={listed ? () => runBridgeOperation(bridge.cancel()) : undefined}
+          onRetry={() =>
+            runBridgeOperation(listed ? bridge.retry() : bridge.createPersonalDeployment({}))
+          }
           requestPending={busy}
           status={
             snapshot.personalSetup ?? {

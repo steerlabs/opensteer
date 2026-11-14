@@ -309,6 +309,33 @@ describe("Desktop snapshot presentation", () => {
     // With nothing open, the list of places (or, when there are none, the
     // welcome that shows in its place) is where a person starts.
     expect(desktopAccessPresentationFromSnapshot(snapshot())).toBe("picker");
+    // A setup that failed before its Deployment was listed keeps its own
+    // screen, with its reason and Try again; Welcome could not retry it.
+    const unlisted = personalStatus({
+      canStart: true,
+      deploymentId: createId("deployment"),
+      issue: {
+        code: "database-unavailable",
+        component: "postgresql",
+        detail: "Another app is using port 5432. Quit it, then try again.",
+        repairAction: "restart-opensteer",
+      },
+      state: "repair-required",
+      step: null,
+    });
+    expect(desktopAccessPresentationFromSnapshot(snapshot({ personalSetup: unlisted }))).toBe(
+      "personal",
+    );
+    // Once listed, the list's own retry and cancel apply, as for any place.
+    expect(
+      desktopAccessPresentationFromSnapshot(
+        snapshot({
+          deployments: [{ ...accessDeployment("idle"), id: unlisted.deploymentId! }],
+          personalSetup: unlisted,
+          selectedDeploymentId: unlisted.deploymentId!,
+        }),
+      ),
+    ).toBe("picker");
     expect(
       desktopAccessPresentationFromSnapshot(
         snapshot({

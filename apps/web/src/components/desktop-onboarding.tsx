@@ -157,7 +157,7 @@ export function DesktopPersonalSetup({
   readonly computerName: string;
   /** This window asked to set this computer up, rather than reopening it. */
   readonly firstRun?: boolean;
-  readonly onBack: () => void;
+  readonly onBack?: (() => void) | undefined;
   readonly onRetry: () => void;
   readonly requestPending?: boolean;
   readonly status: DesktopPersonalDeploymentStatus;

@@ -775,6 +775,39 @@ describe("DeploymentAccessService", () => {
     service.dispose();
   });
 
+  it("starts a setup again that failed before its Deployment was listed, and only then", async () => {
+    const failed = {
+      ...personalStatus,
+      canStart: true,
+      deploymentId: createId("deployment"),
+      issue: {
+        code: "database-unavailable" as const,
+        component: "postgresql" as const,
+        detail: "Another app is using port 5432. Quit it, then try again.",
+        repairAction: "restart-opensteer" as const,
+      },
+      state: "repair-required" as const,
+      step: null,
+    };
+    const fixture = fakePorts({ personal: failed });
+    const service = new DeploymentAccessService(fixture.ports);
+    await service.initialize();
+    // Nothing is listed to retry through, so setting up again is the way on.
+    await expect(service.createPersonalDeployment()).resolves.toBeUndefined();
+    expect(fixture.ports.personal.start).toHaveBeenCalledOnce();
+    service.dispose();
+
+    const listed = fakePorts({
+      deployments: [deployment({ id: failed.deploymentId, onThisComputer: true })],
+      personal: failed,
+    });
+    const listedService = new DeploymentAccessService(listed.ports);
+    await listedService.initialize();
+    await expect(listedService.createPersonalDeployment()).rejects.toThrow("not available");
+    expect(listed.ports.personal.start).not.toHaveBeenCalled();
+    listedService.dispose();
+  });
+
   it("finishes an activating Account link instead of refusing the affordance it advertises", async () => {
     const fixture = fakePorts();
     const activating = {

@@ -345,7 +345,13 @@ export class DeploymentAccessService {
   async createPersonalDeployment(input: DesktopCreatePersonalDeploymentInput = {}): Promise<void> {
     this.#assertActive();
     const personal = this.#personalSetup();
-    if (personal?.deploymentId !== null || personal.state !== "stopped" || !personal.canStart) {
+    // A setup that stopped before its Deployment was listed has nothing to
+    // retry through the list, so starting it again here is its way on.
+    const fresh = personal?.deploymentId === null && personal.state === "stopped";
+    const unfinished =
+      personal?.deploymentId != null &&
+      !this.#catalog.deployments.some(({ id }) => id === personal.deploymentId);
+    if (!personal?.canStart || !(fresh || unfinished)) {
       throw operationUnavailable("createPersonalDeployment");
     }
     await this.#simpleOperation(
