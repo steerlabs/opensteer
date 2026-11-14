@@ -355,7 +355,18 @@ export class PlaywrightChromiumLauncher implements BrowserLauncher {
           try {
             const page = await probe.newPage();
             return await page.evaluate(async () => {
-              const data = navigator.userAgentData;
+              const data = (
+                navigator as {
+                  userAgentData?: {
+                    getHighEntropyValues: (hints: readonly string[]) => Promise<{
+                      architecture?: string;
+                      bitness?: string;
+                      platform?: string;
+                      platformVersion?: string;
+                    }>;
+                  };
+                }
+              ).userAgentData;
               if (!data) return undefined;
               const high = await data.getHighEntropyValues([
                 "architecture",
